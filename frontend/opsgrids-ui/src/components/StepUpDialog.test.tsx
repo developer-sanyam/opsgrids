@@ -443,8 +443,10 @@ describe("StepUpDialog: leaving", () => {
     await user.click(trigger);
     await user.type(codeField(), "482913");
 
+    // Focus goes back when the dialog's effect is cleaned up, which can land a tick after the
+    // dialog has left the page.
     await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(document.activeElement).toBe(trigger);
+    await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
   it("starts with an empty field every time it opens", async () => {
