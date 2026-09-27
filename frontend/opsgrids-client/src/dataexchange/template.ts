@@ -264,6 +264,12 @@ function updateRules(entity: AnyEntity): string[] {
       `Cannot be changed once created: ${headersOf(entity, fixed)}. A row whose cell differs from the record is refused.`,
     );
   }
+  const locked = update.notUpdatable ?? [];
+  if (locked.length > 0) {
+    rules.push(
+      `Not changed by an update, leave blank: ${headersOf(entity, locked)}. A row with a value there is refused.`,
+    );
+  }
   rules.push(
     "Warning: updating overwrites live data and cannot be undone. Nothing detects an edit that someone else makes after your file is read: it is overwritten by what the file says. Check the preview before you import.",
   );

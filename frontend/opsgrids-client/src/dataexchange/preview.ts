@@ -66,6 +66,10 @@ interface Updating {
   keyHeader: string;
 }
 
+function headerOf(entity: AnyEntity, key: string): string {
+  return entity.columns.find((column) => column.key === key)?.header ?? key;
+}
+
 function withStoredKey(row: ParsedRow, updating: Updating, item: unknown): ParsedRow {
   const { keyColumn } = updating;
   const key = updating.spec.keyOf?.(item) ?? null;
@@ -185,6 +189,17 @@ export function prepareImport(
         continue;
       }
       if (label === "") label = updating.spec.keyOf?.(stored.item) ?? "";
+      // A cell (or a [clear]) where the update does nothing would look as if it had changed the
+      // field. Said before the cell is even read, so a bad value there is not what the row is refused for.
+      const locked = (updating.spec.notUpdatable ?? []).filter((key) => !isBlank(cells[key]));
+      if (locked.length > 0) {
+        refuse(
+          joinProblems(
+            locked.map((key) => `${headerOf(entity, key)} cannot be changed by an update: leave the cell blank.`),
+          ),
+        );
+        continue;
+      }
     }
 
     const intent: RowIntent =

@@ -184,6 +184,8 @@ export function makeProductUpdate(options: ProductUpdateOptions = {}): UpdateSpe
       { column: "active", field: "is_active", current: (item) => item.active },
       { column: "email", current: (item) => (item.email === "" ? null : item.email), clear: "" },
     ],
+    // Set by a create only: a filled cell in one of these refuses an update row.
+    notUpdatable: ["category", "weight", "launched", "phone"],
     send: options.send ?? (() => Promise.resolve()),
     ...(options.extras === undefined ? {} : { extras: options.extras }),
     ...(options.check === undefined ? {} : { check: options.check }),

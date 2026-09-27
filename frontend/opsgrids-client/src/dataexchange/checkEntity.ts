@@ -152,6 +152,32 @@ function checkUpdate(entity: AnyEntity): string[] {
       );
     }
   }
+
+  // Every importable column must be accounted for, so an update never quietly ignores a cell: it
+  // changes the column (a field), hands it to an extra step, or refuses a value in it (notUpdatable).
+  const others = [
+    ["extraColumns", update.extraColumns ?? []],
+    ["notUpdatable", update.notUpdatable ?? []],
+  ] as const;
+  for (const [list, keys] of others) {
+    for (const key of keys) {
+      if (!known.has(key)) problems.push(`The update's ${list} names "${key}", which is no column`);
+    }
+  }
+  const listed = [...update.fields.map((field) => field.column), ...others.flatMap(([, keys]) => keys)];
+  for (const key of new Set(listed)) {
+    const times = listed.filter((other) => other === key).length;
+    const inOthers = others.reduce((total, [, keys]) => total + keys.filter((other) => other === key).length, 0);
+    if (times > 1 && inOthers > 0) {
+      problems.push(`The column "${key}" is listed more than once across the update's fields, extraColumns and notUpdatable`);
+    }
+  }
+  for (const column of importableColumns(entity)) {
+    if (column.importOnly === true || listed.includes(column.key) || column.key === keyColumn || column.key === entity.recordIdKey) continue;
+    problems.push(
+      `The column "${column.key}" is not covered by the update: list it in fields, extraColumns (an extra step handles it) or notUpdatable (a filled cell is refused)`,
+    );
+  }
   return problems;
 }
 

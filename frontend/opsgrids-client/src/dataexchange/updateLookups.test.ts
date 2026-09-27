@@ -41,7 +41,12 @@ function withCategory(extra: Partial<UpdateSpec<ProductItem>> = {}) {
   const base = makeProductUpdate({ items: [retired, active] });
   return makeProductEntity({
     recordIdKey: "id",
-    update: { ...base, fields: [...base.fields, categoryField], ...extra },
+    update: {
+      ...base,
+      fields: [...base.fields, categoryField],
+      notUpdatable: (base.notUpdatable ?? []).filter((key) => key !== "category"),
+      ...extra,
+    },
   });
 }
 
