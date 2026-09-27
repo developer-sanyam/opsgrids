@@ -30,6 +30,7 @@ from app.schemas import (
     MfaEnrolled,
     MfaEnrolStart,
     MfaRequired,
+    MfaStepUpIn,
     MfaVerifyIn,
     OperatorEnrollmentCodeIn,
     OperatorEnrollmentCodeOut,
@@ -360,6 +361,62 @@ async def mfa_verify(
         org_hint=payload.organization,
     )
     return _to_result(outcome, response, cfg)
+
+
+@router.post(
+    "/auth/mfa/step-up",
+    response_model=TokenOut,
+    summary="Prove a one-time code and get a short-lived token for revealing protected details",
+    responses={
+        401: {"description": "The bearer token or its session is not valid."},
+        403: {
+            "description": (
+                "`mfa-unavailable-for-sso` (the session came from single sign-on) or "
+                "`mfa-locked` (too many wrong codes)."
+            )
+        },
+        409: {"description": "`mfa-not-enrolled`: set up two-factor authentication first."},
+        422: {
+            "description": (
+                "`mfa-code-invalid`, `mfa-code-replayed`, or a validation error (including a "
+                "recovery code, which is not accepted here)."
+            )
+        },
+    },
+)
+async def mfa_step_up(
+    payload: MfaStepUpIn,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    directory: DirectoryDep,
+    entitlements: EntitlementsDep,
+    pair: KeyDep,
+    principal: CurrentPrincipal,
+) -> TokenOut:
+    """Exchange a TOTP code for an access token whose `amr` includes `otp`.
+
+    Bearer-authenticated: the caller is the signed-in member the token names, and nothing in the
+    body says who. The answer is an **access token only** — no refresh token, no cookie — good
+    for `step_up_token_ttl_seconds`, and it is not remembered by the session, so a refresh never
+    carries `otp`. Hold it in memory, use it for the reveal request(s), and let it lapse.
+
+    Takes a bare session for the reason `mfa_verify` does — a wrong code is counted and must
+    survive the request that refuses it — and binds the tenant itself; see `services.step_up`.
+    """
+    issued = await services.step_up(
+        session,
+        cfg=settings(),
+        pair=pair,
+        directory=directory,
+        entitlements=entitlements,
+        principal=principal,
+        code=payload.code,
+        request=request,
+    )
+    # A token in a response body is not for any cache to keep.
+    response.headers["Cache-Control"] = "no-store"
+    return _token_out(issued)
 
 
 @router.post(

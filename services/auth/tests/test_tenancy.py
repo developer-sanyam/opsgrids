@@ -83,6 +83,22 @@ BARE_SESSION_ROUTES = {
 }
 
 
+#: Routes that carry a principal **and** take a bare session, each with the reason. The chokepoint
+#: (`get_tenant_session`) rolls back on an exception, which is exactly wrong for a route whose
+#: whole job on the failure path is to *persist* something — a wrong second-factor code has to be
+#: counted, and the lockout it trips has to stick, even though the request answers an error. Such
+#: a route must bind the tenant itself, as the transaction's first statement; the behavioural
+#: half of that is `TestThePrincipalRouteOnABareSessionBindsItself` below.
+PRINCIPAL_ON_BARE_SESSION_ROUTES = {
+    "/api/v1/auth/mfa/step-up": (
+        "A signed-in member proves a one-time code. A wrong code is counted and can trip a "
+        "lockout that ends the session; that write has to be committed before the route "
+        "raises, which the rolling-back tenant chokepoint would undo. `services.step_up` "
+        "binds the tenant GUC itself, first."
+    ),
+}
+
+
 def _every_call(dependant: Dependant) -> set[Any]:
     found: set[Any] = set()
     stack = list(dependant.dependencies)
@@ -129,6 +145,7 @@ class TestRouteAudit:
             for route in _routes()
             if get_principal in _every_call(route.dependant)
             and get_tenant_session not in _every_call(route.dependant)
+            and route.path not in PRINCIPAL_ON_BARE_SESSION_ROUTES
         )
         assert not offenders, f"{offenders} resolve a principal on an unbound transaction"
 
@@ -139,6 +156,7 @@ class TestRouteAudit:
             if route.path.startswith("/api/v1")
             and get_session in _direct_calls(route.dependant)
             and route.path not in BARE_SESSION_ROUTES
+            and route.path not in PRINCIPAL_ON_BARE_SESSION_ROUTES
         )
         assert not offenders, f"{offenders} take `get_session` directly and are not allow-listed"
 
@@ -154,9 +172,22 @@ class TestRouteAudit:
             if route.path in BARE_SESSION_ROUTES:
                 assert get_principal not in _every_call(route.dependant), route.path
 
+    def test_the_principal_exemptions_are_real_and_documented(self) -> None:
+        """An exemption is only honest while the route still holds a principal, still takes a
+        bare session, and does not *also* go through the chokepoint (which would make it a
+        second, redundant transaction opener)."""
+        by_path = {route.path: route for route in _routes()}
+        for path, reason in PRINCIPAL_ON_BARE_SESSION_ROUTES.items():
+            assert path in by_path, f"{path} is exempt but no longer exists"
+            calls = _every_call(by_path[path].dependant)
+            assert get_principal in calls, f"{path} is exempt but carries no principal"
+            assert get_session in _direct_calls(by_path[path].dependant), path
+            assert get_tenant_session not in calls, f"{path} no longer needs the exemption"
+            assert len(reason) > 40, f"{path} is exempt without a real reason"
+
     def test_the_audit_is_looking_at_something(self) -> None:
-        """Five routes with a principal exist today: switch-org, me, the two enrolment
-        steps and the password change. Zero would mean the walk is broken."""
+        """Six routes with a principal exist today: switch-org, me, the two enrolment steps,
+        the step-up and the password change. Zero would mean the walk is broken."""
         guarded = [r for r in _routes() if get_principal in _every_call(r.dependant)]
         assert len(guarded) >= 5
 
@@ -252,6 +283,22 @@ class TestTheGucIsSetInsideEveryRequest:
         ).scalar_one()
         await session.rollback()
         assert value in ("", None), f"the tenant leaked: {value!r}"
+
+
+class TestThePrincipalRouteOnABareSessionBindsItself:
+    async def test_the_step_up_binds_the_tenant_first_even_when_it_refuses(
+        self, client: AsyncClient, registered: None, statements: list[Statement]
+    ) -> None:
+        """A refusal is the path with the least reason to have bound anything, so it is the one
+        worth pinning: the request below is turned away at the session check (`sid` names no
+        session), and the first thing the transaction still did was `set_config` for ORG_A."""
+        with _as(_signed_in()):
+            statements.clear()
+            response = await client.post("/api/v1/auth/mfa/step-up", json={"code": "123456"})
+        assert response.status_code == 401, response.text
+        first, params = statements[0]
+        assert f"set_config('{TENANT_GUC}'" in first, f"first statement was {first!r}"
+        assert str(ORG_A) in str(params), "bound to the wrong organization"
 
 
 class TestThePolicyClassificationHolds:

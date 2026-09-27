@@ -61,10 +61,13 @@ EmployeeRead = Annotated[ScopeContext, Depends(require("hrms.people.employee.rea
 EmployeeWrite = Annotated[
     ScopeContext, Depends(require("hrms.people.employee.write", minimum=Scope.ORG))
 ]
-#: Unmasking is dangerous: it needs its own permission **and** a recent second factor. `amr` is
-#: the platform's step-up mechanism — the guard refuses a token whose `amr` does not include
-#: `otp`, even when the permission is held. No scope floor: OWN is legitimate (a person unmasking
-#: their own record), and the object-level `assert_can_touch` enforces the rest.
+#: Unmasking is dangerous: it needs its own permission **and** an access token whose `amr`
+#: includes `otp`. The guard refuses a token without it, even when the permission is held. That
+#: is all it checks — a token that *carries* `otp`; it does not measure how recently a code was
+#: presented. A member gets such a token from `POST /auth/mfa/step-up` (a short-lived, access-only
+#: token, not remembered by the session; ADR-0023), or by presenting a code at sign-in, in which
+#: case the whole session carries `otp` for its lifetime. No scope floor: OWN is legitimate (a
+#: person unmasking their own record), and the object-level `assert_can_touch` enforces the rest.
 EmployeeUnmask = Annotated[
     ScopeContext,
     Depends(require("hrms.people.employee.read_sensitive", amr={"otp"})),
