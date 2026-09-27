@@ -7,6 +7,7 @@ import type { ProjectHealth, ProjectIn, ProjectOut, ProjectPhase, ProjectUpdate 
 import { HEALTH_LABEL, PHASE_LABEL } from "@/data/labels";
 
 import {
+  columnOf,
   labelOfOption,
   numberOf,
   optionOf,
@@ -73,7 +74,7 @@ const columns: readonly ImportColumn[] = [
     header: "Client",
     kind: "text",
     maxLength: 200,
-    help: "Who the project is for. Leave blank for an internal project.",
+    help: "Who the project is for. On a new project, leave blank for an internal project.",
   },
   {
     key: "owner",
@@ -82,21 +83,23 @@ const columns: readonly ImportColumn[] = [
     lookup: OWNERS,
     lookupHint:
       "Use the team member's name exactly as on the Team screen. If two members share a name, rename one first.",
-    help: "The delivery lead, by name as listed on the Team screen. Leave blank for an unassigned project.",
+    lookupHintUpdate:
+      "Use the team member's name exactly as on the Team screen. If two members share a name, rename one first. To remove the owner, write [clear]; a blank cell keeps it.",
+    help: "The delivery lead, by name as listed on the Team screen. On a new project, leave blank for an unassigned project.",
   },
   {
     key: "phase",
     header: "Phase",
     kind: "enum",
     options: PHASE_OPTIONS,
-    help: "Where the project is. Leave blank for Discovery.",
+    help: "Where the project is. On a new project, leave blank for Discovery.",
   },
   {
     key: "health",
     header: "Health",
     kind: "enum",
     options: HEALTH_OPTIONS,
-    help: "How delivery is going. Leave blank for On track.",
+    help: "How delivery is going. On a new project, leave blank for On track.",
   },
   {
     key: "progress_pct",
@@ -146,7 +149,7 @@ const columns: readonly ImportColumn[] = [
     pattern: /^[A-Za-z]{3}$/,
     patternHint: "A three-letter currency code such as INR or USD.",
     defaultCurrency: DEFAULT_CURRENCY,
-    help: `The currency of the budget and the spend. Leave blank for ${DEFAULT_CURRENCY}.`,
+    help: `The currency of the budget and the spend. On a new project, leave blank for ${DEFAULT_CURRENCY}.`,
   },
   {
     key: "team_size",
@@ -240,14 +243,12 @@ const sampleRows: readonly Record<string, SheetValue>[] = [
 
 const notes = [
   "Project codes must be unique. With \"Add new records only\", a code that already exists, even one held by a deleted project, is skipped and never updated.",
-  "Owner is found by the member's name as listed on the Team screen. If two members share a name, the row is refused until one of them is renamed. Leave Owner blank for an unassigned project.",
-  "Start date and target date are both required, and the target date cannot be before the start date.",
-  `Budget and spent are written in whole currency units, for example 2500000 or 2500000.50, with the currency in the Currency column. A blank currency means ${DEFAULT_CURRENCY}.`,
+  "Owner is found by the member's name as listed on the Team screen. If two members share a name, the row is refused until one of them is renamed. On a new project, leave Owner blank for an unassigned project.",
+  "To add a project, start date and target date are both required, and the target date cannot be before the start date.",
+  `Budget and spent are written in whole currency units, for example 2500000 or 2500000.50, with the currency in the Currency column. On a new project, a blank currency means ${DEFAULT_CURRENCY}.`,
   "Phase and health can be left blank: a new project starts in Discovery and On track.",
   "Milestones are counted from the project's milestones. Open tasks is a stored figure, not counted from tasks. Neither can be imported, and an imported project starts with 0 open tasks.",
   "A row with a Record ID came out of the system and is already there, so \"Add new records only\" refuses it. To use an exported file as a starting point, delete its Record ID column first. With \"Add new and update existing\", the Record ID says which project to update.",
-  "Updating: the project code says which project a row is about and cannot be changed. A row that names a project by Record ID must carry that project's own code or leave it blank.",
-  "Updating: [clear] empties Client, Owner and Summary. Every other column keeps its value when blank, and Start date and Target date can never be empty.",
   "Updating: the start and target dates are checked together with the project's stored dates, so a Start date after the stored target, or a Target date before the stored start, is refused.",
   "Updating: a blank Currency keeps the project's own currency, so its amounts are read in that currency and not in INR. Changing the currency does not convert the budget or the spend: a row that changes it must also give Budget and Spent in the new currency (a blank one is allowed only while that amount is 0), or it is refused.",
 ];
@@ -281,7 +282,7 @@ const projectUpdate: UpdateSpec<ProjectOut> = {
       field: "owner_ref" satisfies keyof ProjectUpdate,
       // An unowned project comes back as "Unassigned" with no id.
       current: (p) => storedText(p.owner.id),
-      resolve: resolveLookup(OWNERS),
+      resolve: resolveLookup(columnOf(columns, "owner")),
       clear: null,
     },
     { column: "phase", current: (p) => p.phase },

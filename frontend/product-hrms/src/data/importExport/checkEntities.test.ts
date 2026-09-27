@@ -132,3 +132,33 @@ describe("the employees entity definition", () => {
     expect(checkImportEntity(employeesEntity, lookups)).toEqual([]);
   });
 });
+
+describe("the employees update spec", () => {
+  const update = employeesEntity.update;
+
+  it("passes the engine's definition check together with the columns it changes", () => {
+    const lookups = lookupsFor([unit("d-hr", "Human Resources")], [site("BLR-HQ", "Bengaluru HQ")], ["EMP-0007"]);
+    expect(update).toBeDefined();
+    expect(checkImportEntity(employeesEntity, lookups)).toEqual([]);
+  });
+
+  it("covers every importable column: each is an update field, so nothing needs a notUpdatable or extraColumns entry", () => {
+    const covered = new Set([...(update?.fields.map((f) => f.column) ?? []), ...(update?.extraColumns ?? [])]);
+    const importable = employeesEntity.columns.filter((c) => c.readOnly !== true && c.importOnly !== true);
+    expect(importable.filter((c) => !covered.has(c.key)).map((c) => c.key)).toEqual([]);
+    expect(update?.notUpdatable ?? []).toEqual([]);
+    expect(update?.extraColumns ?? []).toEqual([]);
+  });
+
+  it("keeps the columns it must not change read-only, so they are ignored and never refused", () => {
+    const readOnly = employeesEntity.columns.filter((c) => c.readOnly === true).map((c) => c.key);
+    for (const key of ["status", "date_of_exit"]) expect(readOnly).toContain(key);
+  });
+
+  it("gives a lookup column an update field with a resolve, so a label is never compared or sent as the value", () => {
+    const lookupColumns = employeesEntity.columns.filter((c) => c.lookup !== undefined).map((c) => c.key);
+    for (const key of lookupColumns) {
+      expect(update?.fields.find((f) => f.column === key)?.resolve, key).toBeDefined();
+    }
+  });
+});

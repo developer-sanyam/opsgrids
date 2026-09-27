@@ -1,5 +1,5 @@
-import { RowProblem, normaliseKey } from "@opsgrids/client";
-import type { ImportContext, Lookup, ParsedRow, ParsedValue } from "@opsgrids/client";
+import { RowProblem, normaliseKey, unacceptedLookupValue } from "@opsgrids/client";
+import type { ImportColumn, ImportContext, Lookup, ParsedRow, ParsedValue } from "@opsgrids/client";
 
 /** A text cell, or null when it was left blank. */
 export function textOf(row: ParsedRow, key: string): string | null {
@@ -78,10 +78,28 @@ export function upperCased(value: ParsedValue): ParsedValue {
   return typeof value === "string" ? value.toUpperCase() : value;
 }
 
+/** A column of an entity by key, so a spec cannot name a header it does not have. */
+export function columnOf(columns: readonly ImportColumn[], key: string): ImportColumn {
+  const found = columns.find((column) => column.key === key);
+  if (found === undefined) throw new Error(`The entity has no column "${key}"`);
+  return found;
+}
+
 /**
- * `UpdateField.resolve` for a lookup column: the cell's label as the id or code the record stores,
- * refused as a row problem when the list does not hold it.
+ * `UpdateField.resolve` for a lookup column: the cell's label as the id or code the record stores.
+ * The engine does not check a lookup cell of a row that updates a record (blank leaves it alone),
+ * so this is where an unknown or ambiguous label is refused, in the engine's own words and with the
+ * column's update hint.
  */
-export function resolveLookup(name: string): (value: ParsedValue, ctx: ImportContext) => ParsedValue {
-  return (value, { lookups }) => (typeof value === "string" ? resolveReference(lookups[name], value) : value);
+export function resolveLookup(column: ImportColumn): (value: ParsedValue, ctx: ImportContext) => ParsedValue {
+  return (value, { lookups }) => {
+    if (typeof value !== "string") return value;
+    const lookup = column.lookup === undefined ? undefined : lookups[column.lookup];
+    if (lookup === undefined) {
+      throw new RowProblem(`The accepted values for ${column.header} could not be loaded, so it cannot be checked`);
+    }
+    const resolved = lookup.resolve(value);
+    if (resolved === undefined) throw new RowProblem(unacceptedLookupValue(column, value, lookup, true));
+    return resolved;
+  };
 }

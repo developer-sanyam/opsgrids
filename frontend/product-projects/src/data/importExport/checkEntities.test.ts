@@ -69,3 +69,29 @@ describe("the portfolio entity definition", () => {
     expect(checkImportEntity(portfolioEntity, lookups ?? {})).toEqual([]);
   });
 });
+
+describe("the portfolio update spec", () => {
+  const update = portfolioEntity.update;
+
+  it("is there, and is what the engine's definition check lints", () => {
+    expect(update).toBeDefined();
+    const lookups = lookupsFor([
+      { id: "p-01", name: "Meera Iyer" },
+      { id: "p-02", name: "Arjun Rao" },
+    ]);
+    expect(checkImportEntity(portfolioEntity, lookups)).toEqual([]);
+  });
+
+  it("covers every importable column: each is an update field, so nothing needs a notUpdatable or extraColumns entry", () => {
+    const covered = new Set([...(update?.fields.map((f) => f.column) ?? []), ...(update?.extraColumns ?? [])]);
+    const importable = portfolioEntity.columns.filter((c) => c.readOnly !== true && c.importOnly !== true);
+    expect(importable.filter((c) => !covered.has(c.key)).map((c) => c.key)).toEqual([]);
+    expect(update?.notUpdatable ?? []).toEqual([]);
+    expect(update?.extraColumns ?? []).toEqual([]);
+  });
+
+  it("gives the owner column an update field with a resolve, so a name is never compared or sent as the value", () => {
+    expect(update?.fields.find((f) => f.column === "owner")?.resolve).toBeDefined();
+    expect(portfolioEntity.columns.find((c) => c.key === "owner")?.lookupHintUpdate).toBeTruthy();
+  });
+});
