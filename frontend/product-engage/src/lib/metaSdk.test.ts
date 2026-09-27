@@ -37,17 +37,75 @@ describe("parseEmbeddedSignupMessage", () => {
     expect(parseEmbeddedSignupMessage(message(only))).toEqual({ kind: "finish", wabaId: "222", phoneNumberId: null });
   });
 
-  it("reads a cancellation and an error", () => {
+  it("reads a plain cancellation, which carries no reason", () => {
     expect(
       parseEmbeddedSignupMessage(
         message({ type: "WA_EMBEDDED_SIGNUP", event: "CANCEL", data: { current_step: "PHONE_NUMBER_SETUP" } }),
       ),
-    ).toEqual({ kind: "cancel", step: "PHONE_NUMBER_SETUP" });
+    ).toEqual({ kind: "cancel", step: "PHONE_NUMBER_SETUP", message: null, code: null, sessionId: null });
+  });
+
+  it("reads the reason Meta documents on a CANCEL event instead of dropping it", () => {
+    const cancel = {
+      type: "WA_EMBEDDED_SIGNUP",
+      event: "CANCEL",
+      data: {
+        error_message: "The phone number is already registered on another account.",
+        error_code: 1234,
+        session_id: "sess-42",
+        timestamp: "1700000000",
+      },
+    };
+    const expected = {
+      kind: "cancel",
+      step: null,
+      message: "The phone number is already registered on another account.",
+      code: "1234",
+      sessionId: "sess-42",
+    };
+    expect(parseEmbeddedSignupMessage(message(cancel))).toEqual(expected);
+    expect(parseEmbeddedSignupMessage(message(JSON.stringify(cancel)))).toEqual(expected);
+  });
+
+  it("keeps a string error code and the step together on a cancel that has both", () => {
+    expect(
+      parseEmbeddedSignupMessage(
+        message({
+          type: "WA_EMBEDDED_SIGNUP",
+          event: "CANCEL",
+          data: { current_step: "VERIFY_PHONE", error_code: "E-7", error_message: "Code not received" },
+        }),
+      ),
+    ).toEqual({ kind: "cancel", step: "VERIFY_PHONE", message: "Code not received", code: "E-7", sessionId: null });
+  });
+
+  it("reads an error, with its code and session when it has them", () => {
     expect(
       parseEmbeddedSignupMessage(
         message({ type: "WA_EMBEDDED_SIGNUP", event: "ERROR", data: { error_message: "Session expired" } }),
       ),
-    ).toEqual({ kind: "error", message: "Session expired" });
+    ).toEqual({ kind: "error", message: "Session expired", code: null, sessionId: null });
+    expect(
+      parseEmbeddedSignupMessage(
+        message({
+          type: "WA_EMBEDDED_SIGNUP",
+          event: "ERROR",
+          data: { error_message: "Session expired", error_code: 9, session_id: "s-1" },
+        }),
+      ),
+    ).toEqual({ kind: "error", message: "Session expired", code: "9", sessionId: "s-1" });
+  });
+
+  it("caps a long message from the popup and ignores fields of the wrong type", () => {
+    const parsed = parseEmbeddedSignupMessage(
+      message({
+        type: "WA_EMBEDDED_SIGNUP",
+        event: "CANCEL",
+        data: { error_message: "x".repeat(1000), error_code: { nested: true }, session_id: ["a"] },
+      }),
+    );
+    expect(parsed).toMatchObject({ kind: "cancel", code: null, sessionId: null });
+    expect(parsed !== null && parsed.kind === "cancel" ? parsed.message?.length : 0).toBe(300);
   });
 
   it("believes nobody but Meta's own origin", () => {

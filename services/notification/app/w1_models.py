@@ -21,7 +21,16 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Index, LargeBinary, String, UniqueConstraint, text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -92,6 +101,23 @@ class WhatsAppNumber(Base, UUIDPrimaryKeyMixin, OrgScopedMixin, TimestampMixin):
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     #: When Meta was last asked. Null forces the next read to refresh (a quality webhook sets it).
     refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Meta's `code_verification_status` (VERIFIED | NOT_VERIFIED | EXPIRED ...), verbatim.
+    code_verification_status: Mapped[str | None] = mapped_column(String(24))
+    #: Meta's `platform_type` (CLOUD_API | ON_PREMISE | NOT_APPLICABLE), verbatim. `CLOUD_API`
+    #: means registered for the Cloud API; `NOT_APPLICABLE` means not registered yet.
+    platform_type: Mapped[str | None] = mapped_column(String(24))
+    #: Meta's `throughput.level` (STANDARD | HIGH | NOT_APPLICABLE), verbatim.
+    throughput_level: Mapped[str | None] = mapped_column(String(24))
+
+    #: The six-digit PIN this platform chose when it registered the number
+    #: (`POST /{id}/register`), **sealed** like the token, never returned or logged. It is kept
+    #: because a registration that half-succeeded has set that PIN as the number's two-step
+    #: verification PIN, and a second attempt with a different one would be refused.
+    registration_pin_sealed: Mapped[bytes | None] = mapped_column(LargeBinary)
+    #: How many `register` calls were made inside the current 72-hour window (Meta allows ten).
+    registration_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: When the last `register` call was made; the window is measured from it.
+    registration_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         UniqueConstraint("organization_id", "phone_number_id", name="uq_w1_numbers_org_number"),

@@ -46,7 +46,7 @@ class SignupCompleteOut(BaseModel):
 
 
 class SignupStepOut(BaseModel):
-    key: Literal["token", "number", "webhook", "templates", "verify"]
+    key: Literal["token", "number", "webhook", "register", "templates", "verify"]
     label: str
     state: Literal["waiting", "running", "done", "failed"]
     detail: str | None = None
@@ -70,6 +70,14 @@ class NumberOut(BaseModel):
     messaging_limit: Literal["TIER_250", "TIER_1K", "TIER_10K", "TIER_100K", "UNLIMITED", "unknown"]
     status: Literal["connected", "pending_verification", "disconnected"]
     is_default: bool
+    #: Whether the number is registered for the Cloud API (`registered`), still waiting for
+    #: registration or verification (`not_registered`), or not known. Derived from Meta's
+    #: `platform_type` and `status`.
+    registration: Literal["registered", "not_registered", "unknown"] = "unknown"
+    #: Meta's `code_verification_status`, verbatim (`VERIFIED`, `NOT_VERIFIED`, ...), or null.
+    code_verification_status: str | None = None
+    #: Meta's `throughput.level` (`STANDARD`, `HIGH`, `NOT_APPLICABLE`), or null.
+    throughput_level: str | None = None
 
 
 class NumbersOut(BaseModel):

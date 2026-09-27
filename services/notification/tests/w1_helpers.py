@@ -5,6 +5,7 @@ Kept out of `conftest.py` (shared by every slice) and named for the slice, so it
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -68,7 +69,8 @@ def template(meta_id: str, name: str) -> dict[str, Any]:
 class FakeMeta:
     """Just enough Graph for Embedded Signup. `fail` maps a route name to the HTTP status it
     answers with (`oauth`, `debug_token`, `me`, `numbers`, `number`, `subscribe`, `unsubscribe`,
-    `subscribed`, `templates`)."""
+    `subscribed`, `templates`, `register`). `oauth_error` and `register_error` replace those two
+    routes' failure body with a Meta-shaped one (`{"status": 400, "error": {...}}`)."""
 
     def __init__(self) -> None:
         self.calls: list[httpx.Request] = []
@@ -82,6 +84,12 @@ class FakeMeta:
         self.subscribed: list[str] = [APP_ID]
         #: Epoch seconds `debug_token` reports; 0 is Meta's "does not expire".
         self.token_expires_at = 0
+        self.oauth_error: dict[str, Any] | None = None
+        self.register_error: dict[str, Any] | None = None
+        #: What `POST /{id}/register` was sent, decoded.
+        self.register_bodies: list[dict[str, Any]] = []
+        #: Whether a successful register flips the number to CONNECTED (Meta does, after a moment).
+        self.register_connects = True
 
     def _refuse(self, route: str) -> httpx.Response | None:
         status = self.fail.get(route)
@@ -102,6 +110,10 @@ class FakeMeta:
         self, method: str, parts: list[str], request: httpx.Request
     ) -> tuple[str, httpx.Response]:
         if parts == ["oauth", "access_token"]:
+            if self.oauth_error is not None:
+                return "oauth-error", httpx.Response(
+                    int(self.oauth_error.get("status", 400)), json=self.oauth_error
+                )
             return "oauth", httpx.Response(200, json={"access_token": TOKEN})
         if parts == ["debug_token"]:
             scopes = [{"scope": "whatsapp_business_management", "target_ids": self.granted}]
@@ -110,6 +122,18 @@ class FakeMeta:
             )
         if parts == ["me"]:
             return "me", httpx.Response(200, json={"id": "biz"})
+        if len(parts) == 2 and parts[1] == "register" and method == "POST":
+            self.register_bodies.append(json.loads(request.content or b"{}"))
+            if self.register_error is not None:
+                return "register-error", httpx.Response(
+                    int(self.register_error.get("status", 400)), json=self.register_error
+                )
+            if self.register_connects:
+                for item in self.numbers:
+                    if item["id"] == parts[0]:
+                        item["status"] = "CONNECTED"
+                        item["platform_type"] = "CLOUD_API"
+            return "register", httpx.Response(200, json={"success": True})
         if len(parts) == 1:
             found = [n for n in self.numbers if n["id"] == parts[0]]
             if not found:
@@ -127,6 +151,10 @@ class FakeMeta:
         if len(parts) == 2 and parts[1] == "message_templates":
             return "templates", httpx.Response(200, json={"data": self.templates})
         return "unknown", httpx.Response(404, json={"error": {"code": 100, "message": "x"}})
+
+    def registers(self) -> list[httpx.Request]:
+        """The `POST /{phone_number_id}/register` calls, in order."""
+        return [c for c in self.calls if c.url.path.endswith("/register")]
 
     def routes_called(self) -> list[str]:
         return ["/".join(c.url.path.strip("/").split("/")[1:]) for c in self.calls]

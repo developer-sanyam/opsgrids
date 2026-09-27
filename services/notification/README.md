@@ -216,21 +216,31 @@ caller assuming it took effect.
 
 ## WhatsApp Embedded Signup, numbers and health (`app/w1_*.py`)
 
-`POST /engage/whatsapp/signup/complete` seals the popup's one-time code on a `w1_setup_runs` row,
-stages `notification.whatsapp.setup_requested` through the outbox and answers 202. After commit the
-worker (`consumers.run_whatsapp_setup` → `app/w1_setup.py`) runs five steps, each committed before
-the next: `token` (exchange the code), `number` (discover the WABA, prove ownership, store the
-sealed token in `provider_accounts`, fill the numbers cache), `webhook` (`POST /{waba}/subscribed_apps`),
-`templates` (`w2_services.sync_templates`), `verify` (read the number and subscription back). A
-failing step fails the run with a machine-readable `error_code` (`code_exchange_failed`,
-`ownership_check_failed`, `number_claimed`, `webhook_subscribe_failed`, `templates_sync_failed`,
-`webhook_not_subscribed`, `meta_unreachable`, ...). The code and the token are sealed at rest, wiped
-as soon as they are spent, and never appear in a response, an event, an audit row or a log line.
+`POST /engage/whatsapp/signup/complete` exchanges the popup's one-time code for a token **inside the
+request** (Meta's code lives about 30 seconds, so it cannot wait behind a queue), seals the token on a
+`w1_setup_runs` row (the code itself is never stored), stages `notification.whatsapp.setup_requested`
+through the outbox and answers 202. After commit the worker (`consumers.run_whatsapp_setup` →
+`app/w1_setup.py`) runs six steps, each committed before the next: `token` (already done by the
+request), `number` (discover the WABA, prove ownership, store the sealed token in
+`provider_accounts`, fill the numbers cache), `webhook` (`POST /{waba}/subscribed_apps`), `register`
+(`POST /{phone_number_id}/register` with a random six-digit PIN, sealed on `w1_numbers`; skipped when
+Meta already reports the number `CONNECTED`, counted against Meta's ten calls per 72 hours, never
+retried blindly), `templates` (`w2_services.sync_templates`), `verify` (read the number and
+subscription back; fails with `number_not_connected` when the number still cannot send). A refused
+code answers 409 `code_expired` / `code_exchange_failed` (503 `meta_unreachable`, retryable with the
+same code). A failing step fails the run with a machine-readable `error_code`
+(`ownership_check_failed`, `number_claimed`, `pin_required`, `register_rate_limited`,
+`webhook_subscribe_failed`, `templates_sync_failed`, `webhook_not_subscribed`, `meta_unreachable`,
+...). The token and the PIN are sealed at rest, and never appear in a response, an event, an audit
+row or a log line. `POST /engage/whatsapp/disconnect` releases the routing key
+(`provider_accounts.phone_number_id` becomes null, the number is kept in
+`released_phone_number_id`), so the number can be connected by another organization and a webhook for
+it is dropped as an unknown number.
 
 | Route | Permission | Notes |
 |---|---|---|
 | `GET /engage/whatsapp/signup/config` | `engage.setup.whatsapp.read` | `enabled: false` unless `META_APP_ID`, `META_APP_SECRET` and `META_EMBEDDED_SIGNUP_CONFIG_ID` are set. |
-| `POST /engage/whatsapp/signup/complete` | `engage.setup.whatsapp.write` | 202; idempotent on the code; 409 `setup_in_progress`. |
+| `POST /engage/whatsapp/signup/complete` | `engage.setup.whatsapp.write` | 202 once the code is exchanged; idempotent on the code; 409 `setup_in_progress` / `code_expired` / `code_exchange_failed`, 503 `meta_unreachable`. |
 | `GET /engage/whatsapp/signup/{id}` | `engage.setup.whatsapp.read` | Steps and state; another organization's id is a 404. |
 | `GET /engage/whatsapp/numbers` | `engage.setup.whatsapp.read` | Cached; refreshed from Graph when older than ten minutes. |
 | `POST /engage/whatsapp/numbers/{id}/default` | `engage.setup.whatsapp.write` | Moves the webhook routing key, so the number must be on the account's own WABA and Meta must confirm (with the connection's token) that it controls it; mirrors it into `provider_accounts`. 409 `number_inactive` / `ownership_check_failed` / `number_claimed`. |

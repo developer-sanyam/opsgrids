@@ -1135,6 +1135,12 @@ services:
       META_APP_ID: ${META_APP_ID:-}
       META_APP_SECRET: ${META_APP_SECRET:-}
       META_EMBEDDED_SIGNUP_CONFIG_ID: ${META_EMBEDDED_SIGNUP_CONFIG_ID:-}
+      # Optional, and absent from a box's .env by default: an empty value is ignored by the
+      # service's settings (`env_ignore_empty`), so the code's own Graph base and version apply.
+      # Set WHATSAPP_GRAPH_VERSION (for example v25.0) to move every Graph call to another
+      # version without a code change; WHATSAPP_API_BASE replaces the whole base URL.
+      WHATSAPP_API_BASE: ${WHATSAPP_API_BASE:-}
+      WHATSAPP_GRAPH_VERSION: ${WHATSAPP_GRAPH_VERSION:-}
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
       # customer-service is deployed under the `crm` profile only; on a box without it enabled

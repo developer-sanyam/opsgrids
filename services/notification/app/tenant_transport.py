@@ -226,7 +226,7 @@ async def _resolve_whatsapp(
         return _refuse(organization_id, "whatsapp", NOT_CONNECTED, why="not_connected")
     if not account.access_token_enc:
         return _refuse(organization_id, "whatsapp", NOT_CONNECTED, why="no_token")
-    if not _PHONE_NUMBER_ID.match(account.phone_number_id):
+    if not account.phone_number_id or not _PHONE_NUMBER_ID.match(account.phone_number_id):
         return _refuse(organization_id, "whatsapp", NOT_CONNECTED, why="bad_phone_number_id")
 
     try:
