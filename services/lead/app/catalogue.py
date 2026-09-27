@@ -125,6 +125,24 @@ CRM_LEADS = PermissionCatalogue(
         PermissionSpec(
             "lead", "lead", "convert", "Convert a qualified lead into a company and deal", "OWN"
         ),
+        # Reading a lead's real phone number or email, as opposed to the masked hint every
+        # other read returns. Classified dangerous and stepped up at the route
+        # (`amr={"otp"}`), exactly as customer-service treats `crm.book.contact.read_sensitive`:
+        # the ordinary lead permission must not be a route to an unconverted prospect's
+        # personal details, and every reveal writes an `entity.sensitive_read` audit row naming
+        # the field but never its value. OWN by default (a rep reveals the leads they are
+        # working), ORG at most. As ADR-0000 §5's note says, `is_dangerous` is metadata and
+        # not a control — what actually constrains a reveal is the step-up on the route, the
+        # scope re-applied to the one lead, and the audit row.
+        PermissionSpec(
+            "lead",
+            "lead",
+            "read_sensitive",
+            "Reveal a lead's real phone number or email, audited",
+            "OWN",
+            "ORG",
+            is_dangerous=True,
+        ),
     ],
 )
 
@@ -147,13 +165,15 @@ CRM_LEADS_ROLE_TEMPLATES: list[RoleTemplate] = [
         product=PRODUCT,
         description=(
             "Every person with a CRM seat. Reads the whole intake list — sales works from one "
-            "shared book — works and converts the leads they own."
+            "shared book — works and converts the leads they own, and may reveal the real "
+            "phone number or email of a lead they own (stepped up and audited)."
         ),
         is_default=True,
         grants=CRM_LEADS.pick(
             ("crm.lead.lead.read", "ORG"),
             ("crm.lead.lead.write", "OWN"),
             ("crm.lead.lead.convert", "OWN"),
+            ("crm.lead.lead.read_sensitive", "OWN"),
         ),
     ),
 ]

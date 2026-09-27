@@ -31,6 +31,7 @@ see `_resolve_round_robin_snapshot`'s own docstring.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from collections.abc import Sequence
@@ -46,21 +47,23 @@ from starlette.requests import Request
 from app import clients, domain, selectors
 from app.config import settings
 from app.models import AssignmentRule, AuditLog, Lead, OutboxEvent
-from app.schemas import LeadPatch
+from app.schemas import LeadPatch, RevealField
 from platform_core.audit import record_audit, record_sensitive_read
-from platform_core.auth import Scope, ScopeContext
+from platform_core.auth import Principal, Scope, ScopeContext
+from platform_core.cache import get_redis
 from platform_core.db import assert_tenant, set_tenant
 from platform_core.errors import (
     ConflictProblem,
     ForbiddenProblem,
     NotFoundProblem,
+    RateLimitedProblem,
     UpstreamUnavailableProblem,
     ValidationProblem,
 )
 from platform_core.events import publish_event
 from platform_core.logging import get_logger
 from platform_core.models import utcnow
-from platform_core.pii import blind_index, open_sealed, seal
+from platform_core.pii import PiiError, blind_index, open_sealed, seal
 
 log = get_logger("lead.services")
 
@@ -649,6 +652,258 @@ async def update_lead(
         actor=_actor(ctx),
     )
     return lead
+
+
+# ------------------------------------------------------------------ revealing a sealed detail
+
+#: What the 404 says when the requested detail was never captured. Names only the field the
+#: caller asked about — it says nothing about the *other* one.
+_NOTHING_ON_FILE: dict[str, str] = {
+    "phone": "No phone number is on file for this lead",
+    "email": "No email address is on file for this lead",
+}
+
+#: The daily budget's window. Not a setting: "per day" is what the budget is called.
+_REVEAL_DAILY_WINDOW_SECONDS = 86_400
+
+#: The longest the reveal budget's Redis round trip may take. There is exactly one round trip
+#: (`_REVEAL_BUDGET_SCRIPT`), so this is the whole cost of the check and the most a request can
+#: hold a pooled database connection for while it waits: the budget is spent inside the request's
+#: transaction (after the lead has been looked up and before it is opened). A Redis that neither
+#: answers nor refuses — a dropped route, a stopped container behind a proxy — is the same 503 an
+#: outage is: nothing is revealed.
+_REVEAL_BUDGET_TIMEOUT_SECONDS = 2.0
+
+#: Spend one reveal from **both** windows, or from **neither**, in one atomic step on the server.
+#: `KEYS` are the burst and the daily counter; `ARGV` are their limits and their TTLs.
+#:
+#: * **One round trip and one atomic step**, so a timeout or a dropped connection cannot land
+#:   between an `INCR` and its `EXPIRE` and leave a counter that never expires (which, for a
+#:   daily counter, would refuse its user for ever). The server runs a script to completion once
+#:   it has it whatever the client does next, and does not run one it never received.
+#: * **The expiry is set whenever there is none** (`TTL < 0`), not only when the count is 1, so a
+#:   counter that somehow lost its expiry is healed by the next request.
+#: * **A refused request spends nothing.** A caller who is over the burst limit does not also burn
+#:   the daily budget with the requests that are refused, so a stolen token cannot exhaust the
+#:   real person's day by hammering after the burst is spent. It answers `1` (burst spent) or `2`
+#:   (daily spent) with the current counts, and `0` when it spent.
+#:
+#: Duplicated in lead- and customer-service, which share the counters (the same keys), and pinned
+#: equal by `tests/infra/test_reveal_budget_parity.py`. Keep them identical.
+_REVEAL_BUDGET_SCRIPT = """
+local burst = tonumber(redis.call('GET', KEYS[1]) or '0')
+local daily = tonumber(redis.call('GET', KEYS[2]) or '0')
+if burst >= tonumber(ARGV[1]) then return {1, burst, daily} end
+if daily >= tonumber(ARGV[2]) then return {2, burst, daily} end
+burst = redis.call('INCR', KEYS[1])
+if redis.call('TTL', KEYS[1]) < 0 then redis.call('EXPIRE', KEYS[1], ARGV[3]) end
+daily = redis.call('INCR', KEYS[2])
+if redis.call('TTL', KEYS[2]) < 0 then redis.call('EXPIRE', KEYS[2], ARGV[4]) end
+return {0, burst, daily}
+"""
+
+
+def log_reveal_refused(
+    principal: Principal,
+    *,
+    reason: str,
+    lead_id: uuid.UUID | None = None,
+    field: str | None = None,
+    request: Request | None = None,
+) -> None:
+    """One structured WARNING per refused reveal: who, where, which lead, and why.
+
+    A log line, deliberately not an audit row. A refusal changes nothing, so it is not an
+    `entity.sensitive_read` (that action means a value was opened), and an audit table a prober
+    can grow one 403 at a time is a cost rather than a control. What a refusal *does* need is to
+    be visible — somebody walking lead ids, or a session without the step-up trying every field,
+    is exactly the pattern worth grepping for.
+
+    Never a value: the ids, the field's *name* and a reason code, nothing read from the lead.
+    `request_id` correlates the line with the request's other logs; it is whatever the client
+    sent as `X-Request-ID` when it sent one, so it locates a line and proves nothing about who
+    made the call — `actor_id` is the identity.
+    """
+    log.warning(
+        "lead.reveal.refused",
+        reason=reason,
+        organization_id=str(principal.organization_id),
+        actor_id=str(principal.sub),
+        lead_id=str(lead_id) if lead_id is not None else None,
+        field=field,
+        request_id=getattr(request.state, "request_id", None) if request is not None else None,
+    )
+
+
+async def enforce_reveal_budget(ctx: ScopeContext, *, request: Request | None = None) -> None:
+    """Spend one reveal from this user's budget in this organization, or raise 429.
+
+    Two fixed windows, both keyed on the organization *and* the user, so one person's budget is
+    never another's and the same person in two organizations has two (a membership is
+    per-organization): `reveal_burst_limit` per `reveal_burst_window_seconds`, and
+    `reveal_daily_limit` per UTC day. The keys are shared with customer-service's reveal on purpose
+    — the thing being bounded is how much PII one person can read, and two routes with two budgets
+    would double it. **Keep the key prefix identical to customer-service's.**
+
+    **Spent when a lead is about to be opened, not when a request arrives.** It runs after the
+    permission, the step-up and the entitlement have passed and after the lead has been shown to
+    exist in this organization, to be in the caller's scope and to have a value on file — and
+    before it is opened (`reveal_lead_field`). A request that was going to be refused spends
+    nothing, so a stolen token cannot exhaust the real person's budget with invalid ids or leads
+    they may not touch, and cannot deny them the reveals they are entitled to. What it costs:
+    probing with ids that turn out to be foreign or absent is no longer counted here, only by the
+    gateway's own limits — and it reads nothing, since absent and foreign are the same 404.
+
+    A window is fixed, not sliding: a caller can spend the end of one and the start of the next.
+    Both windows are spent — or both refused, with nothing spent — in **one** round trip
+    (`_REVEAL_BUDGET_SCRIPT`), bounded by **one** timeout, so the whole check costs the request at
+    most `_REVEAL_BUDGET_TIMEOUT_SECONDS` of a held database connection.
+
+    **Fails closed.** Redis unreachable, erroring, not opened in this process, or not answering in
+    `_REVEAL_BUDGET_TIMEOUT_SECONDS` is a 503: a Redis outage stops reveals rather than lifting
+    their limit. Nothing else in this service uses Redis.
+    """
+    cfg = settings()
+    who = f"{ctx.organization_id}:{ctx.principal.sub}"
+    now = int(time.time())
+    burst_window = cfg.reveal_burst_window_seconds
+    daily_window = _REVEAL_DAILY_WINDOW_SECONDS
+    # The keys `platform_core.cache.enforce_rate_limit` would have used for the same windows.
+    burst_key = f"rl:crm.reveal.burst:{who}:{now // burst_window}"
+    daily_key = f"rl:crm.reveal.daily:{who}:{now // daily_window}"
+    try:
+        async with asyncio.timeout(_REVEAL_BUDGET_TIMEOUT_SECONDS):
+            verdict, _burst, _daily = await get_redis().eval(
+                _REVEAL_BUDGET_SCRIPT,
+                2,
+                burst_key,
+                daily_key,
+                cfg.reveal_burst_limit,
+                cfg.reveal_daily_limit,
+                # Two windows of slack, so a clock skew cannot orphan the key.
+                burst_window * 2,
+                daily_window * 2,
+            )
+    except Exception as exc:
+        log.error("lead.reveal.budget_unavailable", error=str(exc)[:120])
+        raise UpstreamUnavailableProblem(
+            "Cannot verify request limits right now. Please retry shortly."
+        ) from exc
+
+    if verdict != 0:
+        window, name = (burst_window, "burst") if verdict == 1 else (daily_window, "daily")
+        log_reveal_refused(ctx.principal, reason=f"rate_limited_{name}", request=request)
+        problem = RateLimitedProblem("Too many requests. Please slow down.")
+        problem.headers = {"Retry-After": str(window)}
+        raise problem
+
+
+async def reveal_lead_field(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    lead_id: uuid.UUID,
+    field: RevealField,
+    *,
+    request: Request | None = None,
+) -> str:
+    """Reveal a lead's real phone number or email to a human — the audited, stepped-up path.
+
+    Reaching here means the caller held `crm.lead.lead.read_sensitive` and presented a step-up
+    token (`amr` with `otp` and the step-up marker). Everything else is decided here, in one
+    function, so no caller can reach the decrypt having skipped a check:
+
+    1. The lead is fetched inside the caller's organization. An id that is not there — or is
+       another organization's — is the same 404, so this route confirms nothing about lead ids
+       it should not.
+    2. The caller's scope is re-applied to this one lead (`assert_can_touch`, a 403): filtering
+       a list and forgetting the detail is the named vulnerability. Checked *before* whether a
+       value exists, so an out-of-scope caller cannot learn whether a lead has a phone.
+    3. Nothing sealed for the requested field is a 404 (`_NOTHING_ON_FILE`), never a 200 with a
+       null. No audit row is kept for it — nothing was disclosed, and the request's
+       transaction rolls back on the error.
+    4. The reveal budget is spent (`enforce_reveal_budget`, 429 when spent, 503 when it cannot
+       be checked): only a request that has passed 1-3 counts, and nothing has been decrypted yet.
+    5. The sealed value is opened with the same key context `create_lead` sealed it under.
+    6. An `entity.sensitive_read` audit row naming the **field only** — and the token's session
+       and `amr` — is staged in the caller's transaction, which commits before the response is
+       sent (`get_tenant_session`'s function-scoped exit): a revealed value never leaves without a
+       record that it was revealed. The value itself is never written anywhere, here or in a
+       log line.
+
+    Every refusal in 1-4 also logs one WARNING (`log_reveal_refused`) — not an audit row.
+
+    A converted lead still reveals — it keeps its own sealed copy, independent of the contact
+    conversion created on customer-service's side.
+    """
+    lead = await selectors.get_lead(session, ctx.organization_id, lead_id)
+    if lead is None:
+        log_reveal_refused(
+            ctx.principal, reason="lead_not_found", lead_id=lead_id, field=field, request=request
+        )
+        raise NotFoundProblem("That lead is not part of this organization")
+    try:
+        ctx.assert_can_touch(owner_id=lead.owner_id)
+    except ForbiddenProblem:
+        log_reveal_refused(
+            ctx.principal, reason="out_of_scope", lead_id=lead.id, field=field, request=request
+        )
+        raise
+
+    sealed = lead.phone_enc if field == "phone" else lead.email_enc
+    if sealed is None:
+        log_reveal_refused(
+            ctx.principal, reason="nothing_on_file", lead_id=lead.id, field=field, request=request
+        )
+        raise NotFoundProblem(_NOTHING_ON_FILE[field])
+
+    # Everything that could refuse this request without a value being opened has now run, so this
+    # is where the budget is spent: after the cheap checks, before the decrypt.
+    await enforce_reveal_budget(ctx, request=request)
+
+    try:
+        plaintext = open_sealed(sealed, settings=settings())
+    except PiiError:
+        # An unopenable envelope is a server fault (a key rotated out from under a row, a
+        # damaged column), not something to describe to a client — it surfaces as a plain 500.
+        # The log names the row and the field so someone can find it, and never the value.
+        log.error(
+            "lead.reveal.unopenable",
+            organization_id=str(ctx.organization_id),
+            lead_id=str(lead.id),
+            field=field,
+        )
+        raise
+
+    # The same action and shape `record_sensitive_read` writes (`{"fields": [...]}`), plus the
+    # session that did it. `record_sensitive_read` cannot carry it, so this is `record_audit`
+    # directly. The row's own `request_id` comes from `X-Request-ID` when the client sent one,
+    # so it is a correlation aid and not evidence of anything; `session_id` — the token's `sid`
+    # claim, forwarded by the gateway — is what ties a reveal to the sign-in that authorised it,
+    # and `amr` — the token's authentication methods — says *how*: `["pwd", "otp", "stepup"]` for a
+    # code proved for this reveal, and the row could not otherwise tell that from a session that
+    # gave a code at sign-in. The field's *name* only, never its value.
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="entity.sensitive_read",
+        entity="lead",
+        entity_id=lead.id,
+        after={
+            "fields": [field],
+            "session_id": ctx.principal.session_id,
+            "amr": list(ctx.principal.amr),
+        },
+        request=request,
+    )
+    log.info(
+        "lead.field_revealed",
+        organization_id=str(ctx.organization_id),
+        lead_id=str(lead.id),
+        field=field,
+    )
+    return plaintext
 
 
 # ------------------------------------------------------------------ conversion: claim, call, record

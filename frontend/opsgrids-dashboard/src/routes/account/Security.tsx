@@ -1,32 +1,38 @@
 import { useRef, useState } from "react";
 
-import { problemMessage, useAuth, useMutation } from "@opsgrids/client";
-import { Button, Card, InlineAlert, QrCode, TextField, useToast } from "@opsgrids/ui";
+import { ApiError, problemMessage, problemSlug, useAuth, useMutation } from "@opsgrids/client";
+import { Button, Card, InlineAlert, TextField, useToast } from "@opsgrids/ui";
 
-import {
-  changePassword,
-  completeSessionAndReload,
-  confirmMfaEnrolment,
-  startMfaEnrolment,
-  switchOrganization,
-} from "@/api/auth";
-import type { MfaEnrolStart } from "@/api/auth";
+import { changePassword, completeSessionAndReload, switchOrganization } from "@/api/auth";
 import { PageHeader } from "@/ui";
+
+import { MfaSection } from "./MfaSection";
 
 /** Change password, set up two-factor, and — when there is more than one — switch organisation. */
 export function SecurityPage() {
   const { user } = useAuth();
+  // A session an identity provider opened carries `sso` and never `pwd` (`SSO_AMR` in auth-service).
+  const singleSignOn = user !== null && user.amr.includes("sso") && !user.amr.includes("pwd");
 
   return (
     <div className="flex flex-col gap-6">
       <PageHeader eyebrow="Account" title="Security" description="Your own sign-in — not your organisation's settings." />
       <PasswordSection />
-      <MfaSection enabled={user?.mfa_enabled ?? false} />
+      <MfaSection enabled={user?.mfa_enabled ?? false} singleSignOn={singleSignOn} />
       {user && user.organizations.length > 1 ? <OrgSwitchSection organizations={user.organizations} currentId={user.organization_id} /> : null}
     </div>
   );
 }
 
+/**
+ * Change password. The server answers a wrong current password as a 422 `password-incorrect` on
+ * field `current_password` — never a 401, which the shared client would answer by refreshing,
+ * re-sending and signing the member out — and counts it toward the sign-in lockout; so the field is
+ * emptied (that value cannot work again) and focused for the next try. The new password's own
+ * refusals (`new_password`: the same as the current one, or too weak) land under that field and
+ * leave the current password alone, since nothing about it was in question. A lockout is not a
+ * field's fault and is said above the button.
+ */
 function PasswordSection() {
   const toast = useToast();
   const [current, setCurrent] = useState("");
@@ -41,6 +47,12 @@ function PasswordSection() {
       setNext("");
       setConfirm("");
       toast.success("Password changed.");
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && problemSlug(error.problem) === "password-incorrect") {
+        setCurrent("");
+        currentRef.current?.focus();
+      }
     },
   });
 
@@ -70,7 +82,10 @@ function PasswordSection() {
           type="password"
           autoComplete="current-password"
           value={current}
-          onChange={(e) => setCurrent(e.target.value)}
+          onChange={(e) => {
+            setCurrent(e.target.value);
+            save.reset();
+          }}
           error={save.fieldErrors.current_password}
         />
         <TextField
@@ -78,7 +93,10 @@ function PasswordSection() {
           type="password"
           autoComplete="new-password"
           value={next}
-          onChange={(e) => setNext(e.target.value)}
+          onChange={(e) => {
+            setNext(e.target.value);
+            save.reset();
+          }}
           helper="At least 8 characters."
           error={save.fieldErrors.new_password}
         />
@@ -101,96 +119,6 @@ function PasswordSection() {
   );
 }
 
-function MfaSection({ enabled }: { enabled: boolean }) {
-  const toast = useToast();
-  const [enrolment, setEnrolment] = useState<MfaEnrolStart | null>(null);
-  const [code, setCode] = useState("");
-  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
-
-  const start = useMutation<void, MfaEnrolStart>(() => startMfaEnrolment(), {
-    onSuccess: (result) => setEnrolment(result),
-  });
-
-  const confirm = useMutation<void, { recovery_codes: string[] }>(
-    () => confirmMfaEnrolment(enrolment?.factor_id ?? "", code),
-    {
-      onSuccess: (result) => {
-        setRecoveryCodes(result.recovery_codes);
-        toast.success("Two-factor authentication enabled.");
-      },
-    },
-  );
-
-  if (recoveryCodes) {
-    return (
-      <Card className="flex flex-col gap-4 p-6">
-        <h2 className="text-lg font-bold tracking-tight">Recovery codes</h2>
-        <InlineAlert tone="warning" title="Shown only once — save these somewhere safe.">
-          Each one signs you in if you lose access to your authenticator app.
-        </InlineAlert>
-        <ul className="grid grid-cols-2 gap-2 rounded-tile bg-ground p-4 font-mono text-sm tabular-nums">
-          {recoveryCodes.map((code_) => (
-            <li key={code_}>{code_}</li>
-          ))}
-        </ul>
-      </Card>
-    );
-  }
-
-  if (enabled) {
-    return (
-      <Card className="flex flex-col gap-2 p-6">
-        <h2 className="text-lg font-bold tracking-tight">Two-factor authentication</h2>
-        <p className="text-sm text-muted">Enabled for your account.</p>
-      </Card>
-    );
-  }
-
-  if (enrolment) {
-    return (
-      <Card className="flex flex-col gap-4 p-6">
-        <h2 className="text-lg font-bold tracking-tight">Set up two-factor authentication</h2>
-        <p className="text-sm text-muted">Scan this with your authenticator app, or enter the code by hand.</p>
-        <QrCode value={enrolment.otpauth_uri} label="Two-factor authentication setup code" />
-        <p className="tnum break-all text-xs text-faint">{enrolment.secret}</p>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void confirm.mutate();
-          }}
-          noValidate
-          className="flex max-w-xs flex-col gap-4"
-        >
-          <TextField
-            label="6-digit code"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            inputMode="numeric"
-            error={confirm.fieldErrors.code}
-          />
-          {confirm.error && Object.keys(confirm.fieldErrors).length === 0 ? (
-            <InlineAlert tone="danger" title={problemMessage(confirm.error)} />
-          ) : null}
-          <Button type="submit" loading={confirm.pending}>
-            {confirm.pending ? "Confirming…" : "Confirm"}
-          </Button>
-        </form>
-      </Card>
-    );
-  }
-
-  return (
-    <Card className="flex flex-col gap-4 p-6">
-      <h2 className="text-lg font-bold tracking-tight">Two-factor authentication</h2>
-      <p className="text-sm text-muted">Not set up yet. Adding it means a code from your phone alongside your password.</p>
-      {start.error ? <InlineAlert tone="danger" title={problemMessage(start.error)} /> : null}
-      <Button type="button" onClick={() => void start.mutate()} loading={start.pending} className="self-start">
-        {start.pending ? "Starting…" : "Set up two-factor authentication"}
-      </Button>
-    </Card>
-  );
-}
-
 function OrgSwitchSection({
   organizations,
   currentId,
@@ -203,6 +131,9 @@ function OrgSwitchSection({
       if (result.status === "complete") completeSessionAndReload(result.access_token, "/");
     },
   });
+  // The token is already for that organisation: this list is out of date (another tab switched).
+  const alreadyThere =
+    switchMutation.error instanceof ApiError && problemSlug(switchMutation.error.problem) === "already-in-organization";
 
   return (
     <Card className="flex flex-col gap-4 p-6">
@@ -227,7 +158,21 @@ function OrgSwitchSection({
           </li>
         ))}
       </ul>
-      {switchMutation.error ? <InlineAlert tone="danger" title={problemMessage(switchMutation.error)} /> : null}
+      {alreadyThere ? (
+        <InlineAlert
+          tone="info"
+          title="You're already in that organisation."
+          action={
+            <Button type="button" size="sm" variant="secondary" onClick={() => window.location.reload()}>
+              Reload
+            </Button>
+          }
+        >
+          This list is out of date. Reload the page to see where you are now.
+        </InlineAlert>
+      ) : switchMutation.error ? (
+        <InlineAlert tone="danger" title={problemMessage(switchMutation.error)} />
+      ) : null}
     </Card>
   );
 }

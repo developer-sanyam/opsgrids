@@ -19,7 +19,8 @@
  * ship in a production build.
  */
 
-import { ApiError, apiRequest } from "@opsgrids/client";
+import { ApiError, apiRequest, revealRequest } from "@opsgrids/client";
+import type { RevealHeaders } from "@opsgrids/client";
 import {
   activityFromWire,
   companyFromWire,
@@ -41,6 +42,7 @@ import type {
   ContactOut,
   ContactPatch,
   ContactPhoneIn,
+  ContactPhoneRevealOut,
   DealIn,
   DealOut,
   DealPatch,
@@ -48,6 +50,8 @@ import type {
   LeadIn,
   LeadOut,
   LeadPatch,
+  LeadRevealIn,
+  LeadRevealOut,
   OwnerIn,
   OwnerOut,
   OwnerPatch,
@@ -66,6 +70,7 @@ import type {
   DealStage,
   Lead,
   LeadConvertResult,
+  LeadRevealField,
   LeadStatus,
   Owner,
   Page,
@@ -639,6 +644,38 @@ export async function setContactPhone(id: string, input: ContactPhoneIn): Promis
   return contactFromWire(row);
 }
 
+/** A plausible number for a fixture mask: every `•` is filled with a fixed digit, so a contact
+ *  always reveals the same number. A mask with no `•` in it ("—") stands for no number at all. */
+function unmaskFixturePhone(mask: string): string | null {
+  if (!mask.includes("•")) return null;
+  const filler = "7654321";
+  let next = 0;
+  return mask.replace(/•/g, () => filler.charAt(next++ % filler.length));
+}
+
+/**
+ * `POST /contacts/{id}/phone:reveal` — `crm.book.contact.read_sensitive` and a second factor. The
+ * one call that returns the real number, audited server-side on every read; `null` when the
+ * contact has no sealed number. `headers` carry the step-up token as the call's only credential
+ * (`useStepUp().run` hands them over) — see `revealRequest`. Fixture mode reads no header: there
+ * is no auth service to step up against.
+ */
+export async function revealContactPhone(
+  id: string,
+  headers: RevealHeaders,
+): Promise<string | null> {
+  if (USE_FIXTURES) {
+    const contact = CONTACTS.find((c) => c.id === id);
+    if (!contact) throw refusal(404, "Not found", "That contact is not part of this organization");
+    return settle(unmaskFixturePhone(contact.phone));
+  }
+  const row = await apiRequest<ContactPhoneRevealOut>(
+    `/contacts/${encodeURIComponent(id)}/phone:reveal`,
+    { method: "POST", ...revealRequest(headers) },
+  );
+  return row.phone;
+}
+
 /* ------------------------------- activities ------------------------------ */
 //
 // The timeline lives with the pipeline, not the account book: the real path is
@@ -941,4 +978,50 @@ export async function convertLead(id: string): Promise<LeadConvertResult> {
     contact_id: row.contact_id,
     deal_id: row.deal_id,
   };
+}
+
+/** The value a fixture lead reveals. A lead created in this session holds what was typed; a
+ *  seeded one holds a mask, and gets a plausible value of its own. */
+function fixtureLeadValue(lead: Lead, field: LeadRevealField): string | null {
+  const stored = lead[field];
+  if (stored === null) return null;
+  if (!stored.includes("•")) return stored;
+  if (field === "phone") return `+91 98765 0${stored.slice(-4)}`;
+  const local = lead.full_name
+    .toLowerCase()
+    .replace(/[^a-z]+/g, ".")
+    .replace(/^\.+|\.+$/g, "");
+  const host = lead.company?.toLowerCase().replace(/[^a-z0-9]+/g, "") || "mail";
+  return `${local}@${host}.example`;
+}
+
+/**
+ * `POST /leads/{id}:reveal` — `crm.lead.lead.read_sensitive` and a second factor. Returns the real
+ * phone number or email address of one lead, audited server-side on every read. A lead with
+ * nothing sealed in that field is a 404 whose sentence says so. `headers` carry the step-up token
+ * as the call's only credential (`useStepUp().run` hands them over) — see `revealRequest`.
+ * Fixture mode reads no header: there is no auth service to step up against.
+ */
+export async function revealLeadField(
+  id: string,
+  field: LeadRevealField,
+  headers: RevealHeaders,
+): Promise<string> {
+  if (USE_FIXTURES) {
+    const lead = LEADS.find((l) => l.id === id);
+    if (!lead) throw refusal(404, "Not found", "That lead is not part of this organization");
+    const value = fixtureLeadValue(lead, field);
+    if (value === null) {
+      const what = field === "phone" ? "phone number" : "email address";
+      throw refusal(404, "Not found", `No ${what} is on file for this lead`);
+    }
+    return settle(value);
+  }
+  const body: LeadRevealIn = { field };
+  const row = await apiRequest<LeadRevealOut>(`/leads/${encodeURIComponent(id)}:reveal`, {
+    method: "POST",
+    body,
+    ...revealRequest(headers),
+  });
+  return row.value;
 }

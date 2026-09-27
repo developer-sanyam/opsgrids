@@ -411,6 +411,53 @@
         "title": "LeadPatch",
         "type": "object"
       },
+      "LeadRevealIn": {
+        "additionalProperties": false,
+        "description": "Which sealed detail to reveal. One route serves both, so the client has a single call\nand the audit row names exactly the field that was opened. Anything but `phone` or\n`email` is a 422 \u2014 there is no way to ask this route for some other column.",
+        "properties": {
+          "field": {
+            "enum": [
+              "phone",
+              "email"
+            ],
+            "title": "Field",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "title": "LeadRevealIn",
+        "type": "object"
+      },
+      "LeadRevealOut": {
+        "description": "A lead's real phone number or email, revealed to a human who stepped up.\n\nReturned only by `POST /leads/{id}:reveal`, which requires the dangerous\n`crm.lead.lead.read_sensitive` permission and a second factor, and which writes an audit\nrow every time. `value` is always present: a lead with nothing sealed for the requested\nfield is a 404, never a 200 with a null. The response is sent `Cache-Control: no-store`.",
+        "properties": {
+          "field": {
+            "enum": [
+              "phone",
+              "email"
+            ],
+            "title": "Field",
+            "type": "string"
+          },
+          "lead_id": {
+            "title": "Lead Id",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lead_id",
+          "field",
+          "value"
+        ],
+        "title": "LeadRevealOut",
+        "type": "object"
+      },
       "Page_LeadOut_": {
         "properties": {
           "items": {
@@ -857,6 +904,72 @@
           }
         },
         "summary": "Convert a qualified lead into a company and a deal",
+        "tags": [
+          "lead"
+        ]
+      }
+    },
+    "/api/v1/leads/{lead_id}:reveal": {
+      "post": {
+        "description": "The only public route that returns a lead's real phone number or email.\n\nA POST rather than a GET on purpose: it has a side effect \u2014 it writes an\n`entity.sensitive_read` audit row naming the field \u2014 and it must never be cached,\npre-fetched, logged in a query string or replayed from browser history the way a GET can\nbe. The response says so itself (`Cache-Control: no-store`).\n\nGuarded by the dangerous `read_sensitive` permission and a step-up token (`_reveal_guard`),\nthen re-scoped to this one lead inside `services.reveal_lead_field`, which also owns the\nnot-found, the nothing-on-file, the per-user reveal budget and the audit steps. This route\ntakes the ordinary tenant session, so the audit row commits before the response is sent.",
+        "operationId": "reveal_lead_field_api_v1_leads__lead_id__reveal_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lead_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lead Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeadRevealIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadRevealOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "Missing `crm.lead.lead.read_sensitive`, a step-up token (`Additional authentication required: otp, stepup` \u2014 a session that gave a code at sign-in is not enough; `POST /auth/mfa/step-up` mints one), or the lead is outside the caller's scope."
+          },
+          "404": {
+            "description": "The lead is not part of this organization, or it has no value on file for the requested field."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "This user has spent their reveal budget in this organization: 30 per 10 minutes or 200 per day, shared with the contact reveal. Only a request that would have revealed a value spends from it. `Retry-After` is the length of the window that was spent, in seconds."
+          },
+          "503": {
+            "description": "The budget could not be checked (Redis is unreachable), so nothing is revealed. Retry shortly."
+          }
+        },
+        "summary": "Reveal a lead's real phone number or email (audited)",
         "tags": [
           "lead"
         ]

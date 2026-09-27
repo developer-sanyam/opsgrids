@@ -11,4 +11,8 @@ app = create_app(
     title="Lead service",
     description="Lead service — part of the OpsGrids platform.",
     routers=[router],
+    # Only the reveal budget (`services.enforce_reveal_budget`) uses Redis. Declared here so the
+    # lifespan opens the client and `/health/ready` reports it (`create_app` explains why a
+    # service that uses Redis without declaring it is a crash waiting for its first request).
+    redis=True,
 )

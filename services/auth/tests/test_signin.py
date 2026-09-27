@@ -22,6 +22,7 @@ from app import security, services
 from app.config import Settings
 from app.keys import KeyPair
 from app.models import Credential, MfaFactor, MfaRecoveryCode, RefreshToken, Session
+from platform_core.auth import Principal
 from platform_core.errors import (
     BusinessRuleProblem,
     ForbiddenProblem,
@@ -95,6 +96,34 @@ class TestCredentials:
         # The correct password is now refused too — that is the point of a lockout.
         with pytest.raises(ForbiddenProblem, match="temporarily locked"):
             await _login(session, cfg, pair, directory)
+
+    async def test_the_lock_expiring_is_a_real_unlock_one_typo_does_not_relock(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """Second review, m1: the count restarts with the lock, exactly as the second-factor
+        counter's does, so the first wrong password after `lockout_minutes` is one failure and the
+        next sign-in with the right password works."""
+        for _ in range(cfg.max_failed_attempts):
+            with pytest.raises(UnauthorizedProblem):
+                # pragma: allowlist nextline secret
+                await _login(session, cfg, pair, directory, password="wrong")
+        credential = await session.get(Credential, USER)
+        assert credential is not None
+        assert credential.failed_attempts == 0
+        assert credential.locked_until is not None and credential.locked_until > datetime.now(UTC)
+        credential.locked_until = datetime.now(UTC) - timedelta(seconds=1)  # the lock ran out
+        await session.commit()
+
+        with pytest.raises(UnauthorizedProblem):  # a typo: refused, but not a relock
+            # pragma: allowlist nextline secret
+            await _login(session, cfg, pair, directory, password="typo")
+
+        credential = await session.get(Credential, USER)
+        assert credential is not None
+        assert credential.failed_attempts == 1
+        assert credential.locked_until is None or credential.locked_until < datetime.now(UTC)
+        outcome = await _login(session, cfg, pair, directory)
+        assert outcome.status == "complete"
 
     async def test_the_lock_is_checked_before_the_password(
         self, session, cfg, pair, directory, registered
@@ -687,6 +716,19 @@ class TestRefreshRotation:
             )
 
 
+def _principal(issued: services.Issued) -> Principal:
+    """The caller `get_principal` would build from the access token this sign-in issued."""
+    claims = jwt.decode(issued.access_token, options={"verify_signature": False})
+    return Principal(
+        sub=USER,
+        organization_id=issued.organization_id,
+        membership_id=issued.membership_id,
+        session_id=str(issued.session_id),
+        audience=claims["aud"],
+        amr=list(claims["amr"]),
+    )
+
+
 class TestPasswords:
     async def test_changing_a_password_ends_every_other_session(
         self, session, cfg, pair, directory, registered
@@ -694,9 +736,14 @@ class TestPasswords:
         """If the old password was captured, the sessions it opened are captured too."""
         outcome = await _login(session, cfg, pair, directory)
         assert outcome.issued is not None
+        await session.commit()
 
         await services.change_password(
-            session, cfg=cfg, user_id=USER, current=PASSWORD, new="a-brand-new-8"
+            session,
+            cfg=cfg,
+            principal=_principal(outcome.issued),
+            current=PASSWORD,
+            new="a-brand-new-8",
         )
 
         with pytest.raises(UnauthorizedProblem):
@@ -709,10 +756,19 @@ class TestPasswords:
                 raw_token=outcome.issued.refresh_token,
             )
 
-    async def test_the_new_password_must_differ(self, session, cfg, registered) -> None:
+    async def test_the_new_password_must_differ(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        outcome = await _login(session, cfg, pair, directory)
+        assert outcome.issued is not None
+        await session.commit()
         with pytest.raises(BusinessRuleProblem, match="must be different"):
             await services.change_password(
-                session, cfg=cfg, user_id=USER, current=PASSWORD, new=PASSWORD
+                session,
+                cfg=cfg,
+                principal=_principal(outcome.issued),
+                current=PASSWORD,
+                new=PASSWORD,
             )
 
     async def test_a_reset_for_an_unknown_address_is_silently_accepted(self, session, cfg) -> None:

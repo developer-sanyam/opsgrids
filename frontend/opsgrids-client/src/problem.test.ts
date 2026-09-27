@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ApiError } from "./http";
-import { fieldError, fieldErrorMap, fieldErrors, problemMessage } from "./problem";
+import { fieldError, fieldErrorMap, fieldErrors, problemMessage, problemSlug } from "./problem";
 
 /** `register_error_handlers`' `RequestValidationError` branch, verbatim. */
 const VALIDATION = {
@@ -84,6 +84,21 @@ describe("fieldErrorMap", () => {
       ],
     };
     expect(fieldErrorMap(problem).name).toBe("Field required");
+  });
+});
+
+describe("problemSlug", () => {
+  it("is the last segment of the type URI, lower-cased", () => {
+    expect(problemSlug({ type: "https://errors.opsgrids.dev/password-locked" })).toBe("password-locked");
+    expect(problemSlug({ type: "https://errors.opsgrids.dev/MFA-Locked/" })).toBe("mfa-locked");
+    expect(problemSlug({ type: "mfa-not-enrolled" })).toBe("mfa-not-enrolled");
+  });
+
+  it("is empty when there is no type, or no problem at all", () => {
+    expect(problemSlug({ status: 403 })).toBe("");
+    expect(problemSlug({ type: "" })).toBe("");
+    expect(problemSlug(null)).toBe("");
+    expect(problemSlug(undefined)).toBe("");
   });
 });
 

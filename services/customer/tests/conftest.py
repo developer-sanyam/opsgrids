@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sys
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -35,9 +35,10 @@ from app import services
 from app.config import settings
 from app.main import app
 from app.models import SCHEMA
+from platform_core import cache
 from platform_core.auth import Scope
 from platform_core.db import TENANT_GUC, get_session
-from tests.helpers import ctx_for
+from tests.helpers import FakeRedis, ctx_for
 
 TENANT_TABLES = (
     "contacts",
@@ -62,6 +63,18 @@ def _connect_args() -> dict:
 @pytest.fixture
 def org_id() -> uuid.UUID:
     return uuid.uuid4()
+
+
+@pytest.fixture(autouse=True)
+def redis() -> Iterator[FakeRedis]:
+    """A stand-in Redis. The reveal route spends a per-user budget from Redis and **fails
+    closed** (503) when it is unreachable, so every test that reveals needs one installed —
+    `ASGITransport` never runs the lifespan that would open a real client. Sync on purpose: it is
+    autouse, and an autouse *async* fixture would demand an event loop the sync tests lack."""
+    fake = FakeRedis()
+    cache._redis = fake  # type: ignore[assignment]
+    yield fake
+    cache._redis = None
 
 
 @pytest_asyncio.fixture

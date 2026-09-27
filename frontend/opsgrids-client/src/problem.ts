@@ -76,6 +76,21 @@ export function fieldErrorMap(problem: ProblemJson | null | undefined): Record<s
 }
 
 /**
+ * A problem's stable kind: the last segment of its `type` URI, lower-cased —
+ * `https://errors.opsgrids.dev/password-locked` is `password-locked`. `""` when the document
+ * carries no `type`.
+ *
+ * This is what a screen branches on when one status means several things (a 403 is a lockout for
+ * `mfa-locked` and "not for single sign-on" for `mfa-unavailable-for-sso`). Never the `detail`,
+ * which is the server's wording and may change; never the status alone.
+ */
+export function problemSlug(problem: ProblemJson | null | undefined): string {
+  const type = problem?.type;
+  if (!type) return "";
+  return type.split("/").filter(Boolean).pop()?.toLowerCase() ?? "";
+}
+
+/**
  * The sentence to put in front of the user for a failure that is not a field's fault.
  *
  * The gateway's `detail` is usually already right — "That employee is already linked to another

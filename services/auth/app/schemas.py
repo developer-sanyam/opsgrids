@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from platform_core.egress import EgressBlockedError, check_url_shape
 
@@ -84,6 +84,40 @@ class MfaVerifyIn(BaseModel):
     organization: str | None = Field(default=None, max_length=60)
 
 
+class MfaStepUpIn(BaseModel):
+    """`POST /auth/mfa/step-up`. Nothing here says *who* — identity is the bearer token's.
+
+    Unknown fields are refused: a client that sends `user_id` or `session_id` alongside the code
+    is either confused or probing, and silently ignoring the extras would hide both.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Six digits from an authenticator app (spaces are tolerated, as at login). **Not** a
+    #: recovery code — those are refused, unspent, with a message saying so. Bounds match
+    #: `MfaVerifyIn` so a pasted recovery code reaches that friendlier refusal, not a length error.
+    code: str = Field(min_length=6, max_length=32)
+
+
+class MfaEnrolStartIn(BaseModel):
+    """`POST /auth/mfa/enrol`. Adding an authenticator changes how the account is reached, so a
+    bearer token alone is not enough: the caller re-proves who they are (ADR-0023, B1).
+
+    Unknown fields are refused, like every write.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The member's current password — always required. Wrong ones are counted against the same
+    #: lockout as sign-in. Deliberately not `Password`: a too-short value must reach the
+    #: "incorrect" answer (and be counted) rather than a validation error that reveals the policy.
+    password: str = Field(min_length=1, max_length=200)
+    #: A code from an authenticator **already** on the account — required exactly when the account
+    #: has one (the answer is `mfa-current-code-required` otherwise), ignored when it has none.
+    #: A TOTP code, or a recovery code (which is then spent).
+    current_code: str | None = Field(default=None, min_length=6, max_length=32)
+
+
 class MfaEnrolStart(BaseModel):
     factor_id: uuid.UUID
     secret: str
@@ -97,13 +131,21 @@ class MfaEnrolConfirmIn(BaseModel):
 
 
 class MfaEnrolled(BaseModel):
-    """Recovery codes are shown **once**. They are stored hashed and never retrievable."""
+    """Recovery codes are shown **once**. They are stored hashed and never retrievable.
+
+    **Empty when the account already had a working authenticator**: only the first factor mints
+    recovery codes, and adding another leaves the existing set exactly as it was — so a client
+    must not render an empty "save these" panel for it.
+    """
 
     recovery_codes: list[str]
 
 
 class PasswordChangeIn(BaseModel):
-    current_password: Password
+    #: Deliberately not `Password`: a too-short candidate must reach the "incorrect" answer (and
+    #: be counted) rather than a validation error that is free and reveals the policy — the same
+    #: reason `MfaEnrolStartIn.password` is not one.
+    current_password: str = Field(min_length=1, max_length=200)
     new_password: Password
 
 

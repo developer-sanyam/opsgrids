@@ -191,6 +191,30 @@ class TestUnmaskAuthorization:
         assert body["bank_account"] == BANK
         assert body["pan"] == PAN
 
+    async def test_a_session_that_gave_a_code_at_sign_in_still_passes_this_route_risk_5(
+        self, client, org_id, sealed
+    ) -> None:
+        """ADR-0023 risk 5, pinned as it is today. This route requires `otp` alone, and a session
+        that gave a code at sign-in carries `otp` on every token it mints for its whole life — so
+        with an authenticator enrolled (which turns MFA on for every later sign-in), that session's
+        ordinary token unmasks here with no fresh code. The CRM reveal routes also require the step-
+        up marker and refuse it; this one does not, because its UI does not yet run the step-up.
+        When the follow-up wires `useStepUp` here and adds the marker to the guard, THIS TEST FAILS
+        — which is the point: rewrite it as the refusal it should then be."""
+        target = sealed["target"]
+        principal = principal_for(
+            org_id,
+            target,
+            ["hrms.people.employee.read_sensitive:OWN"],
+            amr=["pwd", "otp"],  # a login-time session: `otp`, and no step-up marker
+        )
+        with as_principal(principal):
+            response = await client.post(
+                f"/api/v1/employees/{target.id}/pii/unmask", json=self._body("bank_account", "pan")
+            )
+        assert response.status_code == 200
+        assert response.json()["bank_account"] == BANK
+
     async def test_own_scope_cannot_unmask_another(self, client, org_id, sealed) -> None:
         """OWN reaches only the caller's own record. Aimed at somebody else, it is refused by the
         object-level scope check — the named vulnerability, closed for the unmask route too."""

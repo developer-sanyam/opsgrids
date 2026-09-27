@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pydantic import Field
+
 from platform_core.config import ServiceSettings, settings_for
 
 
@@ -87,6 +89,18 @@ class Settings(ServiceSettings):
     #: box only until `bin/reseal-mfa-factors` reports `remaining=0`, then remove it (RUNBOOK,
     #: "Operator MFA"). Tests and `local`/`test`/`ci` set it freely to exercise the legacy path.
     mfa_accept_legacy_plaintext: bool = False
+
+    # --- member step-up (ADR-0023) --------------------------------------------------
+    #: How long the access token `POST /auth/mfa/step-up` mints is good for. That token carries
+    #: `amr=["otp"]` and is the only thing that opens the "reveal" routes for a member; it is
+    #: neither refreshable nor revocable inside this window, so the window *is* the exposure of a
+    #: stolen one. Long enough to reveal a handful of records in a row, short enough that walking
+    #: away from the screen ends the privilege. Bounded on both sides at load: below 30 s a person
+    #: cannot finish a task before it lapses (and the UI would re-prompt in a loop), above 600 s it
+    #: is a second, unrevocable session in all but name. A value outside the range fails startup
+    #: rather than being silently clamped, because the alternative is a security setting that does
+    #: not do what its value says.
+    step_up_token_ttl_seconds: int = Field(default=180, ge=30, le=600)
 
     def model_post_init(self, _: object) -> None:
         """M1(a) of the third-round security review: the admin-gateway hop signature

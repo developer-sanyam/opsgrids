@@ -1643,7 +1643,7 @@
     },
     "/api/v1/contacts/{contact_id}/phone:reveal": {
       "post": {
-        "description": "The only public route that returns a real number.\n\nA POST rather than a GET on purpose: this has a side effect \u2014 it writes an\n`entity.sensitive_read` audit row \u2014 and it must never be cached, pre-fetched, logged in a\nquery string or replayed from browser history the way a GET can be.\n\nGuarded by the dangerous `read_sensitive` permission and a second factor, then re-scoped\nto this one contact. Filtering a list and forgetting the detail route is the named\nvulnerability this shape exists to avoid.",
+        "description": "The only public route that returns a real number.\n\nA POST rather than a GET on purpose: this has a side effect \u2014 it writes an\n`entity.sensitive_read` audit row \u2014 and it must never be cached, pre-fetched, logged in a\nquery string or replayed from browser history the way a GET can be. The response says so\nitself (`Cache-Control: no-store`).\n\nGuarded by the dangerous `read_sensitive` permission and a step-up token (`_reveal_guard`),\nthen re-scoped to this one contact inside `services.reveal_contact_phone`, which also spends\nthe per-user reveal budget just before the number is opened. Filtering a list and forgetting\nthe detail route is the named vulnerability this shape exists to avoid.",
         "operationId": "reveal_contact_phone_api_v1_contacts__contact_id__phone_reveal_post",
         "parameters": [
           {
@@ -1668,6 +1668,9 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "description": "Missing `crm.book.contact.read_sensitive`, a step-up token (`Additional authentication required: otp, stepup` \u2014 a session that gave a code at sign-in is not enough; `POST /auth/mfa/step-up` mints one), or the contact is outside the caller's scope."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1677,6 +1680,12 @@
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "This user has spent their reveal budget in this organization: 30 per 10 minutes or 200 per day, shared with the lead reveal. Only a request that would have opened a contact spends from it. `Retry-After` is the length of the window that was spent, in seconds."
+          },
+          "503": {
+            "description": "The budget could not be checked (Redis is unreachable), so nothing is revealed. Retry shortly."
           }
         },
         "summary": "Reveal a contact's real phone number (audited)",

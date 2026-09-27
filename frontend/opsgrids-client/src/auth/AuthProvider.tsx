@@ -6,6 +6,7 @@ import {
   setAccessToken,
   setUnauthorizedHandler,
 } from "../session";
+import { clearStepUpToken } from "../stepup/holder";
 import * as authApi from "./api";
 import { AuthContext } from "./context";
 import type { AuthStatus } from "./context";
@@ -73,6 +74,8 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
 
   const clearSession = useCallback(() => {
     setAccessToken(null);
+    // A step-up token is proof of a code typed in *this* session; it goes with it.
+    clearStepUpToken();
     expiresAtRef.current = null;
     pending.current = null;
     setUser(null);
@@ -147,6 +150,7 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
   // A 401 from anywhere clears the session and returns to /login (the guard redirects).
   useEffect(() => {
     setUnauthorizedHandler(() => {
+      clearStepUpToken();
       pending.current = null;
       expiresAtRef.current = null;
       setUser(null);
@@ -186,6 +190,7 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
       const result = await refreshAccessToken();
       if (!active) return;
       if (result.outcome === "unauthorized") {
+        clearStepUpToken();
         pending.current = null;
         expiresAtRef.current = null;
         setUser(null);
@@ -300,6 +305,9 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
   );
 
   const logout = useCallback(async () => {
+    // Before the network call, not after: a slow sign-out must not leave a code's worth of
+    // access sitting in memory for as long as the request takes.
+    clearStepUpToken();
     try {
       await authApi.logout();
     } catch {

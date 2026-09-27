@@ -259,6 +259,33 @@ class TestUnmask:
         ).scalars()
         assert "entity.sensitive_read" in list(rows)
 
+    async def test_a_session_that_gave_a_code_at_sign_in_still_passes_this_route_risk_5(
+        self, client, as_principal, admin_session, org_id: uuid.UUID, slug: str
+    ) -> None:
+        """ADR-0023 risk 5, pinned as it is today. This route requires `otp` alone, and a session
+        that gave a code at sign-in carries `otp` on every token it mints for its whole life — so
+        with an authenticator enrolled (which turns MFA on for every later sign-in), that session's
+        ordinary token unmasks here with no fresh code. The CRM reveal routes also require the step-
+        up marker and refuse it; this one does not, because its UI does not yet run the step-up.
+        When the follow-up wires `useStepUp` here and adds the marker to the guard, THIS TEST FAILS
+        — which is the point: rewrite it as the refusal it should then be."""
+        await seed_store(admin_session, org_id, slug, status="published")
+        await client.post(PUBLIC_ENQUIRY, json=_payload(slug))
+        with as_principal(all_perms(org_id)):
+            listed = await client.get(ENQUIRIES)
+        enquiry_id = listed.json()["items"][0]["id"]
+
+        login_session = principal_for(
+            org_id,
+            ["storefront.sales.enquiry.unmask:ORG"],
+            amr=["pwd", "otp"],  # a login-time session: `otp`, and no step-up marker
+        )
+        with as_principal(login_session):
+            response = await client.post(f"{ENQUIRIES}/{enquiry_id}:reveal")
+
+        assert response.status_code == 200
+        assert response.json()["email"] == "priya@shahtraders.example"
+
     async def test_reveal_without_the_step_up_is_403(
         self, client, as_principal, admin_session, org_id: uuid.UUID, slug: str
     ) -> None:

@@ -29,7 +29,9 @@ from app.schemas import (
     MfaEnrolConfirmIn,
     MfaEnrolled,
     MfaEnrolStart,
+    MfaEnrolStartIn,
     MfaRequired,
+    MfaStepUpIn,
     MfaVerifyIn,
     OperatorEnrollmentCodeIn,
     OperatorEnrollmentCodeOut,
@@ -82,6 +84,53 @@ wellknown = APIRouter(tags=["discovery"])
 # and binds it to the caller's organization first (ADR-0002 §1); none of them opens its own.
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 TenantSessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
+#: The RFC 7807 body every refusal the platform raises on purpose carries (`platform_core.errors`).
+#: Written out here, inline, because the platform has no model for it to reference (its handlers
+#: build the dict in `platform_core.errors`). `errors` is present when a field is at fault.
+_PROBLEM_BODY: dict[str, Any] = {
+    "type": "object",
+    "title": "Problem",
+    "required": ["type", "title", "status", "detail"],
+    "properties": {
+        "type": {"type": "string", "description": "`https://errors.opsgrids.dev/<slug>`"},
+        "title": {"type": "string"},
+        "status": {"type": "integer"},
+        "detail": {"type": "string"},
+        "instance": {"type": "string"},
+        "request_id": {"type": ["string", "null"]},
+        "errors": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["field", "code", "message"],
+                "properties": {
+                    "field": {"type": "string"},
+                    "code": {"type": "string"},
+                    "message": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+
+def _refusal_422(description: str) -> dict[str, Any]:
+    """A route's own 422 description **alongside** the standard validation-error schema.
+
+    Declaring a 422 in `responses` makes FastAPI drop the one it generates, so a client generated
+    from the document lost the typed `HTTPValidationError` body of every route that named its own
+    refusals. This keeps that schema under `application/json` and adds the problem body the
+    service actually answers with (`application/problem+json`) beside it.
+    """
+    return {
+        "description": description,
+        "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/HTTPValidationError"}},
+            "application/problem+json": {"schema": _PROBLEM_BODY},
+        },
+    }
+
+
 #: Any authenticated operator, no role filter — `/auth/operator/me` answers "who am I", which
 #: every operator role may ask.
 OperatorPrincipalDep = Annotated[Principal, Depends(require_operator())]
@@ -229,7 +278,12 @@ async def select_org(
     return _token_out(issued)
 
 
-@router.post("/auth/switch-org", response_model=TokenOut, summary="Change organization")
+@router.post(
+    "/auth/switch-org",
+    response_model=TokenOut,
+    summary="Change organization",
+    responses={409: {"description": "`already-in-organization`: the token is already for it."}},
+)
 async def switch_org(
     payload: SwitchOrgIn,
     response: Response,
@@ -239,7 +293,12 @@ async def switch_org(
     pair: KeyDep,
     principal: CurrentPrincipal,
 ) -> TokenOut:
-    """Move a live session to another organization, keeping the same session id."""
+    """Move a live session to another organization, keeping the same session id.
+
+    Answers 409 `already-in-organization` for the organization the token is already for: a
+    switch there changes nothing, and the response sets a fresh refresh cookie, so it would turn
+    any access token into a renewable session.
+    """
     cfg = settings()
     if principal.session_id is None:
         raise UnauthorizedProblem("That session is no longer valid.")
@@ -252,6 +311,7 @@ async def switch_org(
         session_id=uuid.UUID(principal.session_id),
         user_id=principal.sub,
         organization_id=payload.organization_id,
+        from_organization_id=principal.organization_id,
     )
     _set_refresh_cookie(response, cfg, issued.refresh_token)
     return _token_out(issued)
@@ -363,24 +423,113 @@ async def mfa_verify(
 
 
 @router.post(
+    "/auth/mfa/step-up",
+    response_model=TokenOut,
+    summary="Prove a one-time code and get a short-lived token for revealing protected details",
+    responses={
+        401: {"description": "The bearer token or its session is not valid."},
+        403: {
+            "description": (
+                "`mfa-unavailable-for-sso` (the session came from single sign-on), "
+                "`mfa-locked` (too many wrong codes) or `mfa-reauthentication-required` "
+                "(the authenticator was added after this session began: sign in again)."
+            )
+        },
+        409: {"description": "`mfa-not-enrolled`: set up two-factor authentication first."},
+        422: _refusal_422(
+            "`mfa-code-invalid`, `mfa-code-replayed`, or a validation error (including a "
+            "recovery code, which is not accepted here)."
+        ),
+    },
+)
+async def mfa_step_up(
+    payload: MfaStepUpIn,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    directory: DirectoryDep,
+    entitlements: EntitlementsDep,
+    pair: KeyDep,
+    principal: CurrentPrincipal,
+) -> TokenOut:
+    """Exchange a TOTP code for an access token whose `amr` includes `otp` and `stepup`.
+
+    Bearer-authenticated: the caller is the signed-in member the token names, and nothing in the
+    body says who. The answer is an **access token only** — no refresh token, no cookie — good
+    for `step_up_token_ttl_seconds`, and it is not remembered by the session, so a refresh never
+    carries either value. Hold it in memory, use it for the reveal request(s), and let it lapse.
+
+    `stepup` is the marker the CRM reveal routes require alongside `otp`: a session that gave a
+    code at sign-in carries `otp` for its whole life, and only this endpoint can mint `stepup`,
+    so it is what says a code was proved for *this* reveal and not days ago.
+
+    Takes a bare session for the reason `mfa_verify` does — a wrong code is counted and must
+    survive the request that refuses it — and binds the tenant itself; see `services.step_up`.
+    """
+    issued = await services.step_up(
+        session,
+        cfg=settings(),
+        pair=pair,
+        directory=directory,
+        entitlements=entitlements,
+        principal=principal,
+        code=payload.code,
+        request=request,
+    )
+    # A token in a response body is not for any cache to keep.
+    response.headers["Cache-Control"] = "no-store"
+    return _token_out(issued)
+
+
+@router.post(
     "/auth/mfa/enrol",
     response_model=MfaEnrolStart,
     status_code=status.HTTP_201_CREATED,
-    summary="Start setting up an authenticator app",
+    summary="Start setting up an authenticator app (re-enter your password)",
+    responses={
+        401: {"description": "The bearer token or its session is not valid."},
+        403: {
+            "description": (
+                "`mfa-unavailable-for-sso` (single sign-on session), `password-locked` or "
+                "`mfa-locked` (too many wrong attempts)."
+            )
+        },
+        422: _refusal_422(
+            "`password-incorrect`, `mfa-current-code-required` (the account already has "
+            "an authenticator: send `current_code`), `mfa-code-invalid`, "
+            "`mfa-code-replayed`, or a validation error."
+        ),
+        503: {"description": "`mfa-reseal-pending`: a legacy factor is awaiting upgrade."},
+    },
 )
 async def mfa_enrol(
-    session: TenantSessionDep, directory: DirectoryDep, principal: CurrentPrincipal
+    payload: MfaEnrolStartIn,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    directory: DirectoryDep,
+    principal: CurrentPrincipal,
 ) -> MfaEnrolStart:
-    user = await directory.get(principal.sub)
-    if user is None:
-        raise UnauthorizedProblem("That session is no longer valid.")
-    factor, secret, uri = await services.begin_mfa_enrolment(
+    """Begin enrolling an authenticator — after the member proves who they are again.
+
+    A bearer token alone is not enough (ADR-0023, B1): the body carries the current `password`
+    and, when the account already has an authenticator, a `current_code` from it. Wrong values
+    are counted against the same lockouts as sign-in and answer 422, not 401, so the shared
+    client does not refresh and re-send the same wrong value.
+
+    Takes a bare session and commits for itself, for the reason `mfa_step_up` does; see
+    `services.begin_member_enrolment`. The response carries a secret and is not to be cached.
+    """
+    factor, secret, uri = await services.begin_member_enrolment(
         session,
-        principal.sub,
-        account_email=user.email,
         cfg=settings(),
-        session_id=principal.session_id,
+        directory=directory,
+        principal=principal,
+        password=payload.password,
+        current_code=payload.current_code,
+        request=request,
     )
+    response.headers["Cache-Control"] = "no-store"
     return MfaEnrolStart(factor_id=factor.id, secret=secret, otpauth_uri=uri)
 
 
@@ -388,18 +537,50 @@ async def mfa_enrol(
     "/auth/mfa/enrol/confirm",
     response_model=MfaEnrolled,
     summary="Prove the app works and turn MFA on",
+    responses={
+        401: {"description": "The bearer token or its session is not valid."},
+        403: {"description": "`mfa-unavailable-for-sso`: a single sign-on session."},
+        404: {
+            "description": (
+                "No such enrolment — it does not exist, is not yours, was started from a "
+                "different session, is more than ten minutes old, or was overtaken by another "
+                "authenticator being confirmed. Start again."
+            )
+        },
+        422: _refusal_422(
+            "`mfa-code-invalid` (field `code`; the fifth wrong code also cancels the "
+            "setup), or a validation error."
+        ),
+    },
 )
 async def mfa_confirm(
-    payload: MfaEnrolConfirmIn, session: TenantSessionDep, principal: CurrentPrincipal
+    payload: MfaEnrolConfirmIn,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    principal: CurrentPrincipal,
 ) -> MfaEnrolled:
-    codes = await services.confirm_mfa_enrolment(
+    """Finish enrolment with a code from the new authenticator.
+
+    Only the session that began the enrolment (`POST /auth/mfa/enrol`) can confirm it, within ten
+    minutes, and with at most five wrong codes. The account's **first** authenticator returns ten
+    recovery codes, once; adding another returns an empty list and leaves the existing codes
+    untouched.
+
+    Takes a bare session for the reason `mfa_enrol` does — a wrong code is counted against the
+    pending factor and must survive the request that refuses it — and binds the tenant itself;
+    see `services.confirm_member_enrolment`.
+    """
+    codes = await services.confirm_member_enrolment(
         session,
-        factor_id=payload.factor_id,
-        user_id=principal.sub,
-        code=payload.code,
         cfg=settings(),
-        session_id=principal.session_id,
+        principal=principal,
+        factor_id=payload.factor_id,
+        code=payload.code,
+        request=request,
     )
+    # Recovery codes in a response body are not for any cache to keep.
+    response.headers["Cache-Control"] = "no-store"
     # Shown once. Stored hashed, and never retrievable again.
     return MfaEnrolled(recovery_codes=codes)
 
@@ -571,17 +752,42 @@ async def save_sso_config(
     "/auth/password/change",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Change your password",
+    responses={
+        401: {"description": "The bearer token or its session is not valid."},
+        403: {
+            "description": (
+                "`password-locked`: the account is locked after too many wrong passwords (the "
+                "same lockout as sign-in), for a call made from a session that is still live. "
+                "The attempt that *trips* the lock is itself a 422 `password-incorrect`, like "
+                "the ones before it; it also ends the session it came from, so that session's "
+                "token answers 401 afterwards."
+            )
+        },
+        422: _refusal_422(
+            "`password-incorrect` (field `current_password`; counted), `business-rule` "
+            "(field `new_password`: the same as the current one), or a validation error "
+            "(field `new_password`: too weak). Never a 401 for a wrong password."
+        ),
+    },
 )
 async def change_password(
     payload: PasswordChangeIn,
     request: Request,
-    session: TenantSessionDep,
+    session: SessionDep,
     principal: CurrentPrincipal,
 ) -> Response:
+    """Change the signed-in member's password.
+
+    Guarded like sign-in is, because it would otherwise be a password oracle: a wrong current
+    password is counted against the sign-in lockout and audited, the new password is judged
+    before the current one is looked at, and a wrong one answers 422 — not 401, which the shared
+    client would answer by refreshing, re-sending and signing the member out. Takes a bare session
+    and binds the tenant itself, for the reason `mfa_step_up` does; see `services.change_password`.
+    """
     await services.change_password(
         session,
         cfg=settings(),
-        user_id=principal.sub,
+        principal=principal,
         current=payload.current_password,
         new=payload.new_password,
         request=request,

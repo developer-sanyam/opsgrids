@@ -16,6 +16,7 @@ import type {
   CompanyStatus,
   ContactStatus,
   DealStage,
+  LeadRevealField,
   LeadSource,
   LeadStatus,
 } from "./types";
@@ -66,6 +67,19 @@ export interface LeadConvertOut {
   deal_id: string;
 }
 
+/** The body of `POST /leads/{id}:reveal` — which of the lead's two sealed values to read. */
+export interface LeadRevealIn {
+  field: LeadRevealField;
+}
+
+/** What `POST /leads/{id}:reveal` answers: the real value, in the clear, once. The response carries
+ *  `Cache-Control: no-store`; nothing here may keep it beyond the screen that asked. */
+export interface LeadRevealOut {
+  lead_id: string;
+  field: LeadRevealField;
+  value: string;
+}
+
 /** Mirrors `CompanyOut` — what `GET /customers` and `GET /customers/{id}` return. */
 export interface CompanyOut {
   id: string;
@@ -94,6 +108,13 @@ export interface ContactOut {
   owner_id: string;
   last_activity_at: string | null;
   created_at: string;
+}
+
+/** Mirrors `ContactPhoneRevealed` — what `POST /contacts/{id}/phone:reveal` answers. `phone` is
+ *  `null` when the contact has no sealed number. Never cached: the response is `no-store`. */
+export interface ContactPhoneRevealOut {
+  contact_id: string;
+  phone: string | null;
 }
 
 /** Mirrors `DealOut` — what `GET /deals` and `GET /deals/{id}` return. */

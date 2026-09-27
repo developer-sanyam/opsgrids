@@ -20,7 +20,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import scope, selectors, services
@@ -33,11 +33,13 @@ from app.schemas import (
     LeadIn,
     LeadOut,
     LeadPatch,
+    LeadRevealIn,
+    LeadRevealOut,
     ServiceInfo,
 )
-from platform_core.auth import ScopeContext, require, require_product
+from platform_core.auth import CurrentPrincipal, ScopeContext, require, require_product
 from platform_core.db import get_session, get_tenant_session
-from platform_core.errors import NotFoundProblem
+from platform_core.errors import ForbiddenProblem, NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 # Registering the crm scope resolver at import of the api module ties it to the product it
@@ -65,6 +67,57 @@ Entitled = Depends(require_product("crm"))
 LeadRead = Annotated[ScopeContext, Depends(require("crm.lead.lead.read"))]
 LeadWrite = Annotated[ScopeContext, Depends(require("crm.lead.lead.write"))]
 LeadConvert = Annotated[ScopeContext, Depends(require("crm.lead.lead.convert"))]
+REVEAL_PERMISSION = "crm.lead.lead.read_sensitive"
+#: What auth-service's `POST /auth/mfa/step-up` puts in a token's `amr` and nothing else does
+#: (`STEP_UP_AMR` in `services/auth/app/services.py`; `tests/infra/test_step_up_marker.py` keeps
+#: the copies equal). `otp` alone is not enough: a session that gave a code **at sign-in** carries
+#: `otp` on every token it mints for its whole life (up to seven days), and every session opened
+#: after an authenticator is set up is one of those — so a stolen session token would pass a guard
+#: that asked only for `otp`. `require` demands every member of the set (ADR-0023).
+STEP_UP_AMR = "stepup"
+_require_reveal = require(REVEAL_PERMISSION, amr={"otp", STEP_UP_AMR})
+
+
+async def _reveal_guard(principal: CurrentPrincipal, request: Request) -> ScopeContext:
+    """The reveal route's authorization: the dangerous permission **and** a code proved for this
+    reveal — a step-up token (`otp` *and* the step-up marker, `STEP_UP_AMR`), which a session that
+    merely gave a code at sign-in does not hold — the same pairing customer-service requires to
+    reveal a contact's phone. An ordinary CRM session must not be a route to a prospect's contact
+    details.
+
+    It is `require(...)` itself, wrapped, so the rules are the platform's; the wrapper adds what
+    `require` cannot: a refusal is logged (`services.log_reveal_refused`) — the permission and
+    step-up checks happen here, before the route body exists, so this is the only place that can
+    see them. The per-user reveal budget is **not** spent here: it is spent in
+    `services.reveal_lead_field`, after the request has been shown to be one that could reveal
+    something (a real lead, in scope, with a value on file) and before anything is decrypted, so
+    a token cannot burn the real person's budget with requests that were going to be refused.
+    """
+    try:
+        ctx: ScopeContext = _require_reveal(principal)
+    except ForbiddenProblem:
+        # `require` refuses for exactly two reasons when no scope floor is set.
+        held = principal.scope_for(REVEAL_PERMISSION) is not None
+        services.log_reveal_refused(
+            principal,
+            reason="step_up_required" if held else "missing_permission",
+            lead_id=_path_uuid(request, "lead_id"),
+            request=request,
+        )
+        raise
+    return ctx
+
+
+def _path_uuid(request: Request, name: str) -> uuid.UUID | None:
+    """The path parameter as a UUID for a log line, or None when it is not one — the
+    parameter is client-supplied text and is only ever logged after it parses."""
+    try:
+        return uuid.UUID(str(request.path_params.get(name)))
+    except ValueError:
+        return None
+
+
+LeadReveal = Annotated[ScopeContext, Depends(_reveal_guard)]
 
 
 @router.get("/lead/info", response_model=ServiceInfo, summary="What this service is")
@@ -215,3 +268,65 @@ async def convert_lead(
         contact_id=str(contact_id) if contact_id else None,
         deal_id=str(deal_id),
     )
+
+
+@router.post(
+    "/leads/{lead_id}:reveal",
+    response_model=LeadRevealOut,
+    status_code=status.HTTP_200_OK,
+    summary="Reveal a lead's real phone number or email (audited)",
+    dependencies=[Entitled],
+    responses={
+        403: {
+            "description": (
+                "Missing `crm.lead.lead.read_sensitive`, a step-up token "
+                "(`Additional authentication required: otp, stepup` — a session that gave a "
+                "code at sign-in is not enough; `POST /auth/mfa/step-up` mints one), or the "
+                "lead is outside the caller's scope."
+            )
+        },
+        404: {
+            "description": (
+                "The lead is not part of this organization, or it has no value on file for "
+                "the requested field."
+            )
+        },
+        429: {
+            "description": (
+                "This user has spent their reveal budget in this organization: 30 per 10 "
+                "minutes or 200 per day, shared with the contact reveal. Only a request that "
+                "would have revealed a value spends from it. `Retry-After` is the length of "
+                "the window that was spent, in seconds."
+            )
+        },
+        503: {
+            "description": (
+                "The budget could not be checked (Redis is unreachable), so nothing is "
+                "revealed. Retry shortly."
+            )
+        },
+    },
+)
+async def reveal_lead_field(
+    lead_id: uuid.UUID,
+    payload: LeadRevealIn,
+    ctx: LeadReveal,
+    session: SessionDep,
+    request: Request,
+    response: Response,
+) -> LeadRevealOut:
+    """The only public route that returns a lead's real phone number or email.
+
+    A POST rather than a GET on purpose: it has a side effect — it writes an
+    `entity.sensitive_read` audit row naming the field — and it must never be cached,
+    pre-fetched, logged in a query string or replayed from browser history the way a GET can
+    be. The response says so itself (`Cache-Control: no-store`).
+
+    Guarded by the dangerous `read_sensitive` permission and a step-up token (`_reveal_guard`),
+    then re-scoped to this one lead inside `services.reveal_lead_field`, which also owns the
+    not-found, the nothing-on-file, the per-user reveal budget and the audit steps. This route
+    takes the ordinary tenant session, so the audit row commits before the response is sent.
+    """
+    value = await services.reveal_lead_field(session, ctx, lead_id, payload.field, request=request)
+    response.headers["Cache-Control"] = "no-store"
+    return LeadRevealOut(lead_id=str(lead_id), field=payload.field, value=value)

@@ -114,6 +114,8 @@ export { StatusBadge } from "./components/StatusBadge";
 export type { StatusBadgeProps } from "./components/StatusBadge";
 export { isStatusWord, STATUS_TONES, STATUS_WORDS, statusLabel, statusTone } from "./lib/status";
 export type { StatusTone, StatusWord } from "./lib/status";
+export { StepUpDialog } from "./components/StepUpDialog";
+export type { StepUpDialogError, StepUpDialogProps, StepUpMfaState } from "./components/StepUpDialog";
 export { Stepper, StepperActions } from "./components/Stepper";
 export type { StepItem } from "./components/Stepper";
 export { Switch } from "./components/Switch";

@@ -5,18 +5,33 @@ fail if a future edit accidentally started storing the raw value somewhere it sh
 
 from __future__ import annotations
 
+import contextlib
+import json
+import uuid
+from collections.abc import Iterator
+
 import pytest
 from sqlalchemy import func, select
 
-from app import services
+from app import clients, services
 from app.config import settings
-from app.models import AuditLog
-from platform_core.auth import Scope
+from app.main import app
+from app.models import AuditLog, Lead, OutboxEvent
+from platform_core.auth import Principal, Scope, get_principal
 from platform_core.errors import ConflictProblem
-from platform_core.pii import open_sealed
-from tests.helpers import ctx_for
+from platform_core.pii import PiiError, open_sealed
+from tests.helpers import STEPPED_UP, ctx_for, principal_for
 
 pytestmark = pytest.mark.integration
+
+
+@contextlib.contextmanager
+def as_principal(principal: Principal) -> Iterator[None]:
+    app.dependency_overrides[get_principal] = lambda: principal
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_principal, None)
 
 
 class TestSealing:
@@ -150,3 +165,308 @@ class TestDedup:
             )
         ).scalar_one()
         assert sensitive == 0
+
+
+# --------------------------------------------------------------------- revealing (the audited path)
+#
+# `POST /leads/{id}:reveal` is the only route that opens a lead's sealed phone or email. What is
+# refused, and to whom, is `test_authz.py::TestRevealAuthorization`; these are the other half —
+# what a permitted reveal returns, and what it must leave behind (and must not).
+
+REVEAL = "crm.lead.lead.read_sensitive"
+RAW_PHONE = "+919876543210"
+RAW_EMAIL = "priya@stellar.example"
+
+
+def _reveal_path(lead_id: uuid.UUID) -> str:
+    return f"/api/v1/leads/{lead_id}:reveal"
+
+
+SESSION_ID = "b5d3c1e2-session-of-the-stepped-up-sign-in"
+
+
+def _stepped_up(org_id: uuid.UUID, *, scope: str = "ORG") -> Principal:
+    return principal_for(
+        org_id, [f"{REVEAL}:{scope}"], subject_ref=None, amr=STEPPED_UP, session_id=SESSION_ID
+    )
+
+
+async def _sensitive_reads(admin_session, org_id: uuid.UUID) -> list[AuditLog]:
+    """The **committed** `entity.sensitive_read` rows, oldest first. Read on a separate BYPASSRLS
+    connection, so a row the request only staged and never committed is not in the result."""
+    async with admin_session.begin():
+        rows = (
+            (
+                await admin_session.execute(
+                    select(AuditLog)
+                    .where(
+                        AuditLog.organization_id == org_id,
+                        AuditLog.action == "entity.sensitive_read",
+                    )
+                    .order_by(AuditLog.at, AuditLog.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return list(rows)
+
+
+async def _outbox_count(admin_session) -> int:
+    async with admin_session.begin():
+        return (
+            await admin_session.execute(select(func.count()).select_from(OutboxEvent))
+        ).scalar_one()
+
+
+class TestReveal:
+    async def test_the_phone_reveals_to_exactly_what_was_sealed(self, client, org_id, data) -> None:
+        with as_principal(_stepped_up(org_id)):
+            response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
+        assert response.status_code == 200
+        assert response.json() == {
+            "lead_id": str(data["lead_a_id"]),
+            "field": "phone",
+            "value": RAW_PHONE,
+        }
+
+    async def test_the_email_reveals_to_exactly_what_was_sealed(self, client, org_id, data) -> None:
+        with as_principal(_stepped_up(org_id)):
+            response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "email"})
+        assert response.status_code == 200
+        assert response.json() == {
+            "lead_id": str(data["lead_a_id"]),
+            "field": "email",
+            "value": RAW_EMAIL,
+        }
+
+    async def test_the_response_is_never_cached(self, client, org_id, data) -> None:
+        with as_principal(_stepped_up(org_id)):
+            response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+
+    async def test_the_ordinary_reads_still_carry_only_the_mask(self, client, org_id, data) -> None:
+        """Revealing one lead's phone changes nothing about how it is shown everywhere else."""
+        with as_principal(_stepped_up(org_id)):
+            await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
+        with as_principal(principal_for(org_id, ["crm.lead.lead.read:ORG"])):
+            response = await client.get(f"/api/v1/leads/{data['lead_a_id']}")
+        assert RAW_PHONE not in response.text
+        assert RAW_EMAIL not in response.text
+        assert "•" in response.json()["phone"]
+
+    async def test_every_reveal_writes_exactly_one_committed_audit_row_naming_the_field(
+        self, client, org_id, data, admin_session
+    ) -> None:
+        assert await _sensitive_reads(admin_session, org_id) == []
+
+        principal = _stepped_up(org_id)
+        with as_principal(principal):
+            for position, field in enumerate(("phone", "phone", "email"), start=1):
+                # A repeat is a second read, not a no-op.
+                response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": field})
+                assert response.status_code == 200
+                # Committed before the response came back: a separate connection already sees
+                # exactly one more row than the reveals that came before this one.
+                committed = await _sensitive_reads(admin_session, org_id)
+                assert len(committed) == position
+                assert committed[-1].after == {
+                    "fields": [field],
+                    "session_id": SESSION_ID,
+                    "amr": STEPPED_UP,
+                }
+
+        rows = await _sensitive_reads(admin_session, org_id)
+        assert [row.after["fields"] for row in rows] == [["phone"], ["phone"], ["email"]]
+        for row in rows:
+            assert row.entity == "lead"
+            assert row.entity_id == data["lead_a_id"]
+            assert row.actor_id == principal.sub
+            assert row.organization_id == org_id
+            assert row.before is None
+            # A correlation aid only: the middleware adopts a client-supplied `X-Request-ID`,
+            # so this is not evidence of anything. The session id below is.
+            assert row.request_id
+
+    async def test_the_audit_row_carries_the_session_that_did_it_and_no_value(
+        self, client, org_id, data, admin_session
+    ) -> None:
+        """The row can be tied to the sign-in (and so the MFA step-up) that authorised the
+        reveal — `session_id`, the token's `sid` — and is still exactly the field's name, the
+        session id and nothing else: no value, no masked form, no lead detail."""
+        with as_principal(_stepped_up(org_id)):
+            for field in ("phone", "email"):
+                await client.post(_reveal_path(data["lead_a_id"]), json={"field": field})
+
+        rows = await _sensitive_reads(admin_session, org_id)
+        assert [row.after for row in rows] == [
+            {"fields": ["phone"], "session_id": SESSION_ID, "amr": STEPPED_UP},
+            {"fields": ["email"], "session_id": SESSION_ID, "amr": STEPPED_UP},
+        ]
+        for row in rows:
+            blob = json.dumps([row.before, row.after, row.reason], default=str)
+            assert RAW_PHONE.removeprefix("+") not in blob
+            assert RAW_EMAIL not in blob
+            assert "stellar" not in blob.lower()
+
+    async def test_the_audit_row_says_how_the_reveal_was_authorised(
+        self, client, org_id, data, admin_session
+    ) -> None:
+        """The row records the token's `amr`, so an auditor can tell a code proved for this reveal
+        (`["pwd", "otp", "stepup"]`) from a session that merely gave one at sign-in — which the
+        route now refuses, but which the row could not otherwise have told apart."""
+        principal = principal_for(
+            org_id,
+            [f"{REVEAL}:ORG"],
+            amr=["pwd", "otp", "stepup"],
+            session_id=SESSION_ID,
+        )
+        with as_principal(principal):
+            response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
+        assert response.status_code == 200
+
+        (row,) = await _sensitive_reads(admin_session, org_id)
+        assert row.after["amr"] == ["pwd", "otp", "stepup"]
+        assert set(row.after) == {"fields", "session_id", "amr"}
+
+    async def test_a_reveal_with_no_session_id_still_writes_the_row(
+        self, client, org_id, data, admin_session
+    ) -> None:
+        """A principal that carries no `sid` (a directly presented token) is not refused — the
+        key is there, null, so a row without provenance is visibly a row without provenance."""
+        principal = principal_for(org_id, [f"{REVEAL}:ORG"], amr=STEPPED_UP)
+        with as_principal(principal):
+            response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
+        assert response.status_code == 200
+
+        (row,) = await _sensitive_reads(admin_session, org_id)
+        assert row.after == {"fields": ["phone"], "session_id": None, "amr": STEPPED_UP}
+
+    async def test_no_audit_row_and_no_event_carries_the_value(
+        self, client, org_id, data, admin_session
+    ) -> None:
+        """The load-bearing one. Sealing a value is pointless if a table any reporting query can
+        reach holds it in plaintext — so after revealing both fields, look at *everything* this
+        service wrote."""
+        with as_principal(_stepped_up(org_id)):
+            for field in ("phone", "email"):
+                response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": field})
+                assert response.status_code == 200
+
+        async with admin_session.begin():
+            audit = (await admin_session.execute(select(AuditLog))).scalars().all()
+            outbox = (await admin_session.execute(select(OutboxEvent))).scalars().all()
+        assert audit
+        for row in audit:
+            blob = json.dumps([row.before, row.after, row.reason, row.action], default=str)
+            assert RAW_PHONE not in blob
+            assert RAW_PHONE.removeprefix("+") not in blob
+            assert RAW_EMAIL not in blob
+        for event in outbox:
+            blob = json.dumps(event.payload, default=str)
+            assert RAW_PHONE.removeprefix("+") not in blob
+            assert RAW_EMAIL not in blob
+
+    async def test_a_reveal_emits_no_event(self, client, org_id, data, admin_session) -> None:
+        before = await _outbox_count(admin_session)
+        with as_principal(_stepped_up(org_id)):
+            response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
+        assert response.status_code == 200
+        assert await _outbox_count(admin_session) == before
+
+    async def test_a_lead_with_nothing_on_file_is_not_found_and_leaves_no_row(
+        self, client, org_id, data, admin_session
+    ) -> None:
+        """`lead_b` was captured with neither a phone nor an email."""
+        with as_principal(_stepped_up(org_id)):
+            phone = await client.post(_reveal_path(data["lead_b_id"]), json={"field": "phone"})
+            email = await client.post(_reveal_path(data["lead_b_id"]), json={"field": "email"})
+        assert phone.status_code == 404
+        assert phone.json()["detail"] == "No phone number is on file for this lead"
+        assert email.status_code == 404
+        assert email.json()["detail"] == "No email address is on file for this lead"
+        # Nothing was disclosed, so nothing is recorded as disclosed.
+        assert await _sensitive_reads(admin_session, org_id) == []
+
+    async def test_the_not_found_says_nothing_about_the_other_field(
+        self, client, session, org_id
+    ) -> None:
+        """A lead with an email and no phone: asking for the phone learns only that there is no
+        phone — not that there is an email."""
+        write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
+        async with session.begin():
+            lead = await services.create_lead(
+                session,
+                write,
+                full_name="Email Only",
+                company=None,
+                email="only.email@example.com",
+                phone=None,
+                source="manual",
+                owner_id=None,
+                notes="",
+            )
+        lead_id = lead.id
+
+        with as_principal(_stepped_up(org_id)):
+            phone = await client.post(_reveal_path(lead_id), json={"field": "phone"})
+            email = await client.post(_reveal_path(lead_id), json={"field": "email"})
+
+        assert phone.status_code == 404
+        assert "email" not in phone.text.lower()
+        assert "only.email@example.com" not in phone.text
+        assert email.status_code == 200
+        assert email.json()["value"] == "only.email@example.com"
+
+    async def test_a_converted_lead_still_reveals_its_own_copy(
+        self, client, session, org_id, data, admin_session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Conversion seals a *second* copy on customer-service's contact; the lead keeps its
+        own, so the reveal keeps working (the UI may prefer the contact, but is not forced to)."""
+
+        async def _company(settings, organization_id, **kwargs):  # type: ignore[no-untyped-def]
+            return uuid.uuid4(), uuid.uuid4()
+
+        async def _deal(settings, organization_id, **kwargs):  # type: ignore[no-untyped-def]
+            return uuid.uuid4()
+
+        monkeypatch.setattr(clients, "ensure_company_and_contact", _company)
+        monkeypatch.setattr(clients, "ensure_deal", _deal)
+        convert = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        await services.convert_lead(session, convert, data["lead_a_id"])
+        before = await _sensitive_reads(admin_session, org_id)  # the conversion's own read
+
+        with as_principal(_stepped_up(org_id)):
+            response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
+
+        assert response.status_code == 200
+        assert response.json()["value"] == RAW_PHONE
+        after = await _sensitive_reads(admin_session, org_id)
+        assert len(after) == len(before) + 1
+        assert after[-1].after == {
+            "fields": ["phone"],
+            "session_id": SESSION_ID,
+            "amr": STEPPED_UP,
+        }
+
+    async def test_an_envelope_that_will_not_open_reveals_nothing_and_records_nothing(
+        self, client, session, org_id, data, admin_session
+    ) -> None:
+        """A sealed value damaged, or sealed under a key that has since been retired, is a
+        server fault: the value never leaves, and there is no audit row for a read that did not
+        happen. (It surfaces as a bare 500 to a real client; the test client re-raises it.)"""
+        async with admin_session.begin():
+            await admin_session.execute(
+                Lead.__table__.update()
+                .where(Lead.id == data["lead_a_id"])
+                .values(phone_enc=b"\x01" + b"\x00" * 40)
+            )
+        # The test client shares this session with the fixture that seeded the lead, so its
+        # identity map still holds the row as it was sealed. A real request has a session of
+        # its own and reads what the table holds now.
+        session.expunge_all()
+
+        with as_principal(_stepped_up(org_id)), pytest.raises(PiiError):
+            await client.post(_reveal_path(data["lead_a_id"]), json={"field": "phone"})
+        assert await _sensitive_reads(admin_session, org_id) == []

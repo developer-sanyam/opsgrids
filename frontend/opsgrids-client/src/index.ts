@@ -29,6 +29,30 @@ export type {
   OrganizationChoice,
 } from "./auth/types";
 
+// Member step-up: a fresh one-time code for one dangerous call (reveal, unmask). `StepUpDialog` in
+// `@opsgrids/ui` is the prompt; `useStepUp().dialogProps` feeds it.
+export { StepUpError } from "./auth/stepUpError";
+export type { StepUpFailure } from "./auth/stepUpError";
+export type { StepUpToken } from "./auth/types";
+export {
+  StepUpCancelledError,
+  clearStepUpToken,
+  isStepUpCancelled,
+  revealRequest,
+  useStepUp,
+  withStepUp,
+} from "./stepup";
+export type {
+  RevealHeaders,
+  RevealRequestOptions,
+  StepUpMfaState,
+  StepUpPhase,
+  StepUpPromptError,
+  StepUpPromptProps,
+  StepUpRunOptions,
+  UseStepUpResult,
+} from "./stepup";
+
 export { decodeAccessToken } from "./auth/token";
 export type { AccessClaims } from "./auth/token";
 
@@ -41,7 +65,7 @@ export { PLATFORM_APP_HOSTS, isAllowedRedirectTarget } from "./sso/platformHosts
 export { API_BASE, ApiError, apiRequest } from "./http";
 export type { ProblemJson, RequestOptions } from "./http";
 
-export { fieldError, fieldErrorMap, fieldErrors, problemMessage } from "./problem";
+export { fieldError, fieldErrorMap, fieldErrors, problemMessage, problemSlug } from "./problem";
 export type { FieldError } from "./problem";
 
 export { PermissionProvider } from "./permissions/PermissionProvider";
