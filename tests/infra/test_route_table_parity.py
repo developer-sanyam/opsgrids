@@ -75,21 +75,52 @@ def test_the_prod_operator_route_points_at_the_in_cluster_auth_host() -> None:
 
 
 # ------------------------------------------------------------------------------------------
-# The WhatsApp webhook. `routes.prod.json` routed `/api/v1/webhooks/whatsapp` through app-gateway
-# while the gateway's policy only knew a root-path `/webhooks/whatsapp` (which a proxy that serves
-# only `/api/...` can never match) and notification mounted the router only at the root — so every
-# Meta delivery and handshake was a 401 at the gateway, or a 404 behind it. Nothing compared the
-# *policy* or the *service* with the *production table*, which is how it shipped. These tests read
-# the real policy and the real notification app (each in a subprocess inside its own service
-# directory: `import app` is ambiguous across services, so neither can share this process) and hold
-# them against both tables.
+# The WhatsApp webhook, and Facebook Login's deauthorize / data-deletion callbacks alongside it.
+# `routes.prod.json` routed `/api/v1/webhooks/whatsapp` through app-gateway while the gateway's
+# policy only knew a root-path `/webhooks/whatsapp` (which a proxy that serves only `/api/...` can
+# never match) and notification mounted the router only at the root — so every Meta delivery and
+# handshake was a 401 at the gateway, or a 404 behind it. Nothing compared the *policy* or the
+# *service* with the *production table*, which is how it shipped. These tests read the real policy
+# and the real notification app (each in a subprocess inside its own service directory: `import
+# app` is ambiguous across services, so neither can share this process) and hold them against both
+# tables.
+#
+# Every assertion below is written against `EXPECTED_WEBHOOK_PATHS`/`EXPECTED_BODY_CAPS` — a
+# mapping, not one hardcoded path — so a fourth callback is one entry in each mapping, not a new
+# copy of every test in this section.
 # ------------------------------------------------------------------------------------------
 
 WHATSAPP = "/api/v1/webhooks/whatsapp"
+DEAUTHORIZE = "/api/v1/webhooks/whatsapp/deauthorize"
+DATA_DELETION = "/api/v1/webhooks/whatsapp/data-deletion"
+DATA_DELETION_STATUS = "/api/v1/webhooks/whatsapp/data-deletion-status"
 WEBHOOK_PREFIX = "/api/v1/webhooks/"
-#: Meta documents webhook payloads up to 3 MB. Above the gateway's 2 MiB default, so the route has
-#: to say so, and the same figure is notification's own ceiling on the body it will buffer.
+
+#: Meta documents WhatsApp Business Platform webhook payloads up to 3 MB. Above the gateway's
+#: 2 MiB default, so the route has to say so, and the same figure is notification's own ceiling on
+#: the body it will buffer for that one callback.
 WHATSAPP_BODY_CAP = 3 * 1024 * 1024
+#: The deauthorize and data-deletion callbacks are a form-encoded `signed_request` — a couple
+#: hundred bytes — never a batch of events, so they share one much smaller cap:
+#: `app.meta_signed_request.MAX_SIGNED_REQUEST_BYTES` on notification's own side, which
+#: `test_notification_will_buffer_exactly_what_the_gateway_lets_through` holds this number to.
+META_PRIVACY_BODY_CAP = 4096
+
+#: Every public webhook path, and the HTTP methods each is public for. Pinned, not just compared:
+#: widening this is a security decision, made here, on purpose, once.
+EXPECTED_WEBHOOK_PATHS: dict[str, list[str]] = {
+    WHATSAPP: ["GET", "POST"],
+    DEAUTHORIZE: ["POST"],
+    DATA_DELETION: ["POST"],
+    DATA_DELETION_STATUS: ["GET"],
+}
+#: The body cap every public webhook route above must carry, in both route tables.
+EXPECTED_BODY_CAPS: dict[str, int] = {
+    WHATSAPP: WHATSAPP_BODY_CAP,
+    DEAUTHORIZE: META_PRIVACY_BODY_CAP,
+    DATA_DELETION: META_PRIVACY_BODY_CAP,
+    DATA_DELETION_STATUS: META_PRIVACY_BODY_CAP,
+}
 #: Routed in the production table but deliberately NOT public in app-gateway: Razorpay's callback,
 #: which the owner decides separately. A new `/api/v1/webhooks/*` route must be added here or
 #: declared public — silently being neither is the defect this file exists to prevent.
@@ -105,10 +136,10 @@ print(json.dumps({
 }))
 """
 
-#: A `PUT` to a path that exists but takes only GET and POST is a 405; to one that does not exist,
-#: a 404. Asked over ASGI rather than read from `app.routes`, which is not a stable shape (included
-#: routers are not always flattened into it) and would test the framework's bookkeeping instead of
-#: what a request meets.
+#: A `PUT` to a path that exists but takes only GET and/or POST is a 405; to one that does not
+#: exist, a 404. Asked over ASGI rather than read from `app.routes`, which is not a stable shape
+#: (included routers are not always flattened into it) and would test the framework's bookkeeping
+#: instead of what a request meets.
 _NOTIFICATION_SCRIPT = """
 import asyncio
 import json
@@ -117,17 +148,27 @@ import httpx
 
 from app.api.webhooks import MAX_WEBHOOK_BODY_BYTES
 from app.main import app
+from app.meta_signed_request import MAX_SIGNED_REQUEST_BYTES
 
 
 async def main() -> dict:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://probe"
     ) as client:
-        status = {
-            path: (await client.request("PUT", path)).status_code
-            for path in ("/api/v1/webhooks/whatsapp", "/webhooks/whatsapp", "/api/v1/nowhere")
-        }
-    return {"max_webhook_body_bytes": MAX_WEBHOOK_BODY_BYTES, "put_status": status}
+        paths = (
+            "/api/v1/webhooks/whatsapp",
+            "/webhooks/whatsapp",
+            "/api/v1/webhooks/whatsapp/deauthorize",
+            "/api/v1/webhooks/whatsapp/data-deletion",
+            "/api/v1/webhooks/whatsapp/data-deletion-status",
+            "/api/v1/nowhere",
+        )
+        status = {path: (await client.request("PUT", path)).status_code for path in paths}
+    return {
+        "max_webhook_body_bytes": MAX_WEBHOOK_BODY_BYTES,
+        "max_signed_request_bytes": MAX_SIGNED_REQUEST_BYTES,
+        "put_status": status,
+    }
 
 
 print(json.dumps(asyncio.run(main())))
@@ -168,10 +209,12 @@ def _webhook_routes(path: Path) -> dict[str, dict[str, object]]:
 TABLES = [pytest.param(DEV_ROUTES, id="dev"), pytest.param(PROD_ROUTES, id="prod")]
 
 
-def test_the_gateway_makes_exactly_the_whatsapp_callback_public_as_a_webhook() -> None:
+def test_the_gateway_makes_exactly_the_expected_paths_public_as_webhooks() -> None:
     """Pinned, not just compared: widening this list is a security decision, and it should fail
     loudly here and be made on purpose."""
-    assert _app_gateway_policy()["webhook_paths"] == {WHATSAPP: ["GET", "POST"]}
+    assert _app_gateway_policy()["webhook_paths"] == {
+        path: sorted(methods) for path, methods in EXPECTED_WEBHOOK_PATHS.items()
+    }
 
 
 def test_no_webhook_path_is_public_by_any_other_list() -> None:
@@ -183,7 +226,7 @@ def test_no_webhook_path_is_public_by_any_other_list() -> None:
 
 
 @pytest.mark.parametrize("table", TABLES)
-def test_the_public_webhook_is_routed_by_its_own_exact_entry(table: Path) -> None:
+def test_every_public_webhook_is_routed_by_its_own_exact_entry(table: Path) -> None:
     """Public in the policy and unrouted (or swallowed by a broader or `blocked` prefix) in a
     table is a public 404 today and a public hole the day someone adds a broader prefix. It must
     also be a plain route: no `product` or `staff_only`, which the public branch never checks and
@@ -219,39 +262,45 @@ def test_every_webhook_route_in_dev_exists_in_prod() -> None:
 
 
 @pytest.mark.parametrize("table", TABLES)
-def test_the_public_webhook_carries_metas_body_cap_on_its_route(table: Path) -> None:
-    """The cap is the only thing between an unauthenticated POST and a buffered body, so the value
-    the box enforces must be the value the tests exercised, in both tables, and it must be the one
-    Meta needs: without it the 2 MiB default would 413 a legitimate 2 to 3 MiB batch, which Meta
-    answers by redelivering it."""
+def test_every_public_webhook_carries_its_expected_body_cap(table: Path) -> None:
+    """The cap is the only thing between an unauthenticated request and a buffered body, so the
+    value the box enforces must be the value the tests exercised, in both tables, and it must be
+    the one each provider needs: without it the 2 MiB default would 413 a legitimate WhatsApp
+    batch, which Meta answers by redelivering it."""
     from platform_core.gateway import MAX_ROUTE_BODY_BYTES
 
-    for path in _app_gateway_policy()["webhook_paths"]:
+    for path, expected in EXPECTED_BODY_CAPS.items():
         cap = _webhook_routes(table)[path].get("max_body_bytes")
-        assert cap == WHATSAPP_BODY_CAP, f"{path} in {table.name}: {cap}"
+        assert cap == expected, f"{path} in {table.name}: {cap}"
         assert isinstance(cap, int) and cap <= MAX_ROUTE_BODY_BYTES
 
 
 def test_notification_will_buffer_exactly_what_the_gateway_lets_through() -> None:
     """The second line of defence has to be at least as wide as the first, or a body the gateway
     legitimately forwarded would be refused behind it; and no wider, or it would not be a second
-    line at all."""
-    assert _notification()["max_webhook_body_bytes"] == WHATSAPP_BODY_CAP
+    line at all. Two ceilings, not one: the WhatsApp Business Platform callback's own, and the
+    signed_request callbacks' own, much smaller one."""
+    notification = _notification()
+    assert notification["max_webhook_body_bytes"] == WHATSAPP_BODY_CAP
+    assert notification["max_signed_request_bytes"] == META_PRIVACY_BODY_CAP
 
 
 def test_notification_serves_the_path_the_gateway_forwards() -> None:
-    """The gateway forwards the request path unchanged. Mounted only at the root, the callback
-    answered every gateway-forwarded request with a 404. The root mount stays for a developer's
-    tunnel."""
+    """The gateway forwards the request path unchanged. Mounted only at the root, a callback
+    answers every gateway-forwarded request with a 404. The root mount stays for a developer's
+    tunnel (checked on the WhatsApp Business Platform callback alone — the other three have no
+    reason to be reachable from one and are not mounted there)."""
     status = _notification()["put_status"]
     assert status["/api/v1/nowhere"] == 404, "probe cannot tell a mounted path from a missing one"
-    assert status[WHATSAPP] == 405, "not mounted where the gateway forwards it"
+    for path in EXPECTED_WEBHOOK_PATHS:
+        assert status[path] == 405, f"{path} not mounted where the gateway forwards it"
     assert status["/webhooks/whatsapp"] == 405, "the root mount for a developer's tunnel is gone"
 
 
 @pytest.mark.parametrize("table", TABLES)
-def test_the_public_webhook_is_routed_to_notification(table: Path) -> None:
+def test_every_public_webhook_is_routed_to_notification(table: Path) -> None:
     """Same upstream as the rest of notification's routes in that table: the wrong host or port is
     what a hand-edit of one file gets wrong."""
     routes = {str(r["prefix"]): r for r in _routes(table)}
-    assert routes[WHATSAPP]["upstream"] == routes["/api/v1/notifications"]["upstream"]
+    for path in EXPECTED_WEBHOOK_PATHS:
+        assert routes[path]["upstream"] == routes["/api/v1/notifications"]["upstream"]

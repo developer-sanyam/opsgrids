@@ -73,6 +73,10 @@ export function useMetaSignup(
 
   const codeRef = useRef<string | null>(null);
   const sessionRef = useRef<Session | null>(null);
+  // From `FB.login`'s own response, not the `WA_EMBEDDED_SIGNUP` message `sessionRef` holds --
+  // a different part of the same round trip. Optional and never verified against Meta; see
+  // `SignupCompleteIn.meta_user_id`'s own docstring for why it is captured at all.
+  const metaUserIdRef = useRef<string | null>(null);
   const submittedRef = useRef(false);
   const graceTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const stopListening = useRef<(() => void) | null>(null);
@@ -132,10 +136,12 @@ export function useMetaSignup(
     stopListening.current = null;
     if (mounted.current) setPhase("completing");
     const session = sessionRef.current;
+    const metaUserId = metaUserIdRef.current;
     const body: SignupCompleteIn = {
       code,
       ...(session?.wabaId != null ? { waba_id: session.wabaId } : {}),
       ...(session?.phoneNumberId != null ? { phone_number_id: session.phoneNumberId } : {}),
+      ...(metaUserId != null ? { meta_user_id: metaUserId } : {}),
     };
     try {
       const out = await completeSignup(body);
@@ -155,6 +161,7 @@ export function useMetaSignup(
 
     codeRef.current = null;
     sessionRef.current = null;
+    metaUserIdRef.current = null;
     submittedRef.current = false;
     clearTimeout(graceTimer.current);
     stopListening.current?.();
@@ -180,6 +187,8 @@ export function useMetaSignup(
 
     const onResponse = (response: FbLoginResponse) => {
       const code = response.authResponse?.code ?? null;
+      const userId = response.authResponse?.userID;
+      if (userId != null && userId !== "") metaUserIdRef.current = userId;
       if (code === null || code === "") {
         // Closed or declined, or Meta stopped it and is about to say why: wait a moment for the
         // message before settling on "closed".

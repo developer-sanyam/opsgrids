@@ -38,6 +38,12 @@ class SignupCompleteIn(_Strict):
     code: str = Field(min_length=1, max_length=2048)
     waba_id: str | None = Field(default=None, pattern=_DIGITS)
     phone_number_id: str | None = Field(default=None, pattern=_DIGITS)
+    #: The Facebook-scoped user id from the same `FB.login` response as the popup's code
+    #: (`response.authResponse.userID`) -- Meta's own bare-digit id format, so the same pattern as
+    #: the two ids above. Captured going forward so a later deauthorize or data-deletion callback
+    #: naming this id can be attributed back to this connection; never verified against Meta (there
+    #: is no Graph call that confirms it), so treated as a hint like the other two.
+    meta_user_id: str | None = Field(default=None, pattern=_DIGITS)
 
 
 class SignupCompleteOut(BaseModel):

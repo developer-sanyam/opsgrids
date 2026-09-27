@@ -12,9 +12,15 @@
  */
 
 /** What `FB.login`'s callback receives. With `response_type: "code"` the authorization code is
- *  on `authResponse`; a closed or declined window leaves `authResponse` empty. */
+ *  on `authResponse`; a closed or declined window leaves `authResponse` empty. `userID` is the
+ *  Facebook-scoped id of whoever completed the popup — the same id Meta's deauthorize and
+ *  data-deletion callbacks later name, forwarded to `signup/complete` so a connection made now can
+ *  be attributed to one of those callbacks later (`docs/whatsapp/webhooks.md`). Optional because
+ *  not every SDK response carries it (a cached/partial session can omit it), in which case it is
+ *  simply not sent — the connection is then one made without this attribution, same as any made
+ *  before this existed. */
 export interface FbLoginResponse {
-  authResponse?: { code?: string | null } | null;
+  authResponse?: { code?: string | null; userID?: string | null } | null;
   status?: string;
 }
 

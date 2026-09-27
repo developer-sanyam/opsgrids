@@ -289,6 +289,30 @@ async def account_for_phone_number(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def accounts_for_meta_user_id(
+    session: AsyncSession, meta_user_id: str
+) -> Sequence[ProviderAccount]:
+    """Every WhatsApp connection whose Embedded Signup was completed by this Facebook user id --
+    what Meta's deauthorize and data-deletion callbacks resolve against.
+
+    **Deliberately not org-scoped**, for the same reason `account_for_phone_number` is not: a
+    Meta-scoped user id names a *person*, not one organization, and this platform holds only one
+    token per connection today, so the same person legitimately shows up on more than one
+    organization's row (a consultant who set up WhatsApp for two customers) or on none (every
+    connection made before `meta_user_id` was captured, or one made through the manual
+    "paste a token" path, which never asks Meta's SDK for a user id at all). Runs on the directory
+    session (SELECT-only, BYPASSRLS); the caller binds each returned row's own organization before
+    touching anything else, once per row -- never once for the whole result, the same rule the
+    webhook route's per-number resolution already follows.
+    """
+    stmt = select(ProviderAccount).where(
+        ProviderAccount.meta_user_id == meta_user_id,
+        ProviderAccount.channel == "whatsapp",
+        ProviderAccount.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalars().all()
+
+
 # --------------------------------------------------------------------- engage sending identity
 
 

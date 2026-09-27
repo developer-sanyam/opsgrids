@@ -121,8 +121,25 @@ ENGAGE_TRACKING_PREFIX = "/api/v1/engage/t/"
 #:
 #: **Not here, deliberately:** Razorpay's `/api/v1/webhooks/razorpay`. It is routed in production
 #: but declaring it public is a separate decision that has not been taken.
+#:
+#: The three `/whatsapp/deauthorize`, `/whatsapp/data-deletion` and
+#: `/whatsapp/data-deletion-status` entries are Facebook Login's deauthorize and data-deletion
+#: callbacks — a different Meta trust scheme (`signed_request`, verified by notification's
+#: `app/meta_signed_request.py`) from the WhatsApp Business Platform callback above
+#: (`X-Hub-Signature-256`), grouped in this same mapping because the shape they need from the
+#: gateway is identical: no bearer token, their own rate-limit buckets, and exactly the methods
+#: named here. `data-deletion-status` is `GET`-only and carries no signature at all — it is the
+#: public status page Meta's own response to `data-deletion` links to, named by an opaque
+#: confirmation code in the query string rather than a path variable, which is what lets it sit in
+#: this exact-match mapping instead of needing a prefix (`GatewayPolicy.public_path_prefixes`, the
+#: unsubscribe link's own shape) for a variable segment.
 WEBHOOK_PUBLIC_PATHS: Mapping[str, frozenset[str]] = MappingProxyType(
-    {"/api/v1/webhooks/whatsapp": frozenset({"GET", "POST"})}
+    {
+        "/api/v1/webhooks/whatsapp": frozenset({"GET", "POST"}),
+        "/api/v1/webhooks/whatsapp/deauthorize": frozenset({"POST"}),
+        "/api/v1/webhooks/whatsapp/data-deletion": frozenset({"POST"}),
+        "/api/v1/webhooks/whatsapp/data-deletion-status": frozenset({"GET"}),
+    }
 )
 
 # Resolved relative to the service directory so `make run` and the container image agree.

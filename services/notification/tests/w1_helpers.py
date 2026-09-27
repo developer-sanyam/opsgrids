@@ -29,7 +29,12 @@ CODE = "ci-only-one-time-code"
 TOKEN = "ci-only-business-token"  # pragma: allowlist secret
 WABA = "9001"
 
-W1_TABLES = ("w1_setup_runs", "w1_numbers", "w1_connection_health")
+W1_TABLES = (
+    "w1_setup_runs",
+    "w1_numbers",
+    "w1_connection_health",
+    "w1_meta_deletion_requests",
+)
 
 
 def number(

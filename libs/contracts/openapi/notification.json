@@ -5348,6 +5348,18 @@
             "title": "Code",
             "type": "string"
           },
+          "meta_user_id": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{1,30}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta User Id"
+          },
           "phone_number_id": {
             "anyOf": [
               {

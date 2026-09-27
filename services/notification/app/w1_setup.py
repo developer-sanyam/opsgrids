@@ -402,6 +402,7 @@ async def _step_number(session: AsyncSession, run: SetupRun, ctx: Ctx) -> str:
             display_number=display,
             access_token_enc=sealed,
             status="connected",
+            meta_user_id=run.meta_user_id_hint,
         )
         session.add(account)
     else:
@@ -411,6 +412,11 @@ async def _step_number(session: AsyncSession, run: SetupRun, ctx: Ctx) -> str:
         account.access_token_enc = sealed
         account.status = "connected"
         account.updated_by = run.started_by or SYSTEM_ACTOR
+        # Only overwritten when this run actually carried one: an older client (or the manual
+        # "paste a token" path, which never touches this run shape at all) reconnecting must not
+        # blank out an id a previous signup already captured.
+        if run.meta_user_id_hint is not None:
+            account.meta_user_id = run.meta_user_id_hint
     try:
         # `provider_accounts.phone_number_id` is globally unique (the webhook routing key), so the
         # database is what refuses a number another organization already holds.

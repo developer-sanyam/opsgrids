@@ -32,7 +32,14 @@
     "body and notification verifies it — so it is declared public in the gateway's own",
     "`app/main.py` (`WEBHOOK_PUBLIC_PATHS`, exact path, GET and POST only), and says how large a",
     "body it may carry: Meta documents up to 3 MiB, over the 2 MiB default. The prefix and the",
-    "cap must match `infrastructure/edge/routes.prod.json`; tests/infra checks it."
+    "cap must match `infrastructure/edge/routes.prod.json`; tests/infra checks it.",
+    "",
+    "The three `/api/v1/webhooks/whatsapp/deauthorize|data-deletion|data-deletion-status`",
+    "entries are Facebook Login's deauthorize and data-deletion callbacks (a different Meta",
+    "trust scheme, `signed_request` rather than `X-Hub-Signature-256` — see docs/whatsapp/",
+    "webhooks.md), also declared public in `WEBHOOK_PUBLIC_PATHS`. Their own body cap is far",
+    "smaller than the WhatsApp webhook's: a signed_request is a couple hundred bytes, never a",
+    "batch of events."
   ],
   "routes": [
     { "prefix": "/api/v1/auth/operator", "upstream": "http://localhost:8110", "blocked": true },
@@ -78,6 +85,9 @@
     { "prefix": "/api/v1/notifications", "upstream": "http://localhost:8151", "product": "notification" },
     { "prefix": "/api/v1/engage", "upstream": "http://localhost:8151", "product": "engage" },
     { "prefix": "/api/v1/webhooks/whatsapp", "upstream": "http://localhost:8151", "max_body_bytes": 3145728 },
+    { "prefix": "/api/v1/webhooks/whatsapp/deauthorize", "upstream": "http://localhost:8151", "max_body_bytes": 4096 },
+    { "prefix": "/api/v1/webhooks/whatsapp/data-deletion-status", "upstream": "http://localhost:8151", "max_body_bytes": 4096 },
+    { "prefix": "/api/v1/webhooks/whatsapp/data-deletion", "upstream": "http://localhost:8151", "max_body_bytes": 4096 },
     { "prefix": "/api/v1/approvals", "upstream": "http://localhost:8152" },
 
     { "prefix": "/api/v1/billing", "upstream": "http://localhost:8160" },

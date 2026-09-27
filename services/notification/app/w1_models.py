@@ -1,7 +1,8 @@
 """Tables for WhatsApp Embedded Signup, the numbers cache and connection health (slice W1).
 
-Three small tables, all tenant-scoped with FORCE row-level security, none holding anything a
-webhook routes on (that stays `provider_accounts.phone_number_id`, globally unique):
+Four tables. The first three are tenant-scoped with FORCE row-level security, and none of them
+holds anything a webhook routes on (that stays `provider_accounts.phone_number_id`, globally
+unique):
 
 * `w1_setup_runs` — one row per `signup/complete`. It is the persisted state the worker advances
   and `GET /engage/whatsapp/signup/{id}` reads. It briefly holds two secrets, **both sealed**: the
@@ -13,6 +14,9 @@ webhook routes on (that stays `provider_accounts.phone_number_id`, globally uniq
   marks the one mirrored into `provider_accounts` (the number sends go out on).
 * `w1_connection_health` — one row per organization: what was last learned about the token and the
   webhook subscription, so the health screen never has to call Meta to answer.
+
+The fourth, `w1_meta_deletion_requests`, is deliberately **not** tenant-scoped — see its own
+docstring for why a Meta data-deletion callback has no single organization to belong to.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -61,6 +66,13 @@ class SetupRun(Base, UUIDPrimaryKeyMixin, OrgScopedMixin, TimestampMixin):
     #: The ids the browser reported. Hints: the server discovers and verifies the real ones.
     waba_hint: Mapped[str | None] = mapped_column(String(80))
     phone_number_hint: Mapped[str | None] = mapped_column(String(80))
+    #: The Facebook-scoped user id `FB.login`'s response carried, from the same browser round
+    #: trip as the two hints above. Unlike them it is never verified against Meta (there is no
+    #: Graph call that confirms "this id completed this login" -- Meta does not publish one) and
+    #: is mirrored onto `provider_accounts.meta_user_id` as-is once the connection is written
+    #: (`w1_setup._step_number`). A hint in the same sense as the other two: informational, not
+    #: load-bearing for anything this run itself does.
+    meta_user_id_hint: Mapped[str | None] = mapped_column(String(40))
     started_by: Mapped[str | None] = mapped_column(String(80))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -139,3 +151,41 @@ class ConnectionHealth(Base, UUIDPrimaryKeyMixin, OrgScopedMixin, TimestampMixin
     last_setup_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
 
     __table_args__ = (UniqueConstraint("organization_id", name="uq_w1_connection_health_org"),)
+
+
+class MetaDataDeletionRequest(Base):
+    """The whole answer `GET .../data-deletion-status` may ever give a stranger holding a
+    confirmation code -- and, separately, what makes a retried Meta data-deletion callback return
+    that same code rather than mint a fresh one.
+
+    **Deliberately not tenant-scoped**, on purpose and for a reason specific to this callback
+    rather than an oversight: one Meta data-deletion request can fan out to more than one
+    organization (`meta_user_id` is not unique to one connection) or to none at all (an id we
+    cannot attribute still owes Meta an answer), so no single `organization_id` would be the right
+    scope, and a policy that let it through for "every organization or none" would not be a tenant
+    boundary at all -- the same judgement call `processed_events` already makes, for a related
+    reason (see `migrations/versions/b2c3d4e5f6a7_enable_row_level_security.py`). It carries no
+    `organization_id` column, and no migration ever enables row-level security on it.
+
+    **Deliberately minimal**, so that this table -- the one place an unauthenticated `GET` can
+    reach -- reveals nothing if it leaked whole: no Meta user id, in any form, and no
+    organization id. `request_key` is the one exception, and it is not the id either: a blind
+    index (`platform_core.pii.blind_index`, the same primitive `w1_setup_runs.code_hash` uses for
+    a one-time code) of the callback's own `f"{user_id}:{issued_at}"`, keyed by
+    `Settings.pii_encryption_key`. It cannot be inverted back to who asked, and it exists only so
+    a retried callback -- Meta resending the identical POST, not a person submitting a second,
+    genuinely new request -- finds its own earlier row instead of minting another confirmation
+    code. `issued_at` is Meta's own timestamp on the signed request and does not change on a mere
+    retry of the same POST; a fresh request from the same person (a new "Send Request" click) gets
+    a new `issued_at` and, correctly, its own confirmation code.
+    """
+
+    __tablename__ = "w1_meta_deletion_requests"
+
+    #: Alphanumeric, per Meta's own contract for the field (`docs/development/create-an-app/
+    #: app-dashboard/data-deletion-callback`) -- `secrets.token_hex(16)`, 32 hex characters.
+    confirmation_code: Mapped[str] = mapped_column(String(43), primary_key=True)
+    request_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
