@@ -282,7 +282,9 @@ async def test_a_webhook_for_one_orgs_number_never_touches_another_org(
 # --------------------------------------------------------------------- STOP
 
 
-async def test_stop_suppresses_and_the_next_reply_is_refused(client, session, org_id) -> None:
+async def test_stop_suppresses_marketing_only_and_a_service_reply_still_goes(
+    client, session, org_id
+) -> None:
     await _connect_account(session, org_id)
     body = json.dumps(_payload(messages=[_text_message(body="STOP")])).encode()
     response = await client.post("/webhooks/whatsapp", content=body, headers=_headers(body))
@@ -296,6 +298,7 @@ async def test_stop_suppresses_and_the_next_reply_is_refused(client, session, or
         )
         assert pref.suppressed is True
         assert pref.reason == "customer_stop"
+        assert pref.category == "marketing"
 
         conversation = (await session.execute(select(Conversation))).scalars().one()
         ctx = ctx_for(org_id, "engage.inbox.message.reply", Scope.ORG)
@@ -306,9 +309,9 @@ async def test_stop_suppresses_and_the_next_reply_is_refused(client, session, or
             body="We got your message",
             idempotency_key="k1",
         )
-    # Staged, not refused outright — "we deliberately did not tell this customer" is a fact kept
-    # on the message row, the same way a rule-driven send records a suppression.
-    assert message.state == "suppressed"
+    # STOP is a request to stop marketing, so a human answering the customer's own message inside
+    # the service window is not refused (it was, when STOP wrote a `*` row).
+    assert message.state != "suppressed"
 
 
 # --------------------------------------------------------------------- cross-organization batching

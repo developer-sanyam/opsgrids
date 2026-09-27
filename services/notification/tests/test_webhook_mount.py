@@ -57,7 +57,9 @@ def _configured(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(
         "app.api.webhooks.settings",
         lambda: SimpleNamespace(
-            whatsapp_verify_token=SecretStr(TOKEN), whatsapp_app_secret=SecretStr(SECRET)
+            whatsapp_verify_token=SecretStr(TOKEN),
+            whatsapp_app_secret=SecretStr(SECRET),
+            meta_app_secret=None,
         ),
     )
 
