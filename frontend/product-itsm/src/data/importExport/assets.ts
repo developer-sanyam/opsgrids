@@ -72,7 +72,7 @@ const columns: readonly ImportColumn[] = [
     header: "Status",
     kind: "enum",
     options: STATUS_OPTIONS,
-    help: "Where the asset is in its life. Leave blank for In stock.",
+    help: "Where the asset is in its life. On a new asset, leave blank for In stock.",
   },
   {
     key: "owner",
@@ -124,7 +124,7 @@ const columns: readonly ImportColumn[] = [
     pattern: /^[A-Za-z]{3}$/,
     patternHint: "A three-letter currency code such as INR or USD.",
     defaultCurrency: DEFAULT_CURRENCY,
-    help: `The currency of the cost. Leave blank for ${DEFAULT_CURRENCY}.`,
+    help: `The currency of the cost. On a new asset, leave blank for ${DEFAULT_CURRENCY}.`,
   },
   {
     key: "open_incidents",
@@ -177,11 +177,9 @@ const notes = [
   "Asset tags must be unique. With \"Add new records only\", a row whose tag already exists is skipped, never updated.",
   "A tag that once belonged to an asset that was later deleted still cannot be used again. The server reports it as a conflict without saying why, so a row that is refused as already existing may be a deleted asset's tag: choose another tag.",
   "Every imported asset is recorded as belonging to the person who runs the import, whatever the Owner column says: Owner is only the name shown. A person who can see only their own assets sees exactly the ones they imported.",
-  `Cost is written in whole currency units, for example 84500 or 84500.50, with the currency in the next column. A blank currency means ${DEFAULT_CURRENCY}.`,
+  `Cost is written in whole currency units, for example 84500 or 84500.50, with the currency in the next column. On a new asset, a blank currency means ${DEFAULT_CURRENCY}.`,
   "Owner is free text, such as a person's name or a team. It is not matched against your users.",
   "Dates can be Excel dates or written as YYYY-MM-DD, for example 2026-04-01.",
-  "Updating: the asset tag says which asset a row is about and cannot be changed. An export has no Record ID for assets, so the tag is the only way to name one.",
-  "Updating: [clear] empties Owner, Location, Serial number, Purchase date and Warranty expires. Name, Type, Status, Cost and Cost currency cannot be emptied: leave them blank to keep them.",
   "Updating: a blank Cost currency keeps the asset's own currency, so a cost is read in that currency and not in INR. Changing the currency does not convert the cost: a row that changes it must also give Cost in the new currency, or it is refused.",
   "Updating: changing Owner changes only the name shown, not whose asset it is for permissions. A person who can see only their own assets cannot see, and so cannot update, anyone else's.",
 ];
