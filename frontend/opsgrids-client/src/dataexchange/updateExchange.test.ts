@@ -107,7 +107,7 @@ describe("choosing the mode", () => {
   });
 });
 
-describe("the records to update are loaded once per dialog session", () => {
+describe("the records to update are loaded for each file, and shared while a load is in flight", () => {
   it("does not load them at all in add mode", async () => {
     const { exchange, load, latest } = setUp();
     await exchange.actions.openFile(await file());
@@ -115,16 +115,45 @@ describe("the records to update are loaded once per dialog session", () => {
     expect(latest()?.preview).toMatchObject({ mode: "add", invalid: 1 });
   });
 
-  it("loads them with the lookups and the dialog's signal, and keeps them for the next file", async () => {
+  it("loads them with the lookups and the dialog's signal", async () => {
     const { exchange, load } = setUp();
     await exchange.actions.setMode("addAndUpdate");
     await exchange.actions.openFile(await file());
-    await exchange.actions.openFile(await file([[null, "SKU-2", "Nut", null]]));
     expect(load).toHaveBeenCalledTimes(1);
     const ctx = load.mock.calls[0]?.[0];
     expect(ctx?.lookups).toBe(productLookups);
     expect(ctx?.signal).toBeInstanceOf(AbortSignal);
     expect(ctx?.signal.aborted).toBe(false);
+  });
+
+  it("reads them again for every file that is opened: it may have been edited for an hour since the last load", async () => {
+    const { exchange, load } = setUp();
+    await exchange.actions.setMode("addAndUpdate");
+    await exchange.actions.openFile(await file());
+    await exchange.actions.openFile(await file([[null, "SKU-2", "Nut", null]]));
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not compare a re-opened file with the first load", async () => {
+    let call = 0;
+    const { exchange, latest } = setUp({
+      load: () => Promise.resolve(call++ === 0 ? stored : [storedProduct(1, { name: "Bracket" }), storedProduct(2)]),
+    });
+    await exchange.actions.setMode("addAndUpdate");
+    await exchange.actions.openFile(await file());
+    expect(latest()?.preview?.rows[0]).toMatchObject({ action: "update", changes: ["Name"] });
+    await exchange.actions.openFile(await file());
+    // With the first load this would still say Name changes; the record already has it.
+    expect(latest()?.preview?.rows[0]).toMatchObject({ action: "unchanged" });
+  });
+
+  it("answers a change of mode from the load it already has, without a second read", async () => {
+    const { exchange, load } = setUp();
+    await exchange.actions.openFile(await file());
+    await exchange.actions.setMode("addAndUpdate");
+    await exchange.actions.setMode("add");
+    await exchange.actions.setMode("addAndUpdate");
+    expect(load).toHaveBeenCalledTimes(1);
   });
 
   it("shares one load that is in flight between everyone who asks", async () => {
@@ -189,13 +218,13 @@ describe("the records to update are loaded once per dialog session", () => {
     }
   });
 
-  it("keeps them after an import that changed nothing", async () => {
+  it("reads them again for the next file after an import that changed nothing, as after any other", async () => {
     const { exchange, load } = setUp({ send: () => Promise.reject(new ApiError(422, "No", { status: 422, detail: "No" })) });
     await exchange.actions.setMode("addAndUpdate");
     await exchange.actions.openFile(await file());
     await exchange.actions.startImport();
     await exchange.actions.openFile(await file());
-    expect(load).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledTimes(2);
   });
 
   it("drops them when the dialog is reset, and when it is torn down", async () => {

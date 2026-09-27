@@ -352,6 +352,14 @@ export interface PreviewRow {
   note: string | null;
 }
 
+/**
+ * How an update-mode preview treated the export baseline (ADR-0022 addendum): `used`, so a cell the
+ * user did not change since the export was left alone; `none`, the file has no baseline, so every
+ * filled cell is compared with the record as it is now; `unusable`, it has one that is damaged,
+ * too big or another list's, which was ignored (and behaves as `none`).
+ */
+export type BaselineUse = "used" | "none" | "unusable";
+
 export interface ImportPreview {
   fileName: string;
   /** The mode this preview was computed for. */
@@ -377,9 +385,14 @@ export interface ImportPreview {
    *  Always empty in `addAndUpdate` mode: a row that updates a record needs none of them (a blank cell
    *  leaves the field alone), and a row that adds one says what it lacks. */
   missingRequired: readonly string[];
-  /** A sentence when update mode was chosen but the file has no column that can name a record (no
-   *  Record ID and no key column), so every row would be added as new. Null otherwise, and in `add` mode. */
+  /** A sentence when update mode will not match rows the way the user expects: the file has no column
+   *  that can name a record (no Record ID and no key column), so every row would be added as new, or
+   *  the list can only be matched by Record ID and some rows have none, so those are added. Null
+   *  otherwise, and in `add` mode. */
   matchWarning: string | null;
+  /** Update mode when at least one row names a stored record: what became of the export baseline.
+   *  Null in `add` mode and when no row names a record (nothing there to be stale). */
+  baseline: BaselineUse | null;
 }
 
 export interface ImportProgress {

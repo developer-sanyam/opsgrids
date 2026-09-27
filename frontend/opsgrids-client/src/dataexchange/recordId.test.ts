@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { NO_BASELINE } from "./baseline";
 import { InvalidCell, recordIdHeader } from "./cells";
 import { buildExportWorkbook } from "./exporter";
 import { prepareImport } from "./preview";
@@ -98,7 +99,14 @@ describe("a row that carries a record id", () => {
     expect(shown.invalid).toBe(1);
     const { prepared } = prepareImport(
       withId,
-      { sheetName: "Import", columns: [], rows: [{ row: 2, cells: { id: new InvalidCell("#N/A", "x") } }], unknownHeaders: [], missingRequired: [] },
+      {
+        sheetName: "Import",
+        columns: [],
+        rows: [{ row: 2, cells: { id: new InvalidCell("#N/A", "x") } }],
+        unknownHeaders: [],
+        missingRequired: [],
+        baseline: NO_BASELINE,
+      },
       ctx,
       "f.xlsx",
     );

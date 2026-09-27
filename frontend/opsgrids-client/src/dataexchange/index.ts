@@ -5,6 +5,7 @@ export { majorToMinor, minorToMajor } from "./money";
 export { CLEAR_TOKEN, RowProblem, defineImportEntity } from "./types";
 export { buildUpdate, indexExisting, isClearToken, matchRow, normaliseKey, planUpdate } from "./update";
 export type {
+  BaselineUse,
   ColumnKind,
   ColumnOption,
   DataExchangeActions,

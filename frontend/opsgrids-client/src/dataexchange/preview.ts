@@ -8,6 +8,7 @@
  * columns it changes), a row that already matches its record (no request), or a row refused.
  */
 
+import { withoutUntouched } from "./baseline";
 import { displayValue, importableColumns, isBlank, recordIdHeader } from "./cells";
 import type { AnyEntity } from "./cells";
 import { coerceRow } from "./coerce";
@@ -16,6 +17,7 @@ import { UNCHANGED_MESSAGE, prepareMessage } from "./errors";
 import { sampleMatcher } from "./sample";
 import type { RunnerRow } from "./runner";
 import type {
+  BaselineUse,
   ImportContext,
   ImportMode,
   ImportPreview,
@@ -76,6 +78,12 @@ export interface PreparedImport {
   /** Update rows that already match their record: nothing is sent, and the report says so. */
   unchanged: RowOutcome[];
   lookups: LookupSet;
+  /**
+   * What the preview promised, row by row: which action, and which columns it changes. Compared with
+   * the same file planned against records loaded later, it says whether what the user reviewed is
+   * still what would be sent.
+   */
+  review: string;
 }
 
 /** What update mode needs to match a row: the spec, the index over the loaded records, the key's header. */
@@ -184,14 +192,18 @@ export function prepareImport(
   const invalid: RowOutcome[] = [];
   const unchanged: RowOutcome[] = [];
   const shown: PreviewRow[] = [];
-  const tally = { create: 0, update: 0, sample: 0 };
+  const tally = { create: 0, update: 0, sample: 0, matched: 0 };
   /** The first row that updates each record: a second row for the same record is refused. */
   const claimed = new Map<string, number>();
+  const reviewed: string[] = [];
+  let baselineUsed = false;
 
-  for (const { row, cells } of sheet.rows) {
+  for (const { row, cells: typed } of sheet.rows) {
     const values: Record<string, string> = {};
-    for (const column of sheet.columns) values[column.key] = displayValue(cells[column.key]);
+    for (const column of sheet.columns) values[column.key] = displayValue(typed[column.key]);
     let label = identifying === undefined ? "" : (values[identifying.key] ?? "");
+    // What the row's cells count as: what was typed, less the cells the export wrote and nobody changed.
+    let cells = typed;
     // Who the record this row names is, once it is known to name one.
     let record: string | null = null;
 
@@ -200,16 +212,9 @@ export function prepareImport(
       error: string | null,
       details: { changes?: readonly string[]; note?: string } = {},
     ): void => {
-      shown.push({
-        row,
-        values,
-        error,
-        sample: action === "sample",
-        action,
-        changes: details.changes ?? [],
-        record,
-        note: details.note ?? null,
-      });
+      const changes = details.changes ?? [];
+      reviewed.push(`${row}:${action}:${changes.join("|")}`);
+      shown.push({ row, values, error, sample: action === "sample", action, changes, record, note: details.note ?? null });
     };
     const refuse = (message: string): void => {
       invalid.push({ row, status: "invalid", message, label, record: record ?? undefined });
@@ -227,13 +232,22 @@ export function prepareImport(
         refuse(recordIdRefusal);
         continue;
       }
-      const match = matchRow(updating.index, displayValue(cells[recordIdKey]), null);
+      const recordId = displayValue(cells[recordIdKey]);
+      const match = matchRow(updating.index, recordId, null);
       if (match.kind !== "found") {
         refuse(unknownRecordIdMessage(idHeader));
         continue;
       }
       stored = { item: match.item, id: updating.spec.idOf(match.item), by: "id" };
       record = recordLabelOf(updating.spec, match.item);
+      tally.matched += 1;
+      // A cell the export wrote and nobody has changed is not this row's to send: what the record
+      // holds now may be a colleague's later edit.
+      const written = sheet.baseline.kind === "found" ? sheet.baseline.records.get(recordId) : undefined;
+      if (written !== undefined) {
+        baselineUsed = true;
+        cells = withoutUntouched(typed, written);
+      }
     }
 
     // Before any validation: an unchanged example row is never reported wrong, whatever the
@@ -258,6 +272,7 @@ export function prepareImport(
       if (match.kind === "found") {
         stored = { item: match.item, id: updating.spec.idOf(match.item), by: "key" };
         record = recordLabelOf(updating.spec, match.item);
+        tally.matched += 1;
       }
     }
 
@@ -356,7 +371,15 @@ export function prepareImport(
       // a record still needs its required cells, and says so.
       missingRequired: updating === null ? sheet.missingRequired : [],
       matchWarning: updating === null ? null : matchWarningFor(entity, updating, sheet, tally.create),
+      baseline: updating === null ? null : baselineUse(sheet, tally.matched, baselineUsed),
     },
-    prepared: { valid, invalid, unchanged, lookups: ctx.lookups },
+    prepared: { valid, invalid, unchanged, lookups: ctx.lookups, review: reviewed.join("\n") },
   };
+}
+
+/** What became of the export baseline, said only where some row names a stored record and could have been stale. */
+function baselineUse(sheet: ParsedSheet, matched: number, used: boolean): BaselineUse | null {
+  if (matched === 0) return null;
+  if (used) return "used";
+  return sheet.baseline.kind === "unusable" ? "unusable" : "none";
 }
