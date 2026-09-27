@@ -1143,9 +1143,9 @@ def _decode_pre_auth(
 #: `sessions.revoked_reason` when wrong current passwords typed into the password-change form trip
 #: the lockout — distinct from sign-in's and enrolment's, so an operator can tell which door was
 #: used.
-PASSWORD_CHANGE_LOCKOUT_REASON = "password_change_failed_attempts"
+PASSWORD_CHANGE_LOCKOUT_REASON = "password_change_failed_attempts"  # pragma: allowlist secret
 
-EVT_PASSWORD_CHANGE_FAILED = "auth.password_change_failed"
+EVT_PASSWORD_CHANGE_FAILED = "auth.password_change_failed"  # pragma: allowlist secret
 
 
 async def change_password(

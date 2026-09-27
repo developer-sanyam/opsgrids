@@ -34,6 +34,8 @@ from tests.conftest import MEMBERSHIP_A, ORG_A, PASSWORD, USER
 
 pytestmark = pytest.mark.integration
 
+NEW_PASSWORD = "a-brand-new-pw-9"  # pragma: allowlist secret
+
 #: Routes under /api/v1 allowed on a bare session, each with the reason.
 PRE_ORGANIZATION = "runs before an organization has been chosen; there is no tenant to bind"
 BARE_SESSION_ROUTES = {
@@ -443,7 +445,7 @@ class TestThePrincipalRouteOnABareSessionBindsItself:
             statements.clear()
             response = await client.post(
                 "/api/v1/auth/password/change",
-                json={"current_password": PASSWORD, "new_password": "a-brand-new-pw-9"},
+                json={"current_password": PASSWORD, "new_password": NEW_PASSWORD},
             )
         assert response.status_code == 204, response.text
         _assert_bound_first(statements, touches="credentials")
@@ -455,7 +457,7 @@ class TestThePrincipalRouteOnABareSessionBindsItself:
             )
         ).scalar_one()
         await session.rollback()
-        assert security.verify_password(stored, "a-brand-new-pw-9"), "the change did not commit"
+        assert security.verify_password(stored, NEW_PASSWORD), "the change did not commit"
 
     async def test_a_refused_password_change_still_binds_first(
         self, client: AsyncClient, registered: None, statements: list[Statement]
@@ -464,7 +466,7 @@ class TestThePrincipalRouteOnABareSessionBindsItself:
             statements.clear()
             response = await client.post(
                 "/api/v1/auth/password/change",
-                json={"current_password": PASSWORD, "new_password": "a-brand-new-pw-9"},
+                json={"current_password": PASSWORD, "new_password": NEW_PASSWORD},
             )
         assert response.status_code == 401, response.text
         first, params = statements[0]
