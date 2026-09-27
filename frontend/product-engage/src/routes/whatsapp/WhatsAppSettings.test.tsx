@@ -144,7 +144,7 @@ describe("populated", () => {
   it("says in words when the token or the webhook needs attention", async () => {
     vi.spyOn(api, "getWhatsAppHealth").mockResolvedValue({
       ...HEALTH_OK,
-      token: { state: "invalid", checked_at: null },
+      token: { state: "invalid", checked_at: null, identity_revoked_at: null },
       webhook: { state: "silent", last_event_at: null },
     });
     vi.spyOn(api, "listWhatsAppNumbers").mockResolvedValue({ items: [MAIN_NUMBER] });

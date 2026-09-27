@@ -184,11 +184,11 @@ def test_a_genuine_callback_payload_with_neither_field_still_verifies() -> None:
 
 
 def test_the_algorithm_check_does_not_fold_non_ascii_letters_onto_ascii_ones() -> None:
-    """`str.upper()` is Unicode-aware: the Kelvin sign `"K"` upper-cases to itself and,
+    """`str.upper()` is Unicode-aware: the Kelvin sign (`\u212a`) upper-cases to itself and,
     depending on the Unicode version, some casefold tables can equate look-alike letters across
     scripts. `bytes.upper()` only ever touches ASCII `a`-`z`, so an algorithm string that is not
     plain ASCII must be refused outright rather than compared after a Unicode-aware fold."""
-    value = _signed_request({"user_id": "1"}, algorithm="HMAC-SHA256K")
+    value = _signed_request({"user_id": "1"}, algorithm="HMAC-SHA256\u212a")
     with pytest.raises(msr.SignedRequestError):
         msr.parse_signed_request(value, SECRET)
 

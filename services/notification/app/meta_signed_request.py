@@ -125,7 +125,8 @@ def _b64url_decode(segment: str) -> bytes:
     than a refusal."""
     padded = segment + "=" * (-len(segment) % 4)
     try:
-        return base64.b64decode(padded.translate(_URLSAFE_TO_STANDARD).encode("ascii"), validate=True)
+        standard = padded.translate(_URLSAFE_TO_STANDARD).encode("ascii")
+        return base64.b64decode(standard, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise SignedRequestError("signed_request is not valid base64url") from exc
 
