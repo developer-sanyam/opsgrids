@@ -1356,15 +1356,25 @@ class TestTheAuditTrail:
 # ---------------------------------------------------------------- the reveal-route guard
 
 
-class TestTheTokenOpensTheRevealRoutes:
-    """Exercised against `require(perm, amr={"otp"})` itself, on a throwaway app, for the four
-    permissions that carried that guard when the endpoint was built (the two CRM ones now also
-    require the step-up marker: see the class below). The bearer token goes through the real
-    `get_principal`; only the permission grant (which the gateway resolves per request and no
-    token carries) is supplied by the harness."""
+class TestAStepUpTokenSatisfiesABareOtpGuard:
+    """What this covers, and what it does not.
+
+    A **throwaway app** whose one route is guarded with `require(perm, amr={"otp"})` — the shape of
+    the guards on the HRMS, storefront and Engage unmask routes today. It proves two things about
+    the token this endpoint mints: it carries what such a guard asks for (`otp`), and a member's
+    *password-only* session token (a session that has proved no code) does not.
+
+    It does **not** exercise those services' real routes (their own suites do), and it says nothing
+    about the CRM reveal routes, whose guard is `amr={"otp", "stepup"}`
+    (`TestTheCrmRevealGuardWantsBothValues`, and the routes' own suites). And it says nothing about
+    a session that gave a code at sign-in, which carries `otp` and passes a bare `otp` guard with no
+    step-up at all: that is ADR-0023 risk 5, pinned per route in employee's, storefront's and
+    notification's own suites.
+
+    The bearer token goes through the real `get_principal`; only the permission grant (which the
+    gateway resolves per request and no token carries) is supplied by the harness."""
 
     PERMISSIONS: ClassVar[list[str]] = [
-        "crm.book.contact.read_sensitive",
         "hrms.people.employee.read_sensitive",
         "storefront.sales.enquiry.unmask",
         "engage.inbox.message.unmask",
@@ -1396,7 +1406,7 @@ class TestTheTokenOpensTheRevealRoutes:
         return mini
 
     @pytest.mark.parametrize("permission", PERMISSIONS)
-    async def test_the_step_up_token_passes_and_the_session_token_does_not(
+    async def test_a_step_up_token_passes_a_bare_otp_guard_and_a_password_only_token_does_not(
         self, http: AsyncClient, session, cfg, pair, directory, registered, permission: str
     ) -> None:
         issued = await _sign_in(session, cfg, pair, directory)
@@ -1418,7 +1428,7 @@ class TestTheTokenOpensTheRevealRoutes:
             assert opened.status_code == 200, opened.text
             assert opened.json() == {"revealed": True}
 
-    async def test_the_step_up_does_not_grant_the_permission_itself(
+    async def test_a_step_up_token_does_not_grant_the_permission_the_guard_also_asks_for(
         self, http: AsyncClient, session, cfg, pair, directory, registered
     ) -> None:
         issued = await _sign_in(session, cfg, pair, directory)

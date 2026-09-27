@@ -312,6 +312,28 @@ async def test_unmask_requires_the_permission_and_the_step_up(client, session, o
     assert revealed.json()["body"] == "the real words"
 
 
+async def test_a_session_that_gave_a_code_at_sign_in_still_passes_this_route_risk_5(
+    client, session, org_id
+) -> None:
+    """ADR-0023 risk 5, pinned as it is today. This route requires `otp` alone, and a session that
+    gave a code at sign-in carries `otp` on every token it mints for its whole life — so with an
+    authenticator enrolled (which turns MFA on for every later sign-in), that session's ordinary
+    token unmasks here with no fresh code. The CRM reveal routes also require the step-up marker and
+    refuse it; this one does not, because its UI does not yet run the step-up. When the follow-up
+    wires `useStepUp` here and adds the marker to the guard, THIS TEST FAILS — which is the point:
+    rewrite it as the refusal it should then be."""
+    _, message = await _seed_conversation(session, org_id, body="the real words")
+    conversation_id = message.conversation_id
+    message_id = message.id
+
+    # A login-time session: `otp`, and no step-up marker.
+    with as_principal(caller(org_id, [f"{M_UNMASK}:ORG"], amr=["pwd", "otp"])):
+        revealed = await client.post(f"{BASE}/{conversation_id}/messages/{message_id}:unmask")
+
+    assert revealed.status_code == 200
+    assert revealed.json()["body"] == "the real words"
+
+
 async def test_unmasking_writes_an_audit_row_every_time(client, session, org_id) -> None:
     _, message = await _seed_conversation(session, org_id)
     with as_principal(caller(org_id, [f"{M_UNMASK}:ORG"], amr=["otp"])):
