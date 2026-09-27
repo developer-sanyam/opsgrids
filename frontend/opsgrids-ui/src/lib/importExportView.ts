@@ -21,6 +21,8 @@ export interface ImportExportRowOutcome {
   message: string | null;
   id?: string | undefined;
   changes?: readonly string[] | undefined;
+  /** An update row: which stored record it names, in words a person recognises. */
+  record?: string | undefined;
   label: string;
 }
 
@@ -35,7 +37,15 @@ export interface ImportExportPreviewRow {
   sample: boolean;
   action: ImportExportPreviewAction;
   changes: readonly string[];
+  /** A row that names a stored record: who it is, in words a person recognises. Null when it names none. */
+  record: string | null;
+  /** Something to say about a row that is not refused but does not do what it looks like. Null otherwise. */
+  note: string | null;
 }
+
+/** What an update-mode preview did with the export baseline: `used`, `none` (the file has none) or
+ *  `unusable` (it has one that was damaged, too big or another list's, and was ignored). */
+export type ImportExportBaselineUse = "used" | "none" | "unusable";
 
 export interface ImportExportPreview {
   fileName: string;
@@ -52,6 +62,7 @@ export interface ImportExportPreview {
   unknownHeaders: readonly string[];
   missingRequired: readonly string[];
   matchWarning: string | null;
+  baseline: ImportExportBaselineUse | null;
 }
 
 export interface ImportExportProgress {
@@ -108,6 +119,9 @@ export interface ImportExportMeta {
   canExport: boolean;
   /** The list can be updated from a sheet: the dialog offers "Add new and update existing" to whoever may import. */
   canUpdate: boolean;
+  /** The header of the column an export writes each record's id in ("Company ID"): the words the
+   *  dialog's sentences use for it, so they say what the sheet says. */
+  recordIdHeader: string;
 }
 
 export interface ImportExportButtonProps {

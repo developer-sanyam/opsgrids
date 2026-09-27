@@ -29,17 +29,33 @@ const OUTCOME_BADGE: Record<ImportExportRowStatus, StatusBadgeProps> = {
   invalid: { tone: "warning", label: "Invalid" },
 };
 
-const COLUMNS: ImportExportTableColumn<ImportExportRowOutcome>[] = [
-  { key: "row", header: "Row", rowHeader: true, className: "tnum text-muted", render: (outcome) => outcome.row },
-  { key: "item", header: "Item", render: (outcome) => <ImportExportCellText value={outcome.label} /> },
-  { key: "result", header: "Result", render: (outcome) => <StatusBadge {...OUTCOME_BADGE[outcome.status]} /> },
-  {
-    key: "details",
-    header: "Details",
-    className: "min-w-48",
-    render: (outcome) => <ImportExportCellText value={outcome.message} />,
-  },
-];
+/**
+ * The listed rows' columns. An update run also names the stored record each row was matched to, so a
+ * Record ID column that slipped by a row is seen in the result as it was in the preview.
+ */
+function columnsFor(outcomes: readonly ImportExportRowOutcome[]): ImportExportTableColumn<ImportExportRowOutcome>[] {
+  const naming = outcomes.some((outcome) => outcome.record !== undefined && outcome.record !== "");
+  return [
+    { key: "row", header: "Row", rowHeader: true, className: "tnum text-muted", render: (outcome) => outcome.row },
+    { key: "item", header: "Item", render: (outcome) => <ImportExportCellText value={outcome.label} /> },
+    ...(naming
+      ? [
+          {
+            key: "record",
+            header: "Existing record",
+            render: (outcome: ImportExportRowOutcome) => <ImportExportCellText value={outcome.record} />,
+          },
+        ]
+      : []),
+    { key: "result", header: "Result", render: (outcome) => <StatusBadge {...OUTCOME_BADGE[outcome.status]} /> },
+    {
+      key: "details",
+      header: "Details",
+      className: "min-w-48",
+      render: (outcome) => <ImportExportCellText value={outcome.message} />,
+    },
+  ];
+}
 
 function toneOf(summary: ImportExportSummary): InlineAlertTone {
   if (summary.cancelled) return "info";
@@ -112,7 +128,7 @@ export function ImportExportResult({ summary, meta, mode, notice }: ResultProps)
           </p>
           <ImportExportTable
             label={`Rows that were not ${saved}`}
-            columns={COLUMNS}
+            columns={columnsFor(problems)}
             rows={problems}
             rowKey={(outcome) => String(outcome.row)}
           />

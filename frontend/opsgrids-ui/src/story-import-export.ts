@@ -26,6 +26,7 @@ export const META: ImportExportMeta = {
   requiredHeaders: ["Name"],
   canExport: true,
   canUpdate: false,
+  recordIdHeader: "Company ID",
 };
 
 /** A list that can be updated from a sheet, so the dialog offers "Add new and update existing". */
@@ -37,6 +38,7 @@ export const UPDATE_META: ImportExportMeta = {
   requiredHeaders: ["SKU", "Name"],
   canExport: true,
   canUpdate: true,
+  recordIdHeader: "Item ID",
 };
 
 /** The dialog as it opens: nothing chosen, nothing running. */
@@ -75,6 +77,8 @@ function previewRow(
     sample: extra.sample ?? false,
     action,
     changes: [],
+    record: null,
+    note: null,
   };
 }
 
@@ -109,6 +113,7 @@ export const PREVIEW_WITH_ERRORS: ImportExportPreview = {
   unknownHeaders: ["Nickname"],
   missingRequired: [],
   matchWarning: null,
+  baseline: null,
 };
 
 /** The file has no Name column, so no row can be sent, whatever else is in it. */
@@ -132,6 +137,7 @@ export const PREVIEW_MISSING_COLUMNS: ImportExportPreview = {
   unknownHeaders: ["Nickname", "Account manager"],
   missingRequired: ["Name"],
   matchWarning: null,
+  baseline: null,
 };
 
 const ITEM_COLUMNS = [
@@ -145,7 +151,7 @@ function itemRow(
   row: number,
   values: [sku: string, name: string, price: string, quantity: string],
   action: ImportExportPreviewAction,
-  extra: { error?: string; changes?: readonly string[] } = {},
+  extra: { error?: string; changes?: readonly string[]; record?: string; note?: string } = {},
 ): ImportExportPreviewRow {
   const [sku, name, price, quantity] = values;
   return {
@@ -155,6 +161,8 @@ function itemRow(
     sample: action === "sample",
     action,
     changes: extra.changes ?? [],
+    record: extra.record ?? null,
+    note: extra.note ?? null,
   };
 }
 
@@ -174,17 +182,96 @@ export const PREVIEW_UPDATE_MIXED: ImportExportPreview = {
     itemRow(6, ["BRK-200", "Bracket, galvanised", "980", ""], "invalid", {
       error: "More than one record has that SKU, so the row cannot say which to update.",
     }),
-    itemRow(2, ["BRK-100", "Steel bracket", "1499.50", ""], "update", { changes: ["Price"] }),
-    itemRow(3, ["BRK-110", "Steel bracket, white", "", "40"], "update", { changes: ["Quantity"] }),
-    itemRow(4, ["BRK-120", "Bracket, zinc", "12", ""], "update", { changes: ["Name", "Price"] }),
+    itemRow(2, ["BRK-100", "Steel bracket", "1499.50", ""], "update", {
+      changes: ["Price"],
+      record: "Steel bracket (BRK-100)",
+    }),
+    itemRow(3, ["BRK-110", "Steel bracket, white", "", "40"], "update", {
+      changes: ["Quantity"],
+      record: "Steel bracket, white (BRK-110)",
+    }),
+    itemRow(4, ["BRK-120", "Bracket, zinc", "12", ""], "update", {
+      changes: ["Name", "Price"],
+      record: "Bracket, zinc plated (BRK-120)",
+    }),
     itemRow(5, ["NUT-500", "Hex nut M8", "2.50", "5000"], "create"),
     itemRow(7, ["NUT-510", "Hex nut M10", "3", "2500"], "create"),
-    itemRow(8, ["BRK-130", "Bracket, black", "", ""], "unchanged"),
-    itemRow(9, ["BRK-140", "Bracket, brass", "", ""], "unchanged"),
+    itemRow(8, ["BRK-130", "Bracket, black", "", ""], "unchanged", { record: "Bracket, black (BRK-130)" }),
+    itemRow(9, ["BRK-140", "Bracket, brass", "", ""], "unchanged", { record: "Bracket, brass (BRK-140)" }),
   ],
   unknownHeaders: [],
   missingRequired: [],
   matchWarning: null,
+  baseline: "used",
+};
+
+/**
+ * A file with no export baseline (a sample sheet, or an export an editor saved without it): every
+ * filled cell is compared with the record as it is now, so the preview warns that an old cell puts
+ * its old value back. One row is found by a name written in other capitals and changes nothing.
+ */
+export const PREVIEW_UPDATE_NO_BASELINE: ImportExportPreview = {
+  fileName: "prices-copied-from-june.xlsx",
+  mode: "addAndUpdate",
+  total: 3,
+  valid: 2,
+  invalid: 0,
+  sample: 0,
+  create: 0,
+  update: 2,
+  unchanged: 1,
+  columns: ITEM_COLUMNS,
+  rows: [
+    itemRow(2, ["BRK-100", "Steel bracket", "1499.50", "120"], "update", {
+      changes: ["Price", "Quantity"],
+      record: "Steel bracket (BRK-100)",
+    }),
+    itemRow(3, ["BRK-110", "Steel bracket, white", "18", "40"], "update", {
+      changes: ["Price"],
+      record: "Steel bracket, white (BRK-110)",
+    }),
+    itemRow(4, ["brk-120", "Bracket, zinc plated", "12", "300"], "unchanged", {
+      record: "Bracket, zinc plated (BRK-120)",
+      note: "The SKU differs from the record's only in capitals, and a row found by it cannot change that, so nothing was sent. Use the Item ID to change only the capitals of a name.",
+    }),
+  ],
+  unknownHeaders: [],
+  missingRequired: [],
+  matchWarning: null,
+  baseline: "none",
+};
+
+/** The file carries a baseline that is damaged or another list's: it is ignored, and the preview says so. */
+export const PREVIEW_UPDATE_UNUSABLE_BASELINE: ImportExportPreview = {
+  ...PREVIEW_UPDATE_NO_BASELINE,
+  fileName: "items-export-edited.xlsx",
+  baseline: "unusable",
+};
+
+/** A list matched by its id column alone, with rows that have no id: they are added as new records, and the count says so. */
+export const PREVIEW_UPDATE_ROWS_WITHOUT_ID: ImportExportPreview = {
+  fileName: "items-with-new-rows.xlsx",
+  mode: "addAndUpdate",
+  total: 3,
+  valid: 3,
+  invalid: 0,
+  sample: 0,
+  create: 2,
+  update: 1,
+  unchanged: 0,
+  columns: ITEM_COLUMNS,
+  rows: [
+    itemRow(2, ["", "Steel bracket, galvanised", "", ""], "update", {
+      changes: ["Name"],
+      record: "Steel bracket (BRK-100)",
+    }),
+    itemRow(3, ["", "Hex nut M8", "2.50", "5000"], "create"),
+    itemRow(4, ["", "Hex nut M10", "3", "2500"], "create"),
+  ],
+  unknownHeaders: [],
+  missingRequired: [],
+  matchWarning: "2 rows have no Item ID, so they will be created as new records.",
+  baseline: "used",
 };
 
 /** Every row already matches its record: there is nothing to send, and the button says so. */
@@ -200,14 +287,15 @@ export const PREVIEW_UPDATE_ALL_UNCHANGED: ImportExportPreview = {
   unchanged: 4,
   columns: ITEM_COLUMNS,
   rows: [
-    itemRow(2, ["BRK-100", "Steel bracket", "1499.50", "120"], "unchanged"),
-    itemRow(3, ["BRK-110", "Steel bracket, white", "18", "40"], "unchanged"),
-    itemRow(4, ["BRK-120", "Bracket, zinc", "12", "300"], "unchanged"),
-    itemRow(5, ["BRK-130", "Bracket, black", "", ""], "unchanged"),
+    itemRow(2, ["BRK-100", "Steel bracket", "1499.50", "120"], "unchanged", { record: "Steel bracket (BRK-100)" }),
+    itemRow(3, ["BRK-110", "Steel bracket, white", "18", "40"], "unchanged", { record: "Steel bracket, white (BRK-110)" }),
+    itemRow(4, ["BRK-120", "Bracket, zinc", "12", "300"], "unchanged", { record: "Bracket, zinc plated (BRK-120)" }),
+    itemRow(5, ["BRK-130", "Bracket, black", "", ""], "unchanged", { record: "Bracket, black (BRK-130)" }),
   ],
   unknownHeaders: [],
   missingRequired: [],
   matchWarning: null,
+  baseline: "used",
 };
 
 /** The ways an update row is refused before anything is sent, each with its reason. */
@@ -225,19 +313,26 @@ export const PREVIEW_UPDATE_REFUSALS: ImportExportPreview = {
   rows: [
     itemRow(3, ["BRK-110", "[clear]", "", ""], "invalid", { error: "Name cannot be cleared" }),
     itemRow(4, ["BRK-999", "Steel bracket", "1499.50", ""], "invalid", {
-      error: "That Record ID is not in this list: the record may have been deleted, or the file came from another organisation.",
+      error:
+        "That Item ID is not in this list: the record may have been deleted, the file came from another organisation, or it is outside the records you can see.",
     }),
     itemRow(6, ["BRK-101", "Steel bracket", "", ""], "invalid", {
       error: "SKU cannot be changed once the record exists (it is 'BRK-100'). Leave the cell as it is, or blank.",
+      record: "Steel bracket (BRK-100)",
     }),
     itemRow(7, ["BRK-100", "Steel bracket", "1400", ""], "invalid", {
       error: "This row updates the same record as row 2. Keep only one of the two rows.",
+      record: "Steel bracket (BRK-100)",
     }),
-    itemRow(2, ["BRK-100", "Steel bracket", "1499.50", ""], "update", { changes: ["Price"] }),
+    itemRow(2, ["BRK-100", "Steel bracket", "1499.50", ""], "update", {
+      changes: ["Price"],
+      record: "Steel bracket (BRK-100)",
+    }),
   ],
   unknownHeaders: [],
   missingRequired: [],
   matchWarning: null,
+  baseline: "used",
 };
 
 /** Update mode was chosen but the file has nothing that names a record: every row would be added as new. */
@@ -260,7 +355,8 @@ export const PREVIEW_UPDATE_CANNOT_MATCH: ImportExportPreview = {
   unknownHeaders: [],
   missingRequired: [],
   matchWarning:
-    "This file has no Record ID or SKU column, so it cannot update existing records; every row would be added as new.",
+    "This file has no Item ID or SKU column, so it cannot update existing records; every row would be added as new.",
+  baseline: null,
 };
 
 export const PROGRESS_RUNNING: ImportExportProgress = {
@@ -380,9 +476,23 @@ export const SUMMARY_UPDATE_CLEAN: ImportExportSummary = {
   invalid: 0,
   cancelled: false,
   outcomes: [
-    { row: 2, status: "updated", message: null, label: "BRK-100", changes: ["Price"] },
-    { row: 3, status: "updated", message: null, label: "BRK-110", changes: ["Quantity"] },
-    { row: 4, status: "updated", message: null, label: "BRK-120", changes: ["Name", "Price"] },
+    { row: 2, status: "updated", message: null, label: "BRK-100", changes: ["Price"], record: "Steel bracket (BRK-100)" },
+    {
+      row: 3,
+      status: "updated",
+      message: null,
+      label: "BRK-110",
+      changes: ["Quantity"],
+      record: "Steel bracket, white (BRK-110)",
+    },
+    {
+      row: 4,
+      status: "updated",
+      message: null,
+      label: "BRK-120",
+      changes: ["Name", "Price"],
+      record: "Bracket, zinc plated (BRK-120)",
+    },
     { row: 5, status: "created", message: null, id: "item-501", label: "NUT-500" },
     { row: 6, status: "created", message: null, id: "item-502", label: "NUT-510" },
     ...[7, 8, 9, 10, 11].map(
@@ -391,6 +501,7 @@ export const SUMMARY_UPDATE_CLEAN: ImportExportSummary = {
         status: "unchanged",
         message: "Every cell already matches the record, so nothing was sent.",
         label: `BRK-${row + 120}`,
+        record: `Bracket (BRK-${row + 120})`,
       }),
     ),
   ],
@@ -408,6 +519,29 @@ export const SUMMARY_UPDATE_WITH_FAILURES: ImportExportSummary = {
       message: "An item named 'Steel bracket, white' already exists.",
       label: "BRK-150",
       changes: ["Name"],
+      record: "Bracket, nickel (BRK-150)",
+    },
+  ],
+};
+
+/** A row whose first request went through and a later one did not: the message says which columns were saved and which were not. */
+export const SUMMARY_UPDATE_PARTLY_SAVED: ImportExportSummary = {
+  created: 0,
+  updated: 1,
+  unchanged: 0,
+  skipped: 0,
+  failed: 1,
+  invalid: 0,
+  cancelled: false,
+  outcomes: [
+    { row: 2, status: "updated", message: null, label: "BRK-100", changes: ["Price"], record: "Steel bracket (BRK-100)" },
+    {
+      row: 3,
+      status: "failed",
+      message: "The request could not be completed. Check your connection and try again. Saved: Name, Price. Not saved: Stage.",
+      label: "BRK-110",
+      changes: ["Name", "Price", "Stage"],
+      record: "Steel bracket, white (BRK-110)",
     },
   ],
 };

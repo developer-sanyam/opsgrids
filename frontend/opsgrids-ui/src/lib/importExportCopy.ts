@@ -6,6 +6,7 @@
  */
 
 import type {
+  ImportExportBaselineUse,
   ImportExportMeta,
   ImportExportMode,
   ImportExportPreview,
@@ -94,10 +95,18 @@ function updatePreviewSentence(preview: ImportExportPreview): string {
   return `No rows to send: ${rest.join(", ")}.`;
 }
 
-/** The import button's words: the rows it will send, or, in update mode with none, that there is nothing to change. */
+/**
+ * The import button's words: the rows it will send. In update mode it says what each will do, since
+ * "Import 5 rows" hides that three of them overwrite records: "Update 3, add 2". With nothing to send
+ * it says there is nothing to change.
+ */
 export function importButtonLabel(preview: ImportExportPreview): string {
-  if (preview.mode === "addAndUpdate" && preview.valid === 0) return "Nothing to change";
-  return `Import ${rowsLabel(preview.valid)}`;
+  if (preview.mode !== "addAndUpdate") return `Import ${rowsLabel(preview.valid)}`;
+  const parts = [
+    preview.update > 0 ? `Update ${formatCount(preview.update)}` : null,
+    preview.create > 0 ? `${preview.update > 0 ? "add" : "Add"} ${formatCount(preview.create)}` : null,
+  ].filter((part) => part !== null);
+  return parts.length === 0 ? "Nothing to change" : parts.join(", ");
 }
 
 function createdPhrase(created: number, meta: ImportExportMeta): string {
@@ -185,15 +194,63 @@ function resultAnnouncement(summary: ImportExportSummary, mode: ImportExportMode
 /**
  * What "Add new and update existing" does, in plain words: how a row finds its record, what a blank
  * cell and `[clear]` mean, and what the update cannot protect against. Shown under the choice.
+ * `recordIdHeader` is the list's own name for the id column an export writes ("Company ID"), so the
+ * rule says what the sheet says.
  */
-export const UPDATE_RULES: readonly string[] = [
-  "Start from an export of the list. A row is matched to a record by its Record ID or by the list's unique key, such as a SKU or a code. A row that matches nothing is added as a new record.",
-  "A blank cell leaves the field as it is. Only the cells you fill in are compared with the record.",
-  "Type [clear] in a cell to empty a field. Not every field can be emptied.",
-  "Only fields that changed are sent. A row that changes nothing sends nothing.",
-  "The update cannot detect edits made by someone else after your file is read. Their changes to the same field would be overwritten.",
-  "Records you cannot see are not matched and will be added as new; adding one that already exists will fail as a duplicate.",
-];
+export function updateRules(recordIdHeader: string): readonly string[] {
+  return [
+    `Start from an export of the list. A row is matched to a record by its ${recordIdHeader} or by the list's unique key, such as a SKU or a code. A row that matches nothing is added as a new record.`,
+    "A blank cell leaves the field as it is. Only the cells you fill in are compared with the record.",
+    "Type [clear] in a cell to empty a field. Not every field can be emptied.",
+    "Only fields that changed are sent. A row that changes nothing sends nothing.",
+    "In a file exported from this list, cells you did not change since the export are left alone, so a colleague's later edit to them stays.",
+    "A cell you did change replaces the record's current value. The update cannot detect that someone else changed that field after your export: their change would be overwritten.",
+    "Records you cannot see are not matched and will be added as new; adding one that already exists will fail as a duplicate.",
+  ];
+}
+
+/** What the preview says about the export baseline: how the cells of the file are compared with the records. */
+export interface BaselineNotice {
+  tone: "info" | "warning";
+  /** The fact, in a sentence. */
+  title: string;
+  /** What follows from it. */
+  body: string;
+}
+
+const NO_BASELINE_BODY = "A cell copied from an old export puts its old value back. Export again if unsure.";
+
+/**
+ * The notice an update preview carries about the export baseline (null when there is nothing to
+ * say: adding, or no row names a record). With a baseline only the cells the user changed are used.
+ * Without one every filled cell is compared with the record as it is now, so a cell copied from an old
+ * export would put its old value back.
+ */
+export function baselineNotice(baseline: ImportExportBaselineUse | null): BaselineNotice | null {
+  switch (baseline) {
+    case null:
+      return null;
+    case "used":
+      return {
+        tone: "info",
+        title: "Only the cells you changed since the export are used.",
+        body: "Anything a colleague changed since then stays as they left it.",
+      };
+    case "none":
+      return {
+        tone: "warning",
+        title: "This file has no export baseline, so every filled cell is compared with the record as it is now.",
+        body: NO_BASELINE_BODY,
+      };
+    case "unusable":
+      return {
+        tone: "warning",
+        title:
+          "The export baseline in this file is damaged or belongs to another list, so it was ignored. Every filled cell is compared with the record as it is now.",
+        body: NO_BASELINE_BODY,
+      };
+  }
+}
 
 /** What the reading phase is doing: in update mode it also loads and compares against every stored record. */
 export function readingSentence(mode: ImportExportMode): string {

@@ -1,6 +1,6 @@
 import { useId } from "react";
 
-import { UPDATE_RULES } from "../lib/importExportCopy";
+import { updateRules } from "../lib/importExportCopy";
 import type { ImportExportMode } from "../lib/importExportView";
 import { RadioGroup } from "./RadioGroup";
 import type { RadioOption } from "./RadioGroup";
@@ -13,12 +13,19 @@ const OPTIONS: RadioOption[] = [
 interface ModeChoiceProps {
   mode: ImportExportMode;
   onChange: (mode: ImportExportMode) => void;
+  /** The list's own header for the id column an export writes ("Company ID"), for the rules. */
+  recordIdHeader: string;
   /**
    * The rules of updating start closed, behind their own heading. On the preview the rows are what
    * the eye needs, and the rules were on screen when the mode was chosen in the menu; they stay one
    * key press away for someone who switches here.
    */
   collapsed?: boolean;
+  /**
+   * Open the collapsed rules. For someone who has just switched to updating ON the preview: the
+   * rules were never on screen for them, and this is the choice that overwrites live data.
+   */
+  expanded?: boolean;
 }
 
 /**
@@ -28,11 +35,17 @@ interface ModeChoiceProps {
  *
  * A real `<fieldset>` of two radios: arrow keys move and choose, as the browser does.
  */
-export function ImportExportModeChoice({ mode, onChange, collapsed = false }: ModeChoiceProps) {
+export function ImportExportModeChoice({
+  mode,
+  onChange,
+  recordIdHeader,
+  collapsed = false,
+  expanded = false,
+}: ModeChoiceProps) {
   const name = useId();
   const rules = (
     <ul aria-label="How updating works" className="flex list-disc flex-col gap-1 pl-4 text-body-sm text-muted">
-      {UPDATE_RULES.map((rule) => (
+      {updateRules(recordIdHeader).map((rule) => (
         <li key={rule}>{rule}</li>
       ))}
     </ul>
@@ -47,7 +60,7 @@ export function ImportExportModeChoice({ mode, onChange, collapsed = false }: Mo
         onChange={(value) => onChange(value === "addAndUpdate" ? "addAndUpdate" : "add")}
       />
       {mode === "addAndUpdate" ? (
-        collapsed ? (
+        collapsed && !expanded ? (
           <details className="flex flex-col gap-2">
             <summary className="w-fit cursor-pointer text-body-sm font-semibold text-ink-soft">How updating works</summary>
             <div className="pt-2">{rules}</div>
