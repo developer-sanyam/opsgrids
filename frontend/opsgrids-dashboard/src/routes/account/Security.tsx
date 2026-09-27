@@ -24,6 +24,15 @@ export function SecurityPage() {
   );
 }
 
+/**
+ * Change password. The server answers a wrong current password as a 422 `password-incorrect` on
+ * field `current_password` — never a 401, which the shared client would answer by refreshing,
+ * re-sending and signing the member out — and counts it toward the sign-in lockout; so the field is
+ * emptied (that value cannot work again) and focused for the next try. The new password's own
+ * refusals (`new_password`: the same as the current one, or too weak) land under that field and
+ * leave the current password alone, since nothing about it was in question. A lockout is not a
+ * field's fault and is said above the button.
+ */
 function PasswordSection() {
   const toast = useToast();
   const [current, setCurrent] = useState("");
@@ -38,6 +47,12 @@ function PasswordSection() {
       setNext("");
       setConfirm("");
       toast.success("Password changed.");
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && problemSlug(error.problem) === "password-incorrect") {
+        setCurrent("");
+        currentRef.current?.focus();
+      }
     },
   });
 
@@ -67,7 +82,10 @@ function PasswordSection() {
           type="password"
           autoComplete="current-password"
           value={current}
-          onChange={(e) => setCurrent(e.target.value)}
+          onChange={(e) => {
+            setCurrent(e.target.value);
+            save.reset();
+          }}
           error={save.fieldErrors.current_password}
         />
         <TextField
@@ -75,7 +93,10 @@ function PasswordSection() {
           type="password"
           autoComplete="new-password"
           value={next}
-          onChange={(e) => setNext(e.target.value)}
+          onChange={(e) => {
+            setNext(e.target.value);
+            save.reset();
+          }}
           helper="At least 8 characters."
           error={save.fieldErrors.new_password}
         />

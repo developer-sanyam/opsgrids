@@ -615,3 +615,132 @@ describe("Security: switching organisation", () => {
     expect(screen.queryByRole("button", { name: "Reload" })).toBeNull();
   });
 });
+
+describe("Security: changing the password", () => {
+  const CHANGE = "/api/v1/auth/password/change";
+  const NEW = "a-brand-new-pw-9"; // pragma: allowlist secret
+  const currentField = () => screen.getByLabelText("Current password");
+  const newField = () => screen.getByLabelText("New password");
+  const confirmField = () => screen.getByLabelText("Confirm new password");
+
+  async function fill(user: User, current: string, next: string, confirm = next) {
+    await user.type(currentField(), current);
+    await user.type(newField(), next);
+    await user.type(confirmField(), confirm);
+  }
+
+  const save = () => screen.getByRole("button", { name: "Change password" });
+
+  it("sends both passwords, says it was changed, and empties the form", async () => {
+    const user = userEvent.setup();
+    routes[CHANGE] = () => new Response(null, { status: 204 });
+    renderPage(me());
+
+    await fill(user, PASSWORD, NEW);
+    await user.click(save());
+
+    expect(await screen.findByText("Password changed.")).toBeTruthy();
+    expect(callsTo(CHANGE)[0]?.body).toEqual({ current_password: PASSWORD, new_password: NEW });
+    expect(currentField()).toHaveProperty("value", "");
+    expect(newField()).toHaveProperty("value", "");
+  });
+
+  it("puts a wrong current password under its own field, empties it and focuses it, without signing anybody out", async () => {
+    const user = userEvent.setup();
+    const unauthorized = vi.fn();
+    setUnauthorizedHandler(unauthorized);
+    routes[CHANGE] = () =>
+      problem(422, "password-incorrect", "That is not your current password.", "current_password");
+    renderPage(me());
+    await fill(user, "wrong-guess", NEW);
+
+    await user.click(save());
+
+    await waitFor(() => expect(describedBy(currentField())).toBe("That is not your current password."));
+    expect(currentField().getAttribute("aria-invalid")).toBe("true");
+    expect(currentField()).toHaveProperty("value", "");
+    expect(document.activeElement).toBe(currentField());
+    // The new password was fine and is still there; nothing is said about it.
+    expect(newField()).toHaveProperty("value", NEW);
+    expect(describedBy(newField())).not.toContain("current");
+    expect(pageAlerts()).toHaveLength(0);
+    // A 422, so the shared client neither refreshed nor re-sent it, and the session is intact.
+    expect(callsTo(CHANGE)).toHaveLength(1);
+    expect(callsTo("/api/v1/auth/refresh")).toHaveLength(0);
+    expect(unauthorized).not.toHaveBeenCalled();
+  });
+
+  it("clears the message as soon as the field is edited", async () => {
+    const user = userEvent.setup();
+    routes[CHANGE] = () =>
+      problem(422, "password-incorrect", "That is not your current password.", "current_password");
+    renderPage(me());
+    await fill(user, "wrong-guess", NEW);
+    await user.click(save());
+    await waitFor(() => expect(describedBy(currentField())).not.toBe(""));
+
+    await user.type(currentField(), "x");
+
+    expect(describedBy(currentField())).toBe("");
+    expect(currentField().getAttribute("aria-invalid")).toBeNull();
+  });
+
+  it("puts a new password that is the same as the current one under the new password field", async () => {
+    const user = userEvent.setup();
+    routes[CHANGE] = () =>
+      problem(422, "business-rule", "The new password must be different from the current one.", "new_password");
+    renderPage(me());
+    await fill(user, NEW, NEW);
+
+    await user.click(save());
+
+    await waitFor(() =>
+      expect(describedBy(newField())).toContain("The new password must be different from the current one."),
+    );
+    expect(newField().getAttribute("aria-invalid")).toBe("true");
+    expect(currentField().getAttribute("aria-invalid")).toBeNull();
+    // Nothing was wrong with the current password, so it is left where it is.
+    expect(currentField()).toHaveProperty("value", NEW);
+    expect(pageAlerts()).toHaveLength(0);
+  });
+
+  it("puts a weak new password under the new password field", async () => {
+    const user = userEvent.setup();
+    routes[CHANGE] = () => problem(422, "validation", "Mix letters with numbers or symbols", "new_password");
+    renderPage(me());
+    await fill(user, PASSWORD, "abcdefghijkl");
+
+    await user.click(save());
+
+    await waitFor(() => expect(describedBy(newField())).toContain("Mix letters with numbers or symbols"));
+    expect(currentField()).toHaveProperty("value", PASSWORD);
+    expect(pageAlerts()).toHaveLength(0);
+  });
+
+  it("says a lockout above the button, in the server's words, and marks no field", async () => {
+    const user = userEvent.setup();
+    const detail =
+      "This account is temporarily locked after several failed attempts. Try again shortly, or reset the password.";
+    routes[CHANGE] = () => problem(403, "password-locked", detail);
+    renderPage(me());
+    await fill(user, PASSWORD, NEW);
+
+    await user.click(save());
+
+    expect((await findAlert()).textContent).toContain(detail);
+    expect(currentField().getAttribute("aria-invalid")).toBeNull();
+    expect(newField().getAttribute("aria-invalid")).toBeNull();
+    expect(callsTo(CHANGE)).toHaveLength(1);
+  });
+
+  it("says a confirmation that does not match before anything is sent", async () => {
+    const user = userEvent.setup();
+    renderPage(me());
+    await fill(user, PASSWORD, NEW, "something-else-9");
+
+    await user.click(save());
+
+    expect(describedBy(confirmField())).toBe("Doesn't match the new password.");
+    expect(callsTo(CHANGE)).toHaveLength(0);
+  });
+});

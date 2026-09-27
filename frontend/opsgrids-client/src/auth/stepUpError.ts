@@ -4,9 +4,13 @@
  * The screen never branches on a status code or on the server's wording: it asks `failure`. Each
  * kind is a different thing to put in front of the person:
  *
- * - `wrong-code`: 401 or 422 — wrong, expired or already used. The code is single-use, so the
- *   answer is "wait for the next one", not "try the same digits again".
- * - `locked`: too many failed attempts. Nothing to fix by retyping; say so and let them wait.
+ * - `wrong-code`: 422 (`mfa-code-invalid`, `mfa-code-replayed`) — wrong, expired or already used.
+ *   The code is single-use, so the answer is "wait for the next one", not "try the same digits
+ *   again". A bare 401 lands here too as a fallback, but the auth service does not answer a wrong
+ *   code with one: a 401 from step-up means the bearer or its session is not valid.
+ * - `locked`: 403 `mfa-locked` — a call made while the lock is in force. The fifth wrong code is
+ *   itself a 422 `wrong-code` (it ends the session, so the call after it is a 401); nothing to fix
+ *   by retyping, so say so and let them wait.
  * - `not-enrolled`: 409 `mfa-not-enrolled` — the member has no second factor at all. No code can
  *   work; the way forward is the dashboard's Security page.
  * - `sso`: 403 `mfa-unavailable-for-sso` — the session came from single sign-on, which has no

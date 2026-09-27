@@ -283,7 +283,7 @@ describe("useRevealedField", () => {
 
   it("drops the code's access when the server says the second factor was not there", async () => {
     const { result } = setup(
-      vi.fn().mockRejectedValue(problem(403, "Additional authentication required: otp")),
+      vi.fn().mockRejectedValue(problem(403, "Additional authentication required: otp, stepup")),
     );
 
     await act(async () => {

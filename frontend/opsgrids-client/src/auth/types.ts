@@ -30,9 +30,10 @@ export interface LoginComplete {
 
 /**
  * What `POST /auth/mfa/step-up` answers with: the usual `TokenOut`, minus the parts a step-up has
- * no use for. The token's `amr` includes `otp`, it lives for `expires_in` seconds (about 180), and
- * there is no refresh token and no cookie — it is only ever presented as a bearer on one
- * dangerous call. Never route it through `setAccessToken`: that would mirror it to
+ * no use for. The token's `amr` includes `otp` and `stepup` (the second is what a session that
+ * gave a code at sign-in does not carry, and what the CRM reveal routes require), it lives for
+ * `expires_in` seconds (about 180), and there is no refresh token and no cookie — it is only ever
+ * presented as a bearer on one dangerous call. Never route it through `setAccessToken`: that would mirror it to
  * `sessionStorage` and make it the session.
  */
 export type StepUpToken = Pick<LoginComplete, "access_token" | "token_type" | "expires_in">;

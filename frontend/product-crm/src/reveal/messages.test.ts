@@ -40,7 +40,7 @@ describe("revealFailure", () => {
   });
 
   it("says a missing second factor is a code to enter, not a fault", () => {
-    expect(revealFailure(refusal(403, "Additional authentication required: otp"), "contact")).toEqual({
+    expect(revealFailure(refusal(403, "Additional authentication required: otp, stepup"), "contact")).toEqual({
       tone: "error",
       text: "A one-time code is needed to reveal this. Select Reveal to enter one.",
     });
@@ -93,9 +93,9 @@ describe("revealFailure", () => {
 
 describe("needsFreshCode", () => {
   it("is true only for the 403 that asks for a second factor", () => {
-    expect(needsFreshCode(refusal(403, "Additional authentication required: otp"))).toBe(true);
+    expect(needsFreshCode(refusal(403, "Additional authentication required: otp, stepup"))).toBe(true);
     expect(needsFreshCode(refusal(403, "Out of scope for this resource"))).toBe(false);
-    expect(needsFreshCode(refusal(401, "Additional authentication required: otp"))).toBe(false);
+    expect(needsFreshCode(refusal(401, "Additional authentication required: otp, stepup"))).toBe(false);
     expect(needsFreshCode(refusal(403, undefined))).toBe(false);
     expect(needsFreshCode(new Error("Additional authentication required"))).toBe(false);
   });

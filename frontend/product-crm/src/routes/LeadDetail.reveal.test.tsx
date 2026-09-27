@@ -523,7 +523,7 @@ describe("LeadDetail reveal: a refusal is said, in words, under the field", () =
 
   it("asks for a fresh code, instead of failing the same way, when the server wants a second factor the token lacks", async () => {
     const user = userEvent.setup();
-    routes[REVEAL] = () => problem(403, "Additional authentication required: otp", "forbidden");
+    routes[REVEAL] = () => problem(403, "Additional authentication required: otp, stepup", "forbidden");
     await openLead();
     await user.click(revealPhone());
     await enterCode(user);

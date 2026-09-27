@@ -82,12 +82,20 @@ function isStepUpToken(value: unknown): value is StepUpToken {
 
 /**
  * `POST /auth/mfa/step-up`. Trades a fresh authenticator code for a short-lived token whose `amr`
- * includes `otp` — the proof a "reveal" call needs on top of its permission.
+ * includes `otp` **and** `stepup` — the proof a "reveal" call needs on top of its permission. The
+ * marker is what tells it from a session token that merely carries `otp` because the person gave
+ * a code at sign-in (every session opened after an authenticator is set up does, for days): the
+ * CRM reveal routes require both, and only this endpoint mints `stepup`.
  *
- * Bearer-authenticated with the **session** token, and `signalUnauthorized: false`: a wrong code
- * is a 401, and the default handling would refresh the session, retry, and then sign the person
- * out for mistyping six digits. Here a 401 is only ever a rejected code (or a session the caller
- * checks separately — see `stepup/requestToken.ts`).
+ * Bearer-authenticated with the **session** token, and `signalUnauthorized: false`, so that a
+ * refusal can never sign the person out through the shared client's 401 handling (refresh, retry,
+ * then sign out). A wrong code is **not** a 401: it is a **422** — `mfa-code-invalid`, or
+ * `mfa-code-replayed` for a code already used — and so is a mistyped one, precisely so that the
+ * client does not send it twice and count it twice. The fifth wrong code is a 422
+ * `mfa-code-invalid` like the four before it; what changes is that the session has ended, so the
+ * *next* call is a 401. A 401 here therefore only ever means the bearer or its session is not
+ * valid — an expired session token, or an ended session (see `stepup/requestToken.ts`). The
+ * locked answer (403 `mfa-locked`) is what a call made while the lock is in force gets.
  *
  * The result must never reach `setAccessToken`. It is held by `stepup/holder.ts`, in memory, for
  * its own few minutes, and presented as the bearer of the one call that needs it.
