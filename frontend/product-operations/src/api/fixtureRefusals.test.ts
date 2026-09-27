@@ -126,3 +126,68 @@ describe("a fixture create that the server would refuse", () => {
     expect(created).toMatchObject({ code: "NEW-CODE", parent_id: parent.id });
   });
 });
+
+/** The bulk update sends a PATCH per row and reads a 409 or a 422 from an `ApiError` as that row's
+ *  failure, so an update refused by the server has to be refused the same way here. */
+describe("a fixture update that the server would refuse", () => {
+  it("answers an inventory item moved to a warehouse that does not exist with a 422", async () => {
+    const { client, fixtures, ApiError } = await fixtureMode();
+    const item = fixtures.INVENTORY[0];
+    if (item === undefined) throw new Error("no fixture inventory");
+
+    const error = await refusal(() => client.updateInventoryItem(item.id, { warehouse: "Atlantis" }));
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({
+      status: 422,
+      message: "'Atlantis' does not match an existing warehouse",
+      problem: { status: 422, title: "Validation failed" },
+    });
+  });
+
+  it("answers a warehouse renamed to another warehouse's name with a 409 naming the field", async () => {
+    const { client, fixtures, ApiError } = await fixtureMode();
+    const [warehouse, other] = fixtures.WAREHOUSES;
+    if (warehouse === undefined || other === undefined) throw new Error("no fixture warehouses");
+
+    const error = await refusal(() => client.updateWarehouse(warehouse.id, { name: other.name.toUpperCase() }));
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({
+      status: 409,
+      message: `A warehouse named '${other.name.toUpperCase()}' already exists`,
+      problem: { errors: [{ field: "name", code: "duplicate" }] },
+    });
+  });
+
+  it("answers a category given a parent that is missing, is itself, or sits below it with a 422", async () => {
+    const { client, fixtures, ApiError } = await fixtureMode();
+    const [metals, , , steel] = fixtures.ITEM_CATEGORIES;
+    if (metals === undefined || steel === undefined) throw new Error("no fixture categories");
+    expect(steel.parent_id).toBe(metals.id);
+
+    const missing = await refusal(() => client.updateItemCategory(steel.id, { parent_id: "gone" }));
+    expect(missing).toBeInstanceOf(ApiError);
+    expect(missing).toMatchObject({ status: 422, message: "parent_id does not match an existing category" });
+
+    const own = await refusal(() => client.updateItemCategory(steel.id, { parent_id: steel.id }));
+    expect(own).toMatchObject({ status: 422, message: "A category cannot be its own parent" });
+
+    const loop = await refusal(() => client.updateItemCategory(metals.id, { parent_id: steel.id }));
+    expect(loop).toMatchObject({ status: 422, message: "That would make the category tree circular" });
+  });
+
+  it("still applies what the server would accept: a free name, a warehouse that exists, a new parent, no parent", async () => {
+    const { client, fixtures } = await fixtureMode();
+    const [warehouse, other] = fixtures.WAREHOUSES;
+    const [metals, polymers, , steel] = fixtures.ITEM_CATEGORIES;
+    const item = fixtures.INVENTORY[0];
+    if (!warehouse || !other || !metals || !polymers || !steel || !item) throw new Error("no fixtures");
+
+    expect(await client.updateWarehouse(warehouse.id, { name: "Renamed Hub" })).toMatchObject({ name: "Renamed Hub" });
+    expect(await client.updateInventoryItem(item.id, { warehouse: other.name })).toMatchObject({ warehouse: other.name });
+    expect(await client.updateItemCategory(steel.id, { parent_id: polymers.id })).toMatchObject({ parent_id: polymers.id });
+    expect(await client.updateItemCategory(steel.id, { parent_id: null })).toMatchObject({ parent_id: null });
+    expect(await client.updateItemCategory(metals.id, { parent_id: polymers.id })).toMatchObject({ parent_id: polymers.id });
+  });
+});

@@ -4,12 +4,17 @@
  * One row is one `POST /operations/suppliers`. Spend, open purchase orders and on-time delivery are
  * rollups the service maintains and never accepts, so they are read-only columns: exported, ignored
  * on import.
+ *
+ * An update is one `PATCH /operations/suppliers/{id}` carrying only the fields that differ. The
+ * endpoint has no null guard, so the only empty value it is sent is `""` on the three text fields
+ * that take it; `since` cannot be emptied at all (a null there is a 500). `code` and `currency`
+ * are refused by the endpoint (a 422), so they are immutable fields that only ever compare.
  */
-import { defineImportEntity, minorToMajor } from "@opsgrids/client";
+import { collectPages, defineImportEntity, minorToMajor } from "@opsgrids/client";
 
-import { createSupplier, listSuppliers } from "@/api/client";
+import { createSupplier, listSuppliers, updateSupplier } from "@/api/client";
 import type { ListSuppliersParams } from "@/api/client";
-import type { SupplierIn, SupplierOut, SupplierStatus } from "@/api/types";
+import type { SupplierIn, SupplierOut, SupplierPatch, SupplierStatus } from "@/api/types";
 import {
   CATEGORY_OPTIONS,
   CURRENCY_HINT,
@@ -20,6 +25,9 @@ import {
   optionalText,
   requiredOption,
   requiredText,
+  sameCode,
+  sameEmail,
+  textOrNull,
 } from "./shared";
 
 /** What the Suppliers screen filters by: the export is the whole filtered list, not the visible page. */
@@ -54,7 +62,7 @@ export const supplierImport = defineImportEntity<SupplierIn, SupplierOut, Suppli
       header: "Supplier name",
       kind: "text",
       required: true,
-      help: "The supplier's trading name.",
+      help: "The supplier's trading name. Renaming an existing supplier renames it on every purchase order raised to it.",
       maxLength: 200,
     },
     {
@@ -84,7 +92,7 @@ export const supplierImport = defineImportEntity<SupplierIn, SupplierOut, Suppli
       key: "currency",
       header: "Currency",
       kind: "text",
-      help: "The currency purchase orders to this supplier are raised in. Blank means INR.",
+      help: "The currency purchase orders to this supplier are raised in. Blank means INR on a new supplier. An existing supplier keeps its own currency, which cannot be changed.",
       maxLength: 3,
       pattern: CURRENCY_PATTERN,
       patternHint: CURRENCY_HINT,
@@ -187,10 +195,13 @@ export const supplierImport = defineImportEntity<SupplierIn, SupplierOut, Suppli
   ],
 
   notes: [
-    "A supplier code that already exists is skipped, not changed.",
+    "A supplier code that already exists is skipped, not changed, unless you choose Add new and update existing.",
     "Only the code is checked for duplicates. Two rows with the same name and different codes create two suppliers.",
-    "Status defaults to Active, lead time to 0 days and Supplier since to today when left blank.",
+    "On a new supplier, Status defaults to Active, lead time to 0 days and Supplier since to today when left blank.",
     "The Lifetime spend, Open purchase orders and On-time delivery columns are worked out by the app and ignored on import.",
+    "Updating: Supplier code and Currency cannot be changed, and a cell that disagrees with the supplier is refused. A code typed in other capitals still finds its supplier.",
+    "Updating: Contact name, Contact email and Location can be emptied with [clear]. Supplier since and every other column cannot.",
+    "Updating: renaming a supplier also renames it, without notice, on every purchase order raised to it.",
   ],
 
   toPayload(row) {
@@ -240,5 +251,39 @@ export const supplierImport = defineImportEntity<SupplierIn, SupplierOut, Suppli
       on_time_pct: supplier.on_time_pct,
       id: supplier.id,
     }),
+  },
+
+  update: {
+    loadExisting: (ctx) =>
+      collectPages((page, size) => listSuppliers({ page, size, signal: ctx.signal }), {
+        signal: ctx.signal,
+        key: (supplier) => supplier.id,
+      }),
+    idOf: (supplier) => supplier.id,
+    keyColumn: "code",
+    keyOf: (supplier) => supplier.code,
+    currencyOf: (supplier) => supplier.currency,
+
+    fields: [
+      { column: "code", current: (supplier) => supplier.code, same: sameCode, immutable: true },
+      { column: "name", current: (supplier) => supplier.name },
+      { column: "category", current: (supplier) => supplier.category },
+      { column: "status", current: (supplier) => supplier.status },
+      { column: "lead_time_days", current: (supplier) => supplier.lead_time_days },
+      { column: "currency", current: (supplier) => supplier.currency, same: sameCode, immutable: true },
+      { column: "contact_name", current: (supplier) => textOrNull(supplier.contact_name), clear: "" },
+      {
+        column: "contact_email",
+        current: (supplier) => textOrNull(supplier.contact_email),
+        same: sameEmail,
+        clear: "",
+      },
+      { column: "location", current: (supplier) => textOrNull(supplier.location), clear: "" },
+      { column: "since", current: (supplier) => supplier.since },
+    ],
+
+    async send(supplier, body) {
+      await updateSupplier(supplier.id, body as SupplierPatch);
+    },
   },
 });
