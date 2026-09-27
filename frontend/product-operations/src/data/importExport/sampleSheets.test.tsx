@@ -97,21 +97,46 @@ interface SampleCase {
   entity: Pick<ImportEntity<unknown>, "columns" | "sampleRows" | "notes" | "noun" | "fileStem">;
   page: () => ReactElement;
   hasLists: boolean;
+  /** What the update rules on Instructions name for this list. */
+  updating: { keyHeader: string; emptied: string; fixed: string };
 }
 
 const CASES: readonly SampleCase[] = [
-  { name: "inventory items", entity: inventoryImport, page: () => <Harness entity={inventoryImport} />, hasLists: true },
-  { name: "suppliers", entity: supplierImport, page: () => <Harness entity={supplierImport} />, hasLists: false },
-  { name: "warehouses", entity: warehouseImport, page: () => <Harness entity={warehouseImport} />, hasLists: false },
+  {
+    name: "inventory items",
+    entity: inventoryImport,
+    page: () => <Harness entity={inventoryImport} />,
+    hasLists: true,
+    updating: { keyHeader: "SKU", emptied: "Item category code, HSN code", fixed: "SKU, Currency, Opening stock" },
+  },
+  {
+    name: "suppliers",
+    entity: supplierImport,
+    page: () => <Harness entity={supplierImport} />,
+    hasLists: false,
+    updating: {
+      keyHeader: "Supplier code",
+      emptied: "Contact name, Contact email, Location",
+      fixed: "Supplier code, Currency",
+    },
+  },
+  {
+    name: "warehouses",
+    entity: warehouseImport,
+    page: () => <Harness entity={warehouseImport} />,
+    hasLists: false,
+    updating: { keyHeader: "Warehouse code", emptied: "Location", fixed: "Warehouse code" },
+  },
   {
     name: "item categories",
     entity: itemCategoryImport,
     page: () => <Harness entity={itemCategoryImport} />,
     hasLists: true,
+    updating: { keyHeader: "Category code", emptied: "Parent category code", fixed: "Category code" },
   },
 ];
 
-describe.each(CASES)("the $name sample sheet", ({ entity, page, hasLists }) => {
+describe.each(CASES)("the $name sample sheet", ({ entity, page, hasLists, updating }) => {
   it("is named for the list and holds Import and Instructions, and Lists only where a column has a list", async () => {
     organisationGateway();
     render(page());
@@ -162,10 +187,49 @@ describe.each(CASES)("the $name sample sheet", ({ entity, page, hasLists }) => {
     for (const note of entity.notes ?? []) expect(lines).toContain(note);
     expect(lines).toContain("Columns marked * are required.");
     expect(lines).toContain("Up to 1000 rows per file.");
-    // The engine explains the Record ID once, in the general rules; the entity's notes do not say it again.
-    expect(lines.filter((line) => /Record ID/.test(line))).toEqual([
+    // The engine explains the Record ID twice: how an update finds its record, and in the general
+    // rules why an exported row is not added. The entity's notes do not say it again: they mention
+    // it once, to say what to do about a key typed in other capitals, which the server tells apart.
+    const notes = entity.notes ?? [];
+    expect(lines.filter((line) => /Record ID/.test(line) && !notes.includes(line))).toEqual([
+      expect.stringContaining("A row is matched to an existing record by its Record ID"),
       "Rows exported from the system carry a Record ID; those rows are not imported, delete the Record ID to add a row as a new record.",
     ]);
+    expect(notes.filter((note) => /Record ID/.test(note))).toEqual([
+      expect.stringContaining("differs only in capitals is refused, naming the stored spelling: use that spelling, or the Record ID."),
+    ]);
+  });
+
+  it("explains updating under its own heading: how a row finds its record, what blank and [clear] do, and what cannot change", async () => {
+    organisationGateway();
+    render(page());
+
+    const workbook = await readDownload(await downloadSample(entity.noun));
+    const lines = textRows(sheetOf(workbook, "Instructions")).flat();
+
+    // What an update ignores: the read-only columns an export fills and an import never reads.
+    const ignored = entity.columns
+      .filter((column) => column.readOnly === true && column.key !== "id")
+      .map((column) => column.header);
+
+    const heading = lines.indexOf(`Updating existing ${entity.noun}`);
+    expect(heading, "Instructions has no update section").toBeGreaterThan(-1);
+    const expected = [
+      'Choose "Add new and update existing" in the import dialog to use these rules.',
+      `A row is matched to an existing record by its Record ID (the column an export writes). A row without one is matched by ${updating.keyHeader} in its exact spelling (capitals and spaces count; a ${updating.keyHeader} that differs from an existing one only in capitals or spaces is refused, not matched). A row that matches nothing is added as a new record. If two records have the same ${updating.keyHeader}, the row is refused.`,
+      "A blank cell leaves the field alone. Only the cells you fill in are compared with the record, and only the fields that differ are changed.",
+      "Type [clear] in a cell to empty a field. Only some fields can be emptied.",
+      `Can be emptied with [clear]: ${updating.emptied}.`,
+      `Cannot be changed once created: ${updating.fixed}. A row whose cell differs from the record is refused.`,
+      ...(ignored.length === 0 ? [] : [`Ignored when updating: ${ignored.join(", ")}.`]),
+      "Warning: updating overwrites live data and cannot be undone. In a file exported from this list, cells you did not change since the export are left alone, so someone else's later edit to them stays. Nothing detects that someone else changed a cell you did change after your export: your value replaces theirs. Check the preview before you import.",
+      "General rules",
+    ];
+    expect(lines.slice(heading + 1, heading + 1 + expected.length)).toEqual(expected);
+    // Adding only still skips what exists, and the sheet says which mode that is.
+    expect(lines).toContain(
+      `With "Add new records only", existing ${entity.noun} are skipped, never overwritten. Importing the same file again is safe.`,
+    );
   });
 });
 

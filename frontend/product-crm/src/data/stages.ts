@@ -22,6 +22,21 @@ export const STAGES: StageMeta[] = [
   { stage: "closed_lost", label: "Closed Lost", short: "Lost", color: "var(--color-danger)" },
 ];
 
+/**
+ * Where a deal's probability lands when a stage move does not name one, in percent. The deal
+ * service applies these itself (`STAGE_DEFAULT_PROBABILITY` in its `services.py`), on the board and
+ * from a sheet alike; they are written here only so the words shown to a person can say what a move
+ * will set. A move to a closed stage that names none ends at 100 (won) or 0 (lost).
+ */
+export const STAGE_DEFAULT_PROBABILITY: Readonly<Record<DealStage, number>> = {
+  lead: 20,
+  qualified: 40,
+  proposal: 55,
+  negotiation: 70,
+  closed_won: 100,
+  closed_lost: 0,
+};
+
 /** The four open (in-flight) stages, in order — the working columns of the pipeline board. */
 export const OPEN_STAGES: DealStage[] = ["lead", "qualified", "proposal", "negotiation"];
 

@@ -103,6 +103,54 @@ describe("checkImportEntity over the Operations definitions", () => {
     }
   });
 
+  it.each([
+    ["inventory items", inventoryImport],
+    ["suppliers", supplierImport],
+    ["warehouses", warehouseImport],
+    ["item categories", itemCategoryImport],
+  ])(
+    "accounts for every importable column of %s in its update spec: an update field, an extra column or not updatable",
+    (_name, entity) => {
+      const update = entity.update;
+      if (update === undefined) throw new Error(`${entity.id} has no update spec`);
+      const accounted = new Set([
+        ...update.fields.map((field) => field.column),
+        ...(update.extraColumns ?? []),
+        ...(update.notUpdatable ?? []),
+      ]);
+      const importable = entity.columns
+        .filter((column) => column.readOnly !== true && column.importOnly !== true)
+        .map((column) => column.key);
+      expect(importable.filter((key) => !accounted.has(key))).toEqual([]);
+    },
+  );
+
+  it("leaves nothing to notUpdatable or extraColumns: every importable column of these lists is an update field, so a filled cell is compared or refused with its reason", () => {
+    for (const entity of [inventoryImport, supplierImport, warehouseImport, itemCategoryImport]) {
+      expect(entity.update?.notUpdatable ?? [], entity.id).toEqual([]);
+      expect(entity.update?.extraColumns ?? [], entity.id).toEqual([]);
+    }
+  });
+
+  it.each([
+    ["inventory items", inventoryImport],
+    ["item categories", itemCategoryImport],
+  ])("gives every lookup column of %s a hint for an update that differs from the add-mode hint", (_name, entity) => {
+    for (const column of entity.columns.filter((candidate) => candidate.lookup !== undefined)) {
+      expect(column.lookupHintUpdate, `${column.header} has no lookupHintUpdate`).toBeTruthy();
+      expect(column.lookupHintUpdate).not.toBe(column.lookupHint);
+    }
+  });
+
+  it("gives every update field on a lookup column a resolve, which is the only guard for a label on a row that updates", () => {
+    for (const entity of [inventoryImport, itemCategoryImport]) {
+      const lookupColumns = new Set(entity.columns.filter((column) => column.lookup !== undefined).map((column) => column.key));
+      for (const field of entity.update?.fields ?? []) {
+        if (lookupColumns.has(field.column)) expect(field.resolve, `${field.column} has no resolve`).toBeDefined();
+      }
+    }
+  });
+
   it("has teeth: a lookup the definition names but nobody loaded is reported", () => {
     const problems = checkImportEntity(inventoryImport, {});
     expect(problems).toEqual(

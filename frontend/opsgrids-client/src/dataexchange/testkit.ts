@@ -10,7 +10,7 @@ import { loadExcel, loadableBytes, readBytes } from "./excel";
 import { minorToMajor } from "./money";
 import { makeLookup } from "./lookups";
 import { defineImportEntity } from "./types";
-import type { ImportEntity, ImportColumn, LookupSet, ParsedRow, SheetValue } from "./types";
+import type { ImportEntity, ImportColumn, LookupSet, ParsedRow, SheetValue, UpdateSpec } from "./types";
 import { RowProblem } from "./types";
 
 export interface ProductPayload {
@@ -43,7 +43,7 @@ export interface ProductItem {
 }
 
 export const productColumns: readonly ImportColumn[] = [
-  { key: "id", header: "Id", kind: "text", help: "Assigned by the system.", readOnly: true },
+  { key: "id", header: "Record ID", kind: "text", help: "Assigned by the system.", readOnly: true },
   {
     key: "sku",
     header: "SKU",
@@ -153,7 +153,65 @@ export function toProductPayload(row: ParsedRow, lookups: LookupSet): ProductPay
   };
 }
 
+export interface ProductUpdateOptions {
+  /** The stored records the update matches rows against. */
+  items?: readonly ProductItem[];
+  load?: UpdateSpec<ProductItem>["loadExisting"];
+  send?: (existing: ProductItem, body: Readonly<Record<string, unknown>>) => Promise<void>;
+  extras?: UpdateSpec<ProductItem>["extras"];
+  check?: UpdateSpec<ProductItem>["check"];
+}
+
+/**
+ * How the test products are updated: matched by Record ID or SKU, SKU and currency never change,
+ * price is converted in the stored currency, and only the e-mail can be emptied.
+ */
+export function makeProductUpdate(options: ProductUpdateOptions = {}): UpdateSpec<ProductItem> {
+  const items = options.items ?? [];
+  return {
+    loadExisting: options.load ?? (() => Promise.resolve(items)),
+    idOf: (item) => item.id,
+    keyColumn: "sku",
+    keyOf: (item) => item.sku,
+    currencyOf: (item) => item.currency,
+    fields: [
+      { column: "sku", current: (item) => item.sku, immutable: true },
+      { column: "name", current: (item) => item.name },
+      { column: "status", current: (item) => item.status },
+      { column: "price", field: "price_minor", current: (item) => item.priceMinor },
+      { column: "currency", current: (item) => item.currency, immutable: true },
+      { column: "quantity", current: (item) => item.quantity },
+      { column: "active", field: "is_active", current: (item) => item.active },
+      { column: "email", current: (item) => (item.email === "" ? null : item.email), clear: "" },
+    ],
+    // Set by a create only: a filled cell in one of these refuses an update row.
+    notUpdatable: ["category", "weight", "launched", "phone"],
+    send: options.send ?? (() => Promise.resolve()),
+    ...(options.extras === undefined ? {} : { extras: options.extras }),
+    ...(options.check === undefined ? {} : { check: options.check }),
+  };
+}
+
+/** A stored product, with the values the tests compare a sheet against. */
+export function storedProduct(i: number, overrides: Partial<ProductItem> = {}): ProductItem {
+  return {
+    id: `p-${i}`,
+    sku: `SKU-${i}`,
+    name: `Product ${i}`,
+    status: "in_stock",
+    category: "Hardware",
+    priceMinor: 1000,
+    currency: "INR",
+    quantity: i,
+    active: true,
+    email: "orders@example.com",
+    createdAt: "2026-09-26T10:30:00Z",
+    ...overrides,
+  };
+}
+
 export interface ProductEntityOptions {
+  update?: ImportEntity<ProductPayload, ProductItem, ProductFilters>["update"];
   create?: ImportEntity<ProductPayload, ProductItem, ProductFilters>["create"];
   fetchPage?: NonNullable<ImportEntity<ProductPayload, ProductItem, ProductFilters>["export"]>["fetchPage"];
   maxRows?: number;
@@ -176,6 +234,7 @@ export function makeProductEntity(
     sampleRows: options.sampleRows ?? productSamples,
     maxRows: options.maxRows,
     recordIdKey: options.recordIdKey,
+    update: options.update,
     notes: ["A SKU that already exists is skipped."],
     loadLookups: options.loadLookups ?? (() => Promise.resolve(productLookups)),
     toPayload: (row, ctx) => toProductPayload(row, ctx.lookups),

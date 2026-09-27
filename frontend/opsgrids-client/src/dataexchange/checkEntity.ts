@@ -37,6 +37,9 @@ function checkColumn(entity: AnyEntity, column: ImportColumn, lookups: LookupSet
   if (column.lookupHint !== undefined && column.lookup === undefined) {
     problems.push(`${name} has a lookupHint but is not a lookup column`);
   }
+  if (column.lookupHintUpdate !== undefined && column.lookup === undefined) {
+    problems.push(`${name} has a lookupHintUpdate but is not a lookup column`);
+  }
   if (column.multiline === true && column.kind !== "text") {
     problems.push(`${name} is marked multiline but is not a text column`);
   }
@@ -85,6 +88,106 @@ function checkColumn(entity: AnyEntity, column: ImportColumn, lookups: LookupSet
   return problems;
 }
 
+/**
+ * The rules an `update` spec must keep, so that a row can find its record and a field can only ever
+ * be changed in a way the list's endpoint accepts. Nothing here can run the spec: the checks are on
+ * how it is described.
+ */
+function checkUpdate(entity: AnyEntity): string[] {
+  const { update } = entity;
+  if (update === undefined) return [];
+  const problems: string[] = [];
+  const known = new Map(entity.columns.map((column) => [column.key, column]));
+  const { keyColumn } = update;
+
+  if (keyColumn !== undefined) {
+    const holder = known.get(keyColumn);
+    if (holder === undefined) problems.push(`The update's keyColumn "${keyColumn}" names no column`);
+    else if (holder.readOnly === true) {
+      problems.push(`The update's keyColumn "${keyColumn}" is read-only, so an import never reads it`);
+    }
+    if (update.keyOf === undefined) {
+      problems.push(`The update has a keyColumn ("${keyColumn}") but no keyOf, so no stored record can be matched by it`);
+    }
+  } else if (update.keyOf !== undefined) {
+    problems.push("The update has keyOf but no keyColumn, so nothing reads it");
+  }
+  if (update.keyMatch !== undefined && keyColumn === undefined) {
+    problems.push("The update has keyMatch but no keyColumn, so nothing reads it");
+  }
+
+  if (entity.recordIdKey === undefined) {
+    if (entity.columns.some((column) => column.key === "id")) {
+      problems.push(
+        'The entity has an "id" column and an update but no recordIdKey, so a row cannot name its record by Record ID',
+      );
+    }
+    if (keyColumn === undefined) {
+      problems.push("The update has neither a recordIdKey nor a keyColumn, so no row can name a record to update");
+    }
+  }
+
+  if (update.fields.length === 0) problems.push("The update has no fields, so it could change nothing");
+  const seen = new Set<string>();
+  for (const field of update.fields) {
+    const name = `Update field "${field.column}"`;
+    if (seen.has(field.column)) problems.push(`More than one update field is for the column "${field.column}"`);
+    seen.add(field.column);
+    const column = known.get(field.column);
+    if (column === undefined) {
+      problems.push(`${name} names no column`);
+      continue;
+    }
+    const identity = field.column === keyColumn || field.column === entity.recordIdKey;
+    if (column.readOnly === true && !(field.immutable === true && identity)) {
+      problems.push(`${name} is for a read-only column, which an import never reads`);
+    }
+    if (field.clear !== undefined && column.required === true) {
+      problems.push(`${name} can be cleared but the column is required`);
+    }
+    if (field.clear !== undefined && field.immutable === true) {
+      problems.push(`${name} is immutable and also says how to clear it`);
+    }
+    // A lookup column's cell is a label, and a label is not what the list stores or its endpoint takes.
+    if (column.lookup !== undefined && field.resolve === undefined) {
+      problems.push(
+        `${name} is on the lookup column "${column.lookup}" but has no resolve, so the label itself would be compared and sent as the value`,
+      );
+    }
+  }
+
+  // Every importable column must be accounted for, so an update never quietly ignores a cell: it
+  // changes the column (a field), hands it to an extra step, or refuses a value in it (notUpdatable).
+  // The key column and a column only a create reads (importOnly) are no exception: a row that names
+  // its record by Record ID still carries a key cell, and a cell an update ignores would look applied.
+  const others = [
+    ["extraColumns", update.extraColumns ?? []],
+    ["notUpdatable", update.notUpdatable ?? []],
+  ] as const;
+  for (const [list, keys] of others) {
+    for (const key of keys) {
+      if (!known.has(key)) problems.push(`The update's ${list} names "${key}", which is no column`);
+    }
+  }
+  const listed = [...update.fields.map((field) => field.column), ...others.flatMap(([, keys]) => keys)];
+  for (const key of new Set(listed)) {
+    const times = listed.filter((other) => other === key).length;
+    const inOthers = others.reduce((total, [, keys]) => total + keys.filter((other) => other === key).length, 0);
+    if (times > 1 && inOthers > 0) {
+      problems.push(`The column "${key}" is listed more than once across the update's fields, extraColumns and notUpdatable`);
+    }
+  }
+  for (const column of importableColumns(entity)) {
+    if (listed.includes(column.key)) continue;
+    problems.push(
+      column.key === keyColumn
+        ? `The key column "${column.key}" is not an update field: list it in fields (immutable when the key cannot change) so a row that names its record by Record ID has its key cell compared with the record instead of ignored`
+        : `The column "${column.key}" is not covered by the update: list it in fields, extraColumns (an extra step handles it) or notUpdatable (a filled cell is refused)`,
+    );
+  }
+  return problems;
+}
+
 /** Every problem with the definition, as sentences. Empty when the entity is sound. */
 export function checkImportEntity(entity: AnyEntity, lookups: LookupSet): string[] {
   const problems: string[] = [];
@@ -110,6 +213,8 @@ export function checkImportEntity(entity: AnyEntity, lookups: LookupSet): string
       problems.push(`recordIdKey "${entity.recordIdKey}" must name a readOnly column: the export's own id`);
     }
   }
+
+  problems.push(...checkUpdate(entity));
 
   const known = new Map(entity.columns.map((column) => [column.key, column]));
   const importable = importableColumns(entity);

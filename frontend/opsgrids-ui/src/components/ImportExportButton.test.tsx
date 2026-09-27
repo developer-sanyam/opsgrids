@@ -27,6 +27,7 @@ import { ImportExportButton } from "./ImportExportButton";
 
 function makeActions(): ImportExportViewActions {
   return {
+    setMode: vi.fn(async () => undefined),
     openFile: vi.fn(async () => undefined),
     startImport: vi.fn(async () => undefined),
     cancelImport: vi.fn(),
@@ -457,7 +458,7 @@ describe("ImportExportButton: the preview", () => {
     await openWith({ state: preview });
     const table = screen.getByRole("table", { name: "Rows found in companies-september.xlsx" });
     const headers = within(table).getAllByRole("columnheader").map((cell) => cell.textContent);
-    expect(headers).toEqual(["Row", "Check", "Name", "Industry", "City", "Website", "Employees"]);
+    expect(headers).toEqual(["Row", "Action", "Name", "Industry", "City", "Website", "Employees"]);
 
     const rows = within(table).getAllByRole("row");
     expect(rows).toHaveLength(11);
@@ -465,8 +466,8 @@ describe("ImportExportButton: the preview", () => {
     expect(first.getByRole("rowheader").textContent).toBe("6");
     expect(first.getByText("Needs fixing")).toBeTruthy();
     expect(first.getByText("Name is required.")).toBeTruthy();
-    expect(within(rows[4] as HTMLElement).getByText("Sample row")).toBeTruthy();
-    expect(within(rows[6] as HTMLElement).getByText("Ready")).toBeTruthy();
+    expect(within(rows[4] as HTMLElement).getByText("Sample")).toBeTruthy();
+    expect(within(rows[6] as HTMLElement).getByText("New")).toBeTruthy();
     expect(screen.getByText("Rows that need fixing come first.")).toBeTruthy();
   });
 

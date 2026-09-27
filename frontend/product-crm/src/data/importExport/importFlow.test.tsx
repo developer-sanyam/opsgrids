@@ -233,13 +233,13 @@ async function exportList(user: User): Promise<Download> {
  * came out of the system and is already there. The dialog says so on each row, sends nothing,
  * and does not call any header unknown.
  */
-async function expectRefusedAsExported(user: User, file: Download, rows: number): Promise<void> {
+async function expectRefusedAsExported(user: User, file: Download, rows: number, idHeader: string): Promise<void> {
   await chooseFile(user, new File([file.blob], file.name, { type: XLSX_TYPE }));
   expect(figure("Rows in file")).toBe(String(rows));
   expect(figure("Ready to import")).toBe("0");
   expect(figure("Need fixing")).toBe(String(rows));
   expect(screen.queryByText(/^These columns are ignored/)).toBeNull();
-  for (let row = 2; row < rows + 2; row += 1) expect(previewCheck(row)).toBe(`Needs fixing${RECORD_ID_REFUSED}`);
+  for (let row = 2; row < rows + 2; row += 1) expect(previewCheck(row)).toBe(`Needs fixing${recordIdRefused(idHeader)}`);
   const nothingToSend = screen.getByRole("button", { name: "Import 0 rows" });
   expect(nothingToSend instanceof HTMLButtonElement && nothingToSend.disabled).toBe(true);
 }
@@ -279,10 +279,11 @@ const NO_CONTACT =
   "The contact must already exist and work at that company.";
 /** A conflict that is not a duplicate: no "already", no `duplicate` code. */
 const OVER_THE_LIMIT = "The organisation is over its plan limit for companies";
-/** What the engine says about a row that came out of an export. */
-const RECORD_ID_REFUSED =
-  "This row has a Record ID, so it came from an export and is already in the system. " +
-  "Clear the Record ID cell to add it as a new record.";
+/** What the engine says about a row that came out of an export, on a list that can be updated: it
+ *  names the list's own ID column ("Company ID"). */
+const recordIdRefused = (header: string): string =>
+  `This row has a ${header}, so it came from an export and is already in the system. ` +
+  `Clear the ${header} cell to add it as a new record. Switch to Add new and update existing to update it.`;
 const XLSX_NAME = /^[a-z]+-\d{4}-\d{2}-\d{2}\.xlsx$/;
 
 /* ---------------------------------- companies ---------------------------------- */
@@ -348,10 +349,10 @@ describe("companies: import from Excel", () => {
     expect(figure("Need fixing")).toBe("2");
     expect(figure("Sample rows skipped")).toBe("1");
     expect(screen.getByText("These columns are ignored: Internal note.")).toBeTruthy();
-    expect(previewCheck(2)).toBe("Ready");
+    expect(previewCheck(2)).toBe("New");
     expect(previewCheck(5)).toBe("Needs fixingCompany name is required");
     expect(previewCheck(6)).toBe(`Needs fixing${OWNER_NOBODY}`);
-    expect(previewCheck(7)).toBe("Sample rowAn unchanged example from the sample sheet. It is skipped.");
+    expect(previewCheck(7)).toBe("SampleAn unchanged example from the sample sheet. It is skipped.");
     expect(requests.filter((r) => r.method === "POST")).toHaveLength(0);
 
     await runImport(user, 6);
@@ -558,7 +559,8 @@ describe("companies: export to Excel", () => {
     expect(file.name.startsWith("companies-")).toBe(true);
 
     const workbook = await readBlob(file.blob);
-    expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual(["Export"]);
+    // A list that can be updated also carries the very hidden baseline an update compares a returning file with.
+    expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual(["Export", "OpsGrids baseline"]);
     const sheet = sheetOf(workbook, "Export");
     expect(valuesOf(sheet)).toEqual([
       [
@@ -614,7 +616,7 @@ describe("companies: export to Excel", () => {
     expect(sheet.getCell("I2").numFmt).toBe("#,##0.00");
     expect(sheet.getCell("I4").numFmt).toBe("#,##0");
     expectNoFormulas(workbook);
-    await expectRefusedAsExported(user, file, 3);
+    await expectRefusedAsExported(user, file, 3, "Company ID");
 
     // Clearing the Record ID cells turns the same rows into new records: the two whose owner is
     // accepted go through, and the one owned by a rep who has left is refused like any other
@@ -623,9 +625,9 @@ describe("companies: export to Excel", () => {
     await waitFor(() => expect(figure("Ready to import")).toBe("2"));
     expect(figure("Rows in file")).toBe("3");
     expect(figure("Need fixing")).toBe("1");
-    expect(previewCheck(2)).toBe("Ready");
+    expect(previewCheck(2)).toBe("New");
     expect(previewCheck(3)).toBe(`Needs fixing${notAnOwner("former@example.com")}`);
-    expect(previewCheck(4)).toBe("Ready");
+    expect(previewCheck(4)).toBe("New");
     await runImport(user, 2);
     expect(bodiesPosted(requests, "/customers")).toEqual([
       {
@@ -738,7 +740,7 @@ describe("deals: import from Excel", () => {
     expect(previewCheck(6)).toBe(
       "Needs fixingdaniel.okafor@cobaltfin.com is not a contact of Northwind Logistics. Pick one of that company's contacts.",
     );
-    expect(previewCheck(7)).toContain("Sample row");
+    expect(previewCheck(7)).toContain("Sample");
     expect(previewCheck(10)).toBe(`Needs fixing${NO_CONTACT}`);
     expect(requests.filter((r) => r.method === "POST")).toHaveLength(0);
 
@@ -920,7 +922,7 @@ describe("deals: export to Excel", () => {
     expect(sheet.getCell("J3").type).toBe(ExcelJS.ValueType.String);
     expect(sheet.getCell("E3").numFmt).toBe("#,##0.000");
     expectNoFormulas(workbook);
-    await expectRefusedAsExported(user, file, 2);
+    await expectRefusedAsExported(user, file, 2, "Deal ID");
   });
 });
 
@@ -989,7 +991,7 @@ describe("contacts: import and export", () => {
       "Needs fixingA contact with this email is already on file as Kiran.Bose@northwind.co; addresses that differ only in capitals are treated as the same person.",
     );
     expect(previewCheck(5)).toBe("Needs fixingPhone must start with + and the country code, e.g. +919876543210");
-    expect(previewCheck(6)).toBe("Ready");
+    expect(previewCheck(6)).toBe("New");
     await runImport(user, 4);
 
     expect(bodiesPosted(requests, "/contacts")).toEqual([
@@ -1124,7 +1126,7 @@ describe("contacts: import and export", () => {
     ]);
     expect(sheet.getCell("B3").type).toBe(ExcelJS.ValueType.String);
     expectNoFormulas(workbook);
-    await expectRefusedAsExported(user, file, 2);
+    await expectRefusedAsExported(user, file, 2, "Contact ID");
   });
 });
 
@@ -1244,7 +1246,7 @@ describe("leads: import and export", () => {
       ],
     ]);
     expectNoFormulas(workbook);
-    await expectRefusedAsExported(user, file, 1);
+    await expectRefusedAsExported(user, file, 1, "Lead ID");
   });
 });
 

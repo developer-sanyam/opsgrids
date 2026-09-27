@@ -19,3 +19,25 @@ describe("the assets entity definition", () => {
     expect(assetsEntity.loadLookups).toBeUndefined();
   });
 });
+
+describe("the assets update spec", () => {
+  const update = assetsEntity.update;
+
+  it("is there, and is what the engine's definition check lints", () => {
+    expect(update).toBeDefined();
+    expect(checkImportEntity(assetsEntity, {})).toEqual([]);
+  });
+
+  it("covers every importable column: each is an update field, so nothing needs a notUpdatable or extraColumns entry", () => {
+    const covered = new Set([...(update?.fields.map((f) => f.column) ?? []), ...(update?.extraColumns ?? [])]);
+    const importable = assetsEntity.columns.filter((c) => c.readOnly !== true && c.importOnly !== true);
+    expect(importable.filter((c) => !covered.has(c.key)).map((c) => c.key)).toEqual([]);
+    expect(update?.notUpdatable ?? []).toEqual([]);
+    expect(update?.extraColumns ?? []).toEqual([]);
+  });
+
+  it("matches on the tag alone: it is the key column and there is no Record ID", () => {
+    expect(update?.keyColumn).toBe("tag");
+    expect(assetsEntity.recordIdKey).toBeUndefined();
+  });
+});

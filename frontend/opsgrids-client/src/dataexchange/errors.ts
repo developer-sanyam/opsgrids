@@ -10,6 +10,8 @@ import { RowProblem } from "./types";
 
 export const NETWORK_MESSAGE = "The request could not be completed. Check your connection and try again.";
 export const PREPARE_MESSAGE = "This row could not be prepared for import.";
+/** The result of an update row that already matches its record: nothing was sent for it. */
+export const UNCHANGED_MESSAGE = "Every cell already matches the record, so nothing was sent.";
 
 /** A sentence reduced to what makes it the same sentence: no case, no edge or inner spacing, no closing full stop. */
 function sameSentence(text: string): string {

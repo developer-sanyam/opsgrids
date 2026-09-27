@@ -1,5 +1,5 @@
 import { RowProblem } from "@opsgrids/client";
-import type { ParsedRow } from "@opsgrids/client";
+import type { ParsedRow, ParsedValue } from "@opsgrids/client";
 
 /** A text cell, or null when it was left blank. */
 export function textOf(row: ParsedRow, key: string): string | null {
@@ -39,4 +39,14 @@ export function labelOfOption(
   value: string,
 ): string {
   return options.find((option) => option.value === value)?.label ?? value;
+}
+
+/** A stored text as an update reads it: an empty string is "nothing there", the same as null. */
+export function storedText(value: string | null): string | null {
+  return value === null || value === "" ? null : value;
+}
+
+/** A currency code as the API stores it: upper case. */
+export function upperCased(value: ParsedValue): ParsedValue {
+  return typeof value === "string" ? value.toUpperCase() : value;
 }

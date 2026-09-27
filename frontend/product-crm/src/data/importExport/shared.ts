@@ -31,6 +31,9 @@ export const LOOKUP_CONTACTS = "contacts";
 /** Contact email to the id of the company that contact belongs to. Attached to no column: it lets
  *  a deal row check that its primary contact belongs to its company. */
 export const LOOKUP_CONTACT_COMPANIES = "contactCompanies";
+/** Contact id to the id of the company that contact belongs to. Attached to no column: an update
+ *  uses it to check the contact a deal already has against a company the row changes it to. */
+export const LOOKUP_COMPANY_OF_CONTACT = "companyOfContact";
 /** Each existing contact email to itself, exactly as on file. Attached to no column: it lets a
  *  contact row tell an address that is already on file from one that differs only in capitals. */
 export const LOOKUP_CONTACT_EMAILS = "contactEmails";
@@ -46,7 +49,38 @@ export const OWNER_HINT_AUTO =
 export const COMPANY_HINT = "The company must already exist. Import companies first, then contacts and deals.";
 export const CONTACT_HINT = "The contact must already exist and work at that company.";
 
+/** The same hints for a row that updates a record, where a blank cell leaves the field alone
+ *  instead of filling in a default (`ImportColumn.lookupHintUpdate`). */
+export const OWNER_HINT_UPDATE =
+  "Use the email of an active sales rep, see the Lists sheet. Leave blank to keep the current owner.";
+export const COMPANY_HINT_UPDATE =
+  "The company must already exist. Import companies first, then contacts and deals. Leave blank to keep the current company.";
+export const CONTACT_HINT_UPDATE =
+  "The contact must already exist and work at that company. Leave blank to keep the current contact, or type [clear] to remove it.";
+
 /* --------------------------------- lookups --------------------------------- */
+
+/**
+ * A lookup that can also answer for a label's exact spelling. The engine matches labels ignoring
+ * capitals, so two entries whose labels differ only in capitals (two contacts the server keeps apart
+ * because it compares emails exactly) make each other's label ambiguous. `resolveSpelling` is how an
+ * update settles that: see `resolveLabel` in `updateShared`.
+ */
+export interface SpellingLookup extends Lookup {
+  /** The value of the one entry whose label is exactly `label` (trimmed, capitals as typed), or
+   *  undefined when no entry, or more than one, is spelled that way. */
+  resolveSpelling(label: string): string | undefined;
+}
+
+/** `makeLookup` that also knows each label's exact spelling. Everything `makeLookup` answers, it answers the same. */
+export function makeSpellingLookup(entries: readonly { label: string; value: string }[]): SpellingLookup {
+  const bySpelling = new Map<string, string | null>();
+  for (const { label, value } of entries) {
+    const spelling = label.trim();
+    bySpelling.set(spelling, bySpelling.has(spelling) && bySpelling.get(spelling) !== value ? null : value);
+  }
+  return { ...makeLookup(entries), resolveSpelling: (label) => bySpelling.get(label.trim()) ?? undefined };
+}
 
 const entry = (o: Owner) => ({ label: o.email, value: o.id });
 
@@ -58,8 +92,8 @@ const entry = (o: Owner) => ({ label: o.email, value: o.id });
 export async function loadOwnerLookups(signal: AbortSignal): Promise<LookupSet> {
   const owners = await getOwners(signal);
   return {
-    [LOOKUP_OWNERS]: makeLookup(owners.filter((o) => o.is_active).map(entry)),
-    [LOOKUP_ALL_OWNERS]: makeLookup(owners.map(entry)),
+    [LOOKUP_OWNERS]: makeSpellingLookup(owners.filter((o) => o.is_active).map(entry)),
+    [LOOKUP_ALL_OWNERS]: makeSpellingLookup(owners.map(entry)),
   };
 }
 
@@ -69,7 +103,7 @@ export async function loadCompanyLookup(signal: AbortSignal): Promise<Lookup> {
     signal,
     key: (company) => company.id,
   });
-  return makeLookup(rows.map((c) => ({ label: c.name, value: c.id })));
+  return makeSpellingLookup(rows.map((c) => ({ label: c.name, value: c.id })));
 }
 
 /** Pages of contacts the contact-email lookup reads: 100 of 200, so 20,000 contacts. A book past
@@ -86,16 +120,18 @@ async function loadAllContacts(signal: AbortSignal, maxPages?: number): Promise<
 }
 
 /**
- * Contacts by email, valued as the contact's id, and a second lookup from the same emails to the
- * company each contact belongs to. The deal service cannot see the customer schema, so it accepts
- * any contact id and would store one from another company without complaint; a deal row is
- * checked against the second lookup before anything is sent.
+ * Contacts by email, valued as the contact's id, and two lookups to the company each contact
+ * belongs to: one from the email (what a sheet names) and one from the id (what a stored deal
+ * holds). The deal service cannot see the customer schema, so it accepts any contact id and would
+ * store one from another company without complaint; a deal row is checked against these before
+ * anything is sent.
  */
 export async function loadContactLookups(signal: AbortSignal): Promise<LookupSet> {
   const rows = await loadAllContacts(signal);
   return {
-    [LOOKUP_CONTACTS]: makeLookup(rows.map((c) => ({ label: c.email, value: c.id }))),
+    [LOOKUP_CONTACTS]: makeSpellingLookup(rows.map((c) => ({ label: c.email, value: c.id }))),
     [LOOKUP_CONTACT_COMPANIES]: makeLookup(rows.map((c) => ({ label: c.email, value: c.company_id }))),
+    [LOOKUP_COMPANY_OF_CONTACT]: makeLookup(rows.map((c) => ({ label: c.id, value: c.company_id }))),
   };
 }
 

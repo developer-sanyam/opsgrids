@@ -1,41 +1,73 @@
 import { useRef } from "react";
+import type { ReactNode } from "react";
 
 import { FileTextIcon } from "../icons";
-import { formatCount, rowsLabel } from "../lib/importExportCopy";
+import { baselineNotice, formatCount, importButtonLabel } from "../lib/importExportCopy";
 import type { ImportExportPreview, ImportExportPreviewRow } from "../lib/importExportView";
 import { Button } from "./Button";
 import { ImportExportStats } from "./ImportExportStats";
+import type { ImportExportStat } from "./ImportExportStats";
 import { ImportExportCellText, ImportExportTable } from "./ImportExportTable";
 import type { ImportExportTableColumn } from "./ImportExportTable";
 import { InlineAlert } from "./InlineAlert";
 import { EmptyState } from "./States";
 import { StatusBadge } from "./StatusBadge";
 
-/** What a row of the preview will do, in a word and, for a row that cannot be sent, the reason. */
-function RowCheck({ row }: { row: ImportExportPreviewRow }) {
-  if (row.error !== null) {
-    return (
-      <div className="flex min-w-48 flex-col items-start gap-1">
-        <StatusBadge tone="danger" label="Needs fixing" />
-        <span className="text-ink-soft">{row.error}</span>
-      </div>
-    );
+/** What a row of the preview will do, in a word and, for a row that changes or cannot be sent, the details. */
+function RowAction({ row }: { row: ImportExportPreviewRow }) {
+  switch (row.action) {
+    case "invalid":
+      return (
+        <div className="flex min-w-48 flex-col items-start gap-1">
+          <StatusBadge tone="danger" label="Needs fixing" />
+          <span className="text-ink-soft">{row.error}</span>
+        </div>
+      );
+    case "sample":
+      return (
+        <div className="flex min-w-48 flex-col items-start gap-1">
+          <StatusBadge tone="neutral" label="Sample" />
+          <span className="text-ink-soft">An unchanged example from the sample sheet. It is skipped.</span>
+        </div>
+      );
+    case "update":
+      return (
+        <div className="flex min-w-48 flex-col items-start gap-1">
+          <StatusBadge tone="info" label="Update" />
+          <span className="text-ink-soft">{`Changes: ${row.changes.join(", ")}`}</span>
+        </div>
+      );
+    case "unchanged":
+      // A row that changes nothing usually needs no more than the word; when it is not what it looks
+      // like (a name that differs only in capitals), the note says so.
+      return row.note === null ? (
+        <StatusBadge tone="neutral" label="No change" />
+      ) : (
+        <div className="flex min-w-48 flex-col items-start gap-1">
+          <StatusBadge tone="neutral" label="No change" />
+          <span className="text-ink-soft">{row.note}</span>
+        </div>
+      );
+    case "create":
+      return <StatusBadge tone="success" label="New" />;
   }
-  if (row.sample) {
-    return (
-      <div className="flex min-w-48 flex-col items-start gap-1">
-        <StatusBadge tone="neutral" label="Sample row" />
-        <span className="text-ink-soft">An unchanged example from the sample sheet. It is skipped.</span>
-      </div>
-    );
-  }
-  return <StatusBadge tone="success" label="Ready" />;
 }
 
 function columnsFor(preview: ImportExportPreview): ImportExportTableColumn<ImportExportPreviewRow>[] {
   return [
     { key: "row", header: "Row", rowHeader: true, className: "tnum text-muted", render: (row) => row.row },
-    { key: "check", header: "Check", render: (row) => <RowCheck row={row} /> },
+    { key: "action", header: "Action", render: (row) => <RowAction row={row} /> },
+    // Which stored record each row names, so a Record ID column that slipped by a row is seen here,
+    // before anything is written. Only where rows can name records.
+    ...(preview.mode === "addAndUpdate"
+      ? [
+          {
+            key: "record",
+            header: "Existing record",
+            render: (row: ImportExportPreviewRow) => <ImportExportCellText value={row.record} />,
+          },
+        ]
+      : []),
     ...preview.columns.map((column) => ({
       key: `value-${column.key}`,
       header: column.header,
@@ -44,9 +76,43 @@ function columnsFor(preview: ImportExportPreview): ImportExportTableColumn<Impor
   ];
 }
 
+/** The counts the preview leads with: what will be sent, and in update mode, of what kind. */
+function statsFor(preview: ImportExportPreview): { stats: ImportExportStat[]; columns: string } {
+  if (preview.mode === "add") {
+    return {
+      columns: "grid-cols-2 sm:grid-cols-4",
+      stats: [
+        { label: "Rows in file", value: preview.total },
+        { label: "Ready to import", value: preview.valid },
+        { label: "Need fixing", value: preview.invalid },
+        { label: "Sample rows skipped", value: preview.sample },
+      ],
+    };
+  }
+  return {
+    columns: "grid-cols-2 sm:grid-cols-3",
+    stats: [
+      { label: "Rows in file", value: preview.total },
+      { label: "New records", value: preview.create },
+      { label: "Updates", value: preview.update },
+      { label: "No change", value: preview.unchanged },
+      { label: "Need fixing", value: preview.invalid },
+      { label: "Sample rows skipped", value: preview.sample },
+    ],
+  };
+}
+
 /** Why the import cannot start, when there is a reason the counts alone do not give. */
 function Blocker({ preview }: { preview: ImportExportPreview }) {
   if (preview.missingRequired.length > 0 || preview.valid > 0 || preview.total === 0) return null;
+  if (preview.mode === "addAndUpdate" && preview.unchanged > 0 && preview.invalid === 0) {
+    return (
+      <InlineAlert tone="info" live="off" title="Nothing to change.">
+        Every row already matches its record, so there is nothing to send. Change a cell, save the file, then choose it
+        again.
+      </InlineAlert>
+    );
+  }
   if (preview.invalid === 0) {
     return (
       <InlineAlert tone="warning" live="off" title="Only the sample rows are in this file.">
@@ -73,31 +139,51 @@ function tableNote(preview: ImportExportPreview): string | null {
   return preview.invalid > 0 ? "Rows that need fixing come first." : null;
 }
 
+interface ReviewProps {
+  preview: ImportExportPreview;
+  /** Why the preview is not what the person last saw: Import found the records changed, or could not
+   *  check them. Null otherwise. */
+  notice: string | null;
+  /** The choice between adding only and updating too, or null where the list has no update. Changing it
+   *  checks this same file again, so it stays in reach while the rows are being read. */
+  modeChoice: ReactNode;
+}
+
+/** How an update's cells are compared with the records: what the export baseline did, in a notice. */
+function BaselineAlert({ baseline }: { baseline: ImportExportPreview["baseline"] }) {
+  const notice = baselineNotice(baseline);
+  if (notice === null) return null;
+  return (
+    <InlineAlert tone={notice.tone} live="off" title={notice.title}>
+      {notice.body}
+    </InlineAlert>
+  );
+}
+
 /** The preview phase: what was found in the file, what is wrong with it, and every row it will send. */
-export function ImportExportReview({ preview }: { preview: ImportExportPreview }) {
+export function ImportExportReview({ preview, notice, modeChoice }: ReviewProps) {
   const note = tableNote(preview);
+  const { stats, columns } = statsFor(preview);
   return (
     <div className="flex flex-col gap-4">
+      {notice !== null ? <InlineAlert tone="warning" title={notice} /> : null}
+
       <p className="flex min-w-0 items-center gap-2">
         <FileTextIcon aria-hidden className="size-4 shrink-0 text-muted" />
         <span className="truncate font-semibold text-ink">{preview.fileName}</span>
       </p>
 
-      <ImportExportStats
-        columns="grid-cols-2 sm:grid-cols-4"
-        stats={[
-          { label: "Rows in file", value: preview.total },
-          { label: "Ready to import", value: preview.valid },
-          { label: "Need fixing", value: preview.invalid },
-          { label: "Sample rows skipped", value: preview.sample },
-        ]}
-      />
+      {modeChoice}
+
+      <ImportExportStats columns={columns} stats={stats} />
 
       {preview.missingRequired.length > 0 ? (
         <InlineAlert tone="danger" live="off" title={`Your file is missing required columns: ${preview.missingRequired.join(", ")}.`}>
           Add them to the first row, or download the sample sheet to see the exact names, then choose the file again.
         </InlineAlert>
       ) : null}
+      {preview.matchWarning !== null ? <InlineAlert tone="warning" live="off" title={preview.matchWarning} /> : null}
+      <BaselineAlert baseline={preview.baseline} />
       {preview.unknownHeaders.length > 0 ? (
         <InlineAlert tone="info" live="off" title={`These columns are ignored: ${preview.unknownHeaders.join(", ")}.`} />
       ) : null}
@@ -150,7 +236,7 @@ export function ImportExportReviewActions({ preview, onChooseAnother, onImport }
         Choose another file
       </Button>
       <Button variant="primary" disabled={blocked} onClick={start}>
-        {`Import ${rowsLabel(preview.valid)}`}
+        {importButtonLabel(preview)}
       </Button>
     </>
   );

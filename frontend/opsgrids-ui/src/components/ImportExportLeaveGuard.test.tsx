@@ -28,6 +28,7 @@ const QUESTION = "Stop the import and leave?";
 
 function makeActions(): ImportExportViewActions {
   return {
+    setMode: vi.fn(async () => undefined),
     openFile: vi.fn(async () => undefined),
     startImport: vi.fn(async () => undefined),
     cancelImport: vi.fn(),

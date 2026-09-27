@@ -277,9 +277,9 @@ describe("importing inventory items through the real dialog", () => {
       const tooMany = rowContaining(preview, "BIG-0001").textContent ?? "";
       expect(tooMany).toContain("Needs fixing");
       expect(tooMany).toContain("Reorder point must be between 0 and 2147483");
-      expect(rowContaining(preview, "RM-STL-4501").textContent).toContain("Sample row");
-      expect(rowContaining(preview, "RM-STL-9001").textContent).toContain("Ready");
-      expect(rowContaining(preview, "TAL-0001").textContent).toContain("Ready");
+      expect(rowContaining(preview, "RM-STL-4501").textContent).toContain("Sample");
+      expect(rowContaining(preview, "RM-STL-9001").textContent).toContain("New");
+      expect(rowContaining(preview, "TAL-0001").textContent).toContain("New");
 
       // Every page of every lookup was read: the second warehouse and category live on page 2.
       expect(pagesAsked(recorded, `${API}/warehouses`)).toEqual(["1", "2"]);
@@ -494,7 +494,7 @@ describe("exporting inventory items through the real dialog", () => {
       expect(download?.fileName).toMatch(/^inventory-items-\d{4}-\d{2}-\d{2}\.xlsx$/);
       if (download === undefined) throw new Error("nothing was downloaded");
       const workbook = await readDownload(download);
-      expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual(["Export"]);
+      expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual(["Export", "OpsGrids baseline"]);
       const sheet = sheetOf(workbook, "Export");
 
       // The columns are the importable ones and the read-only ones; opening stock, which the list
@@ -610,7 +610,8 @@ describe("exporting inventory items through the real dialog", () => {
       for (const sku of ["RM-STL-4501", "IMP-KWD-01"]) {
         expect(rowContaining(preview, sku).textContent).toContain(
           "This row has a Record ID, so it came from an export and is already in the system. " +
-            "Clear the Record ID cell to add it as a new record.",
+            "Clear the Record ID cell to add it as a new record. " +
+            "Switch to Add new and update existing to update it.",
         );
       }
       expect(within(review).getByRole("button", { name: "Import 0 rows" }).hasAttribute("disabled")).toBe(true);

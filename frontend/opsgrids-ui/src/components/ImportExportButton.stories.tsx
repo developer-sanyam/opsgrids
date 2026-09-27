@@ -4,25 +4,38 @@ import type { ReactNode } from "react";
 import { Link, RouterProvider, createMemoryRouter } from "react-router-dom";
 import { expect, fn, screen, waitFor } from "storybook/test";
 
-import type { ImportExportViewActions } from "../lib/importExportView";
+import type { ImportExportViewActions, ImportExportViewState } from "../lib/importExportView";
 import {
   META,
   MENU_STATE,
   PREVIEW_MISSING_COLUMNS,
+  PREVIEW_UPDATE_ALL_UNCHANGED,
+  PREVIEW_UPDATE_CANNOT_MATCH,
+  PREVIEW_UPDATE_MIXED,
+  PREVIEW_UPDATE_NO_BASELINE,
+  PREVIEW_UPDATE_REFUSALS,
+  PREVIEW_UPDATE_ROWS_WITHOUT_ID,
+  PREVIEW_UPDATE_UNUSABLE_BASELINE,
   PREVIEW_WITH_ERRORS,
   PROGRESS_RUNNING,
+  PROGRESS_UPDATING,
   PROGRESS_WAITING,
   SUMMARY_CANCELLED,
   SUMMARY_CLEAN,
+  SUMMARY_UPDATE_PARTLY_SAVED,
+  SUMMARY_UPDATE_WITH_FAILURES,
   SUMMARY_WITH_PROBLEMS,
+  UPDATE_META,
   XLSX_TYPE,
   stateFor,
 } from "../story-import-export";
 import { blankFile } from "../story-files";
 import { ImportExportButton } from "./ImportExportButton";
+import type { ImportExportButtonProps } from "./ImportExportButton";
 import { PageHeader } from "./PageHeader";
 
 const ACTIONS: ImportExportViewActions = {
+  setMode: fn(async () => undefined),
   openFile: fn(async () => undefined),
   startImport: fn(async () => undefined),
   cancelImport: fn(),
@@ -102,6 +115,17 @@ export const DraggingAFile: Story = {
   },
 };
 
+/**
+ * A list that can be updated from a sheet: the choice sits between the sample sheet and Import, the
+ * action it changes, with adding only chosen. Nothing about updating is on screen until it is chosen.
+ */
+export const MenuWithModeChoice: Story = { args: { meta: UPDATE_META } };
+
+/** Updating chosen: its rules open under the choice, in plain words, and Import says it adds and updates. */
+export const MenuUpdateChosen: Story = {
+  args: { meta: UPDATE_META, state: stateFor({ mode: "addAndUpdate" }) },
+};
+
 /** The file is being read: nothing to do but wait, and the wait is said aloud once. */
 export const Reading: Story = { args: { state: stateFor({ phase: "reading" }) } };
 
@@ -113,6 +137,122 @@ export const PreviewWithErrors: Story = {
 /** A required column is missing: the reason is at the top and the import cannot start. */
 export const PreviewMissingColumns: Story = {
   args: { state: stateFor({ phase: "preview", preview: PREVIEW_MISSING_COLUMNS }) },
+};
+
+/** Update mode also loads every stored record to compare the rows with, and says so while it waits. */
+export const ReadingRecords: Story = {
+  args: { meta: UPDATE_META, state: stateFor({ phase: "reading", mode: "addAndUpdate" }) },
+};
+
+/**
+ * Update mode on a file: each row says what it will do (New, Update with the columns it changes, No
+ * change), the counts are words, and the choice stays in reach to switch back and check the file again.
+ */
+export const PreviewUpdateMixed: Story = {
+  args: { meta: UPDATE_META, state: stateFor({ phase: "preview", mode: "addAndUpdate", preview: PREVIEW_UPDATE_MIXED }) },
+};
+
+/** Every row already matches its record: nothing to send, and the button says so and cannot be pressed. */
+export const PreviewUpdateAllUnchanged: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({ phase: "preview", mode: "addAndUpdate", preview: PREVIEW_UPDATE_ALL_UNCHANGED }),
+  },
+};
+
+/** Rows refused before anything is sent: an unknown Record ID, an immutable cell that differs, and two more, each with its reason. */
+export const PreviewUpdateRefusals: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({ phase: "preview", mode: "addAndUpdate", preview: PREVIEW_UPDATE_REFUSALS }),
+  },
+};
+
+/** Update mode on a file with no id or key column: it cannot match anything, and says so above the rows. */
+export const PreviewUpdateCannotMatch: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({ phase: "preview", mode: "addAndUpdate", preview: PREVIEW_UPDATE_CANNOT_MATCH }),
+  },
+};
+
+/**
+ * A file with no export baseline: the warning says every filled cell is compared with the record as
+ * it is now, and that an old cell puts its old value back. One row is found by a name in other
+ * capitals and carries the note that says why nothing will be sent for it.
+ */
+export const PreviewUpdateNoBaseline: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({ phase: "preview", mode: "addAndUpdate", preview: PREVIEW_UPDATE_NO_BASELINE }),
+  },
+};
+
+/** A baseline that is damaged or another list's is ignored, and the preview says so before the same warning. */
+export const PreviewUpdateUnusableBaseline: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({ phase: "preview", mode: "addAndUpdate", preview: PREVIEW_UPDATE_UNUSABLE_BASELINE }),
+  },
+};
+
+/** A list matched by its id alone: the rows that have none are counted, above the rows, as new records. */
+export const PreviewUpdateRowsWithoutId: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({ phase: "preview", mode: "addAndUpdate", preview: PREVIEW_UPDATE_ROWS_WITHOUT_ID }),
+  },
+};
+
+/** Import found the records had changed while the preview was open: it shows the new one instead of sending anything. */
+export const PreviewUpdateRefreshed: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({
+      phase: "preview",
+      mode: "addAndUpdate",
+      preview: PREVIEW_UPDATE_MIXED,
+      notice:
+        "The records changed while you were reviewing this file, so the preview has been refreshed and nothing was imported. Check it, then choose Import again.",
+    }),
+  },
+};
+
+/**
+ * A state that follows the choice, as the hook does: the file is first previewed for adding, and
+ * choosing to update on the preview itself shows its rules open under the choice, not behind a heading.
+ */
+function SwitchingOnThePreview(args: ImportExportButtonProps) {
+  const [state, setState] = useState<ImportExportViewState>(
+    stateFor({ phase: "preview", preview: PREVIEW_WITH_ERRORS }),
+  );
+  const actions: ImportExportViewActions = {
+    ...args.actions,
+    setMode: async (mode) => {
+      setState(
+        mode === "addAndUpdate"
+          ? stateFor({ phase: "preview", mode, preview: PREVIEW_UPDATE_MIXED })
+          : stateFor({ phase: "preview", preview: PREVIEW_WITH_ERRORS }),
+      );
+    },
+  };
+  return (
+    <PageHeader
+      eyebrow="Records"
+      title="Items"
+      actions={<ImportExportButton {...args} state={state} actions={actions} />}
+    />
+  );
+}
+
+export const PreviewUpdateSwitchedOnThePreview: Story = {
+  args: { meta: UPDATE_META },
+  render: (args) => <SwitchingOnThePreview {...args} />,
+  play: async (context) => {
+    await meta.play(context);
+    await context.userEvent.click(await screen.findByRole("radio", { name: "Add new and update existing" }));
+    await screen.findByRole("list", { name: "How updating works" });
+  },
 };
 
 /** Rows are going out: numbers, the counts so far, and the instruction to keep the tab open. */
@@ -148,9 +288,33 @@ export const DoneClean: Story = {
   args: { state: stateFor({ phase: "done", summary: SUMMARY_CLEAN }) },
 };
 
+/** An update run part way: rows created and rows updated are counted apart, and nothing is ever skipped. */
+export const ImportingWithUpdates: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({ phase: "importing", mode: "addAndUpdate", progress: PROGRESS_UPDATING }),
+  },
+};
+
 /** Rows that already existed, that the server refused and that were invalid, each with its reason. */
 export const DoneWithFailures: Story = {
   args: { state: stateFor({ phase: "done", summary: SUMMARY_WITH_PROBLEMS }) },
+};
+
+/** An update run: three updated, two created, five unchanged and one refused, in counts, with the refused row listed. */
+export const DoneWithUpdatesAndFailures: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({ phase: "done", mode: "addAndUpdate", summary: SUMMARY_UPDATE_WITH_FAILURES }),
+  },
+};
+
+/** A row whose first request went through and a later one failed: it says which columns were saved and which were not. */
+export const DoneWithAPartlySavedRow: Story = {
+  args: {
+    meta: UPDATE_META,
+    state: stateFor({ phase: "done", mode: "addAndUpdate", summary: SUMMARY_UPDATE_PARTLY_SAVED }),
+  },
 };
 
 /** Stopped by the user: what was made before it stopped, and that the rest was not sent. */

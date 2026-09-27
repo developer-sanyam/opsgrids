@@ -1,8 +1,11 @@
 export { checkImportEntity } from "./checkEntity";
+export { unacceptedLookupValue } from "./coerce";
 export { collectPages, makeLookup } from "./lookups";
 export { majorToMinor, minorToMajor } from "./money";
-export { RowProblem, defineImportEntity } from "./types";
+export { CLEAR_TOKEN, RowProblem, defineImportEntity } from "./types";
+export { buildUpdate, indexExisting, isClearToken, matchRow, normaliseKey, planUpdate } from "./update";
 export type {
+  BaselineUse,
   ColumnKind,
   ColumnOption,
   DataExchangeActions,
@@ -11,8 +14,10 @@ export type {
   ExportPage,
   ExportProgress,
   ExportSource,
+  ExtraStep,
   ImportColumn,
   ImportContext,
+  ImportMode,
   ImportEntity,
   ImportPhase,
   ImportPreview,
@@ -22,10 +27,15 @@ export type {
   LookupSet,
   ParsedRow,
   ParsedValue,
+  PreviewAction,
   PreviewRow,
   RowOutcome,
   RowStatus,
   SheetValue,
+  StepRunner,
+  UpdateField,
+  UpdatePlan,
+  UpdateSpec,
   UseImportExportOptions,
   UseImportExportResult,
 } from "./types";
