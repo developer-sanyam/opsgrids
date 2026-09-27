@@ -1261,10 +1261,13 @@ async def change_password(
     await set_password(session, principal.sub, new, cfg=cfg)
     await revoke_all_for_user(session, principal.sub, reason="password_changed")
 
+    # Against the member's organization, like the failure row above — the two halves of one
+    # trail must be findable together. (The outbox event below stays on the nil organization: a
+    # credential belongs to a person, not to one of their organizations.)
     record_audit(
         session,
         AuditLog,
-        organization_id=uuid.UUID(int=0),
+        organization_id=principal.organization_id,
         actor_id=principal.sub,
         action="auth.password_changed",
         entity="credential",

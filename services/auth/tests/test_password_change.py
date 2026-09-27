@@ -459,6 +459,8 @@ class TestTheChange:
         [changed] = await _audit(session, "auth.password_changed")
         assert changed.actor_id == USER
         assert changed.request_id == "step-up-test-request"
+        # Against the member's organization, so it is found with the failures (which are).
+        assert changed.organization_id == ORG_A
         await session.rollback()
         events = (
             (
@@ -473,6 +475,38 @@ class TestTheChange:
         )
         assert [e.payload for e in events] == [{"user_id": str(USER)}]
         assert await _audit(session, "auth.password_change_failed") == []
+
+    async def test_the_failures_and_the_success_are_one_trail_in_one_organization(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        """Second review, m4. Failures were audited against the member's organization and the
+        success against the nil organization, so reading an organization's audit log for a
+        password change found the guesses and lost the outcome."""
+        issued = await _sign_in(session, cfg, pair, directory)
+        await _change(http, issued.access_token, WRONG_PASSWORD_X)
+        await _change(http, issued.access_token, WRONG_PASSWORD_Y)
+        assert (await _change(http, issued.access_token, PASSWORD)).status_code == 204
+
+        failed = await _audit(session, "auth.password_change_failed")
+        changed = await _audit(session, "auth.password_changed")
+
+        assert len(failed) == 2 and len(changed) == 1
+        assert {row.organization_id for row in [*failed, *changed]} == {ORG_A}
+        assert {row.actor_id for row in [*failed, *changed]} == {USER}
+        # The event for other services is a person-level fact and stays on the nil organization.
+        await session.rollback()
+        events = (
+            (
+                await session.execute(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_type == services.EVT_PASSWORD_CHANGED
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [e.organization_id for e in events] == [uuid.UUID(int=0)]
 
     async def test_the_new_password_signs_in_and_the_old_one_does_not(
         self, http: AsyncClient, session, cfg, pair, directory, registered
