@@ -314,13 +314,27 @@ describe("the owner", () => {
     expect(body).toEqual({ owner_ref: "p-01" });
   });
 
-  it("refuses a name the team list does not hold", () => {
+  const hint = portfolioEntity.columns.find((c) => c.key === "owner")?.lookupHintUpdate ?? "";
+
+  it("refuses a name the team list does not hold, in the engine's words and with the hint for updating", () => {
+    expect(hint).not.toBe("");
     expect(() => plan({ owner: "Nobody Here" })).toThrow(RowProblem);
-    expect(() => plan({ owner: "Nobody Here" })).toThrow('"Nobody Here" is not in the list.');
+    expect(() => plan({ owner: "Nobody Here" })).toThrow(
+      `'Nobody Here' is not one of the accepted values for Owner (see the Lists sheet). ${hint}`,
+    );
   });
 
   it("refuses a name two members share rather than guess", () => {
-    expect(() => plan({ owner: "Sam Lee" })).toThrow('"Sam Lee" is not in the list.');
+    expect(() => plan({ owner: "Sam Lee" })).toThrow(
+      `'Sam Lee' matches more than one of the accepted values for Owner, so it cannot be chosen. ${hint}`,
+    );
+  });
+
+  it("says a team list that failed to load could not be checked, instead of calling every name unknown", () => {
+    const none: ImportContext = { lookups: {}, signal };
+    expect(() => planUpdate(portfolioEntity.columns, spec(), { owner: "Meera Iyer" }, new Set(), STORED, none)).toThrow(
+      "The accepted values for Owner could not be loaded, so it cannot be checked",
+    );
   });
 
   it("is cleared with an explicit null", async () => {
