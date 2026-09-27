@@ -196,8 +196,17 @@ export interface UpdateSpec<Item> {
   /** The `ImportColumn.key` of the sheet column holding the list's unique key (SKU, code, employee
    *  number, asset tag), for rows that have no Record ID. Absent: rows match by Record ID only. */
   keyColumn?: string | undefined;
-  /** The unique key of a stored record, or null when it has none. Matching ignores case and spacing. */
+  /** The unique key of a stored record, or null when it has none. */
   keyOf?(item: Item): string | null;
+  /**
+   * How a row's key cell finds its record, and it MUST follow the server's uniqueness rule for that
+   * key: `exact` (the default: trim only) for every key the server compares exactly (deal names,
+   * SKUs, codes, employee numbers, asset tags), `caseless` (trim, ignore capitals, keep inner
+   * spaces) only where the server itself treats capitals as the same (company names). A key that
+   * differs from a stored one only in capitals, where the server counts them as two, is REFUSED
+   * with the stored spelling named, never matched: it could be a different record.
+   */
+  keyMatch?: "exact" | "caseless" | undefined;
   /** Which stored record a row updates, in words a person recognises (a company's name, a deal's
    *  name, a lead's name, an item's SKU and name). Shown beside every update row in the preview and
    *  in the result report, so a shifted Record ID column is seen before anything is written. Never
