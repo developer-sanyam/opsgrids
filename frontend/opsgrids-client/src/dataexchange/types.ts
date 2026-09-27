@@ -181,7 +181,8 @@ export interface UpdateField<Item> {
 
 /** An update that is not a plain field change (a deal's stage move, a contact's phone). */
 export interface ExtraStep {
-  /** Headers of the columns this step changes, for the preview. */
+  /** Headers of the columns this step changes, at least one: the preview lists them, and a run that
+   *  fails part-way names them as saved or not saved. */
   changed: readonly string[];
   run(): Promise<void>;
 }
@@ -247,8 +248,10 @@ export interface UpdateSpec<Item> {
  * and tries that request again, and gives up when the run is cancelled. A plan hands each of its
  * requests (the field update, then every extra step) to it, so a 429 retries only the request that
  * received it: a 429 request never executed, but the ones before it did and must not be repeated.
+ * `changed` is the headers of the columns that request changes, so a run that fails part-way can say
+ * which were saved and which were not.
  */
-export type StepRunner = (step: () => Promise<void>) => Promise<void>;
+export type StepRunner = (step: () => Promise<void>, changed: readonly string[]) => Promise<void>;
 
 /** What one matched row will do: the headers it changes, and the calls that do it. */
 export interface UpdatePlan {
@@ -317,6 +320,9 @@ export interface RowOutcome {
   id?: string | undefined;
   /** An update row: the headers of the columns it changes (or tried to change, when it failed). */
   changes?: readonly string[] | undefined;
+  /** An update row: which stored record it names, in words a person recognises (`UpdateSpec.recordLabel`),
+   *  so a Record ID column that slipped by a row is seen in the report. */
+  record?: string | undefined;
   /** The first required cell, so a report row is recognisable without the sheet open. */
   label: string;
 }
@@ -338,6 +344,12 @@ export interface PreviewRow {
   action: PreviewAction;
   /** `update` rows: the headers of the columns that change. Empty otherwise. */
   changes: readonly string[];
+  /** A row that names a stored record (an update, a row that changes nothing, or one refused after it
+   *  found its record): who it is, in words a person recognises. Null when it names none. */
+  record: string | null;
+  /** Something to say about a row that is not refused but does not do what it looks like: a row found
+   *  by its name whose only difference is capitals. Null otherwise. */
+  note: string | null;
 }
 
 export interface ImportPreview {
@@ -448,6 +460,9 @@ export interface DataExchangeMeta {
   canExport: boolean;
   /** True when the entity has an `update` spec: the dialog offers "Add new and update existing". */
   canUpdate: boolean;
+  /** The header of the column an export writes each record's id in ("Company ID"), for the sentences
+   *  that tell someone to fill it in or leave it alone. "Record ID" for a list that has none. */
+  recordIdHeader: string;
 }
 
 export interface UseImportExportOptions<Filters> {

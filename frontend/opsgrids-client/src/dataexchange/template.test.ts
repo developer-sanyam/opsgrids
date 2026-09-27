@@ -69,7 +69,7 @@ describe("the sample workbook", () => {
       "Supplier email",
       "Supplier phone",
     ]);
-    expect(headers).not.toContain("Id");
+    expect(headers).not.toContain("Record ID");
     expect(headers).not.toContain("Created");
   });
 
@@ -241,7 +241,7 @@ describe("the Instructions sheet", () => {
       expect(row?.[1]).toBe(column.required === true ? "Yes" : "No");
       expect(row).toContain(column.help);
     }
-    expect(byColumn.has("Id")).toBe(false);
+    expect(byColumn.has("Record ID")).toBe(false);
     expect(byColumn.has("Created")).toBe(false);
 
     expect(byColumn.get("Status")).toContain("In stock, Discontinued");
@@ -502,7 +502,7 @@ describe("import-only and read-only columns", () => {
     const workbook = await buildAndLoad(withOpening);
     const headers = textOf(sheetOf(workbook, "Import"))[0];
     expect(headers).toContain("Opening stock");
-    expect(headers).not.toContain("Id");
+    expect(headers).not.toContain("Record ID");
     expect(headers).not.toContain("Created");
     expect(sheetOf(workbook, "Import").getCell("M2").value).toBe(40);
     const rows = textOf(sheetOf(workbook, "Instructions"));

@@ -113,7 +113,7 @@ describe("readWorkbook: headers", () => {
   });
 
   it("reports unknown headers, ignores them, and stays silent about read-only ones", async () => {
-    const file = await fileWithRows(["SKU", "Name", "Favourite colour", "Id", "Created"], [["A-1", "Bracket", "blue", "id-9", "2026-01-01"]]);
+    const file = await fileWithRows(["SKU", "Name", "Favourite colour", "Record ID", "Created"], [["A-1", "Bracket", "blue", "id-9", "2026-01-01"]]);
     const parsed = await readWorkbook(file, entity);
     expect(parsed.unknownHeaders).toEqual(["Favourite colour"]);
     expect(parsed.columns.map((c) => c.key)).toEqual(["sku", "name"]);

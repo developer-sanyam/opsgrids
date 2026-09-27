@@ -29,9 +29,13 @@ export const DEFAULT_MIN_INTERVAL_MS = 350;
 export const DEFAULT_BACKOFF_MS = 60_000;
 export const DEFAULT_MAX_RETRIES = 3;
 
-/** Said of a failed update row when an earlier request of the same row had already been accepted. */
-export const PARTLY_SAVED_MESSAGE = "The earlier changes to this row were saved.";
-export const STOPPED_PARTWAY_MESSAGE = "The import was stopped after some of this row's changes were saved.";
+/** Said of an update row that failed after an earlier request of the same row had been accepted: which
+ *  columns are on the record now and which are not, so nobody has to open the record to find out. */
+export function partlySavedMessage(saved: readonly string[], notSaved: readonly string[]): string {
+  return `Saved: ${saved.join(", ")}. Not saved: ${notSaved.join(", ")}.`;
+}
+
+export const STOPPED_PARTWAY_MESSAGE = "The import was stopped part-way through this row.";
 
 /** One row that passed validation and is ready to be sent. */
 export interface RunnerRow {
@@ -40,6 +44,8 @@ export interface RunnerRow {
   values: ParsedRow;
   /** The first required cell, so a report row is recognisable without the sheet open. */
   label: string;
+  /** An update row: which stored record it names, for the result report. */
+  record?: string | undefined;
   /** Present on a row that updates a stored record instead of creating one: its plan for this run,
    *  or null when it turns out to change nothing. */
   update?: { plan(ctx: ImportContext): UpdatePlan | null } | undefined;
@@ -132,7 +138,15 @@ export async function runImport(args: RunImportArgs): Promise<RunResult> {
     extra: { id?: string | undefined; changes?: readonly string[] | undefined } = {},
   ): void => {
     tally[status] += 1;
-    outcomes.push({ row: item.row, status, message, id: extra.id, changes: extra.changes, label: item.label });
+    outcomes.push({
+      row: item.row,
+      status,
+      message,
+      id: extra.id,
+      changes: extra.changes,
+      record: item.record,
+      label: item.label,
+    });
     report();
   };
 
@@ -208,20 +222,23 @@ export async function runImport(args: RunImportArgs): Promise<RunResult> {
       return true;
     }
     const { changed } = plan;
-    let saved = 0;
+    /** The columns whose request the server accepted, in order. */
+    const saved: string[] = [];
+    const partly = (): string =>
+      partlySavedMessage(saved, changed.filter((header) => !saved.includes(header)));
     try {
-      await plan.run(async (step) => {
+      await plan.run(async (step, done) => {
         if ((await attempt(step)) === undefined) throw new Stopped();
-        saved += 1;
+        saved.push(...done);
       });
     } catch (error) {
       if (error instanceof Stopped) {
         // Nothing to say about a row that never started; a row half done must not vanish from the report.
-        if (saved > 0) conclude(item, "failed", STOPPED_PARTWAY_MESSAGE, { changes: changed });
+        if (saved.length > 0) conclude(item, "failed", `${STOPPED_PARTWAY_MESSAGE} ${partly()}`, { changes: changed });
         return false;
       }
       const reason = rowMessage(error);
-      conclude(item, error instanceof RowProblem ? "invalid" : "failed", saved > 0 ? `${reason} ${PARTLY_SAVED_MESSAGE}` : reason, {
+      conclude(item, error instanceof RowProblem ? "invalid" : "failed", saved.length > 0 ? `${reason} ${partly()}` : reason, {
         changes: changed,
       });
       return true;

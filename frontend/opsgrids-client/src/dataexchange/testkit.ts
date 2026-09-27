@@ -43,7 +43,7 @@ export interface ProductItem {
 }
 
 export const productColumns: readonly ImportColumn[] = [
-  { key: "id", header: "Id", kind: "text", help: "Assigned by the system.", readOnly: true },
+  { key: "id", header: "Record ID", kind: "text", help: "Assigned by the system.", readOnly: true },
   {
     key: "sku",
     header: "SKU",

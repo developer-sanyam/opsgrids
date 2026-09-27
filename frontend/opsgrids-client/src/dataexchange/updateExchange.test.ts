@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../http";
 import { createExchange } from "./exchange";
 import { ReferenceListError } from "./lookups";
-import { RECORD_ID_MESSAGE, RECORD_ID_UPDATE_HINT } from "./preview";
+import { RECORD_ID_UPDATE_HINT } from "./preview";
 import { fileWithRows, makeProductEntity, makeProductUpdate, productLookups, storedProduct } from "./testkit";
 import type { ProductItem, ProductPayload } from "./testkit";
 import type { DataExchangeState, ImportContext, ImportSummary } from "./types";
@@ -14,7 +14,7 @@ vi.mock("./workbook", async (importOriginal) => {
   return { ...actual, readWorkbook: vi.fn(actual.readWorkbook) };
 });
 
-const HEADERS = ["Id", "SKU *", "Name *", "Price"];
+const HEADERS = ["Record ID", "SKU *", "Name *", "Price"];
 type Cell = string | null;
 
 beforeEach(() => {
@@ -219,7 +219,9 @@ describe("changing the mode on a preview", () => {
     const { exchange, latest, states } = setUp();
     await exchange.actions.openFile(await file());
     expect(latest()?.preview).toMatchObject({ mode: "add", valid: 0, invalid: 1 });
-    expect(latest()?.preview?.rows[0]?.error).toBe(`${RECORD_ID_MESSAGE} ${RECORD_ID_UPDATE_HINT}`);
+    expect(latest()?.preview?.rows[0]?.error).toBe(
+      `This row has a Record ID, so it came from an export and is already in the system. Clear the Record ID cell to add it as a new record. ${RECORD_ID_UPDATE_HINT}`,
+    );
     expect(readWorkbook).toHaveBeenCalledTimes(1);
 
     const from = states.length;

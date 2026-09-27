@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { InvalidCell } from "./cells";
+import { InvalidCell, recordIdHeader } from "./cells";
 import { buildExportWorkbook } from "./exporter";
-import { prepareImport, RECORD_ID_MESSAGE } from "./preview";
-import { fileOf, fileWithRows, loadBlob, makeProductEntity, productLookups, productSamples } from "./testkit";
+import { prepareImport } from "./preview";
+import { fileOf, fileWithRows, loadBlob, makeProductEntity, productColumns, productLookups, productSamples } from "./testkit";
 import type { ProductItem } from "./testkit";
 import type { ImportSummary } from "./types";
 import { readWorkbook } from "./workbook";
@@ -11,7 +11,10 @@ import { readWorkbook } from "./workbook";
 const withId = makeProductEntity({ recordIdKey: "id" });
 const ctx = { lookups: productLookups, signal: new AbortController().signal };
 
-const HEADERS = ["Id", "SKU *", "Name *"];
+const HEADERS = ["Record ID", "SKU *", "Name *"];
+
+const REFUSAL =
+  "This row has a Record ID, so it came from an export and is already in the system. Clear the Record ID cell to add it as a new record.";
 
 function item(i: number, overrides: Partial<ProductItem> = {}): ProductItem {
   return {
@@ -68,17 +71,14 @@ describe("a row that carries a record id", () => {
   it("is refused in the preview with the explanation, is invalid, and is never sent", async () => {
     const { preview: shown, prepared } = await preview([["p-1", "A-1", "Bracket"]]);
     expect(shown).toMatchObject({ total: 1, valid: 0, invalid: 1, sample: 0 });
-    expect(shown.rows[0]?.error).toBe(
-      "This row has a Record ID, so it came from an export and is already in the system. Clear the Record ID cell to add it as a new record.",
-    );
-    expect(RECORD_ID_MESSAGE).toBe(shown.rows[0]?.error);
+    expect(shown.rows[0]?.error).toBe(REFUSAL);
     expect(prepared.valid).toEqual([]);
-    expect(prepared.invalid).toEqual([{ row: 2, status: "invalid", message: RECORD_ID_MESSAGE, label: "A-1" }]);
+    expect(prepared.invalid).toEqual([{ row: 2, status: "invalid", message: REFUSAL, label: "A-1" }]);
   });
 
   it("is refused alone: the column errors of a row that must not be sent would only bury the reason", async () => {
     const { preview: shown } = await preview([["p-1", "", ""]]);
-    expect(shown.rows[0]?.error).toBe(RECORD_ID_MESSAGE);
+    expect(shown.rows[0]?.error).toBe(REFUSAL);
   });
 
   it("does not stop the other rows: those with the id cleared still import", async () => {
@@ -121,7 +121,7 @@ describe("importing an export", () => {
     const { preview: shown, prepared } = prepareImport(withId, parsed, ctx, "export.xlsx");
     expect(shown).toMatchObject({ total: 3, valid: 0, invalid: 3 });
     expect(prepared.valid).toEqual([]);
-    expect(shown.rows.every((row) => row.error === RECORD_ID_MESSAGE)).toBe(true);
+    expect(shown.rows.every((row) => row.error === REFUSAL)).toBe(true);
   });
 
   it("refuses an export of the sample rows too, though each looks exactly like an example", async () => {
@@ -197,6 +197,36 @@ describe("no request is sent for a row that carries a record id", () => {
     const summary = summaries.at(-1);
     expect(summary).toMatchObject({ created: 0, invalid: 2 });
     expect(summary?.outcomes.map((outcome) => outcome.status)).toEqual(["invalid", "invalid"]);
-    expect(summary?.outcomes[0]?.message).toBe(RECORD_ID_MESSAGE);
+    expect(summary?.outcomes[0]?.message).toBe(REFUSAL);
+  });
+});
+
+describe("the sentences name the list's own id column", () => {
+  const renamed = makeProductEntity({
+    recordIdKey: "id",
+    columns: productColumns.map((column) => (column.key === "id" ? { ...column, header: "Product ID" } : column)),
+  });
+
+  it("refuses a row that carries the id with the header the sheet uses, not a generic one", async () => {
+    const parsed = await readWorkbook(await fileWithRows(["Product ID", "SKU *", "Name *"], [["p-1", "A-1", "Bracket"]]), renamed);
+    const { preview: shown } = prepareImport(renamed, parsed, ctx, "file.xlsx");
+    expect(shown.rows[0]?.error).toBe(
+      "This row has a Product ID, so it came from an export and is already in the system. Clear the Product ID cell to add it as a new record.",
+    );
+  });
+
+  it("says it on the Instructions sheet", async () => {
+    const { buildSampleWorkbook } = await import("./template");
+    const sheet = (await loadBlob(await buildSampleWorkbook(renamed, productLookups))).getWorksheet("Instructions");
+    const texts: string[] = [];
+    sheet?.eachRow((row) => row.eachCell((cell) => texts.push(cell.text)));
+    expect(texts).toContain(
+      "Rows exported from the system carry a Product ID; those rows are not imported, delete the Product ID to add a row as a new record.",
+    );
+  });
+
+  it("falls back to Record ID for a list with no id column", () => {
+    expect(recordIdHeader(makeProductEntity())).toBe("Record ID");
+    expect(recordIdHeader(renamed)).toBe("Product ID");
   });
 });

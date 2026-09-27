@@ -128,6 +128,7 @@ describe("useImportExport: meta and identity", () => {
       requiredHeaders: ["SKU", "Name"],
       canExport: true,
       canUpdate: false,
+      recordIdHeader: "Record ID",
     });
     expect(result.current.state).toMatchObject({ phase: "menu", mode: "add", error: null, preview: null, summary: null });
   });
@@ -1016,7 +1017,7 @@ describe("useImportExport: update mode", () => {
   it("switches the mode, checks the file that is open again, and reports what an import updated", async () => {
     const onImported = vi.fn<(summary: ImportSummary) => void>();
     const { result } = renderHook(() => useImportExport(updatable(), { onImported }));
-    await open(result, await fileWithRows(["Id", "SKU *", "Name *"], updateRows));
+    await open(result, await fileWithRows(["Record ID", "SKU *", "Name *"], updateRows));
     expect(result.current.state.preview).toMatchObject({ mode: "add", valid: 0, invalid: 1 });
 
     await act(async () => {

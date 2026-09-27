@@ -5,7 +5,7 @@ import { checkImportEntity } from "./checkEntity";
 import { buildReportWorkbook } from "./report";
 import { buildSampleWorkbook } from "./template";
 import { loadBlob, makeProductEntity, makeProductUpdate, productColumns, productLookups, storedProduct } from "./testkit";
-import type { ImportSummary, UpdateSpec } from "./types";
+import type { ImportColumn, ImportSummary, UpdateSpec } from "./types";
 import type { ProductItem } from "./testkit";
 
 const items = [storedProduct(1)];
@@ -24,8 +24,38 @@ describe("the Instructions sheet of a list that can be updated", () => {
     expect(lines).toContain("Updating existing products");
     expect(lines).toContain('Choose "Add new and update existing" in the import dialog to use these rules.');
     expect(lines).toContain(
-      "A row is matched to an existing record by its Record ID (the column an export writes). A row without one is matched by SKU, ignoring capitals and extra spaces. A row that matches nothing is added as a new record. If two records have the same SKU, the row is refused.",
+      "A row is matched to an existing record by its Record ID (the column an export writes). A row without one is matched by SKU in its exact spelling (capitals and spaces count; a SKU that differs from an existing one only in capitals or spaces is refused, not matched). A row that matches nothing is added as a new record. If two records have the same SKU, the row is refused.",
     );
+    expect(lines.join("\n")).not.toContain("ignoring capitals");
+  });
+
+  it("says a caseless key is matched ignoring capitals, and only then", async () => {
+    const caseless = makeProductEntity({
+      recordIdKey: "id",
+      update: { ...makeProductUpdate({ items }), keyMatch: "caseless" },
+    });
+    const lines = await instructionLines(caseless);
+    expect(lines).toContain(
+      "A row is matched to an existing record by its Record ID (the column an export writes). A row without one is matched by SKU, ignoring capitals. A row that matches nothing is added as a new record. If two records have the same SKU, the row is refused.",
+    );
+    expect(lines.join("\n")).not.toContain("exact spelling");
+  });
+
+  it("lists the read-only columns an update ignores, except the Record ID and any it refuses", async () => {
+    const lines = await instructionLines(updatable);
+    expect(lines).toContain("Ignored when updating: Created.");
+
+    const refusing = makeProductEntity({
+      recordIdKey: "id",
+      update: { ...makeProductUpdate({ items }), notUpdatable: ["category", "weight", "launched", "phone", "created"] },
+    });
+    expect((await instructionLines(refusing)).some((line) => line.startsWith("Ignored when updating"))).toBe(false);
+  });
+
+  it("says nothing about ignored columns when the list has no read-only column but its Record ID", async () => {
+    const columns = productColumns.filter((column) => column.key !== "created");
+    const lines = await instructionLines(makeProductEntity({ recordIdKey: "id", columns, update: makeProductUpdate({ items }) }));
+    expect(lines.some((line) => line.startsWith("Ignored when updating"))).toBe(false);
   });
 
   it("says a blank cell leaves the field alone, and that only differing fields are changed", async () => {
@@ -57,17 +87,24 @@ describe("the Instructions sheet of a list that can be updated", () => {
     expect(lines.some((line) => line.startsWith("Cannot be changed once created"))).toBe(false);
   });
 
-  it("warns that a file overwrites live data, with no undo and no protection from someone else's edit", async () => {
+  it("warns that a file overwrites live data, with no undo and no protection from someone else's edit to a cell you changed", async () => {
     const lines = await instructionLines(updatable);
     const warning = lines.find((line) => line.startsWith("Warning: updating overwrites live data"));
     expect(warning).toContain("cannot be undone");
-    expect(warning).toContain("someone else");
+    expect(warning).toContain("changed a cell you did change after your export: your value replaces theirs");
+  });
+
+  it("dates the risk from the export, not from when the file is read", async () => {
+    const lines = await instructionLines(updatable);
+    const warning = lines.find((line) => line.startsWith("Warning: updating overwrites live data")) ?? "";
+    expect(warning).not.toContain("is read");
+    expect(warning).toContain("cells you did not change since the export are left alone");
   });
 
   it("matches by the key alone, or by Record ID alone, when that is all the list has", async () => {
     const keyOnly = await instructionLines(makeProductEntity({ update: makeProductUpdate({ items }) }));
     expect(keyOnly).toContain(
-      "A row is matched to an existing record by its SKU, ignoring capitals and extra spaces. A row that matches nothing is added as a new record. If two records have the same SKU, the row is refused.",
+      "A row is matched to an existing record by its SKU in its exact spelling (capitals and spaces count; a SKU that differs from an existing one only in capitals or spaces is refused, not matched). A row that matches nothing is added as a new record. If two records have the same SKU, the row is refused.",
     );
     const idOnly = await instructionLines(
       makeProductEntity({ recordIdKey: "id", update: { ...makeProductUpdate({ items }), keyColumn: undefined } }),
@@ -125,6 +162,51 @@ describe("the result report of an update", () => {
       "Changes",
     ]);
     expect([2, 3, 4, 5].map((r) => sheet.getCell(r, 5).value)).toEqual(["Name, Price", null, null, "Name"]);
+  });
+
+  it("names the stored record of every row that names one, in a column after Changes", async () => {
+    const named: ImportSummary = {
+      ...summary,
+      outcomes: summary.outcomes.map((outcome) =>
+        outcome.status === "created" ? outcome : { ...outcome, record: `Bracket (${outcome.label})` },
+      ),
+    };
+    const sheet = await sheetOf(named);
+    expect((sheet.getRow(1).values as ExcelJS.CellValue[]).slice(1)).toEqual([
+      "Row",
+      "SKU",
+      "Status",
+      "Message",
+      "Changes",
+      "Existing record",
+    ]);
+    expect([2, 3, 4, 5].map((r) => sheet.getCell(r, 6).value)).toEqual([
+      "Bracket (SKU-1)",
+      null,
+      "Bracket (SKU-2)",
+      "Bracket (SKU-3)",
+    ]);
+  });
+
+  it("has the Existing record column even when no row changed anything, and no Changes column then", async () => {
+    const sheet = await sheetOf({
+      ...summary,
+      updated: 0,
+      failed: 0,
+      created: 0,
+      outcomes: [{ row: 4, status: "unchanged", message: "Every cell already matches the record, so nothing was sent.", label: "SKU-2", record: "Bracket" }],
+    });
+    expect((sheet.getRow(1).values as ExcelJS.CellValue[]).slice(1)).toEqual(["Row", "SKU", "Status", "Message", "Existing record"]);
+    expect(sheet.getCell("E2").value).toBe("Bracket");
+  });
+
+  it("writes a record label as text, so nothing in it is ever a formula", async () => {
+    const sheet = await sheetOf({
+      ...summary,
+      outcomes: [{ row: 2, status: "updated", message: null, label: "A", changes: ["Name"], record: "=SUM(1)" }],
+    });
+    expect(sheet.getCell("F2").value).toBe("=SUM(1)");
+    expect(sheet.getCell("F2").formula).toBeUndefined();
   });
 
   it("says Updated and Unchanged in words, beside Created and Failed", async () => {
@@ -229,6 +311,34 @@ describe("checkImportEntity on an update spec", () => {
 
   it("flags an update with no fields", () => {
     expect(withUpdate({ ...good, fields: [] })).toContain("The update has no fields, so it could change nothing");
+  });
+
+  it("flags a key column that is not an update field: a Record ID row's key cell would be ignored", () => {
+    const fields = good.fields.filter((field) => field.column !== "sku");
+    expect(withUpdate({ ...good, fields })).toEqual([
+      'The key column "sku" is not an update field: list it in fields (immutable when the key cannot change) so a row that names its record by Record ID has its key cell compared with the record instead of ignored',
+    ]);
+  });
+
+  it("accepts a key column that is handled by being refused, like any other column", () => {
+    const fields = good.fields.filter((field) => field.column !== "sku");
+    expect(withUpdate({ ...good, fields, notUpdatable: [...(good.notUpdatable ?? []), "sku"] })).toEqual([]);
+  });
+
+  it("flags an import-only column the update does not handle, and accepts one it refuses or reads as unknowable", () => {
+    const opening: ImportColumn = { key: "opening", header: "Opening stock", kind: "integer", help: "Units on hand at the start.", importOnly: true };
+    const entity = (update: UpdateSpec<ProductItem>) =>
+      checkImportEntity(makeProductEntity({ recordIdKey: "id", columns: [...productColumns, opening], update }), productLookups);
+    expect(entity(good)).toEqual([
+      'The column "opening" is not covered by the update: list it in fields, extraColumns (an extra step handles it) or notUpdatable (a filled cell is refused)',
+    ]);
+    expect(entity({ ...good, notUpdatable: [...(good.notUpdatable ?? []), "opening"] })).toEqual([]);
+    expect(entity({ ...good, fields: [...good.fields, { column: "opening", current: () => undefined, immutable: true }] })).toEqual([]);
+  });
+
+  it("flags keyMatch on a list with no key column", () => {
+    const keyless = { ...withoutKeyOf(good), keyColumn: undefined, keyMatch: "caseless" as const };
+    expect(withUpdate(keyless)).toContain("The update has keyMatch but no keyColumn, so nothing reads it");
   });
 
   it("accepts a field whose stored value the list never returns, and prints nothing of it", () => {

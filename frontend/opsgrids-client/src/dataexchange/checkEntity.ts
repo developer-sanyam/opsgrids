@@ -112,6 +112,9 @@ function checkUpdate(entity: AnyEntity): string[] {
   } else if (update.keyOf !== undefined) {
     problems.push("The update has keyOf but no keyColumn, so nothing reads it");
   }
+  if (update.keyMatch !== undefined && keyColumn === undefined) {
+    problems.push("The update has keyMatch but no keyColumn, so nothing reads it");
+  }
 
   if (entity.recordIdKey === undefined) {
     if (entity.columns.some((column) => column.key === "id")) {
@@ -155,6 +158,8 @@ function checkUpdate(entity: AnyEntity): string[] {
 
   // Every importable column must be accounted for, so an update never quietly ignores a cell: it
   // changes the column (a field), hands it to an extra step, or refuses a value in it (notUpdatable).
+  // The key column and a column only a create reads (importOnly) are no exception: a row that names
+  // its record by Record ID still carries a key cell, and a cell an update ignores would look applied.
   const others = [
     ["extraColumns", update.extraColumns ?? []],
     ["notUpdatable", update.notUpdatable ?? []],
@@ -173,9 +178,11 @@ function checkUpdate(entity: AnyEntity): string[] {
     }
   }
   for (const column of importableColumns(entity)) {
-    if (column.importOnly === true || listed.includes(column.key) || column.key === keyColumn || column.key === entity.recordIdKey) continue;
+    if (listed.includes(column.key)) continue;
     problems.push(
-      `The column "${column.key}" is not covered by the update: list it in fields, extraColumns (an extra step handles it) or notUpdatable (a filled cell is refused)`,
+      column.key === keyColumn
+        ? `The key column "${column.key}" is not an update field: list it in fields (immutable when the key cannot change) so a row that names its record by Record ID has its key cell compared with the record instead of ignored`
+        : `The column "${column.key}" is not covered by the update: list it in fields, extraColumns (an extra step handles it) or notUpdatable (a filled cell is refused)`,
     );
   }
   return problems;

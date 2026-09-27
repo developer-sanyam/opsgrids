@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { recordIdHeader } from "./cells";
 import type { AnyEntity } from "./cells";
 import { DEFAULT_EXPORT_MAX_ROWS, IDLE_STATE, createExchange } from "./exchange";
 import type { Exchange } from "./exchange";
@@ -86,6 +87,7 @@ export function useImportExport<Payload, Item = unknown, Filters = void>(
         .map((column) => column.header),
       canExport: entity.export !== undefined,
       canUpdate: entity.update !== undefined,
+      recordIdHeader: recordIdHeader(entity),
     }),
     [entity],
   );

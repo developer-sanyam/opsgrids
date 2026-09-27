@@ -24,9 +24,22 @@ import type {
   UpdateSpec,
 } from "./types";
 
-/** A key compared without case or runs of spaces: the same rule `makeLookup` uses. */
+/** A label compared without case or runs of spaces: the same rule `makeLookup` uses. It is for
+ *  lookup labels and for spotting a near-duplicate; a record's KEY is compared by `keyFold`. */
 export function normaliseKey(text: string): string {
   return text.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+export type KeyMatch = NonNullable<UpdateSpec<unknown>["keyMatch"]>;
+
+/**
+ * A record's key as its list's uniqueness rule sees it (`UpdateSpec.keyMatch`): `exact` compares
+ * what was typed, trimmed, so `AB-1` and `ab-1` are two records; `caseless` also ignores capitals
+ * but keeps inner spaces, since the server that treats capitals as the same still counts a run of
+ * spaces as a difference.
+ */
+export function keyFold(keyMatch: KeyMatch, text: string): string {
+  return keyMatch === "caseless" ? text.trim().toLowerCase() : text.trim();
 }
 
 /** True for a cell whose text is `[clear]` (any case, surrounding spaces ignored). */
@@ -36,22 +49,35 @@ export function isClearToken(cell: unknown): boolean {
 
 export interface ExistingIndex<Item> {
   byId: ReadonlyMap<string, Item>;
+  /** Records by their key as the list's `keyMatch` rule folds it. */
   byKey: ReadonlyMap<string, readonly Item[]>;
+  keyMatch: KeyMatch;
+  /** `exact` lists only: every stored spelling of a key, by what `normaliseKey` makes of it, so a key
+   *  that differs from a stored one only in capitals or spacing can be recognised and refused. */
+  spellings: ReadonlyMap<string, readonly string[]>;
 }
 
 export function indexExisting<Item>(spec: UpdateSpec<Item>, items: readonly Item[]): ExistingIndex<Item> {
+  const keyMatch = spec.keyMatch ?? "exact";
   const byId = new Map<string, Item>();
   const byKey = new Map<string, Item[]>();
+  const spellings = new Map<string, string[]>();
   for (const item of items) {
     byId.set(spec.idOf(item), item);
     const key = spec.keyOf?.(item) ?? null;
     if (key === null || key.trim() === "") continue;
-    const normalised = normaliseKey(key);
-    const bucket = byKey.get(normalised);
-    if (bucket === undefined) byKey.set(normalised, [item]);
+    const folded = keyFold(keyMatch, key);
+    const bucket = byKey.get(folded);
+    if (bucket === undefined) byKey.set(folded, [item]);
     else bucket.push(item);
+    if (keyMatch === "exact") {
+      const loose = normaliseKey(key);
+      const known = spellings.get(loose);
+      if (known === undefined) spellings.set(loose, [folded]);
+      else if (!known.includes(folded)) known.push(folded);
+    }
   }
-  return { byId, byKey };
+  return { byId, byKey, keyMatch, spellings };
 }
 
 export type Match<Item> =
@@ -61,9 +87,20 @@ export type Match<Item> =
   /** The row carries a Record ID that no record in this list has (deleted, or another organisation's). */
   | { kind: "unknown-id" }
   /** More than one stored record has this key (a list that does not enforce it), so the row cannot say which. */
-  | { kind: "ambiguous" };
+  | { kind: "ambiguous" }
+  /**
+   * No record has this key as typed, but others have it in other capitals or spacing, and the
+   * server counts those as different keys: the row could mean a new record or one of these, so it
+   * is refused with the stored spelling(s) named, never matched.
+   */
+  | { kind: "variant"; spellings: readonly string[] };
 
-/** Finds the record a row names: its Record ID first, else the list's unique key. */
+/**
+ * Finds the record a row names: its Record ID first, else the list's unique key, by the list's own
+ * rule (`UpdateSpec.keyMatch`). Under `exact` a key that is stored exactly is found, whatever
+ * near-twins sit beside it; only when nothing is stored exactly does a twin in other capitals or
+ * spacing refuse the row.
+ */
 export function matchRow<Item>(
   index: ExistingIndex<Item>,
   recordId: string | null,
@@ -74,11 +111,12 @@ export function matchRow<Item>(
     return item === undefined ? { kind: "unknown-id" } : { kind: "found", item, by: "id" };
   }
   if (key !== null && key.trim() !== "") {
-    const candidates = index.byKey.get(normaliseKey(key)) ?? [];
-    if (candidates.length === 0) return { kind: "new" };
+    const candidates = index.byKey.get(keyFold(index.keyMatch, key)) ?? [];
     const [only] = candidates;
     if (candidates.length === 1 && only !== undefined) return { kind: "found", item: only, by: "key" };
-    return { kind: "ambiguous" };
+    if (candidates.length > 1) return { kind: "ambiguous" };
+    const twins = index.spellings.get(normaliseKey(key)) ?? [];
+    return twins.length > 0 ? { kind: "variant", spellings: twins } : { kind: "new" };
   }
   return { kind: "new" };
 }
@@ -162,8 +200,18 @@ function resolved<Item>(field: UpdateField<Item>, cell: ParsedValue, ctx: Import
   return field.resolve === undefined ? cell : field.resolve(cell, ctx);
 }
 
+/** Line endings compared as one: a cell edited in Excel breaks lines with `\n`, a server may hold `\r\n`. */
+const lines = (text: string): string => text.replace(/\r\n?/g, "\n");
+
+/**
+ * Whether a resolved cell is what is already stored. The engine trims every cell, and the servers
+ * keep a text as it was typed, so a stored "Acme " would differ from an untouched exported "Acme"
+ * and read as a rename: text is compared against the stored value trimmed, line endings alike.
+ * A field's own `same` replaces all of this.
+ */
 function sameValue<Item>(field: UpdateField<Item>, cell: ParsedValue, stored: ParsedValue): boolean {
   if (field.same !== undefined) return field.same(cell, stored);
+  if (typeof cell === "string" && typeof stored === "string") return lines(cell) === lines(stored.trim());
   return cell === stored;
 }
 
@@ -189,8 +237,8 @@ export function planUpdate<Item>(
   return {
     changed,
     run: async (around = direct) => {
-      if (Object.keys(diff.body).length > 0) await around(() => spec.send(existing, diff.body, ctx));
-      for (const step of extras) await around(() => step.run());
+      if (Object.keys(diff.body).length > 0) await around(() => spec.send(existing, diff.body, ctx), diff.changed);
+      for (const step of extras) await around(() => step.run(), step.changed);
     },
   };
 }

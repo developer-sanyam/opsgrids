@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../http";
 import { prepareImport } from "./preview";
-import { PARTLY_SAVED_MESSAGE, STOPPED_PARTWAY_MESSAGE, runImport } from "./runner";
+import { STOPPED_PARTWAY_MESSAGE, runImport } from "./runner";
 import type { RunImportArgs, RunnerRow } from "./runner";
 import { fileWithRows, makeProductEntity, makeProductUpdate, productLookups, storedProduct } from "./testkit";
 import type { ProductItem, ProductPayload } from "./testkit";
@@ -11,7 +11,7 @@ import { readWorkbook } from "./workbook";
 
 const ctx = { lookups: productLookups, signal: new AbortController().signal };
 
-const HEADERS = ["Id", "SKU *", "Name *", "Price"];
+const HEADERS = ["Record ID", "SKU *", "Name *", "Price"];
 type Cell = string | number | null;
 
 const stored: ProductItem[] = [storedProduct(1), storedProduct(2), storedProduct(3)];
@@ -90,7 +90,7 @@ describe("runImport: rows that update a record", () => {
     expect(create).not.toHaveBeenCalled();
     expect(result).toMatchObject({ created: 0, updated: 1, failed: 0, cancelled: false });
     expect(result.outcomes).toEqual([
-      { row: 2, status: "updated", message: null, id: undefined, changes: ["Name", "Price"], label: "SKU-1" },
+      { row: 2, status: "updated", message: null, id: undefined, changes: ["Name", "Price"], record: "SKU-1", label: "SKU-1" },
     ]);
   });
 
@@ -284,14 +284,33 @@ describe("runImport: other errors while updating", () => {
     }
   });
 
-  it("says when earlier changes to the same row were already saved", async () => {
+  it("names what was saved and what was not when a later request of the same row fails", async () => {
     const steps = (): ExtraStep[] => [{ changed: ["Stage"], run: () => Promise.reject(problem(409, "A deal in 'won' cannot move")) }];
-    const { result } = await run([["p-1", null, "A", null]], { extras: steps });
+    const { result } = await run([["p-1", null, "A", "12"]], { extras: steps });
     expect(result.outcomes[0]).toMatchObject({
       status: "failed",
-      message: `A deal in 'won' cannot move ${PARTLY_SAVED_MESSAGE}`,
-      changes: ["Name", "Stage"],
+      message: "A deal in 'won' cannot move Saved: Name, Price. Not saved: Stage.",
+      changes: ["Name", "Price", "Stage"],
     });
+  });
+
+  it("names the columns of a middle step that failed, and those after it, as not saved", async () => {
+    const steps = (): ExtraStep[] => [
+      { changed: ["Stage"], run: () => Promise.reject(problem(422, "Stage is closed")) },
+      { changed: ["Phone", "Owner"], run: () => Promise.resolve() },
+    ];
+    const { result, calls } = await run([["p-1", null, "A", null]], { extras: steps });
+    expect(calls).toEqual(['patch p-1 {"name":"A"}']);
+    expect(result.outcomes[0]?.message).toBe("Stage is closed Saved: Name. Not saved: Stage, Phone, Owner.");
+  });
+
+  it("names a saved extra step when the one after it fails", async () => {
+    const steps = (): ExtraStep[] => [
+      { changed: ["Stage"], run: () => Promise.resolve() },
+      { changed: ["Phone"], run: () => Promise.reject(problem(422, "That is not a phone number")) },
+    ];
+    const { result } = await run([["p-1", null, "A", null]], { extras: steps });
+    expect(result.outcomes[0]?.message).toBe("That is not a phone number Saved: Name, Stage. Not saved: Phone.");
   });
 
   it("does not say so when the first request is the one that failed", async () => {
@@ -326,7 +345,15 @@ describe("runImport: cancelling an update", () => {
     expect(calls).toEqual(['patch p-1 {"name":"A"}']);
     expect(result.cancelled).toBe(true);
     expect(result.outcomes).toEqual([
-      { row: 2, status: "failed", message: STOPPED_PARTWAY_MESSAGE, id: undefined, changes: ["Name", "Stage"], label: "SKU-1" },
+      {
+        row: 2,
+        status: "failed",
+        message: `${STOPPED_PARTWAY_MESSAGE} Saved: Name. Not saved: Stage.`,
+        id: undefined,
+        changes: ["Name", "Stage"],
+        record: "SKU-1",
+        label: "SKU-1",
+      },
     ]);
   });
 
