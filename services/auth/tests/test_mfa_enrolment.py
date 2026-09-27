@@ -30,7 +30,7 @@ from typing import Any
 import jwt
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import event, func, select
+from sqlalchemy import event, func, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -1074,11 +1074,21 @@ class TestTwoConfirmationsAtOnce:
     async def test_mint_exactly_one_set_of_recovery_codes(
         self, session, cfg, pair, directory, registered
     ) -> None:
-        """A real race on two connections. Two pending factors exist for one member (the service
-        primitive does not prune, which is how two can); both confirmations read "no other working
-        factor" unless the credential row is locked first, and each would mint — and the second
-        replace — the recovery codes. Locked, the loser finds the winner's factor confirmed after
-        its own was begun, and is refused."""
+        """A real race on two connections, with the overlap **forced** rather than hoped for.
+
+        Two pending factors exist for one member (the service primitive does not prune, which is
+        how two can). A third connection takes the credential row first (`FOR UPDATE`); both
+        confirmations are then started and the test waits until *both are blocked on a lock* —
+        provably in flight together — before it lets go. Released:
+
+        * with the credential locked at the top of confirm (the code), both were queued behind
+          the row, so they run one after the other; the second finds the first's factor confirmed
+          after its own was begun, and is refused;
+        * without that lock, both had already read "no other working factor" and were parked on
+          the write that follows, so both mint (and the second replaces the first's codes).
+
+        So it fails without the lock every time, not only when the scheduler happens to interleave.
+        """
         issued = await _sign_in(session, cfg, pair, directory)
         pending = []
         for _ in range(2):
@@ -1102,13 +1112,29 @@ class TestTwoConfirmationsAtOnce:
 
         engines: list[AsyncEngine] = []
         sessions: list[AsyncSession] = []
-        for _ in range(2):
+        for _ in range(3):
             engine = create_async_engine(
                 settings().app_dsn,
                 connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}},
             )
             engines.append(engine)
             sessions.append(async_sessionmaker(engine, expire_on_commit=False)())
+        holder, *confirmers = sessions
+        # The app role, like the connections it watches: `pg_stat_activity` shows a role only its
+        # own sessions' wait state.
+        watcher = create_async_engine(settings().app_dsn)
+        engines.append(watcher)
+
+        async def _blocked_on_a_lock() -> int:
+            async with watcher.connect() as connection:
+                return (
+                    await connection.execute(
+                        text(
+                            "SELECT count(*) FROM pg_stat_activity "
+                            "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                        )
+                    )
+                ).scalar_one()
 
         async def _attempt(s: AsyncSession, factor_id: uuid.UUID, secret: str) -> Any:
             return await services.confirm_member_enrolment(
@@ -1119,12 +1145,28 @@ class TestTwoConfirmationsAtOnce:
                 code=_code(secret),
             )
 
+        tasks: list[asyncio.Task[Any]] = []
         try:
-            results = await asyncio.gather(
-                *(_attempt(s, fid, sec) for s, (fid, sec) in zip(sessions, pending, strict=True)),
-                return_exceptions=True,
+            await holder.execute(
+                text("SELECT 1 FROM auth.credentials WHERE user_id = :u FOR UPDATE"), {"u": USER}
             )
+            tasks = [
+                asyncio.create_task(_attempt(s, fid, sec))
+                for s, (fid, sec) in zip(confirmers, pending, strict=True)
+            ]
+            deadline = asyncio.get_running_loop().time() + 10
+            while await _blocked_on_a_lock() < 2:
+                assert asyncio.get_running_loop().time() < deadline, (
+                    "the two confirmations were never both in flight, blocked on the credential "
+                    "row: the race was not forced"
+                )
+                await asyncio.sleep(0.05)
+            assert not any(task.done() for task in tasks), "a confirmation got past the held row"
+            await holder.rollback()  # let go: both are now released into the race
+            results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 30)
         finally:
+            for task in tasks:
+                task.cancel()
             for s in sessions:
                 await s.close()
             for engine in engines:

@@ -2945,7 +2945,7 @@ def _issue_operator(
         entitlements=[],
         roles=roles,
         locations=[],
-        amr=_dedupe_amr(auth_session.amr),
+        amr=_dedupe_amr(_session_amr(auth_session)),
         permission_version=0,
         subject_ref=None,
         ttl_seconds=cfg.access_token_ttl_seconds,
@@ -2998,7 +2998,7 @@ def _mint_operator_access_only(
         entitlements=[],
         roles=roles,
         locations=[],
-        amr=_dedupe_amr(auth_session.amr),
+        amr=_dedupe_amr(_session_amr(auth_session)),
         permission_version=0,
         subject_ref=None,
         ttl_seconds=cfg.access_token_ttl_seconds,
@@ -3535,7 +3535,7 @@ async def confirm_operator_mfa_enrolment(
         # Lost a race against another confirmation of the same session — refuse rather than
         # mint a second token pair for a step that has already completed once.
         raise UnauthorizedProblem("Please start signing in again.")
-    auth_session.amr = _dedupe_amr([*auth_session.amr, "otp"])
+    auth_session.amr = _dedupe_amr([*_session_amr(auth_session), "otp"])
     record_audit(
         session,
         AuditLog,
@@ -3613,7 +3613,7 @@ async def operator_verify_mfa(
     _clear_operator_failures(staff)
     if not await _claim_mfa_verified(session, auth_session):
         raise UnauthorizedProblem("Please start signing in again.")
-    auth_session.amr = _dedupe_amr([*auth_session.amr, "otp"])
+    auth_session.amr = _dedupe_amr([*_session_amr(auth_session), "otp"])
 
     # A recovery-code sign-in is its own audited action (MINOR 11): a break-glass code being
     # spent is a materially different event from an ordinary authenticator check, and an
