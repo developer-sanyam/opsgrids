@@ -99,3 +99,86 @@ describe("fixture mode: creates are refused like the server refuses them", () =>
     expect(problemMessage(error)).toBe("An owner with that email already exists");
   });
 });
+
+/**
+ * The same for updates (the bulk update from Excel reads the status: a 409 on a rename is a real
+ * failure the user must see, and a record that has gone is a 404), and with the server's sentences.
+ */
+describe("fixture mode: updates are refused like the server refuses them", () => {
+  it("a company that does not exist is a 404", async () => {
+    const { updateCompany, problemMessage, refusal } = await fixtureClient();
+    const error = await refusal(updateCompany("comp-nowhere", { city: "Pune" }));
+    expect(error.status).toBe(404);
+    expect(problemMessage(error)).toBe("That company is not part of this organization");
+  });
+
+  it("a company renamed onto another's name, ignoring capitals and spaces, is a 409; a change of its own capitals is a rename", async () => {
+    const { updateCompany, problemMessage, refusal } = await fixtureClient();
+    const error = await refusal(updateCompany("comp-1", { name: "  MERIDIAN steelworks " }));
+    expect(error.status).toBe(409);
+    expect(problemMessage(error)).toBe("A company with that name already exists");
+    await expect(updateCompany("comp-1", { name: "NORTHWIND LOGISTICS" })).resolves.toMatchObject({
+      name: "NORTHWIND LOGISTICS",
+    });
+  });
+
+  it("a deal renamed onto another's exact name is a 409, other capitals are a new name, and a missing deal is a 404", async () => {
+    const { updateDeal, problemMessage, refusal } = await fixtureClient();
+    const clash = await refusal(updateDeal("deal-2", { name: "Fleet telematics rollout" }));
+    expect(clash.status).toBe(409);
+    expect(problemMessage(clash)).toBe("A deal with that name already exists");
+    await expect(updateDeal("deal-2", { name: "FLEET telematics rollout" })).resolves.toMatchObject({
+      name: "FLEET telematics rollout",
+    });
+    expect((await refusal(updateDeal("deal-nowhere", { source: "x" }))).status).toBe(404);
+  });
+
+  it("a contact moved onto another's exact email is a 409, other capitals are allowed as the server allows them, and a missing company is a 404", async () => {
+    const { updateContact, problemMessage, refusal } = await fixtureClient();
+    const clash = await refusal(updateContact("con-2", { email: "rajesh.khanna@northwind.co" }));
+    expect(clash.status).toBe(409);
+    expect(problemMessage(clash)).toBe("A contact with that email already exists");
+    await expect(updateContact("con-2", { email: "Rajesh.Khanna@northwind.co" })).resolves.toMatchObject({
+      email: "Rajesh.Khanna@northwind.co",
+    });
+    const missing = await refusal(updateContact("con-2", { company_id: "comp-nowhere" }));
+    expect(missing.status).toBe(404);
+    expect(problemMessage(missing)).toBe("That company is not part of this organization");
+  });
+
+  it("a converted lead cannot be given an owner or a status, but its name and notes change", async () => {
+    const { updateLead, problemMessage, refusal } = await fixtureClient();
+    const error = await refusal(updateLead("lead-5", { owner_id: "own-2" }));
+    expect(error.status).toBe(409);
+    expect(problemMessage(error)).toBe("A converted lead cannot be reassigned or have its status changed");
+    await expect(updateLead("lead-5", { full_name: "P. Nair", notes: "Won." })).resolves.toMatchObject({
+      full_name: "P. Nair",
+      status: "converted",
+    });
+    expect((await refusal(updateLead("lead-nowhere", { notes: "x" }))).status).toBe(404);
+  });
+
+  it("a closed deal, and a move to the stage a deal is already in, is a 409 in the server's words", async () => {
+    const { moveDealStage, problemMessage, refusal } = await fixtureClient();
+    const closed = await refusal(moveDealStage("deal-5", { stage: "lead" }));
+    expect(closed.status).toBe(409);
+    expect(problemMessage(closed)).toBe("A deal in 'closed_won' cannot move to 'lead'");
+    const same = await refusal(moveDealStage("deal-4", { stage: "lead" }));
+    expect(same.status).toBe(409);
+    expect(problemMessage(same)).toBe("A deal in 'lead' cannot move to 'lead'");
+    await expect(moveDealStage("deal-4", { stage: "qualified", probability: 40 })).resolves.toMatchObject({
+      stage: "qualified",
+      probability: 40,
+    });
+  });
+
+  it("a phone without a country code is a 422 naming the field, and the number is saved masked otherwise", async () => {
+    const { setContactPhone, refusal } = await fixtureClient();
+    const bad = await refusal(setContactPhone("con-1", { raw_phone: "98765 43210" }));
+    expect(bad.status).toBe(422);
+    expect(bad.problem?.errors?.map((e) => e.field)).toEqual(["raw_phone"]);
+    const saved = await setContactPhone("con-1", { raw_phone: "+91 98765 43210" });
+    expect(saved.phone).not.toContain("98765");
+    expect((await refusal(setContactPhone("con-nowhere", { raw_phone: "+919876543210" }))).status).toBe(404);
+  });
+});

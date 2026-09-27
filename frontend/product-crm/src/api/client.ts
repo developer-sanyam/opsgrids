@@ -106,6 +106,10 @@ function refusal(
 
 const conflict = (detail: string): ApiError => refusal(409, "Conflict", detail);
 
+/** The 404 the server answers for an id that is not in this organization (or was deleted). */
+const notFound = (thing: string): ApiError =>
+  refusal(404, "Not found", `That ${thing} is not part of this organization`);
+
 /** Small artificial delay so loading states are exercised in fixtures mode. */
 function settle<T>(value: T, ms = 240): Promise<T> {
   return new Promise((resolve) => setTimeout(() => resolve(value), ms));
@@ -228,9 +232,14 @@ export async function createDeal(input: DealIn): Promise<Deal> {
 export async function updateDeal(id: string, patch: DealPatch): Promise<Deal> {
   if (USE_FIXTURES) {
     const index = DEALS.findIndex((d) => d.id === id);
-    if (index === -1) throw new Error("That deal could not be found.");
+    if (index === -1) throw notFound("deal");
     const current = DEALS[index];
-    if (!current) throw new Error("That deal could not be found.");
+    if (!current) throw notFound("deal");
+    // The server compares deal names exactly, capitals included, and refuses a rename onto another deal's.
+    const newName = patch.name;
+    if (newName !== undefined && DEALS.some((d) => d.id !== id && d.name === newName)) {
+      throw conflict("A deal with that name already exists");
+    }
     const updated: Deal = {
       ...current,
       ...(patch.name !== undefined ? { name: patch.name } : {}),
@@ -272,14 +281,12 @@ export async function deleteDeal(id: string): Promise<void> {
 export async function moveDealStage(id: string, input: StageMoveIn): Promise<Deal> {
   if (USE_FIXTURES) {
     const index = DEALS.findIndex((d) => d.id === id);
-    if (index === -1) throw new Error("That deal could not be found.");
+    if (index === -1) throw notFound("deal");
     const current = DEALS[index];
-    if (!current) throw new Error("That deal could not be found.");
-    if (current.stage === "closed_won" || current.stage === "closed_lost") {
-      throw new Error("A closed deal can't be moved.");
-    }
-    if (current.stage === input.stage) {
-      throw new Error("That deal is already in this stage.");
+    if (!current) throw notFound("deal");
+    // A closed deal stays where it is, and a move to the stage it is already in is not a move.
+    if (current.stage === "closed_won" || current.stage === "closed_lost" || current.stage === input.stage) {
+      throw conflict(`A deal in '${current.stage}' cannot move to '${input.stage}'`);
     }
     const updated: Deal = {
       ...current,
@@ -424,14 +431,13 @@ export async function createCompany(input: CompanyIn): Promise<Company> {
 export async function updateCompany(id: string, patch: CompanyPatch): Promise<Company> {
   if (USE_FIXTURES) {
     const index = COMPANIES.findIndex((c) => c.id === id);
-    if (index === -1) throw new Error("That company could not be found.");
+    if (index === -1) throw notFound("company");
     const current = COMPANIES[index];
-    if (!current) throw new Error("That company could not be found.");
-    if (
-      patch.name !== undefined &&
-      COMPANIES.some((c) => c.id !== id && c.name.toLowerCase() === patch.name?.toLowerCase())
-    ) {
-      throw new Error("A company with that name already exists.");
+    if (!current) throw notFound("company");
+    // The server compares company names ignoring case and surrounding spaces.
+    const newName = patch.name?.trim().toLowerCase();
+    if (newName !== undefined && COMPANIES.some((c) => c.id !== id && c.name.trim().toLowerCase() === newName)) {
+      throw conflict("A company with that name already exists");
     }
     const updated: Company = {
       ...current,
@@ -537,7 +543,7 @@ export async function createContact(input: ContactIn): Promise<Contact> {
       throw conflict("A contact with that email already exists");
     }
     if (!COMPANIES.some((c) => c.id === input.company_id)) {
-      throw refusal(404, "Not found", "That company is not part of this organization");
+      throw notFound("company");
     }
     if (input.raw_phone !== undefined && !E164.test(input.raw_phone.replace(/[\s\-().]/g, ""))) {
       throw refusal(422, "Validation failed", "Request validation failed", [
@@ -568,15 +574,16 @@ export async function createContact(input: ContactIn): Promise<Contact> {
 export async function updateContact(id: string, patch: ContactPatch): Promise<Contact> {
   if (USE_FIXTURES) {
     const index = CONTACTS.findIndex((c) => c.id === id);
-    if (index === -1) throw new Error("That contact could not be found.");
+    if (index === -1) throw notFound("contact");
     const current = CONTACTS[index];
-    if (!current) throw new Error("That contact could not be found.");
-    if (
-      patch.email !== undefined &&
-      CONTACTS.some((c) => c.id !== id && c.email.toLowerCase() === patch.email?.toLowerCase())
-    ) {
-      throw new Error("A contact with that email already exists.");
+    if (!current) throw notFound("contact");
+    // The server compares contact emails exactly, capitals included.
+    const newEmail = patch.email;
+    if (newEmail !== undefined && CONTACTS.some((c) => c.id !== id && c.email === newEmail)) {
+      throw conflict("A contact with that email already exists");
     }
+    const newCompany = patch.company_id;
+    if (newCompany !== undefined && !COMPANIES.some((c) => c.id === newCompany)) throw notFound("company");
     const updated: Contact = {
       ...current,
       ...(patch.full_name !== undefined ? { full_name: patch.full_name } : {}),
@@ -612,11 +619,13 @@ export async function deleteContact(id: string): Promise<void> {
 export async function setContactPhone(id: string, input: ContactPhoneIn): Promise<Contact> {
   if (USE_FIXTURES) {
     const index = CONTACTS.findIndex((c) => c.id === id);
-    if (index === -1) throw new Error("That contact could not be found.");
+    if (index === -1) throw notFound("contact");
     const current = CONTACTS[index];
-    if (!current) throw new Error("That contact could not be found.");
-    if (!/^\+\d{1,3}\d{4,}$/.test(input.raw_phone.replace(/\s/g, ""))) {
-      throw new Error("Enter the number with a country code, like +91 98765 43210.");
+    if (!current) throw notFound("contact");
+    if (!E164.test(input.raw_phone.replace(/[\s\-().]/g, ""))) {
+      throw refusal(422, "Validation failed", "Request validation failed", [
+        { field: "raw_phone", code: "invalid_phone", message: "That is not a valid phone number with a country code" },
+      ]);
     }
     const updated: Contact = { ...current, phone: maskPhone(input.raw_phone) };
     CONTACTS[index] = updated;
@@ -863,9 +872,12 @@ export async function createLead(input: LeadIn): Promise<Lead> {
 export async function updateLead(id: string, patch: LeadPatch): Promise<Lead> {
   if (USE_FIXTURES) {
     const index = LEADS.findIndex((l) => l.id === id);
-    if (index === -1) throw new Error("That lead could not be found.");
+    if (index === -1) throw notFound("lead");
     const current = LEADS[index];
-    if (!current) throw new Error("That lead could not be found.");
+    if (!current) throw notFound("lead");
+    if (current.status === "converted" && (patch.status !== undefined || patch.owner_id !== undefined)) {
+      throw conflict("A converted lead cannot be reassigned or have its status changed");
+    }
     const lead: Lead = {
       ...current,
       ...(patch.full_name !== undefined ? { full_name: patch.full_name } : {}),
