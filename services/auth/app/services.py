@@ -179,15 +179,22 @@ def _register_password_failure(credential: Credential, cfg: Settings) -> bool:
     Returns whether this call tripped the lock. The caller commits — before it raises, or the
     count is rolled back with the request it was counting.
 
-    The one implementation behind sign-in (`_verify_credentials`) and `begin_member_enrolment`:
-    they share `Credential.failed_attempts` / `locked_until` on purpose, because a password
-    guessed at through a signed-in session is the same password guessed at through the login
-    form and must not get a second allowance.
+    The one implementation behind sign-in (`_verify_credentials`), `begin_member_enrolment` and
+    `change_password`: they share `Credential.failed_attempts` / `locked_until` on purpose,
+    because a password guessed at through a signed-in session is the same password guessed at
+    through the login form and must not get a second allowance.
+
+    **The count restarts with the lock**, as `_register_mfa_failure` does for the code counter, so
+    that the lock expiring is a real unlock: with the count left at `max_failed_attempts`, the
+    first wrong password after `lockout_minutes` would lock the account again — and in
+    `change_password` and `begin_member_enrolment`, where the tripping attempt also ends the
+    session it came from, that one typo would end the member's session. (Second review, m1.)
     """
     credential.failed_attempts += 1
     if credential.failed_attempts < cfg.max_failed_attempts:
         return False
     credential.locked_until = datetime.now(UTC) + timedelta(minutes=cfg.lockout_minutes)
+    credential.failed_attempts = 0
     log.warning("auth.account_locked", user_id=str(credential.user_id))
     return True
 

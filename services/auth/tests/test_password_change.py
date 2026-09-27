@@ -357,6 +357,37 @@ class TestAWrongCurrentPassword:
             )
         assert (await _change(http, attacker.access_token, PASSWORD)).status_code == 401
 
+    async def test_the_lock_expiring_is_a_real_unlock_one_typo_does_not_relock_or_end_the_session(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        """Second review, m1. `_register_password_failure` used to leave the count at
+        `max_failed_attempts` when it set the lock, so the first wrong password after the lock
+        expired tripped it again — and here, where the tripping attempt ends the session it came
+        from, one typo by the real member ended their session."""
+        attacker = await _sign_in(session, cfg, pair, directory)
+        for _ in range(cfg.max_failed_attempts):
+            await _change(http, attacker.access_token, WRONG_PASSWORD_X)
+        assert (await _password_failures(session))[0] == 0
+        # The lock runs out. (A fresh sign-in is what the member would then do.)
+        await session.execute(
+            Credential.__table__.update().values(
+                locked_until=datetime.now(UTC) - timedelta(seconds=1)
+            )
+        )
+        await session.commit()
+        member = await _sign_in(session, cfg, pair, directory)
+
+        typo = await _change(http, member.access_token, WRONG_PASSWORD_Y)
+
+        assert typo.status_code == 422
+        assert _problem_type(typo) == "password-incorrect"
+        count, locked_until = await _password_failures(session)
+        assert count == 1, "the count did not restart with the lock"
+        assert locked_until is None or locked_until < datetime.now(UTC), "one typo relocked"
+        assert (await _session_row(session, member.session_id)).revoked_at is None
+        # And the account is fully usable: the right password still changes it.
+        assert (await _change(http, member.access_token, PASSWORD)).status_code == 204
+
     async def test_a_locked_account_refuses_the_right_password_without_counting_or_changing(
         self, http: AsyncClient, session, cfg, pair, directory, registered
     ) -> None:
@@ -389,7 +420,11 @@ class TestAWrongCurrentPassword:
         ]
         assert answers[: cfg.max_failed_attempts] == [422] * cfg.max_failed_attempts
         assert set(answers[cfg.max_failed_attempts :]) == {401}
-        assert (await _password_failures(session))[0] == cfg.max_failed_attempts
+        # The count restarted with the lock (`_register_password_failure`), so it says 0 with the
+        # lock set — not `max_failed_attempts`, which would relock on the first typo after expiry.
+        count, locked_until = await _password_failures(session)
+        assert count == 0
+        assert locked_until is not None and locked_until > datetime.now(UTC)
 
 
 # ------------------------------------------------------------------------- the success

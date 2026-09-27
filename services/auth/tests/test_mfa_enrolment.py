@@ -341,6 +341,33 @@ class TestABearerAloneCannotStartAnEnrolment:
         assert (await _begin(http, attacker.access_token, password=PASSWORD)).status_code == 401
         assert await _factors(session) == []
 
+    async def test_the_lock_expiring_is_a_real_unlock_one_typo_does_not_relock_or_end_the_session(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        """Second review, m1: the count restarts with the lock, so the first wrong password after
+        it expires is one failure, not a relock that also ends the session it came from."""
+        attacker = await _sign_in(session, cfg, pair, directory)
+        for _ in range(cfg.max_failed_attempts):
+            await _begin(http, attacker.access_token, password=WRONG_PASSWORD_X)
+        assert (await _password_failures(session))[0] == 0
+        await session.execute(
+            Credential.__table__.update().values(
+                locked_until=datetime.now(UTC) - timedelta(seconds=1)
+            )
+        )
+        await session.commit()
+        member = await _sign_in(session, cfg, pair, directory)
+
+        typo = await _begin(http, member.access_token, password=WRONG_PASSWORD_Y)
+
+        assert typo.status_code == 422
+        assert _problem_type(typo) == "password-incorrect"
+        count, locked_until = await _password_failures(session)
+        assert count == 1
+        assert locked_until is None or locked_until < datetime.now(UTC)
+        assert (await _session_row(session, member.session_id)).revoked_at is None
+        assert (await _begin(http, member.access_token, password=PASSWORD)).status_code == 201
+
     async def test_a_locked_account_refuses_the_right_password_without_counting(
         self, http: AsyncClient, session, cfg, pair, directory, registered
     ) -> None:

@@ -97,6 +97,34 @@ class TestCredentials:
         with pytest.raises(ForbiddenProblem, match="temporarily locked"):
             await _login(session, cfg, pair, directory)
 
+    async def test_the_lock_expiring_is_a_real_unlock_one_typo_does_not_relock(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """Second review, m1: the count restarts with the lock, exactly as the second-factor
+        counter's does, so the first wrong password after `lockout_minutes` is one failure and the
+        next sign-in with the right password works."""
+        for _ in range(cfg.max_failed_attempts):
+            with pytest.raises(UnauthorizedProblem):
+                # pragma: allowlist nextline secret
+                await _login(session, cfg, pair, directory, password="wrong")
+        credential = await session.get(Credential, USER)
+        assert credential is not None
+        assert credential.failed_attempts == 0
+        assert credential.locked_until is not None and credential.locked_until > datetime.now(UTC)
+        credential.locked_until = datetime.now(UTC) - timedelta(seconds=1)  # the lock ran out
+        await session.commit()
+
+        with pytest.raises(UnauthorizedProblem):  # a typo: refused, but not a relock
+            # pragma: allowlist nextline secret
+            await _login(session, cfg, pair, directory, password="typo")
+
+        credential = await session.get(Credential, USER)
+        assert credential is not None
+        assert credential.failed_attempts == 1
+        assert credential.locked_until is None or credential.locked_until < datetime.now(UTC)
+        outcome = await _login(session, cfg, pair, directory)
+        assert outcome.status == "complete"
+
     async def test_the_lock_is_checked_before_the_password(
         self, session, cfg, pair, directory, registered
     ) -> None:
