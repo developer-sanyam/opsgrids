@@ -24,7 +24,11 @@ const LOOKUPS: LookupSet = {
   ]),
 };
 
-const CONTEXT: ImportContext = { lookups: LOOKUPS, signal: new AbortController().signal };
+/**
+ * A context of its own for each check: the engine gives every file one, and the codes a file has
+ * claimed so far live in it.
+ */
+const context = (lookups: LookupSet = LOOKUPS): ImportContext => ({ lookups, signal: new AbortController().signal });
 
 function loadLookups(signal: AbortSignal): Promise<LookupSet> {
   if (itemCategoryImport.loadLookups === undefined) throw new Error("item categories have no lookups");
@@ -90,14 +94,14 @@ describe("item category toPayload", () => {
   const ROW: ParsedRow = { code: "STAINLESS", name: "Stainless steel", parent: null };
 
   it("creates a top-level category when the parent cell is blank", () => {
-    expect(itemCategoryImport.toPayload(ROW, CONTEXT)).toStrictEqual({
+    expect(itemCategoryImport.toPayload(ROW, context())).toStrictEqual({
       code: "STAINLESS",
       name: "Stainless steel",
     });
   });
 
   it("turns a parent code into the id the API wants, whatever its capitals", () => {
-    expect(itemCategoryImport.toPayload({ ...ROW, parent: "steel" }, CONTEXT)).toStrictEqual({
+    expect(itemCategoryImport.toPayload({ ...ROW, parent: "steel" }, context())).toStrictEqual({
       code: "STAINLESS",
       name: "Stainless steel",
       parent_id: "cat-steel",
@@ -108,7 +112,7 @@ describe("item category toPayload", () => {
   // says to import the parent first), before `toPayload` runs. `toPayload` still fails the row
   // rather than send a guess.
   it("fails the row for a parent that is not there yet", () => {
-    const attempt = () => itemCategoryImport.toPayload({ ...ROW, parent: "ALLOYS" }, CONTEXT);
+    const attempt = () => itemCategoryImport.toPayload({ ...ROW, parent: "ALLOYS" }, context());
     expect(attempt).toThrow(RowProblem);
     expect(attempt).toThrow('Parent category code "ALLOYS" does not match exactly one entry on the Lists sheet.');
   });
@@ -120,23 +124,22 @@ describe("item category toPayload", () => {
         { label: "STEEL", value: "cat-b" },
       ]),
     };
-    const attempt = () =>
-      itemCategoryImport.toPayload({ ...ROW, parent: "steel" }, { ...CONTEXT, lookups });
+    const attempt = () => itemCategoryImport.toPayload({ ...ROW, parent: "steel" }, context(lookups));
     expect(attempt).toThrow(RowProblem);
   });
 
   it("accepts a code no existing category resembles", () => {
-    expect(itemCategoryImport.toPayload({ ...ROW, code: "ALLOYS" }, CONTEXT)).toMatchObject({ code: "ALLOYS" });
+    expect(itemCategoryImport.toPayload({ ...ROW, code: "ALLOYS" }, context())).toMatchObject({ code: "ALLOYS" });
   });
 
   it("sends a code spelled exactly like an existing one, so the server's 409 makes it a skipped row", () => {
-    expect(itemCategoryImport.toPayload({ ...ROW, code: "STEEL" }, CONTEXT)).toMatchObject({ code: "STEEL" });
+    expect(itemCategoryImport.toPayload({ ...ROW, code: "STEEL" }, context())).toMatchObject({ code: "STEEL" });
   });
 
   it.each(["steel", "Steel", "sTeEl"])(
     "refuses %j, which differs from an existing code only in capitals, and says which one",
     (code) => {
-      const attempt = () => itemCategoryImport.toPayload({ ...ROW, code }, CONTEXT);
+      const attempt = () => itemCategoryImport.toPayload({ ...ROW, code }, context());
       expect(attempt).toThrow(RowProblem);
       expect(attempt).toThrow(
         "An item category with the code 'STEEL' already exists; codes that differ only in capitals are not accepted.",
@@ -155,16 +158,40 @@ describe("item category toPayload", () => {
         { label: "STEEL", value: "STEEL" },
       ]),
     };
-    const context = { ...CONTEXT, lookups };
-    expect(() => itemCategoryImport.toPayload({ ...ROW, code: "Steel" }, context)).not.toThrow();
-    expect(() => itemCategoryImport.toPayload({ ...ROW, code: "STEEL" }, context)).not.toThrow();
-    expect(() => itemCategoryImport.toPayload({ ...ROW, code: "steel" }, context)).toThrow(
+    expect(() => itemCategoryImport.toPayload({ ...ROW, code: "Steel" }, context(lookups))).not.toThrow();
+    expect(() => itemCategoryImport.toPayload({ ...ROW, code: "STEEL" }, context(lookups))).not.toThrow();
+    expect(() => itemCategoryImport.toPayload({ ...ROW, code: "steel" }, context(lookups))).toThrow(
       "More than one item category already has a code that differs from 'steel' only in capitals, so it is not accepted.",
     );
   });
 
+  it("refuses a code it cannot check when the existing codes were not loaded, and sends nothing on a guess", () => {
+    const attempt = () => itemCategoryImport.toPayload({ ...ROW, code: "ALLOYS" }, context({}));
+    expect(attempt).toThrow(RowProblem);
+    expect(attempt).toThrow("The existing item category codes could not be loaded, so this row cannot be checked against them.");
+  });
+
+  it("refuses a code that differs only in capitals from one an earlier row of the same file gives", () => {
+    const file = context();
+    expect(itemCategoryImport.toPayload({ ...ROW, code: "ALLOYS" }, file)).toMatchObject({ code: "ALLOYS" });
+    const attempt = () => itemCategoryImport.toPayload({ ...ROW, code: "alloys" }, file);
+    expect(attempt).toThrow(RowProblem);
+    expect(attempt).toThrow(
+      "An earlier row of this file gives an item category the code 'ALLOYS'; codes that differ only in capitals are not accepted.",
+    );
+    // The same spelling is left to the server, and the next file starts with nothing claimed.
+    expect(() => itemCategoryImport.toPayload({ ...ROW, code: "ALLOYS" }, file)).not.toThrow();
+    expect(() => itemCategoryImport.toPayload({ ...ROW, code: "alloys" }, context())).not.toThrow();
+  });
+
+  it("does not let a row refused for its parent claim its code", () => {
+    const file = context();
+    expect(() => itemCategoryImport.toPayload({ ...ROW, code: "ALLOYS", parent: "NOWHERE" }, file)).toThrow(RowProblem);
+    expect(itemCategoryImport.toPayload({ ...ROW, code: "alloys" }, file)).toMatchObject({ code: "alloys" });
+  });
+
   it("refuses a missing required cell", () => {
-    expect(() => itemCategoryImport.toPayload({ ...ROW, code: null }, CONTEXT)).toThrow(
+    expect(() => itemCategoryImport.toPayload({ ...ROW, code: null }, context())).toThrow(
       /Category code is required/,
     );
   });
@@ -231,10 +258,10 @@ describe("item category create", () => {
     const recorded = stubGateway(() => ({ body: { id: "cat-9" }, status: 201 }));
     const payload = itemCategoryImport.toPayload(
       { code: "STAINLESS", name: "Stainless steel", parent: "STEEL" },
-      CONTEXT,
+      context(),
     );
 
-    const result = await itemCategoryImport.create(payload, CONTEXT);
+    const result = await itemCategoryImport.create(payload, context());
 
     expect(recorded[0]?.url.pathname).toBe("/api/v1/operations/inventory/categories");
     expect(recorded[0]?.init.method).toBe("POST");
@@ -257,7 +284,7 @@ describe("item category create", () => {
       status: 409,
     }));
     await expect(
-      itemCategoryImport.create({ code: "STEEL", name: "Steel" }, CONTEXT),
+      itemCategoryImport.create({ code: "STEEL", name: "Steel" }, context()),
     ).rejects.toMatchObject({ status: 409 });
   });
 });

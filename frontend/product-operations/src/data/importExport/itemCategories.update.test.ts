@@ -65,6 +65,50 @@ describe("a row that changes nothing", () => {
     expect(plan({ code: "STEEL", name: "Steel", parent: "metals" })).toBeNull();
   });
 
+  describe("when two categories carry the parent's code in other capitals", () => {
+    const twins: ImportContext = {
+      lookups: {
+        ...LOOKUPS,
+        parents: makeLookup([
+          { label: "METALS", value: "cat-metals" },
+          { label: "Metals", value: "cat-metals-2" },
+          { label: "STEEL", value: "cat-steel" },
+          { label: "POLYMERS", value: "cat-poly" },
+        ]),
+      },
+      signal: new AbortController().signal,
+    };
+    const planIn = (existing: typeof STEEL, row: ParsedRow, cleared: readonly string[] = []) =>
+      planFor(itemCategoryImport, existing, row, twins, cleared);
+    const underMetals = { ...STEEL, parent_id: "cat-metals" };
+    const underMetalsAgain = { ...STEEL, parent_id: "cat-metals-2" };
+
+    it("is no change when the cell repeats the code of the category's own parent, whichever twin that is", () => {
+      expect(planIn(underMetals, { ...BLANK, parent: "METALS" })).toBeNull();
+      expect(planIn(underMetalsAgain, { ...BLANK, parent: "Metals" })).toBeNull();
+    });
+
+    it("leaves the other cells of such a row to change what they change", async () => {
+      const p = planIn(underMetals, { ...BLANK, name: "Steel sections", parent: "METALS" });
+      expect(p?.changed).toEqual(["Category name"]);
+      expect((await soleRequest(p)).body).toEqual({ name: "Steel sections" });
+    });
+
+    it("refuses the other twin and a spelling that fits both, since the row cannot say which parent it means", () => {
+      expect(() => planIn(underMetals, { ...BLANK, parent: "Metals" })).toThrow(
+        "'Metals' matches more than one of the accepted values for Parent category code, so it cannot be chosen.",
+      );
+      expect(() => planIn(underMetals, { ...BLANK, parent: "metals" })).toThrow(RowProblem);
+    });
+
+    it("still re-parents to a code only one category carries, and to the top level with [clear]", async () => {
+      expect((await soleRequest(planIn(underMetals, { ...BLANK, parent: "polymers" }))).body).toEqual({
+        parent_id: "cat-poly",
+      });
+      expect((await soleRequest(planIn(underMetals, { ...BLANK }, ["parent"]))).body).toEqual({ parent_id: null });
+    });
+  });
+
   it("holds a row found by its Record ID to the code's exact spelling: other capitals is an attempt to change it", () => {
     // A row found by typing its code is handed the stored spelling by the engine (see updateFlow.test.tsx).
     expect(() => plan({ ...BLANK, code: "steel" })).toThrow(
@@ -209,17 +253,22 @@ describe("the parent", () => {
 });
 
 describe("finding the category a row names", () => {
-  it("matches by Record ID first, and by code ignoring capitals and spacing", () => {
+  it("matches by Record ID first, and by the code, surrounding spaces ignored", () => {
     expect(matchAmong(itemCategoryImport, [METALS, STEEL], "cat-steel", null)).toEqual({
       kind: "found",
       item: STEEL,
       by: "id",
     });
-    expect(matchAmong(itemCategoryImport, [METALS, STEEL], null, " steel ")).toEqual({
+    expect(matchAmong(itemCategoryImport, [METALS, STEEL], null, " STEEL ")).toEqual({
       kind: "found",
       item: STEEL,
       by: "key",
     });
+  });
+
+  it("names the category a row updates by its code and name", () => {
+    expect(updateSpec(itemCategoryImport).recordLabel?.(STEEL)).toBe("STEEL · Steel");
+    expect(updateSpec(itemCategoryImport).recordLabel?.(METALS)).toBe("METALS · METALS");
   });
 
   it("treats a code nobody has as a new category, and a Record ID nobody has as an error", () => {
@@ -228,7 +277,7 @@ describe("finding the category a row names", () => {
   });
 
   it("refuses a code that two categories share, instead of picking one", () => {
-    const twin = itemCategoryOut("steel", "cat-steel-2");
+    const twin = itemCategoryOut("STEEL", "cat-steel-2");
     expect(matchAmong(itemCategoryImport, [METALS, STEEL, twin], null, "STEEL")).toEqual({ kind: "ambiguous" });
   });
 });
@@ -274,6 +323,19 @@ describe("item category update notes", () => {
     expect(notes).toMatch(/Category code cannot be changed/);
     expect(notes).toMatch(/\[clear\] moves it to the top level. Category name cannot be emptied/);
     expect(notes).toMatch(/checked as its row is sent, in file order.*make the tree circular is refused for that row/);
+  });
+
+  it("says that a code must be spelled as stored, and that other capitals need that spelling or the Record ID", () => {
+    const notes = (itemCategoryImport.notes ?? []).join(" ");
+    expect(notes).toMatch(/by its code spelled exactly as it is stored/);
+    expect(notes).toMatch(/differs only in capitals is refused, naming the stored spelling: use that spelling, or the Record ID/);
+    expect(notes).not.toMatch(/still finds its category/);
+  });
+
+  it("says that a code that only differs in capitals from an earlier row of the file is refused", () => {
+    expect((itemCategoryImport.notes ?? []).join(" ")).toMatch(
+      /so is a code that only differs in capitals from one an earlier row of the same file gives/,
+    );
   });
 
   it("says in the parent column's help how to move a category to the top level", () => {

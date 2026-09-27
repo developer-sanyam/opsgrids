@@ -245,10 +245,10 @@ describe("updating inventory items through the real dialog", () => {
       const recorded = gateway({ inventory: STORED_ITEMS });
       render(<Harness entity={inventoryImport} onImported={onImported} />);
       const file = await sheetFile(inventoryImport, "stock-update.xlsx", ITEM_KEYS, [
-        // Row 2: found by its SKU in other capitals; the warehouse, unit and price are the same items
-        // written another way (62.4 is 6240 paise). Only the name differs.
+        // Row 2: found by its SKU; the warehouse, unit and price are the same items written another
+        // way (62.4 is 6240 paise). Only the name differs.
         {
-          sku: "rm-stl-4501",
+          sku: "RM-STL-4501",
           name: "Cold-rolled steel coil, 1.5 mm",
           warehouse: "main warehouse",
           uom: "KGS",
@@ -288,8 +288,8 @@ describe("updating inventory items through the real dialog", () => {
       expect(within(review).queryByText(/missing required columns/i)).toBeNull();
       const table = previewTable(review, "stock-update.xlsx");
       const action = (text: string) => rowContaining(table, text).textContent ?? "";
-      expect(action("rm-stl-4501")).toContain("Update");
-      expect(action("rm-stl-4501")).toContain("Changes: Item name");
+      expect(action("RM-STL-4501")).toContain("Update");
+      expect(action("RM-STL-4501")).toContain("Changes: Item name");
       expect(action("PKG-BOX-330")).toContain("No change");
       expect(action("MRO-LUB-220")).toContain("Changes: Unit value");
       expect(action("TAL-0001")).toContain("Changes: Warehouse, Unit of measure");
@@ -495,6 +495,60 @@ describe("updating inventory items through the real dialog", () => {
     },
     TEST_TIMEOUT,
   );
+
+  it(
+    "takes the cell an export wrote for a warehouse or a category that another one shares a name with as no change, and refuses a change to such a name",
+    async () => {
+      const user = userEvent.setup();
+      // The server compares names and codes exactly, so it allows "Pune Plant" beside "Pune plant" and
+      // "METALS" beside "Metals": each label then names two records, and no lookup can tell them apart.
+      const recorded = gateway({
+        warehouses: [[warehouseOut("Pune Plant", "WH-P1"), warehouseOut("Pune plant", "WH-P2"), warehouseOut("Main Warehouse", "WH-MAIN")]],
+        categories: [[itemCategoryOut("METALS", "cat-metals"), itemCategoryOut("Metals", "cat-metals-2"), itemCategoryOut("STEEL", "cat-steel")]],
+        inventory: [
+          [
+            inventoryItemOut({ id: "inv-p1", sku: "PUN-0001", name: "Pune bolt", warehouse: "Pune Plant", item_category_id: "cat-metals" }),
+            inventoryItemOut({ id: "inv-p2", sku: "PUN-0002", name: "Pune nut", warehouse: "Pune plant", item_category_id: "cat-metals-2" }),
+            inventoryItemOut({ id: "inv-m3", sku: "MAI-0003", name: "Main washer", warehouse: "Main Warehouse", item_category_id: "cat-steel" }),
+            inventoryItemOut({ id: "inv-m4", sku: "MAI-0004", name: "Main screw", warehouse: "Main Warehouse", item_category_id: "cat-steel" }),
+          ],
+        ],
+      });
+      render(<Harness entity={inventoryImport} />);
+      const file = await sheetFile(inventoryImport, "twins.xlsx", ["sku", "name", "warehouse", "item_category"], [
+        // Row 2: exactly what the export wrote for it, and a new name: only the name changes.
+        { sku: "PUN-0001", name: "Pune bolt, M8", warehouse: "Pune Plant", item_category: "METALS" },
+        // Row 3: the other twin's own cells: no change.
+        { sku: "PUN-0002", warehouse: "Pune plant", item_category: "Metals" },
+        // Row 4: a move to a warehouse whose name two warehouses have.
+        { sku: "MAI-0003", warehouse: "Pune Plant" },
+        // Row 5: a category whose code two categories have, in a spelling that fits both.
+        { sku: "MAI-0004", item_category: "metals" },
+      ]);
+
+      const review = await previewUpdate(user, "inventory items", file);
+
+      expect(stat(review, "Updates")).toBe("1");
+      expect(stat(review, "No change")).toBe("1");
+      expect(stat(review, "Need fixing")).toBe("2");
+      const table = previewTable(review, "twins.xlsx");
+      expect(rowContaining(table, "PUN-0001").textContent).toContain("Changes: Item name");
+      expect(rowContaining(table, "PUN-0002").textContent).toContain("No change");
+      expect(rowContaining(table, "MAI-0003").textContent).toContain(
+        "'Pune Plant' matches more than one of the accepted values for Warehouse, so it cannot be chosen.",
+      );
+      expect(rowContaining(table, "MAI-0004").textContent).toContain(
+        "'metals' matches more than one of the accepted values for Item category code, so it cannot be chosen.",
+      );
+
+      await importAndWait(user, review, "Import 1 row");
+
+      expect(writes(recorded)).toEqual([
+        { method: "PATCH", path: `${API}/inventory/inv-p1`, body: { name: "Pune bolt, M8" } },
+      ]);
+    },
+    TEST_TIMEOUT,
+  );
 });
 
 /* ------------------------------ warehouses ------------------------------ */
@@ -561,13 +615,89 @@ describe("updating warehouses through the real dialog", () => {
     },
     TEST_TIMEOUT,
   );
+
+  it(
+    "refuses a name that differs only in capitals from one an earlier row of the same file gives, whether that row renames a warehouse or adds one",
+    async () => {
+      const user = userEvent.setup();
+      const recorded = gateway({ warehouses: [[MAIN, COLD, EAST, WEST]] });
+      render(<Harness entity={warehouseImport} />);
+      const file = await sheetFile(warehouseImport, "warehouses-delta.xlsx", ["code", "name"], [
+        // Row 2: renames East Depot to Delta, which no warehouse has.
+        { code: "WH-EAST", name: "Delta" },
+        // Row 3: the same name in other capitals for another warehouse. The server would accept both
+        // and leave the organisation with two warehouses no inventory row could name.
+        { code: "WH-WEST", name: "delta" },
+        // Row 4: and for a warehouse the file adds.
+        { code: "WH-NEW-1", name: "DELTA" },
+        // Row 5: a new warehouse called Gamma, then a rename to it in other capitals.
+        { code: "WH-NEW-2", name: "Gamma" },
+        { code: "WH-COLD", name: "gamma" },
+      ]);
+
+      const review = await previewUpdate(user, "warehouses", file);
+
+      expect(stat(review, "Updates")).toBe("1");
+      expect(stat(review, "New records")).toBe("1");
+      expect(stat(review, "Need fixing")).toBe("3");
+      const table = previewTable(review, "warehouses-delta.xlsx");
+      const earlier = (name: string) =>
+        `An earlier row of this file gives a warehouse the name '${name}'; names that differ only in capitals or spacing are not accepted.`;
+      expect(rowContaining(table, "WH-EAST").textContent).toContain("Changes: Warehouse name");
+      expect(rowContaining(table, "WH-WEST").textContent).toContain(earlier("Delta"));
+      expect(rowContaining(table, "WH-NEW-1").textContent).toContain(earlier("Delta"));
+      expect(rowContaining(table, "WH-NEW-2").textContent).toContain("New");
+      expect(rowContaining(table, "WH-COLD").textContent).toContain(earlier("Gamma"));
+
+      const finished = await importAndWait(user, review, "Import 2 rows");
+
+      // Only the rows that passed are sent, in file order, and none of them is refused when its turn comes.
+      expect(writes(recorded)).toEqual([
+        { method: "PATCH", path: `${API}/warehouses/wh-WH-EAST`, body: { name: "Delta" } },
+        { method: "POST", path: `${API}/warehouses`, body: { code: "WH-NEW-2", name: "Gamma" } },
+      ]);
+      expect(stat(finished, "Updated")).toBe("1");
+      expect(stat(finished, "Created")).toBe("1");
+      expect(stat(finished, "Invalid")).toBe("3");
+      expect(stat(finished, "Failed")).toBe("0");
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "starts every file with nothing claimed: a name one file gave does not count against the next file opened in the same dialog",
+    async () => {
+      const user = userEvent.setup();
+      const recorded = gateway({ warehouses: [[MAIN, COLD, EAST, WEST]] });
+      render(<Harness entity={warehouseImport} />);
+      const first = await sheetFile(warehouseImport, "first.xlsx", ["code", "name"], [{ code: "WH-EAST", name: "Delta" }]);
+      const second = await sheetFile(warehouseImport, "second.xlsx", ["code", "name"], [{ code: "WH-WEST", name: "delta" }]);
+
+      const firstReview = await previewUpdate(user, "warehouses", first);
+      expect(stat(firstReview, "Updates")).toBe("1");
+      expect(stat(firstReview, "Need fixing")).toBe("0");
+
+      await uploadFile(user, second);
+      await waitFor(() => expect(previewTable(screen.getByRole("dialog", { name: "Review your file" }), "second.xlsx")).toBeTruthy());
+      const review = screen.getByRole("dialog", { name: "Review your file" });
+      expect(stat(review, "Updates")).toBe("1");
+      expect(stat(review, "Need fixing")).toBe("0");
+
+      await importAndWait(user, review, "Import 1 row");
+
+      expect(writes(recorded)).toEqual([
+        { method: "PATCH", path: `${API}/warehouses/wh-WH-WEST`, body: { name: "delta" } },
+      ]);
+    },
+    TEST_TIMEOUT,
+  );
 });
 
 /* ------------------------------ suppliers ------------------------------ */
 
 describe("updating suppliers through the real dialog", () => {
   it(
-    "finds a supplier by its code in other capitals, empties an email with an empty string, and refuses a currency or a since it cannot change",
+    "finds a supplier by its code, empties an email with an empty string, and refuses a currency or a since it cannot change",
     async () => {
       const user = userEvent.setup();
       const recorded = gateway({
@@ -581,8 +711,8 @@ describe("updating suppliers through the real dialog", () => {
       });
       render(<Harness entity={supplierImport} />);
       const file = await sheetFile(supplierImport, "suppliers-update.xlsx", ["code", "name", "currency", "contact_name", "contact_email", "since"], [
-        // Row 2: found by "sup-mer"; a new contact, the email emptied, a new date.
-        { code: "sup-mer", contact_name: "Farhan Qureshi", contact_email: "[clear]", since: "2020-01-15" },
+        // Row 2: found by its code; a new contact, the email emptied, a new date.
+        { code: "SUP-MER", contact_name: "Farhan Qureshi", contact_email: "[clear]", since: "2020-01-15" },
         // Row 3: dollars for a rupee supplier.
         { code: "SUP-APX", currency: "USD" },
         // Row 4: a since date cannot be emptied (the server answers a null with a 500).
@@ -594,7 +724,7 @@ describe("updating suppliers through the real dialog", () => {
       expect(stat(review, "Updates")).toBe("1");
       expect(stat(review, "Need fixing")).toBe("2");
       const table = previewTable(review, "suppliers-update.xlsx");
-      expect(rowContaining(table, "sup-mer").textContent).toContain("Changes: Contact name, Contact email, Supplier since");
+      expect(rowContaining(table, "SUP-MER").textContent).toContain("Changes: Contact name, Contact email, Supplier since");
       expect(rowContaining(table, "SUP-APX").textContent).toContain(
         "Currency cannot be changed once the record exists (it is 'INR'). Leave the cell as it is, or blank.",
       );

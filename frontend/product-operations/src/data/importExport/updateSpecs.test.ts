@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ImportEntity } from "@opsgrids/client";
 
+import type { InventoryItemPatch, ItemCategoryPatch, SupplierPatch, WarehousePatch } from "@/api/types";
 import { inventoryImport } from "./inventory";
 import { itemCategoryImport } from "./itemCategories";
 import { supplierImport } from "./suppliers";
@@ -20,8 +21,10 @@ interface Expected {
   immutable: string[];
   /** What each clearable column is sent to empty it. Everything else refuses `[clear]`. */
   clear: Record<string, "" | null>;
-  /** The keys a body can carry: the endpoint's own field names, and no other. */
-  wireKeys: string[];
+  /** The keys a body can carry: the endpoint's own field names, and no other. Each list below is
+   *  declared `satisfies readonly (keyof ...Patch)[]`, so a name the endpoint's patch type lacks does not
+   *  compile, and the test holds the spec's own wire keys equal to it. */
+  wireKeys: readonly string[];
   pricedInItsOwnCurrency: boolean;
 }
 
@@ -48,6 +51,14 @@ function describeSpec<Payload, Item, Filters>(
       expect(spec.keyColumn).toBe(expected.keyColumn);
       expect(columns.get(expected.keyColumn)?.required).toBe(true);
       expect(entity.recordIdKey).toBe("id");
+    });
+
+    it("matches its key exactly: the server compares it exactly, so the engine's default (`exact`) must stand", () => {
+      expect(spec.keyMatch).toBeUndefined();
+    });
+
+    it("names the record a row updates, so that a shifted Record ID column is seen in the preview", () => {
+      expect(spec.recordLabel).toBeDefined();
     });
 
     it("holds the identity, currency and stock columns immutable, and nothing else", () => {
@@ -97,7 +108,7 @@ describeSpec("inventory items", inventoryImport, {
     "track_expiry",
     "track_quality",
     "is_active",
-  ],
+  ] as const satisfies readonly (keyof InventoryItemPatch)[],
   pricedInItsOwnCurrency: true,
 });
 
@@ -105,7 +116,16 @@ describeSpec("suppliers", supplierImport, {
   keyColumn: "code",
   immutable: ["code", "currency"],
   clear: { contact_name: "", contact_email: "", location: "" },
-  wireKeys: ["name", "category", "status", "lead_time_days", "contact_name", "contact_email", "location", "since"],
+  wireKeys: [
+    "name",
+    "category",
+    "status",
+    "lead_time_days",
+    "contact_name",
+    "contact_email",
+    "location",
+    "since",
+  ] as const satisfies readonly (keyof SupplierPatch)[],
   pricedInItsOwnCurrency: true,
 });
 
@@ -113,7 +133,7 @@ describeSpec("warehouses", warehouseImport, {
   keyColumn: "code",
   immutable: ["code"],
   clear: { location: "" },
-  wireKeys: ["name", "location"],
+  wireKeys: ["name", "location"] as const satisfies readonly (keyof WarehousePatch)[],
   pricedInItsOwnCurrency: false,
 });
 
@@ -121,6 +141,6 @@ describeSpec("item categories", itemCategoryImport, {
   keyColumn: "code",
   immutable: ["code"],
   clear: { parent: null },
-  wireKeys: ["name", "parent_id"],
+  wireKeys: ["name", "parent_id"] as const satisfies readonly (keyof ItemCategoryPatch)[],
   pricedInItsOwnCurrency: false,
 });
