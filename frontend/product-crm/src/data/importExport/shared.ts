@@ -49,6 +49,15 @@ export const OWNER_HINT_AUTO =
 export const COMPANY_HINT = "The company must already exist. Import companies first, then contacts and deals.";
 export const CONTACT_HINT = "The contact must already exist and work at that company.";
 
+/** The same hints for a row that updates a record, where a blank cell leaves the field alone
+ *  instead of filling in a default (`ImportColumn.lookupHintUpdate`). */
+export const OWNER_HINT_UPDATE =
+  "Use the email of an active sales rep, see the Lists sheet. Leave blank to keep the current owner.";
+export const COMPANY_HINT_UPDATE =
+  "The company must already exist. Import companies first, then contacts and deals. Leave blank to keep the current company.";
+export const CONTACT_HINT_UPDATE =
+  "The contact must already exist and work at that company. Leave blank to keep the current contact, or type [clear] to remove it.";
+
 /* --------------------------------- lookups --------------------------------- */
 
 const entry = (o: Owner) => ({ label: o.email, value: o.id });

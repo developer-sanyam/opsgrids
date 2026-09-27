@@ -1,23 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, RowProblem, indexExisting, makeLookup, matchRow } from "@opsgrids/client";
-import type { LookupSet, ParsedValue } from "@opsgrids/client";
+import { ApiError, RowProblem, indexExisting, matchRow } from "@opsgrids/client";
+import type { ParsedValue } from "@opsgrids/client";
 
 import type { Company } from "@/api/types";
 import { companyImport } from "./companies";
 import { companyWire, contextWith, pageOf, stubGateway } from "./entityTestKit";
-import { planFor, requestLines, runPlan, updateSpecOf, valuesOf } from "./updateTestKit";
+import {
+  OWNER_LOOKUPS,
+  ambiguousOwner,
+  notAnAcceptedOwner,
+  planFor,
+  requestLines,
+  runPlan,
+  updateSpecOf,
+  valuesOf,
+} from "./updateTestKit";
 
-const LOOKUPS: LookupSet = {
-  owners: makeLookup([
-    { label: "sofia@example.com", value: "own-1" },
-    { label: "Grace@Example.com", value: "own-2" },
-    // Two active reps under one address: the name cannot say which.
-    { label: "twin@example.com", value: "own-7" },
-    { label: "Twin@example.com", value: "own-8" },
-  ]),
-};
-const ctx = contextWith(LOOKUPS);
+const ctx = contextWith(OWNER_LOOKUPS);
 const spec = updateSpecOf(companyImport);
 
 afterEach(() => {
@@ -186,17 +186,25 @@ describe("companies: the owner", () => {
     expect(plan({ owner: "SOFIA@example.com" })?.changed).toEqual(["Owner email"]);
   });
 
-  it("refuses an owner who is not an active rep, with a sentence naming the column", () => {
+  it("refuses an owner nobody has, in the engine's words and with the hint for updating", () => {
     expect(() => plan({ owner: "nobody@example.com" })).toThrow(RowProblem);
-    expect(() => plan({ owner: "nobody@example.com" })).toThrow(
-      "'nobody@example.com' is not an active sales rep. Use one from the Lists sheet, or leave Owner email blank to keep it as it is.",
-    );
+    expect(() => plan({ owner: "nobody@example.com" })).toThrow(notAnAcceptedOwner("nobody@example.com"));
   });
 
   it("refuses an owner that two reps share, instead of choosing one", () => {
-    expect(() => plan({ owner: "twin@example.com" })).toThrow(
-      "'twin@example.com' matches more than one entry for Owner email, so it cannot be chosen.",
-    );
+    expect(() => plan({ owner: "twin@example.com" })).toThrow(ambiguousOwner("twin@example.com"));
+  });
+
+  it("keeps a company with the rep who has left when the row repeats them, and changes what else it says", async () => {
+    const calls = stubGateway(() => companyWire("comp-1", "x"));
+    const former: Company = { ...STORED, owner_id: "own-3" };
+    expect(plan({ ...SAME_AS_STORED, owner: "former@example.com" }, [], former)).toBeNull();
+    await runPlan(plan({ ...SAME_AS_STORED, owner: "former@example.com", city: "Pune" }, [], former));
+    expect(calls[0]?.body).toStrictEqual({ city: "Pune" });
+  });
+
+  it("refuses to give a company to a rep who has left", () => {
+    expect(() => plan({ owner: "former@example.com" })).toThrow(notAnAcceptedOwner("former@example.com"));
   });
 
   it("does not pre-empt the server for a caller who may only assign to themselves", async () => {

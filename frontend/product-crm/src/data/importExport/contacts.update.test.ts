@@ -6,15 +6,20 @@ import type { LookupSet, ParsedValue } from "@opsgrids/client";
 import type { Contact } from "@/api/types";
 import { contactImport } from "./contacts";
 import { contactWire, contextWith, pageOf, stubApi, stubGateway } from "./entityTestKit";
-import { planFor, requestLines, runPlan, updateSpecOf, valuesOf } from "./updateTestKit";
+import {
+  OWNER_LOOKUPS,
+  notAnAcceptedOwner,
+  planFor,
+  requestLines,
+  runPlan,
+  updateSpecOf,
+  valuesOf,
+} from "./updateTestKit";
 
 const onFile = (...emails: string[]) => makeLookup(emails.map((email) => ({ label: email, value: email })));
 
 const LOOKUPS: LookupSet = {
-  owners: makeLookup([
-    { label: "sofia@example.com", value: "own-1" },
-    { label: "Grace@Example.com", value: "own-2" },
-  ]),
+  ...OWNER_LOOKUPS,
   companies: makeLookup([
     { label: "Northwind Logistics", value: "comp-1" },
     { label: "Cobalt Financial", value: "comp-2" },
@@ -144,12 +149,17 @@ describe("contacts: what a row changes", () => {
   it("refuses a company that is not on file, with a sentence naming the column", () => {
     expect(() => plan({ company: "Nowhere Ltd" })).toThrow(RowProblem);
     expect(() => plan({ company: "Nowhere Ltd" })).toThrow(
-      "'Nowhere Ltd' is not a company on file. Use one from the Lists sheet, or leave Company blank to keep it as it is.",
+      "'Nowhere Ltd' is not one of the accepted values for Company (see the Lists sheet). The company must already exist. Import companies first, then contacts and deals. Leave blank to keep the current company.",
     );
   });
 
-  it("refuses an owner who is not an active rep", () => {
-    expect(() => plan({ owner: "former@example.com" })).toThrow("'former@example.com' is not an active sales rep.");
+  it("refuses an owner nobody has, and a rep who has left when the row gives the contact to them", () => {
+    expect(() => plan({ owner: "nobody@example.com" })).toThrow(notAnAcceptedOwner("nobody@example.com"));
+    expect(() => plan({ owner: "former@example.com" })).toThrow(notAnAcceptedOwner("former@example.com"));
+  });
+
+  it("keeps a contact with the rep who has left when the row repeats them", () => {
+    expect(plan({ ...SAME_AS_STORED, owner: "former@example.com" }, [], { ...STORED, owner_id: "own-3" })).toBeNull();
   });
 
   it("does not pre-empt the server for a caller who may only assign to themselves", async () => {

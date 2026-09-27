@@ -24,11 +24,17 @@ function shapeOf<Payload, Item, Filters>(entity: ImportEntity<Payload, Item, Fil
       sent: f.field ?? f.column,
       clear: f.clear,
       immutable: f.immutable === true,
+      resolves: f.resolve !== undefined,
     })),
+    lookupColumns: entity.columns
+      .filter((c) => c.lookup !== undefined)
+      .map((c) => ({ key: c.key, add: c.lookupHint, update: c.lookupHintUpdate })),
     keyColumn: spec.keyColumn,
     hasKeyOf: spec.keyOf !== undefined,
     hasCurrency: spec.currencyOf !== undefined,
     hasExtras: spec.extras !== undefined,
+    extraColumns: spec.extraColumns ?? [],
+    notUpdatable: spec.notUpdatable ?? [],
     notes: (entity.notes ?? []).join(" "),
     recordIdHelp: entity.columns.find((c) => c.key === entity.recordIdKey)?.help ?? "",
   };
@@ -42,7 +48,8 @@ const ENTITIES = [
     accepted: ["name", "owner_id", "domain", "industry", "size_band", "city", "country", "status", "annual_revenue_minor", "currency"],
     clear: { domain: "", industry: "", sizeBand: "", city: "", country: "" },
     immutable: [],
-    beyondFields: [],
+    extraColumns: [],
+    notUpdatable: [],
     key: "name",
   },
   {
@@ -52,7 +59,8 @@ const ENTITIES = [
     accepted: ["full_name", "title", "email", "company_id", "owner_id", "status"],
     clear: { title: "" },
     immutable: [],
-    beyondFields: ["phone"],
+    extraColumns: ["phone"],
+    notUpdatable: [],
     key: "email",
   },
   {
@@ -62,30 +70,34 @@ const ENTITIES = [
     accepted: ["full_name", "company", "owner_id", "notes"],
     clear: { company: null, notes: "" },
     immutable: ["email", "phone"],
-    beyondFields: [],
+    extraColumns: [],
+    notUpdatable: ["email", "phone"],
     key: undefined,
   },
   {
     name: "deals",
     shape: shapeOf(dealImport),
-    // DealPatch, plus `stage`, which `send` takes to the stage endpoint
-    accepted: ["name", "company_id", "primary_contact_id", "owner_id", "value_minor", "currency", "close_date", "probability", "source", "stage"],
+    // DealPatch without `stage` and `probability`: extra steps send those
+    accepted: ["name", "company_id", "primary_contact_id", "owner_id", "value_minor", "currency", "close_date", "source"],
     clear: { contact: null, source: "" },
     immutable: [],
-    beyondFields: [],
+    extraColumns: ["stage", "probability"],
+    notUpdatable: [],
     key: "name",
   },
 ];
 
-describe.each(ENTITIES)("$name: the update spec", ({ shape, accepted, clear, immutable, beyondFields, key }) => {
-  it("covers every importable column, so no cell a user fills in is silently ignored", () => {
-    const covered = [...shape.fields.map((f) => f.column), ...beyondFields];
-    expect(covered.sort()).toEqual([...shape.importable].sort());
+describe.each(ENTITIES)("$name: the update spec", ({ shape, accepted, clear, immutable, extraColumns, notUpdatable, key }) => {
+  it("names only importable columns for its fields, its extra steps and its key", () => {
+    for (const field of shape.fields) expect(shape.importable).toContain(field.column);
+    for (const column of [...shape.extraColumns, ...shape.notUpdatable]) expect(shape.importable).toContain(column);
+    if (shape.keyColumn !== undefined) expect(shape.importable).toContain(shape.keyColumn);
   });
 
-  it("names only importable columns for its fields and its key", () => {
-    for (const field of shape.fields) expect(shape.importable).toContain(field.column);
-    if (shape.keyColumn !== undefined) expect(shape.importable).toContain(shape.keyColumn);
+  it("declares the columns its extra steps handle and the ones it leaves out on purpose", () => {
+    expect(shape.extraColumns).toEqual(extraColumns);
+    expect(shape.notUpdatable).toEqual(notUpdatable);
+    expect(shape.fields.filter((f) => shape.extraColumns.includes(f.column))).toEqual([]);
   });
 
   it("finds a row's record by the list's key, or by its ID alone where the list has none", () => {
@@ -102,6 +114,22 @@ describe.each(ENTITIES)("$name: the update spec", ({ shape, accepted, clear, imm
   it("can empty exactly the fields the endpoint can empty, each with the value it accepts", () => {
     const clearable = Object.fromEntries(shape.fields.filter((f) => f.clear !== undefined).map((f) => [f.column, f.clear]));
     expect(clearable).toEqual(clear);
+  });
+
+  it("judges every lookup column itself, since the engine does not on a row that updates a record", () => {
+    for (const { key } of shape.lookupColumns) {
+      expect(shape.fields.find((f) => f.column === key)?.resolves, `${key} resolves its label`).toBe(true);
+    }
+  });
+
+  it("advises a user who names something a list does not have without the add-mode default", () => {
+    expect(shape.lookupColumns.length).toBeGreaterThan(0);
+    for (const { key, add, update } of shape.lookupColumns) {
+      expect(update, `${key} has a hint for updating`).toBeDefined();
+      expect(update).not.toBe(add);
+      expect(update).toMatch(/Leave blank to keep the current/);
+      expect(update).not.toMatch(/assign it to yourself|assign automatically/);
+    }
   });
 
   it("says how a row finds its record and that [clear] empties a field", () => {
@@ -126,12 +154,12 @@ describe("what differs between the lists", () => {
     ]);
   });
 
-  it("uses extra steps for the contact's phone only: the deal's stage travels with its own send", () => {
+  it("uses extra steps for the contact's phone and the deal's stage and probability only", () => {
     expect(ENTITIES.map((e) => [e.name, e.shape.hasExtras])).toEqual([
       ["companies", false],
       ["contacts", true],
       ["leads", false],
-      ["deals", false],
+      ["deals", true],
     ]);
   });
 });

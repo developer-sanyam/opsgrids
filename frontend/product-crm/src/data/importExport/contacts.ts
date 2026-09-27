@@ -27,11 +27,13 @@ import type { ContactIn, ContactPatch } from "@/api/wire";
 
 import {
   COMPANY_HINT,
+  COMPANY_HINT_UPDATE,
   LOOKUP_ALL_OWNERS,
   LOOKUP_COMPANIES,
   LOOKUP_CONTACT_EMAILS,
   LOOKUP_OWNERS,
   OWNER_HINT,
+  OWNER_HINT_UPDATE,
   companyIdByName,
   labelFor,
   loadCompanyLookup,
@@ -43,7 +45,7 @@ import {
   requiredTextOf,
   textOf,
 } from "./shared";
-import { columnOf, loadEvery, orNull, patchOf, resolveByLookup } from "./updateShared";
+import { columnOf, loadEvery, orNull, patchOf, refuseInactiveOwner, resolveByLookup } from "./updateShared";
 
 /** What the Contacts screen filters its list by; the export writes exactly that list. */
 export interface ContactFilters {
@@ -82,6 +84,7 @@ const COLUMNS: readonly ImportColumn[] = [
     required: true,
     lookup: LOOKUP_COMPANIES,
     lookupHint: COMPANY_HINT,
+    lookupHintUpdate: COMPANY_HINT_UPDATE,
     help: "The name of a company that already exists, spelled as on the Companies screen. See the Lists sheet.",
   },
   {
@@ -90,6 +93,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     lookup: LOOKUP_OWNERS,
     lookupHint: OWNER_HINT,
+    lookupHintUpdate: OWNER_HINT_UPDATE,
     help: "Email of the team member who owns the contact, from the Lists sheet. Leave blank to own it yourself, or, when updating, to keep the current owner.",
   },
   {
@@ -245,18 +249,19 @@ export const contactImport = defineImportEntity<ContactIn, Contact, ContactFilte
         column: "company",
         field: "company_id",
         current: (contact) => contact.company_id,
-        resolve: resolveByLookup(COMPANY, "a company on file"),
+        resolve: resolveByLookup(COMPANY),
       },
       {
         column: "owner",
         field: "owner_id",
         current: (contact) => contact.owner_id,
-        resolve: resolveByLookup(OWNER, "an active sales rep"),
+        resolve: resolveByLookup(OWNER, LOOKUP_ALL_OWNERS),
       },
       { column: "title", current: (contact) => orNull(contact.title), clear: "" },
       { column: "status", current: (contact) => contact.status },
     ],
     check: (row, _contact, changed, ctx) => {
+      refuseInactiveOwner(OWNER, row, changed, ctx);
       const email = textOf(row, "email");
       if (email === undefined || !changed.includes(EMAIL.header)) return;
       const problem = capitalsProblem(email, ctx.lookups[LOOKUP_CONTACT_EMAILS]);
@@ -265,6 +270,7 @@ export const contactImport = defineImportEntity<ContactIn, Contact, ContactFilte
     send: async (contact, body) => {
       await updateContact(contact.id, patchOf<ContactPatch>(body));
     },
+    extraColumns: ["phone"],
     // The number is write-only: the stored one is a mask, so a filled Phone cell always differs
     // and is always written, and there is no route that removes a number.
     extras: (row, cleared, contact) => {

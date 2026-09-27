@@ -279,10 +279,10 @@ const NO_CONTACT =
   "The contact must already exist and work at that company.";
 /** A conflict that is not a duplicate: no "already", no `duplicate` code. */
 const OVER_THE_LIMIT = "The organisation is over its plan limit for companies";
-/** What the engine says about a row that came out of an export. */
+/** What the engine says about a row that came out of an export, on a list that can be updated. */
 const RECORD_ID_REFUSED =
   "This row has a Record ID, so it came from an export and is already in the system. " +
-  "Clear the Record ID cell to add it as a new record.";
+  "Clear the Record ID cell to add it as a new record. Switch to Add new and update existing to update it.";
 const XLSX_NAME = /^[a-z]+-\d{4}-\d{2}-\d{2}\.xlsx$/;
 
 /* ---------------------------------- companies ---------------------------------- */
@@ -348,10 +348,10 @@ describe("companies: import from Excel", () => {
     expect(figure("Need fixing")).toBe("2");
     expect(figure("Sample rows skipped")).toBe("1");
     expect(screen.getByText("These columns are ignored: Internal note.")).toBeTruthy();
-    expect(previewCheck(2)).toBe("Ready");
+    expect(previewCheck(2)).toBe("New");
     expect(previewCheck(5)).toBe("Needs fixingCompany name is required");
     expect(previewCheck(6)).toBe(`Needs fixing${OWNER_NOBODY}`);
-    expect(previewCheck(7)).toBe("Sample rowAn unchanged example from the sample sheet. It is skipped.");
+    expect(previewCheck(7)).toBe("SampleAn unchanged example from the sample sheet. It is skipped.");
     expect(requests.filter((r) => r.method === "POST")).toHaveLength(0);
 
     await runImport(user, 6);
@@ -623,9 +623,9 @@ describe("companies: export to Excel", () => {
     await waitFor(() => expect(figure("Ready to import")).toBe("2"));
     expect(figure("Rows in file")).toBe("3");
     expect(figure("Need fixing")).toBe("1");
-    expect(previewCheck(2)).toBe("Ready");
+    expect(previewCheck(2)).toBe("New");
     expect(previewCheck(3)).toBe(`Needs fixing${notAnOwner("former@example.com")}`);
-    expect(previewCheck(4)).toBe("Ready");
+    expect(previewCheck(4)).toBe("New");
     await runImport(user, 2);
     expect(bodiesPosted(requests, "/customers")).toEqual([
       {
@@ -738,7 +738,7 @@ describe("deals: import from Excel", () => {
     expect(previewCheck(6)).toBe(
       "Needs fixingdaniel.okafor@cobaltfin.com is not a contact of Northwind Logistics. Pick one of that company's contacts.",
     );
-    expect(previewCheck(7)).toContain("Sample row");
+    expect(previewCheck(7)).toContain("Sample");
     expect(previewCheck(10)).toBe(`Needs fixing${NO_CONTACT}`);
     expect(requests.filter((r) => r.method === "POST")).toHaveLength(0);
 
@@ -989,7 +989,7 @@ describe("contacts: import and export", () => {
       "Needs fixingA contact with this email is already on file as Kiran.Bose@northwind.co; addresses that differ only in capitals are treated as the same person.",
     );
     expect(previewCheck(5)).toBe("Needs fixingPhone must start with + and the country code, e.g. +919876543210");
-    expect(previewCheck(6)).toBe("Ready");
+    expect(previewCheck(6)).toBe("New");
     await runImport(user, 4);
 
     expect(bodiesPosted(requests, "/contacts")).toEqual([

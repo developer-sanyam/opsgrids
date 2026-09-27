@@ -26,6 +26,7 @@ import {
   LOOKUP_ALL_OWNERS,
   LOOKUP_OWNERS,
   OWNER_HINT_AUTO,
+  OWNER_HINT_UPDATE,
   labelFor,
   loadOwnerLookups,
   namedOwnerId,
@@ -33,7 +34,15 @@ import {
   requiredTextOf,
   textOf,
 } from "./shared";
-import { columnOf, loadEvery, orNull, patchOf, resolveByLookup, sameMultiline } from "./updateShared";
+import {
+  columnOf,
+  loadEvery,
+  orNull,
+  patchOf,
+  refuseInactiveOwner,
+  resolveByLookup,
+  sameMultiline,
+} from "./updateShared";
 
 /** What the Leads screen filters its list by; the export writes exactly that list. */
 export interface LeadFilters {
@@ -92,6 +101,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     lookup: LOOKUP_OWNERS,
     lookupHint: OWNER_HINT_AUTO,
+    lookupHintUpdate: OWNER_HINT_UPDATE,
     help: "Email of the team member who owns the lead, from the Lists sheet. Leave blank to have it assigned by your round-robin rule, or, when updating, to keep the current owner.",
   },
   {
@@ -208,7 +218,7 @@ export const leadImport = defineImportEntity<LeadIn, Lead, LeadFilters>({
         column: "owner",
         field: "owner_id",
         current: (lead) => lead.owner_id,
-        resolve: resolveByLookup(OWNER, "an active sales rep"),
+        resolve: resolveByLookup(OWNER, LOOKUP_ALL_OWNERS),
       },
       { column: "notes", current: (lead) => orNull(lead.notes), clear: "", same: sameMultiline },
       // Sealed on the server and never returned but as a mask: no cell can equal the stored value,
@@ -216,7 +226,11 @@ export const leadImport = defineImportEntity<LeadIn, Lead, LeadFilters>({
       { column: "email", current: (lead) => lead.email, immutable: true },
       { column: "phone", current: (lead) => lead.phone, immutable: true },
     ],
-    check: (_row, lead, changed) => {
+    // No endpoint updates either. Declared so the engine refuses a filled cell too, and so the
+    // definition check knows they are left out on purpose.
+    notUpdatable: ["email", "phone"],
+    check: (row, lead, changed, ctx) => {
+      refuseInactiveOwner(OWNER, row, changed, ctx);
       if (lead.status === "converted" && changed.includes(OWNER.header)) {
         throw new RowProblem(
           "A converted lead cannot be reassigned. Its Full name, Company and Notes can still be changed.",

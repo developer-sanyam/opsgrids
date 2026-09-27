@@ -20,6 +20,7 @@ import {
   LOOKUP_ALL_OWNERS,
   LOOKUP_OWNERS,
   OWNER_HINT,
+  OWNER_HINT_UPDATE,
   currencyOf,
   labelFor,
   loadOwnerLookups,
@@ -36,6 +37,7 @@ import {
   orNull,
   patchOf,
   refuseCurrencyChangeWithoutAmount,
+  refuseInactiveOwner,
   resolveByLookup,
   upperCased,
 } from "./updateShared";
@@ -68,6 +70,7 @@ const COLUMNS: readonly ImportColumn[] = [
     kind: "text",
     lookup: LOOKUP_OWNERS,
     lookupHint: OWNER_HINT,
+    lookupHintUpdate: OWNER_HINT_UPDATE,
     help: "Email of the team member who owns the company, from the Lists sheet. Leave blank to own it yourself, or, when updating, to keep the current owner.",
   },
   {
@@ -216,7 +219,7 @@ export const companyImport = defineImportEntity<CompanyIn, Company, CompanyFilte
         column: "owner",
         field: "owner_id",
         current: (company) => company.owner_id,
-        resolve: resolveByLookup(OWNER, "an active sales rep"),
+        resolve: resolveByLookup(OWNER, LOOKUP_ALL_OWNERS),
       },
       { column: "domain", current: (company) => orNull(company.domain), clear: "" },
       { column: "industry", current: (company) => orNull(company.industry), clear: "" },
@@ -227,13 +230,15 @@ export const companyImport = defineImportEntity<CompanyIn, Company, CompanyFilte
       { column: "annualRevenue", field: "annual_revenue_minor", current: (company) => company.annual_revenue_minor },
       { column: "currency", current: (company) => company.currency, resolve: upperCased },
     ],
-    check: (row, company, changed) =>
+    check: (row, company, changed, ctx) => {
+      refuseInactiveOwner(OWNER, row, changed, ctx);
       refuseCurrencyChangeWithoutAmount(
         { amount: AMOUNT, currency: CURRENCY },
         row,
         changed,
         company.annual_revenue_minor,
-      ),
+      );
+    },
     send: async (company, body) => {
       await updateCompany(company.id, patchOf<CompanyPatch>(body));
     },

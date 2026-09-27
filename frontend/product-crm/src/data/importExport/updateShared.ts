@@ -4,11 +4,8 @@
  * the way a sheet hands it back, and the one rule every list with an amount needs.
  *
  * The specs describe a change; `planUpdate` in `@opsgrids/client` decides what actually differs.
- * Nothing here talks to a user about a row that the engine has already refused: a lookup cell that
- * is not in its list never reaches `resolve` in a real run, and the sentence below only backs up a
- * lookup that changed between the check and the send.
  */
-import { RowProblem, collectPages } from "@opsgrids/client";
+import { RowProblem, collectPages, unacceptedLookupValue } from "@opsgrids/client";
 import type { ExportPage, ImportColumn, ImportContext, ParsedRow, ParsedValue } from "@opsgrids/client";
 
 /**
@@ -48,33 +45,53 @@ export function patchOf<Patch>(body: Readonly<Record<string, unknown>>): Patch {
   return body as Patch;
 }
 
-function quote(text: string): string {
-  return `'${text.length > 40 ? `${text.slice(0, 37)}…` : text}'`;
-}
-
 /**
- * The id the list stores for the label a lookup column's cell names, from the same lookup and by
- * the same rule `toPayload` uses when adding a record. `what` completes "is not ...": "an active
- * sales rep", "a company on file". A name the lookup does not hold, or holds twice, refuses the row.
+ * The id the list stores for the label a lookup column's cell names. The engine does not check a
+ * lookup cell on a row that updates a record (a record may hold a value the column no longer offers),
+ * so this is the only guard: an unknown label, or one that names two entries, refuses the row with
+ * the engine's own sentence and the column's `lookupHintUpdate`. `lookupName` says which lookup
+ * judges the label when it is not the column's own.
  */
-export function lookupId(column: ImportColumn, what: string, label: string, ctx: ImportContext): string {
-  const lookup = column.lookup === undefined ? undefined : ctx.lookups[column.lookup];
-  const id = lookup?.resolve(label);
-  if (id !== undefined) return id;
-  if (lookup?.isAmbiguous(label) === true) {
-    throw new RowProblem(`${quote(label)} matches more than one entry for ${column.header}, so it cannot be chosen.`);
+export function lookupId(
+  column: ImportColumn,
+  label: string,
+  ctx: ImportContext,
+  lookupName: string | undefined = column.lookup,
+): string {
+  const lookup = lookupName === undefined ? undefined : ctx.lookups[lookupName];
+  if (lookup === undefined) {
+    throw new RowProblem(`The accepted values for ${column.header} could not be loaded, so it cannot be checked`);
   }
-  throw new RowProblem(
-    `${quote(label)} is not ${what}. Use one from the Lists sheet, or leave ${column.header} blank to keep it as it is.`,
-  );
+  const id = lookup.resolve(label);
+  if (id === undefined) throw new RowProblem(unacceptedLookupValue(column, label, lookup, true));
+  return id;
 }
 
 /** `UpdateField.resolve` for a lookup column: the label the cell names becomes the id stored. */
 export function resolveByLookup(
   column: ImportColumn,
-  what: string,
+  lookupName?: string,
 ): (value: ParsedValue, ctx: ImportContext) => ParsedValue {
-  return (value, ctx) => (typeof value === "string" ? lookupId(column, what, value, ctx) : value);
+  return (value, ctx) => (typeof value === "string" ? lookupId(column, value, ctx, lookupName) : value);
+}
+
+/**
+ * A rep who has left still owns their records, and an export writes them by email, so an owner cell
+ * that repeats what a record already has must be accepted whoever that is: the owner field resolves
+ * against every rep (`resolveByLookup(column, LOOKUP_ALL_OWNERS)`). Giving a record to a rep who is
+ * not active is another matter, and is refused here, once the diff has said the owner changes.
+ */
+export function refuseInactiveOwner(
+  owner: ImportColumn,
+  row: ParsedRow,
+  changed: readonly string[],
+  ctx: ImportContext,
+): void {
+  if (!changed.includes(owner.header)) return;
+  const label = row[owner.key];
+  const active = owner.lookup === undefined ? undefined : ctx.lookups[owner.lookup];
+  if (typeof label !== "string" || active === undefined || active.resolve(label) !== undefined) return;
+  throw new RowProblem(unacceptedLookupValue(owner, label, active, true));
 }
 
 /** `UpdateField.resolve` for a currency cell: the server keeps ISO codes upper-cased. */

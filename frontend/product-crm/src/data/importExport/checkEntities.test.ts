@@ -82,6 +82,28 @@ describe.each(ENTITIES)("$name definition", ({ entity }) => {
   });
 });
 
+/**
+ * An update spec accounts for every importable column: it changes it (a field), hands it to an
+ * extra step (a contact's phone, a deal's stage), or leaves it out on purpose (a lead's email). A
+ * column that is none of these would take whatever a user typed in it and do nothing, and say
+ * nothing. The engine's own check enforces the same; this states it for the four CRM lists.
+ */
+describe.each(ENTITIES)("$name update spec", ({ entity }) => {
+  it("accounts for every importable column, so no cell a user fills in is silently ignored", () => {
+    const update = present(entity.update, "update");
+    const accounted = new Set<string>([
+      ...update.fields.map((field) => field.column),
+      ...(update.extraColumns ?? []),
+      ...(update.notUpdatable ?? []),
+    ]);
+    const missing = entity.columns
+      .filter((column) => column.readOnly !== true && column.importOnly !== true)
+      .filter((column) => !accounted.has(column.key))
+      .map((column) => column.header);
+    expect(missing).toEqual([]);
+  });
+});
+
 describe("the definition check itself", () => {
   it("reports a lookup that loadLookups does not provide, so a pass above means something", () => {
     const problems = checkImportEntity(companyImport, {});
