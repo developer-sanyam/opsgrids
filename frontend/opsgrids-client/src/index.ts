@@ -143,6 +143,7 @@ export {
   minorToMajor,
   normaliseKey,
   planUpdate,
+  unacceptedLookupValue,
   useImportExport,
 } from "./dataexchange";
 export type {

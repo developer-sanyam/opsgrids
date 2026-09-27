@@ -85,6 +85,10 @@ export interface ImportColumn {
   /** `lookup` columns: a sentence added to the "is not in the list" error saying how to fix it
    *  ("Import the manager first, then run this file again: rows already imported are skipped."). */
   lookupHint?: string | undefined;
+  /** `lookup` columns: the hint for a row that updates an existing record, used instead of
+   *  `lookupHint` where the add-mode advice is wrong ("Leave blank to assign it to yourself": when
+   *  updating, blank leaves the field alone). Absent: `lookupHint` applies to both. */
+  lookupHintUpdate?: string | undefined;
 }
 
 /** A named set of reference data, loaded once per dialog open from the full list (all pages). */

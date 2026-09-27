@@ -19,7 +19,7 @@ import {
 import type { AnyEntity, CellInput } from "./cells";
 import { EMAIL_MAX, normaliseEmail } from "./email";
 import { compareDecimals, parseMajorUnits, plainNumberString, describeMoneyProblem } from "./money";
-import type { ImportColumn, ImportContext, LookupSet, ParsedRow, ParsedValue } from "./types";
+import type { ImportColumn, ImportContext, Lookup, LookupSet, ParsedRow, ParsedValue } from "./types";
 import { RowProblem } from "./types";
 import { isClearToken } from "./update";
 
@@ -32,6 +32,9 @@ export interface CoerceEnv {
   currency?: string | undefined;
   /** Said after "<Header> is required" when a cell is missing: which rows need it, in update mode. */
   requiredNote?: string | undefined;
+  /** A lookup column's cell is plain text, not checked against the lookup: the row updates a record,
+   *  and the update field's own `resolve` judges the label (it may accept what the record already has). */
+  plainLookups?: boolean | undefined;
 }
 
 const DEFAULT_CURRENCY = "INR";
@@ -128,8 +131,25 @@ function coerceText(column: ImportColumn, cell: CellInput, env: CoerceEnv): Coer
       return fail(`${header} is not in the expected format${hint}`);
     }
   }
-  if (column.lookup !== undefined) return coerceLookup(column, column.lookup, text, env);
+  if (column.lookup !== undefined && env.plainLookups !== true) return coerceLookup(column, column.lookup, text, env);
   return ok(text);
+}
+
+/**
+ * The sentence for a lookup label the list does not accept (unknown, or naming more than one entry),
+ * ending in the column's hint for putting it right. `updating` picks `lookupHintUpdate` where the
+ * column has one: on a row that updates a record, leaving a cell blank means leaving the field alone,
+ * which the add-mode hint ("leave it blank to assign it to yourself") may contradict.
+ *
+ * An update field's `resolve` is where a matched row's lookup label is judged, so it uses this too.
+ */
+export function unacceptedLookupValue(column: ImportColumn, text: string, lookup: Lookup, updating: boolean): string {
+  const written = updating ? (column.lookupHintUpdate ?? column.lookupHint) : column.lookupHint;
+  const hint = written === undefined ? "" : ` ${written}`;
+  if (lookup.isAmbiguous(text)) {
+    return `${quote(text)} matches more than one of the accepted values for ${column.header}, so it cannot be chosen.${hint}`;
+  }
+  return `${quote(text)} is not one of the accepted values for ${column.header} (see the Lists sheet).${hint}`;
 }
 
 function coerceLookup(column: ImportColumn, name: string, text: string, env: CoerceEnv): Coerced {
@@ -138,13 +158,7 @@ function coerceLookup(column: ImportColumn, name: string, text: string, env: Coe
     return fail(`The accepted values for ${column.header} could not be loaded, so it cannot be checked`);
   }
   if (lookup.resolve(text) !== undefined) return ok(text);
-  const hint = column.lookupHint === undefined ? "" : ` ${column.lookupHint}`;
-  if (lookup.isAmbiguous(text)) {
-    return fail(
-      `${quote(text)} matches more than one of the accepted values for ${column.header}, so it cannot be chosen.${hint}`,
-    );
-  }
-  return fail(`${quote(text)} is not one of the accepted values for ${column.header} (see the Lists sheet).${hint}`);
+  return fail(unacceptedLookupValue(column, text, lookup, false));
 }
 
 function coerceInteger(column: ImportColumn, cell: CellInput): Coerced {
@@ -360,6 +374,7 @@ export function coerceRow(
   const env: CoerceEnv = {
     lookups: ctx.lookups,
     ...(intent.kind === "create" && intent.whileUpdating === true ? { requiredNote: " to add a new record" } : {}),
+    ...(updating ? { plainLookups: true } : {}),
   };
   const errors: string[] = [];
   const row: Record<string, ParsedValue> = {};

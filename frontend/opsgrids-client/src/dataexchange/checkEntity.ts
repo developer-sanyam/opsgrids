@@ -37,6 +37,9 @@ function checkColumn(entity: AnyEntity, column: ImportColumn, lookups: LookupSet
   if (column.lookupHint !== undefined && column.lookup === undefined) {
     problems.push(`${name} has a lookupHint but is not a lookup column`);
   }
+  if (column.lookupHintUpdate !== undefined && column.lookup === undefined) {
+    problems.push(`${name} has a lookupHintUpdate but is not a lookup column`);
+  }
   if (column.multiline === true && column.kind !== "text") {
     problems.push(`${name} is marked multiline but is not a text column`);
   }
@@ -141,6 +144,12 @@ function checkUpdate(entity: AnyEntity): string[] {
     }
     if (field.clear !== undefined && field.immutable === true) {
       problems.push(`${name} is immutable and also says how to clear it`);
+    }
+    // A lookup column's cell is a label, and a label is not what the list stores or its endpoint takes.
+    if (column.lookup !== undefined && field.resolve === undefined) {
+      problems.push(
+        `${name} is on the lookup column "${column.lookup}" but has no resolve, so the label itself would be compared and sent as the value`,
+      );
     }
   }
   return problems;

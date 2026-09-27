@@ -1,4 +1,5 @@
 export { checkImportEntity } from "./checkEntity";
+export { unacceptedLookupValue } from "./coerce";
 export { collectPages, makeLookup } from "./lookups";
 export { majorToMinor, minorToMajor } from "./money";
 export { CLEAR_TOKEN, RowProblem, defineImportEntity } from "./types";
