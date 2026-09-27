@@ -251,16 +251,17 @@ function updateRules(entity: AnyEntity): string[] {
   rules.push(
     "A blank cell leaves the field alone. Only the cells you fill in are compared with the record, and only the fields that differ are changed.",
   );
-  const stuck = update.fields
-    .filter((field) => field.immutable !== true && field.clear === undefined)
-    .map((field) => field.column);
+  const emptiable = update.fields.filter((field) => field.clear !== undefined).map((field) => field.column);
   rules.push(
-    `Type ${CLEAR_TOKEN} in a cell to empty a field.${stuck.length > 0 ? ` These fields cannot be emptied: ${headersOf(entity, stuck)}.` : ""}`,
+    `Type ${CLEAR_TOKEN} in a cell to empty a field. Only some fields can be emptied.`,
+    emptiable.length > 0
+      ? `Can be emptied with ${CLEAR_TOKEN}: ${headersOf(entity, emptiable)}.`
+      : `No field can be emptied with ${CLEAR_TOKEN}.`,
   );
   const fixed = update.fields.filter((field) => field.immutable === true).map((field) => field.column);
   if (fixed.length > 0) {
     rules.push(
-      `${headersOf(entity, fixed)} cannot be changed once a record exists. A row whose cell differs from the record is refused.`,
+      `Cannot be changed once created: ${headersOf(entity, fixed)}. A row whose cell differs from the record is refused.`,
     );
   }
   rules.push(

@@ -40,6 +40,16 @@ describe("[clear] in a cell", () => {
     expect(cleared.size).toBe(5);
   });
 
+  it("is never checked as a lookup label: a lookup column clears, and still refuses a name it does not know", () => {
+    const cleared = coerce({ sku: "A-1", category: "[clear]" }, updateOf());
+    expect(cleared.errors).toEqual([]);
+    expect(cleared.row.category).toBeNull();
+    expect(cleared.cleared.has("category")).toBe(true);
+    expect(coerce({ sku: "A-1", category: "Nowhere" }, updateOf()).errors).toEqual([
+      "'Nowhere' is not one of the accepted values for Category (see the Lists sheet).",
+    ]);
+  });
+
   it("is refused when adding, once, whatever the number of cells that say it", () => {
     const { errors, cleared, row } = coerce({ sku: "A-1", name: "Bracket", email: "[clear]", quantity: "[clear]" }, create);
     expect(errors).toEqual([CLEAR_REFUSED_MESSAGE]);
