@@ -911,8 +911,10 @@ async def claim_for_send(
     """Move one message `pending` → `sending` and count the attempt. Returns None if unclaimable.
 
     Unclaimable covers every benign race: already sent, suppressed after the event was queued,
-    out of attempts, or claimed by another dispatcher. Returning None rather than raising keeps a
-    redelivered queued-event a no-op instead of a dead letter.
+    or claimed by another dispatcher. Returning None rather than raising keeps a redelivered
+    queued-event a no-op instead of a dead letter. Only `pending` is claimable, which is what
+    makes the retry sweep safe: it may queue a second event for a message whose first is still
+    in flight, and whichever event loses finds nothing to claim.
     """
     message = await selectors.get_message(session, organization_id, message_id)
     if message is None:
@@ -969,8 +971,18 @@ async def record_sent(
     message_id: uuid.UUID,
     provider: str,
     provider_message_id: str | None,
+    detail: str | None = None,
 ) -> None:
-    """Mark a message sent and append the winning attempt to its ledger."""
+    """Mark a message sent and append the winning attempt to its ledger.
+
+    `detail` is the provider's own acceptance note when it gave one (Meta's `message_status`,
+    e.g. `held_for_quality_assessment`), kept on the attempt's ledger row.
+
+    The wamid is committed here, *after* the provider call returned - there is no earlier moment
+    it exists. A delivery receipt that beats this commit finds no message for its wamid;
+    `fold_status` raises `ReceiptBeforeSend` for a fresh one so the webhook is redelivered
+    instead of the receipt being dropped.
+    """
     message = await selectors.get_message(session, organization_id, message_id)
     if message is None:  # pragma: no cover - the row was read moments earlier
         return
@@ -989,7 +1001,7 @@ async def record_sent(
             attempt_no=message.attempts,
             provider=provider,
             outcome="sent",
-            detail=None,
+            detail=detail,
             at=datetime.now(UTC),
         )
     )
@@ -1013,6 +1025,20 @@ async def record_sent(
     )
 
 
+#: Backoff for a transient send failure: `RETRY_BASE_SECONDS * 2 ** (attempts - 1)`, capped.
+#: Five waits (1, 2, 4, 8, 16 minutes) fit inside the default `dispatch_max_attempts` of six -
+#: about half an hour end to end, long enough to ride out a Meta throttle or a short outage and
+#: short enough that a message nobody can send is reported failed the same afternoon.
+RETRY_BASE_SECONDS: Final = 60
+RETRY_CAP_SECONDS: Final = 3600
+
+
+def retry_delay(attempts: int) -> timedelta:
+    """How long a message that has failed `attempts` times waits before its next attempt."""
+    exponent = max(attempts - 1, 0)
+    return timedelta(seconds=min(RETRY_BASE_SECONDS * (2**exponent), RETRY_CAP_SECONDS))
+
+
 async def record_failure(
     session: AsyncSession,
     *,
@@ -1022,16 +1048,26 @@ async def record_failure(
     error: str,
     permanent: bool,
     max_attempts: int,
+    error_code: str | None = None,
+    now: datetime | None = None,
 ) -> None:
     """Append the failed attempt and decide whether the message waits for another.
 
-    A permanent refusal goes straight to `failed` — retrying an address the provider will never
+    A permanent refusal goes straight to `failed` - retrying an address the provider will never
     accept only delays the moment somebody looks at it. A transient failure returns to `pending`
-    while attempts remain, and the broker's redelivery brings it back.
+    while attempts remain, stamped with when it failed: **that stamp is the retry clock.**
+    Nothing re-delivers it by itself - the queued event that brought it here is already
+    processed, and a redelivery would hit `already_processed` - so `sweep_message_retries`
+    finds it once `retry_delay(attempts)` has passed and queues a fresh event. Out of attempts,
+    it fails terminally with a reason that says so.
+
+    `error_code` is the provider's own code (Meta's `error.code`); it lands on
+    `messages.provider_error_code` beside the text so an operator sees what Meta said.
     """
     message = await selectors.get_message(session, organization_id, message_id)
     if message is None:  # pragma: no cover
         return
+    at = now or datetime.now(UTC)
 
     session.add(
         Delivery(
@@ -1042,14 +1078,25 @@ async def record_failure(
             provider=provider,
             outcome="failed",
             detail=error[:2000],
-            at=datetime.now(UTC),
+            at=at,
         )
     )
 
     retryable = not permanent and domain.should_retry(message.attempts, max_attempts=max_attempts)
+    exhausted = not permanent and not retryable
     message.state = domain.STATE_PENDING if retryable else domain.STATE_FAILED
-    message.last_error = error[:2000]
+    message.last_error = (
+        f"retries_exhausted after {message.attempts} attempts: {error}"[:2000]
+        if exhausted
+        else error[:2000]
+    )
+    if error_code:
+        message.provider_error_code = error_code[:40]
+        message.provider_error_detail = error[:2000]
     message.updated_by = SYSTEM_ACTOR
+    # The retry clock (see above). Set explicitly rather than left to `onupdate`, which would
+    # be the transaction's start and not the failure's.
+    message.updated_at = at
     await session.flush()
 
     if not retryable:
@@ -1071,7 +1118,204 @@ async def record_failure(
         )
 
 
+async def template_block(session: AsyncSession, message: Message) -> tuple[str, str] | None:
+    """`(code, reason)` when the provider template this message names can no longer be sent.
+
+    Staging checked the template once (`_wording_for`); this is asked again by the dispatcher
+    between claiming a message and sending it, because a template is paused or disabled by Meta
+    for quality at any time and a message can sit queued, or in retry backoff, for a while.
+    The codes are Meta's own for the same conditions, so the failed message reads the same
+    whether we caught it or Meta did: 132015 paused, 132016 disabled, 132001 anything else not
+    approved (rejected, back in review, deleted). None means send - including for a message that
+    names no provider template at all.
+    """
+    code = message.provider_template_code
+    if not code:
+        return None
+    template = await selectors.get_provider_template(
+        session, message.organization_id, code, message.channel
+    )
+    if template is None:
+        return "132001", "template_not_found_or_not_approved: the template no longer exists"
+    if domain.template_is_sendable(template.status):
+        return None
+    if template.status == "paused":
+        return "132015", "template_paused: the template is paused by the provider"
+    if template.status == "disabled":
+        return "132016", "template_disabled: the template is disabled by the provider"
+    return (
+        "132001",
+        f"template_not_found_or_not_approved: the template is {template.status}, not approved",
+    )
+
+
+async def due_message_retries(
+    session: AsyncSession, *, now: datetime, limit: int
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """`(organization_id, message_id)` for every `pending` message that has failed at least once
+    and whose backoff has elapsed.
+
+    Cross-tenant, so it runs on the BYPASSRLS outbox role, which holds column-level `SELECT` on
+    exactly the columns named here (`migrations/env.py`, `grant_message_retry_reader`) - never a
+    message's address or body. Discovery only: every write the sweep makes off the back of it
+    is tenant-bound. The due test is repeated there, under the tenant, against the row itself.
+    """
+    delay = func.least(
+        float(RETRY_CAP_SECONDS), float(RETRY_BASE_SECONDS) * func.power(2, Message.attempts - 1)
+    )
+    due_at = Message.updated_at + func.make_interval(0, 0, 0, 0, 0, 0, delay)
+    stmt = (
+        select(Message.organization_id, Message.id)
+        .where(
+            Message.state == domain.STATE_PENDING,
+            Message.attempts > 0,
+            Message.deleted_at.is_(None),
+            due_at <= now,
+        )
+        .order_by(Message.updated_at.asc(), Message.id.asc())
+        .limit(limit)
+    )
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+async def requeue_for_retry(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    message_id: uuid.UUID,
+    max_attempts: int,
+    now: datetime,
+) -> str:
+    """Queue one fresh dispatch event for a message whose backoff has elapsed. Tenant-bound.
+
+    Returns `requeued`, `exhausted` (out of attempts - failed terminally instead), or `skipped`
+    (no longer pending, not yet due, or gone: another dispatcher or an earlier tick got there).
+
+    Why a *new* event: the original was marked processed in the claim transaction, so
+    redelivering it would be swallowed by `already_processed`. This one has its own id, so the
+    dispatcher's dedupe lets it through, and `claim_for_send` (pending only) is what still
+    guarantees one copy - if the message was sent, suppressed or claimed since, the claim finds
+    nothing to do. The event goes through the outbox in this transaction, so it exists only if
+    the stamp below does.
+
+    The `updated_at` bump is the sweep's own dedupe: it restarts the message's backoff clock, so
+    the next tick does not queue the same message again while this event waits in the broker.
+    """
+    message = await selectors.get_message(session, organization_id, message_id)
+    if message is None or message.state != domain.STATE_PENDING or message.attempts < 1:
+        return "skipped"
+    if message.updated_at + retry_delay(message.attempts) > now:
+        return "skipped"
+
+    if not domain.should_retry(message.attempts, max_attempts=max_attempts):
+        # Only reachable when `dispatch_max_attempts` was lowered while this waited. No new
+        # ledger row: the attempt that got it here already wrote its own.
+        message.state = domain.STATE_FAILED
+        previous = message.last_error or "unknown"
+        message.last_error = f"retries_exhausted after {message.attempts} attempts: {previous}"[
+            :2000
+        ]
+        message.updated_by = SYSTEM_ACTOR
+        message.updated_at = now
+        await session.flush()
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=organization_id,
+            event_type=EVT_MESSAGE_FAILED,
+            aggregate_type="message",
+            aggregate_id=message.id,
+            payload={
+                "organization_id": str(organization_id),
+                "message_id": str(message.id),
+                "channel": message.channel,
+                "attempts": message.attempts,
+                "last_error": message.last_error,
+            },
+            actor={"type": "system", "id": SYSTEM_ACTOR},
+        )
+        return "exhausted"
+
+    message.updated_at = now
+    message.updated_by = SYSTEM_ACTOR
+    await session.flush()
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=organization_id,
+        event_type=EVT_MESSAGE_QUEUED,
+        aggregate_type="message",
+        aggregate_id=message.id,
+        payload={
+            "organization_id": str(organization_id),
+            "message_id": str(message.id),
+            "channel": message.channel,
+            "category": message.category,
+            "retry_of_attempt": message.attempts,
+        },
+        actor={"type": "system", "id": SYSTEM_ACTOR},
+    )
+    return "requeued"
+
+
+async def sweep_message_retries(
+    *,
+    discovery_factory: Any,
+    work_scope: Any,
+    max_attempts: int,
+    now: datetime | None = None,
+    limit: int = 100,
+) -> int:
+    """Re-queue every due retry, across organizations. Returns how many were queued.
+
+    The same discovery/work split as the campaign driver and the automation sweep: *which
+    organizations have a message due* runs on the outbox role (no tenant to bind while asking),
+    and every write runs under that organization's own binding via `work_scope`, one
+    transaction per message so one bad row cannot roll back another's re-queue.
+    """
+    at = now or datetime.now(UTC)
+    async with discovery_factory() as session, session.begin():
+        due = await due_message_retries(session, now=at, limit=limit)
+    queued = 0
+    for organization_id, message_id in due:
+        try:
+            async with work_scope(organization_id) as session:
+                outcome = await requeue_for_retry(
+                    session,
+                    organization_id=organization_id,
+                    message_id=message_id,
+                    max_attempts=max_attempts,
+                    now=at,
+                )
+        except Exception:
+            log.exception(
+                "notification.retry_sweep.failed",
+                organization_id=str(organization_id),
+                message_id=str(message_id),
+            )
+            continue
+        queued += outcome == "requeued"
+    return queued
+
+
 # --------------------------------------------------------------------- provider receipts
+
+
+#: How long after a receipt's own timestamp an unknown wamid is still assumed to be a message
+#: whose send has not committed yet, rather than one this service never sent. Long enough to
+#: cover a slow `record_sent` transaction and Meta's first redelivery; short enough that a
+#: receipt for another tool's message on the same number stops asking for redelivery quickly.
+RECEIPT_RACE_WINDOW: Final = timedelta(minutes=10)
+
+
+class ReceiptBeforeSend(Exception):
+    """A delivery receipt named a wamid we have not recorded yet - the send that produced it has
+    not committed. Deliberately not a `ValueError`/`LookupError`: `is_permanent_fold_error` reads
+    those as "will never work", and this is exactly the failure a redelivery fixes. It is
+    transient, so the webhook answers 5xx and Meta sends the receipt again."""
+
+    def __init__(self, provider_message_id: str) -> None:
+        super().__init__(f"no message yet for provider message id {provider_message_id!r}")
 
 
 async def fold_status(
@@ -1091,7 +1335,11 @@ async def fold_status(
 
       * **No such message.** A receipt for something this organization did not send — a message
         sent before this system existed, or from another tool on the same number. Recording it
-        against nothing would invent a message.
+        against nothing would invent a message. *Unless the receipt is fresh*: the wamid is only
+        committed by `record_sent` after Meta's response came back, and a `sent`/`delivered`
+        receipt can beat that commit. A receipt younger than `RECEIPT_RACE_WINDOW` for an unknown
+        wamid therefore raises `ReceiptBeforeSend` instead of returning, so the caller does not
+        mark it processed and Meta redelivers it once the wamid has landed.
       * **No progress.** Receipts arrive out of order, so a `delivered` can follow a `read`.
         `domain.advances` is what keeps the fold monotonic; without it a message would report
         as less delivered than it is, and the inbox would lie.
@@ -1103,6 +1351,13 @@ async def fold_status(
         session, organization_id, provider_message_id
     )
     if message is None:
+        if datetime.now(UTC) - occurred_at <= RECEIPT_RACE_WINDOW:
+            log.info(
+                "notification.receipt.before_send_committed",
+                provider_message_id=provider_message_id,
+                status=status,
+            )
+            raise ReceiptBeforeSend(provider_message_id)
         log.info(
             "notification.receipt.unknown_message",
             provider_message_id=provider_message_id,

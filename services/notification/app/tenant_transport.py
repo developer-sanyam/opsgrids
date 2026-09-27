@@ -164,7 +164,9 @@ class _ScrubbedTransport:
         try:
             return await self._inner.send(message)
         except TransportError as exc:
-            raise type(exc)(self._scrub(str(exc))) from None
+            # `with_message` keeps the class *and* the provider's code and reason: the dispatcher
+            # decides on those (and flips the connection's health on a rejected credential).
+            raise exc.with_message(self._scrub(str(exc))) from None
         except Exception as exc:
             raise TransportUnavailable(self._scrub(str(exc))) from None
 

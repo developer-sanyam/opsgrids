@@ -431,6 +431,19 @@ async def test_a_template_send_still_carries_its_payload_on_the_tenants_number(
     """The provider-template path is unchanged; only whose number it leaves from moved."""
     await _connect_whatsapp(org_a, phone=PHONE_A, token=TOKEN_A)
     async with _scope(org_a) as s:
+        # The dispatcher re-checks the template's status right before sending, so it has to exist
+        # and be approved — as it always is by the time a rule stages a message against it.
+        s.add(
+            models.ProviderTemplate(
+                organization_id=org_a,
+                code="order_shipped",
+                channel="whatsapp",
+                provider_name="order_shipped",
+                language="en",
+                category="utility",
+                status="approved",
+            )
+        )
         message = await services.stage_message(
             s,
             organization_id=org_a,

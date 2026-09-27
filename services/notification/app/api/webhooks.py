@@ -258,7 +258,11 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
                     )
                     # Marked processed even when the fold applied nothing. The event *has* been
                     # handled: re-running it would reach the same conclusion, and leaving it
-                    # unmarked would make every redelivery repeat the work.
+                    # unmarked would make every redelivery repeat the work. The one exception
+                    # is a receipt that beat its own send's commit: `fold_status` raises
+                    # `ReceiptBeforeSend` for it, so this line is never reached, the transaction
+                    # rolls back, and the `except` below treats it as transient - 5xx, Meta
+                    # redelivers once the wamid has landed.
                     session.add(
                         ProcessedEvent(
                             event_id=update.dedupe_id,

@@ -83,7 +83,9 @@ def verify_signature(raw_body: bytes, header_value: str | None, app_secret: str)
         return False
 
     expected = hmac.new(app_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, supplied)
+    # Bytes, not str: `compare_digest` raises `TypeError` on a str with a non-ASCII character,
+    # and the header is attacker-controlled - that would be a 500 instead of the 401 it is owed.
+    return hmac.compare_digest(expected.encode("utf-8"), supplied.encode("utf-8", "surrogatepass"))
 
 
 def verification_challenge(
@@ -100,7 +102,15 @@ def verification_challenge(
     """
     if mode != "subscribe":
         raise WebhookError("not a subscription handshake")
-    if not token or not expected_token or not hmac.compare_digest(token, expected_token):
+    # Bytes for the same reason as `verify_signature`: a non-ASCII query value would otherwise
+    # raise `TypeError` (a 500) rather than fail the comparison (a 403).
+    if (
+        not token
+        or not expected_token
+        or not hmac.compare_digest(
+            token.encode("utf-8", "surrogatepass"), expected_token.encode("utf-8", "surrogatepass")
+        )
+    ):
         raise WebhookError("verification token does not match")
     if not challenge:
         raise WebhookError("no challenge to echo")

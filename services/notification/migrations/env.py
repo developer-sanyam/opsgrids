@@ -66,6 +66,39 @@ def grant_campaign_sweep_reader(connection: Connection) -> None:
     connection.commit()
 
 
+def grant_message_retry_reader(connection: Connection) -> None:
+    """Column-level `SELECT` on `messages` for the outbox role — the failed-send retry sweep's own
+    cross-tenant discovery (`app/cron.py`, `services.due_message_retries`).
+
+    Same shape and reasons as `grant_campaign_sweep_reader`: six columns, named exactly
+    (`organization_id`, `id`, `state`, `attempts`, `updated_at`, `deleted_at`), never `to_address`,
+    `subject` or `body`. Discovery only asks *which message in which organization is due for
+    another attempt*; every write the sweep makes runs tenant-bound. Without this grant the sweep's
+    query fails on the outbox role and no failed send is ever retried.
+
+    Idempotent and re-applied after every alembic run: `REVOKE` first, `GRANT` again only if the
+    table exists.
+    """
+    reader = cfg.db_outbox_role
+    if not reader:
+        return
+    if not connection.execute(
+        text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": reader}
+    ).scalar():
+        return
+    if connection.execute(
+        text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.messages"}
+    ).scalar():
+        connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."messages" FROM "{reader}"'))
+        connection.execute(
+            text(
+                "GRANT SELECT (organization_id, id, state, attempts, updated_at, deleted_at) "
+                f'ON "{SCHEMA}"."messages" TO "{reader}"'
+            )
+        )
+    connection.commit()
+
+
 #: Append-only at the database, enforced by a table privilege rather than a policy (ADR-0000 §9):
 #: a consent change of mind is a new row, never an edit (ADR-0021).
 APPEND_ONLY_TABLE = "consent_events"
@@ -123,6 +156,7 @@ def do_run_migrations(connection: Connection) -> None:
     # without them -- which is exactly what happened the first time this was left out.
     apply_schema_grants(connection, SCHEMA, cfg.db_app_role, outbox_role=cfg.db_outbox_role)
     grant_campaign_sweep_reader(connection)
+    grant_message_retry_reader(connection)
     reapply_append_only(connection)
 
 

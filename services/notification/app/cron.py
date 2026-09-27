@@ -52,6 +52,15 @@ provider, no usable sender) is retried by discovery no more often than `Settings
 engage_campaign_pause_retry_seconds` after it last paused — an operator's `POST
 /engage/campaigns/{id}/resume` clears that clock immediately instead of waiting.
 
+**The message retry sweep rides the same tick.** A message whose provider call failed
+transiently is left `pending`, stamped with when it failed, and nothing else re-delivers it: the
+queued event that brought it to the dispatcher was marked processed in the claim transaction and
+is acked. `services.sweep_message_retries` finds those messages once their exponential backoff
+(`services.retry_delay`) has elapsed and queues a **new** dispatch event for each through the
+outbox, with the same discovery/work split as above: discovery on the BYPASSRLS outbox role (column
+grant on `messages`, `migrations/env.py`), every write tenant-bound. `claim_for_send` only claims
+`pending`, so a message the dispatcher already took is never sent twice.
+
 One campaign never blocks another: `_drain` only ever works the campaign it was called for, and
 an unhandled exception from one campaign's own batch is caught, logged with its own identifiers,
 and counted — never allowed to kill the whole tick's remaining candidates (the same reasoning
@@ -103,6 +112,8 @@ class SweepReport:
     paused: int = 0
     capped: int = 0
     backed_off: int = 0
+    #: Failed messages re-queued for another send attempt this tick.
+    retries_queued: int = 0
     #: A campaign whose own batch raised. Counted rather than left to propagate, for the same
     #: reason `approval.cron.SweepReport.failed` is: one campaign's bug must not stall every
     #: other campaign due this tick, or every future tick after a naive restart.
@@ -132,6 +143,7 @@ class CampaignDriver(GuardedSweep):
         max_backoff_seconds: float = 300.0,
         discovery_limit: int = 100,
         resolve_target: TargetResolver | None = None,
+        dispatch_max_attempts: int | None = None,
     ) -> None:
         super().__init__(poll_interval=poll_interval, max_backoff=max_backoff_seconds)
         self._discovery_factory = discovery_factory
@@ -139,6 +151,13 @@ class CampaignDriver(GuardedSweep):
         #: The contact lookup an automation send needs when the sweep resumes a run that names its
         #: recipient by contact id, the same resolver the event consumer folds with.
         self._resolve_target = resolve_target
+        #: How many sends a message gets before the retry sweep gives up on it. Defaults to the
+        #: service's own setting, so the two entrypoints that build this driver need not thread it.
+        self._dispatch_max_attempts = (
+            dispatch_max_attempts
+            if dispatch_max_attempts is not None
+            else settings().dispatch_max_attempts
+        )
         self._batch_size = batch_size
         self._lease_seconds = lease_seconds
         self._pause_retry_seconds = pause_retry_seconds
@@ -159,7 +178,7 @@ class CampaignDriver(GuardedSweep):
 
     async def on_tick_success(self, result: SweepReport) -> None:
         report = result
-        if report.considered or report.failed:
+        if report.considered or report.failed or report.retries_queued:
             log.info(
                 "notification.cron.pass",
                 considered=report.considered,
@@ -168,6 +187,7 @@ class CampaignDriver(GuardedSweep):
                 paused=report.paused,
                 capped=report.capped,
                 backed_off=report.backed_off,
+                retries_queued=report.retries_queued,
                 failed=report.failed,
             )
 
@@ -192,7 +212,23 @@ class CampaignDriver(GuardedSweep):
                 continue
             await self._drain(organization_id, campaign_id, report, at)
         await self._wake_overdue_automations(at)
+        report.retries_queued = await self._requeue_message_retries(at)
         return report
+
+    async def _requeue_message_retries(self, at: datetime) -> int:
+        """Queue a fresh dispatch event for every failed message whose backoff has elapsed. Its
+        own failure (discovery unavailable, say) is logged rather than raised, so it can never
+        stall campaign sending, and campaign work never delays it beyond one tick."""
+        try:
+            return await services.sweep_message_retries(
+                discovery_factory=self._discovery_factory,
+                work_scope=self._work_scope,
+                max_attempts=self._dispatch_max_attempts,
+                now=at,
+            )
+        except Exception:
+            log.exception("notification.retry_sweep.discovery_failed")
+            return 0
 
     async def _wake_overdue_automations(self, at: datetime) -> None:
         """The automation engine's lost-wake net (slice A1): resume any run parked on a wait or a
@@ -350,6 +386,7 @@ async def main() -> None:
         lease_seconds=cfg.engage_campaign_claim_lease_seconds,
         pause_retry_seconds=cfg.engage_campaign_pause_retry_seconds,
         poll_interval=cfg.engage_campaign_poll_interval_seconds,
+        dispatch_max_attempts=cfg.dispatch_max_attempts,
     )
     await driver.run()
 
