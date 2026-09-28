@@ -840,6 +840,214 @@ class LocationPatch(BaseModel):
         return self
 
 
+# ------------------------------------------------------------------ warehouse geometry (plan §2/
+# F7 — floors, versioned layouts, per-version location placements, and the walk graph)
+
+LayoutVersionStatus = Literal["draft", "published", "archived"]
+
+
+class WarehouseFloorOut(BaseModel):
+    id: str
+    warehouse_id: str
+    floor_number: int
+    name: str
+
+
+class WarehouseFloorIn(BaseModel):
+    """`POST /warehouses/{warehouse_id}/floors`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    floor_number: int = Field(ge=-10, le=200)
+    name: str = Field(default="", max_length=120)
+
+
+class WarehouseFloorPatch(BaseModel):
+    """`PATCH /warehouse-floors/{id}`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    floor_number: int | None = Field(default=None, ge=-10, le=200)
+    name: str | None = Field(default=None, max_length=120)
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        _reject_explicit_null(self, ("floor_number",))
+        return self
+
+
+class LayoutVersionOut(BaseModel):
+    id: str
+    warehouse_floor_id: str
+    version_number: int
+    status: LayoutVersionStatus
+    label: str
+    published_at: datetime | None
+    published_by: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class LayoutVersionCreateIn(BaseModel):
+    """`POST /warehouse-floors/{floor_id}/layout-versions` — opens a new draft. Refused with 409
+    if the floor already has one (`app.warehouse.services.open_draft_version`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(default="", max_length=200)
+    #: Start from a copy of the floor's current published placements/walk-graph (the ordinary
+    #: "edit the live layout" case) rather than empty (a genuinely new floor plan).
+    clone_from_published: bool = True
+
+
+class LocationPlacementIn(BaseModel):
+    """One entry of a `LayoutGeometryIn.placements` list — where `location_id` sits on this
+    draft's floor. Integer millimetres throughout (ADR-0000 §8)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    location_id: UUID
+    x_mm: int = Field(ge=0, le=1_000_000)
+    y_mm: int = Field(ge=0, le=1_000_000)
+    z_mm: int | None = Field(default=None, ge=0, le=1_000_000)
+    width_mm: int = Field(default=1000, gt=0, le=1_000_000)
+    depth_mm: int = Field(default=1000, gt=0, le=1_000_000)
+    height_mm: int | None = Field(default=None, gt=0, le=1_000_000)
+
+
+class LocationPlacementOut(BaseModel):
+    location_id: str
+    x_mm: int
+    y_mm: int
+    z_mm: int | None
+    width_mm: int
+    depth_mm: int
+    height_mm: int | None
+    location_code: str
+    location_kind: LocationKind
+
+
+class WalkNodeIn(BaseModel):
+    """One entry of a `LayoutGeometryIn.walk_nodes` list. `code` is this draft's own reference for
+    the node — what a `WalkEdgeIn` names in `from_code`/`to_code` — never a database id, so a
+    caller building the whole graph client-side never has to round-trip one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    location_id: UUID | None = None
+    x_mm: int = Field(ge=0, le=1_000_000)
+    y_mm: int = Field(ge=0, le=1_000_000)
+    z_mm: int | None = Field(default=None, ge=0, le=1_000_000)
+
+
+class WalkNodeOut(BaseModel):
+    id: str
+    code: str
+    location_id: str | None
+    x_mm: int
+    y_mm: int
+    z_mm: int | None
+
+
+class WalkEdgeIn(BaseModel):
+    """One entry of a `LayoutGeometryIn.walk_edges` list, naming its endpoints by the `code`s
+    named in the same payload's `walk_nodes`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_code: str = Field(min_length=1, max_length=40)
+    to_code: str = Field(min_length=1, max_length=40)
+    distance_mm: int = Field(gt=0, le=10_000_000)
+    is_traversable: bool = True
+    bidirectional: bool = True
+
+    @model_validator(mode="after")
+    def _no_self_loop(self) -> Self:
+        if self.from_code == self.to_code:
+            raise ValueError("A walk edge cannot connect a node to itself")
+        return self
+
+
+class WalkEdgeOut(BaseModel):
+    id: str
+    from_node_id: str
+    to_node_id: str
+    from_code: str
+    to_code: str
+    distance_mm: int
+    is_traversable: bool
+    bidirectional: bool
+
+
+class LayoutGeometryIn(BaseModel):
+    """`PUT /layout-versions/{id}/geometry` — the whole "save draft" payload a 2D canvas editor
+    posts. A **full replace**: every placement, walk node and walk edge this draft has is
+    dropped and rebuilt from exactly what is given here, which is what lets a canvas save its
+    entire current state in one call without diffing against what the server already had. Refused
+    (409) on anything but a `draft` version (`app.warehouse.services.save_draft_geometry`) — a
+    published version is never edited in place."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    placements: list[LocationPlacementIn] = Field(default_factory=list)
+    walk_nodes: list[WalkNodeIn] = Field(default_factory=list)
+    walk_edges: list[WalkEdgeIn] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _codes_and_locations_are_unique_and_resolvable(self) -> Self:
+        node_codes = [n.code for n in self.walk_nodes]
+        if len(node_codes) != len(set(node_codes)):
+            raise ValueError("walk_nodes[].code must be unique within one layout version")
+        location_ids = [p.location_id for p in self.placements]
+        if len(location_ids) != len(set(location_ids)):
+            raise ValueError("placements[].location_id must be unique within one layout version")
+        node_location_ids = [n.location_id for n in self.walk_nodes if n.location_id is not None]
+        if len(node_location_ids) != len(set(node_location_ids)):
+            raise ValueError(
+                "walk_nodes[].location_id must be unique within one layout version — at most "
+                "one walk node may stand for a given location"
+            )
+        known = set(node_codes)
+        for edge in self.walk_edges:
+            if edge.from_code not in known or edge.to_code not in known:
+                raise ValueError(
+                    f"walk_edges[] names a node code not present in walk_nodes: "
+                    f"{edge.from_code!r} -> {edge.to_code!r}"
+                )
+        return self
+
+
+class LayoutGeometryOut(BaseModel):
+    version: LayoutVersionOut
+    placements: list[LocationPlacementOut]
+    walk_nodes: list[WalkNodeOut]
+    walk_edges: list[WalkEdgeOut]
+
+
+class LayoutValidationIssueOut(BaseModel):
+    #: overlap | disconnected_node.
+    kind: str
+    message: str
+    location_ids: list[str] = Field(default_factory=list)
+    node_id: str | None = None
+
+
+class LayoutValidationOut(BaseModel):
+    is_valid: bool
+    issues: list[LayoutValidationIssueOut]
+
+
+class RouteOut(BaseModel):
+    """`GET /warehouse-floors/{floor_id}/route` — a computed path over the floor's **published**
+    layout, from one location to another (`app.domain.shortest_walk_path`)."""
+
+    from_location_id: str
+    to_location_id: str
+    node_ids: list[str]
+    distance_mm: int
+
+
 # ------------------------------------------------------------------ overview rollups
 
 

@@ -34,7 +34,7 @@ from app.inventory import ledger as inv_ledger
 from app.inventory import selectors as inv_selectors
 from app.inventory import services as inv_services
 from app.inventory.quantity import QuantityError, parse_qty
-from app.models import SCHEMA, Order, PurchaseOrderLine
+from app.models import SCHEMA, LayoutVersion, Order, PurchaseOrderLine, WarehouseFloor
 from app.orders import selectors as order_selectors
 from app.orders import services as order_services
 from app.schemas import (
@@ -56,6 +56,11 @@ from app.schemas import (
     ItemVariantIn,
     ItemVariantOut,
     ItemVariantPatch,
+    LayoutGeometryIn,
+    LayoutGeometryOut,
+    LayoutValidationOut,
+    LayoutVersionCreateIn,
+    LayoutVersionOut,
     LocationIn,
     LocationOut,
     LocationPatch,
@@ -82,6 +87,7 @@ from app.schemas import (
     ReceiveIn,
     ReconcileOut,
     ReservationReleaseIn,
+    RouteOut,
     ScanIn,
     ServiceInfo,
     ShipmentAdvanceIn,
@@ -97,6 +103,9 @@ from app.schemas import (
     TaskCancelIn,
     TaskReleaseIn,
     UomOut,
+    WarehouseFloorIn,
+    WarehouseFloorOut,
+    WarehouseFloorPatch,
     WarehouseIn,
     WarehouseOut,
     WarehousePatch,
@@ -105,6 +114,8 @@ from app.schemas import (
     WorkerPatch,
     WorkerPresenceIn,
 )
+from app.warehouse import selectors as wh_selectors
+from app.warehouse import services as wh_services
 from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.db import get_session, get_tenant_session
 from platform_core.errors import NotFoundProblem, ValidationProblem
@@ -166,6 +177,20 @@ LocationWrite = Annotated[ScopeContext, Depends(require("operations.inventory.lo
 #: Reservations narrow what everyone else in the org can promise, so there is no OWN reading.
 StockReserve = Annotated[
     ScopeContext, Depends(require("operations.inventory.stock.reserve", minimum=Scope.ORG))
+]
+
+# ------------------------------------------------------------------ warehouse geometry (plan §2/
+# F7): floors, versioned layouts, the walk graph and routing over it.
+
+FloorRead = Annotated[ScopeContext, Depends(require("operations.warehouse.floor.read"))]
+FloorWrite = Annotated[ScopeContext, Depends(require("operations.warehouse.floor.write"))]
+LayoutRead = Annotated[ScopeContext, Depends(require("operations.warehouse.layout.read"))]
+LayoutWrite = Annotated[ScopeContext, Depends(require("operations.warehouse.layout.write"))]
+#: Making a draft the floor's current layout, or rolling back to a prior published one — every
+#: worker's pick routing and the F9 3D viewer read whatever is published, so this is a
+#: platform-wide change the instant it commits, not a private edit.
+LayoutPublish = Annotated[
+    ScopeContext, Depends(require("operations.warehouse.layout.publish", minimum=Scope.ORG))
 ]
 
 # ------------------------------------------------------------------ orders (ADR-0024, ADR-0025)
@@ -1286,6 +1311,277 @@ async def update_location(
         raise NotFoundProblem("That location is not part of this organization")
     updated = await inv_services.update_location(session, ctx, location, payload, request=request)
     return inv_selectors.location_out(updated)
+
+
+# ------------------------------------------------------------------ warehouse geometry (plan §2/
+# F7): floors, versioned layouts, the walk graph and routing over it.
+
+
+async def _get_floor_or_404(
+    session: AsyncSession, ctx: ScopeContext, floor_id: uuid.UUID
+) -> WarehouseFloor:
+    floor = await wh_selectors.get_floor(session, ctx.organization_id, floor_id)
+    if floor is None:
+        raise NotFoundProblem("That floor is not part of this organization")
+    return floor
+
+
+async def _get_version_and_floor_or_404(
+    session: AsyncSession, ctx: ScopeContext, version_id: uuid.UUID, *, for_update: bool = False
+) -> tuple[LayoutVersion, WarehouseFloor]:
+    version = await wh_selectors.get_layout_version(
+        session, ctx.organization_id, version_id, for_update=for_update
+    )
+    if version is None:
+        raise NotFoundProblem("That layout version is not part of this organization")
+    floor = await _get_floor_or_404(session, ctx, version.warehouse_floor_id)
+    return version, floor
+
+
+@router.get(
+    "/operations/warehouses/{warehouse_id}/floors",
+    response_model=Page[WarehouseFloorOut],
+    summary="A warehouse's floors",
+    dependencies=[Entitled],
+)
+async def list_floors(
+    warehouse_id: uuid.UUID, session: SessionDep, ctx: FloorRead, params: PageQuery
+) -> Page[WarehouseFloorOut]:
+    warehouse = await inv_selectors.get_warehouse(session, ctx.organization_id, warehouse_id)
+    if warehouse is None:
+        raise NotFoundProblem("That warehouse is not part of this organization")
+    stmt = wh_selectors.floors_stmt(ctx.organization_id, warehouse_id)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([wh_selectors.floor_out(f) for f in rows], total=total, params=params)
+
+
+@router.post(
+    "/operations/warehouses/{warehouse_id}/floors",
+    response_model=WarehouseFloorOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a floor to a warehouse",
+    dependencies=[Entitled],
+)
+async def create_floor(
+    warehouse_id: uuid.UUID,
+    payload: WarehouseFloorIn,
+    session: SessionDep,
+    ctx: FloorWrite,
+    request: Request,
+) -> WarehouseFloorOut:
+    warehouse = await inv_selectors.get_warehouse(session, ctx.organization_id, warehouse_id)
+    if warehouse is None:
+        raise NotFoundProblem("That warehouse is not part of this organization")
+    floor = await wh_services.create_floor(
+        session,
+        ctx,
+        warehouse,
+        floor_number=payload.floor_number,
+        name=payload.name,
+        request=request,
+    )
+    return wh_selectors.floor_out(floor)
+
+
+@router.get(
+    "/operations/warehouse-floors/{floor_id}",
+    response_model=WarehouseFloorOut,
+    summary="One floor",
+    dependencies=[Entitled],
+)
+async def read_floor(floor_id: uuid.UUID, session: SessionDep, ctx: FloorRead) -> WarehouseFloorOut:
+    floor = await _get_floor_or_404(session, ctx, floor_id)
+    return wh_selectors.floor_out(floor)
+
+
+@router.patch(
+    "/operations/warehouse-floors/{floor_id}",
+    response_model=WarehouseFloorOut,
+    summary="Update a floor",
+    dependencies=[Entitled],
+)
+async def update_floor(
+    floor_id: uuid.UUID,
+    payload: WarehouseFloorPatch,
+    session: SessionDep,
+    ctx: FloorWrite,
+    request: Request,
+) -> WarehouseFloorOut:
+    floor = await _get_floor_or_404(session, ctx, floor_id)
+    updated = await wh_services.update_floor(session, ctx, floor, payload, request=request)
+    return wh_selectors.floor_out(updated)
+
+
+@router.get(
+    "/operations/warehouse-floors/{floor_id}/layout-versions",
+    response_model=Page[LayoutVersionOut],
+    summary="A floor's layout version history — draft, published and archived alike",
+    dependencies=[Entitled],
+)
+async def list_layout_versions(
+    floor_id: uuid.UUID, session: SessionDep, ctx: LayoutRead, params: PageQuery
+) -> Page[LayoutVersionOut]:
+    floor = await _get_floor_or_404(session, ctx, floor_id)
+    stmt = wh_selectors.layout_versions_stmt(ctx.organization_id, floor.id)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build(
+        [wh_selectors.layout_version_out(v) for v in rows], total=total, params=params
+    )
+
+
+@router.post(
+    "/operations/warehouse-floors/{floor_id}/layout-versions",
+    response_model=LayoutVersionOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Open a new draft layout version for a floor",
+    dependencies=[Entitled],
+)
+async def create_layout_version(
+    floor_id: uuid.UUID,
+    payload: LayoutVersionCreateIn,
+    session: SessionDep,
+    ctx: LayoutWrite,
+    request: Request,
+) -> LayoutVersionOut:
+    floor = await _get_floor_or_404(session, ctx, floor_id)
+    version = await wh_services.open_draft_version(
+        session,
+        ctx,
+        floor,
+        label=payload.label,
+        clone_from_published=payload.clone_from_published,
+        request=request,
+    )
+    return wh_selectors.layout_version_out(version)
+
+
+async def _geometry_out(
+    session: AsyncSession, ctx: ScopeContext, version: LayoutVersion
+) -> LayoutGeometryOut:
+    org_id = ctx.organization_id
+    placements = await wh_selectors.placements_for_version(session, org_id, version.id)
+    nodes = await wh_selectors.nodes_for_version(session, org_id, version.id)
+    edges = await wh_selectors.edges_for_version(session, org_id, version.id)
+    locations = await wh_selectors.locations_by_id(
+        session, org_id, {p.location_id for p in placements}
+    )
+    code_by_node_id = {n.id: n.code for n in nodes}
+    return LayoutGeometryOut(
+        version=wh_selectors.layout_version_out(version),
+        placements=[
+            wh_selectors.placement_out(p, locations[p.location_id])
+            for p in placements
+            if p.location_id in locations
+        ],
+        walk_nodes=[wh_selectors.walk_node_out(n) for n in nodes],
+        walk_edges=[wh_selectors.walk_edge_out(e, code_by_node_id) for e in edges],
+    )
+
+
+@router.get(
+    "/operations/layout-versions/{version_id}",
+    response_model=LayoutGeometryOut,
+    summary="One layout version's full geometry — placements and walk graph",
+    dependencies=[Entitled],
+)
+async def read_layout_version(
+    version_id: uuid.UUID, session: SessionDep, ctx: LayoutRead
+) -> LayoutGeometryOut:
+    version, _floor = await _get_version_and_floor_or_404(session, ctx, version_id)
+    return await _geometry_out(session, ctx, version)
+
+
+@router.put(
+    "/operations/layout-versions/{version_id}/geometry",
+    response_model=LayoutGeometryOut,
+    summary="Replace a draft's placements and walk graph — the canvas editor's \"save draft\"",
+    dependencies=[Entitled],
+)
+async def save_layout_geometry(
+    version_id: uuid.UUID,
+    payload: LayoutGeometryIn,
+    session: SessionDep,
+    ctx: LayoutWrite,
+    request: Request,
+) -> LayoutGeometryOut:
+    version, floor = await _get_version_and_floor_or_404(session, ctx, version_id, for_update=True)
+    updated = await wh_services.save_draft_geometry(
+        session, ctx, floor, version, payload, request=request
+    )
+    return await _geometry_out(session, ctx, updated)
+
+
+@router.delete(
+    "/operations/layout-versions/{version_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Discard a draft layout version",
+    dependencies=[Entitled],
+)
+async def discard_layout_version(
+    version_id: uuid.UUID, session: SessionDep, ctx: LayoutWrite, request: Request
+) -> Response:
+    version, _floor = await _get_version_and_floor_or_404(session, ctx, version_id, for_update=True)
+    await wh_services.discard_draft_version(session, ctx, version, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/operations/layout-versions/{version_id}/validate",
+    response_model=LayoutValidationOut,
+    summary="Check a layout for overlapping locations or disconnected walk nodes, without "
+    "publishing",
+    dependencies=[Entitled],
+)
+async def validate_layout_version(
+    version_id: uuid.UUID, session: SessionDep, ctx: LayoutRead
+) -> LayoutValidationOut:
+    version, _floor = await _get_version_and_floor_or_404(session, ctx, version_id)
+    return await wh_selectors.validate_layout(session, ctx.organization_id, version)
+
+
+@router.post(
+    "/operations/layout-versions/{version_id}/publish",
+    response_model=LayoutVersionOut,
+    summary="Publish a draft (or roll back to a prior published version)",
+    dependencies=[Entitled],
+)
+async def publish_layout_version(
+    version_id: uuid.UUID, session: SessionDep, ctx: LayoutPublish, request: Request
+) -> LayoutVersionOut:
+    version, floor = await _get_version_and_floor_or_404(session, ctx, version_id, for_update=True)
+    published = await wh_services.publish_layout_version(
+        session, ctx, floor, version, request=request
+    )
+    return wh_selectors.layout_version_out(published)
+
+
+@router.get(
+    "/operations/warehouse-floors/{floor_id}/route",
+    response_model=RouteOut,
+    summary="Shortest walk path between two locations on a floor's published layout",
+    dependencies=[Entitled],
+)
+async def compute_route(
+    floor_id: uuid.UUID,
+    session: SessionDep,
+    ctx: LayoutRead,
+    from_location_id: Annotated[uuid.UUID, Query()],
+    to_location_id: Annotated[uuid.UUID, Query()],
+) -> RouteOut:
+    floor = await _get_floor_or_404(session, ctx, floor_id)
+    plan = await wh_selectors.find_route(
+        session,
+        ctx.organization_id,
+        floor,
+        from_location_id=from_location_id,
+        to_location_id=to_location_id,
+    )
+    return RouteOut(
+        from_location_id=str(from_location_id),
+        to_location_id=str(to_location_id),
+        node_ids=[str(n) for n in plan.node_ids],
+        distance_mm=plan.distance_mm,
+    )
 
 
 # ------------------------------------------------------------------ orders (ADR-0024, ADR-0025)

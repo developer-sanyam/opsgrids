@@ -79,6 +79,7 @@ export function WarehousesPage() {
           label={w.name}
           actions={[
             { label: "Locations", onSelect: () => navigate(`/warehouses/${w.id}/locations`) },
+            { label: "Floors", onSelect: () => navigate(`/warehouses/${w.id}/floors`) },
             { label: "Edit", onSelect: () => setEditing(w), hidden: !canWrite },
             { label: "Delete", tone: "danger", onSelect: () => setDeleting(w), hidden: !canWrite },
           ]}

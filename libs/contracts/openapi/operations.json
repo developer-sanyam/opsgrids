@@ -1344,6 +1344,222 @@
         "title": "ItemVariantPatch",
         "type": "object"
       },
+      "LayoutGeometryIn": {
+        "additionalProperties": false,
+        "description": "`PUT /layout-versions/{id}/geometry` \u2014 the whole \"save draft\" payload a 2D canvas editor\nposts. A **full replace**: every placement, walk node and walk edge this draft has is\ndropped and rebuilt from exactly what is given here, which is what lets a canvas save its\nentire current state in one call without diffing against what the server already had. Refused\n(409) on anything but a `draft` version (`app.warehouse.services.save_draft_geometry`) \u2014 a\npublished version is never edited in place.",
+        "properties": {
+          "placements": {
+            "items": {
+              "$ref": "#/components/schemas/LocationPlacementIn"
+            },
+            "title": "Placements",
+            "type": "array"
+          },
+          "walk_edges": {
+            "items": {
+              "$ref": "#/components/schemas/WalkEdgeIn"
+            },
+            "title": "Walk Edges",
+            "type": "array"
+          },
+          "walk_nodes": {
+            "items": {
+              "$ref": "#/components/schemas/WalkNodeIn"
+            },
+            "title": "Walk Nodes",
+            "type": "array"
+          }
+        },
+        "title": "LayoutGeometryIn",
+        "type": "object"
+      },
+      "LayoutGeometryOut": {
+        "properties": {
+          "placements": {
+            "items": {
+              "$ref": "#/components/schemas/LocationPlacementOut"
+            },
+            "title": "Placements",
+            "type": "array"
+          },
+          "version": {
+            "$ref": "#/components/schemas/LayoutVersionOut"
+          },
+          "walk_edges": {
+            "items": {
+              "$ref": "#/components/schemas/WalkEdgeOut"
+            },
+            "title": "Walk Edges",
+            "type": "array"
+          },
+          "walk_nodes": {
+            "items": {
+              "$ref": "#/components/schemas/WalkNodeOut"
+            },
+            "title": "Walk Nodes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "version",
+          "placements",
+          "walk_nodes",
+          "walk_edges"
+        ],
+        "title": "LayoutGeometryOut",
+        "type": "object"
+      },
+      "LayoutValidationIssueOut": {
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "location_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Location Ids",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "node_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node Id"
+          }
+        },
+        "required": [
+          "kind",
+          "message"
+        ],
+        "title": "LayoutValidationIssueOut",
+        "type": "object"
+      },
+      "LayoutValidationOut": {
+        "properties": {
+          "is_valid": {
+            "title": "Is Valid",
+            "type": "boolean"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/LayoutValidationIssueOut"
+            },
+            "title": "Issues",
+            "type": "array"
+          }
+        },
+        "required": [
+          "is_valid",
+          "issues"
+        ],
+        "title": "LayoutValidationOut",
+        "type": "object"
+      },
+      "LayoutVersionCreateIn": {
+        "additionalProperties": false,
+        "description": "`POST /warehouse-floors/{floor_id}/layout-versions` \u2014 opens a new draft. Refused with 409\nif the floor already has one (`app.warehouse.services.open_draft_version`).",
+        "properties": {
+          "clone_from_published": {
+            "default": true,
+            "title": "Clone From Published",
+            "type": "boolean"
+          },
+          "label": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "title": "LayoutVersionCreateIn",
+        "type": "object"
+      },
+      "LayoutVersionOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "published_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published By"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "published",
+              "archived"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version_number": {
+            "title": "Version Number",
+            "type": "integer"
+          },
+          "warehouse_floor_id": {
+            "title": "Warehouse Floor Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "warehouse_floor_id",
+          "version_number",
+          "status",
+          "label",
+          "published_at",
+          "published_by",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "LayoutVersionOut",
+        "type": "object"
+      },
       "LocationIn": {
         "additionalProperties": false,
         "description": "`POST /warehouses/{warehouse_id}/locations`. `parent_id`, when given, must name an\nexisting location in the same warehouse. `barcode`, when given, must be unique across every\nlive location in the organization.",
@@ -1703,6 +1919,156 @@
           }
         },
         "title": "LocationPatch",
+        "type": "object"
+      },
+      "LocationPlacementIn": {
+        "additionalProperties": false,
+        "description": "One entry of a `LayoutGeometryIn.placements` list \u2014 where `location_id` sits on this\ndraft's floor. Integer millimetres throughout (ADR-0000 \u00a78).",
+        "properties": {
+          "depth_mm": {
+            "default": 1000,
+            "exclusiveMinimum": 0.0,
+            "maximum": 1000000.0,
+            "title": "Depth Mm",
+            "type": "integer"
+          },
+          "height_mm": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1000000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height Mm"
+          },
+          "location_id": {
+            "format": "uuid",
+            "title": "Location Id",
+            "type": "string"
+          },
+          "width_mm": {
+            "default": 1000,
+            "exclusiveMinimum": 0.0,
+            "maximum": 1000000.0,
+            "title": "Width Mm",
+            "type": "integer"
+          },
+          "x_mm": {
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "X Mm",
+            "type": "integer"
+          },
+          "y_mm": {
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Y Mm",
+            "type": "integer"
+          },
+          "z_mm": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Z Mm"
+          }
+        },
+        "required": [
+          "location_id",
+          "x_mm",
+          "y_mm"
+        ],
+        "title": "LocationPlacementIn",
+        "type": "object"
+      },
+      "LocationPlacementOut": {
+        "properties": {
+          "depth_mm": {
+            "title": "Depth Mm",
+            "type": "integer"
+          },
+          "height_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height Mm"
+          },
+          "location_code": {
+            "title": "Location Code",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "location_kind": {
+            "enum": [
+              "zone",
+              "aisle",
+              "rack",
+              "shelf",
+              "bin",
+              "staging",
+              "pack_station",
+              "dock",
+              "receiving",
+              "returns",
+              "quarantine"
+            ],
+            "title": "Location Kind",
+            "type": "string"
+          },
+          "width_mm": {
+            "title": "Width Mm",
+            "type": "integer"
+          },
+          "x_mm": {
+            "title": "X Mm",
+            "type": "integer"
+          },
+          "y_mm": {
+            "title": "Y Mm",
+            "type": "integer"
+          },
+          "z_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Z Mm"
+          }
+        },
+        "required": [
+          "location_id",
+          "x_mm",
+          "y_mm",
+          "z_mm",
+          "width_mm",
+          "depth_mm",
+          "height_mm",
+          "location_code",
+          "location_kind"
+        ],
+        "title": "LocationPlacementOut",
         "type": "object"
       },
       "OfferIn": {
@@ -2697,6 +3063,42 @@
         "title": "Page[ItemCategoryOut]",
         "type": "object"
       },
+      "Page_LayoutVersionOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LayoutVersionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[LayoutVersionOut]",
+        "type": "object"
+      },
       "Page_LocationOut_": {
         "properties": {
           "items": {
@@ -3055,6 +3457,42 @@
           "pages"
         ],
         "title": "Page[UomOut]",
+        "type": "object"
+      },
+      "Page_WarehouseFloorOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WarehouseFloorOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[WarehouseFloorOut]",
         "type": "object"
       },
       "Page_WarehouseOut_": {
@@ -4180,6 +4618,38 @@
         "title": "ReservationReleaseIn",
         "type": "object"
       },
+      "RouteOut": {
+        "description": "`GET /warehouse-floors/{floor_id}/route` \u2014 a computed path over the floor's **published**\nlayout, from one location to another (`app.domain.shortest_walk_path`).",
+        "properties": {
+          "distance_mm": {
+            "title": "Distance Mm",
+            "type": "integer"
+          },
+          "from_location_id": {
+            "title": "From Location Id",
+            "type": "string"
+          },
+          "node_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Node Ids",
+            "type": "array"
+          },
+          "to_location_id": {
+            "title": "To Location Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_location_id",
+          "to_location_id",
+          "node_ids",
+          "distance_mm"
+        ],
+        "title": "RouteOut",
+        "type": "object"
+      },
       "ScanIn": {
         "additionalProperties": false,
         "description": "`POST /fulfilment/tasks/{id}/scan` \u2014 one row in the append-only `scan_events` (plan F3).\nThe task's own first scan additionally moves it `ACCEPTED -> IN_PROGRESS` (ADR-0025 \u00a72).",
@@ -4261,7 +4731,7 @@
       },
       "ShipmentIn": {
         "additionalProperties": false,
-        "description": "`POST /dispatch/shipments` \u2014 the carrier handover (Fulfilment plan F5): creates the\nshipment, already at `PICKUP_HANDOVER`, posts the dispatch `issue` move against whatever pick\nand pack transferred (ADR-0024 \u00a76), and moves the order `READY -> HANDED_OVER -> DELIVERED`\nin the same call once `app.orders.services.check_billing_gate` passes \u2014 the delivery/courier\ncounterpart to `POST /orders/{id}/hand-over`'s counter/walk-in path.\n\n`carrier_name`/`tracking_reference` are manual text only \u2014 no carrier API integration exists\nin this build (Fulfilment plan F5's own \"not in phase\" list); `tracking_reference` may be\nunknown at handover and set (or corrected) on a later transition instead.",
+        "description": "`POST /dispatch/shipments` \u2014 the carrier handover (Fulfilment plan F5): creates the\nshipment, already at `PICKUP_HANDOVER`, posts the dispatch `issue` move against whatever pick\nand pack transferred (ADR-0024 \u00a76), and moves the order `READY -> HANDED_OVER -> DELIVERED`\nin the same call once `app.orders.services.check_billing_gate` passes \u2014 the delivery/courier\ncounterpart to `POST /orders/{id}/hand-over`'s counter/walk-in path.\n\n`carrier_name`/`tracking_reference` are manual text only \u2014 no carrier API integration exists\nin this build (Fulfilment plan F5's own \"not in phase\" list); `tracking_reference` may be\nunknown at handover and set (or corrected) on a later transition instead.\n\n`payment_confirmed` mirrors `OrderHandoverIn`'s own field exactly \u2014 the carrier-desk\noperator's attestation that a cash/prepaid order's payment was collected, the same documented\nstand-in for `services/payment`'s tenant collections module (ADR-0024 A4) the counter path\nalready uses (security review M3). Inert for a credit-terms order.",
         "properties": {
           "carrier_name": {
             "maxLength": 120,
@@ -4278,6 +4748,11 @@
             "minimum": 0.0,
             "title": "Order Version",
             "type": "integer"
+          },
+          "payment_confirmed": {
+            "default": false,
+            "title": "Payment Confirmed",
+            "type": "boolean"
           },
           "tracking_reference": {
             "anyOf": [
@@ -5207,6 +5682,288 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WalkEdgeIn": {
+        "additionalProperties": false,
+        "description": "One entry of a `LayoutGeometryIn.walk_edges` list, naming its endpoints by the `code`s\nnamed in the same payload's `walk_nodes`.",
+        "properties": {
+          "bidirectional": {
+            "default": true,
+            "title": "Bidirectional",
+            "type": "boolean"
+          },
+          "distance_mm": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000000.0,
+            "title": "Distance Mm",
+            "type": "integer"
+          },
+          "from_code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "From Code",
+            "type": "string"
+          },
+          "is_traversable": {
+            "default": true,
+            "title": "Is Traversable",
+            "type": "boolean"
+          },
+          "to_code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "To Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_code",
+          "to_code",
+          "distance_mm"
+        ],
+        "title": "WalkEdgeIn",
+        "type": "object"
+      },
+      "WalkEdgeOut": {
+        "properties": {
+          "bidirectional": {
+            "title": "Bidirectional",
+            "type": "boolean"
+          },
+          "distance_mm": {
+            "title": "Distance Mm",
+            "type": "integer"
+          },
+          "from_code": {
+            "title": "From Code",
+            "type": "string"
+          },
+          "from_node_id": {
+            "title": "From Node Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_traversable": {
+            "title": "Is Traversable",
+            "type": "boolean"
+          },
+          "to_code": {
+            "title": "To Code",
+            "type": "string"
+          },
+          "to_node_id": {
+            "title": "To Node Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "from_node_id",
+          "to_node_id",
+          "from_code",
+          "to_code",
+          "distance_mm",
+          "is_traversable",
+          "bidirectional"
+        ],
+        "title": "WalkEdgeOut",
+        "type": "object"
+      },
+      "WalkNodeIn": {
+        "additionalProperties": false,
+        "description": "One entry of a `LayoutGeometryIn.walk_nodes` list. `code` is this draft's own reference for\nthe node \u2014 what a `WalkEdgeIn` names in `from_code`/`to_code` \u2014 never a database id, so a\ncaller building the whole graph client-side never has to round-trip one.",
+        "properties": {
+          "code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Code",
+            "type": "string"
+          },
+          "location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          },
+          "x_mm": {
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "X Mm",
+            "type": "integer"
+          },
+          "y_mm": {
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Y Mm",
+            "type": "integer"
+          },
+          "z_mm": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Z Mm"
+          }
+        },
+        "required": [
+          "code",
+          "x_mm",
+          "y_mm"
+        ],
+        "title": "WalkNodeIn",
+        "type": "object"
+      },
+      "WalkNodeOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          },
+          "x_mm": {
+            "title": "X Mm",
+            "type": "integer"
+          },
+          "y_mm": {
+            "title": "Y Mm",
+            "type": "integer"
+          },
+          "z_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Z Mm"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "location_id",
+          "x_mm",
+          "y_mm",
+          "z_mm"
+        ],
+        "title": "WalkNodeOut",
+        "type": "object"
+      },
+      "WarehouseFloorIn": {
+        "additionalProperties": false,
+        "description": "`POST /warehouses/{warehouse_id}/floors`.",
+        "properties": {
+          "floor_number": {
+            "maximum": 200.0,
+            "minimum": -10.0,
+            "title": "Floor Number",
+            "type": "integer"
+          },
+          "name": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "floor_number"
+        ],
+        "title": "WarehouseFloorIn",
+        "type": "object"
+      },
+      "WarehouseFloorOut": {
+        "properties": {
+          "floor_number": {
+            "title": "Floor Number",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "warehouse_id",
+          "floor_number",
+          "name"
+        ],
+        "title": "WarehouseFloorOut",
+        "type": "object"
+      },
+      "WarehouseFloorPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /warehouse-floors/{id}`.",
+        "properties": {
+          "floor_number": {
+            "anyOf": [
+              {
+                "maximum": 200.0,
+                "minimum": -10.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Floor Number"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "WarehouseFloorPatch",
         "type": "object"
       },
       "WarehouseIn": {
@@ -8574,6 +9331,222 @@
         ]
       }
     },
+    "/api/v1/operations/layout-versions/{version_id}": {
+      "delete": {
+        "operationId": "discard_layout_version_api_v1_operations_layout_versions__version_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Discard a draft layout version",
+        "tags": [
+          "operations"
+        ]
+      },
+      "get": {
+        "operationId": "read_layout_version_api_v1_operations_layout_versions__version_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LayoutGeometryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One layout version's full geometry \u2014 placements and walk graph",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/layout-versions/{version_id}/geometry": {
+      "put": {
+        "operationId": "save_layout_geometry_api_v1_operations_layout_versions__version_id__geometry_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LayoutGeometryIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LayoutGeometryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replace a draft's placements and walk graph \u2014 the canvas editor's \"save draft\"",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/layout-versions/{version_id}/publish": {
+      "post": {
+        "operationId": "publish_layout_version_api_v1_operations_layout_versions__version_id__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LayoutVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish a draft (or roll back to a prior published version)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/layout-versions/{version_id}/validate": {
+      "post": {
+        "operationId": "validate_layout_version_api_v1_operations_layout_versions__version_id__validate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LayoutValidationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Check a layout for overlapping locations or disconnected walk nodes, without publishing",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
     "/api/v1/operations/locations/by-barcode/{barcode}": {
       "get": {
         "operationId": "read_location_by_barcode_api_v1_operations_locations_by_barcode__barcode__get",
@@ -10036,6 +11009,239 @@
         ]
       }
     },
+    "/api/v1/operations/warehouse-floors/{floor_id}": {
+      "patch": {
+        "operationId": "update_floor_api_v1_operations_warehouse_floors__floor_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "floor_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Floor Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WarehouseFloorPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarehouseFloorOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a floor",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/warehouse-floors/{floor_id}/layout-versions": {
+      "get": {
+        "operationId": "list_layout_versions_api_v1_operations_warehouse_floors__floor_id__layout_versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "floor_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Floor Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_LayoutVersionOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A floor's layout version history \u2014 draft, published and archived alike",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "create_layout_version_api_v1_operations_warehouse_floors__floor_id__layout_versions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "floor_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Floor Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LayoutVersionCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LayoutVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open a new draft layout version for a floor",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/warehouse-floors/{floor_id}/route": {
+      "get": {
+        "operationId": "compute_route_api_v1_operations_warehouse_floors__floor_id__route_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "floor_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Floor Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from_location_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "From Location Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_location_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "To Location Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Shortest walk path between two locations on a floor's published layout",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
     "/api/v1/operations/warehouses": {
       "get": {
         "operationId": "list_warehouses_api_v1_operations_warehouses_get",
@@ -10213,6 +11419,123 @@
           }
         },
         "summary": "Update a warehouse",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/warehouses/{warehouse_id}/floors": {
+      "get": {
+        "operationId": "list_floors_api_v1_operations_warehouses__warehouse_id__floors_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "warehouse_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Warehouse Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_WarehouseFloorOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A warehouse's floors",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "create_floor_api_v1_operations_warehouses__warehouse_id__floors_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "warehouse_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Warehouse Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WarehouseFloorIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarehouseFloorOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a floor to a warehouse",
         "tags": [
           "operations"
         ]

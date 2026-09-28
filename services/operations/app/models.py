@@ -293,6 +293,15 @@ class Location(Base, TenantBase):
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
     )
+    #: The floor this location sits on (warehouse geometry, plan §2/F7) — `NULL` until a
+    #: published layout places it. Stable identity, not versioned: unlike its *position* on that
+    #: floor (`LocationPlacement`, scoped to a `layout_version` so a draft's coordinates never
+    #: leak into what is published), which floor a location belongs to is one fact — but it is
+    #: still only ever written on *publish* (`app.warehouse.services.publish_layout_version`),
+    #: never from a draft save, so it too never reflects a layout that was merely proposed.
+    floor_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.warehouse_floors.id", ondelete="RESTRICT")
+    )
     #: zone | aisle | rack | shelf | bin | staging | pack_station | dock | receiving | returns |
     #: quarantine (ADR-0024 §5, amending ADR-0014 §1's zone|rack|bin). A kind is *where* stock
     #: is, never *what condition* it is in — that is `STOCK_STATUSES`, a separate axis carried by
@@ -348,6 +357,7 @@ class Location(Base, TenantBase):
             unique=True,
             postgresql_where=text("barcode IS NOT NULL AND deleted_at IS NULL"),
         ),
+        Index("ix_locations_org_floor", "organization_id", "floor_id"),
     )
 
 
@@ -1928,6 +1938,282 @@ class ShipmentTransition(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
 
     __table_args__ = (
         Index("ix_shipment_transitions_org_shipment", "organization_id", "shipment_id", "at"),
+    )
+
+
+# ------------------------------------------------------------------ warehouse geometry
+# (plan §2 domain model table: `warehouse_floors, layout_versions, location_rules, walk_nodes,
+# walk_edges`; `location_rules` is not built in this slice — nothing yet needs a rule beyond the
+# overlap/connectivity checks `app.domain` already runs at validate/publish time, so it stays a
+# later phase's addition, the same "schema-only until a phase needs it" precedent F1 set for this
+# whole group.)
+
+
+class WarehouseFloor(Base, TenantBase):
+    """One physical floor of a warehouse (plan §2/F7) — the thing a `LayoutVersion` is a version
+    *of*. `floor_number` need not start at 1 or be contiguous (basements, mezzanines); it is
+    display ordering, not an array index. Deleting a floor is a soft delete like every other
+    reference table here; nothing yet refuses one with locations or published layouts still
+    pointing at it, since deleting a floor with real geometry is not a normal admin action —
+    revisit if that turns out to be wrong in practice."""
+
+    __tablename__ = "warehouse_floors"
+
+    warehouse_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.warehouses.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    floor_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+
+    __table_args__ = (
+        Index(
+            "uq_warehouse_floors_org_warehouse_number",
+            "organization_id",
+            "warehouse_id",
+            "floor_number",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_warehouse_floors_org_warehouse", "organization_id", "warehouse_id"),
+    )
+
+
+#: draft -> published -> archived (superseded by a later publish) -> published again (rollback:
+#: republishing an archived version, `app.warehouse.services.publish_layout_version`). Never
+#: draft -> archived directly — a draft that is abandoned is discarded outright (`DELETE
+#: /layout-versions/{id}`, only while still `draft`), not archived, so "archived" always means
+#: "this was published once" and a rollback target is always something that really was live.
+LAYOUT_VERSION_STATUSES = ("draft", "published", "archived")
+
+
+class LayoutVersion(Base, TenantBase):
+    """One version of a floor's layout (plan §2/F7; ADR-0024 §5's "floors / layout versions /
+    walk graph, schema only" now gets its first write path). `version_number` is a per-floor
+    sequence starting at 1, assigned once at creation and never reused.
+
+    **Versioning discipline (this slice's whole point): a published version is never edited in
+    place.** `app.warehouse.services.save_draft_geometry` refuses on anything but a `draft`
+    version; editing a published layout means opening a new draft first (optionally cloned from
+    the current published version, so an edit starts from what is live) and publishing *that* —
+    which archives the previous published version rather than overwriting it. History survives
+    every publish, so a rollback (`publish_layout_version` called again on an `archived` version)
+    has something real to point back at.
+
+    At most one `draft` and at most one `published` version per floor at a time (the two partial
+    unique indexes below) — the same "at most one current row" shape `FulfilmentSettings` already
+    uses for its org/warehouse split, chosen here so "the floor's current layout" is always a
+    single, unambiguous lookup rather than a most-recent-published query.
+    """
+
+    __tablename__ = "layout_versions"
+
+    warehouse_floor_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.warehouse_floors.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: draft | published | archived — `LAYOUT_VERSION_STATUSES`, enforced by the write path
+    #: (`app.domain.can_transition_layout_version`), the same convention every other status
+    #: column in this service follows.
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="draft")
+    label: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Directory id of whoever published (or rolled back to) this version — `layout.publish` is
+    #: dangerous, so this is what an audit question ("who made this live") reads first, before
+    #: reaching for `audit_logs`.
+    published_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(f"status IN {LAYOUT_VERSION_STATUSES!r}", name="status_known"),
+        Index(
+            "uq_layout_versions_org_floor_number",
+            "organization_id",
+            "warehouse_floor_id",
+            "version_number",
+            unique=True,
+        ),
+        Index(
+            "uq_layout_versions_org_floor_draft",
+            "organization_id",
+            "warehouse_floor_id",
+            unique=True,
+            # `deleted_at IS NULL`: a discarded draft (`discard_draft_version` soft-deletes it —
+            # its `status` stays `"draft"` forever, only `deleted_at` changes) must not go on
+            # blocking a new one from opening, the same partial-index shape `Location`'s own
+            # `uq_locations_org_warehouse_default` already uses for exactly this reason.
+            postgresql_where=text("status = 'draft' AND deleted_at IS NULL"),
+        ),
+        Index(
+            "uq_layout_versions_org_floor_published",
+            "organization_id",
+            "warehouse_floor_id",
+            unique=True,
+            postgresql_where=text("status = 'published' AND deleted_at IS NULL"),
+        ),
+        Index("ix_layout_versions_org_floor", "organization_id", "warehouse_floor_id"),
+    )
+
+
+class LocationPlacement(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """Where one `Location` sits on one floor, **in one `LayoutVersion`** (plan §2/F7) — this is
+    the "geometry columns" ADR-0024 §5 and the plan's domain-model table ask for, kept off
+    `Location` itself and off this table's own would-be-second-identity shape on purpose: a plain
+    x/y pair on the `locations` row cannot hold two different values for "where the draft has it"
+    and "where the published layout has it" at once, and the whole point of this slice is that a
+    draft edit must not leak into what is published until someone publishes it. This row carries
+    only geometry and a location/version pair — no `code`, `kind`, `parent_id` or `barcode` — so
+    `Location` stays the one place a location's *identity* lives (CLAUDE.md: never duplicate it).
+
+    Integer millimetres throughout (ADR-0000 §8's no-float rule applies to any stored measurement,
+    not only money — `WorkerPositionSample.lat_micro`/`lng_micro` sets the same precedent).
+    `width_mm`/`depth_mm` are the footprint a 2D editor or the F9 3D viewer renders as a box;
+    `z_mm`/`height_mm` are optional (most floor plans are flat) and cheap to carry now rather than
+    added in a second migration later.
+    """
+
+    __tablename__ = "location_placements"
+
+    layout_version_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.layout_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.locations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    x_mm: Mapped[int] = mapped_column(Integer, nullable=False)
+    y_mm: Mapped[int] = mapped_column(Integer, nullable=False)
+    z_mm: Mapped[int | None] = mapped_column(Integer)
+    width_mm: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    depth_mm: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    height_mm: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("width_mm > 0 AND depth_mm > 0", name="footprint_positive"),
+        CheckConstraint("height_mm IS NULL OR height_mm > 0", name="height_positive_when_present"),
+        Index(
+            "uq_location_placements_org_version_location",
+            "organization_id",
+            "layout_version_id",
+            "location_id",
+            unique=True,
+        ),
+        Index("ix_location_placements_org_location", "organization_id", "location_id"),
+    )
+
+
+class WalkNode(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One point in a floor's walk graph (plan §2/F7) — near a location (`location_id` set) or a
+    bare junction/turn (`location_id` NULL). `code` is the caller-assigned label
+    (`"N1"`, `"AISLE-A-JUNC"`) a walk-edge payload names its endpoints by, so a full-draft
+    replace (`app.warehouse.services.save_draft_geometry`) never has to round-trip
+    server-generated ids before it can wire up edges — unique per version, not globally, so two
+    floors' drafts can both use `"N1"` without colliding.
+    """
+
+    __tablename__ = "walk_nodes"
+
+    layout_version_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.layout_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    code: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: The location this node stands for, if any — routing resolves a `from_location_id`/
+    #: `to_location_id` request to a node through this column, so at most one node per location
+    #: per version may set it (`uq_walk_nodes_org_version_location`).
+    location_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="CASCADE")
+    )
+    x_mm: Mapped[int] = mapped_column(Integer, nullable=False)
+    y_mm: Mapped[int] = mapped_column(Integer, nullable=False)
+    z_mm: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_walk_nodes_org_version_code",
+            "organization_id",
+            "layout_version_id",
+            "code",
+            unique=True,
+        ),
+        Index(
+            "uq_walk_nodes_org_version_location",
+            "organization_id",
+            "layout_version_id",
+            "location_id",
+            unique=True,
+            postgresql_where=text("location_id IS NOT NULL"),
+        ),
+        Index("ix_walk_nodes_org_version", "organization_id", "layout_version_id"),
+    )
+
+
+class WalkEdge(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One traversable (or currently blocked) segment between two `WalkNode`s (plan §2/F7),
+    weighted for `app.domain.shortest_walk_path`'s Dijkstra search. `bidirectional` (the default —
+    most aisles walk both ways) makes the routing graph treat this one row as two directed edges;
+    a one-way segment (a turnstile, a one-way dock lane) sets it `False` and is traversable only
+    `from_node_id -> to_node_id`. `is_traversable=False` blocks the edge without deleting it —
+    a temporary obstruction (a spill, a closed aisle) toggles one field rather than losing the
+    edge's own distance/geometry.
+    """
+
+    __tablename__ = "walk_edges"
+
+    layout_version_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.layout_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    from_node_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.walk_nodes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    to_node_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.walk_nodes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: Millimetres — the routing weight. Never a float (ADR-0000 §8); "cost" beyond raw distance
+    #: (a ramp, a slow corner) is expressed by inflating this figure, not a second column, until a
+    #: real use case needs to tell the two apart.
+    distance_mm: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    is_traversable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    bidirectional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("distance_mm > 0", name="distance_positive"),
+        CheckConstraint("from_node_id != to_node_id", name="no_self_loop"),
+        Index(
+            "uq_walk_edges_org_version_nodes",
+            "organization_id",
+            "layout_version_id",
+            "from_node_id",
+            "to_node_id",
+            unique=True,
+        ),
+        Index("ix_walk_edges_org_version", "organization_id", "layout_version_id"),
+        Index("ix_walk_edges_org_from_node", "organization_id", "from_node_id"),
+        Index("ix_walk_edges_org_to_node", "organization_id", "to_node_id"),
     )
 
 
