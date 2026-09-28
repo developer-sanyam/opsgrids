@@ -2,6 +2,24 @@
   "manifest_version": 1,
   "permissions": [
     {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See shipments and their carrier handover history",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "dispatch",
+      "resource": "shipment"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Hand an order to a carrier once the billing gate passes, and advance a shipment through its own lifecycle",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "dispatch",
+      "resource": "shipment"
+    },
+    {
       "action": "execute",
       "default_scope": "ORG",
       "description": "Confirm a package (posts the staging -> pack/dock relocation) and maintain packaging materials",
@@ -280,6 +298,14 @@
       "description": "Administers procurement and inventory across the organization. Built from the Operations catalogue alone \u2014 running operations is not the same job as owning the account.",
       "grants": [
         {
+          "code": "operations.dispatch.shipment.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.dispatch.shipment.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.fulfilment.pack.execute",
           "scope": "ORG"
         },
@@ -407,8 +433,16 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does. Does not create or rename warehouses \u2014 that stays with the admin.",
+      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Does not create or rename warehouses \u2014 that stays with the admin.",
       "grants": [
+        {
+          "code": "operations.dispatch.shipment.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.dispatch.shipment.write",
+          "scope": "ORG"
+        },
         {
           "code": "operations.fulfilment.pack.execute",
           "scope": "ORG"

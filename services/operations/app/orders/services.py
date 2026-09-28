@@ -31,9 +31,16 @@ from app import domain
 from app.config import settings
 from app.inventory import ledger
 from app.inventory import selectors as inv_selectors
-from app.inventory.ledger import ReserveLine
+from app.inventory.ledger import MoveLine, ReserveLine
 from app.inventory.quantity import MAX_ABS_MILLI, QuantityError, format_qty, parse_qty
-from app.models import AuditLog, Order, OrderLine, OrderTransition, OutboxEvent
+from app.models import (
+    AuditLog,
+    InventoryReservation,
+    Order,
+    OrderLine,
+    OrderTransition,
+    OutboxEvent,
+)
 from app.orders import selectors
 from platform_core.audit import record_audit
 from platform_core.auth import Principal, Scope, ScopeContext
@@ -1095,6 +1102,193 @@ def check_billing_gate(order: Order) -> None:
         )
 
 
+# ------------------------------------------------------------------ handover completion (shared:
+# counter/walk-in `hand_over_order` and F5's carrier `app.dispatch.services.dispatch_order`)
+
+
+async def _consume_order_stock_for_handover(
+    session: AsyncSession, ctx: ScopeContext, order: Order, *, request: Request | None
+) -> list[InventoryReservation]:
+    """The stock-consuming half of a handover (security review M2): posts the kernel `issue`
+    move that actually draws down whatever pick and pack transferred (ADR-0024 §6) — previously
+    only `app.dispatch.services.dispatch_order`'s own job, leaving every counter hand-over
+    (`hand_over_order`, F4, already live) writing zero ledger activity: the staging reservation
+    stayed `active` forever, stock both "on hand" and "reserved", permanently unavailable to any
+    other order. Both handover paths call this identically now.
+
+    Refuses (409) if any of the order's own lines still has an untouched accept-time reservation
+    (security review M1: never draw straight from the storage bin — only a pick or pack
+    destination is fair game). The carrier path additionally runs its own, stronger,
+    fulfilment-aware check before ever reaching here (`app.dispatch.services.dispatch_order`,
+    naming a partially-packed line too); this one is the generic floor both paths share, using
+    only `app.inventory`/`app.orders` data (ADR-0024 §1: `orders` never imports `fulfilment`).
+    """
+    org_id = ctx.organization_id
+    unpicked = await selectors.unpicked_lines_for_order(session, org_id, order.id)
+    if unpicked:
+        item_ids = [r.inventory_item_id for r in unpicked]
+        items = await selectors.items_for_lines(session, org_id, item_ids)
+        names = sorted({items[i].sku if i in items else str(i) for i in item_ids})
+        raise ConflictProblem(
+            f"Order {order.number} cannot be handed over — never picked: {', '.join(names)}"
+        )
+
+    leaves = await selectors.leaf_reservations_for_order(session, org_id, order.id)
+    balances = await inv_selectors.balances_by_id(session, org_id, [r.balance_id for r in leaves])
+    move_lines: list[MoveLine] = []
+    for reservation in leaves:
+        open_remainder = (
+            reservation.quantity_milli
+            - reservation.consumed_milli
+            - reservation.released_milli
+            - reservation.transferred_milli
+        )
+        if open_remainder <= 0:  # pragma: no cover - defensive, `status == "active"` implies this
+            continue
+        balance = balances.get(reservation.balance_id)
+        if balance is None:  # pragma: no cover - defensive, the reservation's own FK guarantees it
+            raise ConflictProblem(
+                f"{reservation.id}'s reservation has no stock bucket to draw from"
+            )
+        move_lines.append(
+            MoveLine(
+                item_id=reservation.inventory_item_id,
+                location_id=balance.location_id,
+                quantity_milli=-open_remainder,
+                reservation_id=reservation.id,
+            )
+        )
+    if not move_lines:  # pragma: no cover - defensive, `unpicked`'s own guard above rules this out
+        raise ConflictProblem(f"Order {order.number} has nothing staged to hand over")
+
+    await ledger.post_move(
+        session,
+        ctx,
+        kind="issue",
+        lines=move_lines,
+        occurred_on=date.today(),
+        reference_type="order",
+        reference_id=order.id,
+        # Stable per order (security review cheap-fix list): a retry after a lost response
+        # replays this exact move instead of a fresh key finding nothing and answering 409.
+        idempotency_key=f"handover:{order.id}",
+        occurred_on_explicit=False,
+        request=request,
+    )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=org_id,
+        actor_id=ctx.principal.sub,
+        action="order.handover_stock_issued",
+        entity="order",
+        entity_id=order.id,
+        after={
+            "reservations_consumed": [str(r.id) for r in leaves],
+            "line_count": len(move_lines),
+        },
+        request=request,
+    )
+    return leaves
+
+
+async def complete_handover(
+    session: AsyncSession, ctx: ScopeContext, order: Order, *, request: Request | None = None
+) -> None:
+    """The `READY -> HANDED_OVER -> DELIVERED` write itself (ADR-0025 §1: "the handover *is*
+    delivery... both transition rows are written in one transaction, so there is only one path"),
+    factored out so the two-transition write, its `order_transitions` rows, and the
+    `operations.orders.order.handed_over` event exist in **exactly one place** — both handover
+    paths this build has write them identically, only how each path gets to this point differs.
+
+    **Also** where the stock actually leaves (security review M2): `_consume_order_stock_for_
+    handover` posts the kernel `issue` move against every reservation pick and pack ever
+    transferred for this order, before either transition is written — a refusal there rolls back
+    cleanly, the same fail-fast order `dispatch_order` already used for its own version/transition
+    checks.
+
+    **Not this function's job**, and already done by the time a caller reaches here: the
+    `order.version`/`can_transition_order(order.status, "HANDED_OVER")` check (each caller's own
+    first action, before it does any of its own path-specific work — recording a counter
+    attestation, or creating a shipment and posting the dispatch issue — so a stale version or a
+    non-`READY` order is refused before that work ever happens, not only before this write), and
+    `check_billing_gate` itself. `order` must already be locked by the caller, the same `FOR
+    UPDATE` shape every order write in this module uses.
+    """
+    await _consume_order_stock_for_handover(session, ctx, order, request=request)
+
+    handed_over_from = order.status
+    _record_transition(order, to_status="HANDED_OVER")
+    session.add(
+        OrderTransition(
+            organization_id=ctx.organization_id,
+            order_id=order.id,
+            from_status=handed_over_from,
+            to_status="HANDED_OVER",
+            actor=str(ctx.principal.sub),
+            reason="",
+        )
+    )
+    delivered_from = order.status
+    if not domain.can_transition_order(  # pragma: no cover - defensive
+        delivered_from, "DELIVERED"
+    ):
+        raise ConflictProblem(
+            f"Order {order.number} cannot be marked delivered from {delivered_from}"
+        )
+    _record_transition(order, to_status="DELIVERED")
+    session.add(
+        OrderTransition(
+            organization_id=ctx.organization_id,
+            order_id=order.id,
+            from_status=delivered_from,
+            to_status="DELIVERED",
+            actor=str(ctx.principal.sub),
+            reason="",
+        )
+    )
+    order.updated_by = str(ctx.principal.sub)
+    order.updated_at = datetime.now(UTC)
+    await session.flush()
+
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_ORDER_HANDED_OVER,
+        aggregate_type="order",
+        aggregate_id=order.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "order_id": str(order.id),
+            "number": order.number,
+        },
+        actor=_actor(ctx),
+    )
+
+
+def attest_payment_if_confirmed(order: Order, *, payment_confirmed: bool) -> bool:
+    """The cash/prepaid payment attestation both handover paths share (security review M3): the
+    counter operator's own confirmation (`hand_over_order`) and, identically, the carrier-desk
+    operator's own confirmation (`app.dispatch.services.dispatch_order`) that COD was collected
+    or prepayment is confirmed — the same stand-in `OrderHandoverIn`'s own docstring documents for
+    `services/payment`'s tenant collections module (ADR-0024 A4), not yet built. Never touches
+    `paid_at` for a credit-terms order (nothing to confirm) or if it is already set.
+
+    Returns whether *this* call is what set it (MINOR 5, security review): `order.paid_at is not
+    None` alone cannot tell a fact this call just established from one recorded earlier or by an
+    event, which the caller's own audit row needs to say correctly.
+    """
+    snapshot = order.settings_snapshot or {}
+    payment_term = snapshot.get("payment_defaults", {}).get(order.channel, "cash")
+    attested = (
+        payment_confirmed and payment_term in _PAYMENT_REQUIRED_TERMS and order.paid_at is None
+    )
+    if attested:
+        order.paid_at = datetime.now(UTC)
+    return attested
+
+
 # ------------------------------------------------------------------ hand over (counter/walk-in)
 
 
@@ -1137,7 +1331,6 @@ async def hand_over_order(
     if not domain.can_transition_order(order.status, "HANDED_OVER"):
         raise ConflictProblem(f"Order {order.number} is {order.status} and cannot be handed over")
 
-    snapshot = order.settings_snapshot or {}
     if (
         pickup_code is not None
         and order.pickup_code is not None
@@ -1146,52 +1339,13 @@ async def hand_over_order(
     ):
         order.pickup_code_verified_at = datetime.now(UTC)
 
-    payment_term = snapshot.get("payment_defaults", {}).get(order.channel, "cash")
-    # MINOR 5 (security review): captured before the write so the audit row below can tell "this
-    # call is what attested payment" from "it was already true" — `order.paid_at is not None`
-    # alone answers only the latter, and cannot distinguish a fact this call just established from
-    # one recorded on an earlier call or by the eventual carrier-handover event (F5).
-    payment_attested_by_operator = (
-        payment_confirmed and payment_term in _PAYMENT_REQUIRED_TERMS and order.paid_at is None
+    payment_attested_by_operator = attest_payment_if_confirmed(
+        order, payment_confirmed=payment_confirmed
     )
-    if payment_attested_by_operator:
-        order.paid_at = datetime.now(UTC)
 
     check_billing_gate(order)
 
-    handed_over_from = order.status
-    _record_transition(order, to_status="HANDED_OVER")
-    session.add(
-        OrderTransition(
-            organization_id=ctx.organization_id,
-            order_id=order.id,
-            from_status=handed_over_from,
-            to_status="HANDED_OVER",
-            actor=str(ctx.principal.sub),
-            reason="",
-        )
-    )
-    delivered_from = order.status
-    if not domain.can_transition_order(  # pragma: no cover - defensive
-        delivered_from, "DELIVERED"
-    ):
-        raise ConflictProblem(
-            f"Order {order.number} cannot be marked delivered from {delivered_from}"
-        )
-    _record_transition(order, to_status="DELIVERED")
-    session.add(
-        OrderTransition(
-            organization_id=ctx.organization_id,
-            order_id=order.id,
-            from_status=delivered_from,
-            to_status="DELIVERED",
-            actor=str(ctx.principal.sub),
-            reason="",
-        )
-    )
-    order.updated_by = str(ctx.principal.sub)
-    order.updated_at = datetime.now(UTC)
-    await session.flush()
+    await complete_handover(session, ctx, order, request=request)
 
     handover_audit_after: dict[str, Any] = {
         "status": "DELIVERED",
@@ -1210,20 +1364,6 @@ async def hand_over_order(
         entity_id=order.id,
         after=handover_audit_after,
         request=request,
-    )
-    publish_event(
-        session,
-        OutboxEvent,
-        organization_id=ctx.organization_id,
-        event_type=EVT_ORDER_HANDED_OVER,
-        aggregate_type="order",
-        aggregate_id=order.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "order_id": str(order.id),
-            "number": order.number,
-        },
-        actor=_actor(ctx),
     )
     return order
 

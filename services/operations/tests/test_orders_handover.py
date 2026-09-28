@@ -16,7 +16,8 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
-from app.models import AuditLog, FulfilmentSettings, Order, OrderTransition
+from app.inventory.reconcile import reconcile_organization
+from app.models import AuditLog, FulfilmentSettings, InventoryBalance, Order, OrderTransition
 from app.orders import selectors as order_selectors
 from app.orders import services as order_services
 from tests.fulfilment_fixtures import (
@@ -265,6 +266,50 @@ class TestBillingGateSuccess:
 
         after = await _reload(session, org_id, order_id)
         assert after.paid_at is not None
+
+
+class TestReservationGenuinelyConsumed:
+    """Security review M2: `complete_handover` now posts the same reservation-consuming `issue`
+    move on the counter path that the carrier path (F5) always posted — previously this path
+    wrote zero ledger activity, so every counter-delivered order in production left its staging
+    reservation `active` forever: stock both "on hand" and "reserved," permanently unavailable to
+    any other order, and `reconcile_organization` never flagged it (nothing was internally
+    inconsistent, just business-logic-leaked). This is the regression test proving that bug is
+    actually fixed, not merely documented as fixed."""
+
+    async def test_hand_over_consumes_the_staging_reservation(
+        self, client, org_id, session, floor: Floor
+    ) -> None:
+        await _seed_settings(
+            session, org_id, invoice_timing="on_delivery", payment_defaults={"manual": "credit"}
+        )
+        order_id = await _ready_order(client, org_id, session, floor, qty="10")
+        order = await _reload(session, org_id, order_id)
+
+        response = await _hand_over(client, org_id, order_id, order.version)
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "DELIVERED"
+
+        async with session.begin():
+            staging_qty, staging_reserved = (
+                await session.execute(
+                    select(InventoryBalance.quantity_milli, InventoryBalance.reserved_milli).where(
+                        InventoryBalance.organization_id == org_id,
+                        InventoryBalance.inventory_item_id == floor.shop.widget,
+                        InventoryBalance.location_id == floor.staging_location_id,
+                        InventoryBalance.status == "AVAILABLE",
+                    )
+                )
+            ).one()
+        # Before the fix: (0, 10_000) — issued off the shelf by the pick, but still "reserved"
+        # forever because nothing ever posted the consuming move. After: genuinely issued out.
+        assert (staging_qty, staging_reserved) == (0, 0)
+
+        async with session.begin():
+            report = await reconcile_organization(session, org_id)
+        assert report.findings == [], [
+            (f.kind, f.stored_milli, f.expected_milli) for f in report.findings
+        ]
 
 
 class TestTransitionsAppendOnly:

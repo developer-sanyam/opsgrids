@@ -169,6 +169,65 @@ async def open_reservations_for_order(
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def unpicked_lines_for_order(
+    session: AsyncSession, org_id: uuid.UUID, order_id: uuid.UUID
+) -> list[InventoryReservation]:
+    """The order's own accept-time reservations that are still `active` and were **never**
+    transferred (`transferred_from_reservation_id IS NULL`) — a line nothing was ever picked
+    from, or a pick task cancelled before it finished (security review M1). `complete_handover`
+    refuses whenever this is non-empty rather than drawing straight from the storage bin: only a
+    pick or pack destination (`leaf_reservations_for_order`) is ever fair game to consume."""
+    stmt = (
+        select(InventoryReservation)
+        .join(InventoryBalance, InventoryBalance.id == InventoryReservation.balance_id)
+        .where(
+            InventoryReservation.organization_id == org_id,
+            InventoryReservation.reference_type == "order",
+            InventoryReservation.reference_id == order_id,
+            InventoryReservation.status == "active",
+            InventoryReservation.transferred_from_reservation_id.is_(None),
+        )
+        .order_by(
+            InventoryBalance.inventory_item_id,
+            InventoryBalance.location_id,
+            InventoryBalance.status,
+            InventoryBalance.lot_id,
+            InventoryBalance.roll_id,
+        )
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def leaf_reservations_for_order(
+    session: AsyncSession, org_id: uuid.UUID, order_id: uuid.UUID
+) -> list[InventoryReservation]:
+    """Every reservation actually holding this order's stock right now — a pick or pack
+    destination (`transferred_from_reservation_id IS NOT NULL`), `active`, with an open
+    remainder. The flat set `complete_handover`'s consuming `issue` move draws against
+    (ADR-0024 §6; security review B1): regardless of how many hops or branches (a split pack)
+    the transfer tree grew, never a fixed-depth chain walk from one starting reservation, which
+    breaks the moment a staging reservation is packed into more than one destination."""
+    stmt = (
+        select(InventoryReservation)
+        .join(InventoryBalance, InventoryBalance.id == InventoryReservation.balance_id)
+        .where(
+            InventoryReservation.organization_id == org_id,
+            InventoryReservation.reference_type == "order",
+            InventoryReservation.reference_id == order_id,
+            InventoryReservation.status == "active",
+            InventoryReservation.transferred_from_reservation_id.is_not(None),
+        )
+        .order_by(
+            InventoryBalance.inventory_item_id,
+            InventoryBalance.location_id,
+            InventoryBalance.status,
+            InventoryBalance.lot_id,
+            InventoryBalance.roll_id,
+        )
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
 async def pick_task_statuses_for_order(
     session: AsyncSession, org_id: uuid.UUID, order_id: uuid.UUID
 ) -> list[str]:

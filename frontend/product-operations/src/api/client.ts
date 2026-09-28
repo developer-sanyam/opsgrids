@@ -78,6 +78,11 @@ import type {
   QuoteIn,
   QuoteOut,
   ReceiveIn,
+  ShipmentAdvanceIn,
+  ShipmentIn,
+  ShipmentOut,
+  ShipmentRefusalIn,
+  ShipmentStatus,
   StockAdjustmentIn,
   StockMovementKind,
   StockMovementOut,
@@ -1908,5 +1913,79 @@ export async function updateWorker(id: string, patch: WorkerPatch): Promise<Work
   return apiRequest<WorkerOut>(`/operations/fulfilment/workers/${encodeURIComponent(id)}`, {
     method: "PATCH",
     body: patch,
+  });
+}
+
+/* ------------------------------------ dispatch (Fulfilment F5, ADR-0024 §6) ------------------------------------ */
+/**
+ * The carrier handover and a shipment's own lifecycle after that. No fixture-mode branch, the
+ * same precedent the fulfilment section above sets: every function here always calls the real
+ * endpoint through `apiRequest`.
+ */
+
+export interface ListShipmentsParams {
+  status?: ShipmentStatus | "all";
+  order_id?: string;
+  warehouse_id?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/dispatch/shipments` — `operations.dispatch.shipment.read`. */
+export async function listShipments(params: ListShipmentsParams = {}): Promise<Page<ShipmentOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    status: params.status === "all" ? undefined : params.status,
+    order_id: params.order_id,
+    warehouse_id: params.warehouse_id,
+  });
+  return apiRequest<Page<ShipmentOut>>(`/operations/dispatch/shipments${query}`);
+}
+
+export async function getShipment(id: string): Promise<ShipmentOut> {
+  return apiRequest<ShipmentOut>(`/operations/dispatch/shipments/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/dispatch/shipments` — `operations.dispatch.shipment.write:ORG`. The carrier
+ *  handover: creates the shipment and moves the order through the billing gate in one call, the
+ *  delivery/courier counterpart to `hand_over_order` (`acceptOrder`/`holdOrder`'s neighbour
+ *  above). A 409 here is the same billing-gate refusal `OrderDetail`'s counter path would see. */
+export async function dispatchOrder(input: ShipmentIn): Promise<ShipmentOut> {
+  return apiRequest<ShipmentOut>("/operations/dispatch/shipments", { method: "POST", body: input });
+}
+
+/** `POST /operations/dispatch/shipments/{id}/in-transit` — `operations.dispatch.shipment.write:ORG`.
+ *  Also the retry path from `FAILED`. */
+export async function markShipmentInTransit(id: string, input: ShipmentAdvanceIn = {}): Promise<ShipmentOut> {
+  return apiRequest<ShipmentOut>(`/operations/dispatch/shipments/${encodeURIComponent(id)}/in-transit`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** `POST /operations/dispatch/shipments/{id}/deliver` — `operations.dispatch.shipment.write:ORG`. */
+export async function deliverShipment(id: string, input: ShipmentAdvanceIn = {}): Promise<ShipmentOut> {
+  return apiRequest<ShipmentOut>(`/operations/dispatch/shipments/${encodeURIComponent(id)}/deliver`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** `POST /operations/dispatch/shipments/{id}/fail` — `operations.dispatch.shipment.write:ORG`. A
+ *  reason is required. */
+export async function failShipment(id: string, input: ShipmentRefusalIn): Promise<ShipmentOut> {
+  return apiRequest<ShipmentOut>(`/operations/dispatch/shipments/${encodeURIComponent(id)}/fail`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** `POST /operations/dispatch/shipments/{id}/return` — `operations.dispatch.shipment.write:ORG`.
+ *  A reason is required. */
+export async function returnShipment(id: string, input: ShipmentRefusalIn): Promise<ShipmentOut> {
+  return apiRequest<ShipmentOut>(`/operations/dispatch/shipments/${encodeURIComponent(id)}/return`, {
+    method: "POST",
+    body: input,
   });
 }

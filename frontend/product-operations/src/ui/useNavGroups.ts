@@ -6,6 +6,7 @@ import {
   HomeIcon,
   LayersIcon,
   PackageIcon,
+  TruckIcon,
   UsersIcon,
   WarehouseIcon,
 } from "@opsgrids/ui";
@@ -24,6 +25,7 @@ const GROUPS: NavGroup[] = [
       { to: "/orders", label: "Orders", icon: PackageIcon },
       { to: "/fulfilment/tasks", label: "Tasks", icon: ClipboardCheckIcon },
       { to: "/fulfilment/workers", label: "Workers", icon: UsersIcon },
+      { to: "/dispatch", label: "Dispatch", icon: TruckIcon },
       { to: "/purchase-orders", label: "Purchase Orders", icon: ClipboardListIcon },
       { to: "/inventory", label: "Inventory", icon: LayersIcon },
       { to: "/inventory/categories", label: "Item Categories", icon: FolderIcon },

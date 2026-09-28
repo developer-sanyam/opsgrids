@@ -1400,3 +1400,93 @@ class PackageIn(BaseModel):
     destination_location_id: UUID
     weight_grams: int | None = Field(default=None, ge=0)
     lines: list[PackageLineIn] = Field(min_length=1, max_length=200)
+
+
+# ------------------------------------------------------------------ dispatch (ADR-0024 §6;
+# `docs/fulfilment/plan.md` F5)
+
+ShipmentStatus = Literal["PICKUP_HANDOVER", "IN_TRANSIT", "DELIVERED", "FAILED", "RETURNED"]
+
+
+class ShipmentOut(BaseModel):
+    id: str
+    order_id: str
+    warehouse_id: str
+    status: ShipmentStatus
+    carrier_name: str
+    tracking_reference: str | None
+    failure_reason: str | None
+    delivered_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+def _reject_blank_or_control(value: str, *, field_name: str) -> str:
+    """The codebase's existing blank-rejection convention (`services/subscription/app/schemas.py
+    ::_reason_is_not_blank`), extended to also reject control characters — a `min_length` bound
+    alone lets a whitespace-only or control-character string through, and this is free-text a
+    warehouse floor or carrier desk types by hand (security review cheap-fix list)."""
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{field_name} must not be blank")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in stripped):
+        raise ValueError(f"{field_name} must not contain control characters")
+    return stripped
+
+
+class ShipmentIn(BaseModel):
+    """`POST /dispatch/shipments` — the carrier handover (Fulfilment plan F5): creates the
+    shipment, already at `PICKUP_HANDOVER`, posts the dispatch `issue` move against whatever pick
+    and pack transferred (ADR-0024 §6), and moves the order `READY -> HANDED_OVER -> DELIVERED`
+    in the same call once `app.orders.services.check_billing_gate` passes — the delivery/courier
+    counterpart to `POST /orders/{id}/hand-over`'s counter/walk-in path.
+
+    `carrier_name`/`tracking_reference` are manual text only — no carrier API integration exists
+    in this build (Fulfilment plan F5's own "not in phase" list); `tracking_reference` may be
+    unknown at handover and set (or corrected) on a later transition instead.
+
+    `payment_confirmed` mirrors `OrderHandoverIn`'s own field exactly — the carrier-desk
+    operator's attestation that a cash/prepaid order's payment was collected, the same documented
+    stand-in for `services/payment`'s tenant collections module (ADR-0024 A4) the counter path
+    already uses (security review M3). Inert for a credit-terms order.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    order_id: UUID
+    #: The order's own optimistic-lock version (ADR-0025 §1) — this call moves the order, the
+    #: same `order_version` field `CreatePickTasksIn` names for the identical reason.
+    order_version: int = Field(ge=0)
+    carrier_name: str = Field(min_length=1, max_length=120)
+    tracking_reference: str | None = Field(default=None, max_length=120)
+    payment_confirmed: bool = False
+
+    @field_validator("carrier_name")
+    @classmethod
+    def _carrier_name_is_not_blank(cls, value: str) -> str:
+        return _reject_blank_or_control(value, field_name="carrier_name")
+
+
+class ShipmentAdvanceIn(BaseModel):
+    """`POST /dispatch/shipments/{id}/in-transit` and `.../deliver` — no reason needed for a
+    forward-moving update. `tracking_reference` may be set or corrected here: a courier's own
+    tracking number is often not known until pickup is scanned into their own system, after this
+    shipment's own creation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tracking_reference: str | None = Field(default=None, max_length=120)
+
+
+class ShipmentRefusalIn(BaseModel):
+    """`POST /dispatch/shipments/{id}/fail` and `.../return` — a reason is required, the same
+    convention `OrderCancelIn`/`OrderHoldIn` set for any operator action that needs one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_is_not_blank(cls, value: str) -> str:
+        return _reject_blank_or_control(value, field_name="reason")

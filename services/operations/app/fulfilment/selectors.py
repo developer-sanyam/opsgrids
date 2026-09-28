@@ -332,6 +332,23 @@ async def lines_for_task(
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def task_lines_for_order(
+    session: AsyncSession, org_id: uuid.UUID, order_id: uuid.UUID
+) -> list[PickTaskLine]:
+    """Every pick-task line across every task an order has, joined through `pick_tasks.order_id`
+    (`PickTaskLine` itself carries no `order_id` column). `app.dispatch.services.dispatch_order`
+    reads this to tell a genuinely picked-and-packed line from one that never was (security
+    review B1/M1) — `picked_milli`/`short_milli`/`quantity_milli` are the accounting a reservation
+    walk cannot give on its own, and stay accurate even after a cancelled task's reservation is
+    released back to stock (`app.fulfilment.services.cancel_task`)."""
+    stmt = (
+        select(PickTaskLine)
+        .join(PickTask, PickTask.id == PickTaskLine.pick_task_id)
+        .where(PickTaskLine.organization_id == org_id, PickTask.order_id == order_id)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
 async def lines_map_for_tasks(
     session: AsyncSession, org_id: uuid.UUID, task_ids: Sequence[uuid.UUID]
 ) -> dict[uuid.UUID, list[PickTaskLine]]:

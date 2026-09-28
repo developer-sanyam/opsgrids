@@ -466,6 +466,50 @@ def pick_task_line_settled(*, quantity_milli: int, picked_milli: int, short_mill
     return picked_milli + short_milli >= quantity_milli
 
 
+# ------------------------------------------------------------------ dispatch (ADR-0024 §6;
+# Fulfilment plan F5)
+
+#: `Shipment.status`'s exact vocabulary — the carrier lifecycle, kept on its own record apart
+#: from `orders.status` the same way pick/offer/invoice/payment status already are (ADR-0025 §1).
+#: `app.dispatch.services.dispatch_order` creates a shipment already at `PICKUP_HANDOVER` (the
+#: carrier has physically taken the goods, in the same call that moves the order `READY ->
+#: HANDED_OVER -> DELIVERED`) — there is no separate `CREATED` state to transition out of.
+#: `DELIVERED` and `RETURNED` are terminal; `FAILED` is not — a failed attempt can be retried
+#: (`-> IN_TRANSIT`) or sent back (`-> RETURNED`).
+SHIPMENT_STATUSES: tuple[str, ...] = (
+    "PICKUP_HANDOVER",
+    "IN_TRANSIT",
+    "DELIVERED",
+    "FAILED",
+    "RETURNED",
+)
+SHIPMENT_TERMINAL_STATUSES: frozenset[str] = frozenset({"DELIVERED", "RETURNED"})
+
+#: The whole shipment lifecycle Fulfilment plan F5 names ("pickup handover, in-transit,
+#: delivered, failed, returned"), in the same `dict[str, frozenset[str]]` shape
+#: `PO_TRANSITIONS`/`ORDER_TRANSITIONS`/`PICK_TASK_TRANSITIONS` above use, and the same "no
+#: self-edges, an unlisted move is 409" convention `can_transition_po` documents. `DELIVERED` is
+#: reached only from `IN_TRANSIT` — going straight from `PICKUP_HANDOVER` with no transit leg
+#: ever recorded is not an edge this build offers; a same-day local collection with nothing to
+#: track in transit is the counter path (`app.orders.services.hand_over_order`), not this one.
+#: `PICKUP_HANDOVER -> FAILED`/`-> RETURNED` are real edges (an attempt or a refusal can be
+#: recorded before any transit update ever lands); `FAILED -> IN_TRANSIT` is a retried attempt.
+SHIPMENT_TRANSITIONS: dict[str, frozenset[str]] = {
+    "PICKUP_HANDOVER": frozenset({"IN_TRANSIT", "FAILED", "RETURNED"}),
+    "IN_TRANSIT": frozenset({"DELIVERED", "FAILED", "RETURNED"}),
+    "FAILED": frozenset({"IN_TRANSIT", "RETURNED"}),
+    "DELIVERED": frozenset(),
+    "RETURNED": frozenset(),
+}
+
+
+def can_transition_shipment(current: str, new: str) -> bool:
+    """Whether a shipment may move `current` -> `new`. Every other move — including a no-op
+    "move" to the same status — answers 409, the same convention `can_transition_order`/
+    `can_transition_pick_task` document."""
+    return new in SHIPMENT_TRANSITIONS.get(current, frozenset())
+
+
 # ------------------------------------------------------------------ needs-attention queue
 
 

@@ -72,6 +72,9 @@ const FulfilmentTasksPage = lazy(() =>
 const FulfilmentWorkersPage = lazy(() =>
   import("./routes/FulfilmentWorkers").then((m) => ({ default: m.FulfilmentWorkersPage })),
 );
+const DispatchShipmentsPage = lazy(() =>
+  import("./routes/DispatchShipments").then((m) => ({ default: m.DispatchShipmentsPage })),
+);
 
 function lazyRoute(path: string, element: ReactNode) {
   return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
@@ -124,6 +127,7 @@ const router = createBrowserRouter([
           lazyRoute("orders/:id", <OrderDetailPage />),
           lazyRoute("fulfilment/tasks", <FulfilmentTasksPage />),
           lazyRoute("fulfilment/workers", <FulfilmentWorkersPage />),
+          lazyRoute("dispatch", <DispatchShipmentsPage />),
           { path: "*", element: <NotFoundPage /> },
         ],
       },

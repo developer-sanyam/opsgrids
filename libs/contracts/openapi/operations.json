@@ -2913,6 +2913,42 @@
         "title": "Page[PurchaseOrderOut]",
         "type": "object"
       },
+      "Page_ShipmentOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ShipmentOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ShipmentOut]",
+        "type": "object"
+      },
       "Page_StockMovementOut_": {
         "properties": {
           "items": {
@@ -4203,6 +4239,173 @@
         "title": "ServiceInfo",
         "type": "object"
       },
+      "ShipmentAdvanceIn": {
+        "additionalProperties": false,
+        "description": "`POST /dispatch/shipments/{id}/in-transit` and `.../deliver` \u2014 no reason needed for a\nforward-moving update. `tracking_reference` may be set or corrected here: a courier's own\ntracking number is often not known until pickup is scanned into their own system, after this\nshipment's own creation.",
+        "properties": {
+          "tracking_reference": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking Reference"
+          }
+        },
+        "title": "ShipmentAdvanceIn",
+        "type": "object"
+      },
+      "ShipmentIn": {
+        "additionalProperties": false,
+        "description": "`POST /dispatch/shipments` \u2014 the carrier handover (Fulfilment plan F5): creates the\nshipment, already at `PICKUP_HANDOVER`, posts the dispatch `issue` move against whatever pick\nand pack transferred (ADR-0024 \u00a76), and moves the order `READY -> HANDED_OVER -> DELIVERED`\nin the same call once `app.orders.services.check_billing_gate` passes \u2014 the delivery/courier\ncounterpart to `POST /orders/{id}/hand-over`'s counter/walk-in path.\n\n`carrier_name`/`tracking_reference` are manual text only \u2014 no carrier API integration exists\nin this build (Fulfilment plan F5's own \"not in phase\" list); `tracking_reference` may be\nunknown at handover and set (or corrected) on a later transition instead.",
+        "properties": {
+          "carrier_name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Carrier Name",
+            "type": "string"
+          },
+          "order_id": {
+            "format": "uuid",
+            "title": "Order Id",
+            "type": "string"
+          },
+          "order_version": {
+            "minimum": 0.0,
+            "title": "Order Version",
+            "type": "integer"
+          },
+          "tracking_reference": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking Reference"
+          }
+        },
+        "required": [
+          "order_id",
+          "order_version",
+          "carrier_name"
+        ],
+        "title": "ShipmentIn",
+        "type": "object"
+      },
+      "ShipmentOut": {
+        "properties": {
+          "carrier_name": {
+            "title": "Carrier Name",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "delivered_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered At"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "order_id": {
+            "title": "Order Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PICKUP_HANDOVER",
+              "IN_TRANSIT",
+              "DELIVERED",
+              "FAILED",
+              "RETURNED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tracking_reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking Reference"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "order_id",
+          "warehouse_id",
+          "status",
+          "carrier_name",
+          "tracking_reference",
+          "failure_reason",
+          "delivered_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ShipmentOut",
+        "type": "object"
+      },
+      "ShipmentRefusalIn": {
+        "additionalProperties": false,
+        "description": "`POST /dispatch/shipments/{id}/fail` and `.../return` \u2014 a reason is required, the same\nconvention `OrderCancelIn`/`OrderHoldIn` set for any operator action that needs one.",
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "ShipmentRefusalIn",
+        "type": "object"
+      },
       "SpendPoint": {
         "description": "A point on the spend-over-time chart, in minor units. Mirrors the SPA's `SpendPoint`.",
         "properties": {
@@ -5342,6 +5545,406 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/operations/dispatch/shipments": {
+      "get": {
+        "operationId": "list_shipments_api_v1_operations_dispatch_shipments_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "order_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Order Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "warehouse_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warehouse Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ShipmentOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Shipments, filterable by order, warehouse and status",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "dispatch_order_api_v1_operations_dispatch_shipments_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShipmentIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShipmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hand an order to a carrier once the billing gate passes (also confirms delivery, ADR-0025 \u00a71) \u2014 the delivery/courier counterpart to POST /orders/{id}/hand-over",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/dispatch/shipments/{shipment_id}": {
+      "get": {
+        "operationId": "read_shipment_api_v1_operations_dispatch_shipments__shipment_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Shipment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShipmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One shipment",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/dispatch/shipments/{shipment_id}/deliver": {
+      "post": {
+        "operationId": "shipment_deliver_api_v1_operations_dispatch_shipments__shipment_id__deliver_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Shipment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShipmentAdvanceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShipmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm delivery",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/dispatch/shipments/{shipment_id}/fail": {
+      "post": {
+        "operationId": "shipment_fail_api_v1_operations_dispatch_shipments__shipment_id__fail_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Shipment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShipmentRefusalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShipmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record a failed delivery attempt (reason required)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/dispatch/shipments/{shipment_id}/in-transit": {
+      "post": {
+        "operationId": "shipment_in_transit_api_v1_operations_dispatch_shipments__shipment_id__in_transit_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Shipment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShipmentAdvanceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShipmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark a shipment in transit (or retry a failed attempt)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/dispatch/shipments/{shipment_id}/return": {
+      "post": {
+        "operationId": "shipment_return_api_v1_operations_dispatch_shipments__shipment_id__return_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Shipment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShipmentRefusalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShipmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record a shipment returned to the business (reason required)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
     "/api/v1/operations/fulfilment/offers/{offer_id}/accept": {
       "post": {
         "operationId": "accept_offer_api_v1_operations_fulfilment_offers__offer_id__accept_post",

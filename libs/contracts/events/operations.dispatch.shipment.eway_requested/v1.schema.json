@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.dispatch.shipment.eway_requested/v1",
+  "title": "operations.dispatch.shipment.eway_requested",
+  "description": "Operations asks finance to consider raising an e-Way bill for one carrier handover (Fulfilment ADR-0024 §6/plan F5, ADR-0019's stub adapter — `services/finance/app/eway/`). Fire-and-forget: operations never calls finance's e-Way machinery directly, and never re-implements e-Way validation itself. `consignment_value_minor` crossing operations' own coarse threshold mirror (₹50,000, `app.dispatch.services._EWAY_VALUE_THRESHOLD_MINOR`) is only a pre-filter so a trivial shipment never reaches this queue — the real 'is a bill required' call (`services/finance/app/domain.py::requires_eway_bill`, which also needs a document type, a supply type and a reported status this event carries none of) is finance's own, made from the invoice it already holds for this order. Money is integer minor units of `currency`.",
+  "$comment": "Ahead of its consumer, the same shape operations.orders.order.invoice_requested was ahead of finance's invoice_requested_from_order before F4 landed: no services/finance consumer exists for this event yet (a documented follow-up — see the Fulfilment F5 slice's own report). This schema is the contract a future finance-side consumer should be built against, not a description of a consumer that exists today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "shipment_id",
+    "order_id",
+    "order_number",
+    "consignment_value_minor",
+    "currency",
+    "carrier_name",
+    "dispatched_at"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "shipment_id": { "type": "string", "format": "uuid" },
+    "order_id": { "type": "string", "format": "uuid" },
+    "order_number": { "type": "string", "minLength": 1 },
+    "consignment_value_minor": {
+      "type": "integer",
+      "description": "The order's own total_minor at the moment of handover — the value finance's own requires_eway_bill threshold test is against, once it resolves this shipment against the invoice it holds."
+    },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "carrier_name": { "type": "string", "minLength": 1 },
+    "tracking_reference": { "type": ["string", "null"] },
+    "dispatched_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the carrier took possession — the movement an e-Way bill, once raised, licenses."
+    }
+  }
+}

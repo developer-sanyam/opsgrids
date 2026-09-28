@@ -32,6 +32,8 @@ WORKER_WRITE_OWN_PERM = "operations.fulfilment.worker.write:OWN"
 WORKER_LOCATION_READ_PERM = "operations.fulfilment.worker.location_read:ORG"
 PACK_READ_PERM = "operations.fulfilment.pack.read:ORG"
 PACK_EXECUTE_PERM = "operations.fulfilment.pack.execute:ORG"
+DISPATCH_READ_PERM = "operations.dispatch.shipment.read:ORG"
+DISPATCH_WRITE_PERM = "operations.dispatch.shipment.write:ORG"
 
 
 @dataclass
@@ -191,3 +193,97 @@ async def ready_order(  # type: ignore[no-untyped-def]
     line_id = task["lines"][0]["id"]
     await confirm_pick(client, org_id, task["id"], line_id, floor.worker_employee_id)
     return order.id
+
+
+async def confirm_package(  # type: ignore[no-untyped-def]
+    client,
+    org_id: uuid.UUID,
+    order_id: uuid.UUID,
+    *,
+    destination_location_id: uuid.UUID,
+    pick_task_line_id: str,
+    quantity: str,
+) -> dict:
+    principal = principal_for(org_id, [PACK_EXECUTE_PERM], subject_ref=uuid.uuid4())
+    with as_principal(principal):
+        response = await client.post(
+            "/api/v1/operations/fulfilment/packages",
+            json={
+                "order_id": str(order_id),
+                "destination_location_id": str(destination_location_id),
+                "lines": [{"pick_task_line_id": pick_task_line_id, "quantity": quantity}],
+            },
+        )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def packed_order(  # type: ignore[no-untyped-def]
+    client, org_id: uuid.UUID, session: AsyncSession, floor: Floor, *, qty: str = "10"
+) -> uuid.UUID:
+    """`ready_order`, then packs the whole picked line into `floor.dock_location_id` — the F3
+    step `ready_order` deliberately stops short of (`Package`'s own docstring: picking alone
+    already reaches `READY`, ADR-0025 §1). F5's dispatch tests start from here when they need to
+    prove the *full* pick-then-pack transfer chain (ADR-0024 §6), not only the pick half.
+    Returns the order id."""
+    order = await accept_order(
+        session,
+        org_id,
+        floor.shop,
+        lines=[{"inventory_item_id": floor.shop.widget, "quantity": qty}],
+    )
+    tasks = await create_tasks(client, org_id, order)
+    task = tasks[0]
+    offer = await offer_task(client, org_id, task["id"], floor.worker_id)
+    await accept_offer(client, org_id, offer["id"], floor.worker_employee_id)
+    line_id = task["lines"][0]["id"]
+    await confirm_pick(client, org_id, task["id"], line_id, floor.worker_employee_id)
+    await confirm_package(
+        client,
+        org_id,
+        order.id,
+        destination_location_id=floor.dock_location_id,
+        pick_task_line_id=line_id,
+        quantity=qty,
+    )
+    return order.id
+
+
+# ------------------------------------------------------------------ dispatch (Fulfilment plan F5)
+
+
+async def dispatch_order(  # type: ignore[no-untyped-def]
+    client,
+    org_id: uuid.UUID,
+    order_id: uuid.UUID,
+    order_version: int,
+    *,
+    carrier_name: str = "Acme Couriers",
+    tracking_reference: str | None = "TRK-0001",
+    payment_confirmed: bool = False,
+    perms: list[str] | None = None,
+):
+    principal = principal_for(
+        org_id, perms if perms is not None else [DISPATCH_WRITE_PERM], subject_ref=uuid.uuid4()
+    )
+    with as_principal(principal):
+        return await client.post(
+            "/api/v1/operations/dispatch/shipments",
+            json={
+                "order_id": str(order_id),
+                "order_version": order_version,
+                "carrier_name": carrier_name,
+                "tracking_reference": tracking_reference,
+                "payment_confirmed": payment_confirmed,
+            },
+        )
+
+
+async def transition_shipment(  # type: ignore[no-untyped-def]
+    client, org_id: uuid.UUID, shipment_id: str, action: str, *, body: dict | None = None
+):
+    principal = principal_for(org_id, [DISPATCH_WRITE_PERM], subject_ref=uuid.uuid4())
+    with as_principal(principal):
+        return await client.post(
+            f"/api/v1/operations/dispatch/shipments/{shipment_id}/{action}", json=body or {}
+        )

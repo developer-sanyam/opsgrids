@@ -1,4 +1,11 @@
-import type { OfferState, OrderStatus, PickTaskStatus, PoStatus, SupplierStatus } from "@/api/types";
+import type {
+  OfferState,
+  OrderStatus,
+  PickTaskStatus,
+  PoStatus,
+  ShipmentStatus,
+  SupplierStatus,
+} from "@/api/types";
 import { AlertTriangleIcon, StatusBadge } from "@opsgrids/ui";
 import type { StatusTone, StatusWord } from "@opsgrids/ui";
 
@@ -144,6 +151,38 @@ export function AssignmentOfferStatusPill({ state }: { state: OfferState }) {
   const word = OFFER_REGISTERED[state];
   if (word) return <StatusBadge status={word} label={OFFER_LABEL[state]} />;
   return <StatusBadge tone={OFFER_EXPLICIT_TONE[state] ?? "neutral"} label={OFFER_LABEL[state]} />;
+}
+
+/* ------------------------------ shipment status -------------------------- */
+/**
+ * The carrier lifecycle (`app.domain.SHIPMENT_TRANSITIONS`, Fulfilment F5). Registered words
+ * carry the registry's tone: `delivered` (success), `failed` (danger). `pickup_handover`,
+ * `in_transit` and `returned` are not registered words — each takes an explicit tone.
+ */
+
+const SHIPMENT_LABEL: Record<ShipmentStatus, string> = {
+  PICKUP_HANDOVER: "Pickup handover",
+  IN_TRANSIT: "In transit",
+  DELIVERED: "Delivered",
+  FAILED: "Failed",
+  RETURNED: "Returned",
+};
+
+const SHIPMENT_REGISTERED: Partial<Record<ShipmentStatus, StatusWord>> = {
+  DELIVERED: "delivered",
+  FAILED: "failed",
+};
+
+const SHIPMENT_EXPLICIT_TONE: Partial<Record<ShipmentStatus, StatusTone>> = {
+  PICKUP_HANDOVER: "info",
+  IN_TRANSIT: "info",
+  RETURNED: "danger",
+};
+
+export function ShipmentStatusPill({ status }: { status: ShipmentStatus }) {
+  const word = SHIPMENT_REGISTERED[status];
+  if (word) return <StatusBadge status={word} label={SHIPMENT_LABEL[status]} />;
+  return <StatusBadge tone={SHIPMENT_EXPLICIT_TONE[status] ?? "neutral"} label={SHIPMENT_LABEL[status]} />;
 }
 
 /* ------------------------------ stock level ---------------------------- */
