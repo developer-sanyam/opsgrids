@@ -1810,6 +1810,99 @@ class PackageLine(Base, TenantBase):
     )
 
 
+class Shipment(Base, TenantBase):
+    """A carrier handover for one order (ADR-0024 §6; Fulfilment plan F5) — the delivery/courier
+    counterpart to the counter/walk-in path `hand_over_order` covers. `app.dispatch.services
+    .dispatch_order` creates this row, posts the dispatch `issue` move (ADR-0024 §6: the first
+    point in the whole flow the reservation pick and pack transferred is actually consumed, not
+    merely relocated), and moves the order `READY -> HANDED_OVER -> DELIVERED` in the same
+    transaction — the carrier physically taking the goods is what proves handover happened on
+    this path, the same role the counter's pickup-code/payment attestation plays on the other.
+
+    `status` runs `PICKUP_HANDOVER -> IN_TRANSIT -> DELIVERED` (or `FAILED`/`RETURNED`) —
+    `app.domain.SHIPMENT_TRANSITIONS` — a lifecycle of its own, deliberately apart from
+    `orders.status` (ADR-0025 §1: everything but the order's own short commercial status lives on
+    its own record). The order's status reaches `DELIVERED` the moment this row is created
+    (commercially, the goods have left the business); this row's own status is what actually
+    tracks the physical movement after that.
+
+    `carrier_name`/`tracking_reference` are manual text fields only — no carrier API integration
+    exists in this build (Fulfilment plan F5's own "not in phase" list). `tracking_reference` is
+    nullable: a courier's own tracking number may not be known at the moment of handover and can
+    be filled in (or corrected) on a later transition.
+
+    One shipment per order in this build (`uq_shipments_org_order`) — ADR-0025's own "revisit if
+    ... a single order routinely needs partial handover of some lines ahead of others" names a
+    multi-shipment order as a later, unbuilt design, not this one.
+    """
+
+    __tablename__ = "shipments"
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.orders.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    warehouse_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.warehouses.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: See class docstring — vocabulary in `app.domain.SHIPMENT_TRANSITIONS`.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="PICKUP_HANDOVER")
+    carrier_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    tracking_reference: Mapped[str | None] = mapped_column(String(120))
+    #: Set on a `-> FAILED` transition — why the delivery attempt did not land, for the next
+    #: attempt or the return to read.
+    failure_reason: Mapped[str | None] = mapped_column(String(500))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index(
+            "uq_shipments_org_order",
+            "organization_id",
+            "order_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_shipments_org_status", "organization_id", "status"),
+        Index("ix_shipments_org_warehouse", "organization_id", "warehouse_id"),
+        CheckConstraint(
+            "status IN ('PICKUP_HANDOVER', 'IN_TRANSIT', 'DELIVERED', 'FAILED', 'RETURNED')",
+            name="status_known",
+        ),
+    )
+
+
+class ShipmentTransition(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One append-only row per shipment status change (Fulfilment plan F5) — `shipment_transitions`
+    joins `APPEND_ONLY_TABLES` in `services/operations/migrations/env.py`, the same
+    privilege-enforced append-only rule `order_transitions` already carries.
+
+    Never edited or deleted: a retried delivery attempt or a return is a new row here, never a
+    rewritten old one (ADR-0000 §9).
+    """
+
+    __tablename__ = "shipment_transitions"
+
+    shipment_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.shipments.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    from_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    reason: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_shipment_transitions_org_shipment", "organization_id", "shipment_id", "at"),
+    )
+
+
 class OutboxEvent(Base, OutboxMixin):
     """Domain events staged in the same transaction as the change they describe."""
 

@@ -791,3 +791,50 @@ export interface OfferIn {
 export interface TaskCancelIn {
   reason: string;
 }
+
+/* --------------------------------- dispatch (Fulfilment F5, ADR-0024 §6) --------------------------------- */
+/**
+ * Mirrors `services/operations/app/schemas.py`'s dispatch section exactly. The carrier handover —
+ * the delivery/courier counterpart to `POST /orders/{id}/hand-over` — and a shipment's own
+ * lifecycle after that (never a second write to the order's own status, which already reaches
+ * `DELIVERED` the moment the shipment is created).
+ */
+
+/** The carrier lifecycle (`app.domain.SHIPMENT_TRANSITIONS`). `DELIVERED` is reached only from
+ *  `IN_TRANSIT` — build a status filter or badge set from exactly this list. */
+export type ShipmentStatus = "PICKUP_HANDOVER" | "IN_TRANSIT" | "DELIVERED" | "FAILED" | "RETURNED";
+
+/** Mirrors `ShipmentOut`. */
+export interface ShipmentOut {
+  id: string;
+  order_id: string;
+  warehouse_id: string;
+  status: ShipmentStatus;
+  carrier_name: string;
+  tracking_reference: string | null;
+  failure_reason: string | null;
+  delivered_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `POST /dispatch/shipments` — the carrier handover: creates the shipment, already at
+ *  `PICKUP_HANDOVER`, and moves the order `READY -> HANDED_OVER -> DELIVERED` in the same call
+ *  once the billing gate passes. `carrier_name`/`tracking_reference` are manual text only. */
+export interface ShipmentIn {
+  order_id: string;
+  order_version: number;
+  carrier_name: string;
+  tracking_reference?: string;
+}
+
+/** `POST /dispatch/shipments/{id}/in-transit` and `.../deliver`. No reason needed for a
+ *  forward-moving update; `tracking_reference` may be set or corrected here. */
+export interface ShipmentAdvanceIn {
+  tracking_reference?: string;
+}
+
+/** `POST /dispatch/shipments/{id}/fail` and `.../return`. A reason is required. */
+export interface ShipmentRefusalIn {
+  reason: string;
+}

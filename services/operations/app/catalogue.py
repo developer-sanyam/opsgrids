@@ -375,6 +375,34 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Dispatch (ADR-0024 §6; Fulfilment plan F5). Shipments are a shared operational queue
+        # like orders, tasks and packages — a dispatcher has to see and work every shipment in
+        # the org, not only the ones they personally created — so, like `orders.order.*`, every
+        # dispatch permission is ORG-only (no OWN reading offered at all).
+        PermissionSpec(
+            "dispatch",
+            "shipment",
+            "read",
+            "See shipments and their carrier handover history",
+            "ORG",
+            "ORG",
+        ),
+        # The carrier handover (creates the shipment, posts the dispatch issue move, and moves
+        # the order through the billing gate) and every later leg of a shipment's own lifecycle
+        # (in-transit, delivered, failed, returned) share one permission — same reasoning
+        # `orders.order.write` covers place/hold/release together rather than splitting each
+        # transition of the *same* document's own lifecycle into its own permission; the genuine
+        # commitment step here is the handover itself, gated identically to the counter path by
+        # `check_billing_gate`, not a second sign-off this permission would have to encode.
+        PermissionSpec(
+            "dispatch",
+            "shipment",
+            "write",
+            "Hand an order to a carrier once the billing gate passes, and advance a shipment "
+            "through its own lifecycle",
+            "ORG",
+            "ORG",
+        ),
     ],
 )
 
@@ -399,8 +427,9 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "Raises, approves and receives purchase orders org-wide; maintains suppliers and "
             "inventory (including stock adjustments); reads warehouses. Accepts, cancels and "
             "hands over customer orders — the stock-commitment, stock-release and billing-gate "
-            "steps — on top of the ordinary counter work every Operations user does. Does not "
-            "create or rename warehouses — that stays with the admin."
+            "steps — on top of the ordinary counter work every Operations user does, and hands "
+            "orders to a carrier (the same billing gate, on the delivery path). Does not create "
+            "or rename warehouses — that stays with the admin."
         ),
         grants=OPERATIONS.pick(
             ("operations.procurement.purchase_order.read", "ORG"),
@@ -429,6 +458,8 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.fulfilment.worker.location_read", "ORG"),
             ("operations.fulfilment.pack.read", "ORG"),
             ("operations.fulfilment.pack.execute", "ORG"),
+            ("operations.dispatch.shipment.read", "ORG"),
+            ("operations.dispatch.shipment.write", "ORG"),
         ),
     ),
     RoleTemplate(

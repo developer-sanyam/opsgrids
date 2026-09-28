@@ -26,6 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
 from app.config import settings
+from app.dispatch import selectors as dispatch_selectors
+from app.dispatch import services as dispatch_services
 from app.fulfilment import selectors as fulfilment_selectors
 from app.fulfilment import services as fulfilment_services
 from app.inventory import ledger as inv_ledger
@@ -82,6 +84,10 @@ from app.schemas import (
     ReservationReleaseIn,
     ScanIn,
     ServiceInfo,
+    ShipmentAdvanceIn,
+    ShipmentIn,
+    ShipmentOut,
+    ShipmentRefusalIn,
     StockAdjustmentIn,
     StockBalanceOut,
     StockMovementOut,
@@ -232,6 +238,20 @@ PackRead = Annotated[
 ]
 PackExecute = Annotated[
     ScopeContext, Depends(require("operations.fulfilment.pack.execute", minimum=Scope.ORG))
+]
+
+# ------------------------------------------------------------------ dispatch (ADR-0024 §6;
+# `docs/fulfilment/plan.md` F5)
+
+#: N3 (security review) shape: floored at ORG, the same defense-in-depth belt-and-suspenders
+#: `TaskRead`/`PackRead` already use on top of a catalogue whose own ceiling is already ORG.
+DispatchRead = Annotated[
+    ScopeContext, Depends(require("operations.dispatch.shipment.read", minimum=Scope.ORG))
+]
+#: The carrier handover is as consequential as `OrderHandOver` (it moves the order through the
+#: same billing gate) — floored at ORG the same way.
+DispatchWrite = Annotated[
+    ScopeContext, Depends(require("operations.dispatch.shipment.write", minimum=Scope.ORG))
 ]
 
 
@@ -2088,6 +2108,188 @@ async def confirm_package(
         request=request,
     )
     return await _package_out(session, ctx, package)
+
+
+# ------------------------------------------------------------------ dispatch (ADR-0024 §6;
+# `docs/fulfilment/plan.md` F5)
+
+
+@router.get(
+    "/operations/dispatch/shipments",
+    response_model=Page[ShipmentOut],
+    summary="Shipments, filterable by order, warehouse and status",
+    dependencies=[Entitled],
+)
+async def list_shipments(
+    session: SessionDep,
+    ctx: DispatchRead,
+    params: PageQuery,
+    order_id: Annotated[uuid.UUID | None, Query()] = None,
+    warehouse_id: Annotated[uuid.UUID | None, Query()] = None,
+    shipment_status: Annotated[str | None, Query(alias="status")] = None,
+) -> Page[ShipmentOut]:
+    stmt = dispatch_selectors.shipments_stmt(
+        ctx, order_id=order_id, warehouse_id=warehouse_id, status=shipment_status
+    )
+    rows, total = await paginate(session, stmt, params)
+    return Page.build(
+        [dispatch_selectors.shipment_out(s) for s in rows], total=total, params=params
+    )
+
+
+@router.get(
+    "/operations/dispatch/shipments/{shipment_id}",
+    response_model=ShipmentOut,
+    summary="One shipment",
+    dependencies=[Entitled],
+)
+async def read_shipment(
+    shipment_id: uuid.UUID, session: SessionDep, ctx: DispatchRead
+) -> ShipmentOut:
+    shipment = await dispatch_selectors.get_shipment(session, ctx.organization_id, shipment_id)
+    if shipment is None:
+        raise NotFoundProblem("That shipment is not part of this organization")
+    return dispatch_selectors.shipment_out(shipment)
+
+
+@router.post(
+    "/operations/dispatch/shipments",
+    response_model=ShipmentOut,
+    status_code=status.HTTP_201_CREATED,
+    summary=(
+        "Hand an order to a carrier once the billing gate passes "
+        "(also confirms delivery, ADR-0025 §1) — the delivery/courier counterpart to "
+        "POST /orders/{id}/hand-over"
+    ),
+    dependencies=[Entitled],
+)
+async def dispatch_order(
+    payload: ShipmentIn, session: SessionDep, ctx: DispatchWrite, request: Request
+) -> ShipmentOut:
+    order = await order_selectors.get_order(
+        session, ctx.organization_id, payload.order_id, for_update=True
+    )
+    if order is None:
+        raise NotFoundProblem("That order is not part of this organization")
+    shipment = await dispatch_services.dispatch_order(
+        session,
+        ctx,
+        order,
+        expected_version=payload.order_version,
+        carrier_name=payload.carrier_name,
+        tracking_reference=payload.tracking_reference,
+        request=request,
+    )
+    return dispatch_selectors.shipment_out(shipment)
+
+
+async def _transition_shipment(
+    shipment_id: uuid.UUID,
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    to_status: str,
+    reason: str = "",
+    tracking_reference: str | None = None,
+    request: Request,
+) -> ShipmentOut:
+    shipment = await dispatch_selectors.get_shipment(
+        session, ctx.organization_id, shipment_id, for_update=True
+    )
+    if shipment is None:
+        raise NotFoundProblem("That shipment is not part of this organization")
+    await dispatch_services.transition_shipment(
+        session,
+        ctx,
+        shipment,
+        to_status=to_status,
+        reason=reason,
+        tracking_reference=tracking_reference,
+        request=request,
+    )
+    return dispatch_selectors.shipment_out(shipment)
+
+
+@router.post(
+    "/operations/dispatch/shipments/{shipment_id}/in-transit",
+    response_model=ShipmentOut,
+    summary="Mark a shipment in transit (or retry a failed attempt)",
+    dependencies=[Entitled],
+)
+async def shipment_in_transit(
+    shipment_id: uuid.UUID,
+    payload: ShipmentAdvanceIn,
+    session: SessionDep,
+    ctx: DispatchWrite,
+    request: Request,
+) -> ShipmentOut:
+    return await _transition_shipment(
+        shipment_id,
+        session,
+        ctx,
+        to_status="IN_TRANSIT",
+        tracking_reference=payload.tracking_reference,
+        request=request,
+    )
+
+
+@router.post(
+    "/operations/dispatch/shipments/{shipment_id}/deliver",
+    response_model=ShipmentOut,
+    summary="Confirm delivery",
+    dependencies=[Entitled],
+)
+async def shipment_deliver(
+    shipment_id: uuid.UUID,
+    payload: ShipmentAdvanceIn,
+    session: SessionDep,
+    ctx: DispatchWrite,
+    request: Request,
+) -> ShipmentOut:
+    return await _transition_shipment(
+        shipment_id,
+        session,
+        ctx,
+        to_status="DELIVERED",
+        tracking_reference=payload.tracking_reference,
+        request=request,
+    )
+
+
+@router.post(
+    "/operations/dispatch/shipments/{shipment_id}/fail",
+    response_model=ShipmentOut,
+    summary="Record a failed delivery attempt (reason required)",
+    dependencies=[Entitled],
+)
+async def shipment_fail(
+    shipment_id: uuid.UUID,
+    payload: ShipmentRefusalIn,
+    session: SessionDep,
+    ctx: DispatchWrite,
+    request: Request,
+) -> ShipmentOut:
+    return await _transition_shipment(
+        shipment_id, session, ctx, to_status="FAILED", reason=payload.reason, request=request
+    )
+
+
+@router.post(
+    "/operations/dispatch/shipments/{shipment_id}/return",
+    response_model=ShipmentOut,
+    summary="Record a shipment returned to the business (reason required)",
+    dependencies=[Entitled],
+)
+async def shipment_return(
+    shipment_id: uuid.UUID,
+    payload: ShipmentRefusalIn,
+    session: SessionDep,
+    ctx: DispatchWrite,
+    request: Request,
+) -> ShipmentOut:
+    return await _transition_shipment(
+        shipment_id, session, ctx, to_status="RETURNED", reason=payload.reason, request=request
+    )
 
 
 # ------------------------------------------------------------------ overview

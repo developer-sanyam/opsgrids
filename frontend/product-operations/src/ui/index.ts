@@ -66,6 +66,7 @@ export {
   OrderStatusPill,
   PickTaskStatusPill,
   PoStatusPill,
+  ShipmentStatusPill,
   SupplierStatusPill,
   StockPill,
 } from "./StatusPill";

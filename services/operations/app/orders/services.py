@@ -1095,6 +1095,77 @@ def check_billing_gate(order: Order) -> None:
         )
 
 
+# ------------------------------------------------------------------ handover completion (shared:
+# counter/walk-in `hand_over_order` and F5's carrier `app.dispatch.services.dispatch_order`)
+
+
+async def complete_handover(
+    session: AsyncSession, ctx: ScopeContext, order: Order, *, request: Request | None = None
+) -> None:
+    """The `READY -> HANDED_OVER -> DELIVERED` write itself (ADR-0025 §1: "the handover *is*
+    delivery... both transition rows are written in one transaction, so there is only one path"),
+    factored out so the two-transition write, its `order_transitions` rows, and the
+    `operations.orders.order.handed_over` event exist in **exactly one place** — both handover
+    paths this build has write them identically, only how each path gets to this point differs.
+
+    **Not this function's job**, and already done by the time a caller reaches here: the
+    `order.version`/`can_transition_order(order.status, "HANDED_OVER")` check (each caller's own
+    first action, before it does any of its own path-specific work — recording a counter
+    attestation, or creating a shipment and posting the dispatch issue — so a stale version or a
+    non-`READY` order is refused before that work ever happens, not only before this write), and
+    `check_billing_gate` itself. `order` must already be locked by the caller, the same `FOR
+    UPDATE` shape every order write in this module uses.
+    """
+    handed_over_from = order.status
+    _record_transition(order, to_status="HANDED_OVER")
+    session.add(
+        OrderTransition(
+            organization_id=ctx.organization_id,
+            order_id=order.id,
+            from_status=handed_over_from,
+            to_status="HANDED_OVER",
+            actor=str(ctx.principal.sub),
+            reason="",
+        )
+    )
+    delivered_from = order.status
+    if not domain.can_transition_order(  # pragma: no cover - defensive
+        delivered_from, "DELIVERED"
+    ):
+        raise ConflictProblem(
+            f"Order {order.number} cannot be marked delivered from {delivered_from}"
+        )
+    _record_transition(order, to_status="DELIVERED")
+    session.add(
+        OrderTransition(
+            organization_id=ctx.organization_id,
+            order_id=order.id,
+            from_status=delivered_from,
+            to_status="DELIVERED",
+            actor=str(ctx.principal.sub),
+            reason="",
+        )
+    )
+    order.updated_by = str(ctx.principal.sub)
+    order.updated_at = datetime.now(UTC)
+    await session.flush()
+
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_ORDER_HANDED_OVER,
+        aggregate_type="order",
+        aggregate_id=order.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "order_id": str(order.id),
+            "number": order.number,
+        },
+        actor=_actor(ctx),
+    )
+
+
 # ------------------------------------------------------------------ hand over (counter/walk-in)
 
 
@@ -1159,39 +1230,7 @@ async def hand_over_order(
 
     check_billing_gate(order)
 
-    handed_over_from = order.status
-    _record_transition(order, to_status="HANDED_OVER")
-    session.add(
-        OrderTransition(
-            organization_id=ctx.organization_id,
-            order_id=order.id,
-            from_status=handed_over_from,
-            to_status="HANDED_OVER",
-            actor=str(ctx.principal.sub),
-            reason="",
-        )
-    )
-    delivered_from = order.status
-    if not domain.can_transition_order(  # pragma: no cover - defensive
-        delivered_from, "DELIVERED"
-    ):
-        raise ConflictProblem(
-            f"Order {order.number} cannot be marked delivered from {delivered_from}"
-        )
-    _record_transition(order, to_status="DELIVERED")
-    session.add(
-        OrderTransition(
-            organization_id=ctx.organization_id,
-            order_id=order.id,
-            from_status=delivered_from,
-            to_status="DELIVERED",
-            actor=str(ctx.principal.sub),
-            reason="",
-        )
-    )
-    order.updated_by = str(ctx.principal.sub)
-    order.updated_at = datetime.now(UTC)
-    await session.flush()
+    await complete_handover(session, ctx, order, request=request)
 
     handover_audit_after: dict[str, Any] = {
         "status": "DELIVERED",
@@ -1210,20 +1249,6 @@ async def hand_over_order(
         entity_id=order.id,
         after=handover_audit_after,
         request=request,
-    )
-    publish_event(
-        session,
-        OutboxEvent,
-        organization_id=ctx.organization_id,
-        event_type=EVT_ORDER_HANDED_OVER,
-        aggregate_type="order",
-        aggregate_id=order.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "order_id": str(order.id),
-            "number": order.number,
-        },
-        actor=_actor(ctx),
     )
     return order
 
