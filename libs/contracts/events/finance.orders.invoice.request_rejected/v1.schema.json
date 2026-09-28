@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/finance.orders.invoice.request_rejected/v1",
+  "title": "finance.orders.invoice.request_rejected",
+  "description": "Finance refused an `operations.orders.order.invoice_requested` event (Fulfilment ADR-0024 §1/§4) — no invoice was created. `reason` is `tax_mismatch` (the recomputed subtotal, tax or total disagreed with the requester's expected_* figures — the expected/actual fields are then all present), `unknown_customer` (`customer_id` is not a `finance.customers.id` for this organization), `invalid_supply_type`, `invalid_place_of_supply`, `invalid_tax_rate` (not a statutory GST band) or `non_positive_total`. A request for an order that already has its invoice is deliberately NOT a reason here — that is a silent no-op (mirroring `commerce.invoice.finalized`'s own `nothing_to_collect` shape), nothing is published for it, and this event's absence is not evidence of anything.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "order_id", "reason"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "order_id": { "type": "string", "format": "uuid" },
+    "reason": {
+      "enum": [
+        "tax_mismatch",
+        "unknown_customer",
+        "invalid_supply_type",
+        "invalid_place_of_supply",
+        "invalid_tax_rate",
+        "non_positive_total"
+      ]
+    },
+    "expected_subtotal_minor": { "type": ["integer", "null"] },
+    "actual_subtotal_minor": { "type": ["integer", "null"] },
+    "expected_tax_minor": { "type": ["integer", "null"] },
+    "actual_tax_minor": { "type": ["integer", "null"] },
+    "expected_total_minor": { "type": ["integer", "null"] },
+    "actual_total_minor": { "type": ["integer", "null"] }
+  }
+}

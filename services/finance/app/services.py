@@ -34,6 +34,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -161,6 +162,15 @@ EVT_WITHHOLDING_RECORDED = "finance.compliance.withholding.recorded"
 EVT_ITC_ACCRUED = "finance.compliance.itc.accrued"
 EVT_ITC_REVERSED = "finance.compliance.itc.reversed"
 EVT_ITC_UTILISED = "finance.compliance.itc.utilised"
+#: Fulfilment F4 (finance slice), answering `operations.orders.order.invoice_requested`
+#: (`app/consumers.py`). A **different** topic and a narrower payload than `EVT_INVOICE_ISSUED`
+#: above on purpose: that one is this service's own general "a document was issued" fact, with a
+#: GST-shaped payload no other product should have to parse; this pair is the order-integration
+#: contract — the module segment is `orders`, not `billing`, precisely so the two never share a
+#: Python name or a routing key. (`operations`' F4 slice is `EVT_INVOICE_ISSUED`'s only other
+#: near-namesake, and it lives in a process that cannot import this one to notice the collision.)
+EVT_ORDER_INVOICE_ISSUED = "finance.orders.invoice.issued"
+EVT_ORDER_INVOICE_REQUEST_REJECTED = "finance.orders.invoice.request_rejected"
 
 #: The permission an automated filing runs under. Named rather than omitted: the audit and outbox
 #: rows every filing writes need an actor and a scope, and a service acting on an organization's
@@ -746,6 +756,330 @@ async def allocate_invoice_number(
     next_after = (await session.execute(stmt)).scalar_one()
     seq = int(next_after) - 1
     return f"{series}-{financial_year}-{seq:05d}"
+
+
+# ------------------------------------------------------- orders (Fulfilment ADR-0024 §1/§4)
+
+
+def _integrity_error_constraint(exc: IntegrityError) -> str | None:
+    """The name of the constraint that actually fired, when the driver surfaces one. Same
+    extraction `leave.services._integrity_error_constraint`/`approval.services`'s own uses, for
+    the identical asyncpg-wraps-the-driver-exception reason — see that function's docstring."""
+    orig = exc.orig
+    name = getattr(orig, "constraint_name", None)
+    if name is not None:
+        return str(name)
+    cause = getattr(orig, "__cause__", None)
+    return str(name) if (name := getattr(cause, "constraint_name", None)) is not None else None
+
+
+@dataclass
+class OrderInvoiceLineIn:
+    """One line of an order's invoice request, as `operations` reports it (ADR-0024 §1/§4).
+
+    `line_amount_minor` is the **taxable value** finance recomputes tax from — the price snapshot
+    the boundary decision names, taken as given rather than re-derived from `quantity` x
+    `unit_price_minor` the way a principal-route invoice line is (`_line_amount_minor`): this is
+    what operations already charged the order for, not a figure finance is trusted to re-price.
+    """
+
+    description: str
+    quantity: float
+    unit_price_minor: int
+    line_amount_minor: int
+    #: Overrides the request's own `tax_rate_pct` for this line. `None` inherits it — the same
+    #: shape `InvoiceLineCreate.tax_rate_pct` has on the principal route.
+    tax_rate_pct: Decimal | float | None = None
+
+
+@dataclass
+class OrderInvoiceOutcome:
+    """What `evaluate_order_invoice_request` decided, for the consumer to log.
+
+    `outcome` is one of `issued` (`invoice` is the new document), `duplicate` (this order already
+    had one — a benign no-op, nothing published) or `rejected` (`reason` names why, and
+    `EVT_ORDER_INVOICE_REQUEST_REJECTED` has already been staged on the outbox naming the same
+    reason and, for a `tax_mismatch`, the three expected-vs-actual triples below).
+    """
+
+    outcome: str
+    invoice: Invoice | None = None
+    reason: str | None = None
+    expected_subtotal_minor: int | None = None
+    actual_subtotal_minor: int | None = None
+    expected_tax_minor: int | None = None
+    actual_tax_minor: int | None = None
+    expected_total_minor: int | None = None
+    actual_total_minor: int | None = None
+
+
+def _reject_order_invoice(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    order_id: uuid.UUID,
+    reason: str,
+    expected_subtotal_minor: int | None = None,
+    actual_subtotal_minor: int | None = None,
+    expected_tax_minor: int | None = None,
+    actual_tax_minor: int | None = None,
+    expected_total_minor: int | None = None,
+    actual_total_minor: int | None = None,
+) -> OrderInvoiceOutcome:
+    """Stage `EVT_ORDER_INVOICE_REQUEST_REJECTED` and return the matching outcome.
+
+    Every rejection publishes — the whole reason this path gets a dedicated event rather than
+    silence: nothing on it ever raises, so the event is the only way `operations`' own F4 slice
+    learns its numbers did not match finance's, or that the customer it named does not exist here.
+    """
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_ORDER_INVOICE_REQUEST_REJECTED,
+        aggregate_type="order",
+        aggregate_id=order_id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "order_id": str(order_id),
+            "reason": reason,
+            "expected_subtotal_minor": expected_subtotal_minor,
+            "actual_subtotal_minor": actual_subtotal_minor,
+            "expected_tax_minor": expected_tax_minor,
+            "actual_tax_minor": actual_tax_minor,
+            "expected_total_minor": expected_total_minor,
+            "actual_total_minor": actual_total_minor,
+        },
+        actor=_actor(ctx),
+    )
+    return OrderInvoiceOutcome(
+        outcome="rejected",
+        reason=reason,
+        expected_subtotal_minor=expected_subtotal_minor,
+        actual_subtotal_minor=actual_subtotal_minor,
+        expected_tax_minor=expected_tax_minor,
+        actual_tax_minor=actual_tax_minor,
+        expected_total_minor=expected_total_minor,
+        actual_total_minor=actual_total_minor,
+    )
+
+
+async def evaluate_order_invoice_request(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    order_id: uuid.UUID,
+    order_number: str,
+    customer_id: uuid.UUID,
+    currency: str,
+    lines: list[OrderInvoiceLineIn],
+    tax_rate_pct: Decimal | float,
+    expected_subtotal_minor: int,
+    expected_tax_minor: int,
+    expected_total_minor: int,
+    place_of_supply: str | None,
+    supply_type: str,
+    reverse_charge: bool,
+    today: date | None = None,
+    request: Request | None = None,
+) -> OrderInvoiceOutcome:
+    """Act on one `operations.orders.order.invoice_requested` event (ADR-0024 §1/§4).
+
+    The boundary decision: operations requests an invoice with a price snapshot — `lines`, and
+    the three `expected_*` totals it computed from them — and finance recomputes the tax with its
+    own `domain.split_gst`/`domain.is_intra_state` (the same pair `create_invoice` calls) and
+    **refuses a mismatch** rather than trusting the caller's arithmetic. Exact integer equality,
+    no tolerance: a rounding difference is exactly the kind of disagreement this check exists to
+    catch, not paper over.
+
+    Never raises for a business situation — an unknown customer, a bad rate, a mismatch, or an
+    order that already has its invoice are all outcomes, not exceptions, the same way
+    `app/consumers.py`'s module docstring holds `file_requested_invoice` to: a queue has nobody to
+    raise at, and a handler that raised on a redelivery would dead-letter it. `order_number` is
+    accepted and not currently persisted anywhere on `Invoice` — carried for a future audit/notes
+    use and so the caller need not special-case this function's contract against the payload it
+    already has.
+
+    `customer_id` is trusted as an existing `finance.customers.id` for this organization —
+    resolving a CRM contact into one is explicitly not this function's job (see this slice's own
+    report on the boundary: `finance.customers` carries no CRM link field by design). An id that
+    does not resolve here is rejected exactly like a tax mismatch, never treated as a crash.
+
+    One invoice per order is enforced twice. The pre-check below
+    (`selectors.invoice_exists_for_order`) is the fast path for the ordinary case — a redelivered
+    request for an order already invoiced — and `uq_invoices_org_order_id` is the real guarantee,
+    caught here inside a `SAVEPOINT` so the genuine race (two deliveries landing in two consumer
+    replicas close enough together that both pass the pre-check) collapses into the same benign
+    no-op rather than a dead-lettered `IntegrityError`.
+    """
+    if await selectors.invoice_exists_for_order(session, ctx.organization_id, order_id):
+        return OrderInvoiceOutcome(outcome="duplicate")
+
+    customer = await selectors.get_customer(
+        session, ctx.organization_id, customer_id, for_update=True
+    )
+    if customer is None:
+        return _reject_order_invoice(session, ctx, order_id=order_id, reason="unknown_customer")
+
+    if supply_type not in domain.SUPPLY_TYPES:
+        return _reject_order_invoice(session, ctx, order_id=order_id, reason="invalid_supply_type")
+    if place_of_supply is not None and place_of_supply not in domain.GST_STATE_CODES:
+        return _reject_order_invoice(
+            session, ctx, order_id=order_id, reason="invalid_place_of_supply"
+        )
+
+    registration = await selectors.get_gst_registration(session, ctx.organization_id)
+    seller_state = registration.state_code if registration else ""
+    intra_state = place_of_supply is not None and domain.is_intra_state(
+        supply_type=supply_type, seller_state_code=seller_state, place_of_supply=place_of_supply
+    )
+
+    try:
+        document_rate = _checked_rate(tax_rate_pct, where="Order invoice tax rate")
+        invoice_lines: list[InvoiceLine] = []
+        subtotal = 0
+        tax_split = domain.ZERO_TAX
+        for i, line in enumerate(lines, start=1):
+            rate = (
+                document_rate
+                if line.tax_rate_pct is None
+                else _checked_rate(line.tax_rate_pct, where=f"Order invoice line {i} tax rate")
+            )
+            taxable = line.line_amount_minor
+            subtotal += taxable
+            split = (
+                domain.ZERO_TAX
+                if reverse_charge
+                else domain.split_gst(taxable, rate, intra_state=intra_state)
+            )
+            tax_split = tax_split + split
+            invoice_lines.append(
+                InvoiceLine(
+                    organization_id=ctx.organization_id,
+                    created_by=str(ctx.principal.sub),
+                    line_no=i,
+                    description=line.description,
+                    quantity=Decimal(str(line.quantity)),
+                    unit_price_minor=line.unit_price_minor,
+                    amount_minor=taxable,
+                    tax_rate_pct=rate,
+                    cgst_minor=split.cgst_minor,
+                    sgst_minor=split.sgst_minor,
+                    igst_minor=split.igst_minor,
+                )
+            )
+    except BusinessRuleProblem:
+        return _reject_order_invoice(session, ctx, order_id=order_id, reason="invalid_tax_rate")
+
+    tax = tax_split.total_minor
+    total = subtotal + tax
+
+    if total <= 0:
+        return _reject_order_invoice(session, ctx, order_id=order_id, reason="non_positive_total")
+
+    if (
+        subtotal != expected_subtotal_minor
+        or tax != expected_tax_minor
+        or total != expected_total_minor
+    ):
+        return _reject_order_invoice(
+            session,
+            ctx,
+            order_id=order_id,
+            reason="tax_mismatch",
+            expected_subtotal_minor=expected_subtotal_minor,
+            actual_subtotal_minor=subtotal,
+            expected_tax_minor=expected_tax_minor,
+            actual_tax_minor=tax,
+            expected_total_minor=expected_total_minor,
+            actual_total_minor=total,
+        )
+
+    issued_on = _today(today)
+    number = await allocate_invoice_number(session, ctx, document_type="invoice", on=issued_on)
+    invoice = Invoice(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        number=number,
+        document_type="invoice",
+        customer_id=customer_id,
+        issued_date=issued_on,
+        due_date=issued_on,
+        currency=currency,
+        subtotal_minor=subtotal,
+        tax_rate_pct=document_rate,
+        tax_minor=tax,
+        total_minor=total,
+        order_id=order_id,
+        place_of_supply=place_of_supply,
+        supply_type=supply_type,
+        reverse_charge=reverse_charge,
+        seller_gstin=registration.gstin if registration else None,
+        buyer_gstin=customer.gstin,
+        cgst_minor=tax_split.cgst_minor,
+        sgst_minor=tax_split.sgst_minor,
+        igst_minor=tax_split.igst_minor,
+        lines=invoice_lines,
+    )
+    try:
+        # A SAVEPOINT, not a bare `session.add` + `flush()`: see `uq_invoices_org_order_id`'s own
+        # migration docstring for why. The pre-check above already refused the ordinary duplicate;
+        # this is only for the race it cannot see.
+        async with session.begin_nested():
+            session.add(invoice)
+            await session.flush()
+    except IntegrityError as exc:
+        if _integrity_error_constraint(exc) != "uq_invoices_org_order_id":
+            raise
+        return OrderInvoiceOutcome(outcome="duplicate")
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="invoice.issued",
+        entity="invoice",
+        entity_id=invoice.id,
+        after={
+            "number": invoice.number,
+            "document_type": invoice.document_type,
+            "status": invoice.status,
+            "total_minor": invoice.total_minor,
+            "order_id": str(order_id),
+        },
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_ORDER_INVOICE_ISSUED,
+        aggregate_type="invoice",
+        aggregate_id=invoice.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "order_id": str(order_id),
+            "invoice_id": str(invoice.id),
+            "invoice_number": invoice.number,
+            "total_minor": invoice.total_minor,
+        },
+        actor=_actor(ctx),
+    )
+
+    # Auto-filing and withholding run exactly as they do for a principal-route invoice
+    # (`create_invoice`, above) — an order-triggered document is not a second-class one, and
+    # skipping either here would make it the only invoice on the platform that never gets an IRN
+    # or a withholding assessment.
+    if domain.should_auto_file(
+        supply_type=invoice.supply_type,
+        document_type=invoice.document_type,
+        status=invoice.status,
+    ):
+        request_filing(session, ctx, invoice, trigger="finalized")
+    await assess_withholdings(session, ctx, invoice, customer, request=request)
+
+    return OrderInvoiceOutcome(outcome="issued", invoice=invoice)
 
 
 def _place_of_supply(payload: InvoiceCreate, customer: Customer, seller_state: str) -> str | None:
