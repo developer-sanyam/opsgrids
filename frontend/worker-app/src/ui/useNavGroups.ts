@@ -1,10 +1,10 @@
 import { HomeIcon, UserIcon } from "@opsgrids/ui";
 import type { NavEntry, NavGroup } from "@opsgrids/ui";
 
-// Two real screens today (Home's task-list shell, Profile). Task detail, scan and pick/pack
-// confirmation have no backend yet (docs/fulfilment/plan.md F3) and are deliberately not in the
-// nav — a nav item whose screen has no backend does not belong in it (frontend/CLAUDE.md: zero
-// placeholder or dead code).
+// Task detail, scan and pick/pack confirmation are real screens now (docs/fulfilment/plan.md F3)
+// but stay out of top-level nav on purpose: each is reached by drilling into a specific task or
+// order from Home, the same way an order detail screen is never a nav item of its own. A phone's
+// bottom nav is two destinations: the task list, and the person using it.
 const GROUPS: NavGroup[] = [
   {
     title: "Main Menu",
