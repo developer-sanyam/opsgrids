@@ -59,6 +59,7 @@ from app.schemas import (
     LocationPatch,
     OfferIn,
     OrderCancelIn,
+    OrderHandoverIn,
     OrderHoldIn,
     OrderIn,
     OrderOut,
@@ -185,6 +186,9 @@ OrderAccept = Annotated[
 ]
 OrderCancel = Annotated[
     ScopeContext, Depends(require("operations.orders.order.cancel", minimum=Scope.ORG))
+]
+OrderHandOver = Annotated[
+    ScopeContext, Depends(require("operations.orders.order.hand_over", minimum=Scope.ORG))
 ]
 
 # ------------------------------------------------------------------ fulfilment (ADR-0024 §7,
@@ -1472,6 +1476,37 @@ async def cancel_order(
         order,
         expected_version=payload.version,
         reason=payload.reason,
+        request=request,
+    )
+    return await _order_out(session, ctx, order)
+
+
+@router.post(
+    "/operations/orders/{order_id}/hand-over",
+    response_model=OrderOut,
+    summary=(
+        "Hand an order over at the counter once the billing gate passes "
+        "(also confirms delivery, ADR-0025 §1)"
+    ),
+    dependencies=[Entitled],
+)
+async def hand_over_order(
+    order_id: uuid.UUID,
+    payload: OrderHandoverIn,
+    session: SessionDep,
+    ctx: OrderHandOver,
+    request: Request,
+) -> OrderOut:
+    order = await order_selectors.get_order(session, ctx.organization_id, order_id, for_update=True)
+    if order is None:
+        raise NotFoundProblem("That order is not part of this organization")
+    await order_services.hand_over_order(
+        session,
+        ctx,
+        order,
+        expected_version=payload.version,
+        pickup_code=payload.pickup_code,
+        payment_confirmed=payload.payment_confirmed,
         request=request,
     )
     return await _order_out(session, ctx, order)

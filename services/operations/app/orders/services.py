@@ -16,9 +16,11 @@ same shape `services/lead/app/services.py:convert_lead` already uses for the ide
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select, text
@@ -30,14 +32,17 @@ from app.config import settings
 from app.inventory import ledger
 from app.inventory import selectors as inv_selectors
 from app.inventory.ledger import ReserveLine
-from app.inventory.quantity import MAX_ABS_MILLI, QuantityError, parse_qty
+from app.inventory.quantity import MAX_ABS_MILLI, QuantityError, format_qty, parse_qty
 from app.models import AuditLog, Order, OrderLine, OrderTransition, OutboxEvent
 from app.orders import selectors
 from platform_core.audit import record_audit
-from platform_core.auth import ScopeContext
+from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.db import assert_tenant, set_tenant
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 from platform_core.events import publish_event
+from platform_core.logging import get_logger
+
+log = get_logger("operations.orders")
 
 EVT_ORDER_PLACED = "operations.orders.order.placed"
 EVT_ORDER_ACCEPTED = "operations.orders.order.accepted"
@@ -49,6 +54,34 @@ EVT_ORDER_CANCELLED = "operations.orders.order.cancelled"
 #: other order event names, so the plan's event catalogue (docs/fulfilment/plan.md §5) has one
 #: home for every `operations.orders.order.*` constant.
 EVT_ORDER_READY = "operations.orders.order.ready"
+#: `READY -> HANDED_OVER -> DELIVERED`, the counter/walk-in path (ADR-0025 §1) — see
+#: `hand_over_order`. There is no separate `delivered` event: the plan's event catalogue
+#: (docs/fulfilment/plan.md §5) names `handed_over` only, the same precedent `EVT_ORDER_HELD`
+#: sets for a transition with no dedicated wire event of its own.
+EVT_ORDER_HANDED_OVER = "operations.orders.order.handed_over"
+#: This service's own request for an invoice (ADR-0024 §1/§4; Fulfilment plan F4) — the exact
+#: contract `libs/contracts/events/operations.orders.order.invoice_requested/v1.schema.json`
+#: fixes, consumed by `services/finance/app/consumers.py::invoice_requested_from_order` (already
+#: deployed, ahead of this producer — see that schema's own `$comment`).
+EVT_ORDER_INVOICE_REQUESTED = "operations.orders.order.invoice_requested"
+#: `services/finance`'s own event name
+#: (`services/finance/app/services.py::EVT_ORDER_INVOICE_ISSUED`) — never imported (no
+#: cross-service import exists in this platform any more than a cross-schema
+#: foreign key does, ADR-0000 §10), so this is the string contract copied by hand, the same way
+#: `EVT_OFFER_EXPIRE_REQUESTED` names a target event `services/scheduler` fires without importing
+#: it either. `app.consumers.finance_invoice_issued` binds to this exact routing key.
+EVT_FINANCE_INVOICE_ISSUED = "finance.orders.invoice.issued"
+
+#: `Order.channel` values whose payment term (`ResolvedSettings.payment_term_for`) needs a
+#: recorded payment before handover (ADR-0025 §1's billing gate) — every term except `"credit"`.
+_PAYMENT_REQUIRED_TERMS = frozenset({"prepaid", "cash"})
+#: `fulfilment_settings.invoice_timing` values under which an invoice must exist **by handover**
+#: (ADR-0025 §1's billing gate). `on_delivery` is deliberately excluded here: that policy's own
+#: check belongs to the `DELIVERED -> COMPLETED` close-out gate the ADR describes separately
+#: ("every invoice the org's timing policy requires exists") — not built in F4 (out of this
+#: slice's scope; see this slice's own report), and never this gate's job even for a counter
+#: order where handover and delivery happen to land in the same transaction.
+_INVOICE_REQUIRED_BY_HANDOVER_TIMINGS = frozenset({"on_accept", "on_dispatch"})
 
 #: A priced line above this is refused before `place` ever flushes it — comfortably inside
 #: `BigInteger`'s ~9.22e18 ceiling even summed over `OrderIn.lines`'s max 200 lines, and the same
@@ -719,6 +752,16 @@ async def release_hold_order(
     # No outbox event here: releasing a hold resumes whatever commercial milestone the order was
     # already at rather than reaching a new one, and the plan's event catalogue (§5) names
     # `held`, not a matching `released`.
+    if target == "READY":
+        # MAJOR 1 (security review): a release landing on `READY` is the same milestone
+        # `_maybe_ready_order` reaches on the ordinary `IN_FULFILMENT -> READY` path, so it has to
+        # run the same READY-triggered facts (`handle_order_ready`) — a pickup code, if this org
+        # requires one, and the invoice request (or its visibly-logged skip). Skipping this left
+        # `require_pickup_code=True` orgs with a `pickup_code` that is `None` forever: every
+        # hand-over then 409s permanently, with no way out but cancelling the order. Same module
+        # as `handle_order_ready`, called with the order row this function already holds locked —
+        # no import-linter boundary crossed.
+        await handle_order_ready(session, ctx, order, request=request)
     return order
 
 
@@ -805,3 +848,453 @@ async def cancel_order(
         actor=_actor(ctx),
     )
     return order
+
+
+# ------------------------------------------------------------------ READY-triggered facts
+# (pickup code, invoice request — Fulfilment plan F4, ADR-0025 §1)
+
+
+def _generate_pickup_code() -> str:
+    """A 6-digit code a customer presents at counter handover (`check_billing_gate`).
+    `secrets.choice`, not `random`: guessing this code lets a stranger claim somebody else's
+    paid order, so it has to come from the CSPRNG the same way any other bearer credential does."""
+    return "".join(secrets.choice("0123456789") for _ in range(6))
+
+
+def _resolve_finance_customer_id(order: Order) -> uuid.UUID | None:
+    """Where `request_invoice_for_order` would resolve a `finance.customers.id` for this order's
+    buyer. **Always `None` today** — this is F4's documented, unresolved gap, not an oversight:
+
+    `Order.customer_id` is a `services/customer` id (ADR-0000 §10: a plain UUID, no cross-schema
+    FK); `finance.customers.id` is a different id space entirely, and `finance.customers` carries
+    no CRM link field to bridge them by design (its own model docstring: "Distinct from any CRM
+    account by design — no cross-schema link"). `services/finance` exposes no lookup/create-by-
+    external-reference endpoint today either (`services/finance/app/api/routes.py` and
+    `internal.py` grepped for this slice: only the ordinary `POST /finance/customers`, full
+    `CustomerCreate` payload, no dedup key) — calling it from here would mint a brand new finance
+    customer on every order a repeat buyer places, which is worse than not invoicing them at all.
+
+    Returns `None` until finance ships a real resolve-or-create surface. When it does, this
+    function is the one place that changes: a real implementation would be a **call**, run with
+    no session and no transaction open, before `request_invoice_for_order`'s own transaction —
+    the identical `docs/io-outside-transactions.md` discipline `check_credit_before_accept`
+    documents for the same reason.
+    """
+    return None
+
+
+def _invoice_request_lines(
+    lines: Sequence[OrderLine], items: Mapping[uuid.UUID, Any]
+) -> list[dict[str, Any]]:
+    """The `lines` array of the `invoice_requested` payload — each line's own accepted price
+    snapshot (ADR-0024 §3: `selling_price_minor`/`line_total_minor`, never recomputed here).
+    `quantity` is a wire float, the shape the schema and finance's `OrderInvoiceLineIn` both take
+    it as (`format_qty` turns `quantity_milli` back into a decimal string first, the same
+    conversion `order_line_out` already uses, rather than dividing by `QTY_SCALE` by hand a second
+    way)."""
+    out: list[dict[str, Any]] = []
+    for line in lines:
+        item = items.get(line.inventory_item_id)
+        assert line.selling_price_minor is not None  # every READY order's lines are priced
+        assert line.line_total_minor is not None
+        out.append(
+            {
+                "sku": item.sku if item is not None else "",
+                "quantity": float(format_qty(line.quantity_milli)),
+                "unit_price_minor": line.selling_price_minor,
+                "line_amount_minor": line.line_total_minor,
+            }
+        )
+    return out
+
+
+def _invoice_request_payload(
+    order: Order,
+    lines: Sequence[OrderLine],
+    items: Mapping[uuid.UUID, Any],
+    *,
+    customer_id: uuid.UUID,
+    tax_rate_pct: Decimal,
+) -> dict[str, Any]:
+    """The exact `operations.orders.order.invoice_requested` v1 shape
+    (`libs/contracts/events/operations.orders.order.invoice_requested/v1.schema.json`,
+    `additionalProperties: false` — every key here is one the schema names, nothing more).
+
+    `expected_tax_minor`/`expected_total_minor` are computed with
+    `domain.expected_gst_amount_minor`, which mirrors finance's own rounding (that function's own
+    docstring explains why this is safe without knowing finance's seller GST registration:
+    `place_of_supply` is always omitted here, and the total a rate produces does not depend on
+    the intra/inter-state split). `reverse_charge` is always `False` and `supply_type` always
+    `"b2b"` — operations tracks neither yet, and both are this schema's own defaults."""
+    invoice_lines = _invoice_request_lines(lines, items)
+    subtotal = domain.order_subtotal_minor(lines)
+    tax = sum(
+        domain.expected_gst_amount_minor(line.line_total_minor or 0, tax_rate_pct) for line in lines
+    )
+    return {
+        "organization_id": str(order.organization_id),
+        "order_id": str(order.id),
+        "order_number": order.number,
+        "customer_id": str(customer_id),
+        "currency": order.currency,
+        "lines": invoice_lines,
+        "tax_rate_pct": float(tax_rate_pct),
+        "expected_subtotal_minor": subtotal,
+        "expected_tax_minor": tax,
+        "expected_total_minor": subtotal + tax,
+        "supply_type": "b2b",
+        "reverse_charge": False,
+    }
+
+
+async def request_invoice_for_order(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    order: Order,
+    lines: Sequence[OrderLine],
+    *,
+    request: Request | None = None,
+) -> None:
+    """Emit `operations.orders.order.invoice_requested` once picking/packing completes for an
+    order (ADR-0024 §1/§4; Fulfilment plan F4) — called from
+    `app.fulfilment.services._maybe_ready_order` (via `handle_order_ready`), inside the same
+    transaction that already holds the order row lock for the `IN_FULFILMENT -> READY` move
+    (ADR-0025 §1's order-row-first discipline), so this needs no lock of its own.
+
+    **This slice's customer_id gap (see the slice's own report).** The event's `customer_id` must
+    be a `finance.customers.id` (the schema's own description). `_resolve_finance_customer_id`
+    always returns `None` today — there is no bridge from `Order.customer_id` to one, and no
+    finance endpoint to build one against in this request/response cycle (that function's own
+    docstring has the full reasoning). Rather than send an empty/fabricated id, which would only
+    bounce off finance's `unknown_customer` rejection, this is a **visibly-logged no-op**: a
+    structured warning and an audit row (`order.invoice_request_skipped`) so the gap is on the
+    order's own trail, not only in a log line. The `READY` transition itself is unaffected —
+    picking completion is not conditional on billing.
+    """
+    tax_rate_pct = Decimal((order.settings_snapshot or {}).get("default_tax_rate_pct", "0"))
+    finance_customer_id = _resolve_finance_customer_id(order)
+    if finance_customer_id is None:
+        log.warning(
+            "orders.invoice_request.skipped",
+            organization_id=str(ctx.organization_id),
+            order_id=str(order.id),
+            order_number=order.number,
+            reason="no_finance_customer_mapping",
+        )
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=ctx.organization_id,
+            actor_id=ctx.principal.sub,
+            action="order.invoice_request_skipped",
+            entity="order",
+            entity_id=order.id,
+            after={"reason": "no_finance_customer_mapping"},
+            request=request,
+        )
+        return
+
+    item_ids = [line.inventory_item_id for line in lines]
+    items = await selectors.items_for_lines(session, ctx.organization_id, item_ids)
+    payload = _invoice_request_payload(
+        order, lines, items, customer_id=finance_customer_id, tax_rate_pct=tax_rate_pct
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_ORDER_INVOICE_REQUESTED,
+        aggregate_type="order",
+        aggregate_id=order.id,
+        payload=payload,
+        actor=_actor(ctx),
+    )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="order.invoice_requested",
+        entity="order",
+        entity_id=order.id,
+        after={
+            "customer_id": str(finance_customer_id),
+            "expected_total_minor": payload["expected_total_minor"],
+        },
+        request=request,
+    )
+
+
+async def handle_order_ready(
+    session: AsyncSession, ctx: ScopeContext, order: Order, *, request: Request | None = None
+) -> None:
+    """Runs once, inside the same transaction that moves an order to `READY` — either
+    `app.fulfilment.services._maybe_ready_order`'s ordinary `IN_FULFILMENT -> READY` path, or
+    `release_hold_order`'s `ON_HOLD -> READY` release (MAJOR 1, security review) — both of which
+    already hold the order row lock before calling this. The two READY-triggered facts Fulfilment
+    plan F4 adds:
+
+    1. Issues a pickup code, if this org requires one at handover
+       (`fulfilment_settings.require_pickup_code`, snapshotted onto the order at accept) and one
+       is not already set — idempotent against being called twice for the same order, though
+       `_maybe_ready_order`'s own guard (`order.status != "IN_FULFILMENT"` returns early) means
+       it structurally never is.
+    2. Requests an invoice from finance (`request_invoice_for_order` — see that function's own
+       docstring for this slice's customer_id gap).
+    """
+    snapshot = order.settings_snapshot or {}
+    if snapshot.get("require_pickup_code", False) and order.pickup_code is None:
+        order.pickup_code = _generate_pickup_code()
+        # `release_hold_order` already flushed its own `updated_at` write before calling here, so
+        # this pickup-code write is a second, later dirty column on the same row: an autoflush
+        # from here on (the `lines_for` read two lines down, say) issues a second `UPDATE order`
+        # that does not carry `updated_at` explicitly, and its `onupdate=func.now()` is a SQL-side
+        # default, not a literal value SQLAlchemy can keep in memory — the Python attribute is
+        # left expired. A caller that reads it later with no awaited ORM call of its own
+        # (`app/api/routes.py::_order_out`, building the response) would then try to lazy-load it
+        # and crash with `MissingGreenlet`. Touching it again here keeps it a real, already-loaded
+        # value no matter how many separate flushes this call ends up costing.
+        order.updated_at = datetime.now(UTC)
+
+    lines = await selectors.lines_for(session, ctx.organization_id, order.id)
+    await request_invoice_for_order(session, ctx, order, lines, request=request)
+
+
+# ------------------------------------------------------------------ billing gate (ADR-0025 §1)
+
+
+def check_billing_gate(order: Order) -> None:
+    """`READY -> HANDED_OVER`'s guard (ADR-0025 §1) — reads **only** `order`'s own columns
+    (including its `settings_snapshot`, the policy it was accepted under). Calls no other
+    service: every fact it checks arrived earlier, from an event or from the same handover call
+    that is about to use it. Raises `ConflictProblem` naming exactly the condition that is
+    missing; never more than one order's worth of state, so it is cheap enough to call from
+    F5's carrier handover unchanged — the reason this is its own function rather than inlined
+    into `hand_over_order`.
+    """
+    snapshot = order.settings_snapshot or {}
+
+    invoice_timing = snapshot.get("invoice_timing", "on_accept")
+    if invoice_timing in _INVOICE_REQUIRED_BY_HANDOVER_TIMINGS and order.invoice_id is None:
+        raise ConflictProblem(
+            f"Order {order.number} has no invoice yet, and this organization's invoice-timing "
+            f"policy ({invoice_timing}) requires one before handover"
+        )
+
+    payment_term = snapshot.get("payment_defaults", {}).get(order.channel, "cash")
+    if payment_term in _PAYMENT_REQUIRED_TERMS and order.paid_at is None:
+        raise ConflictProblem(
+            f"Order {order.number} has not been paid, and its payment term ({payment_term}) "
+            "requires payment before handover"
+        )
+
+    if snapshot.get("require_pickup_code", False) and order.pickup_code_verified_at is None:
+        raise ConflictProblem(
+            f"Order {order.number}'s pickup code has not been verified, and this organization "
+            "requires one before handover"
+        )
+
+
+# ------------------------------------------------------------------ hand over (counter/walk-in)
+
+
+async def hand_over_order(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    order: Order,
+    *,
+    expected_version: int,
+    pickup_code: str | None = None,
+    payment_confirmed: bool = False,
+    request: Request | None = None,
+) -> Order:
+    """`READY -> HANDED_OVER -> DELIVERED`, the counter/walk-in handover (ADR-0025 §1): "the
+    handover *is* delivery... both transition rows are written in one transaction, so there is
+    only one path." `order` must already be locked by the caller (`app/api/routes.py`, the same
+    `FOR UPDATE` shape `hold_order`/`cancel_order` use).
+
+    Two facts are recorded **before** the gate runs, in this same transaction, if the caller
+    supplied them — this is how the reusable `check_billing_gate` ends up with something to read
+    without itself calling anyone: this call is the one that *establishes* the fact for the
+    counter path, exactly as an earlier event establishes it for the eventual carrier path (F5).
+    Recording happens before the gate check but the whole call is still one transaction: a failed
+    gate raises and rolls every field write in this call back too, so a caller must resend both
+    the code and the confirmation together next time, never rely on a partial attempt having
+    stuck.
+
+    * `pickup_code`, compared against `order.pickup_code`, sets `pickup_code_verified_at` on a
+      match. A caller who does not yet know the code (or is wrong) leaves it unset, and the gate
+      answers exactly why.
+    * `payment_confirmed`, the operator's own attestation for a cash/prepaid order — see
+      `OrderHandoverIn`'s own docstring for the honest gap this stands in for. Never touches
+      `paid_at` for a credit-terms order (nothing to confirm) or if it is already set.
+    """
+    if order.version != expected_version:
+        raise ConflictProblem(
+            f"Order {order.number} is at version {order.version}, not {expected_version}; "
+            "reload it and try again"
+        )
+    if not domain.can_transition_order(order.status, "HANDED_OVER"):
+        raise ConflictProblem(f"Order {order.number} is {order.status} and cannot be handed over")
+
+    snapshot = order.settings_snapshot or {}
+    if (
+        pickup_code is not None
+        and order.pickup_code is not None
+        and order.pickup_code_verified_at is None
+        and secrets.compare_digest(pickup_code, order.pickup_code)
+    ):
+        order.pickup_code_verified_at = datetime.now(UTC)
+
+    payment_term = snapshot.get("payment_defaults", {}).get(order.channel, "cash")
+    # MINOR 5 (security review): captured before the write so the audit row below can tell "this
+    # call is what attested payment" from "it was already true" — `order.paid_at is not None`
+    # alone answers only the latter, and cannot distinguish a fact this call just established from
+    # one recorded on an earlier call or by the eventual carrier-handover event (F5).
+    payment_attested_by_operator = (
+        payment_confirmed and payment_term in _PAYMENT_REQUIRED_TERMS and order.paid_at is None
+    )
+    if payment_attested_by_operator:
+        order.paid_at = datetime.now(UTC)
+
+    check_billing_gate(order)
+
+    handed_over_from = order.status
+    _record_transition(order, to_status="HANDED_OVER")
+    session.add(
+        OrderTransition(
+            organization_id=ctx.organization_id,
+            order_id=order.id,
+            from_status=handed_over_from,
+            to_status="HANDED_OVER",
+            actor=str(ctx.principal.sub),
+            reason="",
+        )
+    )
+    delivered_from = order.status
+    if not domain.can_transition_order(  # pragma: no cover - defensive
+        delivered_from, "DELIVERED"
+    ):
+        raise ConflictProblem(
+            f"Order {order.number} cannot be marked delivered from {delivered_from}"
+        )
+    _record_transition(order, to_status="DELIVERED")
+    session.add(
+        OrderTransition(
+            organization_id=ctx.organization_id,
+            order_id=order.id,
+            from_status=delivered_from,
+            to_status="DELIVERED",
+            actor=str(ctx.principal.sub),
+            reason="",
+        )
+    )
+    order.updated_by = str(ctx.principal.sub)
+    order.updated_at = datetime.now(UTC)
+    await session.flush()
+
+    handover_audit_after: dict[str, Any] = {
+        "status": "DELIVERED",
+        "pickup_code_verified": order.pickup_code_verified_at is not None,
+        "paid": order.paid_at is not None,
+    }
+    if payment_attested_by_operator:
+        handover_audit_after["payment_attested_by_operator"] = True
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="order.handed_over",
+        entity="order",
+        entity_id=order.id,
+        after=handover_audit_after,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_ORDER_HANDED_OVER,
+        aggregate_type="order",
+        aggregate_id=order.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "order_id": str(order.id),
+            "number": order.number,
+        },
+        actor=_actor(ctx),
+    )
+    return order
+
+
+# ------------------------------------------------------------------ consumer support
+# (finance.orders.invoice.issued — Fulfilment plan F4)
+
+#: The permission a system-originated write (this module's own event consumer) presents as —
+#: same shape `app.fulfilment.services.service_ctx` already uses, and the same reasoning: no
+#: human is behind this write, so it is floored at the ordinary `orders.order.write` grant rather
+#: than anything stronger, and it carries no real `sub` (`uuid.UUID(int=0)`, never a real
+#: principal's id).
+_ORDERS_SYSTEM_PERMISSION = "operations.orders.order.write"
+
+
+def service_ctx(organization_id: uuid.UUID) -> ScopeContext:
+    principal = Principal(
+        sub=uuid.UUID(int=0),
+        organization_id=organization_id,
+        membership_id=None,
+        perms=[f"{_ORDERS_SYSTEM_PERMISSION}:ORG"],
+        entitlements=["operations"],
+    )
+    return ScopeContext(principal=principal, scope=Scope.ORG, permission=_ORDERS_SYSTEM_PERMISSION)
+
+
+async def record_invoice_issued(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    order_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    invoice_number: str,
+    request: Request | None = None,
+) -> bool:
+    """Writes the invoice fact `check_billing_gate` reads (ADR-0025 §1) — bound to finance's own
+    `finance.orders.invoice.issued` (`app.consumers.finance_invoice_issued`). Returns whether it
+    actually wrote anything, for the consumer's own log line.
+
+    Idempotent twice over, `order_cancelled`'s own consumer's discipline: the event id, via
+    `ProcessedEvent`, is the consumer's job; here, the domain — a second delivery for an order
+    that already carries an `invoice_id` is a silent no-op, never an overwrite. An invoice is
+    immutable once issued (ADR-0000 §9), so operations' own record of it must never look like it
+    changed underneath a second, redelivered copy of the same fact.
+    """
+    order = await selectors.get_order(session, ctx.organization_id, order_id, for_update=True)
+    if order is None:
+        log.warning(
+            "orders.invoice_issued.unknown_order",
+            organization_id=str(ctx.organization_id),
+            order_id=str(order_id),
+        )
+        return False
+    if order.invoice_id is not None:
+        return False
+
+    order.invoice_id = invoice_id
+    order.version += 1
+    order.updated_by = str(ctx.principal.sub)
+    order.updated_at = datetime.now(UTC)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="order.invoice_recorded",
+        entity="order",
+        entity_id=order.id,
+        after={"invoice_id": str(invoice_id), "invoice_number": invoice_number},
+        request=request,
+    )
+    return True

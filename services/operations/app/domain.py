@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 from fractions import Fraction
 
 from app.inventory import quantity
@@ -337,6 +338,28 @@ def order_subtotal_minor(lines: Sequence[OrderLine]) -> int:
     """An order's subtotal — the sum of its lines' `line_total_minor`. A line still unpriced
     (before `place` has run) contributes 0."""
     return sum(line.line_total_minor or 0 for line in lines)
+
+
+def expected_gst_amount_minor(taxable_minor: int, rate_pct: Decimal) -> int:
+    """The GST `request_invoice_for_order` expects finance to compute on one taxable amount —
+    **deliberately mirrors** `services/finance/app/domain.py::gst_amount_minor` (same formula,
+    same `Decimal`, same `ROUND_HALF_UP`) rather than importing it: no cross-schema import exists
+    between services here any more than a cross-schema foreign key does (ADR-0000 §10 is about
+    tables, but the same reasoning holds for code — the two must agree by *contract*, which is
+    exactly what `evaluate_order_invoice_request`'s own exact-integer-equality check enforces, not
+    by silently sharing an implementation that could drift without either side noticing).
+
+    Finance's `split_gst` divides this same total between CGST/SGST or hands it whole to IGST
+    depending on `intra_state`, but never re-rounds it doing so — `TaxSplit.total_minor` always
+    equals this function's result regardless of the split (`services/finance` ADR-0024 §1 review:
+    the two halves sum to the one rounding, not each rounded on its own). So a request that omits
+    `place_of_supply` (this build always does — operations tracks no GST state codes yet) is
+    still checkable here without knowing finance's own seller registration: `intra_state` cannot
+    change the *total*, only how it is split into heads, and this function only ever needs the
+    total.
+    """
+    exact = Decimal(taxable_minor) * rate_pct / Decimal(100)
+    return int(exact.to_integral_value(rounding=ROUND_HALF_UP))
 
 
 # ------------------------------------------------------------------ fulfilment (ADR-0025 §2)

@@ -1744,6 +1744,40 @@
         "title": "OrderCancelIn",
         "type": "object"
       },
+      "OrderHandoverIn": {
+        "additionalProperties": false,
+        "description": "`POST /orders/{id}/hand-over` \u2014 the counter/walk-in path through ADR-0025 \u00a71's billing\ngate (`app.orders.services.check_billing_gate`; Fulfilment plan F4). For walk-in and counter\nhandover the handover *is* delivery (ADR-0025 \u00a71), so a successful call moves the order\n`READY -> HANDED_OVER -> DELIVERED` in one transaction.\n\n`pickup_code` is what the customer presents at the counter, checked against the code issued\nat READY when this org requires one (`fulfilment_settings.require_pickup_code`); omitted or\nwrong when one is required is exactly the \"pickup code unverified\" gate failure.\n`payment_confirmed` is the operator's own attestation that a cash/prepaid order's payment was\ncollected at the counter \u2014 a documented stand-in for `services/payment`'s tenant collections\nmodule (ADR-0024 A4), not yet built; see this slice's own report. Both are inert for a\ncredit-terms order or an org that requires no pickup code \u2014 the gate simply never asks for\nthem.",
+        "properties": {
+          "payment_confirmed": {
+            "default": false,
+            "title": "Payment Confirmed",
+            "type": "boolean"
+          },
+          "pickup_code": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "pattern": "^[0-9]{6}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pickup Code"
+          },
+          "version": {
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "OrderHandoverIn",
+        "type": "object"
+      },
       "OrderHoldIn": {
         "additionalProperties": false,
         "description": "`POST /orders/{id}/hold`. A reason is required \u2014 an operator hold, e.g. the customer\nasked to delay collection (ADR-0025 \u00a71).",
@@ -1947,7 +1981,7 @@
         "type": "object"
       },
       "OrderOut": {
-        "description": "Mirrors the SPA's `OrderOut`. `total_minor` is `subtotal_minor` (F2 carries no\ndiscount/tax/shipping line \u2014 those are a later phase's addition); both are `0` until `place`\nprices the lines.",
+        "description": "Mirrors the SPA's `OrderOut`. `total_minor` is `subtotal_minor` (F2 carries no\ndiscount/tax/shipping line \u2014 those are a later phase's addition); both are `0` until `place`\nprices the lines.\n\n`invoice_id`/`paid_at`/`pickup_code_verified_at` are the billing-gate facts F4 adds\n(ADR-0025 \u00a71) \u2014 `pickup_code` itself is deliberately never on this model (`Order`'s own\ndocstring explains why).",
         "properties": {
           "channel": {
             "enum": [
@@ -1991,6 +2025,17 @@
             "title": "Id",
             "type": "string"
           },
+          "invoice_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invoice Id"
+          },
           "lines": {
             "items": {
               "$ref": "#/components/schemas/OrderLineItem"
@@ -2001,6 +2046,30 @@
           "number": {
             "title": "Number",
             "type": "string"
+          },
+          "paid_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paid At"
+          },
+          "pickup_code_verified_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pickup Code Verified At"
           },
           "status": {
             "enum": [
@@ -8328,6 +8397,59 @@
           }
         },
         "summary": "Cancel an order and release every open reservation it holds",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/orders/{order_id}/hand-over": {
+      "post": {
+        "operationId": "hand_over_order_api_v1_operations_orders__order_id__hand_over_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderHandoverIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hand an order over at the counter once the billing gate passes (also confirms delivery, ADR-0025 \u00a71)",
         "tags": [
           "operations"
         ]
