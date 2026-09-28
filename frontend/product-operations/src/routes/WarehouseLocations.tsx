@@ -147,15 +147,20 @@ export function WarehouseLocationsPage() {
         title={warehouseState.status === "success" ? warehouseState.data.name : "Loading…"}
         description="The zone → aisle/rack → shelf/bin tree stock is filed under, with each location's barcode and pick sequence."
         actions={
-          <Can permission="operations.inventory.location.write" scope="ORG">
-            <Button
-              leadingIcon={<PlusIcon className="size-4" />}
-              onClick={() => setCreatingUnderParentId(null)}
-              disabled={warehouseState.status !== "success"}
-            >
-              New location
+          <>
+            <Button variant="secondary" onClick={() => navigate(`/warehouses/${id}/3d`)}>
+              3D view
             </Button>
-          </Can>
+            <Can permission="operations.inventory.location.write" scope="ORG">
+              <Button
+                leadingIcon={<PlusIcon className="size-4" />}
+                onClick={() => setCreatingUnderParentId(null)}
+                disabled={warehouseState.status !== "success"}
+              >
+                New location
+              </Button>
+            </Can>
+          </>
         }
       />
 
