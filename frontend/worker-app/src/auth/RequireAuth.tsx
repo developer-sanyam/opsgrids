@@ -1,0 +1,14 @@
+import type { ReactNode } from "react";
+
+import { RequireAuth as BaseRequireAuth } from "@opsgrids/client";
+
+import { LogoMark } from "@/ui/LogoMark";
+
+/** The authenticated gate, wearing this app's mark while the session boots. */
+export function RequireAuth({ children }: { children: ReactNode }) {
+  return (
+    <BaseRequireAuth logo={<LogoMark className="size-11 animate-pulse" />} message="Signing you in…">
+      {children}
+    </BaseRequireAuth>
+  );
+}

@@ -308,7 +308,9 @@ check: lint typecheck test ## lint + typecheck + test — the fast path
 # report before the row fails, the same reason the backend fan-out runs every service.
 #
 # Needs Node 22 and pnpm 11 on PATH, and `make frontend-install` once.
-FRONTEND_PACKAGES := $(notdir $(wildcard frontend/opsgrids-* frontend/product-*))
+# `frontend/worker-app` is named explicitly: it is its own surface (ADR-0024 §7), not a
+# `product-*`, so the glob does not already see it.
+FRONTEND_PACKAGES := $(notdir $(wildcard frontend/opsgrids-* frontend/product-*)) worker-app
 
 .PHONY: frontend-install
 frontend-install: ## pnpm install from the lockfile, exactly (fails if package.json and the lock disagree)
