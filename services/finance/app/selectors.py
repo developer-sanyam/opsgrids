@@ -428,6 +428,24 @@ async def invoice_exists(session: AsyncSession, org_id: uuid.UUID, invoice_id: u
     return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
+async def invoice_exists_for_order(
+    session: AsyncSession, org_id: uuid.UUID, order_id: uuid.UUID
+) -> bool:
+    """Whether this organization already has an `invoice` document (not a credit note) for this
+    order — the read-side mirror of `uq_invoices_org_order_id`, checked before a write is
+    attempted so the ordinary case (a redelivered `invoice_requested`) never has to reach the
+    database's own race guard. A credit note naming this order is deliberately not seen here,
+    for the same reason the index does not count one: it corrects the original invoice rather
+    than competing with it for the order."""
+    stmt = select(Invoice.id).where(
+        Invoice.organization_id == org_id,
+        Invoice.order_id == order_id,
+        Invoice.document_type == "invoice",
+        Invoice.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
 async def get_invoices(
     session: AsyncSession,
     org_id: uuid.UUID,

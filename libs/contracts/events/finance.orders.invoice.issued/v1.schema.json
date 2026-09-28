@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/finance.orders.invoice.issued/v1",
+  "title": "finance.orders.invoice.issued",
+  "description": "Finance raised an invoice in answer to `operations.orders.order.invoice_requested` (Fulfilment ADR-0024 §1/§4): the recomputed tax matched the requester's price snapshot exactly. Deliberately narrow — operations does not need finance's GST-shaped fields to know its order is billed — and a different topic from `finance.billing.invoice.issued` (emitted by `create_invoice`, the general-purpose invoice-creation path): the two are not the same event, and a consumer of one must not assume it also receives the other.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "order_id", "invoice_id", "invoice_number", "total_minor"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "order_id": { "type": "string", "format": "uuid" },
+    "invoice_id": { "type": "string", "format": "uuid" },
+    "invoice_number": { "type": "string", "minLength": 1 },
+    "total_minor": { "type": "integer", "minimum": 1 }
+  }
+}

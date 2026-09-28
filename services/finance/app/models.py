@@ -192,6 +192,14 @@ class Invoice(Base, TenantBase):
     corrects_invoice_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("finance.invoices.id", ondelete="RESTRICT")
     )
+    #: The order this invoice was raised for, when `operations`' order engine asked for it
+    #: (Fulfilment ADR-0024 §1/§4) — null for a manually raised invoice. A plain indexed UUID,
+    #: never a cross-schema FK (ADR-0000 §10): `operations.orders` lives in a different schema, so
+    #: this is validated in application code, not enforced by Postgres. `uq_invoices_org_order_id`
+    #: below is the actual guarantee — one `invoice` document per order — and is scoped to
+    #: `document_type = 'invoice'` precisely so a credit note correcting that invoice may name the
+    #: same order without colliding with the index protecting the original document.
+    order_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
 
     lines: Mapped[list[InvoiceLine]] = relationship(
         back_populates="invoice",
@@ -206,6 +214,17 @@ class Invoice(Base, TenantBase):
         Index("ix_invoices_org_issued", "organization_id", "issued_date"),
         # The filing queue's access path: "which of this org's documents still need an IRN".
         Index("ix_invoices_org_supply_type", "organization_id", "supply_type"),
+        # One `invoice` per order. A `credit_note` referencing the same order is deliberately
+        # outside this index's predicate — see `order_id`'s own comment above.
+        Index(
+            "uq_invoices_org_order_id",
+            "organization_id",
+            "order_id",
+            unique=True,
+            postgresql_where=text(
+                "order_id IS NOT NULL AND document_type = 'invoice' AND deleted_at IS NULL"
+            ),
+        ),
     )
 
 

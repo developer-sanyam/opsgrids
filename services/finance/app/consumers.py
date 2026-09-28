@@ -48,6 +48,12 @@ The handler never raises for a business situation. A missing invoice, a document
 IRN, one already filed — all are outcomes, logged. Raising would nack the message, and the second
 nack dead-letters it; a dead-lettered event in a compliance path is an incident, so it is reserved
 for the things that genuinely are one (the database is gone, the process is misconfigured).
+
+A second handler, below, answers `operations`' order engine the same way: Fulfilment ADR-0024
+§1/§4 puts every financial document in finance, and `invoice_requested_from_order` is where an
+order becomes one — recomputing the tax on the price snapshot it was handed and refusing, never
+raising, on a mismatch. It is held to the identical four properties, restated at its own
+docstring rather than assumed from this one.
 """
 
 from __future__ import annotations
@@ -226,6 +232,124 @@ async def file_requested_invoice(envelope: dict[str, Any]) -> None:
 
 
 consumer.on(services.EVT_INVOICE_FILING_REQUESTED)(file_requested_invoice)
+
+
+#: `operations` originates this — bare string, named locally rather than imported, for the same
+#: reason `payment.app.consumers.EVT_INVOICE_FINALIZED` is: `import app` is ambiguous across
+#: services, so one process may only ever hold one service's `app`, and this process is finance's.
+#: Fulfilment ADR-0024 §1/§4: operations owns the order and asks for its invoice with a price
+#: snapshot; this consumer is the "finance recomputes the tax, refuses a mismatch" half of that.
+EVT_INVOICE_REQUESTED = "operations.orders.order.invoice_requested"
+
+
+async def invoice_requested_from_order(envelope: dict[str, Any]) -> None:
+    """Raise, or refuse, the invoice one order asked for (ADR-0024 §1/§4).
+
+    Bound to `operations.orders.order.invoice_requested`. The four properties
+    `file_requested_invoice` above states are held here too:
+
+    * **The GUC is set per message**, from the envelope's own `organization_id` — never the
+      payload's, for the identical reason `file_requested_invoice` gives: the envelope's column is
+      one its producer's row-level security enforced, the payload is JSON this consumer cannot
+      prove nothing altered in transit. The mismatch guard below is copied from that handler
+      rather than re-derived.
+    * **The handler is idempotent at the event id** (`already_processed`/`mark_processed`, one
+      transaction).
+    * **And at the domain**, twice over: `services.evaluate_order_invoice_request` checks
+      `selectors.invoice_exists_for_order` before writing, and `uq_invoices_org_order_id` catches
+      the race that check cannot see — both collapse to the same benign `duplicate` outcome, never
+      a second invoice and never a raised `IntegrityError`.
+    * **Failure is bounded and it surfaces.** Nothing on the business path raises: an unknown
+      customer, a tax mismatch, an invalid rate — every one of them is
+      `services.evaluate_order_invoice_request` staging `EVT_ORDER_INVOICE_REQUEST_REJECTED` on
+      the outbox and returning, not an exception. Only a genuine defect (the database is gone, a
+      constraint fired that was not `uq_invoices_org_order_id`) reaches the broker's own
+      retry-then-dead-letter.
+    """
+    event_id = uuid.UUID(envelope["event_id"])
+    payload = envelope["payload"]
+    envelope_organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload_organization_id = uuid.UUID(payload["organization_id"])
+
+    if payload_organization_id != envelope_organization_id:
+        async with _session_scope(envelope_organization_id) as session:
+            if await already_processed(session, ProcessedEvent, event_id):
+                log.info("finance.order_invoice.duplicate", event_id=str(event_id))
+                return
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+        log.error(
+            "finance.order_invoice.organization_mismatch",
+            event_id=str(event_id),
+            envelope_organization_id=str(envelope_organization_id),
+            payload_organization_id=str(payload_organization_id),
+        )
+        return
+
+    organization_id = envelope_organization_id
+    order_id = uuid.UUID(payload["order_id"])
+    lines = [
+        services.OrderInvoiceLineIn(
+            description=str(line.get("description") or line.get("sku") or ""),
+            quantity=float(line["quantity"]),
+            unit_price_minor=int(line["unit_price_minor"]),
+            line_amount_minor=int(line["line_amount_minor"]),
+            tax_rate_pct=line.get("tax_rate_pct"),
+        )
+        for line in payload["lines"]
+    ]
+
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("finance.order_invoice.duplicate", event_id=str(event_id))
+            return
+
+        outcome = await services.evaluate_order_invoice_request(
+            session,
+            services.service_ctx(organization_id),
+            order_id=order_id,
+            order_number=str(payload["order_number"]),
+            customer_id=uuid.UUID(payload["customer_id"]),
+            currency=payload["currency"],
+            lines=lines,
+            # Not part of the payload shape the spec that opened this slice proposed — added
+            # because `domain.split_gst` cannot recompute a tax amount with no rate to apply. See
+            # this slice's own report for the reasoning; `operations`' F4 slice must send it.
+            tax_rate_pct=payload.get("tax_rate_pct", 0),
+            expected_subtotal_minor=int(payload["expected_subtotal_minor"]),
+            expected_tax_minor=int(payload["expected_tax_minor"]),
+            expected_total_minor=int(payload["expected_total_minor"]),
+            place_of_supply=payload.get("place_of_supply"),
+            supply_type=payload.get("supply_type") or "b2b",
+            reverse_charge=bool(payload.get("reverse_charge", False)),
+        )
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    if outcome.outcome == "duplicate":
+        log.info(
+            "finance.order_invoice.already_issued",
+            event_id=str(event_id),
+            organization_id=str(organization_id),
+            order_id=str(order_id),
+        )
+    elif outcome.outcome == "rejected":
+        log.warning(
+            "finance.order_invoice.rejected",
+            event_id=str(event_id),
+            organization_id=str(organization_id),
+            order_id=str(order_id),
+            reason=outcome.reason,
+        )
+    else:
+        log.info(
+            "finance.order_invoice.issued",
+            event_id=str(event_id),
+            organization_id=str(organization_id),
+            order_id=str(order_id),
+            invoice_id=str(outcome.invoice.id) if outcome.invoice is not None else None,
+        )
+
+
+consumer.on(EVT_INVOICE_REQUESTED)(invoice_requested_from_order)
 
 
 async def main() -> None:
