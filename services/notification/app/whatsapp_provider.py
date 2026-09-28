@@ -78,7 +78,10 @@ async def verify_ownership(
         if number_response.status_code != 200:
             log.warning("whatsapp_provider.number_unverified", status=number_response.status_code)
             raise WhatsAppOwnershipError(
-                "this access token could not read that phone number from Meta"
+                _with_reason(
+                    "this access token could not read that phone number from Meta",
+                    number_response,
+                )
             )
         number_body = _json_object(number_response)
         if number_body is None or str(number_body.get("id") or "") != str(phone_number_id):
@@ -98,7 +101,10 @@ async def verify_ownership(
         if waba_response.status_code != 200:
             log.warning("whatsapp_provider.waba_unverified", status=waba_response.status_code)
             raise WhatsAppOwnershipError(
-                "this access token could not list that WhatsApp Business Account's numbers"
+                _with_reason(
+                    "this access token could not list that WhatsApp Business Account's numbers",
+                    waba_response,
+                )
             )
         waba_body = _json_object(waba_response)
         numbers = (waba_body or {}).get("data")
@@ -113,6 +119,26 @@ async def verify_ownership(
     finally:
         if owns_client:
             await client.aclose()
+
+
+def _with_reason(sentence: str, response: httpx.Response) -> str:
+    """`sentence`, plus Meta's own reason in parentheses when it gave one.
+
+    Every branch above used to raise the same fixed sentence whatever Meta's actual answer was —
+    a wrong WABA id, an expired token and a token missing `whatsapp_business_management` all read
+    identically, so the person connecting an account had no way to tell which to fix.
+    `error_user_msg` is the one field Meta itself documents as safe to show a person (as opposed
+    to `message`, which is for a developer reading logs), so this is the same trust boundary
+    `w2_graph._error_from`
+    already draws for template and send errors — never `message`, `type` or anything else in the
+    body, and never the response body itself if it is not the shape expected.
+    """
+    reason = _json_object(response)
+    error = (reason or {}).get("error")
+    detail = error.get("error_user_msg") if isinstance(error, dict) else None
+    if not isinstance(detail, str) or detail.strip() == "":
+        return sentence
+    return f"{sentence} ({detail.strip()[:300]})"
 
 
 def _json_object(response: httpx.Response) -> dict[str, object] | None:
