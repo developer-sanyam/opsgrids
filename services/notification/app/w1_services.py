@@ -18,7 +18,7 @@ import secrets
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import httpx
@@ -70,6 +70,14 @@ STEPS: Final = (
     ("templates", "Syncing message templates"),
     ("verify", "Testing the connection"),
 )
+
+#: Meta allows ten `register` calls per number in 72 hours (error 133016) and blocks the number
+#: for the rest of the window past that. Stop two short of it. Shared by Embedded Signup's own
+#: `register` step (`w1_setup._step_register`, via `reserve_registration_pin` below) and a manual
+#: connection's registration (`register_number_if_needed`) -- one number, one attempt count,
+#: whichever path is registering it.
+REGISTER_ATTEMPT_CAP: Final = 8
+REGISTER_WINDOW: Final = timedelta(hours=72)
 
 
 def problem(cls: type[ProblemError], detail: str, code: str) -> ProblemError:
@@ -455,6 +463,58 @@ def numbers_stale(rows: list[WhatsAppNumber], now: datetime | None = None) -> bo
     return any(r.refreshed_at is None or now - r.refreshed_at > w1_domain.NUMBERS_TTL for r in rows)
 
 
+async def reserve_registration_pin(
+    session: AsyncSession, cfg: Settings, organization_id: uuid.UUID, phone_number_id: str
+) -> str:
+    """Commit, in the caller's own transaction, the fact that a `register` call is about to be
+    made, and return the PIN to make it with (never logged).
+
+    Shared by Embedded Signup's own `register` step (`w1_setup._step_register`, which wraps this
+    in a transaction of its own — see that call site's comment for why) and a manual connection's
+    registration (`register_number_if_needed`). Requires a cached `WhatsAppNumber` row for
+    `phone_number_id` to rate-limit and seal a PIN against; the caller creates or refreshes one
+    first (`apply_numbers`) when the number might not be cached yet.
+
+    Rate-limited to `REGISTER_ATTEMPT_CAP` attempts per `REGISTER_WINDOW` (Meta allows ten
+    `register` calls per number per 72 hours, error 133016). The PIN is generated once, sealed,
+    and reused by every later attempt on this number — Meta needs the exact PIN a number was last
+    registered with, so a regenerated PIN would make a *correct* retry look like a PIN mismatch.
+
+    Raises `ConflictProblem` (`errors[0].code` `register_failed` when there is no cached row for
+    this number, `register_rate_limited` past the cap) rather than returning — the same shape
+    every other refusal in this module raises, so a caller outside the step-runner (a request)
+    gets an ordinary problem+json response, and `w1_setup._run_step`'s generic `ProblemError`
+    handling turns it into the matching `StepFailed` for a caller inside it.
+    """
+    row = await w1_selectors.number_by_phone_id(
+        session, organization_id, phone_number_id, for_update=True
+    )
+    if row is None:
+        raise problem(
+            ConflictProblem, "That phone number is not on the account.", "register_failed"
+        )
+    now = datetime.now(UTC)
+    last = row.registration_attempted_at
+    if last is None or now - last > REGISTER_WINDOW:
+        row.registration_attempts = 0
+    if row.registration_attempts >= REGISTER_ATTEMPT_CAP:
+        raise problem(
+            ConflictProblem,
+            "This number has been registered too many times in the last 72 hours. Wait "
+            "before connecting again.",
+            "register_rate_limited",
+        )
+    if row.registration_pin_sealed:
+        pin = pii.open_sealed(row.registration_pin_sealed, settings=cfg)
+    else:
+        pin = f"{secrets.randbelow(10**6):06d}"
+        row.registration_pin_sealed, _ = pii.seal(pin, kind="generic", settings=cfg)
+    row.registration_attempts += 1
+    row.registration_attempted_at = now
+    await session.flush()
+    return pin
+
+
 # --------------------------------------------------------------------- default number
 
 
@@ -745,6 +805,71 @@ async def subscribe_waba(
         log.warning("w1.subscribe_failed", status=exc.status, code=exc.code)
         return False
     return True
+
+
+async def register_number_if_needed(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    waba_id: str,
+    phone_number_id: str,
+    access_token: str,
+    *,
+    request: Request | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> None:
+    """Register a manually connected number for the Cloud API, unless Meta already reports it
+    `CONNECTED` — the same call and idempotent check Embedded Signup's own `register` step makes
+    (`w1_setup._step_register`), which a manually pasted token
+    (`services.create_whatsapp_connection`, `replace_whatsapp_connection`) never goes through
+    otherwise. A number Meta has not registered for the Cloud API cannot send or receive a single
+    message, so without this a manual connection could show `connected` in the UI while every
+    send silently failed.
+
+    First reads the number back from Meta and folds it into the numbers cache
+    (`apply_numbers`, one item, `mark_missing=False` so this never disconnects any other number
+    this organization has cached — the same partial-list call `w1_setup._step_verify` already
+    makes), because `reserve_registration_pin` needs a cached `WhatsAppNumber` row to rate-limit
+    and seal a PIN against, and a manual connection has never had one written before.
+
+    Best-effort, like `subscribe_waba` right above it and for the same reason: a token that can
+    read the number (already proved by `whatsapp_provider.verify_ownership`) but is refused by
+    `register` — a stale PIN, Meta's ten-per-72-hours limit, a transient failure — is not a reason
+    to refuse the whole connection. An admin can retry registration once whatever Meta is
+    complaining about is fixed; refusing to save credentials Meta itself already accepted as valid
+    would leave the organization with nothing connected at all. Never raises: a refusal is logged
+    (the error code only, never the PIN) rather than surfaced. `request` is accepted but unused
+    today (kept for a future audit row, the same call shape as this module's other write helpers)
+    — nothing here writes one, since a best-effort background call that may or may not have
+    happened is not itself an auditable action; `create_whatsapp_connection` and
+    `replace_whatsapp_connection` already audit the connection it was made from.
+    """
+    cfg = settings()
+    graph = MetaGraph(cfg, transport=transport)
+    try:
+        number = await graph.get_number(phone_number_id, access_token)
+    except GraphError as exc:
+        log.warning("whatsapp_provider.manual_register_failed", status=exc.status, code=exc.code)
+        return
+    await apply_numbers(
+        session,
+        organization_id,
+        waba_id=waba_id,
+        remote=[number],
+        default_phone_number_id=phone_number_id,
+        mark_missing=False,
+    )
+    if w1_domain.status_from_meta(number.get("status")) == "connected":
+        return
+    try:
+        pin = await reserve_registration_pin(session, cfg, organization_id, phone_number_id)
+        await graph.register_number(phone_number_id, access_token, pin)
+    except GraphError as exc:
+        log.warning("whatsapp_provider.manual_register_failed", status=exc.status, code=exc.code)
+    except ProblemError as exc:
+        # `reserve_registration_pin`'s own refusal (rate-limited, or -- should the cache write
+        # above somehow not have stuck -- no cached row): same best-effort rule as a Graph
+        # refusal, so this never blocks the connection either.
+        log.warning("whatsapp_provider.manual_register_failed", error_type=type(exc).__name__)
 
 
 async def unsubscribe_waba(
@@ -1095,11 +1220,7 @@ async def apply_meta_data_deletion(
     # Same tenant transaction as the rest of this effect: a run still `running` that copies
     # `meta_user_id_hint` onto the connection after this commits (`w1_setup._step_number`) would
     # otherwise re-arm the identity link this same request just asked to have forgotten.
-    await session.execute(
-        sa_update(SetupRun)
-        .where(SetupRun.organization_id == organization_id, SetupRun.meta_user_id_hint == user_id)
-        .values(meta_user_id_hint=None)
-    )
+    await clear_stale_meta_user_id_hint(session, organization_id, user_id)
     record_audit(
         session,
         AuditLog,
@@ -1112,6 +1233,28 @@ async def apply_meta_data_deletion(
         request=request,
     )
     return True
+
+
+async def clear_stale_meta_user_id_hint(
+    session: AsyncSession, organization_id: uuid.UUID, user_id: str
+) -> None:
+    """Clears `w1_setup_runs.meta_user_id_hint` for this organization's runs that still carry
+    this Facebook user id — independent of whether a `ProviderAccount` still matches it.
+
+    Called from two places: from `apply_meta_data_deletion` above, for the organization whose
+    account the ordinary lookup found; and directly from the data-deletion webhook route
+    (`api/webhooks.py`) for an organization whose account was already cleared by an earlier
+    deauthorize callback (`apply_meta_deauthorize`, which nulls `meta_user_id` but does not touch
+    `meta_user_id_hint`) — the race `w1_selectors.setup_run_organizations_for_meta_user_id_hint`'s
+    docstring explains. Idempotent (a second call finds nothing left to clear); no audit row,
+    since this alone deletes nothing a person asked to have deleted, only a cached identity hint on
+    an in-progress or abandoned setup attempt.
+    """
+    await session.execute(
+        sa_update(SetupRun)
+        .where(SetupRun.organization_id == organization_id, SetupRun.meta_user_id_hint == user_id)
+        .values(meta_user_id_hint=None)
+    )
 
 
 # --------------------------------------------------------------------- data-deletion confirmation

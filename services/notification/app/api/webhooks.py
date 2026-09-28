@@ -69,7 +69,15 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import meta_signed_request, selectors, services, w1_services, w2_webhooks, webhooks
+from app import (
+    meta_signed_request,
+    selectors,
+    services,
+    w1_selectors,
+    w1_services,
+    w2_webhooks,
+    webhooks,
+)
 from app.config import meta_app_secret, settings
 from app.models import ProcessedEvent
 from platform_core.db import get_directory_session, session_scope
@@ -600,6 +608,12 @@ async def data_deletion(request: Request, directory: DirectorySessionDep) -> JSO
     own WhatsApp business records — message history, contacts, templates, conversations — are
     never touched by this callback. See that function's docstring and `docs/whatsapp/webhooks.md`.
 
+    **Also clears any orphaned `meta_user_id_hint`**, for an organization whose `ProviderAccount`
+    no longer matches this Facebook user id because an earlier deauthorize callback already nulled
+    it (`w1_selectors.setup_run_organizations_for_meta_user_id_hint`'s docstring explains the
+    ordering). Without this, a data-deletion request delivered after its own deauthorize would
+    find no account to key off and silently leave the hint in place.
+
     **The confirmation is minted only after every match has been applied**, not before: minting it
     first (the previous shape) meant a permanent failure resolving or applying a match still ended
     in a row saying "processed" — the one thing this endpoint's response is supposed to mean. A
@@ -611,8 +625,10 @@ async def data_deletion(request: Request, directory: DirectorySessionDep) -> JSO
 
     accounts = await selectors.accounts_for_meta_user_id(directory, payload.user_id)
     had_transient_failure = False
+    matched_organization_ids: set[uuid.UUID] = set()
     for account in accounts:
         organization_id = account.organization_id
+        matched_organization_ids.add(organization_id)
         try:
             async with session_scope(organization_id=organization_id) as session:
                 await w1_services.apply_meta_data_deletion(
@@ -629,7 +645,31 @@ async def data_deletion(request: Request, directory: DirectorySessionDep) -> JSO
                 error_type=type(exc).__name__,
             )
             had_transient_failure = True
-    log.info("webhook.data_deletion.processed", matches=len(accounts))
+
+    hint_organization_ids = await w1_selectors.setup_run_organizations_for_meta_user_id_hint(
+        directory, payload.user_id
+    )
+    orphaned_organization_ids = [
+        oid for oid in hint_organization_ids if oid not in matched_organization_ids
+    ]
+    for organization_id in orphaned_organization_ids:
+        try:
+            async with session_scope(organization_id=organization_id) as session:
+                await w1_services.clear_stale_meta_user_id_hint(
+                    session, organization_id, payload.user_id
+                )
+        except Exception as exc:
+            log.error(
+                "webhook.data_deletion.hint_clear_failed",
+                organization_id=str(organization_id),
+                error_type=type(exc).__name__,
+            )
+            had_transient_failure = True
+    log.info(
+        "webhook.data_deletion.processed",
+        matches=len(accounts),
+        orphaned_hints=len(orphaned_organization_ids),
+    )
     if had_transient_failure:
         return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={})
 

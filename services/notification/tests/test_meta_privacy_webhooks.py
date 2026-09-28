@@ -347,6 +347,57 @@ async def test_data_deletion_also_clears_a_matching_setup_run_hint_in_the_same_t
         assert run.meta_user_id_hint is None
 
 
+async def test_data_deletion_still_clears_the_hint_when_deauthorize_already_nulled_the_account(
+    client, session, org_id
+) -> None:
+    """The ordering that orphaned the hint before this fix: deauthorize runs first and nulls
+    `ProviderAccount.meta_user_id`, so by the time data-deletion arrives,
+    `accounts_for_meta_user_id` finds no account here at all -- `apply_meta_data_deletion` is
+    never reached for this organization, and its own hint-clearing never runs. The route's direct
+    `w1_selectors.setup_run_organizations_for_meta_user_id_hint` lookup is what still finds and
+    clears it. Still returns a genuine confirmation, the same as any other data-deletion request."""
+    await _connected_account(session, org_id)
+    async with session.begin():
+        session.add(
+            SetupRun(
+                organization_id=org_id,
+                status="running",
+                steps=[],
+                code_hash="ci-only-hash",
+                meta_user_id_hint=USER_ID,
+            )
+        )
+
+    deauth_value = _signed_request({"user_id": USER_ID, "issued_at": 1750263773})
+    deauth_response = await client.post(
+        "/webhooks/whatsapp/deauthorize", content=_form(deauth_value), headers=_headers()
+    )
+    assert deauth_response.status_code == 200
+
+    async with session.begin():
+        account = (await session.execute(select(ProviderAccount))).scalars().one()
+        assert account.meta_user_id is None  # the ordering this test depends on
+        run = (await session.execute(select(SetupRun))).scalars().one()
+        assert run.meta_user_id_hint == USER_ID  # not touched by deauthorize -- still orphaned
+
+    deletion_value = _signed_request({"user_id": USER_ID, "issued_at": 1750263774})
+    deletion_response = await client.post(
+        "/webhooks/whatsapp/data-deletion", content=_form(deletion_value), headers=_headers()
+    )
+    assert deletion_response.status_code == 200
+    body = deletion_response.json()
+    assert len(body["confirmation_code"]) == 32
+
+    # `session`'s sessionmaker is `expire_on_commit=False` (see conftest.py), and `run` above is
+    # already in this session's identity map from the read right after deauthorize -- without
+    # this, the next `select(SetupRun)` would hand back that same cached object with its stale
+    # in-memory value, rather than the row the app's own, separate connection just updated.
+    session.expire_all()
+    async with session.begin():
+        run = (await session.execute(select(SetupRun))).scalars().one()
+        assert run.meta_user_id_hint is None
+
+
 async def test_data_deletion_with_no_match_still_returns_a_confirmation(
     client, session, org_id
 ) -> None:
