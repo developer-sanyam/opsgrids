@@ -26,6 +26,13 @@ before trusting an `owner_id`. Both are restricted to `service_caller == "lead"`
 (`_require_org_claim`) — a valid signature proves *which service* is calling, never *which
 route it was meant for* or *which tenant*, and both of those are separate checks here.
 
+A fourth: `GET .../contacts/{id}`, the identity-bridge slice's read for finance. Finance's own
+`Customer` has no link to CRM at all — an auto-triggered invoice request has nowhere to send a
+`customer_id` until it can resolve the CRM contact `operations.Order.customer_id` already names
+into a directory identity it can key its own row on. Same two checks as the lead-only pair
+(`_require_caller(request, "finance")`, `_require_org_claim`), because the answer — a contact's
+name, email and company — is finance's business to ask for and nobody else's by this route.
+
 Mounted at the root and excluded from the OpenAPI document: not public API, and it must not
 appear as though it were.
 """
@@ -43,6 +50,7 @@ from app.config import settings
 from app.schemas import (
     ContactResolveIn,
     ContactResolveOut,
+    ContactSummaryOut,
     LeadConversionIn,
     LeadConversionOut,
     MessagingTargetOut,
@@ -231,6 +239,52 @@ async def resolve_contact(
     # phone number, so a log full of them is a log that correlates customers across lines.
     log.info("customer.resolve.done", matched=contact is not None)
     return ContactResolveOut(contact_id=str(contact.id) if contact else None)
+
+
+@router.get(
+    "/organizations/{organization_id}/contacts/{contact_id}",
+    response_model=ContactSummaryOut,
+    status_code=status.HTTP_200_OK,
+    summary="A contact's directory identity, for finance to resolve a billed party",
+)
+async def get_contact_summary(
+    organization_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+) -> ContactSummaryOut:
+    """The read `ensure_customer_for_crm_contact` (finance) makes on a cache miss — finance
+    keeps no phone, so this never touches the sealed column `messaging_target` opens, and
+    reads no PII: `full_name` and `email` are plain columns, unaudited for the same reason
+    `resolve_contact`'s blind-index match is.
+
+    404 (org-scoped, standard shape) when the contact does not exist, belongs to another
+    organization, or has been soft-deleted — confirming an id exists elsewhere is itself a
+    disclosure, the same rule `messaging_target` and `resolve_contact` already hold to.
+    `Contact.company_id` is NOT NULL, so there is no "contact with no company" case to
+    special-case: a live contact always resolves to a live company.
+
+    Restricted to finance (`_require_caller`) and to a token whose `org` claim names this
+    path's organization (`_require_org_claim`) — the same pair `leads:convert` and
+    `owners:validate` hold lead-service to.
+    """
+    _require_caller(request, "finance")
+    _require_org_claim(request, organization_id)
+
+    async with session.begin():
+        await _bind(session, organization_id, request)
+        found = await selectors.get_contact_with_company(session, organization_id, contact_id)
+        if found is None:
+            raise NotFoundProblem("That contact is not part of this organization")
+        contact, company = found
+
+    return ContactSummaryOut(
+        contact_id=str(contact.id),
+        full_name=contact.full_name,
+        email=contact.email,
+        company_id=str(company.id),
+        company_name=company.name,
+    )
 
 
 @router.post(

@@ -33,12 +33,13 @@ from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+import httpx
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import domain, selectors
+from app import clients, domain, selectors
 from app.config import settings
 from app.eway.base import (
     EwayAck,
@@ -107,6 +108,7 @@ from app.schemas import (
 )
 from platform_core.audit import record_audit
 from platform_core.auth import Principal, Scope, ScopeContext
+from platform_core.db import assert_tenant, set_tenant
 from platform_core.errors import (
     BusinessRuleProblem,
     ConflictProblem,
@@ -114,6 +116,9 @@ from platform_core.errors import (
     UpstreamUnavailableProblem,
 )
 from platform_core.events import publish_event, schedule_event
+from platform_core.logging import get_logger
+
+log = get_logger("finance.services")
 
 # Event names. `finance.*` because these are the product's own, not the platform's; the second
 # segment is the module, matching the permission grammar (ADR-0000 §5).
@@ -196,6 +201,41 @@ def service_ctx(organization_id: uuid.UUID) -> ScopeContext:
         entitlements=["finance"],
     )
     return ScopeContext(principal=principal, scope=Scope.ORG, permission=FILING_PERMISSION)
+
+
+#: The permission `ensure_customer_for_crm_contact` runs under, for the same reason
+#: `FILING_PERMISSION` exists on `service_ctx`: to give an automated write a `ScopeContext`, not
+#: to gate anything — `require_service_token` plus the internal route's own caller allow-list are
+#: what already gated the call.
+_CRM_BRIDGE_PERMISSION = "finance.billing.customer.write"
+
+
+def crm_bridge_ctx(organization_id: uuid.UUID) -> ScopeContext:
+    """The scope context `ensure_customer_for_crm_contact` runs under.
+
+    ORG scope because there is no caller-owned row to narrow a freshly-bridged customer to —
+    finance is an ORG-level product throughout (`app/scope.py`). `sub` is the same stable,
+    all-zero UUID `service_ctx` uses: the caller is a service (operations, eventually), not a
+    person, and every audit row this bridge writes should say so rather than inventing an actor.
+    """
+    principal = Principal(
+        sub=uuid.UUID(int=0),
+        organization_id=organization_id,
+        membership_id=None,
+        perms=[f"{_CRM_BRIDGE_PERMISSION}:ORG"],
+        entitlements=["finance"],
+    )
+    return ScopeContext(principal=principal, scope=Scope.ORG, permission=_CRM_BRIDGE_PERMISSION)
+
+
+async def _bind_tenant(session: AsyncSession, organization_id: uuid.UUID) -> None:
+    """Tenant-bind a transaction this function opened itself — `ensure_customer_for_crm_contact`'s
+    own analogue of `app/api/internal.py`'s `_bind`, needed here rather than there because that
+    function owns its own short transactions (D3: the network call between them must run with
+    none open) instead of running inside one a route already opened and bound."""
+    await set_tenant(session, organization_id)
+    if not settings().is_production:
+        await assert_tenant(session, organization_id)
 
 
 def _actor(ctx: ScopeContext) -> dict[str, Any]:
@@ -458,6 +498,146 @@ async def archive_customer(
         },
         actor=_actor(ctx),
     )
+
+
+# --------------------------------------------------------------------- identity bridge
+
+
+async def ensure_customer_for_crm_contact(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    crm_contact_id: uuid.UUID,
+    *,
+    acting_as: str | None = None,
+    client: httpx.AsyncClient | None = None,
+    request: Request | None = None,
+) -> Customer:
+    """Resolve a CRM contact (`services/customer`) into this organization's own billed party —
+    creating one the first time, reusing it on every later resolve. The fix for an
+    auto-triggered invoice request that has a CRM contact id (`operations.Order.customer_id`)
+    and nowhere to send it: finance's own `Customer` book was disconnected from the CRM until
+    this bridge existed.
+
+    Same discipline `services/customer`'s `ensure_company_and_contact_for_lead` holds itself to:
+    look up by the caller's own external id (`crm_contact_id`) first, so a replay never creates
+    a second row. Unlike that function, this one makes a network call, so it cannot run inside
+    one transaction a caller already holds open (D3) — it owns its own three acts:
+
+    (a) **claim** — a short transaction: an existing bridged customer, if one already exists.
+        Found means done, returned immediately — **no network call on the replay path at all**.
+    (b) **call** — no transaction, no lock held: ask customer-service who this contact is
+        (`clients.fetch_crm_contact`). `clients.CrmContactUnavailable` (unreachable, timeout, a
+        5xx) and `clients.CrmContactNotFound` (unknown or cross-tenant id) are let through as
+        clean, typed, retryable-or-not failures — **never a placeholder customer**.
+    (c) **record** — a second short transaction: re-check for a concurrent creator under the
+        same lookup (another request racing this one may have already won — the common case,
+        never reaching the database's own guard), then insert. The insert itself runs in a
+        SAVEPOINT: the re-check only narrows the race to genuinely simultaneous creators, which
+        is caught as an `IntegrityError` on `uq_customers_org_crm_contact` and answered by
+        re-reading the row the winner just committed — the exact shape
+        `evaluate_order_invoice_request` already holds `uq_invoices_org_order_id` to.
+
+    `acting_as` names the calling service in the audit row (`resolve_messaging_phone`'s own
+    shape) — the internal route passes the caller's verified token identity; a direct call (a
+    test, or a future in-process caller) leaves it `None`, which degrades to no `acting_as` at
+    all rather than inventing one.
+    """
+    async with session.begin():
+        await _bind_tenant(session, ctx.organization_id)
+        existing = await selectors.get_customer_by_crm_contact(
+            session, ctx.organization_id, crm_contact_id
+        )
+    if existing is not None:
+        return existing
+
+    try:
+        summary = await clients.fetch_crm_contact(
+            settings(), ctx.organization_id, crm_contact_id, client=client
+        )
+    except clients.CrmContactNotFound as exc:
+        raise NotFoundProblem("That CRM contact is not part of this organization") from exc
+    except clients.CrmContactUnavailable as exc:
+        raise UpstreamUnavailableProblem(
+            "The CRM is temporarily unable to resolve this contact. Try again shortly."
+        ) from exc
+
+    if summary.contact_id != crm_contact_id:
+        # The route is already scoped to `crm_contact_id` (it's in the request path), so this
+        # can only be a malformed or mismatched upstream response — never trust the echoed id
+        # over the one this function was actually asked to resolve; keying the insert on
+        # `summary.contact_id` instead would let a bad reply bridge the wrong contact.
+        log.error("finance.services.crm_contact_id_mismatch")
+        raise UpstreamUnavailableProblem(
+            "The CRM is temporarily unable to resolve this contact. Try again shortly."
+        )
+
+    async with session.begin():
+        await _bind_tenant(session, ctx.organization_id)
+        existing = await selectors.get_customer_by_crm_contact(
+            session, ctx.organization_id, crm_contact_id
+        )
+        if existing is not None:
+            return existing
+
+        customer = Customer(
+            organization_id=ctx.organization_id,
+            created_by=str(ctx.principal.sub),
+            name=summary.company_name or summary.full_name,
+            contact_name=summary.full_name,
+            email=summary.email,
+            crm_contact_id=crm_contact_id,
+        )
+        try:
+            # A SAVEPOINT, not a bare `session.add` + `flush()`: see `uq_invoices_org_order_id`'s
+            # own migration for why — the re-check above already refused the ordinary duplicate;
+            # this is only for the race it cannot see.
+            async with session.begin_nested():
+                session.add(customer)
+                await session.flush()
+        except IntegrityError as exc:
+            if _integrity_error_constraint(exc) != "uq_customers_org_crm_contact":
+                raise
+            winner = await selectors.get_customer_by_crm_contact(
+                session, ctx.organization_id, crm_contact_id
+            )
+            if winner is None:
+                # The constraint that fired names this index, but the row it protects is gone —
+                # not a state this function's own logic can produce; surfaced rather than papered
+                # over with a customer this transaction never actually wrote.
+                raise
+            return winner
+
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=ctx.organization_id,
+            actor_id=ctx.principal.sub,
+            acting_as=acting_as,
+            action="customer.created",
+            entity="customer",
+            entity_id=customer.id,
+            after={
+                "name": customer.name,
+                "crm_contact_id": str(customer.crm_contact_id),
+            },
+            request=request,
+        )
+        publish_event(
+            session,
+            OutboxEvent,
+            organization_id=ctx.organization_id,
+            event_type=EVT_CUSTOMER_CREATED,
+            aggregate_type="customer",
+            aggregate_id=customer.id,
+            payload={
+                "organization_id": str(ctx.organization_id),
+                "customer_id": str(customer.id),
+                "name": customer.name,
+                "crm_contact_id": str(customer.crm_contact_id),
+            },
+            actor=_actor(ctx),
+        )
+    return customer
 
 
 # --------------------------------------------------------------------- invoices

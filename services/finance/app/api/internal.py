@@ -19,6 +19,15 @@ principal's organization, so row-level security and every `WITH CHECK` apply to 
 Guarded by a short-lived service token addressed to this service by name (`require_service_token`).
 Mounted at the root and excluded from the OpenAPI document: not public API, and it must not appear
 as though it were.
+
+One route since is shaped differently on purpose: `customers:resolve-for-crm-contact`, the
+identity-bridge slice. `organization_id` travels in the **path**, not the body — the same shape
+`services/customer`'s `leads:convert` and `owners:validate` take — because this route is
+restricted to one named caller (`_require_caller`; operations, once a later slice wires it to
+call `services.ensure_customer_for_crm_contact`) and to a token whose `org` claim names that same
+path organization (`_require_org_claim`): a valid signature proves *which service* is calling,
+never *which route it was meant for* or *which tenant*, and both are separate checks here, unlike
+the compliance routes above which any service holding a token addressed to finance may call.
 """
 
 from __future__ import annotations
@@ -38,6 +47,8 @@ from app.irp.base import IrpClient
 from app.schemas import (
     CancelEwayIn,
     CancelFilingIn,
+    CrmContactResolveIn,
+    CrmContactResolveOut,
     EInvoiceFilingOut,
     EwayBillOut,
     FileInvoiceIn,
@@ -48,6 +59,7 @@ from app.schemas import (
 from platform_core.auth import require_service_token
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
+from platform_core.errors import ForbiddenProblem
 from platform_core.logging import get_logger
 
 log = get_logger("finance.internal")
@@ -77,6 +89,31 @@ async def _bind(session: AsyncSession, organization_id: uuid.UUID, request: Requ
     await set_tenant(session, organization_id)
     if not settings.is_production:
         await assert_tenant(session, organization_id)
+
+
+def _require_caller(request: Request, *expected: str) -> None:
+    """Restrict an internal route to a named allow-list of calling services, on top of the
+    valid-signature check `require_service_token` already did. Same reasoning, and the same
+    function shape, as `services/customer`'s own `api/internal.py`: a validly signed token from
+    a service this route was never meant to serve is not a forged token — it is a service using
+    a capability nobody meant to give it. `customers:resolve-for-crm-contact` in particular can
+    create a billed party from a bare CRM contact id, which is operations' business to ask for
+    on an order's behalf and nobody else's."""
+    caller = getattr(request.state, "service_caller", "unknown-service")
+    if caller not in expected:
+        raise ForbiddenProblem(f"{caller!r} may not call this endpoint")
+
+
+def _require_org_claim(request: Request, organization_id: uuid.UUID) -> None:
+    """The token's own `org` claim must name the organization in the path. The signature and
+    audience alone only prove *which service* minted the token, never *which organization* it
+    was minted for — a service holding one valid token could otherwise replay it against any
+    path it can construct. `_bind`'s `assert_tenant` catches a mismatch here too, but only
+    outside production; this check is the one that holds everywhere. Same shape as
+    `services/customer`'s own `_require_org_claim`."""
+    claims = getattr(request.state, "service_claims", None) or {}
+    if claims.get("org") != str(organization_id):
+        raise ForbiddenProblem("This token is not addressed to this organization")
 
 
 @router.post(
@@ -324,3 +361,51 @@ async def sync_ims(
         portal=client.name,
     )
     return result
+
+
+@router.post(
+    "/organizations/{organization_id}/customers:resolve-for-crm-contact",
+    response_model=CrmContactResolveOut,
+    status_code=status.HTTP_200_OK,
+    summary="Resolve (or create) the billed party for a CRM contact",
+)
+async def resolve_customer_for_crm_contact(
+    organization_id: uuid.UUID,
+    payload: CrmContactResolveIn,
+    session: SessionDep,
+    request: Request,
+) -> CrmContactResolveOut:
+    """The identity-bridge slice's write: ensure this organization has a `finance.Customer` for
+    a CRM contact (`services/customer`), creating one the first time and reusing it on every
+    later call for the same `crm_contact_id`.
+
+    Unlike every other route in this module, this handler does **not** wrap its work in
+    `session.begin()` itself: `services.ensure_customer_for_crm_contact` owns its own short
+    transactions, because a network call to customer-service sits between two of them (D3) and
+    must run with neither open. Tenant-binding happens inside that function instead, once per
+    transaction it opens (`services._bind_tenant`), rather than once here.
+
+    Restricted to operations (`_require_caller`) — the only service with a CRM contact id and
+    nowhere to send it, `operations.Order.customer_id` — and to a token whose `org` claim names
+    this path's organization (`_require_org_claim`), the same pair `leads:convert` and
+    `owners:validate` hold lead-service to on customer-service's own internal API.
+    """
+    _require_caller(request, "operations")
+    _require_org_claim(request, organization_id)
+
+    ctx = services.crm_bridge_ctx(organization_id)
+    customer = await services.ensure_customer_for_crm_contact(
+        session,
+        ctx,
+        payload.crm_contact_id,
+        acting_as=getattr(request.state, "service_caller", "unknown-service"),
+        request=request,
+    )
+
+    log.info(
+        "finance.identity_bridge.resolved",
+        organization_id=str(organization_id),
+        crm_contact_id=str(payload.crm_contact_id),
+        customer_id=str(customer.id),
+    )
+    return CrmContactResolveOut(customer_id=str(customer.id))

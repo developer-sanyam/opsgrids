@@ -1298,3 +1298,29 @@ class WithholdingSummaryOut(BaseModel):
     total_cgst_minor: int
     total_sgst_minor: int
     total_igst_minor: int
+
+
+# --------------------------------------------------------------------- identity bridge (internal)
+# Unlike the e-invoicing/e-Way/IMS internal routes above, `organization_id` travels in the
+# **path**, not the body: this route is restricted to one named caller (operations, eventually —
+# `_require_caller`) and to a token whose `org` claim names that same path organization
+# (`_require_org_claim`), the exact shape `services/customer`'s `leads:convert` and
+# `owners:validate` already take for the same reason.
+
+
+class CrmContactResolveIn(BaseModel):
+    """Ask for the billed party that corresponds to this CRM contact, creating one the first
+    time. `crm_contact_id` is `operations.Order.customer_id` — already a plain UUID into
+    `services/customer`, never this service's own `Customer.id`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    crm_contact_id: uuid.UUID
+
+
+class CrmContactResolveOut(BaseModel):
+    """Only the id — the caller already knows everything else about the contact it asked with,
+    and returning any billing detail here would make this route a read-around the permission-
+    guarded customer routes."""
+
+    customer_id: str
