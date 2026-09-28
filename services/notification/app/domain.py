@@ -183,6 +183,15 @@ SUBSCRIBABLE_EVENTS: Final[tuple[str, ...]] = (
     # operations
     "operations.inventory.item.created",
     "operations.inventory.warehouse.created",
+    # `operations.orders.order.held` is deliberately absent — an operator pausing a warehouse
+    # task is an internal operational state, not a commercial milestone a customer is told
+    # about mid-flow. Same call `app.orders.services.release_hold_order` already makes for the
+    # matching release (no outbox event at all, "resumes whatever commercial milestone the order
+    # was already at rather than reaching a new one") and the same shape `create_order`'s DRAFT
+    # uses ("a private working copy nothing outside operations needs to know about yet").
+    "operations.orders.order.accepted",
+    "operations.orders.order.cancelled",
+    "operations.orders.order.placed",
     "operations.procurement.purchase_order.raised",
     "operations.procurement.purchase_order.received",
     "operations.procurement.supplier.created",
