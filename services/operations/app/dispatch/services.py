@@ -3,9 +3,13 @@
 
 `dispatch_order` is the delivery/courier counterpart to `app.orders.services.hand_over_order`'s
 counter/walk-in path: same order-row-first locking, same `check_billing_gate`, same
-`complete_handover` two-transition write — only how the handover fact gets established differs
-(a shipment's own creation here, a pickup-code/payment attestation there). `transition_shipment`
-is the shipment's *own* lifecycle after that (`PICKUP_HANDOVER -> IN_TRANSIT -> DELIVERED`, or
+`attest_payment_if_confirmed`, same `complete_handover` two-transition write (which now also
+posts the stock-consuming `issue` move itself, security review M2) — only how the handover fact
+gets established differs (a shipment's own creation here, a pickup-code/payment attestation
+there), and this path additionally checks that every line was genuinely picked and, if packing
+was started, finished (`app.dispatch.selectors.unfulfilled_order_lines`, security review B1/M1) —
+a carrier-specific requirement the counter path has no equivalent of. `transition_shipment` is
+the shipment's *own* lifecycle after that (`PICKUP_HANDOVER -> IN_TRANSIT -> DELIVERED`, or
 `FAILED`/`RETURNED`) — never a second write to `orders.status`, which already reached `DELIVERED`
 the moment the shipment was created (ADR-0025 §1: everything past the order's own short
 commercial status lives on its own record).
@@ -13,7 +17,8 @@ commercial status lives on its own record).
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,11 +26,10 @@ from starlette.requests import Request
 
 from app import domain
 from app.dispatch import selectors
-from app.inventory import ledger
-from app.inventory.ledger import MoveLine
+from app.inventory.quantity import format_qty
 from app.models import AuditLog, Order, OutboxEvent, Shipment, ShipmentTransition
 from app.orders import selectors as order_selectors
-from app.orders.services import check_billing_gate, complete_handover
+from app.orders.services import attest_payment_if_confirmed, check_billing_gate, complete_handover
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem
@@ -84,31 +88,43 @@ async def dispatch_order(
     expected_version: int,
     carrier_name: str,
     tracking_reference: str | None,
+    payment_confirmed: bool = False,
     request: Request | None = None,
 ) -> Shipment:
     """The carrier handover (Fulfilment plan F5). `order` must already be locked by the caller
     (`app/api/routes.py`, the same `FOR UPDATE` shape `hand_over_order` needs).
 
-    Version and transition-validity are checked **first**, before any other work — the reservation
-    lookup, the dispatch `issue` move and the shipment row are all skipped on a stale version or a
+    Version and transition-validity are checked **first**, before any other work — the coverage
+    check, the billing gate and the shipment row are all skipped on a stale version or a
     non-`READY` order, the same fail-fast order `hand_over_order` uses. Then, in this one
     transaction:
 
-    1. `check_billing_gate(order)` — the *same* function the counter path calls, unchanged.
-    2. For each order line, finds the reservation currently holding its promise, wherever pick
-       and pack last transferred it (`app.dispatch.selectors.leaf_reservations_for_order`,
-       ADR-0024 §6), and posts one `issue` move that **draws** against every one of them
-       (`MoveLine.reservation_id`, never `transfer_reservation_id`) — the first point in the whole
-       flow a reservation is actually consumed, not merely relocated. A line whose leaf
-       reservation has nothing left open (a full short-pick) contributes no move line; an order
-       with nothing left to dispatch at all is refused before any row is written.
-    3. Creates the `Shipment` row, already at `PICKUP_HANDOVER` — the carrier has the goods now,
+    1. `attest_payment_if_confirmed` — the carrier-desk operator's own attestation that a
+       cash/prepaid order was paid, the exact counterpart to the counter path's own
+       `payment_confirmed` handling (security review M3: without this, a cash/prepaid order could
+       never pass the gate below on this path at all).
+    2. `check_billing_gate(order)` — the *same* function the counter path calls, unchanged.
+       **`require_pickup_code` is deliberately left exactly as it is here.** An org that opted
+       into requiring a pickup code has no carrier-side equivalent of one yet, so this path fails
+       closed rather than silently bypassing a condition it cannot currently satisfy — the same
+       fail-closed precedent F4's own security review already set (a gate a real product gap
+       cannot yet pass is correct to leave failing, not a bug to route around).
+    3. `app.dispatch.selectors.unfulfilled_order_lines` — every line must have been genuinely
+       picked, and, if packing was started for it, finished (security review B1/M1). A line never
+       picked at all (including one whose pick task was cancelled, M1) or one left with a genuine
+       partial-pack remainder (B1's split-pack finding) each refuse with a 409 naming the line and
+       the missing quantity, before any row is written — never a silent partial dispatch.
+    4. Creates the `Shipment` row, already at `PICKUP_HANDOVER` — the carrier has the goods now,
        the fact that satisfies the gate on this path the way a verified pickup code or an
        operator's payment attestation does on the counter's.
-    4. Writes `READY -> HANDED_OVER -> DELIVERED` (`app.orders.services.complete_handover`,
-       shared with the counter path so the two-transition write exists in exactly one place).
-    5. Emits `operations.dispatch.shipment.created`, and — when the order's own total crosses the
-       e-Way value threshold — `operations.dispatch.shipment.eway_requested`, fire-and-forget.
+    5. Writes `READY -> HANDED_OVER -> DELIVERED`, **and now also posts the stock-consuming
+       `issue` move** (`app.orders.services.complete_handover`, security review M2 — previously
+       only this function's own job, leaving every counter hand-over writing zero ledger activity;
+       now shared so the consuming move exists in exactly one place either path can reach).
+    6. Emits `operations.dispatch.shipment.created`, and — when the order's own tax-inclusive
+       total (an approximation, `app.domain.expected_gst_amount_minor` over the order's subtotal)
+       crosses the e-Way value threshold, and the order is priced in INR — emits
+       `operations.dispatch.shipment.eway_requested`, fire-and-forget.
     """
     if order.version != expected_version:
         raise ConflictProblem(
@@ -118,39 +134,34 @@ async def dispatch_order(
     if not domain.can_transition_order(order.status, "HANDED_OVER"):
         raise ConflictProblem(f"Order {order.number} is {order.status} and cannot be dispatched")
 
+    # M3 (security review): the carrier-desk counterpart to `hand_over_order`'s own
+    # `payment_confirmed` handling — must run *before* the gate below, the same order the counter
+    # path uses, or a cash/prepaid order can never pass it on this path.
+    attest_payment_if_confirmed(order, payment_confirmed=payment_confirmed)
+    # `require_pickup_code` fails closed here on purpose (see this function's own docstring,
+    # point 2) — not an oversight, and not something to route around.
     check_billing_gate(order)
 
     org_id = ctx.organization_id
     lines = await order_selectors.lines_for(session, org_id, order.id)
-    leaves = await selectors.leaf_reservations_for_order(session, org_id, order.id)
-    balances = await selectors.balances_by_id(
-        session, org_id, [r.balance_id for r in leaves.values()]
+    never_picked, partial_pack = await selectors.unfulfilled_order_lines(
+        session, org_id, order.id, lines
     )
-
-    move_lines: list[MoveLine] = []
-    for line in lines:
-        leaf = leaves.get(line.id)
-        if leaf is None or leaf.status != "active":
-            continue
-        open_remainder = (
-            leaf.quantity_milli - leaf.consumed_milli - leaf.released_milli - leaf.transferred_milli
+    if never_picked or partial_pack:
+        problem_lines = never_picked or partial_pack
+        item_ids = [line.inventory_item_id for line, _ in problem_lines]
+        items = await order_selectors.items_for_lines(session, org_id, item_ids)
+        detail = ", ".join(
+            f"{items[line.inventory_item_id].sku if line.inventory_item_id in items else line.id}"
+            f" ({format_qty(qty)})"
+            for line, qty in problem_lines
         )
-        if open_remainder <= 0:
-            continue
-        balance = balances.get(leaf.balance_id)
-        if balance is None:  # pragma: no cover - defensive, the reservation's own FK guarantees it
-            raise ConflictProblem(f"{line.id}'s reservation has no stock bucket to draw from")
-        move_lines.append(
-            MoveLine(
-                item_id=line.inventory_item_id,
-                location_id=balance.location_id,
-                quantity_milli=-open_remainder,
-                reservation_id=leaf.id,
+        if never_picked:
+            raise ConflictProblem(
+                f"Order {order.number} cannot be dispatched — never picked: {detail}"
             )
-        )
-    if not move_lines:
         raise ConflictProblem(
-            f"Order {order.number} has nothing staged to dispatch — was it actually picked?"
+            f"Order {order.number} cannot be dispatched — staged but not fully packed: {detail}"
         )
 
     shipment = Shipment(
@@ -165,19 +176,9 @@ async def dispatch_order(
     session.add(shipment)
     await session.flush()
 
-    await ledger.post_move(
-        session,
-        ctx,
-        kind="issue",
-        lines=move_lines,
-        occurred_on=date.today(),
-        reference_type="shipment",
-        reference_id=shipment.id,
-        idempotency_key=f"dispatch:{shipment.id}",
-        occurred_on_explicit=False,
-        request=request,
-    )
-
+    # M2 (security review): the reservation-consuming `issue` move is now posted inside
+    # `complete_handover` itself, identically for both handover paths — see that function's own
+    # docstring.
     await complete_handover(session, ctx, order, request=request)
 
     record_audit(
@@ -213,7 +214,16 @@ async def dispatch_order(
         actor=_actor(ctx),
     )
 
-    if order.total_minor > _EWAY_VALUE_THRESHOLD_MINOR:
+    # Security review cheap-fix: finance's real e-Way check is against the tax-*inclusive*
+    # invoice total, not the bare pre-tax subtotal `order.total_minor` is — this pre-filter now
+    # approximates that the same way `app.orders.services.request_invoice_for_order` already does
+    # (`domain.expected_gst_amount_minor`, mirroring finance's own rounding, no cross-service
+    # import, ADR-0000 §10). India-specific, so it only ever applies in INR.
+    tax_rate_pct = Decimal((order.settings_snapshot or {}).get("default_tax_rate_pct", "0"))
+    tax_inclusive_total_minor = order.total_minor + domain.expected_gst_amount_minor(
+        order.total_minor, tax_rate_pct
+    )
+    if order.currency == "INR" and tax_inclusive_total_minor > _EWAY_VALUE_THRESHOLD_MINOR:
         publish_event(
             session,
             OutboxEvent,
@@ -261,7 +271,10 @@ async def transition_shipment(
     org_id = ctx.organization_id
     from_status = shipment.status
     shipment.status = to_status
-    if tracking_reference is not None:
+    # Cheap fix (security review): a blank/whitespace-only value is treated the same as absent —
+    # `is not None` alone let an empty string sent by mistake silently overwrite a previously
+    # stored tracking reference.
+    if tracking_reference is not None and tracking_reference.strip():
         shipment.tracking_reference = tracking_reference
     if to_status == "DELIVERED":
         shipment.delivered_at = datetime.now(UTC)

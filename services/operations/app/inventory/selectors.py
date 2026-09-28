@@ -8,6 +8,7 @@ item-level views and directly for the per-bucket view — never from a stored it
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import BigInteger, Select, cast, func, or_, select
@@ -191,6 +192,23 @@ async def balances_for_item(
         .order_by(Warehouse.code, Location.code, InventoryBalance.status)
     )
     return [tuple(row) for row in (await session.execute(stmt)).all()]
+
+
+async def balances_by_id(
+    session: AsyncSession, org_id: uuid.UUID, balance_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, InventoryBalance]:
+    """A batch of `inventory_balances` rows by id — one query for a whole handover/dispatch
+    (N+1 avoidance), the same shape `app.orders.selectors.items_for_lines` uses for items.
+    Shared by `app.orders.services.complete_handover` (both the counter and carrier handover
+    paths draw against whichever buckets a reservation's own transfer chain last landed stock
+    in) rather than living only in `app.dispatch`, since `orders` -> `inventory` is the one
+    layering direction ADR-0024 §1 allows for this data."""
+    if not balance_ids:
+        return {}
+    stmt = select(InventoryBalance).where(
+        InventoryBalance.organization_id == org_id, InventoryBalance.id.in_(set(balance_ids))
+    )
+    return {b.id: b for b in (await session.execute(stmt)).scalars().all()}
 
 
 async def has_stock_history(session: AsyncSession, org_id: uuid.UUID, item_id: uuid.UUID) -> bool:

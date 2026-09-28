@@ -2178,6 +2178,7 @@ async def dispatch_order(
         expected_version=payload.order_version,
         carrier_name=payload.carrier_name,
         tracking_reference=payload.tracking_reference,
+        payment_confirmed=payload.payment_confirmed,
         request=request,
     )
     return dispatch_selectors.shipment_out(shipment)

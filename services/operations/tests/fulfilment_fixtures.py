@@ -260,6 +260,7 @@ async def dispatch_order(  # type: ignore[no-untyped-def]
     *,
     carrier_name: str = "Acme Couriers",
     tracking_reference: str | None = "TRK-0001",
+    payment_confirmed: bool = False,
     perms: list[str] | None = None,
 ):
     principal = principal_for(
@@ -273,6 +274,7 @@ async def dispatch_order(  # type: ignore[no-untyped-def]
                 "order_version": order_version,
                 "carrier_name": carrier_name,
                 "tracking_reference": tracking_reference,
+                "payment_confirmed": payment_confirmed,
             },
         )
 

@@ -1421,6 +1421,19 @@ class ShipmentOut(BaseModel):
     updated_at: datetime
 
 
+def _reject_blank_or_control(value: str, *, field_name: str) -> str:
+    """The codebase's existing blank-rejection convention (`services/subscription/app/schemas.py
+    ::_reason_is_not_blank`), extended to also reject control characters — a `min_length` bound
+    alone lets a whitespace-only or control-character string through, and this is free-text a
+    warehouse floor or carrier desk types by hand (security review cheap-fix list)."""
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{field_name} must not be blank")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in stripped):
+        raise ValueError(f"{field_name} must not contain control characters")
+    return stripped
+
+
 class ShipmentIn(BaseModel):
     """`POST /dispatch/shipments` — the carrier handover (Fulfilment plan F5): creates the
     shipment, already at `PICKUP_HANDOVER`, posts the dispatch `issue` move against whatever pick
@@ -1431,6 +1444,11 @@ class ShipmentIn(BaseModel):
     `carrier_name`/`tracking_reference` are manual text only — no carrier API integration exists
     in this build (Fulfilment plan F5's own "not in phase" list); `tracking_reference` may be
     unknown at handover and set (or corrected) on a later transition instead.
+
+    `payment_confirmed` mirrors `OrderHandoverIn`'s own field exactly — the carrier-desk
+    operator's attestation that a cash/prepaid order's payment was collected, the same documented
+    stand-in for `services/payment`'s tenant collections module (ADR-0024 A4) the counter path
+    already uses (security review M3). Inert for a credit-terms order.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1441,6 +1459,12 @@ class ShipmentIn(BaseModel):
     order_version: int = Field(ge=0)
     carrier_name: str = Field(min_length=1, max_length=120)
     tracking_reference: str | None = Field(default=None, max_length=120)
+    payment_confirmed: bool = False
+
+    @field_validator("carrier_name")
+    @classmethod
+    def _carrier_name_is_not_blank(cls, value: str) -> str:
+        return _reject_blank_or_control(value, field_name="carrier_name")
 
 
 class ShipmentAdvanceIn(BaseModel):
@@ -1461,3 +1485,8 @@ class ShipmentRefusalIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_is_not_blank(cls, value: str) -> str:
+        return _reject_blank_or_control(value, field_name="reason")

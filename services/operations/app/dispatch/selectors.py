@@ -7,27 +7,30 @@ see every shipment in the org to run the floor, not only the ones they personall
 takes the caller's `ScopeContext` and calls `ctx.apply()`, the same enforcement point every other
 scoped list in this service uses (`app.fulfilment.selectors`'s own module docstring documents the
 same reasoning for `packages_stmt`).
+
+The actual *which reservation does dispatch consume* question is no longer answered here
+(security review B1/M2): the flat gather now lives in `app.orders.selectors
+.leaf_reservations_for_order`/`unpicked_lines_for_order`, read by `app.orders.services
+.complete_handover` — the shared consumption step both the counter (`hand_over_order`) and
+carrier (`dispatch_order`) handover paths call identically. What stays here is carrier-specific:
+whether an order's lines were genuinely *picked and, if packing was started, finished* before a
+carrier is ever offered the goods (`unfulfilled_order_lines`) — a stronger, fulfilment-aware check
+the counter path has no equivalent of, and so cannot share (`orders` never imports `fulfilment`,
+ADR-0024 §1).
 """
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.fulfilment import selectors as fulfilment_selectors
-from app.models import InventoryBalance, InventoryReservation, Shipment
+from app.models import OrderLine, Shipment
 from app.schemas import ShipmentOut
 from platform_core.auth import ScopeContext
-from platform_core.errors import ConflictProblem
-
-#: A transfer chain (accept's reservation -> a pick's staging reservation -> a pack's dock
-#: reservation) is at most two hops deep in this build. A bound, not an unbounded walk: a chain
-#: longer than this is a bug in the transfer bookkeeping, not a deeper warehouse flow F5 supports.
-_MAX_TRANSFER_HOPS = 8
 
 
 def shipments_stmt(
@@ -76,68 +79,47 @@ async def get_shipment_for_order(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-# ------------------------------------------------------------------ the pick/pack transfer chain
-# (ADR-0024 §6) — where a dispatch issue actually draws from
+# ------------------------------------------------------------------ carrier-only fulfilment
+# coverage check (ADR-0024 §6; security review B1/M1) — whether a carrier is being handed a
+# genuinely completed pick (and, if packing was started at all, a completed pack).
 
 
-async def _reservation_transferred_from(
-    session: AsyncSession, org_id: uuid.UUID, source_reservation_id: uuid.UUID
-) -> InventoryReservation | None:
-    stmt = select(InventoryReservation).where(
-        InventoryReservation.organization_id == org_id,
-        InventoryReservation.transferred_from_reservation_id == source_reservation_id,
-    )
-    return (await session.execute(stmt)).scalar_one_or_none()
+async def unfulfilled_order_lines(
+    session: AsyncSession, org_id: uuid.UUID, order_id: uuid.UUID, lines: list[OrderLine]
+) -> tuple[list[tuple[OrderLine, int]], list[tuple[OrderLine, int]]]:
+    """For each of the order's own lines: how much was never picked at all — still sitting on the
+    line's own accept-time promise, or a pick task cancelled before it finished (security review
+    M1) — and how much was picked but left a genuine partial-pack remainder: *some*, not all, of
+    what was picked has gone into a package (security review B1's split-pack finding). A line
+    never sent to a pack station at all (`packaged_milli == 0`, dispatch draws straight from
+    staging) and a line fully packed (`packaged_milli == picked_milli`, dispatch draws from the
+    dock, however many packages it took) are both valid; only a pack that started and stopped
+    partway through one line is not — that quantity is neither at the dock nor still fully staged,
+    and shipping around it would silently drop it.
 
-
-async def leaf_reservation_for(
-    session: AsyncSession, org_id: uuid.UUID, reservation: InventoryReservation
-) -> InventoryReservation:
-    """Walks `transferred_from_reservation_id` forward from `reservation` — an order line's own
-    accept-time promise — to wherever it currently sits (ADR-0024 §6): unchanged if nothing has
-    moved it yet, the staging reservation a pick opened if picked but not (yet) packed, or the
-    pack/dock reservation a pack opened if packed. Dispatch draws against whatever this returns,
-    never a fixed two-hop assumption that would break if a step is skipped or the chain runs
-    deeper than pick-then-pack.
+    Returns `(never_picked, partial_pack)`, each a list of `(order_line, milli_units)` naming
+    exactly what is missing — never a bare "cannot dispatch".
     """
-    current = reservation
-    for _ in range(_MAX_TRANSFER_HOPS):
-        child = await _reservation_transferred_from(session, org_id, current.id)
-        if child is None:
-            return current
-        current = child
-    raise ConflictProblem(  # pragma: no cover - defensive, a bug in the transfer chain, not data
-        f"Reservation {reservation.id}'s transfer chain is unexpectedly deep"
+    task_lines = await fulfilment_selectors.task_lines_for_order(session, org_id, order_id)
+    by_order_line = {tl.order_line_id: tl for tl in task_lines}
+    packaged = await fulfilment_selectors.packaged_milli_for_task_lines(
+        session, org_id, [tl.id for tl in task_lines]
     )
-
-
-async def leaf_reservations_for_order(
-    session: AsyncSession, org_id: uuid.UUID, order_id: uuid.UUID
-) -> dict[uuid.UUID, InventoryReservation]:
-    """Every one of `order_id`'s own lines, mapped to the reservation currently holding its
-    promise — the end of whatever chain of transfers (pick, pack) has moved it since accept. A
-    line whose reservation was entirely released (a full short-pick, never picked at all) still
-    has an entry here; its own `leaf`'s open remainder is simply zero, which
-    `app.dispatch.services.dispatch_order` reads and skips rather than treating as missing.
-    """
-    by_line = await fulfilment_selectors.reservations_by_order_line(session, org_id, order_id)
-    out: dict[uuid.UUID, InventoryReservation] = {}
-    for line_id, reservation in by_line.items():
-        out[line_id] = await leaf_reservation_for(session, org_id, reservation)
-    return out
-
-
-async def balances_by_id(
-    session: AsyncSession, org_id: uuid.UUID, balance_ids: Sequence[uuid.UUID]
-) -> dict[uuid.UUID, InventoryBalance]:
-    """A batch of `inventory_balances` rows by id — one query for a whole dispatch (N+1
-    avoidance), the same shape `app.orders.selectors.items_for_lines` uses for items."""
-    if not balance_ids:
-        return {}
-    stmt = select(InventoryBalance).where(
-        InventoryBalance.organization_id == org_id, InventoryBalance.id.in_(set(balance_ids))
-    )
-    return {b.id: b for b in (await session.execute(stmt)).scalars().all()}
+    never_picked: list[tuple[OrderLine, int]] = []
+    partial_pack: list[tuple[OrderLine, int]] = []
+    for line in lines:
+        task_line = by_order_line.get(line.id)
+        if task_line is None:  # pragma: no cover - defensive, create_pick_tasks covers every line
+            never_picked.append((line, line.quantity_milli))
+            continue
+        unpicked = line.quantity_milli - task_line.picked_milli - task_line.short_milli
+        if unpicked > 0:
+            never_picked.append((line, unpicked))
+            continue
+        packaged_milli = packaged.get(task_line.id, 0)
+        if 0 < packaged_milli < task_line.picked_milli:
+            partial_pack.append((line, task_line.picked_milli - packaged_milli))
+    return never_picked, partial_pack
 
 
 # ------------------------------------------------------------------ projections (ORM -> wire)

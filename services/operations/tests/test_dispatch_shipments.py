@@ -20,8 +20,12 @@ import pytest
 from sqlalchemy import select
 
 from app.dispatch import services as dispatch_services
+from app.fulfilment import selectors as fulfilment_selectors
+from app.inventory import selectors as inv_selectors
+from app.inventory import services as inv_services
 from app.inventory.reconcile import reconcile_organization
 from app.models import (
+    STOCK_AGGREGATES,
     FulfilmentSettings,
     InventoryBalance,
     InventoryReservation,
@@ -32,19 +36,27 @@ from app.models import (
     ShipmentTransition,
 )
 from app.orders import selectors as order_selectors
+from platform_core.auth import Scope
 from platform_core.events import validate_event_schema
 from tests.fulfilment_fixtures import (
     DISPATCH_READ_PERM,
     DISPATCH_WRITE_PERM,
+    PACK_EXECUTE_PERM,
+    TASK_ASSIGN_PERM,
     Floor,
+    accept_offer,
     accept_order,
     build_floor,
+    confirm_package,
+    confirm_pick,
+    create_tasks,
     dispatch_order,
+    offer_task,
     packed_order,
     ready_order,
     transition_shipment,
 )
-from tests.helpers import as_principal, principal_for
+from tests.helpers import as_principal, ctx_for, principal_for
 
 pytestmark = pytest.mark.integration
 
@@ -146,6 +158,81 @@ async def _get_shipment_for_order(session, org_id: uuid.UUID, order_id: uuid.UUI
             )
         ).scalar_one()
     return row
+
+
+async def _second_dock(session, org_id: uuid.UUID, floor: Floor) -> uuid.UUID:
+    """A second `dock` location in `floor`'s own warehouse — B1's split-pack finding needs two
+    genuinely different destinations, `floor.dock_location_id` alone cannot exercise it."""
+    ctx = ctx_for(org_id, "operations.inventory.location.write", Scope.ORG)
+    async with session.begin():
+        warehouse = await inv_selectors.get_warehouse(session, org_id, floor.shop.warehouse_id)
+        assert warehouse is not None
+        dock = await inv_services.create_location(
+            session, ctx, warehouse, kind="dock", code="DOCK-2", name="Dock 2"
+        )
+    return dock.id
+
+
+async def _two_zone_order(
+    session, org_id: uuid.UUID, floor: Floor, *, widget_qty: str = "5", gizmo_qty: str = "5"
+) -> Order:
+    """Gives `floor.shop.gizmo` its own zone/bin, separate from the widget's shared default bin
+    (`build_shop` puts every item at the warehouse's one default bin otherwise) — the multi-task
+    shape security review M1's own finding needs: two order lines that land in two different pick
+    tasks, so one can be cancelled while `CREATED` and the other picked through to `READY`
+    without a single task straddling both."""
+    ctx = ctx_for(org_id, "operations.inventory.location.write", Scope.ORG)
+    stock_ctx = ctx_for(org_id, "operations.inventory.stock.adjust", Scope.ORG)
+    async with session.begin():
+        warehouse = await inv_selectors.get_warehouse(session, org_id, floor.shop.warehouse_id)
+        assert warehouse is not None
+        zone = await inv_services.create_location(
+            session, ctx, warehouse, kind="zone", code="ZONE-B", name="Zone B"
+        )
+        bin_b = await inv_services.create_location(
+            session,
+            ctx,
+            warehouse,
+            kind="bin",
+            code="BIN-B",
+            name="Bin B",
+            parent_id=str(zone.id),
+        )
+        gizmo = await inv_selectors.get_inventory_item(
+            session, org_id, floor.shop.gizmo, for_update=True
+        )
+        assert gizmo is not None
+        gizmo.home_location_id = bin_b.id
+        # `on_hand_milli`/`reserved_milli`/`available_milli` are `column_property` correlated
+        # subqueries (app/models.py `STOCK_AGGREGATES`) — `flush()` marks them expired on any
+        # updated instance (their value could depend on what the flush just wrote), so the
+        # refresh must come *after* the flush, not before, or it is itself immediately expired
+        # again and a bare attribute access outside an awaited call can't lazy-load them
+        # (`MissingGreenlet`). The exact re-read `adjust_stock`/`post_move` already do
+        # themselves after touching stock (`app/inventory/services.py`, `ledger.py`).
+        await session.flush()
+        await session.refresh(gizmo, list(STOCK_AGGREGATES))
+        await inv_services.adjust_stock(session, stock_ctx, gizmo, quantity_delta=100)
+
+    return await accept_order(
+        session,
+        org_id,
+        floor.shop,
+        lines=[
+            {"inventory_item_id": floor.shop.widget, "quantity": widget_qty},
+            {"inventory_item_id": floor.shop.gizmo, "quantity": gizmo_qty},
+        ],
+    )
+
+
+async def _cancel_task(  # type: ignore[no-untyped-def]
+    client, org_id: uuid.UUID, task_id: str, *, reason: str = "cancelled for test"
+):
+    principal = principal_for(org_id, [TASK_ASSIGN_PERM], subject_ref=uuid.uuid4())
+    with as_principal(principal):
+        return await client.post(
+            f"/api/v1/operations/fulfilment/tasks/{task_id}/cancel", json={"reason": reason}
+        )
 
 
 class TestBillingGateRefusals:
@@ -377,6 +464,242 @@ class TestNothingStagedIsRefused:
         assert response.status_code == 409
 
 
+class TestSplitPackDispatch:
+    """Security review BLOCKER B1: `confirm_package` allows a partial quantity per call, so one
+    staging reservation can be transferred to by more than one package — the flat
+    `leaf_reservations_for_order` gather (not a single-child chain walk) must consume all of
+    them, however many there are."""
+
+    async def test_a_line_packed_into_two_different_destinations_still_dispatches_cleanly(
+        self, client, org_id, session, floor: Floor
+    ) -> None:
+        await _seed_settings(session, org_id)
+        second_dock = await _second_dock(session, org_id, floor)
+        order = await accept_order(
+            session,
+            org_id,
+            floor.shop,
+            lines=[{"inventory_item_id": floor.shop.widget, "quantity": "10"}],
+        )
+        tasks = await create_tasks(client, org_id, order)
+        task = tasks[0]
+        offer = await offer_task(client, org_id, task["id"], floor.worker_id)
+        await accept_offer(client, org_id, offer["id"], floor.worker_employee_id)
+        line_id = task["lines"][0]["id"]
+        await confirm_pick(client, org_id, task["id"], line_id, floor.worker_employee_id)
+
+        # The split: 6 to the floor's own dock, 4 to a second one — before the fix, the second
+        # `confirm_package` call would still succeed (F3 has no split-pack guard of its own),
+        # but dispatch afterward raised `MultipleResultsFound` (a bare 500) because the reservation
+        # walk assumed at most one child per staging reservation.
+        await confirm_package(
+            client,
+            org_id,
+            order.id,
+            destination_location_id=floor.dock_location_id,
+            pick_task_line_id=line_id,
+            quantity="6",
+        )
+        await confirm_package(
+            client,
+            org_id,
+            order.id,
+            destination_location_id=second_dock,
+            pick_task_line_id=line_id,
+            quantity="4",
+        )
+
+        order = await _reload_order(session, org_id, order.id)
+        response = await dispatch_order(client, org_id, order.id, order.version)
+        assert response.status_code == 201, response.text
+
+        dock1_qty, dock1_reserved = await _balance(
+            session, org_id, floor.shop.widget, floor.dock_location_id
+        )
+        dock2_qty, dock2_reserved = await _balance(session, org_id, floor.shop.widget, second_dock)
+        assert (dock1_qty, dock1_reserved) == (0, 0)
+        assert (dock2_qty, dock2_reserved) == (0, 0)
+        await _assert_reconciles_clean(session, org_id)
+
+
+class TestPartialPackIsRefused:
+    """Security review BLOCKER B1: packing only some of what was picked must never let dispatch
+    silently ship the packed portion and abandon the rest — the remainder would sit at the
+    staging bucket forever, "reserved" with no order left to release it once this one is
+    DELIVERED."""
+
+    async def test_dispatching_a_partially_packed_line_is_refused(
+        self, client, org_id, session, floor: Floor
+    ) -> None:
+        await _seed_settings(session, org_id)
+        order = await accept_order(
+            session,
+            org_id,
+            floor.shop,
+            lines=[{"inventory_item_id": floor.shop.widget, "quantity": "10"}],
+        )
+        tasks = await create_tasks(client, org_id, order)
+        task = tasks[0]
+        offer = await offer_task(client, org_id, task["id"], floor.worker_id)
+        await accept_offer(client, org_id, offer["id"], floor.worker_employee_id)
+        line_id = task["lines"][0]["id"]
+        await confirm_pick(client, org_id, task["id"], line_id, floor.worker_employee_id)
+        await confirm_package(
+            client,
+            org_id,
+            order.id,
+            destination_location_id=floor.dock_location_id,
+            pick_task_line_id=line_id,
+            quantity="6",  # only 6 of the 10 picked units ever reach a package
+        )
+
+        order_id = order.id
+        order = await _reload_order(session, org_id, order_id)
+        response = await dispatch_order(client, org_id, order_id, order.version)
+        assert response.status_code == 409, response.text
+        assert "not fully packed" in response.text.lower()
+
+        # `order_id`, not `order.id`: the refused dispatch rolled back its own transaction on
+        # the shared session, which expires `order`'s attributes — the same reason every other
+        # refusal test in this file re-reads by a plain id captured before the call, not by
+        # attribute access on an object that lived through it.
+        after = await _reload_order(session, org_id, order_id)
+        assert after.status == "READY"  # refused cleanly, never silently shipped the 6
+
+    async def test_packing_after_the_order_already_left_is_refused(
+        self, client, org_id, session, floor: Floor
+    ) -> None:
+        """The `confirm_package` order-lock/status-check half of the same fix: a line that was
+        picked but never packed still has "available" capacity from the packaging accounting's
+        own point of view even after the order is `DELIVERED` (dispatch draws straight from
+        staging when nothing was ever packed) — packing onto it after the fact must not create a
+        package and a reservation transfer dispatch already accounted for and can never see."""
+        await _seed_settings(session, org_id)
+        order_id = await ready_order(client, org_id, session, floor, qty="10")
+        order = await _reload_order(session, org_id, order_id)
+        # `ready_order` doesn't hand back the task/line ids it used internally, so re-derive the
+        # one live pick-task line the same way `confirm_package`'s own caller normally would.
+        async with session.begin():
+            task_lines = await fulfilment_selectors.task_lines_for_order(session, org_id, order_id)
+        line_id = str(task_lines[0].id)
+
+        dispatch_response = await dispatch_order(client, org_id, order_id, order.version)
+        assert dispatch_response.status_code == 201, dispatch_response.text
+
+        principal = principal_for(org_id, [PACK_EXECUTE_PERM], subject_ref=uuid.uuid4())
+        with as_principal(principal):
+            pack_response = await client.post(
+                "/api/v1/operations/fulfilment/packages",
+                json={
+                    "order_id": str(order_id),
+                    "destination_location_id": str(floor.dock_location_id),
+                    "lines": [{"pick_task_line_id": line_id, "quantity": "10"}],
+                },
+            )
+        assert pack_response.status_code == 409, pack_response.text
+        assert "cannot be packed" in pack_response.text.lower()
+
+
+class TestCancelledTaskLineIsRefused:
+    """Security review MAJOR M1: a task cancelled while still `CREATED` (needing only
+    `task.assign`, no override) must not leave its line's reservation open forever, and dispatch
+    must never draw from an order line that was never actually picked — even though `_maybe_
+    ready_order` lets the order reach `READY` around a cancelled task."""
+
+    async def test_dispatch_refuses_an_order_with_a_cancelled_unpicked_line(
+        self, client, org_id, session, floor: Floor
+    ) -> None:
+        # `_seed_settings` before `_two_zone_order`: `accept_order` snapshots `fulfilment_
+        # settings` onto the order at accept time (ADR-0025 §1) — seeding afterward would leave
+        # this order pinned to `_HARDCODED_DEFAULT` (`invoice_timing="on_accept"`) regardless of
+        # what the settings row says, the same reason every other test in this file seeds first.
+        await _seed_settings(session, org_id)
+        order = await _two_zone_order(session, org_id, floor, widget_qty="5", gizmo_qty="5")
+        order_id = order.id
+        tasks = await create_tasks(client, org_id, order)
+        assert len(tasks) == 2  # one per zone — the shape this finding needs
+
+        widget_task = next(
+            t for t in tasks if t["lines"][0]["inventory_item_id"] == str(floor.shop.widget)
+        )
+        gizmo_task = next(
+            t for t in tasks if t["lines"][0]["inventory_item_id"] == str(floor.shop.gizmo)
+        )
+
+        # The gizmo task never leaves CREATED — cancelled outright, no override needed. Cancelled
+        # *before* the widget's own pick confirms: `_maybe_ready_order` only ever runs from
+        # inside `confirm_pick` itself (`cancel_task` triggers no recomputation of its own), so
+        # the order can only reach `READY` "around" the cancelled task if it was already settled
+        # by the time the *last* active task's pick confirms — not the other way around.
+        cancel_response = await _cancel_task(client, org_id, gizmo_task["id"])
+        assert cancel_response.status_code == 200, cancel_response.text
+
+        offer = await offer_task(client, org_id, widget_task["id"], floor.worker_id)
+        await accept_offer(client, org_id, offer["id"], floor.worker_employee_id)
+        await confirm_pick(
+            client,
+            org_id,
+            widget_task["id"],
+            widget_task["lines"][0]["id"],
+            floor.worker_employee_id,
+        )
+
+        order_after = await _reload_order(session, org_id, order_id)
+        assert order_after.status == "READY"  # existing F3 behavior: unaffected by this fix
+
+        response = await dispatch_order(client, org_id, order_id, order_after.version)
+        assert response.status_code == 409, response.text
+        assert "never picked" in response.text.lower()
+
+        # `order_id`, not `order.id`/`order_after.id`: the refused dispatch rolled back its own
+        # transaction on the shared session, expiring both objects' attributes.
+        #
+        # The cancelled task's reservation was actually released, not left stuck — matching the
+        # fix in `cancel_task` (not merely absent from the order's own leaf set, which alone
+        # would leave the gizmo's original bucket "reserved" forever with no order left to free
+        # it once dispatch permanently refuses this one).
+        reservations = await _reservations_for_order(session, org_id, order_id)
+        gizmo_reservation = next(r for r in reservations if r.inventory_item_id == floor.shop.gizmo)
+        assert gizmo_reservation.status == "released"
+        assert gizmo_reservation.released_milli == gizmo_reservation.quantity_milli
+
+
+class TestPaymentConfirmedOnDispatch:
+    """Security review MAJOR M3: the carrier-desk operator's own attestation, the exact
+    counterpart to the counter path's `payment_confirmed` — without it, a cash/prepaid order
+    (the default payment term) could never pass the billing gate on this path at all."""
+
+    async def test_without_attestation_a_cash_order_is_refused(
+        self, client, org_id, session, floor: Floor
+    ) -> None:
+        await _seed_settings(
+            session, org_id, invoice_timing="on_delivery", payment_defaults={"manual": "cash"}
+        )
+        order_id = await ready_order(client, org_id, session, floor)
+        order = await _reload_order(session, org_id, order_id)
+
+        response = await dispatch_order(client, org_id, order_id, order.version)
+        assert response.status_code == 409, response.text
+        assert "paid" in response.text.lower()
+
+    async def test_attestation_satisfies_the_gate_and_sets_paid_at(
+        self, client, org_id, session, floor: Floor
+    ) -> None:
+        await _seed_settings(
+            session, org_id, invoice_timing="on_delivery", payment_defaults={"manual": "cash"}
+        )
+        order_id = await ready_order(client, org_id, session, floor)
+        order = await _reload_order(session, org_id, order_id)
+
+        response = await dispatch_order(
+            client, org_id, order_id, order.version, payment_confirmed=True
+        )
+        assert response.status_code == 201, response.text
+
+        after = await _reload_order(session, org_id, order_id)
+        assert after.paid_at is not None
+
+
 class TestAuthzAndTenancy:
     async def test_a_caller_without_dispatch_write_is_forbidden(
         self, client, org_id, session, floor: Floor
@@ -456,6 +779,40 @@ class TestAuthzAndTenancy:
         with as_principal(principal):
             read = await client.get(f"/api/v1/operations/dispatch/shipments/{shipment_id}")
         assert read.status_code == 404
+
+    async def test_a_reader_without_read_cannot_get_one_shipment(
+        self, client, org_id, session, floor: Floor
+    ) -> None:
+        """Cheap fix (security review): only the list endpoint had 403 coverage before; the
+        single-shipment `GET` needs its own."""
+        await _seed_settings(session, org_id)
+        order_id = await ready_order(client, org_id, session, floor)
+        order = await _reload_order(session, org_id, order_id)
+        response = await dispatch_order(client, org_id, order_id, order.version)
+        shipment_id = response.json()["id"]
+
+        principal = principal_for(org_id, [], subject_ref=uuid.uuid4())
+        with as_principal(principal):
+            read = await client.get(f"/api/v1/operations/dispatch/shipments/{shipment_id}")
+        assert read.status_code == 403
+
+    async def test_cross_tenant_shipment_list_does_not_leak_the_other_orgs_shipment(
+        self, client, org_id, session, floor: Floor
+    ) -> None:
+        """Cheap fix (security review): the list endpoint had no cross-tenant test at all — only
+        the single-`GET` and the create/transition endpoints did."""
+        await _seed_settings(session, org_id)
+        order_id = await ready_order(client, org_id, session, floor)
+        order = await _reload_order(session, org_id, order_id)
+        response = await dispatch_order(client, org_id, order_id, order.version)
+        shipment_id = response.json()["id"]
+
+        other_org = uuid.uuid4()
+        principal = principal_for(other_org, [DISPATCH_READ_PERM], subject_ref=uuid.uuid4())
+        with as_principal(principal):
+            listed = await client.get("/api/v1/operations/dispatch/shipments")
+        assert listed.status_code == 200, listed.text
+        assert shipment_id not in [row["id"] for row in listed.json()["items"]]
 
 
 class TestShipmentLifecycle:
@@ -577,14 +934,25 @@ class TestShipmentLifecycle:
         response = await transition_shipment(client, org_id, shipment_id, "in-transit")
         assert response.status_code == 409
 
+    @pytest.mark.parametrize(
+        ("action", "body"),
+        [
+            ("in-transit", {}),
+            ("deliver", {}),
+            ("fail", {"reason": "x"}),
+            ("return", {"reason": "x"}),
+        ],
+    )
     async def test_a_caller_without_write_cannot_transition(
-        self, client, org_id, session, floor: Floor
+        self, client, org_id, session, floor: Floor, action: str, body: dict
     ) -> None:
+        """Cheap fix (security review): only `in-transit` had this coverage before; `deliver`,
+        `fail` and `return` are exercised identically here."""
         shipment_id = await self._dispatched(client, org_id, session, floor)
         principal = principal_for(org_id, [DISPATCH_READ_PERM], subject_ref=uuid.uuid4())
         with as_principal(principal):
             response = await client.post(
-                f"/api/v1/operations/dispatch/shipments/{shipment_id}/in-transit", json={}
+                f"/api/v1/operations/dispatch/shipments/{shipment_id}/{action}", json=body
             )
         assert response.status_code == 403
 

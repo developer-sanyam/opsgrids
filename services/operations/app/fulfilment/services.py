@@ -1380,6 +1380,29 @@ async def cancel_task(
             .values(state="WITHDRAWN", responded_at=func.now())
         )
 
+    # M1 (security review): whatever this task's own lines never got to pick must be given back
+    # to available stock, not left stuck on the order's original accept-time reservation forever.
+    # Without this, cancelling a task while it is still `CREATED` (which needs no override, just
+    # `task.assign`) let the order reach `READY`/dispatch with a line that was never picked *and*
+    # left its reservation permanently open — the order could never be cancelled either, once
+    # `dispatch_order`'s own coverage check (B1/M1) refuses to draw from it.
+    org_id = ctx.organization_id
+    lines = await selectors.lines_for_task(session, org_id, task.id)
+    released_lines: list[str] = []
+    for line in lines:
+        remaining = line.quantity_milli - line.picked_milli - line.short_milli
+        if remaining <= 0 or line.reservation_id is None:
+            continue
+        await ledger.release(
+            session,
+            ctx,
+            line.reservation_id,
+            quantity_milli=remaining,
+            idempotency_key=f"pick-cancel:{line.id}",
+            request=request,
+        )
+        released_lines.append(str(line.id))
+
     before = task.status
     task.status = "CANCELLED"
     task.updated_by = str(ctx.principal.sub)
@@ -1395,7 +1418,11 @@ async def cancel_task(
         entity="pick_task",
         entity_id=task.id,
         before={"status": before},
-        after={"status": "CANCELLED", "reason": reason},
+        after={
+            "status": "CANCELLED",
+            "reason": reason,
+            "released_task_lines": released_lines,
+        },
         request=request,
     )
     return task
@@ -1490,11 +1517,19 @@ async def confirm_package(
 ) -> Package:
     """One call opens a package, packs it and posts the staging -> pack/dock relocation,
     transferring each line's own destination reservation onward (ADR-0024 §6) — F3 has no
-    separate open/add-lines/confirm sequence (`Package`'s own docstring)."""
+    separate open/add-lines/confirm sequence (`Package`'s own docstring).
+
+    Locks the order row first (security review B1) — not because this call moves `orders.status`
+    itself (it doesn't), but because it must refuse packing onto an order that already left
+    (`HANDED_OVER`/`DELIVERED` or beyond): without the lock, a pack confirmation could race a
+    dispatch and land after the order's own goods were already handed over, creating packages and
+    reservation transfers dispatch never accounts for."""
     org_id = ctx.organization_id
-    order = await order_selectors.get_order(session, org_id, order_id)
+    order = await order_selectors.get_order(session, org_id, order_id, for_update=True)
     if order is None:
         raise NotFoundProblem("That order is not part of this organization")
+    if order.status not in ("IN_FULFILMENT", "READY"):
+        raise ConflictProblem(f"Order {order.number} is {order.status}; it cannot be packed")
     destination = await inv_selectors.get_location(session, org_id, destination_location_id)
     if destination is None:
         raise NotFoundProblem("That destination location is not part of this organization")
