@@ -47,6 +47,7 @@ from app.w1_schemas import (
 from platform_core import pii
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
+from platform_core.db import session_scope
 from platform_core.errors import (
     ConflictProblem,
     NotFoundProblem,
@@ -808,13 +809,11 @@ async def subscribe_waba(
 
 
 async def register_number_if_needed(
-    session: AsyncSession,
     organization_id: uuid.UUID,
     waba_id: str,
     phone_number_id: str,
     access_token: str,
     *,
-    request: Request | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> None:
     """Register a manually connected number for the Cloud API, unless Meta already reports it
@@ -825,21 +824,33 @@ async def register_number_if_needed(
     message, so without this a manual connection could show `connected` in the UI while every
     send silently failed.
 
-    First reads the number back from Meta and folds it into the numbers cache
-    (`apply_numbers`, one item, `mark_missing=False` so this never disconnects any other number
-    this organization has cached — the same partial-list call `w1_setup._step_verify` already
-    makes), because `reserve_registration_pin` needs a cached `WhatsAppNumber` row to rate-limit
-    and seal a PIN against, and a manual connection has never had one written before.
+    **Deliberately takes no `session` from the caller** and commits its own numbers-cache write
+    and its own PIN reservation each in a short transaction of their own, *before* calling Meta —
+    the same reason `w1_setup._reserve_registration`'s docstring gives for committing early: the
+    caller's transaction (the whole connection create/replace) can still roll back after this
+    returns, and a PIN Meta has already accepted as this number's two-step PIN must not be lost
+    with it, or `register_number` cannot be retried without first turning that verification off
+    again in WhatsApp Manager. Each step:
+
+    1. Reads the number back from Meta and folds it into the numbers cache (`apply_numbers`, one
+       item, `mark_missing=False` so this never disconnects any other number this organization has
+       cached — the same partial-list call `w1_setup._step_verify` already makes), committed
+       before the next step, because `reserve_registration_pin` needs a cached `WhatsAppNumber` row
+       to rate-limit and seal a PIN against, and a manual connection has never had one written
+       before.
+    2. If Meta already reports the number connected, stops there.
+    3. Otherwise reserves a PIN (`reserve_registration_pin`, its own committed transaction) and
+       only then calls `register_number`.
 
     Best-effort, like `subscribe_waba` right above it and for the same reason: a token that can
     read the number (already proved by `whatsapp_provider.verify_ownership`) but is refused by
-    `register` — a stale PIN, Meta's ten-per-72-hours limit, a transient failure — is not a reason
-    to refuse the whole connection. An admin can retry registration once whatever Meta is
-    complaining about is fixed; refusing to save credentials Meta itself already accepted as valid
-    would leave the organization with nothing connected at all. Never raises: a refusal is logged
-    (the error code only, never the PIN) rather than surfaced. `request` is accepted but unused
-    today (kept for a future audit row, the same call shape as this module's other write helpers)
-    — nothing here writes one, since a best-effort background call that may or may not have
+    `register` — a stale PIN, Meta's ten-per-72-hours limit, a transient failure, or anything else
+    going wrong in the steps above — is not a reason to refuse the whole connection. An admin can
+    retry registration once whatever Meta is complaining about is fixed; refusing to save
+    credentials Meta itself already accepted as valid would leave the organization with nothing
+    connected at all. Genuinely never raises past this function — every step is its own `try`, and
+    a refusal is logged (the error code or exception type only, never the PIN) rather than
+    surfaced. Writes no audit row: a best-effort background call that may or may not have
     happened is not itself an auditable action; `create_whatsapp_connection` and
     `replace_whatsapp_connection` already audit the connection it was made from.
     """
@@ -850,26 +861,35 @@ async def register_number_if_needed(
     except GraphError as exc:
         log.warning("whatsapp_provider.manual_register_failed", status=exc.status, code=exc.code)
         return
-    await apply_numbers(
-        session,
-        organization_id,
-        waba_id=waba_id,
-        remote=[number],
-        default_phone_number_id=phone_number_id,
-        mark_missing=False,
-    )
+
+    try:
+        async with session_scope(organization_id=organization_id) as cache_session:
+            await apply_numbers(
+                cache_session,
+                organization_id,
+                waba_id=waba_id,
+                remote=[number],
+                default_phone_number_id=phone_number_id,
+                mark_missing=False,
+            )
+    except Exception as exc:  # best-effort: see the docstring above
+        log.warning("whatsapp_provider.manual_register_failed", error_type=type(exc).__name__)
+        return
+
     if w1_domain.status_from_meta(number.get("status")) == "connected":
         return
+
     try:
-        pin = await reserve_registration_pin(session, cfg, organization_id, phone_number_id)
+        async with session_scope(organization_id=organization_id) as pin_session:
+            pin = await reserve_registration_pin(pin_session, cfg, organization_id, phone_number_id)
+    except Exception as exc:  # best-effort: see the docstring above
+        log.warning("whatsapp_provider.manual_register_failed", error_type=type(exc).__name__)
+        return
+
+    try:
         await graph.register_number(phone_number_id, access_token, pin)
     except GraphError as exc:
         log.warning("whatsapp_provider.manual_register_failed", status=exc.status, code=exc.code)
-    except ProblemError as exc:
-        # `reserve_registration_pin`'s own refusal (rate-limited, or -- should the cache write
-        # above somehow not have stuck -- no cached row): same best-effort rule as a Graph
-        # refusal, so this never blocks the connection either.
-        log.warning("whatsapp_provider.manual_register_failed", error_type=type(exc).__name__)
 
 
 async def unsubscribe_waba(

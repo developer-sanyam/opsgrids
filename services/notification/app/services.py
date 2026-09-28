@@ -2959,7 +2959,7 @@ async def create_whatsapp_connection(
     # for why a registration refusal must not undo a connection Meta already proved this token
     # controls.
     await w1_services.register_number_if_needed(
-        session, ctx.organization_id, waba_id, phone_number_id, access_token
+        ctx.organization_id, waba_id, phone_number_id, access_token
     )
 
     record_audit(
@@ -3065,7 +3065,7 @@ async def replace_whatsapp_connection(
     # credentials may point at a number that was never registered for the Cloud API, and without
     # this call the replacement would look `connected` while every send to it still failed.
     await w1_services.register_number_if_needed(
-        session, ctx.organization_id, waba_id, phone_number_id, access_token
+        ctx.organization_id, waba_id, phone_number_id, access_token
     )
 
     record_audit(
