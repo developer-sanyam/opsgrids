@@ -21,6 +21,11 @@ Concurrency is the database's, not ours:
   request: 409.
 * The `CHECK`s on `inventory_balances` (no negative quantity, reserved within quantity) are the
   backstop. The checks here come first so the caller gets numbers instead of an IntegrityError.
+
+`post_move` also carries an optional reservation transfer on a relocation line (ADR-0024 §6): a
+pick or pack moving reserved stock from a bin to a staging or pack location, in the *same* call
+and the *same* transaction as the move itself, so the stock is never free for another order to
+grab between "moved" and "reserved again". See `MoveLine.transfer_reservation_id`.
 """
 
 from __future__ import annotations
@@ -67,6 +72,10 @@ EVT_STOCK_RELEASED = "operations.inventory.stock.released"
 
 _NO_ID = uuid.UUID(int=0)
 
+#: `(item, location, status, lot, roll)`, stringified — the one bucket key every lock-ordering
+#: and pairing helper in this module shares.
+Bucket = tuple[str, str, str, str, str]
+
 
 def _bucket_key(
     item_id: uuid.UUID,
@@ -74,7 +83,7 @@ def _bucket_key(
     status: str,
     lot_id: uuid.UUID | None,
     roll_id: uuid.UUID | None,
-) -> tuple[str, str, str, str, str]:
+) -> Bucket:
     """The one bucket ordering every multi-line caller locks in (item, location, status, lot,
     roll) — factored out of `MoveLine.bucket()` so `post_move` and `reserve_many` sort their
     locks with the exact same key, never two independently-written orderings that could drift
@@ -108,6 +117,16 @@ class MoveLine:
     the line comes out of reserved stock (and closes the reservation when it is used up); any
     excess comes out of unreserved available stock.
 
+    `transfer_reservation_id` (ADR-0024 §6) is the other way an outbound line can name a
+    reservation: not a draw-down but a relocation that carries the promise with it. The line's
+    *whole* outbound quantity must come off the named reservation's open remainder — more than
+    that is `ConflictProblem`, never a silent split between reserved and free stock the way
+    `reservation_id` allows. It is only valid on a `relocation` line that has exactly one other
+    line in the same move at a *different* location but the same item, lot, roll and status: the
+    kernel opens or tops up a reservation on that destination bucket, carrying the source
+    reservation's `reference_type`/`reference_id`, in the same call. A line may set
+    `reservation_id` or `transfer_reservation_id`, never both.
+
     `unit_cost_currency` names the ISO currency `unit_cost_minor` is in — the currency the
     receipt was actually priced in (a purchase order's, say), never the item's own `currency` by
     assumption and never converted between the two (ADR-0014 §8, revised). The two travel
@@ -124,8 +143,9 @@ class MoveLine:
     unit_cost_minor: int | None = None
     unit_cost_currency: str | None = None
     reservation_id: uuid.UUID | None = None
+    transfer_reservation_id: uuid.UUID | None = None
 
-    def bucket(self) -> tuple[str, str, str, str, str]:
+    def bucket(self) -> Bucket:
         return _bucket_key(self.item_id, self.location_id, self.status, self.lot_id, self.roll_id)
 
 
@@ -153,14 +173,21 @@ def _is_int(value: object) -> bool:
 
 
 def _terminal_status(reservation: InventoryReservation) -> str:
-    """The one rule both closing paths use (MEDIUM #2) for a reservation whose
-    `consumed_milli + released_milli` has just reached `quantity_milli`: `consumed` if any of it
-    was actually drawn against, `released` only if none of it ever was. Call this at the moment
-    of closing, before returning — whichever of `post_move` (a draw) or `release` (a release)
-    happens to be the one that closes it out must land on the same status for the same final
-    (consumed, released) pair, or a caller retrying a keyless release on an already-closed
+    """The one rule every closing path uses (MEDIUM #2, extended for ADR-0024 §6) for a
+    reservation whose `consumed_milli + released_milli + transferred_milli` has just reached
+    `quantity_milli`: `consumed` if any of it was actually drawn against (dispatch happened —
+    takes priority over the other two, real demand fulfilment is the fact worth keeping),
+    `transferred` if none was consumed but some moved with a pick or pack, `released` only if
+    none of it was ever drawn against or moved. Call this at the moment of closing, before
+    returning — whichever of `post_move` (a draw or a transfer) or `release` (a release) happens
+    to be the one that closes it out must land on the same status for the same final (consumed,
+    released, transferred) triple, or a caller retrying a keyless release on an already-closed
     reservation would get a different answer depending on which path got there first."""
-    return "consumed" if reservation.consumed_milli > 0 else "released"
+    if reservation.consumed_milli > 0:
+        return "consumed"
+    if reservation.transferred_milli > 0:
+        return "transferred"
+    return "released"
 
 
 def _request_hash(payload: dict[str, Any]) -> str:
@@ -176,6 +203,8 @@ def _validate_lines(kind: str, lines: Sequence[MoveLine]) -> None:
     for line in lines:
         if line.status not in STOCK_STATUSES:
             raise ValidationProblem(f"{line.status!r} is not a stock status")
+        if line.reservation_id is not None and line.transfer_reservation_id is not None:
+            raise ValidationProblem("A line can draw on a reservation or transfer one, not both")
         if line.counted_milli is not None:
             if kind != "count":
                 raise ValidationProblem("Only a count line may give a counted quantity")
@@ -183,8 +212,8 @@ def _validate_lines(kind: str, lines: Sequence[MoveLine]) -> None:
                 raise ValidationProblem("A counted quantity is a non-negative integer of milli")
             if line.counted_milli > MAX_ABS_MILLI:
                 raise ValidationProblem("That quantity is too large")
-            if line.reservation_id is not None:
-                raise ValidationProblem("A count cannot draw on a reservation")
+            if line.reservation_id is not None or line.transfer_reservation_id is not None:
+                raise ValidationProblem("A count cannot draw on or transfer a reservation")
             continue
         if not _is_int(line.quantity_milli):
             # A float here is a bug upstream, not a user error: refuse loudly, never round.
@@ -193,8 +222,12 @@ def _validate_lines(kind: str, lines: Sequence[MoveLine]) -> None:
             raise ValidationProblem("A stock move line must change the quantity")
         if abs(line.quantity_milli) > MAX_ABS_MILLI:
             raise ValidationProblem("That quantity is too large")
-        if line.reservation_id is not None and line.quantity_milli > 0:
+        if (
+            line.reservation_id is not None or line.transfer_reservation_id is not None
+        ) and line.quantity_milli > 0:
             raise ValidationProblem("Only an outbound line can draw on a reservation")
+        if line.transfer_reservation_id is not None and kind != "relocation":
+            raise ValidationProblem("A reservation transfer is only valid on a relocation")
         if line.unit_cost_minor is not None and (
             not _is_int(line.unit_cost_minor) or line.unit_cost_minor < 0
         ):
@@ -209,6 +242,44 @@ def _validate_lines(kind: str, lines: Sequence[MoveLine]) -> None:
             raise ValidationProblem("A unit cost currency is a 3-letter ISO code")
     if len({line.bucket() for line in lines}) != len(lines):
         raise ValidationProblem("A stock move touches each bucket at most once")
+
+
+def _relocation_pairs(lines: Sequence[MoveLine]) -> dict[Bucket, Bucket]:
+    """Every line naming a `transfer_reservation_id`, mapped to the bucket that receives it
+    (ADR-0024 §6: "only a relocation can transfer"). The destination is the *other* line in the
+    same move sharing this line's item, lot, roll and status but landing at a different location
+    — the same-bucket-family relocation the ADR requires, computed once here so `post_move`
+    checks it before locking anything and reuses the exact same pairing to place the transfer
+    afterwards, rather than two independent readings of "which line is the destination" that
+    could disagree.
+
+    A pure move-shape check, same as `_validate_lines`: no destination, more than one candidate,
+    or a candidate that only differs by status (a quality-hold relocation, still `kind
+    == "relocation"`, but the *same* location) all refuse rather than guess.
+    """
+    pairs: dict[Bucket, Bucket] = {}
+    for line in lines:
+        if line.transfer_reservation_id is None:
+            continue
+        candidates = [
+            other
+            for other in lines
+            if other is not line
+            and other.counted_milli is None
+            and other.quantity_milli > 0
+            and other.item_id == line.item_id
+            and other.lot_id == line.lot_id
+            and other.roll_id == line.roll_id
+            and other.status == line.status
+            and other.location_id != line.location_id
+        ]
+        if len(candidates) != 1:
+            raise ValidationProblem(
+                "A reservation transfer needs exactly one matching relocation line landing at "
+                "a different location with the same item, lot, roll and status"
+            )
+        pairs[line.bucket()] = candidates[0].bucket()
+    return pairs
 
 
 async def _items(
@@ -362,8 +433,13 @@ async def _blocking_reservations(
             "reservation_id": str(r.id),
             "reference_type": r.reference_type,
             "reference_id": str(r.reference_id) if r.reference_id else None,
-            "quantity": format_qty(r.quantity_milli - r.consumed_milli - r.released_milli),
-            "quantity_milli": r.quantity_milli - r.consumed_milli - r.released_milli,
+            "quantity": format_qty(
+                r.quantity_milli - r.consumed_milli - r.released_milli - r.transferred_milli
+            ),
+            "quantity_milli": r.quantity_milli
+            - r.consumed_milli
+            - r.released_milli
+            - r.transferred_milli,
         }
         for r in rows
     ]
@@ -428,10 +504,12 @@ async def post_move(
 ) -> PostedMove:
     """Post one stock move. See the module docstring for the guarantees.
 
-    Raises `ValidationProblem` (malformed lines), `NotFoundProblem` (an item or location outside
-    the caller's organization — never a hint that it exists elsewhere), `InsufficientStock` (a
+    Raises `ValidationProblem` (malformed lines, including a reservation transfer that is not a
+    genuine relocation — ADR-0024 §6), `NotFoundProblem` (an item or location outside the
+    caller's organization — never a hint that it exists elsewhere), `InsufficientStock` (a
     bucket would go negative or into reserved stock), and `ConflictProblem` (an idempotency key
-    reused for a different request, or a reservation that does not fit).
+    reused for a different request, a reservation that does not fit, or a transfer that asks for
+    more than the reservation's open remainder).
 
     `occurred_on_explicit=False` leaves `occurred_on` out of the idempotency hash: it names a
     caller whose `occurred_on` is a server-side default (e.g. "today", computed fresh on every
@@ -440,6 +518,7 @@ async def post_move(
     either way — only whether it counts toward "is this a replay or a different request" changes.
     """
     _validate_lines(kind, lines)
+    relocation_pairs = _relocation_pairs(lines)
     if idempotency_key is not None and not 1 <= len(idempotency_key) <= 128:
         raise ValidationProblem("An idempotency key is 1-128 characters")
     org_id = ctx.organization_id
@@ -463,6 +542,7 @@ async def post_move(
                     line.unit_cost_minor,
                     line.unit_cost_currency,
                     str(line.reservation_id),
+                    str(line.transfer_reservation_id),
                 )
                 for line in lines
             ),
@@ -496,6 +576,12 @@ async def post_move(
     ).scalar_one()
 
     posted = PostedMove(move=move)
+    # Every bucket this move touches, locked exactly once each, in the module's one deterministic
+    # order — kept so the reservation-transfer pass below can place the destination side after
+    # every balance in the move (source and destination alike) is already locked and holds its
+    # post-line figures, per ADR-0024 §6's "both balance locks, then the reservation locks".
+    balances: dict[Bucket, InventoryBalance] = {}
+    transfer_draws: list[tuple[MoveLine, InventoryReservation, int]] = []
     for line in sorted(lines, key=MoveLine.bucket):
         item = items[line.item_id]
         balance = await lock_bucket(
@@ -508,6 +594,7 @@ async def post_move(
             roll_id=line.roll_id,
         )
         assert balance is not None  # created above if it did not exist
+        balances[line.bucket()] = balance
         on_hand, reserved = balance.quantity_milli, balance.reserved_milli
         delta = (
             line.counted_milli - on_hand if line.counted_milli is not None else line.quantity_milli
@@ -515,18 +602,32 @@ async def post_move(
 
         drawn = 0
         reservation: InventoryReservation | None = None
-        if line.reservation_id is not None:
-            reservation = await _lock_reservation(session, org_id, line.reservation_id)
+        is_transfer = line.transfer_reservation_id is not None
+        draw_id = line.transfer_reservation_id if is_transfer else line.reservation_id
+        if draw_id is not None:
+            reservation = await _lock_reservation(session, org_id, draw_id)
             if reservation is None or reservation.balance_id != balance.id:
                 raise ConflictProblem("That reservation is not on this stock")
             if reservation.status != "active":
                 raise ConflictProblem(f"That reservation is {reservation.status}")
-            drawn = min(
-                -delta,
+            open_remainder = (
                 reservation.quantity_milli
                 - reservation.consumed_milli
-                - reservation.released_milli,
+                - reservation.released_milli
+                - reservation.transferred_milli
             )
+            if is_transfer:
+                # A transfer never dips into free stock the way a draw's excess does (module
+                # docstring) — the whole line comes off the reservation, or it is refused
+                # outright (ADR-0024 §6).
+                if -delta > open_remainder:
+                    raise ConflictProblem(
+                        f"Only {format_qty(open_remainder)} is still open on that reservation; "
+                        f"cannot transfer {format_qty(-delta)}"
+                    )
+                drawn = -delta
+            else:
+                drawn = min(-delta, open_remainder)
 
         new_on_hand = on_hand + delta
         new_reserved = reserved - drawn
@@ -555,15 +656,22 @@ async def post_move(
         balance.reserved_milli = new_reserved
         balance.updated_at = now
         if reservation is not None and drawn:
-            reservation.consumed_milli += drawn
+            if is_transfer:
+                reservation.transferred_milli += drawn
+                transfer_draws.append((line, reservation, drawn))
+            else:
+                reservation.consumed_milli += drawn
             if (
-                reservation.consumed_milli + reservation.released_milli
+                reservation.consumed_milli
+                + reservation.released_milli
+                + reservation.transferred_milli
                 == reservation.quantity_milli
             ):
-                # Fully spoken for — by consumption, by release, or a mix of both.
-                # `_terminal_status` is the one rule both closing paths use (MEDIUM #2):
-                # whichever of `post_move` or `release` closes it out, the same net
-                # (consumed, released) always lands on the same status.
+                # Fully spoken for — by consumption, by release, by transfer, or a mix of them.
+                # `_terminal_status` is the one rule every closing path uses (MEDIUM #2,
+                # extended for ADR-0024 §6): whichever of `post_move` or `release` closes it
+                # out, the same net (consumed, released, transferred) always lands on the same
+                # status.
                 reservation.status = _terminal_status(reservation)
                 reservation.closed_at = now
                 reservation.closed_by = str(ctx.principal.sub)
@@ -587,7 +695,70 @@ async def post_move(
     # Deliberately no write to `inventory_items` here: that would take the item's row lock
     # *after* the balance locks, the opposite order from the item-level routes (which lock the
     # item first), and two opposite lock orders are a deadlock waiting for load.
+
+    # The destination side of every reservation transfer this move makes — placed only now, once
+    # every balance the move touches (source *and* destination) is locked and carries its final
+    # post-line figures, and only after the reservation locks already taken above (ADR-0014 §3's
+    # order: both balances, then reservations — unchanged, ADR-0024 §6 adds no new one). Opens a
+    # new reservation on the destination bucket, or tops up one this source reservation already
+    # opened there (an earlier pick call moving the rest of the same promise), carrying the
+    # source's `reference_type`/`reference_id` — never the destination line's own, which has
+    # none of its own to carry.
+    reservation_transfers: list[dict[str, Any]] = []
+    if transfer_draws:
+        now = datetime.now(UTC)
+        for source_line, source_reservation, drawn in transfer_draws:
+            destination_bucket = relocation_pairs[source_line.bucket()]
+            destination_balance = balances[destination_bucket]
+            destination_reservation = (
+                await session.execute(
+                    select(InventoryReservation).where(
+                        InventoryReservation.organization_id == org_id,
+                        InventoryReservation.balance_id == destination_balance.id,
+                        InventoryReservation.status == "active",
+                        InventoryReservation.transferred_from_reservation_id
+                        == source_reservation.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if destination_reservation is None:
+                destination_reservation = InventoryReservation(
+                    organization_id=org_id,
+                    balance_id=destination_balance.id,
+                    inventory_item_id=source_line.item_id,
+                    quantity_milli=drawn,
+                    consumed_milli=0,
+                    released_milli=0,
+                    transferred_milli=0,
+                    status="active",
+                    reference_type=source_reservation.reference_type,
+                    reference_id=source_reservation.reference_id,
+                    transferred_from_reservation_id=source_reservation.id,
+                    created_by=str(ctx.principal.sub),
+                )
+                session.add(destination_reservation)
+            else:
+                destination_reservation.quantity_milli += drawn
+            destination_balance.reserved_milli += drawn
+            destination_balance.updated_at = now
+            reservation_transfers.append(
+                {
+                    "source_reservation_id": str(source_reservation.id),
+                    # Filled in after the flush below, once the (possibly new) row has an id.
+                    "destination_reservation": destination_reservation,
+                    "reference_type": source_reservation.reference_type,
+                    "reference_id": (
+                        str(source_reservation.reference_id)
+                        if source_reservation.reference_id
+                        else None
+                    ),
+                    "quantity": format_qty(drawn),
+                    "quantity_milli": drawn,
+                }
+            )
     await session.flush()
+    for row in reservation_transfers:
+        row["destination_reservation_id"] = str(row.pop("destination_reservation").id)
 
     summary = [
         {
@@ -621,6 +792,7 @@ async def post_move(
             "reference_type": reference_type,
             "reference_id": str(reference_id) if reference_id else None,
             "lines": summary,
+            "reservation_transfers": reservation_transfers,
         },
         reason=note or None,
         request=request,
@@ -641,6 +813,7 @@ async def post_move(
             "reference_id": str(reference_id) if reference_id else None,
             "occurred_on": occurred_on.isoformat(),
             "lines": summary,
+            "reservation_transfers": reservation_transfers,
         },
         actor=_actor(ctx),
     )
@@ -1113,11 +1286,18 @@ async def release(
 
     if reservation.status == "released":
         return reservation
-    if reservation.status == "consumed":
-        raise ConflictProblem("That reservation has been fully consumed")
+    if reservation.status in ("consumed", "transferred"):
+        # A fully consumed reservation was drawn against by an issue (dispatch); a fully
+        # transferred one moved with a pick or pack (ADR-0024 §6) — either way nothing is still
+        # open to give back, distinctly from a reservation only *partly* transferred, which
+        # stays `active` and releasable below.
+        raise ConflictProblem(f"That reservation has been fully {reservation.status}")
 
     open_remaining = (
-        reservation.quantity_milli - reservation.consumed_milli - reservation.released_milli
+        reservation.quantity_milli
+        - reservation.consumed_milli
+        - reservation.released_milli
+        - reservation.transferred_milli
     )
     if quantity_milli is not None and quantity_milli > open_remaining:
         raise ConflictProblem(
@@ -1131,7 +1311,8 @@ async def release(
     balance.updated_at = now
     reservation.released_milli += released_now
     fully_released = (
-        reservation.consumed_milli + reservation.released_milli == reservation.quantity_milli
+        reservation.consumed_milli + reservation.released_milli + reservation.transferred_milli
+        == reservation.quantity_milli
     )
     if fully_released:
         reservation.status = _terminal_status(reservation)

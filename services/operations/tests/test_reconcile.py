@@ -18,7 +18,7 @@ from app.cron import ReconcileSweep
 from app.inventory import ledger
 from app.inventory.ledger import MoveLine
 from app.inventory.reconcile import EVT_INCONSISTENCY, reconcile_organization
-from app.models import SCHEMA, InventoryDiscrepancy, OutboxEvent
+from app.models import SCHEMA, InventoryDiscrepancy, InventoryReservation, OutboxEvent
 from platform_core.db import TENANT_GUC
 from tests.helpers import as_principal, principal_for
 from tests.inventory_fixtures import TODAY, Textile, balance, build_textile, q
@@ -133,6 +133,37 @@ class TestDetection:
             0,
             q("20"),
         )
+
+    async def test_a_reservation_transfer_stays_clean(self, session, admin_session, t) -> None:
+        """ADR-0024 §6: the reconciler's reserved-vs-open-reservations check must count a
+        transferred quantity correctly on *both* sides of a pick — the source bucket (whose
+        reservation now carries `transferred_milli`) and the new destination bucket (whose
+        reservation is `active` as normal) — or a routine pick would manufacture a false
+        `inventory_discrepancies` row every night."""
+        async with session.begin():
+            reservation = (
+                await session.execute(
+                    select(InventoryReservation).where(
+                        InventoryReservation.organization_id == t.org_id,
+                        InventoryReservation.inventory_item_id == t.fabric,
+                    )
+                )
+            ).scalar_one()
+        async with session.begin():
+            await ledger.post_move(
+                session,
+                t.ctx,
+                kind="relocation",
+                lines=[
+                    MoveLine(t.fabric, t.weaving, -q("12"), transfer_reservation_id=reservation.id),
+                    MoveLine(t.fabric, t.finishing, q("12")),
+                ],
+                occurred_on=TODAY,
+            )
+        report = await run(session, t.org_id)
+        assert report.clean
+        assert await balance(session, t.org_id, t.fabric, t.weaving) == (q("70.5"), q("8"))
+        assert await balance(session, t.org_id, t.fabric, t.finishing) == (q("12"), q("12"))
 
     async def test_a_ledger_bucket_with_no_balance_row_is_drift(
         self, session, admin_session, t

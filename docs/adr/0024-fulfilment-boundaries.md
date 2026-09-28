@@ -1,6 +1,6 @@
 # ADR-0024 — Fulfilment: orders, pick/pack, warehouse layout and dispatch — who owns what
 
-**Status:** Proposed — pending sign-off · **Date:** 2026-09-28 ·
+**Status:** Accepted — A1-A4 signed off by the platform owner 2026-09-28 (PR #76) · **Date:** 2026-09-28 ·
 **Plan:** [fulfilment/plan.md](../fulfilment/plan.md)
 
 Fulfilment — a customer order, reserving stock against it, picking, packing, dispatching, and
@@ -20,18 +20,18 @@ ADR-0014 §3 (§6 here) and ADR-0001 "Mobile" (§7 here). Answers the "order eng
 
 ## Sign-off
 
-The whole ADR is Proposed. Four decisions need the platform owner's explicit answer; the owner
-has reviewed the fulfilment design document that proposed them but has not signed any of them
-off. Everything else here follows from these four and is re-opened if any of them is refused.
+All four decisions were put to the platform owner explicitly, one at a time, and each was
+answered **Approve**, 2026-09-28. F0 (PR #76) merged on that basis. Everything else here follows
+from these four; re-opening any of them re-opens what follows from it.
 
 | ID | Decision | Section | Status |
 |---|---|---|---|
-| **A1** | Orders, fulfilment, warehouse layout and dispatch are modules of `operations`, not a new service | §1 | pending sign-off |
-| **A2** | A nullable selling price on `inventory_items` is the MVP price source | §3 | pending sign-off |
-| **A3** | The worker app is a browser PWA, not a native app (amends ADR-0001) | §7 | pending sign-off |
-| **A4** | Tenant payment collection is a module of `payment`, not a new service | §8 | pending sign-off |
+| **A1** | Orders, fulfilment, warehouse layout and dispatch are modules of `operations`, not a new service | §1 | signed off |
+| **A2** | A nullable selling price on `inventory_items` is the MVP price source | §3 | signed off |
+| **A3** | The worker app is a browser PWA, not a native app (amends ADR-0001) | §7 | signed off |
+| **A4** | Tenant payment collection is a module of `payment`, not a new service | §8 | signed off |
 
-## 1. Orders, fulfilment, warehouse layout and dispatch live in `operations` — A1, pending sign-off
+## 1. Orders, fulfilment, warehouse layout and dispatch live in `operations` — A1, signed off
 
 `operations` owns every table a fulfilment step touches: `inventory_items`, `locations`, the
 ledger, `inventory_balances` and `inventory_reservations`. The two hottest write paths fulfilment
@@ -142,7 +142,7 @@ automatically today.
 as an order; a generic "document" table shared by POs, orders and enquiries. That last one is the
 PO overload made worse: one status column and three vocabularies.
 
-## 3. The MVP price is a nullable selling price on `inventory_items` — A2, pending sign-off
+## 3. The MVP price is a nullable selling price on `inventory_items` — A2, signed off
 
 The gap, stated plainly:
 
@@ -300,7 +300,7 @@ status, different location.
 **Why now:** once reservations with fulfilment history exist, their accounting can't be
 reinterpreted. A "consumed" written at pick time can't later be told apart from a real dispatch.
 
-## 7. Amendment to ADR-0001 — the worker app is a browser PWA first — A3, pending sign-off
+## 7. Amendment to ADR-0001 — the worker app is a browser PWA first — A3, signed off
 
 ADR-0001's "Mobile" section plans one native app per product per platform, sharing
 `android/shared` and `ios/OpsGridsKit`. It cites a reference architecture that ships "separate
@@ -342,7 +342,7 @@ the likely route if native becomes necessary, but it is not decided here.
 driving, BLE) becomes an MVP requirement. Either supersedes this amendment for the worker surface
 only.
 
-## 8. Tenant payment collection lives in `payment`, as `app/collections/` — A4, pending sign-off
+## 8. Tenant payment collection lives in `payment`, as `app/collections/` — A4, signed off
 
 **What `payment` does today.** Its model docstring: "mandates, charges, refunds, and the webhook
 inbox", carrying "*what was actually collected*" for commerce (ADR-0004 §1). A charge points at a

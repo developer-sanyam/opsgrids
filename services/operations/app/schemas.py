@@ -696,16 +696,18 @@ class InventoryDiscrepancyOut(BaseModel):
 class InventoryReservationOut(BaseModel):
     """Stock promised to a demand without moving it (ADR-0014 §11). `quantity` is the original
     promise, unchanged by a partial release; `consumed` is what an outbound move has drawn
-    against it; `released` is what has been explicitly given back; `remaining` is what is still
-    open — the three sum to `quantity`."""
+    against it; `released` is what has been explicitly given back; `transferred` is what a
+    relocation has carried to a destination reservation (ADR-0024 §6 — a pick or pack, not
+    dispatch); `remaining` is what is still open — the four sum to `quantity`."""
 
     id: str
     inventory_item_id: str
     quantity: Qty
     consumed: Qty
     released: Qty
+    transferred: Qty
     remaining: Qty
-    status: Literal["active", "released", "consumed"]
+    status: Literal["active", "released", "consumed", "transferred"]
     reference_type: str | None
     reference_id: str | None
 
