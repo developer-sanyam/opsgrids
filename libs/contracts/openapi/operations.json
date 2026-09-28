@@ -330,6 +330,31 @@
             ],
             "title": "Secondary Uom Id"
           },
+          "selling_price_currency": {
+            "anyOf": [
+              {
+                "maxLength": 3,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selling Price Currency"
+          },
+          "selling_price_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selling Price Minor"
+          },
           "sku": {
             "maxLength": 60,
             "minLength": 1,
@@ -475,6 +500,28 @@
             ],
             "title": "Secondary Uom Id"
           },
+          "selling_price_currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selling Price Currency"
+          },
+          "selling_price_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selling Price Minor"
+          },
           "sku": {
             "title": "Sku",
             "type": "string"
@@ -535,7 +582,9 @@
           "track_roll",
           "track_expiry",
           "track_quality",
-          "is_active"
+          "is_active",
+          "selling_price_minor",
+          "selling_price_currency"
         ],
         "title": "InventoryItemOut",
         "type": "object"
@@ -632,6 +681,31 @@
               }
             ],
             "title": "Secondary Uom Id"
+          },
+          "selling_price_currency": {
+            "anyOf": [
+              {
+                "maxLength": 3,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selling Price Currency"
+          },
+          "selling_price_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selling Price Minor"
           },
           "track_expiry": {
             "anyOf": [
@@ -1513,6 +1587,361 @@
         "title": "LocationPatch",
         "type": "object"
       },
+      "OrderCancelIn": {
+        "additionalProperties": false,
+        "description": "`POST /orders/{id}/cancel`. A reason is required, recorded on the `order_transitions` row\nand the cancellation event, the same as a purchase order's cancel.",
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "reason"
+        ],
+        "title": "OrderCancelIn",
+        "type": "object"
+      },
+      "OrderHoldIn": {
+        "additionalProperties": false,
+        "description": "`POST /orders/{id}/hold`. A reason is required \u2014 an operator hold, e.g. the customer\nasked to delay collection (ADR-0025 \u00a71).",
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "reason"
+        ],
+        "title": "OrderHoldIn",
+        "type": "object"
+      },
+      "OrderIn": {
+        "additionalProperties": false,
+        "description": "`POST /orders`. Creates a `DRAFT`. `customer_id` names a `services/customer` contact by\nplain UUID (ADR-0000 \u00a710 \u2014 no cross-schema FK); a walk-in or no-CRM-record order instead (or\nadditionally) carries `customer_name`/`customer_phone` by hand. At least one of a customer id\nor a manual name/phone pair is required \u2014 an order for nobody is not a real order.",
+        "properties": {
+          "channel": {
+            "enum": [
+              "phone",
+              "manual",
+              "sales",
+              "walk_in"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "currency": {
+            "default": "INR",
+            "pattern": "^[A-Z]{3}$",
+            "title": "Currency",
+            "type": "string"
+          },
+          "customer_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer Id"
+          },
+          "customer_name": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Customer Name",
+            "type": "string"
+          },
+          "customer_phone": {
+            "default": "",
+            "maxLength": 32,
+            "title": "Customer Phone",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/OrderLineIn"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Lines",
+            "type": "array"
+          },
+          "warehouse_id": {
+            "format": "uuid",
+            "title": "Warehouse Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel",
+          "warehouse_id",
+          "lines"
+        ],
+        "title": "OrderIn",
+        "type": "object"
+      },
+      "OrderLineIn": {
+        "additionalProperties": false,
+        "description": "One line on `OrderIn`. `selling_price_minor`, when given, is this line's own price and\n`place` will never overwrite it with the item's current `selling_price_minor`; when omitted,\n`place` fills it from the item, and refuses the whole order if the item has none either\n(ADR-0024 \u00a73). Any caller holding `orders.order.create` may set this \u2014 ADR-0024 \u00a73 means it\nfor an item that has no price of its own, not as a general override, but F2 does not restrict\nwho may use it; `OrderLineItem.price_overridden` and the create/place audit rows make every\nuse of it visible instead (review MAJOR B).",
+        "properties": {
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "selling_price_minor": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selling Price Minor"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "quantity"
+        ],
+        "title": "OrderLineIn",
+        "type": "object"
+      },
+      "OrderLineItem": {
+        "description": "One line on an order. `selling_price_minor`/`line_total_minor` are `null` until `place`\nprices the line (ADR-0024 \u00a73) \u2014 NOT NULL on every line of a `PLACED` order or later.\n\n`price_overridden`/`catalogue_price_minor` (review MAJOR B) make an explicit per-line price\nvisible rather than a silent substitution: `price_overridden` is `True` when this line named\nits own price at create time instead of taking the item's; `catalogue_price_minor` is the\nitem's own `selling_price_minor` as of this read, for a reviewer (e.g. whoever accepts the\norder) to compare against `selling_price_minor` above. Neither is stored \u2014 both are computed\non every read (`app.orders.selectors.order_line_out`), so `catalogue_price_minor` always\nreflects the item's *current* price, not the one in force when the line was created.",
+        "properties": {
+          "catalogue_price_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalogue Price Minor"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "line_total_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Line Total Minor"
+          },
+          "price_overridden": {
+            "title": "Price Overridden",
+            "type": "boolean"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "selling_price_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selling Price Minor"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "inventory_item_id",
+          "sku",
+          "quantity",
+          "selling_price_minor",
+          "line_total_minor",
+          "price_overridden",
+          "catalogue_price_minor"
+        ],
+        "title": "OrderLineItem",
+        "type": "object"
+      },
+      "OrderOut": {
+        "description": "Mirrors the SPA's `OrderOut`. `total_minor` is `subtotal_minor` (F2 carries no\ndiscount/tax/shipping line \u2014 those are a later phase's addition); both are `0` until `place`\nprices the lines.",
+        "properties": {
+          "channel": {
+            "enum": [
+              "phone",
+              "manual",
+              "sales",
+              "walk_in"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "customer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer Id"
+          },
+          "customer_name": {
+            "title": "Customer Name",
+            "type": "string"
+          },
+          "customer_phone": {
+            "title": "Customer Phone",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/OrderLineItem"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "DRAFT",
+              "PLACED",
+              "ACCEPTED",
+              "IN_FULFILMENT",
+              "ON_HOLD",
+              "READY",
+              "HANDED_OVER",
+              "DELIVERED",
+              "COMPLETED",
+              "CANCELLED",
+              "REJECTED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "subtotal_minor": {
+            "title": "Subtotal Minor",
+            "type": "integer"
+          },
+          "total_minor": {
+            "title": "Total Minor",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "channel",
+          "status",
+          "version",
+          "warehouse_id",
+          "customer_id",
+          "customer_name",
+          "customer_phone",
+          "subtotal_minor",
+          "total_minor",
+          "currency",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "OrderOut",
+        "type": "object"
+      },
+      "OrderVersionIn": {
+        "additionalProperties": false,
+        "description": "The optimistic-lock envelope every order transition takes (ADR-0025 \u00a71): the caller's\nlast-known `version`. A stale value is a 409, naming the order's current version.",
+        "properties": {
+          "version": {
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "OrderVersionIn",
+        "type": "object"
+      },
       "OverviewOut": {
         "description": "The Operations overview's server-side rollup. The SPA can derive all of this from the\nlist endpoints; this exposes the same arithmetic once, so a reporting view can share it.\n\n`open_pos` counts POs still in flight (draft or approved); `inventory_value_minor` is the\nvalue of stock on hand; `low_stock_count` is items at or below their reorder point;\n`out_of_stock_count` is items with nothing on hand; `on_time_pct` is the real, spend-weighted\non-time delivery rate computed from received purchase orders (`expected_date` vs\n`received_date`) \u2014 `None` when this organization has not received a PO yet, never a\nmanufactured percentage. The series and breakdowns feed the charts.",
         "properties": {
@@ -1736,6 +2165,42 @@
           "pages"
         ],
         "title": "Page[LocationOut]",
+        "type": "object"
+      },
+      "Page_OrderOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OrderOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[OrderOut]",
         "type": "object"
       },
       "Page_PurchaseOrderOut_": {
@@ -2390,6 +2855,195 @@
           "notes"
         ],
         "title": "PurchaseOrderReceiptOut",
+        "type": "object"
+      },
+      "QuoteIn": {
+        "additionalProperties": false,
+        "description": "`POST /orders/quote`. Read-only \u2014 posts nothing, creates no order.",
+        "properties": {
+          "currency": {
+            "default": "INR",
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Currency",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/QuoteLineIn"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Lines",
+            "type": "array"
+          },
+          "warehouse_id": {
+            "format": "uuid",
+            "title": "Warehouse Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "warehouse_id",
+          "lines"
+        ],
+        "title": "QuoteIn",
+        "type": "object"
+      },
+      "QuoteLineIn": {
+        "additionalProperties": false,
+        "description": "One line of `POST /orders/quote`. Same shape as `OrderLineIn` \u2014 a quote is what an order's\nlines would price to before any order exists.",
+        "properties": {
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "selling_price_minor": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selling Price Minor"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "quantity"
+        ],
+        "title": "QuoteLineIn",
+        "type": "object"
+      },
+      "QuoteLineOut": {
+        "description": "One priced (or unpriceable) line of a quote preview, with its availability against\n`InventoryItem.available_milli` at the requested warehouse.",
+        "properties": {
+          "available_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Available Qty",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "line_total_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Line Total Minor"
+          },
+          "priced": {
+            "title": "Priced",
+            "type": "boolean"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "selling_price_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selling Price Minor"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "sufficient": {
+            "title": "Sufficient",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "sku",
+          "quantity",
+          "priced",
+          "selling_price_minor",
+          "line_total_minor",
+          "available_qty",
+          "sufficient"
+        ],
+        "title": "QuoteLineOut",
+        "type": "object"
+      },
+      "QuoteOut": {
+        "description": "What `POST /orders/quote` answers with: a priced total (over the lines that could be\npriced) plus each line's availability. `fully_priced` is `False` when any line named no price\nand matched no item price either \u2014 `place` would refuse such an order outright.",
+        "properties": {
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "fully_available": {
+            "title": "Fully Available",
+            "type": "boolean"
+          },
+          "fully_priced": {
+            "title": "Fully Priced",
+            "type": "boolean"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/QuoteLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "subtotal_minor": {
+            "title": "Subtotal Minor",
+            "type": "integer"
+          },
+          "total_minor": {
+            "title": "Total Minor",
+            "type": "integer"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "warehouse_id",
+          "currency",
+          "subtotal_minor",
+          "total_minor",
+          "fully_priced",
+          "fully_available",
+          "lines"
+        ],
+        "title": "QuoteOut",
         "type": "object"
       },
       "ReceiveIn": {
@@ -4892,6 +5546,499 @@
           }
         },
         "summary": "Update a location",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/orders": {
+      "get": {
+        "operationId": "list_orders_api_v1_operations_orders_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "channel",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel"
+            }
+          },
+          {
+            "in": "query",
+            "name": "warehouse_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warehouse Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_OrderOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Orders, filterable by status and channel",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "create_order_api_v1_operations_orders_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a draft order",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/orders/quote": {
+      "post": {
+        "operationId": "quote_order_api_v1_operations_orders_quote_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuoteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuoteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Price a set of lines against a warehouse, read-only (posts nothing)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/orders/{order_id}": {
+      "get": {
+        "operationId": "read_order_api_v1_operations_orders__order_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One order, with its lines",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/orders/{order_id}/accept": {
+      "post": {
+        "operationId": "accept_order_api_v1_operations_orders__order_id__accept_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderVersionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept a placed order: reserve every line atomically (credit check not yet implemented \u2014 pending F4 billing)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/orders/{order_id}/cancel": {
+      "post": {
+        "operationId": "cancel_order_api_v1_operations_orders__order_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderCancelIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel an order and release every open reservation it holds",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/orders/{order_id}/hold": {
+      "post": {
+        "operationId": "hold_order_api_v1_operations_orders__order_id__hold_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderHoldIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put an order on hold (reason required)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/orders/{order_id}/place": {
+      "post": {
+        "operationId": "place_order_api_v1_operations_orders__order_id__place_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderVersionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Place a draft order: prices every line, reserves nothing",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/orders/{order_id}/release": {
+      "post": {
+        "operationId": "release_order_api_v1_operations_orders__order_id__release_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderVersionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Release a held order (target recomputed from its own facts)",
         "tags": [
           "operations"
         ]

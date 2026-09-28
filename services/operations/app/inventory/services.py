@@ -886,11 +886,16 @@ async def create_inventory_item(
     track_expiry: bool = False,
     track_quality: bool = False,
     is_active: bool = True,
+    selling_price_minor: int | None = None,
+    selling_price_currency: str | None = None,
     request: Request | None = None,
 ) -> InventoryItem:
     """Create an inventory item at its warehouse's default bin. `unit_value_minor` is per-unit
     stock value in integer minor units of `currency`; low-stock is derived, never stored.
     `stocked_at` defaults to today (`InventoryItemOut.updated_at` is a required field).
+
+    `selling_price_minor`/`selling_price_currency` (ADR-0024 §3) are what a customer order line
+    prices from — distinct from `unit_value_minor`, which is cost — both null or both set.
 
     `on_hand` — the opening quantity, in whole units — is never written anywhere directly: a
     non-zero one becomes an `opening` move through the ledger, so the item's stock is the sum of
@@ -939,6 +944,10 @@ async def create_inventory_item(
         track_expiry=track_expiry,
         track_quality=track_quality,
         is_active=is_active,
+        selling_price_minor=selling_price_minor,
+        selling_price_currency=(
+            selling_price_currency.upper() if selling_price_currency else selling_price_currency
+        ),
     )
     session.add(item)
     await _flush_item(session, item)
@@ -1041,6 +1050,8 @@ async def update_inventory_item(
         changes["secondary_uom_id"] = await _resolve_secondary_uom(
             session, ctx.organization_id, changes["secondary_uom_id"]
         )
+    if changes.get("selling_price_currency"):
+        changes["selling_price_currency"] = changes["selling_price_currency"].upper()
 
     before = {field: getattr(item, field) for field in changes}
     old_home = item.home_location_id

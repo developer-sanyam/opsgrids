@@ -42,6 +42,10 @@ from platform_core.db import TENANT_GUC, get_session
 from tests.helpers import ctx_for
 
 TENANT_TABLES = (
+    "order_transitions",
+    "order_lines",
+    "orders",
+    "fulfilment_settings",
     "purchase_order_lines",
     "purchase_orders",
     "inventory_discrepancies",

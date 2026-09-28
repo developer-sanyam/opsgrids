@@ -1,4 +1,12 @@
-import { ClipboardListIcon, FactoryIcon, FolderIcon, HomeIcon, LayersIcon, WarehouseIcon } from "@opsgrids/ui";
+import {
+  ClipboardListIcon,
+  FactoryIcon,
+  FolderIcon,
+  HomeIcon,
+  LayersIcon,
+  PackageIcon,
+  WarehouseIcon,
+} from "@opsgrids/ui";
 import type { NavEntry, NavGroup } from "@opsgrids/ui";
 
 // Every entry here has a real screen behind it — a nav item whose screen has no backend does not
@@ -11,6 +19,7 @@ const GROUPS: NavGroup[] = [
     title: "Main Menu",
     items: [
       { to: "/", label: "Overview", icon: HomeIcon, end: true },
+      { to: "/orders", label: "Orders", icon: PackageIcon },
       { to: "/purchase-orders", label: "Purchase Orders", icon: ClipboardListIcon },
       { to: "/inventory", label: "Inventory", icon: LayersIcon },
       { to: "/inventory/categories", label: "Item Categories", icon: FolderIcon },

@@ -186,6 +186,11 @@ export interface InventoryItemOut {
   track_expiry: boolean;
   track_quality: boolean;
   is_active: boolean;
+  /** What a customer order line is priced at (ADR-0024 §3, fulfilment plan F2) — distinct from
+   *  `unit_value_minor` above, which is cost. Both `null` (no selling price set yet — an order
+   *  line still needs its own explicit price then) or both set. */
+  selling_price_minor: number | null;
+  selling_price_currency: string | null;
 }
 
 /** `POST /inventory`. `on_hand` is never accepted — `opening_on_hand` becomes the item's first
@@ -514,4 +519,139 @@ export interface OverviewOut {
   po_status_mix: StatusSlice[];
   top_suppliers: SupplierSpend[];
   attention: AttentionItem[];
+}
+
+/* ---------------------------------- orders (Fulfilment F2, ADR-0024/0025) ---------------------------------- */
+/**
+ * Mirrors `services/operations/app/schemas.py`'s order section exactly (confirmed against the
+ * landed backend, not the plan doc alone): `OrderChannel`, `OrderStatus`, `OrderLineItem`,
+ * `OrderLineIn`, `OrderOut`, `OrderIn`, `OrderVersionIn`/`OrderHoldIn`/`OrderCancelIn`, `QuoteIn`/
+ * `QuoteOut` and their line shapes. Every mutating call below carries the order's current
+ * `version` — a 409 on a stale one is ordinary optimistic-lock traffic, not a fault.
+ */
+
+export type OrderChannel = "phone" | "manual" | "sales" | "walk_in";
+
+/** The order state machine's full vocabulary (ADR-0025 §1) — build a status filter or badge set
+ *  from exactly this list, never a subset invented for one screen. */
+export type OrderStatus =
+  | "DRAFT"
+  | "PLACED"
+  | "ACCEPTED"
+  | "IN_FULFILMENT"
+  | "ON_HOLD"
+  | "READY"
+  | "HANDED_OVER"
+  | "DELIVERED"
+  | "COMPLETED"
+  | "CANCELLED"
+  | "REJECTED";
+
+/** One line on an order. `selling_price_minor`/`line_total_minor` are `null` until `place` prices
+ *  the line — NOT `null` on any line of a `PLACED` order or later. */
+export interface OrderLineItem {
+  id: string;
+  inventory_item_id: string;
+  sku: string;
+  quantity: Qty;
+  selling_price_minor: number | null;
+  line_total_minor: number | null;
+}
+
+/** One line on `OrderIn`/`QuoteIn`. `selling_price_minor`, when given, is this line's own price
+ *  and is never overwritten by the item's current price at `place`; when omitted, `place` fills it
+ *  from the item, and refuses the whole order if the item has no selling price either. */
+export interface OrderLineIn {
+  inventory_item_id: string;
+  quantity: Qty;
+  selling_price_minor?: number;
+}
+
+/** Mirrors `OrderOut`. `total_minor` equals `subtotal_minor` — F2 carries no discount, tax or
+ *  shipping line. Both are `0` until `place` prices the lines. */
+export interface OrderOut {
+  id: string;
+  number: string;
+  channel: OrderChannel;
+  status: OrderStatus;
+  /** The optimistic-lock version. Every mutating call below must send the value this order was
+   *  last read at; a mismatch is a 409 naming the order's current version. */
+  version: number;
+  warehouse_id: string;
+  customer_id: string | null;
+  customer_name: string;
+  customer_phone: string;
+  subtotal_minor: number;
+  total_minor: number;
+  currency: string;
+  lines: OrderLineItem[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** `POST /orders`. Creates a `DRAFT`. At least one of `customer_id` or a `customer_name`/
+ *  `customer_phone` pair is required — the server 422s an order for nobody. */
+export interface OrderIn {
+  channel: OrderChannel;
+  warehouse_id: string;
+  customer_id?: string | null;
+  customer_name?: string;
+  customer_phone?: string;
+  currency?: string;
+  lines: OrderLineIn[];
+}
+
+/** The optimistic-lock envelope every order transition takes. */
+export interface OrderVersionIn {
+  version: number;
+}
+
+/** `POST /orders/{id}/hold`. A reason is required. */
+export interface OrderHoldIn extends OrderVersionIn {
+  reason: string;
+}
+
+/** `POST /orders/{id}/cancel`. A reason is required, recorded on the transition row. */
+export interface OrderCancelIn extends OrderVersionIn {
+  reason: string;
+}
+
+/** One line of `POST /orders/quote` — same shape as `OrderLineIn`. */
+export interface QuoteLineIn {
+  inventory_item_id: string;
+  quantity: Qty;
+  selling_price_minor?: number;
+}
+
+/** `POST /orders/quote`. Read-only — posts nothing, creates no order. */
+export interface QuoteIn {
+  warehouse_id: string;
+  currency?: string;
+  lines: QuoteLineIn[];
+}
+
+/** One priced (or unpriceable) line of a quote preview, with its availability at the requested
+ *  warehouse. `priced` is `false` when the item has no selling price and the line named none
+ *  either — the same refusal `place` would give, surfaced here instead so a preview never 422s. */
+export interface QuoteLineOut {
+  inventory_item_id: string;
+  sku: string;
+  quantity: Qty;
+  priced: boolean;
+  selling_price_minor: number | null;
+  line_total_minor: number | null;
+  available_qty: Qty;
+  sufficient: boolean;
+}
+
+/** What `POST /orders/quote` answers with. `fully_priced`/`fully_available` are `false` when any
+ *  line couldn't be priced, or is short — never a 422; a quote is a preview, not a refusal. */
+export interface QuoteOut {
+  warehouse_id: string;
+  currency: string;
+  subtotal_minor: number;
+  total_minor: number;
+  fully_priced: boolean;
+  fully_available: boolean;
+  lines: QuoteLineOut[];
 }

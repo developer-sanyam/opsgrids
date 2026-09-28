@@ -15,6 +15,7 @@ import type {
   ItemCategoryOut,
   ItemVariantOut,
   LocationOut,
+  OrderOut,
   PurchaseOrderOut,
   StockMovementOut,
   SupplierOut,
@@ -289,18 +290,22 @@ interface InvSeed {
   uom: string;
   unitValue: number; // rupees per unit
   updated: string;
+  /** What this item sells for on a customer order (ADR-0024 §3, Fulfilment F2) — rupees per
+   *  unit, distinct from `unitValue` (cost). `undefined` leaves it unset, the way most items in a
+   *  fresh org start: an order line for one of these still needs its own explicit price. */
+  sellingPrice?: number;
 }
 
 const INVENTORY_SEEDS: InvSeed[] = [
-  { sku: "RM-STL-4501", name: "Cold-rolled steel coil, 1.2mm", category: "raw_materials", warehouse: "Pune Plant", onHand: 82, reorder: 40, uom: "MT", unitValue: 62_400, updated: "2026-08-23" },
-  { sku: "RM-STL-4520", name: "Galvanised steel sheet, 0.8mm", category: "raw_materials", warehouse: "Pune Plant", onHand: 21, reorder: 30, uom: "MT", unitValue: 71_000, updated: "2026-08-23" },
-  { sku: "RM-ALU-7075", name: "Aluminium billet, 7075-T6", category: "raw_materials", warehouse: "Pune Plant", onHand: 6, reorder: 12, uom: "MT", unitValue: 2_18_000, updated: "2026-08-22" },
+  { sku: "RM-STL-4501", name: "Cold-rolled steel coil, 1.2mm", category: "raw_materials", warehouse: "Pune Plant", onHand: 82, reorder: 40, uom: "MT", unitValue: 62_400, updated: "2026-08-23", sellingPrice: 74_900 },
+  { sku: "RM-STL-4520", name: "Galvanised steel sheet, 0.8mm", category: "raw_materials", warehouse: "Pune Plant", onHand: 21, reorder: 30, uom: "MT", unitValue: 71_000, updated: "2026-08-23", sellingPrice: 84_500 },
+  { sku: "RM-ALU-7075", name: "Aluminium billet, 7075-T6", category: "raw_materials", warehouse: "Pune Plant", onHand: 6, reorder: 12, uom: "MT", unitValue: 2_18_000, updated: "2026-08-22", sellingPrice: 2_54_000 },
   { sku: "RM-ALU-6061", name: "Aluminium billet, 6061-T6", category: "raw_materials", warehouse: "Pune Plant", onHand: 34, reorder: 15, uom: "MT", unitValue: 1_96_000, updated: "2026-08-21" },
   { sku: "RM-CU-ROD", name: "Copper rod, 12mm", category: "raw_materials", warehouse: "Chennai Hub", onHand: 3, reorder: 5, uom: "MT", unitValue: 7_84_000, updated: "2026-08-20" },
   { sku: "RM-POL-ABS", name: "ABS polymer granules, natural", category: "raw_materials", warehouse: "Chennai Hub", onHand: 19, reorder: 10, uom: "MT", unitValue: 1_34_000, updated: "2026-08-22" },
   { sku: "RM-POL-PP0", name: "Polypropylene homopolymer", category: "raw_materials", warehouse: "Chennai Hub", onHand: 7, reorder: 8, uom: "MT", unitValue: 1_12_000, updated: "2026-08-19" },
-  { sku: "CMP-PCB-220", name: "Control PCB assembly, rev C", category: "components", warehouse: "Bengaluru Store", onHand: 260, reorder: 300, uom: "pcs", unitValue: 1_840, updated: "2026-08-23" },
-  { sku: "CMP-REL-014", name: "24V industrial relay", category: "components", warehouse: "Bengaluru Store", onHand: 4200, reorder: 1500, uom: "pcs", unitValue: 245, updated: "2026-08-23" },
+  { sku: "CMP-PCB-220", name: "Control PCB assembly, rev C", category: "components", warehouse: "Bengaluru Store", onHand: 260, reorder: 300, uom: "pcs", unitValue: 1_840, updated: "2026-08-23", sellingPrice: 2_450 },
+  { sku: "CMP-REL-014", name: "24V industrial relay", category: "components", warehouse: "Bengaluru Store", onHand: 4200, reorder: 1500, uom: "pcs", unitValue: 245, updated: "2026-08-23", sellingPrice: 340 },
   { sku: "CMP-SEN-330", name: "Proximity sensor, M18", category: "components", warehouse: "Bengaluru Store", onHand: 640, reorder: 400, uom: "pcs", unitValue: 410, updated: "2026-08-22" },
   { sku: "CMP-CST-410", name: "Gearbox housing casting, GH-410", category: "components", warehouse: "Pune Plant", onHand: 40, reorder: 120, uom: "pcs", unitValue: 3_150, updated: "2026-08-21" },
   { sku: "CMP-CON-088", name: "16-pin ribbon connector", category: "components", warehouse: "Bengaluru Store", onHand: 8800, reorder: 3000, uom: "pcs", unitValue: 62, updated: "2026-08-20" },
@@ -338,6 +343,8 @@ export const INVENTORY: InventoryItemOut[] = INVENTORY_SEEDS.map((s, i) => ({
   track_expiry: false,
   track_quality: false,
   is_active: true,
+  selling_price_minor: s.sellingPrice === undefined ? null : inr(s.sellingPrice),
+  selling_price_currency: s.sellingPrice === undefined ? null : CURRENCY,
 }));
 
 /* ------------------------------ item master (Phase 1) ---------------------- */
@@ -512,3 +519,149 @@ export const MOVEMENTS: Record<string, StockMovementOut[]> = Object.fromEntries(
     ],
   ]),
 );
+
+/* ---------------------------- orders (Fulfilment F2) ------------------------------ */
+/**
+ * Hand-rolled against the landed backend contract (`services/operations/app/schemas.py`,
+ * `app/api/routes.py`), the same "confirmed against the real code" footing F1's `locations`
+ * fixtures were built on — `libs/contracts/openapi/operations.json` does carry the `orders` paths
+ * as of this slice, so this is a fixture-mode mirror of a real, regenerable contract, not a guess.
+ */
+
+const orderUuid = (n: number): string => `70570000-0000-4000-8000-${n.toString().padStart(12, "0")}`;
+const orderLineUuid = (order: number, n: number): string =>
+  `70580000-0000-4000-8000-${order.toString().padStart(6, "0")}${n.toString().padStart(6, "0")}`;
+
+const PUNE_ID = whUuid(2);
+const CHENNAI_ID = whUuid(3);
+const BENGALURU_ID = whUuid(4);
+
+/** `sku -> InventoryItemOut`, for building order line fixtures off the same seed the inventory
+ *  screens read. */
+const invBySku = new Map(INVENTORY.map((item) => [item.sku, item]));
+function invOrThrow(sku: string): InventoryItemOut {
+  const found = invBySku.get(sku);
+  if (!found) throw new Error(`Unknown inventory SKU in order fixtures: ${sku}`);
+  return found;
+}
+
+interface OrderLineSeed {
+  sku: string;
+  quantity: string;
+  /** `null` mirrors an unpriced line on a `DRAFT` order — `place` fills it, or refuses if the
+   *  item has no selling price either. Omit once the order is `PLACED` or later, priced for real. */
+  priceRupees?: number;
+}
+
+interface OrderSeed {
+  n: number;
+  number: string;
+  channel: OrderOut["channel"];
+  status: OrderOut["status"];
+  version: number;
+  warehouseId: string;
+  customerName: string;
+  customerPhone: string;
+  createdAt: string;
+  updatedAt: string;
+  lines: OrderLineSeed[];
+}
+
+const ORDER_SEEDS: OrderSeed[] = [
+  {
+    n: 1,
+    number: "ORD-2026-0301",
+    channel: "phone",
+    status: "DRAFT",
+    version: 0,
+    warehouseId: PUNE_ID,
+    customerName: "Rohan Malhotra",
+    customerPhone: "+91 98200 11122",
+    createdAt: "2026-08-24T09:15:00Z",
+    updatedAt: "2026-08-24T09:15:00Z",
+    lines: [
+      { sku: "RM-STL-4501", quantity: "5" },
+      { sku: "CMP-PCB-220", quantity: "12" },
+    ],
+  },
+  {
+    n: 2,
+    number: "ORD-2026-0298",
+    channel: "manual",
+    status: "PLACED",
+    version: 1,
+    warehouseId: BENGALURU_ID,
+    customerName: "Fatima Sheikh",
+    customerPhone: "+91 90040 55667",
+    createdAt: "2026-08-22T11:00:00Z",
+    updatedAt: "2026-08-22T11:04:00Z",
+    lines: [{ sku: "CMP-REL-014", quantity: "300", priceRupees: 340 }],
+  },
+  {
+    n: 3,
+    number: "ORD-2026-0290",
+    channel: "sales",
+    status: "ACCEPTED",
+    version: 2,
+    warehouseId: PUNE_ID,
+    customerName: "Vikram Dutta",
+    customerPhone: "+91 88888 22334",
+    createdAt: "2026-08-18T08:30:00Z",
+    updatedAt: "2026-08-18T09:10:00Z",
+    lines: [
+      { sku: "RM-STL-4501", quantity: "10", priceRupees: 74_900 },
+      { sku: "RM-ALU-7075", quantity: "2", priceRupees: 2_54_000 },
+    ],
+  },
+  {
+    n: 4,
+    number: "ORD-2026-0281",
+    channel: "manual",
+    status: "CANCELLED",
+    version: 2,
+    warehouseId: CHENNAI_ID,
+    customerName: "Priya Nambiar",
+    customerPhone: "+91 99009 77112",
+    createdAt: "2026-08-11T14:20:00Z",
+    updatedAt: "2026-08-12T10:05:00Z",
+    lines: [{ sku: "RM-POL-ABS", quantity: "4", priceRupees: 1_60_000 }],
+  },
+];
+
+function orderLineTotal(quantity: string, priceMinor: number | null): number | null {
+  if (priceMinor === null) return null;
+  return Math.round(Number(quantity) * priceMinor);
+}
+
+export const ORDERS: OrderOut[] = ORDER_SEEDS.map((seed) => {
+  const lines = seed.lines.map((line, i) => {
+    const item = invOrThrow(line.sku);
+    const priceMinor = line.priceRupees === undefined ? null : inr(line.priceRupees);
+    return {
+      id: orderLineUuid(seed.n, i + 1),
+      inventory_item_id: item.id,
+      sku: item.sku,
+      quantity: line.quantity,
+      selling_price_minor: priceMinor,
+      line_total_minor: orderLineTotal(line.quantity, priceMinor),
+    };
+  });
+  const subtotal = lines.reduce((sum, l) => sum + (l.line_total_minor ?? 0), 0);
+  return {
+    id: orderUuid(seed.n),
+    number: seed.number,
+    channel: seed.channel,
+    status: seed.status,
+    version: seed.version,
+    warehouse_id: seed.warehouseId,
+    customer_id: null,
+    customer_name: seed.customerName,
+    customer_phone: seed.customerPhone,
+    subtotal_minor: subtotal,
+    total_minor: subtotal,
+    currency: CURRENCY,
+    lines,
+    created_at: seed.createdAt,
+    updated_at: seed.updatedAt,
+  };
+});

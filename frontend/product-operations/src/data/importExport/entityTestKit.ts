@@ -103,6 +103,8 @@ export function inventoryItemOut(overrides: Partial<InventoryItemOut> = {}): Inv
     track_expiry: false,
     track_quality: false,
     is_active: true,
+    selling_price_minor: null,
+    selling_price_currency: null,
     ...overrides,
   };
 }

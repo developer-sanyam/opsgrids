@@ -221,6 +221,49 @@ OPERATIONS = PermissionCatalogue(
         # HSN/tax fields and secondary UOM (ADR-0014 Phase 1). Reuses `inventory.item.read/write`
         # rather than a permission per sub-resource: these are all facets of the one item master
         # `inventory_items` already carries, not a separate object with its own audience.
+        #
+        # Orders (ADR-0024 §1, ADR-0025; Fulfilment plan F2). Unlike a purchase order — a buyer's
+        # own document, with a meaningful OWN reading (`raised_by_id`) — a customer order is a
+        # shared operational queue: whoever is at the counter or on the phone has to see and work
+        # every order to fulfil it, not only the one they personally took. So, like suppliers,
+        # inventory and warehouses, every order permission is ORG-only (`default_scope=max_scope
+        # ="ORG"`; no OWN reading is offered at all, matching `procurement.supplier.read/write`'s
+        # own reasoning). `read` also covers the quote preview (`POST /orders/quote`): it posts
+        # nothing and needs no stronger permission than seeing an order would.
+        PermissionSpec(
+            "orders", "order", "read", "See orders, their lines, and price a quote", "ORG", "ORG"
+        ),
+        PermissionSpec("orders", "order", "create", "Create a draft order", "ORG", "ORG"),
+        # Places a draft (prices its lines) and moves a hold/release — the ordinary counter-staff
+        # work of running an order up to the point stock is actually promised.
+        PermissionSpec(
+            "orders",
+            "order",
+            "write",
+            "Place a draft order, and hold/release an accepted one",
+            "ORG",
+            "ORG",
+        ),
+        # Accepting is where the business commits stock (ADR-0025 §1's guard: a credit check, an
+        # all-or-nothing multi-line reservation) — a bigger commitment than raising or placing an
+        # order, so it is its own permission, the same separation `purchase_order.approve` draws
+        # from `purchase_order.write`. `OPERATIONS_USER` (the counter/phone role) does not hold
+        # it by default; `OPERATIONS_MANAGER` and `OPERATIONS_ADMIN` do.
+        PermissionSpec(
+            "orders", "order", "accept", "Accept a placed order, reserving its stock", "ORG", "ORG"
+        ),
+        # Cancelling releases whatever stock `accept` already promised and starts finance's and
+        # payment's own compensation (ADR-0025 §1's cancellation fan-out) — kept apart from
+        # `order.write` for the same reason PO's `approve` is separate from its `write`: undoing
+        # a commitment is not the same act as making the ordinary ones.
+        PermissionSpec(
+            "orders",
+            "order",
+            "cancel",
+            "Cancel an order and release its reservations",
+            "ORG",
+            "ORG",
+        ),
     ],
 )
 
@@ -243,8 +286,10 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
         product=PRODUCT,
         description=(
             "Raises, approves and receives purchase orders org-wide; maintains suppliers and "
-            "inventory (including stock adjustments); reads warehouses. Does not create or "
-            "rename warehouses — that stays with the admin."
+            "inventory (including stock adjustments); reads warehouses. Accepts and cancels "
+            "customer orders — the stock-commitment and stock-release steps — on top of the "
+            "ordinary counter work every Operations user does. Does not create or rename "
+            "warehouses — that stays with the admin."
         ),
         grants=OPERATIONS.pick(
             ("operations.procurement.purchase_order.read", "ORG"),
@@ -259,6 +304,11 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.inventory.warehouse.read", "ORG"),
             ("operations.inventory.location.read", "ORG"),
             ("operations.inventory.location.write", "ORG"),
+            ("operations.orders.order.read", "ORG"),
+            ("operations.orders.order.create", "ORG"),
+            ("operations.orders.order.write", "ORG"),
+            ("operations.orders.order.accept", "ORG"),
+            ("operations.orders.order.cancel", "ORG"),
         ),
     ),
     RoleTemplate(
@@ -266,8 +316,11 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
         name="Operations user",
         product=PRODUCT,
         description=(
-            "Every person with an Operations seat. Raises and sees their own purchase orders, and "
-            "reads the shared suppliers, inventory, warehouses and locations."
+            "Every person with an Operations seat. Raises and sees their own purchase orders, "
+            "reads the shared suppliers, inventory, warehouses and locations, and runs the "
+            "counter: creates and places customer orders, holds and releases them. Does not "
+            "accept (commit stock to) or cancel an order — those stay with the manager, the same "
+            "split `purchase_order.approve` draws from `purchase_order.write`."
         ),
         is_default=True,
         grants=OPERATIONS.pick(
@@ -277,6 +330,9 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.inventory.item.read", "ORG"),
             ("operations.inventory.warehouse.read", "ORG"),
             ("operations.inventory.location.read", "ORG"),
+            ("operations.orders.order.read", "ORG"),
+            ("operations.orders.order.create", "ORG"),
+            ("operations.orders.order.write", "ORG"),
         ),
     ),
 ]

@@ -30,7 +30,9 @@ from app.inventory import ledger as inv_ledger
 from app.inventory import selectors as inv_selectors
 from app.inventory import services as inv_services
 from app.inventory.quantity import QuantityError, parse_qty
-from app.models import SCHEMA, PurchaseOrderLine
+from app.models import SCHEMA, Order, PurchaseOrderLine
+from app.orders import selectors as order_selectors
+from app.orders import services as order_services
 from app.schemas import (
     CancelIn,
     DiscrepancyResolveIn,
@@ -50,11 +52,18 @@ from app.schemas import (
     LocationIn,
     LocationOut,
     LocationPatch,
+    OrderCancelIn,
+    OrderHoldIn,
+    OrderIn,
+    OrderOut,
+    OrderVersionIn,
     OverviewOut,
     PurchaseOrderIn,
     PurchaseOrderOut,
     PurchaseOrderPatch,
     PurchaseOrderReceiptOut,
+    QuoteIn,
+    QuoteOut,
     ReceiveIn,
     ReconcileOut,
     ReservationReleaseIn,
@@ -71,7 +80,7 @@ from app.schemas import (
     WarehousePatch,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
-from platform_core.db import get_tenant_session
+from platform_core.db import get_session, get_tenant_session
 from platform_core.errors import NotFoundProblem, ValidationProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
@@ -131,6 +140,32 @@ LocationWrite = Annotated[ScopeContext, Depends(require("operations.inventory.lo
 #: Reservations narrow what everyone else in the org can promise, so there is no OWN reading.
 StockReserve = Annotated[
     ScopeContext, Depends(require("operations.inventory.stock.reserve", minimum=Scope.ORG))
+]
+
+# ------------------------------------------------------------------ orders (ADR-0024, ADR-0025)
+
+#: `accept` alone uses the raw, unwrapped session: `order_services.accept_order`'s claim/call/
+#: record shape (`docs/io-outside-transactions.md`) needs the credit check to run between two
+#: separate transactions on one session, with no transaction open while it runs. Binding the
+#: whole route in `get_tenant_session`'s one request-long transaction — every other route here
+#: does, and should — would hold that transaction open across the network call, exactly the
+#: pattern the guard flags (`services/lead/app/api/routes.py`'s `:convert` draws the same line).
+RawSessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+#: Orders are a shared operational queue (`app.catalogue`'s own reasoning), not a per-person
+#: document — like `SupplierRead`/`WarehouseRead`/`InventoryRead`, no `minimum=` is set here
+#: because the catalogue itself offers no OWN grant to floor. `accept`/`cancel` below set it
+#: explicitly anyway, matching `StockReserve`/`StockReconcile`'s stricter, defense-in-depth
+#: treatment of the two genuinely consequential order actions (committing and un-committing
+#: stock), not the plain-CRUD ones.
+OrderRead = Annotated[ScopeContext, Depends(require("operations.orders.order.read"))]
+OrderCreate = Annotated[ScopeContext, Depends(require("operations.orders.order.create"))]
+OrderWrite = Annotated[ScopeContext, Depends(require("operations.orders.order.write"))]
+OrderAccept = Annotated[
+    ScopeContext, Depends(require("operations.orders.order.accept", minimum=Scope.ORG))
+]
+OrderCancel = Annotated[
+    ScopeContext, Depends(require("operations.orders.order.cancel", minimum=Scope.ORG))
 ]
 
 
@@ -509,6 +544,8 @@ async def create_inventory_item(
         track_expiry=payload.track_expiry,
         track_quality=payload.track_quality,
         is_active=payload.is_active,
+        selling_price_minor=payload.selling_price_minor,
+        selling_price_currency=payload.selling_price_currency,
         request=request,
     )
     return inv_selectors.inventory_out(item)
@@ -1163,6 +1200,219 @@ async def update_location(
         raise NotFoundProblem("That location is not part of this organization")
     updated = await inv_services.update_location(session, ctx, location, payload, request=request)
     return inv_selectors.location_out(updated)
+
+
+# ------------------------------------------------------------------ orders (ADR-0024, ADR-0025)
+
+
+async def _order_out(session: AsyncSession, ctx: ScopeContext, order: Order) -> OrderOut:
+    lines = await order_selectors.lines_for(session, ctx.organization_id, order.id)
+    items = await order_selectors.items_for_lines(
+        session, ctx.organization_id, [line.inventory_item_id for line in lines]
+    )
+    return order_selectors.order_out(order, lines=lines, items=items)
+
+
+@router.post(
+    "/operations/orders/quote",
+    response_model=QuoteOut,
+    summary="Price a set of lines against a warehouse, read-only (posts nothing)",
+    dependencies=[Entitled],
+)
+async def quote_order(payload: QuoteIn, session: SessionDep, ctx: OrderRead) -> QuoteOut:
+    warehouse = await inv_selectors.get_warehouse(
+        session, ctx.organization_id, payload.warehouse_id
+    )
+    if warehouse is None:
+        raise NotFoundProblem("That warehouse is not part of this organization")
+    return await order_selectors.quote_preview(session, ctx.organization_id, payload)
+
+
+@router.get(
+    "/operations/orders",
+    response_model=Page[OrderOut],
+    summary="Orders, filterable by status and channel",
+    dependencies=[Entitled],
+)
+async def list_orders(
+    session: SessionDep,
+    ctx: OrderRead,
+    params: PageQuery,
+    order_status: Annotated[str | None, Query(alias="status")] = None,
+    channel: Annotated[str | None, Query()] = None,
+    warehouse_id: Annotated[uuid.UUID | None, Query()] = None,
+) -> Page[OrderOut]:
+    stmt = order_selectors.orders_stmt(
+        ctx.organization_id, status=order_status, channel=channel, warehouse_id=warehouse_id
+    )
+    rows, total = await paginate(session, stmt, params)
+    by_order = await order_selectors.lines_map(session, ctx.organization_id, [r.id for r in rows])
+    item_ids = [line.inventory_item_id for lines in by_order.values() for line in lines]
+    items = await order_selectors.items_for_lines(session, ctx.organization_id, item_ids)
+    out = [
+        order_selectors.order_out(order, lines=by_order.get(order.id, []), items=items)
+        for order in rows
+    ]
+    return Page.build(out, total=total, params=params)
+
+
+@router.post(
+    "/operations/orders",
+    response_model=OrderOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a draft order",
+    dependencies=[Entitled],
+)
+async def create_order(
+    payload: OrderIn, session: SessionDep, ctx: OrderCreate, request: Request
+) -> OrderOut:
+    order = await order_services.create_order(
+        session,
+        ctx,
+        channel=payload.channel,
+        warehouse_id=payload.warehouse_id,
+        customer_id=payload.customer_id,
+        customer_name=payload.customer_name,
+        customer_phone=payload.customer_phone,
+        currency=payload.currency,
+        lines=[line.model_dump() for line in payload.lines],
+        request=request,
+    )
+    return await _order_out(session, ctx, order)
+
+
+@router.get(
+    "/operations/orders/{order_id}",
+    response_model=OrderOut,
+    summary="One order, with its lines",
+    dependencies=[Entitled],
+)
+async def read_order(order_id: uuid.UUID, session: SessionDep, ctx: OrderRead) -> OrderOut:
+    order = await order_selectors.get_order(session, ctx.organization_id, order_id)
+    if order is None:
+        raise NotFoundProblem("That order is not part of this organization")
+    return await _order_out(session, ctx, order)
+
+
+@router.post(
+    "/operations/orders/{order_id}/place",
+    response_model=OrderOut,
+    summary="Place a draft order: prices every line, reserves nothing",
+    dependencies=[Entitled],
+)
+async def place_order(
+    order_id: uuid.UUID,
+    payload: OrderVersionIn,
+    session: SessionDep,
+    ctx: OrderWrite,
+    request: Request,
+) -> OrderOut:
+    order = await order_selectors.get_order(session, ctx.organization_id, order_id, for_update=True)
+    if order is None:
+        raise NotFoundProblem("That order is not part of this organization")
+    await order_services.place_order(
+        session, ctx, order, expected_version=payload.version, request=request
+    )
+    return await _order_out(session, ctx, order)
+
+
+@router.post(
+    "/operations/orders/{order_id}/accept",
+    response_model=OrderOut,
+    summary=(
+        "Accept a placed order: reserve every line atomically "
+        "(credit check not yet implemented — pending F4 billing)"
+    ),
+    dependencies=[Entitled],
+)
+async def accept_order(
+    order_id: uuid.UUID,
+    payload: OrderVersionIn,
+    session: RawSessionDep,
+    ctx: OrderAccept,
+    request: Request,
+) -> OrderOut:
+    await order_services.accept_order(
+        session, ctx, order_id, expected_version=payload.version, request=request
+    )
+    order, lines, items = await order_services.load_order_for_response(session, ctx, order_id)
+    return order_selectors.order_out(order, lines=lines, items=items)
+
+
+@router.post(
+    "/operations/orders/{order_id}/hold",
+    response_model=OrderOut,
+    summary="Put an order on hold (reason required)",
+    dependencies=[Entitled],
+)
+async def hold_order(
+    order_id: uuid.UUID,
+    payload: OrderHoldIn,
+    session: SessionDep,
+    ctx: OrderWrite,
+    request: Request,
+) -> OrderOut:
+    order = await order_selectors.get_order(session, ctx.organization_id, order_id, for_update=True)
+    if order is None:
+        raise NotFoundProblem("That order is not part of this organization")
+    await order_services.hold_order(
+        session,
+        ctx,
+        order,
+        expected_version=payload.version,
+        reason=payload.reason,
+        request=request,
+    )
+    return await _order_out(session, ctx, order)
+
+
+@router.post(
+    "/operations/orders/{order_id}/release",
+    response_model=OrderOut,
+    summary="Release a held order (target recomputed from its own facts)",
+    dependencies=[Entitled],
+)
+async def release_order(
+    order_id: uuid.UUID,
+    payload: OrderVersionIn,
+    session: SessionDep,
+    ctx: OrderWrite,
+    request: Request,
+) -> OrderOut:
+    order = await order_selectors.get_order(session, ctx.organization_id, order_id, for_update=True)
+    if order is None:
+        raise NotFoundProblem("That order is not part of this organization")
+    await order_services.release_hold_order(
+        session, ctx, order, expected_version=payload.version, request=request
+    )
+    return await _order_out(session, ctx, order)
+
+
+@router.post(
+    "/operations/orders/{order_id}/cancel",
+    response_model=OrderOut,
+    summary="Cancel an order and release every open reservation it holds",
+    dependencies=[Entitled],
+)
+async def cancel_order(
+    order_id: uuid.UUID,
+    payload: OrderCancelIn,
+    session: SessionDep,
+    ctx: OrderCancel,
+    request: Request,
+) -> OrderOut:
+    order = await order_selectors.get_order(session, ctx.organization_id, order_id, for_update=True)
+    if order is None:
+        raise NotFoundProblem("That order is not part of this organization")
+    await order_services.cancel_order(
+        session,
+        ctx,
+        order,
+        expected_version=payload.version,
+        reason=payload.reason,
+        request=request,
+    )
+    return await _order_out(session, ctx, order)
 
 
 # ------------------------------------------------------------------ overview
