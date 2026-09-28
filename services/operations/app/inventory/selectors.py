@@ -748,13 +748,24 @@ def discrepancy_out(row: InventoryDiscrepancy) -> InventoryDiscrepancyOut:
 
 
 def reservation_out(reservation: InventoryReservation) -> InventoryReservationOut:
-    remaining = reservation.quantity_milli - reservation.consumed_milli - reservation.released_milli
+    # `transferred_milli` (ADR-0024 §6) is no longer open either — it moved to a destination
+    # reservation with a pick or pack — so it comes off `remaining` the same way `consumed_milli`
+    # and `released_milli` already do. `InventoryReservationOut.status` and `.transferred` both
+    # know about it (`app/schemas.py`), so a reservation that closes as `"transferred"` — or one
+    # only partially transferred and still `"active"` — renders correctly through this function.
+    remaining = (
+        reservation.quantity_milli
+        - reservation.consumed_milli
+        - reservation.released_milli
+        - reservation.transferred_milli
+    )
     return InventoryReservationOut(
         id=str(reservation.id),
         inventory_item_id=str(reservation.inventory_item_id),
         quantity=format_qty(reservation.quantity_milli),
         consumed=format_qty(reservation.consumed_milli),
         released=format_qty(reservation.released_milli),
+        transferred=format_qty(reservation.transferred_milli),
         remaining=format_qty(remaining),
         status=reservation.status,
         reference_type=reservation.reference_type,

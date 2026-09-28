@@ -855,13 +855,22 @@ class InventoryBalance(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
 class InventoryReservation(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     """Stock promised to a demand (a sales order, a production order) without moving it.
 
-    `quantity_milli - consumed_milli - released_milli` is the open remainder while
-    `status == "active"`; the sum of open remainders per balance is that balance's
+    `quantity_milli - consumed_milli - released_milli - transferred_milli` is the open remainder
+    while `status == "active"`; the sum of open remainders per balance is that balance's
     `reserved_milli`. `released_milli` is what a caller has explicitly given back
     (ADR-0014 §11) — kept separate from `consumed_milli` (what an outbound move drew against
     this reservation) so `quantity_milli` stays the original promise forever and never has to
     cross zero, which the `quantity_positive` CHECK would otherwise forbid on a full release of
     an untouched reservation.
+
+    `transferred_milli` (ADR-0024 §6) is what `app.inventory.ledger.post_move` moved to another
+    bucket's reservation on a relocation — a pick or a pack, never a real dispatch. It is its own
+    bucket, distinct from `consumed_milli` (a real draw-down, dispatch's move) and
+    `released_milli` (given back, free again): the demand behind a transferred quantity was not
+    met and not freed, it moved with the stock. `transferred_from_reservation_id` is the mirror
+    on the *destination* reservation a transfer opens or tops up — `NULL` on every reservation
+    `reserve`/`reserve_many` create directly, set on one only when `post_move` created or topped
+    it up from another reservation's transfer.
     """
 
     __tablename__ = "inventory_reservations"
@@ -882,11 +891,22 @@ class InventoryReservation(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     #: original promise is kept for the record; the sum with `consumed_milli` is what is no
     #: longer open.
     released_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    #: active | released | consumed
-    status: Mapped[str] = mapped_column(String(10), nullable=False, default="active")
+    #: Drawn off by `post_move`'s reservation transfer (ADR-0024 §6) and opened or topped up on
+    #: the destination bucket's reservation — a pick or pack, not a consumption.
+    transferred_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    #: active | released | consumed | transferred — widened from `String(10)`: "transferred" is
+    #: 11 characters, one more than the old column ever needed to hold (ADR-0024 §6).
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     reference_type: Mapped[str | None] = mapped_column(String(30))
     reference_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    #: Set only on a reservation `post_move` opened (or topped up) as the destination side of a
+    #: transfer — traces it back to the source reservation the quantity moved from. Self-FK
+    #: within this schema (not the cross-schema kind ADR-0000 §10 forbids).
+    transferred_from_reservation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_reservations.id", ondelete="RESTRICT"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -897,11 +917,13 @@ class InventoryReservation(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     __table_args__ = (
         CheckConstraint("quantity_milli > 0", name="quantity_positive"),
         CheckConstraint(
-            "consumed_milli >= 0 AND released_milli >= 0 "
-            "AND consumed_milli + released_milli <= quantity_milli",
+            "consumed_milli >= 0 AND released_milli >= 0 AND transferred_milli >= 0 "
+            "AND consumed_milli + released_milli + transferred_milli <= quantity_milli",
             name="consumed_within",
         ),
-        CheckConstraint("status IN ('active', 'released', 'consumed')", name="status_known"),
+        CheckConstraint(
+            "status IN ('active', 'released', 'consumed', 'transferred')", name="status_known"
+        ),
         Index(
             "uq_inventory_reservations_org_idempotency_key",
             "organization_id",
