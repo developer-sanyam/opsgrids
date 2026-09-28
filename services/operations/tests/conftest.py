@@ -42,6 +42,19 @@ from platform_core.db import TENANT_GUC, get_session
 from tests.helpers import ctx_for
 
 TENANT_TABLES = (
+    "package_lines",
+    "packages",
+    "packaging_materials",
+    "scan_events",
+    "pick_exceptions",
+    "assignment_offers",
+    "pick_task_lines",
+    "pick_tasks",
+    "worker_position_samples",
+    "worker_presence",
+    "worker_zone_access",
+    "worker_skills",
+    "workers",
     "order_transitions",
     "order_lines",
     "orders",

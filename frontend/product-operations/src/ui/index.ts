@@ -61,5 +61,12 @@ export type {
 
 export { useNavGroups } from "./useNavGroups";
 export { NeedsAttention } from "./NeedsAttention";
-export { OrderStatusPill, PoStatusPill, SupplierStatusPill, StockPill } from "./StatusPill";
+export {
+  AssignmentOfferStatusPill,
+  OrderStatusPill,
+  PickTaskStatusPill,
+  PoStatusPill,
+  SupplierStatusPill,
+  StockPill,
+} from "./StatusPill";
 export type { StockLevel } from "./StatusPill";

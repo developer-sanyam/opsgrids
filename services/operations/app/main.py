@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from app import consumers
 from app.api.routes import router
 from app.config import settings
 from app.cron import ReconcileSweep
@@ -19,6 +20,7 @@ from platform_core.db import (
 from platform_core.logging import get_logger
 from platform_core.supervise import (
     register_sweep_health,
+    run_supervised_forever,
     start_background_sweep,
     stop_background_sweep,
 )
@@ -76,11 +78,64 @@ async def _stop_reconcile_sweep(app: FastAPI) -> None:
         await engine.dispose()
 
 
+async def _start_background_worker(app: FastAPI) -> None:
+    """Starts this service's two event consumers (`app/consumers.py` — the fulfilment offer-
+    expiry sweep and the order-cancellation cascade, ADR-0025 §3/§1), exactly what `bin/worker`
+    (`python -m app.consumers`) runs, as one supervised background task inside this process, when
+    `Settings.run_consumers_in_api` is on (MAJOR 2, security review — `operations` had no
+    `*-worker` container and no in-API flag at all, so neither consumer ever ran in production
+    regardless of how correct the handler code was; this is the exact worker-folding pattern
+    eleven other services already use — `services/leave/app/main.py`'s own
+    `_start_background_worker` is the template this mirrors). Off by default everywhere else:
+    local development and any other deployment keeps running `bin/worker` as its own process
+    unchanged.
+
+    The consumer moves onto its own bulkhead engine (`create_bulkhead_engine`), never the API's
+    request pool: a message's transaction must neither take a connection from a request nor be
+    starved by one.
+    """
+    app.state.background_worker_task = None
+    app.state.worker_bulkhead_engine = None
+    cfg = settings()
+    if not cfg.run_consumers_in_api:
+        return
+    try:
+        engine = create_bulkhead_engine(cfg, name="worker")
+        consumers.use_session_scope(bulkhead_scope(engine))
+    except Exception:
+        log.exception("operations.worker.not_started")
+        return
+    app.state.worker_bulkhead_engine = engine
+    app.state.background_worker_task = start_background_sweep(
+        run_supervised_forever(
+            lambda: {"consumer": consumers.consumer.run()}, name="operations.worker"
+        ),
+        name="operations.worker",
+    )
+
+
+async def _stop_background_worker(app: FastAPI) -> None:
+    await stop_background_sweep(getattr(app.state, "background_worker_task", None))
+    engine = getattr(app.state, "worker_bulkhead_engine", None)
+    if engine is not None:
+        await engine.dispose()
+
+
+async def _startup(app: FastAPI) -> None:
+    await _start_reconcile_sweep(app)
+    await _start_background_worker(app)
+
+
+async def _shutdown(app: FastAPI) -> None:
+    await _stop_background_worker(app)
+    await _stop_reconcile_sweep(app)
+
+
 app = create_app(
     settings(),
     title="Operations service",
     description="Operations service — part of the OpsGrids platform.",
     routers=[router],
-    on_startup=_start_reconcile_sweep,
-    on_shutdown=_stop_reconcile_sweep,
+    on_startup=_startup,
+    on_shutdown=_shutdown,
 )

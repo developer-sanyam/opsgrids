@@ -2,6 +2,87 @@
   "manifest_version": 1,
   "permissions": [
     {
+      "action": "execute",
+      "default_scope": "ORG",
+      "description": "Confirm a package (posts the staging -> pack/dock relocation) and maintain packaging materials",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "fulfilment",
+      "resource": "pack"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See packages, their lines and packaging materials",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "fulfilment",
+      "resource": "pack"
+    },
+    {
+      "action": "assign",
+      "default_scope": "ORG",
+      "description": "Create an accepted order's pick tasks, offer or reassign one to a worker, cancel a task nobody has started yet",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "fulfilment",
+      "resource": "task"
+    },
+    {
+      "action": "execute",
+      "default_scope": "OWN",
+      "description": "Accept/decline your own offer, scan, confirm a pick line, raise or resolve an exception \u2014 always on a task currently offered or accepted to you",
+      "is_dangerous": false,
+      "max_scope": "OWN",
+      "module": "fulfilment",
+      "resource": "task"
+    },
+    {
+      "action": "override",
+      "default_scope": "ORG",
+      "description": "Cancel a task a worker already has in hand, or force-close a picked one",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "fulfilment",
+      "resource": "task"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See pick tasks, their lines and offer history",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "fulfilment",
+      "resource": "task"
+    },
+    {
+      "action": "location_read",
+      "default_scope": "ORG",
+      "description": "See which zones a worker may be offered tasks in",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "fulfilment",
+      "resource": "worker"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the worker roster and presence",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "fulfilment",
+      "resource": "worker"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Create and edit worker records, and set your own presence",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "fulfilment",
+      "resource": "worker"
+    },
+    {
       "action": "read",
       "default_scope": "ORG",
       "description": "See inventory on hand",
@@ -190,6 +271,42 @@
       "description": "Administers procurement and inventory across the organization. Built from the Operations catalogue alone \u2014 running operations is not the same job as owning the account.",
       "grants": [
         {
+          "code": "operations.fulfilment.pack.execute",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.pack.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.task.assign",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.task.execute",
+          "scope": "OWN"
+        },
+        {
+          "code": "operations.fulfilment.task.override",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.task.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.worker.location_read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.worker.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.worker.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.item.read",
           "scope": "ORG"
         },
@@ -280,6 +397,38 @@
       "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts and cancels customer orders \u2014 the stock-commitment and stock-release steps \u2014 on top of the ordinary counter work every Operations user does. Does not create or rename warehouses \u2014 that stays with the admin.",
       "grants": [
         {
+          "code": "operations.fulfilment.pack.execute",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.pack.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.task.assign",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.task.override",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.task.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.worker.location_read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.worker.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.worker.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.item.read",
           "scope": "ORG"
         },
@@ -351,6 +500,40 @@
       "is_admin": false,
       "is_default": false,
       "name": "Procurement manager"
+    },
+    {
+      "code": "OPERATIONS_WORKER",
+      "cross_product": false,
+      "description": "The picker/packer role the worker PWA authenticates as (plan F3). Sees the task board and the worker roster read-only, executes only the tasks offered or accepted to them (`task.execute` tops out at OWN \u2014 even this role cannot execute another worker's task), sets their own presence, and confirms packages. Does not offer, reassign or override a task \u2014 that stays with the dispatcher (`OPERATIONS_MANAGER`).",
+      "grants": [
+        {
+          "code": "operations.fulfilment.pack.execute",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.pack.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.task.execute",
+          "scope": "OWN"
+        },
+        {
+          "code": "operations.fulfilment.task.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.worker.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.worker.write",
+          "scope": "OWN"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Warehouse worker"
     },
     {
       "code": "OPERATIONS_USER",

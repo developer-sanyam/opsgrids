@@ -1284,6 +1284,487 @@ class FulfilmentSettings(Base, TenantBase):
     )
 
 
+# ------------------------------------------------------------------ fulfilment (ADR-0024 §7,
+# ADR-0025 §2/§3; docs/fulfilment/plan.md F3)
+
+
+class Worker(Base, TenantBase):
+    """A person who can be offered pick/pack work (plan F3). `employee_id` is a plain UUID into
+    `services/employee`'s `Employee.id` — never a cross-schema foreign key (ADR-0000 §10);
+    `services/employee` is the source of truth for the person, this row is only the
+    fulfilment-facing fact that they can hold tasks, at which warehouse, and whether they are
+    currently active.
+
+    `display_name` is denormalised (the same reasoning `PurchaseOrder.raised_by` already uses) so
+    a task or offer row renders a name without a cross-service join.
+    """
+
+    __tablename__ = "workers"
+
+    employee_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    warehouse_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.warehouses.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        # Partial — a soft-deleted worker's employee link can be reused (e.g. re-onboarded).
+        Index(
+            "uq_workers_org_employee",
+            "organization_id",
+            "employee_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_workers_org_warehouse", "organization_id", "warehouse_id"),
+        Index("ix_workers_org_active", "organization_id", "is_active"),
+    )
+
+
+class WorkerSkill(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One skill tag on a worker (plan F3) — free text today (`"forklift"`, `"cold_storage"`), no
+    fixed vocabulary yet; a later phase's scoring engine is what would give these weight."""
+
+    __tablename__ = "worker_skills"
+
+    worker_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.workers.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    skill: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_worker_skills_org_worker_skill",
+            "organization_id",
+            "worker_id",
+            "skill",
+            unique=True,
+        ),
+    )
+
+
+class WorkerZoneAccess(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """Which zones a worker may be offered tasks in (plan F3) — `location_id` names a `zone`-kind
+    (or any) `Location`; a dispatcher offering a task whose zone the worker has no row for here is
+    refused (`app.fulfilment.services.offer_task`)."""
+
+    __tablename__ = "worker_zone_access"
+
+    worker_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.workers.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.locations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_worker_zone_access_org_worker_location",
+            "organization_id",
+            "worker_id",
+            "location_id",
+            unique=True,
+        ),
+    )
+
+
+class WorkerPresence(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One row per worker — online/offline plus a last-seen timestamp (plan F3). Upserted by
+    `app.fulfilment.services.set_presence`, never inserted twice for the same worker."""
+
+    __tablename__ = "worker_presence"
+
+    worker_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.workers.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: online | offline.
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="offline")
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("status IN ('online', 'offline')", name="status_known"),
+        Index("uq_worker_presence_org_worker", "organization_id", "worker_id", unique=True),
+    )
+
+
+class WorkerPositionSample(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """A coarse location ping (plan F3) — **schema only**: off by default, no code path writes to
+    it yet (the plan explicitly marks live position tracking optional/future, beyond raw
+    presence). Kept here so the later phase that turns it on is a permission and a write path, not
+    a migration."""
+
+    __tablename__ = "worker_position_samples"
+
+    worker_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.workers.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    location_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
+    )
+    #: Coarse coordinates, integer micro-degrees (10^-6) — never a float (ADR-0000 §8's no-float
+    #: rule applies to any stored measurement, not only money).
+    lat_micro: Mapped[int | None] = mapped_column(BigInteger)
+    lng_micro: Mapped[int | None] = mapped_column(BigInteger)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_worker_position_samples_org_worker_recorded",
+            "organization_id",
+            "worker_id",
+            "recorded_at",
+        ),
+    )
+
+
+class PickTask(Base, TenantBase):
+    """One picker's unit of work on an accepted order (ADR-0025 §2, plan F3) — derived from the
+    order's lines, usually one per zone (ADR-0025 §1). `status` runs
+    `app.domain.PICK_TASK_TRANSITIONS`'s vocabulary; unlike `Order.status` this has no dedicated
+    transitions table — ADR-0025 §4 captures pick-task history on the existing `AuditLog` plus the
+    outbox row each change emits, since this is an operational trail, not a customer-facing
+    document.
+
+    `round`/`max_rounds` drive escalation (`CREATED -> ESCALATED` once `round >= max_rounds`,
+    default 3 from `fulfilment_settings`, snapshotted here at task creation the same way
+    `Order.settings_snapshot` freezes the policy an order was accepted under — a later settings
+    edit must never reinterpret a round already in flight). `offer_timeout_seconds` is snapshotted
+    the same way, for the expiry `schedule_event` each offer schedules.
+    """
+
+    __tablename__ = "pick_tasks"
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.orders.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    warehouse_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.warehouses.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: The zone this task's lines share, when one could be resolved by walking each line's source
+    #: location up to its nearest `kind == 'zone'` ancestor — `NULL` when the order's lines could
+    #: not all be grouped under one (a single-bin shop, say), in which case the whole order is one
+    #: task.
+    zone_location_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
+    )
+    #: See class docstring — vocabulary in `app.domain.PICK_TASK_TRANSITIONS`.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="CREATED")
+    #: How many offer rounds have already failed (declined or expired) — `PICK_TASK_TRANSITIONS`'s
+    #: `CREATED -> ESCALATED` fires once this reaches `max_rounds`.
+    round: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_rounds: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    offer_timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+
+    __table_args__ = (
+        Index("ix_pick_tasks_org_order", "organization_id", "order_id"),
+        Index("ix_pick_tasks_org_status", "organization_id", "status"),
+        Index("ix_pick_tasks_org_warehouse", "organization_id", "warehouse_id"),
+        CheckConstraint("round >= 0", name="round_non_negative"),
+        CheckConstraint("max_rounds > 0", name="max_rounds_positive"),
+    )
+
+
+class PickTaskLine(Base, TenantBase):
+    """One order line's worth of picking inside a task (plan F3). `source_location_id` is the bin
+    the order's `accept` reserved stock at (the item's `home_location_id`);
+    `destination_location_id` is the staging bucket the pick relocates it to.
+    `reservation_id` names the *order line's own*
+    `InventoryReservation` (ADR-0024 §6) — resolved once at task creation
+    (`app.fulfilment.selectors.reservations_by_order_line`) and carried here so a pick confirmation
+    always transfers the right promise, never a different line's.
+
+    `picked_milli` is what has actually moved through `post_move`; `short_milli` is what a
+    `pick_exceptions` row recorded instead. A line is settled once `picked_milli + short_milli ==
+    quantity_milli` — the task can reach `PICKED` only once every one of its lines is.
+    """
+
+    __tablename__ = "pick_task_lines"
+
+    pick_task_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.pick_tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    order_line_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.order_lines.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    source_location_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.locations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    destination_location_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.locations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    reservation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_reservations.id", ondelete="RESTRICT"),
+    )
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    picked_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    short_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    #: Copied from `source_location_id`'s own `pick_sequence` at task creation — orders the
+    #: picker's walk (F1).
+    sequence: Mapped[int | None] = mapped_column(Integer)
+
+    __table_args__ = (
+        Index("ix_pick_task_lines_org_task", "organization_id", "pick_task_id"),
+        Index("ix_pick_task_lines_org_order_line", "organization_id", "order_line_id"),
+        CheckConstraint("quantity_milli > 0", name="quantity_positive"),
+        CheckConstraint(
+            "picked_milli >= 0 AND short_milli >= 0 "
+            "AND picked_milli + short_milli <= quantity_milli",
+            name="picked_within",
+        ),
+    )
+
+
+class AssignmentOffer(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One offer of one task to one worker (ADR-0025 §3, exact row shape). A task can be offered to
+    several workers across rounds; this table is the history, never summarised away.
+
+    `state`: `OFFERED, ACCEPTED, DECLINED, EXPIRED, WITHDRAWN, RELEASED`. At most one live offer
+    per task — `uq_assignment_offers_org_task_live`, a partial unique index on `(organization_id,
+    task_id) WHERE state IN ('OFFERED', 'ACCEPTED')`. `score_breakdown` records why this worker was
+    chosen; for the manual-only assignment F3 ships, it names who assigned it (`{"kind": "manual",
+    "assigned_by": "<principal id>"}`), not a scored factor.
+    """
+
+    __tablename__ = "assignment_offers"
+
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.pick_tasks.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    worker_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.workers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    round: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: OFFERED | ACCEPTED | DECLINED | EXPIRED | WITHDRAWN | RELEASED.
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="OFFERED")
+    score_breakdown: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    offered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('OFFERED', 'ACCEPTED', 'DECLINED', 'EXPIRED', 'WITHDRAWN', 'RELEASED')",
+            name="state_known",
+        ),
+        CheckConstraint("round > 0", name="round_positive"),
+        Index(
+            "uq_assignment_offers_org_task_live",
+            "organization_id",
+            "task_id",
+            unique=True,
+            postgresql_where=text("state IN ('OFFERED', 'ACCEPTED')"),
+        ),
+        Index("ix_assignment_offers_org_task", "organization_id", "task_id"),
+        Index("ix_assignment_offers_org_worker_state", "organization_id", "worker_id", "state"),
+    )
+
+
+class PickException(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """A short pick, damage or an empty location, raised against one task line (plan F3). Leaves
+    the task's other lines pickable — it flags this line and pauses the task (`IN_PROGRESS ->
+    EXCEPTION`), it never silently completes it."""
+
+    __tablename__ = "pick_exceptions"
+
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.pick_tasks.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    task_line_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.pick_task_lines.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: short_pick | damaged | not_found | other.
+    reason: Mapped[str] = mapped_column(String(20), nullable=False)
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    #: open | resolved.
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="open")
+    raised_by: Mapped[str | None] = mapped_column(String(64))
+    raised_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    resolved_by: Mapped[str | None] = mapped_column(String(64))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(
+            "reason IN ('short_pick', 'damaged', 'not_found', 'other')", name="reason_known"
+        ),
+        CheckConstraint("status IN ('open', 'resolved')", name="status_known"),
+        CheckConstraint("quantity_milli > 0", name="quantity_positive"),
+        Index("ix_pick_exceptions_org_task", "organization_id", "task_id"),
+    )
+
+
+class ScanEvent(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One barcode scan, append-only (plan F3 names this table explicitly as append-only) —
+    `scan_events` joins `APPEND_ONLY_TABLES` in `migrations/env.py`. A wrong scan is never edited
+    or deleted, only superseded by the next one."""
+
+    __tablename__ = "scan_events"
+
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.pick_tasks.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    worker_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.workers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    location_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
+    )
+    inventory_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.inventory_items.id", ondelete="RESTRICT")
+    )
+    barcode: Mapped[str] = mapped_column(String(64), nullable=False)
+    scanned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (Index("ix_scan_events_org_task", "organization_id", "task_id", "scanned_at"),)
+
+
+class PackagingMaterial(Base, TenantBase):
+    """A box size or bag the org packs into (plan F3) — small reference data, like `Uom`."""
+
+    __tablename__ = "packaging_materials"
+
+    code: Mapped[str] = mapped_column(String(40), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    length_mm: Mapped[int | None] = mapped_column(Integer)
+    width_mm: Mapped[int | None] = mapped_column(Integer)
+    height_mm: Mapped[int | None] = mapped_column(Integer)
+    max_weight_grams: Mapped[int | None] = mapped_column(BigInteger)
+    tare_weight_grams: Mapped[int | None] = mapped_column(BigInteger)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        Index(
+            "uq_packaging_materials_org_code",
+            "organization_id",
+            "code",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+
+class Package(Base, TenantBase):
+    """What went out for one order in one box (plan F3). A pack confirmation creates this row and
+    its lines and posts the staging -> pack/dock relocation in the same call
+    (`app.fulfilment.services.confirm_package`) — F3 has no separate open/add-lines/confirm
+    sequence; one call does all three, mirroring the one-shot shape `post_move` itself already
+    uses for a whole move."""
+
+    __tablename__ = "packages"
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.orders.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    packaging_material_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.packaging_materials.id", ondelete="RESTRICT")
+    )
+    destination_location_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.locations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: OPEN | PACKED. F3 always writes `PACKED` directly — see class docstring; `OPEN` is the
+    #: vocabulary's reserved starting value for a later phase that splits pack into steps.
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="OPEN")
+    weight_grams: Mapped[int | None] = mapped_column(BigInteger)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('OPEN', 'PACKED')", name="status_known"),
+        Index("ix_packages_org_order", "organization_id", "order_id"),
+    )
+
+
+class PackageLine(Base, TenantBase):
+    """One task line's stock inside one package (plan F3)."""
+
+    __tablename__ = "package_lines"
+
+    package_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.packages.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    pick_task_line_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.pick_task_lines.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("quantity_milli > 0", name="quantity_positive"),
+        Index("ix_package_lines_org_package", "organization_id", "package_id"),
+        Index("ix_package_lines_org_task_line", "organization_id", "pick_task_line_id"),
+    )
+
+
 class OutboxEvent(Base, OutboxMixin):
     """Domain events staged in the same transaction as the change they describe."""
 

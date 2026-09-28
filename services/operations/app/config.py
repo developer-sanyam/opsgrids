@@ -26,6 +26,15 @@ class Settings(ServiceSettings):
     #: comment — but pointless). The edge runs exactly one `operations` API replica, so this
     #: flag being on there is never a double-run either.
     run_sweeps_in_api: bool = False
+    #: Runs this service's event consumers (`app/consumers.py` — the fulfilment offer-expiry
+    #: sweep and the order-cancellation cascade, ADR-0025 §3/§1) as a supervised background task
+    #: inside the API process, the same worker-folding shape eleven other services already use
+    #: (MAJOR 2, security review: `operations` shipped F3's two consumers with no container and
+    #: no in-API flag to run them, so neither ever fired in production regardless of how correct
+    #: the handler code was). Off by default everywhere except the edge box's own `.env`:
+    #: `bin/worker` (`python -m app.consumers`) still runs standalone unchanged, and setting this
+    #: to `false` while adding `split-workers` to `EDGE_PROFILES` is the rollback (RUNBOOK.md).
+    run_consumers_in_api: bool = False
 
 
 def settings() -> Settings:

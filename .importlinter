@@ -51,6 +51,21 @@ layers =
     (app.inventory.ledger) | (app.inventory.reconcile) | (app.inventory.selectors)
     (app.inventory.quantity)
 
+# ADR-0024 §1: `orders` never imports `fulfilment` or `dispatch` — a cancelled order's cascade
+# into open pick tasks goes through the outbox/consumer round trip (`operations.orders.order
+# .cancelled`, handled in `app.consumers`), never a direct call, so the two modules stay
+# independently deployable. `fulfilment` importing `orders` (for order/line reads, and to move
+# `Order.status` on task-driven transitions — ADR-0025 §1's `ACCEPTED -> IN_FULFILMENT` /
+# `-> READY`) is the allowed direction and is not constrained here.
+[importlinter:contract:orders-fulfilment-independence]
+name = orders must not import fulfilment or dispatch (ADR-0024 §1)
+type = forbidden
+source_modules =
+    app.orders
+forbidden_modules =
+    app.fulfilment
+    app.dispatch
+
 [importlinter:contract:service-layers]
 name = the service anatomy, enforced: nothing imports upward, no cycles
 type = layers

@@ -1,6 +1,79 @@
 {
   "components": {
     "schemas": {
+      "AssignmentOfferOut": {
+        "description": "Mirrors `assignment_offers` (ADR-0025 \u00a73's exact row shape).",
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "offered_at": {
+            "format": "date-time",
+            "title": "Offered At",
+            "type": "string"
+          },
+          "responded_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Responded At"
+          },
+          "round": {
+            "title": "Round",
+            "type": "integer"
+          },
+          "score_breakdown": {
+            "additionalProperties": true,
+            "title": "Score Breakdown",
+            "type": "object"
+          },
+          "state": {
+            "enum": [
+              "OFFERED",
+              "ACCEPTED",
+              "DECLINED",
+              "EXPIRED",
+              "WITHDRAWN",
+              "RELEASED"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "worker_id": {
+            "title": "Worker Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "task_id",
+          "worker_id",
+          "round",
+          "state",
+          "score_breakdown",
+          "offered_at",
+          "expires_at",
+          "responded_at"
+        ],
+        "title": "AssignmentOfferOut",
+        "type": "object"
+      },
       "AttentionItem": {
         "description": "One row in the \"needs attention\" queue. Mirrors the SPA's `AttentionItem`.",
         "properties": {
@@ -103,6 +176,28 @@
         "title": "CategorySpend",
         "type": "object"
       },
+      "CreatePickTasksIn": {
+        "additionalProperties": false,
+        "description": "`POST /fulfilment/tasks` \u2014 derives every pick task an accepted order needs, from its lines\n(ADR-0025 \u00a71: `ACCEPTED -> IN_FULFILMENT` fires when the first one is created).",
+        "properties": {
+          "order_id": {
+            "format": "uuid",
+            "title": "Order Id",
+            "type": "string"
+          },
+          "order_version": {
+            "minimum": 0.0,
+            "title": "Order Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "order_id",
+          "order_version"
+        ],
+        "title": "CreatePickTasksIn",
+        "type": "object"
+      },
       "DiscrepancyResolveIn": {
         "additionalProperties": false,
         "description": "`POST /inventory/discrepancies/{id}/resolve` \u2014 what was done about it, in words.",
@@ -118,6 +213,19 @@
           "note"
         ],
         "title": "DiscrepancyResolveIn",
+        "type": "object"
+      },
+      "ExceptionResolveIn": {
+        "additionalProperties": false,
+        "properties": {
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "title": "ExceptionResolveIn",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -1597,6 +1705,22 @@
         "title": "LocationPatch",
         "type": "object"
       },
+      "OfferIn": {
+        "additionalProperties": false,
+        "description": "`POST /fulfilment/tasks/{id}/offers` \u2014 a dispatcher offering a task to one worker. F3 is\nmanual-only (no auto-assign engine), so this is the only way an offer is made.",
+        "properties": {
+          "worker_id": {
+            "format": "uuid",
+            "title": "Worker Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "worker_id"
+        ],
+        "title": "OfferIn",
+        "type": "object"
+      },
       "OrderCancelIn": {
         "additionalProperties": false,
         "description": "`POST /orders/{id}/cancel`. A reason is required, recorded on the `order_transitions` row\nand the cancellation event, the same as a purchase order's cancel.",
@@ -2033,6 +2157,369 @@
         "title": "OverviewOut",
         "type": "object"
       },
+      "PackageIn": {
+        "additionalProperties": false,
+        "description": "`POST /fulfilment/packages` \u2014 one call opens the package, adds its lines and posts the\nstaging -> pack/dock relocation, transferring each line's own destination reservation onward\n(ADR-0024 \u00a76). There is no separate confirm step in F3 (`Package`'s own docstring).",
+        "properties": {
+          "destination_location_id": {
+            "format": "uuid",
+            "title": "Destination Location Id",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/PackageLineIn"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Lines",
+            "type": "array"
+          },
+          "order_id": {
+            "format": "uuid",
+            "title": "Order Id",
+            "type": "string"
+          },
+          "packaging_material_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Packaging Material Id"
+          },
+          "weight_grams": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Grams"
+          }
+        },
+        "required": [
+          "order_id",
+          "destination_location_id",
+          "lines"
+        ],
+        "title": "PackageIn",
+        "type": "object"
+      },
+      "PackageLineIn": {
+        "additionalProperties": false,
+        "properties": {
+          "pick_task_line_id": {
+            "format": "uuid",
+            "title": "Pick Task Line Id",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pick_task_line_id",
+          "quantity"
+        ],
+        "title": "PackageLineIn",
+        "type": "object"
+      },
+      "PackageLineOut": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "pick_task_line_id": {
+            "title": "Pick Task Line Id",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "pick_task_line_id",
+          "inventory_item_id",
+          "sku",
+          "quantity"
+        ],
+        "title": "PackageLineOut",
+        "type": "object"
+      },
+      "PackageOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "destination_location_id": {
+            "title": "Destination Location Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/PackageLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "order_id": {
+            "title": "Order Id",
+            "type": "string"
+          },
+          "packaging_material_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Packaging Material Id"
+          },
+          "status": {
+            "enum": [
+              "OPEN",
+              "PACKED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "weight_grams": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Grams"
+          }
+        },
+        "required": [
+          "id",
+          "order_id",
+          "packaging_material_id",
+          "destination_location_id",
+          "status",
+          "weight_grams",
+          "lines",
+          "created_at"
+        ],
+        "title": "PackageOut",
+        "type": "object"
+      },
+      "PackagingMaterialIn": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "height_mm": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height Mm"
+          },
+          "is_active": {
+            "default": true,
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "length_mm": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Length Mm"
+          },
+          "max_weight_grams": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Weight Grams"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "tare_weight_grams": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tare Weight Grams"
+          },
+          "width_mm": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width Mm"
+          }
+        },
+        "required": [
+          "code",
+          "name"
+        ],
+        "title": "PackagingMaterialIn",
+        "type": "object"
+      },
+      "PackagingMaterialOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "height_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height Mm"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "length_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Length Mm"
+          },
+          "max_weight_grams": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Weight Grams"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "tare_weight_grams": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tare Weight Grams"
+          },
+          "width_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width Mm"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "length_mm",
+          "width_mm",
+          "height_mm",
+          "max_weight_grams",
+          "tare_weight_grams",
+          "is_active"
+        ],
+        "title": "PackagingMaterialOut",
+        "type": "object"
+      },
       "Page_InventoryDiscrepancyOut_": {
         "properties": {
           "items": {
@@ -2213,6 +2700,114 @@
         "title": "Page[OrderOut]",
         "type": "object"
       },
+      "Page_PackageOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PackageOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[PackageOut]",
+        "type": "object"
+      },
+      "Page_PackagingMaterialOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PackagingMaterialOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[PackagingMaterialOut]",
+        "type": "object"
+      },
+      "Page_PickTaskOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PickTaskOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[PickTaskOut]",
+        "type": "object"
+      },
       "Page_PurchaseOrderOut_": {
         "properties": {
           "items": {
@@ -2391,6 +2986,350 @@
           "pages"
         ],
         "title": "Page[WarehouseOut]",
+        "type": "object"
+      },
+      "Page_WorkerOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkerOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[WorkerOut]",
+        "type": "object"
+      },
+      "PickConfirmIn": {
+        "additionalProperties": false,
+        "description": "`POST /fulfilment/tasks/{id}/lines/{line_id}/pick`. `quantity` defaults to the line's whole\nremaining request; giving less records the rest as a `short_pick` exception (ADR-0025 \u00a72's\n`IN_PROGRESS -> EXCEPTION`) rather than silently dropping it.",
+        "properties": {
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "short_pick",
+                  "damaged",
+                  "not_found",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "PickConfirmIn",
+        "type": "object"
+      },
+      "PickExceptionOut": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "raised_at": {
+            "format": "date-time",
+            "title": "Raised At",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "short_pick",
+              "damaged",
+              "not_found",
+              "other"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "resolved"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_line_id": {
+            "title": "Task Line Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "task_id",
+          "task_line_id",
+          "reason",
+          "quantity",
+          "note",
+          "status",
+          "raised_at",
+          "resolved_at"
+        ],
+        "title": "PickExceptionOut",
+        "type": "object"
+      },
+      "PickTaskLineOut": {
+        "properties": {
+          "destination_location_id": {
+            "title": "Destination Location Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "order_line_id": {
+            "title": "Order Line Id",
+            "type": "string"
+          },
+          "picked": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Picked",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence"
+          },
+          "short": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Short",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "source_location_id": {
+            "title": "Source Location Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "partial",
+              "picked",
+              "short"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "order_line_id",
+          "inventory_item_id",
+          "sku",
+          "source_location_id",
+          "destination_location_id",
+          "quantity",
+          "picked",
+          "short",
+          "sequence",
+          "status"
+        ],
+        "title": "PickTaskLineOut",
+        "type": "object"
+      },
+      "PickTaskOut": {
+        "description": "Mirrors the SPA's `PickTaskOut` \u2014 the dispatcher board's one row per task, with its lines,\nits whole offer history (ADR-0025 \u00a73's \"why did this take forty minutes\") and any open\nexceptions.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "exceptions": {
+            "items": {
+              "$ref": "#/components/schemas/PickExceptionOut"
+            },
+            "title": "Exceptions",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/PickTaskLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "max_rounds": {
+            "title": "Max Rounds",
+            "type": "integer"
+          },
+          "offers": {
+            "items": {
+              "$ref": "#/components/schemas/AssignmentOfferOut"
+            },
+            "title": "Offers",
+            "type": "array"
+          },
+          "order_id": {
+            "title": "Order Id",
+            "type": "string"
+          },
+          "round": {
+            "title": "Round",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "CREATED",
+              "OFFERED",
+              "ESCALATED",
+              "ACCEPTED",
+              "IN_PROGRESS",
+              "EXCEPTION",
+              "PICKED",
+              "CLOSED",
+              "CANCELLED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          },
+          "zone_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Zone Location Id"
+          }
+        },
+        "required": [
+          "id",
+          "order_id",
+          "warehouse_id",
+          "zone_location_id",
+          "status",
+          "round",
+          "max_rounds",
+          "lines",
+          "offers",
+          "exceptions",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "PickTaskOut",
         "type": "object"
       },
       "PoLineIn": {
@@ -3136,6 +4075,47 @@
         "title": "ReservationReleaseIn",
         "type": "object"
       },
+      "ScanIn": {
+        "additionalProperties": false,
+        "description": "`POST /fulfilment/tasks/{id}/scan` \u2014 one row in the append-only `scan_events` (plan F3).\nThe task's own first scan additionally moves it `ACCEPTED -> IN_PROGRESS` (ADR-0025 \u00a72).",
+        "properties": {
+          "barcode": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Barcode",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inventory Item Id"
+          },
+          "location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          }
+        },
+        "required": [
+          "barcode"
+        ],
+        "title": "ScanIn",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -3856,6 +4836,28 @@
         "title": "SupplierSpend",
         "type": "object"
       },
+      "TaskCancelIn": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "TaskCancelIn",
+        "type": "object"
+      },
+      "TaskReleaseIn": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "TaskReleaseIn",
+        "type": "object"
+      },
       "UomOut": {
         "description": "One entry in the organization's UOM directory (ADR-0014 Phase 1). `is_system` marks a\nunit seeded from the fixed registry; a caller cannot tell the two apart except by this flag \u2014\nboth are equally usable as an item's `uom`.",
         "properties": {
@@ -4027,6 +5029,240 @@
         },
         "title": "WarehousePatch",
         "type": "object"
+      },
+      "WorkerIn": {
+        "additionalProperties": false,
+        "description": "`POST /fulfilment/workers`.",
+        "properties": {
+          "display_name": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "is_active": {
+            "default": true,
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Skills",
+            "type": "array"
+          },
+          "warehouse_id": {
+            "format": "uuid",
+            "title": "Warehouse Id",
+            "type": "string"
+          },
+          "zone_location_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Zone Location Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "employee_id",
+          "warehouse_id"
+        ],
+        "title": "WorkerIn",
+        "type": "object"
+      },
+      "WorkerOut": {
+        "description": "Mirrors the SPA's `WorkerOut`. `zone_location_ids` is `null` unless the caller also holds\n`operations.fulfilment.worker.location_read` \u2014 a separate permission from the rest of the\nroster (`app.catalogue`), so it is progressive disclosure, not always-present data.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "employee_id": {
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "presence_last_seen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Presence Last Seen At"
+          },
+          "presence_status": {
+            "enum": [
+              "online",
+              "offline"
+            ],
+            "title": "Presence Status",
+            "type": "string"
+          },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Skills",
+            "type": "array"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          },
+          "zone_location_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Zone Location Ids"
+          }
+        },
+        "required": [
+          "id",
+          "employee_id",
+          "warehouse_id",
+          "display_name",
+          "is_active",
+          "skills",
+          "presence_status",
+          "presence_last_seen_at",
+          "zone_location_ids",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "WorkerOut",
+        "type": "object"
+      },
+      "WorkerPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /fulfilment/workers/{id}`. `skills`/`zone_location_ids`, when given, **replace** the\nwhole set \u2014 the same full-replace shape simpler than a per-item add/remove pair, matching how\nfew rows either set ever holds.",
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skills"
+          },
+          "warehouse_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warehouse Id"
+          },
+          "zone_location_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Zone Location Ids"
+          }
+        },
+        "title": "WorkerPatch",
+        "type": "object"
+      },
+      "WorkerPresenceIn": {
+        "additionalProperties": false,
+        "description": "`POST /fulfilment/workers/{id}/presence`.",
+        "properties": {
+          "status": {
+            "enum": [
+              "online",
+              "offline"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "WorkerPresenceIn",
+        "type": "object"
       }
     }
   },
@@ -4037,6 +5273,1208 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/operations/fulfilment/offers/{offer_id}/accept": {
+      "post": {
+        "operationId": "accept_offer_api_v1_operations_fulfilment_offers__offer_id__accept_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "offer_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Offer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignmentOfferOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept an offer \u2014 the exact ADR-0025 \u00a73 conditional update; a zero-row update is 409",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/offers/{offer_id}/decline": {
+      "post": {
+        "operationId": "decline_offer_api_v1_operations_fulfilment_offers__offer_id__decline_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "offer_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Offer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignmentOfferOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decline an offer",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/packages": {
+      "get": {
+        "operationId": "list_packages_api_v1_operations_fulfilment_packages_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "order_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Order Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PackageOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Packages",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "confirm_package_api_v1_operations_fulfilment_packages_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PackageIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm a package: posts the staging -> pack/dock relocation in one call",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/packages/{package_id}": {
+      "get": {
+        "operationId": "read_package_api_v1_operations_fulfilment_packages__package_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One package, with its lines",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/packaging-materials": {
+      "get": {
+        "operationId": "list_packaging_materials_api_v1_operations_fulfilment_packaging_materials_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PackagingMaterialOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Packaging materials (box sizes, weights)",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "create_packaging_material_api_v1_operations_fulfilment_packaging_materials_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PackagingMaterialIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackagingMaterialOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a packaging material",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/tasks": {
+      "get": {
+        "operationId": "list_tasks_api_v1_operations_fulfilment_tasks_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "warehouse_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warehouse Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "order_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Order Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PickTaskOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pick tasks \u2014 the dispatcher board",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "create_tasks_api_v1_operations_fulfilment_tasks_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePickTasksIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PickTaskOut"
+                  },
+                  "title": "Response Create Tasks Api V1 Operations Fulfilment Tasks Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Derive an accepted order's pick tasks (moves it ACCEPTED -> IN_FULFILMENT)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/tasks/{task_id}": {
+      "get": {
+        "operationId": "read_task_api_v1_operations_fulfilment_tasks__task_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PickTaskOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One pick task, with its lines, offer history and exceptions",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/tasks/{task_id}/cancel": {
+      "post": {
+        "operationId": "cancel_task_api_v1_operations_fulfilment_tasks__task_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCancelIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PickTaskOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel a task (in-flight tasks additionally need task.override)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/tasks/{task_id}/close": {
+      "post": {
+        "operationId": "close_task_api_v1_operations_fulfilment_tasks__task_id__close_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PickTaskOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Force-close a picked task (override \u2014 F3 has no automatic close path yet)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/tasks/{task_id}/exceptions/{exception_id}/resolve": {
+      "post": {
+        "operationId": "resolve_exception_api_v1_operations_fulfilment_tasks__task_id__exceptions__exception_id__resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "exception_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Exception Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExceptionResolveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PickTaskOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve an exception and resume picking",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/tasks/{task_id}/lines/{line_id}/pick": {
+      "post": {
+        "operationId": "confirm_pick_api_v1_operations_fulfilment_tasks__task_id__lines__line_id__pick_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "line_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Line Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PickConfirmIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PickTaskOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm a pick line \u2014 transfers the reservation; a short pick raises an exception",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/tasks/{task_id}/offers": {
+      "post": {
+        "operationId": "offer_task_api_v1_operations_fulfilment_tasks__task_id__offers_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OfferIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignmentOfferOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Offer a task to a worker (manual assignment \u2014 F3 has no auto-assign engine)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/tasks/{task_id}/release": {
+      "post": {
+        "operationId": "release_task_api_v1_operations_fulfilment_tasks__task_id__release_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskReleaseIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PickTaskOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hand an accepted task back before starting it",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/tasks/{task_id}/scan": {
+      "post": {
+        "operationId": "scan_task_api_v1_operations_fulfilment_tasks__task_id__scan_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PickTaskOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record a barcode scan (the first one starts the task)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/workers": {
+      "get": {
+        "operationId": "list_workers_api_v1_operations_fulfilment_workers_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "warehouse_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warehouse Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "is_active",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Is Active"
+            }
+          },
+          {
+            "description": "Display name",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Display name",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_WorkerOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The worker roster, with presence",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "create_worker_api_v1_operations_fulfilment_workers_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkerIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a worker",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/workers/{worker_id}": {
+      "get": {
+        "operationId": "read_worker_api_v1_operations_fulfilment_workers__worker_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "worker_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Worker Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One worker",
+        "tags": [
+          "operations"
+        ]
+      },
+      "patch": {
+        "operationId": "update_worker_api_v1_operations_fulfilment_workers__worker_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "worker_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Worker Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkerPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a worker's warehouse, active flag, skills or zone access",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/workers/{worker_id}/presence": {
+      "post": {
+        "operationId": "set_worker_presence_api_v1_operations_fulfilment_workers__worker_id__presence_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "worker_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Worker Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkerPresenceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set a worker online/offline \u2014 a worker may only set their own",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
     "/api/v1/operations/info": {
       "get": {
         "operationId": "info_api_v1_operations_info_get",

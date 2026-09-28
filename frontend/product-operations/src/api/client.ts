@@ -42,6 +42,7 @@ import {
   WAREHOUSES,
 } from "./fixtures";
 import type {
+  AssignmentOfferOut,
   CancelIn,
   Category,
   InventoryItemIn,
@@ -58,6 +59,7 @@ import type {
   LocationIn,
   LocationOut,
   LocationPatch,
+  OfferIn,
   OrderCancelIn,
   OrderChannel,
   OrderHoldIn,
@@ -67,6 +69,8 @@ import type {
   OrderVersionIn,
   OverviewOut,
   Page,
+  PickTaskOut,
+  PickTaskStatus,
   PoStatus,
   PurchaseOrderIn,
   PurchaseOrderOut,
@@ -81,7 +85,11 @@ import type {
   SupplierOut,
   SupplierPatch,
   SupplierStatus,
+  TaskCancelIn,
   UomOut,
+  WorkerIn,
+  WorkerOut,
+  WorkerPatch,
   WarehouseIn,
   WarehouseOut,
   WarehousePatch,
@@ -1807,4 +1815,98 @@ export async function getOverview(): Promise<OverviewOut> {
     });
   }
   return apiRequest<OverviewOut>("/operations/overview");
+}
+
+/* -------------------------------- fulfilment (Fulfilment F3, ADR-0024 §7, ADR-0025 §2/§3) -------------------------------- */
+/**
+ * The dispatcher's surface only: list/offer/cancel a pick task, and the worker roster. Scan, pick
+ * and pack confirmation, exceptions and packaging are worker actions the worker PWA
+ * (`frontend/worker-app`, a separate app) calls directly against the same backend — this file
+ * declares no functions for them, since nothing here would ever call them.
+ *
+ * No fixture-mode branch (unlike every function above): `VITE_USE_FIXTURES` stays a dev-only,
+ * offline-design aid, and wiring an in-memory pick-task/offer state machine into it is real
+ * additional scope this slice does not take on. Every function below always calls the real
+ * endpoint through `apiRequest`, "live by default" without the fixture fallback other screens get.
+ */
+
+export interface ListTasksParams {
+  status?: PickTaskStatus | "all";
+  warehouse_id?: string;
+  order_id?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/fulfilment/tasks` — `operations.fulfilment.task.read`. Each row already
+ *  carries its lines, its whole offer history and any open exceptions (N+1 avoidance on the
+ *  server side) — the dispatcher board renders from this one call, no per-row follow-up. */
+export async function listTasks(params: ListTasksParams = {}): Promise<Page<PickTaskOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    status: params.status === "all" ? undefined : params.status,
+    warehouse_id: params.warehouse_id,
+    order_id: params.order_id,
+  });
+  return apiRequest<Page<PickTaskOut>>(`/operations/fulfilment/tasks${query}`);
+}
+
+export async function getTask(id: string): Promise<PickTaskOut> {
+  return apiRequest<PickTaskOut>(`/operations/fulfilment/tasks/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/fulfilment/tasks/{id}/offers` — `operations.fulfilment.task.assign:ORG`.
+ *  Manual assignment: the only path into `OFFERED` in F3 (no auto-assign engine yet), used for a
+ *  fresh `CREATED` task and for a manager assigning an `ESCALATED` one by hand alike. */
+export async function offerTask(id: string, input: OfferIn): Promise<AssignmentOfferOut> {
+  return apiRequest<AssignmentOfferOut>(`/operations/fulfilment/tasks/${encodeURIComponent(id)}/offers`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** `POST /operations/fulfilment/tasks/{id}/cancel` — `operations.fulfilment.task.assign:ORG`. A
+ *  task already `ACCEPTED`/`IN_PROGRESS`/`EXCEPTION` additionally needs
+ *  `operations.fulfilment.task.override` — the caller gates the button on that, this call just
+ *  carries whichever permission the caller actually holds through to the same endpoint. */
+export async function cancelTask(id: string, input: TaskCancelIn): Promise<PickTaskOut> {
+  return apiRequest<PickTaskOut>(`/operations/fulfilment/tasks/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+export interface ListWorkersParams {
+  warehouse_id?: string;
+  is_active?: boolean;
+  q?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/fulfilment/workers` — `operations.fulfilment.worker.read`. */
+export async function listWorkers(params: ListWorkersParams = {}): Promise<Page<WorkerOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    warehouse_id: params.warehouse_id,
+    is_active: params.is_active,
+    q: params.q,
+  });
+  return apiRequest<Page<WorkerOut>>(`/operations/fulfilment/workers${query}`);
+}
+
+/** `POST /operations/fulfilment/workers` — `operations.fulfilment.worker.write:ORG`. */
+export async function createWorker(input: WorkerIn): Promise<WorkerOut> {
+  return apiRequest<WorkerOut>("/operations/fulfilment/workers", { method: "POST", body: input });
+}
+
+/** `PATCH /operations/fulfilment/workers/{id}` — `operations.fulfilment.worker.write:ORG`.
+ *  `skills`/`zone_location_ids`, when given, replace the whole set. */
+export async function updateWorker(id: string, patch: WorkerPatch): Promise<WorkerOut> {
+  return apiRequest<WorkerOut>(`/operations/fulfilment/workers/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: patch,
+  });
 }

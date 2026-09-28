@@ -26,6 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
 from app.config import settings
+from app.fulfilment import selectors as fulfilment_selectors
+from app.fulfilment import services as fulfilment_services
 from app.inventory import ledger as inv_ledger
 from app.inventory import selectors as inv_selectors
 from app.inventory import services as inv_services
@@ -34,8 +36,11 @@ from app.models import SCHEMA, Order, PurchaseOrderLine
 from app.orders import selectors as order_selectors
 from app.orders import services as order_services
 from app.schemas import (
+    AssignmentOfferOut,
     CancelIn,
+    CreatePickTasksIn,
     DiscrepancyResolveIn,
+    ExceptionResolveIn,
     InventoryDiscrepancyOut,
     InventoryItemIn,
     InventoryItemOut,
@@ -52,12 +57,19 @@ from app.schemas import (
     LocationIn,
     LocationOut,
     LocationPatch,
+    OfferIn,
     OrderCancelIn,
     OrderHoldIn,
     OrderIn,
     OrderOut,
     OrderVersionIn,
     OverviewOut,
+    PackageIn,
+    PackageOut,
+    PackagingMaterialIn,
+    PackagingMaterialOut,
+    PickConfirmIn,
+    PickTaskOut,
     PurchaseOrderIn,
     PurchaseOrderOut,
     PurchaseOrderPatch,
@@ -67,6 +79,7 @@ from app.schemas import (
     ReceiveIn,
     ReconcileOut,
     ReservationReleaseIn,
+    ScanIn,
     ServiceInfo,
     StockAdjustmentIn,
     StockBalanceOut,
@@ -74,10 +87,16 @@ from app.schemas import (
     SupplierIn,
     SupplierOut,
     SupplierPatch,
+    TaskCancelIn,
+    TaskReleaseIn,
     UomOut,
     WarehouseIn,
     WarehouseOut,
     WarehousePatch,
+    WorkerIn,
+    WorkerOut,
+    WorkerPatch,
+    WorkerPresenceIn,
 )
 from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.db import get_session, get_tenant_session
@@ -166,6 +185,49 @@ OrderAccept = Annotated[
 ]
 OrderCancel = Annotated[
     ScopeContext, Depends(require("operations.orders.order.cancel", minimum=Scope.ORG))
+]
+
+# ------------------------------------------------------------------ fulfilment (ADR-0024 §7,
+# ADR-0025 §2/§3)
+
+#: N3 (security review): floored at ORG, the same defense-in-depth shape `OrderAccept`/
+#: `OrderCancel` already use on top of a catalogue whose own ceiling is already ORG — belt and
+#: suspenders, in case a custom role ever names this permission at a narrower scope.
+TaskRead = Annotated[
+    ScopeContext, Depends(require("operations.fulfilment.task.read", minimum=Scope.ORG))
+]
+#: No `minimum=` — the catalogue's own `max_scope` already ceilings every grant at `OWN`
+#: (`app/catalogue.py`), so this can never resolve wider than "my own offered/accepted task"
+#: regardless of the role it was granted from.
+TaskExecute = Annotated[ScopeContext, Depends(require("operations.fulfilment.task.execute"))]
+#: Creating tasks, offering, reassigning, and cancelling one nobody has started yet — ordinary
+#: dispatcher work, floored at ORG like `StockReserve`/`OrderAccept`.
+TaskAssign = Annotated[
+    ScopeContext, Depends(require("operations.fulfilment.task.assign", minimum=Scope.ORG))
+]
+#: Cancelling a task already in a worker's hands, or force-closing a picked one — a stronger
+#: permission on edges that ARE in `PICK_TASK_TRANSITIONS`, never a way around the map.
+TaskOverride = Annotated[
+    ScopeContext, Depends(require("operations.fulfilment.task.override", minimum=Scope.ORG))
+]
+#: N3 (security review): same defense-in-depth floor as `TaskRead`, above.
+WorkerRead = Annotated[
+    ScopeContext, Depends(require("operations.fulfilment.worker.read", minimum=Scope.ORG))
+]
+#: No floor — a worker holding this at OWN may still set their own presence
+#: (`ScopeContext.assert_can_touch` guards the object). Roster-management routes (create, patch)
+#: set `minimum=Scope.ORG` explicitly, the same defense-in-depth shape `OrderAccept`/`OrderCancel`
+#: use on top of a catalogue default that already offers OWN.
+WorkerWrite = Annotated[ScopeContext, Depends(require("operations.fulfilment.worker.write"))]
+WorkerRoster = Annotated[
+    ScopeContext, Depends(require("operations.fulfilment.worker.write", minimum=Scope.ORG))
+]
+#: N3 (security review): same defense-in-depth floor as `TaskRead`, above.
+PackRead = Annotated[
+    ScopeContext, Depends(require("operations.fulfilment.pack.read", minimum=Scope.ORG))
+]
+PackExecute = Annotated[
+    ScopeContext, Depends(require("operations.fulfilment.pack.execute", minimum=Scope.ORG))
 ]
 
 
@@ -1413,6 +1475,584 @@ async def cancel_order(
         request=request,
     )
     return await _order_out(session, ctx, order)
+
+
+# ------------------------------------------------------------------ fulfilment: workers
+
+
+async def _worker_out(session: AsyncSession, ctx: ScopeContext, worker) -> object:  # type: ignore[no-untyped-def]
+    skills = await fulfilment_selectors.skills_for(session, ctx.organization_id, [worker.id])
+    presence = await fulfilment_selectors.get_presence(session, ctx.organization_id, worker.id)
+    zone_location_ids: list[str] | None = None
+    if ctx.principal.has("operations.fulfilment.worker.location_read"):
+        zones = await fulfilment_selectors.zone_access_for(session, ctx.organization_id, worker.id)
+        zone_location_ids = [str(z) for z in zones]
+    return fulfilment_selectors.worker_out(
+        worker,
+        skills=skills.get(worker.id, []),
+        presence=presence,
+        zone_location_ids=zone_location_ids,
+    )
+
+
+@router.get(
+    "/operations/fulfilment/workers",
+    response_model=Page[WorkerOut],
+    summary="The worker roster, with presence",
+    dependencies=[Entitled],
+)
+async def list_workers(
+    session: SessionDep,
+    ctx: WorkerRead,
+    params: PageQuery,
+    warehouse_id: Annotated[uuid.UUID | None, Query()] = None,
+    worker_status: Annotated[bool | None, Query(alias="is_active")] = None,
+    q: Annotated[str | None, Query(description="Display name")] = None,
+) -> Page[WorkerOut]:
+    stmt = fulfilment_selectors.workers_stmt(
+        ctx, warehouse_id=warehouse_id, is_active=worker_status, q=q
+    )
+    rows, total = await paginate(session, stmt, params)
+    worker_ids = [w.id for w in rows]
+    skills = await fulfilment_selectors.skills_for(session, ctx.organization_id, worker_ids)
+    presence = await fulfilment_selectors.presence_for(session, ctx.organization_id, worker_ids)
+    has_location_read = ctx.principal.has("operations.fulfilment.worker.location_read")
+    out = []
+    for w in rows:
+        zone_location_ids: list[str] | None = None
+        if has_location_read:
+            zones = await fulfilment_selectors.zone_access_for(session, ctx.organization_id, w.id)
+            zone_location_ids = [str(z) for z in zones]
+        out.append(
+            fulfilment_selectors.worker_out(
+                w,
+                skills=skills.get(w.id, []),
+                presence=presence.get(w.id),
+                zone_location_ids=zone_location_ids,
+            )
+        )
+    return Page.build(out, total=total, params=params)
+
+
+@router.post(
+    "/operations/fulfilment/workers",
+    response_model=WorkerOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a worker",
+    dependencies=[Entitled],
+)
+async def create_worker(
+    payload: WorkerIn, session: SessionDep, ctx: WorkerRoster, request: Request
+) -> object:
+    worker = await fulfilment_services.create_worker(
+        session,
+        ctx,
+        employee_id=payload.employee_id,
+        warehouse_id=payload.warehouse_id,
+        display_name=payload.display_name,
+        is_active=payload.is_active,
+        skills=payload.skills,
+        zone_location_ids=payload.zone_location_ids,
+        request=request,
+    )
+    return await _worker_out(session, ctx, worker)
+
+
+@router.get(
+    "/operations/fulfilment/workers/{worker_id}",
+    response_model=WorkerOut,
+    summary="One worker",
+    dependencies=[Entitled],
+)
+async def read_worker(worker_id: uuid.UUID, session: SessionDep, ctx: WorkerRead) -> object:
+    worker = await fulfilment_selectors.get_worker(session, ctx.organization_id, worker_id)
+    if worker is None:
+        raise NotFoundProblem("That worker is not part of this organization")
+    return await _worker_out(session, ctx, worker)
+
+
+@router.patch(
+    "/operations/fulfilment/workers/{worker_id}",
+    response_model=WorkerOut,
+    summary="Edit a worker's warehouse, active flag, skills or zone access",
+    dependencies=[Entitled],
+)
+async def update_worker(
+    worker_id: uuid.UUID,
+    payload: WorkerPatch,
+    session: SessionDep,
+    ctx: WorkerRoster,
+    request: Request,
+) -> object:
+    worker = await fulfilment_selectors.get_worker(session, ctx.organization_id, worker_id)
+    if worker is None:
+        raise NotFoundProblem("That worker is not part of this organization")
+    updated = await fulfilment_services.update_worker(
+        session,
+        ctx,
+        worker,
+        warehouse_id=payload.warehouse_id,
+        display_name=payload.display_name,
+        is_active=payload.is_active,
+        skills=payload.skills,
+        zone_location_ids=payload.zone_location_ids,
+        request=request,
+    )
+    return await _worker_out(session, ctx, updated)
+
+
+@router.post(
+    "/operations/fulfilment/workers/{worker_id}/presence",
+    response_model=WorkerOut,
+    summary="Set a worker online/offline — a worker may only set their own",
+    dependencies=[Entitled],
+)
+async def set_worker_presence(
+    worker_id: uuid.UUID,
+    payload: WorkerPresenceIn,
+    session: SessionDep,
+    ctx: WorkerWrite,
+    request: Request,
+) -> object:
+    worker = await fulfilment_selectors.get_worker(session, ctx.organization_id, worker_id)
+    if worker is None:
+        raise NotFoundProblem("That worker is not part of this organization")
+    ctx.assert_can_touch(owner_id=worker.employee_id)
+    await fulfilment_services.set_presence(
+        session, ctx, worker, status=payload.status, request=request
+    )
+    return await _worker_out(session, ctx, worker)
+
+
+# ------------------------------------------------------------------ fulfilment: pick tasks
+
+
+async def _task_out(session: AsyncSession, ctx: ScopeContext, task) -> PickTaskOut:  # type: ignore[no-untyped-def]
+    lines = await fulfilment_selectors.lines_for_task(session, ctx.organization_id, task.id)
+    items = await order_selectors.items_for_lines(
+        session, ctx.organization_id, [line.inventory_item_id for line in lines]
+    )
+    line_outs = [
+        fulfilment_selectors.pick_task_line_out(
+            line, sku=items[line.inventory_item_id].sku if line.inventory_item_id in items else ""
+        )
+        for line in lines
+    ]
+    offers = await fulfilment_selectors.offers_for_task(session, ctx.organization_id, task.id)
+    exceptions = await fulfilment_selectors.exceptions_for_task(
+        session, ctx.organization_id, task.id
+    )
+    return fulfilment_selectors.pick_task_out(
+        task,
+        lines=line_outs,
+        offers=[fulfilment_selectors.assignment_offer_out(o) for o in offers],
+        exceptions=[fulfilment_selectors.pick_exception_out(e) for e in exceptions],
+    )
+
+
+@router.get(
+    "/operations/fulfilment/tasks",
+    response_model=Page[PickTaskOut],
+    summary="Pick tasks — the dispatcher board",
+    dependencies=[Entitled],
+)
+async def list_tasks(
+    session: SessionDep,
+    ctx: TaskRead,
+    params: PageQuery,
+    task_status: Annotated[str | None, Query(alias="status")] = None,
+    warehouse_id: Annotated[uuid.UUID | None, Query()] = None,
+    order_id: Annotated[uuid.UUID | None, Query()] = None,
+) -> Page[PickTaskOut]:
+    stmt = fulfilment_selectors.pick_tasks_stmt(
+        ctx.organization_id, status=task_status, warehouse_id=warehouse_id, order_id=order_id
+    )
+    # N3 (security review): `ctx.apply` is the enforcement point, applied here rather than
+    # inside `pick_tasks_stmt` itself — that selector is also called from
+    # `app.fulfilment.services` with whichever permission's `ScopeContext` the calling *action*
+    # holds (often a worker's `task.execute:OWN`), which must always see every task on an order
+    # regardless of that ctx's own scope; only this list read is a caller-facing list of tasks in
+    # the `task.read` sense. No permission in this catalogue ever grants `task.read` below `ORG`,
+    # so `owner_col=None` — `Scope.OWN`, if ever reached despite `TaskRead`'s own floor, resolves
+    # to zero rows here, never the whole org's.
+    stmt = ctx.apply(stmt, owner_col=None)
+    rows, total = await paginate(session, stmt, params)
+    task_ids = [t.id for t in rows]
+    lines_map = await fulfilment_selectors.lines_map_for_tasks(
+        session, ctx.organization_id, task_ids
+    )
+    item_ids = [line.inventory_item_id for lines in lines_map.values() for line in lines]
+    items = await order_selectors.items_for_lines(session, ctx.organization_id, item_ids)
+    offers_map = await fulfilment_selectors.offers_map_for_tasks(
+        session, ctx.organization_id, task_ids
+    )
+    exceptions_map = await fulfilment_selectors.exceptions_map_for_tasks(
+        session, ctx.organization_id, task_ids
+    )
+    out = [
+        fulfilment_selectors.pick_task_out(
+            task,
+            lines=[
+                fulfilment_selectors.pick_task_line_out(
+                    line,
+                    sku=items[line.inventory_item_id].sku
+                    if line.inventory_item_id in items
+                    else "",
+                )
+                for line in lines_map.get(task.id, [])
+            ],
+            offers=[
+                fulfilment_selectors.assignment_offer_out(o) for o in offers_map.get(task.id, [])
+            ],
+            exceptions=[
+                fulfilment_selectors.pick_exception_out(e) for e in exceptions_map.get(task.id, [])
+            ],
+        )
+        for task in rows
+    ]
+    return Page.build(out, total=total, params=params)
+
+
+@router.get(
+    "/operations/fulfilment/tasks/{task_id}",
+    response_model=PickTaskOut,
+    summary="One pick task, with its lines, offer history and exceptions",
+    dependencies=[Entitled],
+)
+async def read_task(task_id: uuid.UUID, session: SessionDep, ctx: TaskRead) -> PickTaskOut:
+    task = await fulfilment_selectors.get_pick_task(session, ctx.organization_id, task_id)
+    if task is None:
+        raise NotFoundProblem("That task is not part of this organization")
+    return await _task_out(session, ctx, task)
+
+
+@router.post(
+    "/operations/fulfilment/tasks",
+    response_model=list[PickTaskOut],
+    status_code=status.HTTP_201_CREATED,
+    summary="Derive an accepted order's pick tasks (moves it ACCEPTED -> IN_FULFILMENT)",
+    dependencies=[Entitled],
+)
+async def create_tasks(
+    payload: CreatePickTasksIn, session: SessionDep, ctx: TaskAssign, request: Request
+) -> list[PickTaskOut]:
+    tasks = await fulfilment_services.create_pick_tasks_for_order(
+        session,
+        ctx,
+        order_id=payload.order_id,
+        order_version=payload.order_version,
+        request=request,
+    )
+    return [await _task_out(session, ctx, t) for t in tasks]
+
+
+@router.post(
+    "/operations/fulfilment/tasks/{task_id}/offers",
+    response_model=AssignmentOfferOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Offer a task to a worker (manual assignment — F3 has no auto-assign engine)",
+    dependencies=[Entitled],
+)
+async def offer_task(
+    task_id: uuid.UUID, payload: OfferIn, session: SessionDep, ctx: TaskAssign, request: Request
+) -> AssignmentOfferOut:
+    task = await fulfilment_selectors.get_pick_task(
+        session, ctx.organization_id, task_id, for_update=True
+    )
+    if task is None:
+        raise NotFoundProblem("That task is not part of this organization")
+    offer = await fulfilment_services.offer_task(
+        session, ctx, task, worker_id=payload.worker_id, request=request
+    )
+    return fulfilment_selectors.assignment_offer_out(offer)
+
+
+@router.post(
+    "/operations/fulfilment/offers/{offer_id}/accept",
+    response_model=AssignmentOfferOut,
+    summary="Accept an offer — the exact ADR-0025 §3 conditional update; a zero-row update is 409",
+    dependencies=[Entitled],
+)
+async def accept_offer(
+    offer_id: uuid.UUID, session: SessionDep, ctx: TaskExecute, request: Request
+) -> AssignmentOfferOut:
+    offer = await fulfilment_services.accept_offer(session, ctx, offer_id, request=request)
+    return fulfilment_selectors.assignment_offer_out(offer)
+
+
+@router.post(
+    "/operations/fulfilment/offers/{offer_id}/decline",
+    response_model=AssignmentOfferOut,
+    summary="Decline an offer",
+    dependencies=[Entitled],
+)
+async def decline_offer(
+    offer_id: uuid.UUID, session: SessionDep, ctx: TaskExecute, request: Request
+) -> AssignmentOfferOut:
+    offer = await fulfilment_services.decline_offer(session, ctx, offer_id, request=request)
+    return fulfilment_selectors.assignment_offer_out(offer)
+
+
+@router.post(
+    "/operations/fulfilment/tasks/{task_id}/release",
+    response_model=PickTaskOut,
+    summary="Hand an accepted task back before starting it",
+    dependencies=[Entitled],
+)
+async def release_task(
+    task_id: uuid.UUID,
+    payload: TaskReleaseIn,
+    session: SessionDep,
+    ctx: TaskExecute,
+    request: Request,
+) -> PickTaskOut:
+    task = await fulfilment_selectors.get_pick_task(
+        session, ctx.organization_id, task_id, for_update=True
+    )
+    if task is None:
+        raise NotFoundProblem("That task is not part of this organization")
+    await fulfilment_services.release_task(session, ctx, task, request=request)
+    return await _task_out(session, ctx, task)
+
+
+@router.post(
+    "/operations/fulfilment/tasks/{task_id}/scan",
+    response_model=PickTaskOut,
+    summary="Record a barcode scan (the first one starts the task)",
+    dependencies=[Entitled],
+)
+async def scan_task(
+    task_id: uuid.UUID, payload: ScanIn, session: SessionDep, ctx: TaskExecute, request: Request
+) -> PickTaskOut:
+    task = await fulfilment_selectors.get_pick_task(
+        session, ctx.organization_id, task_id, for_update=True
+    )
+    if task is None:
+        raise NotFoundProblem("That task is not part of this organization")
+    await fulfilment_services.record_scan(
+        session,
+        ctx,
+        task,
+        barcode=payload.barcode,
+        location_id=payload.location_id,
+        inventory_item_id=payload.inventory_item_id,
+        request=request,
+    )
+    return await _task_out(session, ctx, task)
+
+
+@router.post(
+    "/operations/fulfilment/tasks/{task_id}/lines/{line_id}/pick",
+    response_model=PickTaskOut,
+    summary="Confirm a pick line — transfers the reservation; a short pick raises an exception",
+    dependencies=[Entitled],
+)
+async def confirm_pick(
+    task_id: uuid.UUID,
+    line_id: uuid.UUID,
+    payload: PickConfirmIn,
+    session: SessionDep,
+    ctx: TaskExecute,
+    request: Request,
+) -> PickTaskOut:
+    task, _line = await fulfilment_services.confirm_pick(
+        session,
+        ctx,
+        task_id,
+        line_id,
+        quantity=payload.quantity,
+        reason=payload.reason,
+        note=payload.note,
+        request=request,
+    )
+    return await _task_out(session, ctx, task)
+
+
+@router.post(
+    "/operations/fulfilment/tasks/{task_id}/exceptions/{exception_id}/resolve",
+    response_model=PickTaskOut,
+    summary="Resolve an exception and resume picking",
+    dependencies=[Entitled],
+)
+async def resolve_exception(
+    task_id: uuid.UUID,
+    exception_id: uuid.UUID,
+    payload: ExceptionResolveIn,
+    session: SessionDep,
+    ctx: TaskExecute,
+    request: Request,
+) -> PickTaskOut:
+    task, _exception = await fulfilment_services.resolve_exception(
+        session, ctx, task_id, exception_id, note=payload.note, request=request
+    )
+    return await _task_out(session, ctx, task)
+
+
+@router.post(
+    "/operations/fulfilment/tasks/{task_id}/cancel",
+    response_model=PickTaskOut,
+    summary="Cancel a task (in-flight tasks additionally need task.override)",
+    dependencies=[Entitled],
+)
+async def cancel_task(
+    task_id: uuid.UUID,
+    payload: TaskCancelIn,
+    session: SessionDep,
+    ctx: TaskAssign,
+    request: Request,
+) -> PickTaskOut:
+    task = await fulfilment_selectors.get_pick_task(
+        session, ctx.organization_id, task_id, for_update=True
+    )
+    if task is None:
+        raise NotFoundProblem("That task is not part of this organization")
+    # N4 (security review): `.has(...)` is true for a grant at *any* scope; `task.override` is
+    # the stronger, org-wide permission ADR-0025 §2 describes ("a stronger permission on edges
+    # that ARE in the map"), so this must check the scope itself, the same way `close`'s own
+    # `TaskOverride` dependency (`minimum=Scope.ORG`) already floors it.
+    # N4 (security review): `.has(...)` is true for a grant at *any* scope; `task.override` is
+    # the stronger, org-wide permission ADR-0025 §2 describes ("a stronger permission on edges
+    # that ARE in the map"), so this must check the scope itself, the same way `close`'s own
+    # `TaskOverride` dependency (`minimum=Scope.ORG`) already floors it.
+    has_override = ctx.principal.scope_for("operations.fulfilment.task.override") == Scope.ORG
+    await fulfilment_services.cancel_task(
+        session, ctx, task, reason=payload.reason, has_override=has_override, request=request
+    )
+    return await _task_out(session, ctx, task)
+
+
+@router.post(
+    "/operations/fulfilment/tasks/{task_id}/close",
+    response_model=PickTaskOut,
+    summary="Force-close a picked task (override — F3 has no automatic close path yet)",
+    dependencies=[Entitled],
+)
+async def close_task(
+    task_id: uuid.UUID, session: SessionDep, ctx: TaskOverride, request: Request
+) -> PickTaskOut:
+    task = await fulfilment_selectors.get_pick_task(
+        session, ctx.organization_id, task_id, for_update=True
+    )
+    if task is None:
+        raise NotFoundProblem("That task is not part of this organization")
+    await fulfilment_services.close_task(session, ctx, task, request=request)
+    return await _task_out(session, ctx, task)
+
+
+# ------------------------------------------------------------------ fulfilment: packing
+
+
+@router.get(
+    "/operations/fulfilment/packaging-materials",
+    response_model=Page[PackagingMaterialOut],
+    summary="Packaging materials (box sizes, weights)",
+    dependencies=[Entitled],
+)
+async def list_packaging_materials(
+    session: SessionDep, ctx: PackRead, params: PageQuery
+) -> Page[PackagingMaterialOut]:
+    stmt = fulfilment_selectors.packaging_materials_stmt(ctx)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build(
+        [fulfilment_selectors.packaging_material_out(m) for m in rows], total=total, params=params
+    )
+
+
+@router.post(
+    "/operations/fulfilment/packaging-materials",
+    response_model=PackagingMaterialOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a packaging material",
+    dependencies=[Entitled],
+)
+async def create_packaging_material(
+    payload: PackagingMaterialIn, session: SessionDep, ctx: PackExecute, request: Request
+) -> PackagingMaterialOut:
+    material = await fulfilment_services.create_packaging_material(
+        session,
+        ctx,
+        code=payload.code,
+        name=payload.name,
+        length_mm=payload.length_mm,
+        width_mm=payload.width_mm,
+        height_mm=payload.height_mm,
+        max_weight_grams=payload.max_weight_grams,
+        tare_weight_grams=payload.tare_weight_grams,
+        is_active=payload.is_active,
+        request=request,
+    )
+    return fulfilment_selectors.packaging_material_out(material)
+
+
+async def _package_out(session: AsyncSession, ctx: ScopeContext, package) -> PackageOut:  # type: ignore[no-untyped-def]
+    lines = await fulfilment_selectors.lines_for_package(session, ctx.organization_id, package.id)
+    items = await order_selectors.items_for_lines(
+        session, ctx.organization_id, [line.inventory_item_id for line in lines]
+    )
+    return fulfilment_selectors.package_out(
+        package,
+        lines=[
+            fulfilment_selectors.package_line_out(
+                line,
+                sku=items[line.inventory_item_id].sku if line.inventory_item_id in items else "",
+            )
+            for line in lines
+        ],
+    )
+
+
+@router.get(
+    "/operations/fulfilment/packages",
+    response_model=Page[PackageOut],
+    summary="Packages",
+    dependencies=[Entitled],
+)
+async def list_packages(
+    session: SessionDep,
+    ctx: PackRead,
+    params: PageQuery,
+    order_id: Annotated[uuid.UUID | None, Query()] = None,
+) -> Page[PackageOut]:
+    stmt = fulfilment_selectors.packages_stmt(ctx, order_id=order_id)
+    rows, total = await paginate(session, stmt, params)
+    out = [await _package_out(session, ctx, p) for p in rows]
+    return Page.build(out, total=total, params=params)
+
+
+@router.get(
+    "/operations/fulfilment/packages/{package_id}",
+    response_model=PackageOut,
+    summary="One package, with its lines",
+    dependencies=[Entitled],
+)
+async def read_package(package_id: uuid.UUID, session: SessionDep, ctx: PackRead) -> PackageOut:
+    package = await fulfilment_selectors.get_package(session, ctx.organization_id, package_id)
+    if package is None:
+        raise NotFoundProblem("That package is not part of this organization")
+    return await _package_out(session, ctx, package)
+
+
+@router.post(
+    "/operations/fulfilment/packages",
+    response_model=PackageOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Confirm a package: posts the staging -> pack/dock relocation in one call",
+    dependencies=[Entitled],
+)
+async def confirm_package(
+    payload: PackageIn, session: SessionDep, ctx: PackExecute, request: Request
+) -> PackageOut:
+    package = await fulfilment_services.confirm_package(
+        session,
+        ctx,
+        order_id=payload.order_id,
+        packaging_material_id=payload.packaging_material_id,
+        destination_location_id=payload.destination_location_id,
+        weight_grams=payload.weight_grams,
+        lines=payload.lines,
+        request=request,
+    )
+    return await _package_out(session, ctx, package)
 
 
 # ------------------------------------------------------------------ overview

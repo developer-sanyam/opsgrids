@@ -22,11 +22,13 @@ from app.domain import order_line_amount_minor
 from app.inventory.quantity import QuantityError, format_qty, parse_qty
 from app.models import (
     FulfilmentSettings,
+    InventoryBalance,
     InventoryItem,
     InventoryReservation,
     Location,
     Order,
     OrderLine,
+    PickTask,
 )
 from app.schemas import OrderLineItem, OrderOut, QuoteIn, QuoteLineOut, QuoteOut
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
@@ -138,14 +140,46 @@ async def locations_for_items(
 async def open_reservations_for_order(
     session: AsyncSession, org_id: uuid.UUID, order_id: uuid.UUID
 ) -> list[InventoryReservation]:
-    """The order's still-open reservations — what `cancel` releases. Reads `inventory_reservations`
-    directly (same schema, no chokepoint bypass): the kernel is still the only *writer* of it
-    (ADR-0014 §3); a plain scoped read is not a kernel operation."""
-    stmt = select(InventoryReservation).where(
-        InventoryReservation.organization_id == org_id,
-        InventoryReservation.reference_type == "order",
-        InventoryReservation.reference_id == order_id,
-        InventoryReservation.status == "active",
+    """The order's still-open reservations — what `cancel` releases, in the kernel's own bucket
+    order (`app.inventory.ledger._bucket_key`: item, location, status, lot, roll — N6, security
+    review). F3 shares staging buckets across orders (every pick's destination is one warehouse's
+    staging location), so two orders cancelling at once can now contend the same balance rows;
+    releasing them in whatever order Postgres happens to return is the same opposite-order
+    deadlock surface the kernel already sorts away for `post_move`/`reserve_many`. Reads
+    `inventory_reservations` directly (same schema, no chokepoint bypass): the kernel is still
+    the only *writer* of it (ADR-0014 §3); a plain scoped read is not a kernel operation."""
+    stmt = (
+        select(InventoryReservation)
+        .join(InventoryBalance, InventoryBalance.id == InventoryReservation.balance_id)
+        .where(
+            InventoryReservation.organization_id == org_id,
+            InventoryReservation.reference_type == "order",
+            InventoryReservation.reference_id == order_id,
+            InventoryReservation.status == "active",
+        )
+        .order_by(
+            InventoryBalance.inventory_item_id,
+            InventoryBalance.location_id,
+            InventoryBalance.status,
+            InventoryBalance.lot_id,
+            InventoryBalance.roll_id,
+        )
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def pick_task_statuses_for_order(
+    session: AsyncSession, org_id: uuid.UUID, order_id: uuid.UUID
+) -> list[str]:
+    """Every live pick task's status for one order — what `release_hold_order` needs to
+    recompute the real release target (ADR-0025 §1; MAJOR 1 #2, security review) without
+    importing `app.fulfilment` (ADR-0024 §1 forbids that direction; `app.models.PickTask` itself
+    is a plain model import two layers below `app/orders/services.py`, not a layering violation —
+    confirmed by `lint-imports` after this change)."""
+    stmt = select(PickTask.status).where(
+        PickTask.organization_id == org_id,
+        PickTask.order_id == order_id,
+        PickTask.deleted_at.is_(None),
     )
     return list((await session.execute(stmt)).scalars().all())
 
