@@ -116,6 +116,9 @@ from platform_core.errors import (
     UpstreamUnavailableProblem,
 )
 from platform_core.events import publish_event, schedule_event
+from platform_core.logging import get_logger
+
+log = get_logger("finance.services")
 
 # Event names. `finance.*` because these are the product's own, not the platform's; the second
 # segment is the module, matching the permission grammar (ADR-0000 §5).
@@ -558,6 +561,16 @@ async def ensure_customer_for_crm_contact(
             "The CRM is temporarily unable to resolve this contact. Try again shortly."
         ) from exc
 
+    if summary.contact_id != crm_contact_id:
+        # The route is already scoped to `crm_contact_id` (it's in the request path), so this
+        # can only be a malformed or mismatched upstream response — never trust the echoed id
+        # over the one this function was actually asked to resolve; keying the insert on
+        # `summary.contact_id` instead would let a bad reply bridge the wrong contact.
+        log.error("finance.services.crm_contact_id_mismatch")
+        raise UpstreamUnavailableProblem(
+            "The CRM is temporarily unable to resolve this contact. Try again shortly."
+        )
+
     async with session.begin():
         await _bind_tenant(session, ctx.organization_id)
         existing = await selectors.get_customer_by_crm_contact(
@@ -572,7 +585,7 @@ async def ensure_customer_for_crm_contact(
             name=summary.company_name or summary.full_name,
             contact_name=summary.full_name,
             email=summary.email,
-            crm_contact_id=summary.contact_id,
+            crm_contact_id=crm_contact_id,
         )
         try:
             # A SAVEPOINT, not a bare `session.add` + `flush()`: see `uq_invoices_org_order_id`'s

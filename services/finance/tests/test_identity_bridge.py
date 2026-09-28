@@ -226,8 +226,22 @@ class TestEnsureCustomerForCrmContact:
 
         ctx = services.crm_bridge_ctx(org_id)
 
+        # A plain `asyncio.gather` leaves the actual interleaving to the event loop — both
+        # tasks might genuinely race the insert, or one might sail through claim/call/record
+        # entirely before the other's claim step even runs, which never exercises the
+        # `IntegrityError`-on-`uq_customers_org_crm_contact` path at all. The barrier pins the
+        # rendezvous to the one place that matters: neither task leaves its network call (the
+        # only await between the claim and record transactions, per D3) until both have made
+        # it, so both enter the record transaction back to back on every run, not just most.
+        contact_handler = _crm_contact_handler(contact_id=crm_contact_id)
+        barrier = asyncio.Barrier(2)
+
+        async def _synced_handler(request: httpx.Request) -> httpx.Response:
+            await barrier.wait()
+            return contact_handler(request)
+
         async def _resolve(sess: AsyncSession) -> Customer:
-            async with _mock_client(_crm_contact_handler(contact_id=crm_contact_id)) as client:
+            async with httpx.AsyncClient(transport=httpx.MockTransport(_synced_handler)) as client:
                 return await services.ensure_customer_for_crm_contact(
                     sess, ctx, crm_contact_id, client=client
                 )

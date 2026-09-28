@@ -92,7 +92,10 @@ class Customer(Base, TenantBase):
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     contact_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
-    email: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    #: 254, not 200: matches the max a CRM contact's own `email` column allows
+    #: (services/customer's Contact.email, String(254)) — the identity bridge writes this
+    #: column from that field, and a narrower one here would 500 on a real, valid CRM email.
+    email: Mapped[str] = mapped_column(String(254), nullable=False, default="")
     #: GST identification number, or null for an unregistered buyer.
     gstin: Mapped[str | None] = mapped_column(String(20))
     city: Mapped[str] = mapped_column(String(120), nullable=False, default="")

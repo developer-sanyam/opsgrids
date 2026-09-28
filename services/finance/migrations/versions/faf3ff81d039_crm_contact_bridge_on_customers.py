@@ -46,9 +46,18 @@ def upgrade() -> None:
         schema=SCHEMA,
         postgresql_where=sa.text("crm_contact_id IS NOT NULL AND deleted_at IS NULL"),
     )
+    # 200 -> 254: matches CRM's own Contact.email column exactly, so a real email the bridge
+    # copies over can never overflow this one (a security review caught the mismatch before
+    # any row existed to be narrowed by it).
+    op.alter_column(
+        "customers", "email", existing_type=sa.String(200), type_=sa.String(254), schema=SCHEMA
+    )
 
 
 def downgrade() -> None:
+    op.alter_column(
+        "customers", "email", existing_type=sa.String(254), type_=sa.String(200), schema=SCHEMA
+    )
     op.drop_index(
         "uq_customers_org_crm_contact",
         table_name="customers",
