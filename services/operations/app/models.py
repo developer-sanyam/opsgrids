@@ -274,7 +274,9 @@ _STATUS_SQL = ", ".join(f"'{s}'" for s in STOCK_STATUSES)
 
 
 class Location(Base, TenantBase):
-    """A place stock sits inside a warehouse: zone → rack → bin (ADR-0014, plan §2).
+    """A place stock sits inside a warehouse (ADR-0014, plan §2; kind vocabulary extended by
+    ADR-0024 §5 for fulfilment: zone, aisle, rack, shelf, bin, staging, pack_station, dock,
+    receiving, returns, quarantine).
 
     Every warehouse gets one `is_default` bin at creation; the pre-Phase-1 single-location API
     posts there. `parent_id` builds the tree; a bin with no parent sits directly in its warehouse.
@@ -290,14 +292,38 @@ class Location(Base, TenantBase):
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
     )
-    #: zone | rack | bin
-    kind: Mapped[str] = mapped_column(String(10), nullable=False, default="bin")
+    #: zone | aisle | rack | shelf | bin | staging | pack_station | dock | receiving | returns |
+    #: quarantine (ADR-0024 §5, amending ADR-0014 §1's zone|rack|bin). A kind is *where* stock
+    #: is, never *what condition* it is in — that is `STOCK_STATUSES`, a separate axis carried by
+    #: the ledger, not this column.
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="bin")
     code: Mapped[str] = mapped_column(String(40), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: Scanned/printed value resolving straight to this location. Unique per org where set;
+    #: `NULL` for a location with no label yet.
+    barcode: Mapped[str | None] = mapped_column(String(64))
+    #: Orders a picker's walk through a zone. No uniqueness — ties and gaps are both fine.
+    pick_sequence: Mapped[int | None] = mapped_column(Integer)
+    max_weight_grams: Mapped[int | None] = mapped_column(BigInteger)
+    max_volume_milli: Mapped[int | None] = mapped_column(BigInteger)
+    #: Free text for now (no fixed vocabulary yet — a later phase's call per the fulfilment plan).
+    storage_type: Mapped[str | None] = mapped_column(String(30))
 
     __table_args__ = (
-        CheckConstraint("kind IN ('zone', 'rack', 'bin')", name="kind_known"),
+        CheckConstraint(
+            "kind IN ('zone', 'aisle', 'rack', 'shelf', 'bin', 'staging', 'pack_station', "
+            "'dock', 'receiving', 'returns', 'quarantine')",
+            name="kind_known",
+        ),
+        CheckConstraint(
+            "max_weight_grams IS NULL OR max_weight_grams >= 0",
+            name="max_weight_grams_non_negative",
+        ),
+        CheckConstraint(
+            "max_volume_milli IS NULL OR max_volume_milli >= 0",
+            name="max_volume_milli_non_negative",
+        ),
         Index(
             "uq_locations_org_warehouse_code",
             "organization_id",
@@ -313,6 +339,13 @@ class Location(Base, TenantBase):
             "warehouse_id",
             unique=True,
             postgresql_where=text("is_default AND deleted_at IS NULL"),
+        ),
+        Index(
+            "uq_locations_org_barcode",
+            "organization_id",
+            "barcode",
+            unique=True,
+            postgresql_where=text("barcode IS NOT NULL AND deleted_at IS NULL"),
         ),
     )
 

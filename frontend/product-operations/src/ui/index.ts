@@ -28,6 +28,7 @@ export {
   PageHeader,
   Pagination,
   Pill,
+  QrCode,
   RadioGroup,
   RowActions,
   SampleChip,

@@ -89,6 +89,23 @@ Qty = Annotated[str, Field(pattern=r"^-?\d+(\.\d{1,3})?$", examples=["82.5"])]
 #: chooses), or empty (not every item carries one). Never partial-length digit strings.
 _HSN_PATTERN = r"^(\d{4}(\d{2}(\d{2})?)?)?$"
 StockMovementReason = Literal["damaged", "lost", "found", "consumed", "returned", "other"]
+#: ADR-0024 §5 (amending ADR-0014 §1's zone|rack|bin): the full location-kind vocabulary once
+#: fulfilment needs staging, pack stations, docks, receiving, returns and quarantine as places,
+#: not stock statuses (`StockStatus`, above, is the separate axis for *what condition* stock is
+#: in).
+LocationKind = Literal[
+    "zone",
+    "aisle",
+    "rack",
+    "shelf",
+    "bin",
+    "staging",
+    "pack_station",
+    "dock",
+    "receiving",
+    "returns",
+    "quarantine",
+]
 
 
 class ServiceInfo(BaseModel):
@@ -717,6 +734,72 @@ class WarehousePatch(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=120)
     location: str | None = Field(default=None, max_length=160)
+
+
+# ------------------------------------------------------------------ locations (ADR-0024 §5)
+
+
+class LocationOut(BaseModel):
+    """A node in a warehouse's location tree — zone, aisle, rack, shelf, bin, staging, pack
+    station, dock, receiving, returns or quarantine (ADR-0024 §5)."""
+
+    id: str
+    warehouse_id: str
+    parent_id: str | None
+    kind: LocationKind
+    code: str
+    name: str
+    is_default: bool
+    barcode: str | None
+    pick_sequence: int | None
+    max_weight_grams: int | None
+    max_volume_milli: int | None
+    storage_type: str | None
+
+
+class LocationIn(BaseModel):
+    """`POST /warehouses/{warehouse_id}/locations`. `parent_id`, when given, must name an
+    existing location in the same warehouse. `barcode`, when given, must be unique across every
+    live location in the organization."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: LocationKind = "bin"
+    code: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=120)
+    parent_id: str | None = None
+    # Printable ASCII, no space and no `/`: a barcode containing either could never be resolved
+    # back through `GET /locations/by-barcode/{barcode}`'s path segment, and whitespace/control
+    # characters have no business in a value a scanner or a human types verbatim.
+    barcode: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[!-.0-~]+$")
+    pick_sequence: int | None = Field(default=None, ge=0)
+    max_weight_grams: int | None = Field(default=None, ge=0)
+    max_volume_milli: int | None = Field(default=None, ge=0)
+    storage_type: str | None = Field(default=None, max_length=30)
+
+
+class LocationPatch(BaseModel):
+    """`PATCH /locations/{id}`. Changing `kind` or either capacity field on a location that
+    already has ledger history needs `operations.inventory.layout.publish`, not just
+    `location.write` (ADR-0024 §5) — enforced in the route, since which permission applies
+    depends on what changed and on the location's own history, not on the shape of this
+    payload alone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: LocationKind | None = None
+    code: str | None = Field(default=None, min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    barcode: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[!-.0-~]+$")
+    pick_sequence: int | None = Field(default=None, ge=0)
+    max_weight_grams: int | None = Field(default=None, ge=0)
+    max_volume_milli: int | None = Field(default=None, ge=0)
+    storage_type: str | None = Field(default=None, max_length=30)
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        _reject_explicit_null(self, ("kind", "code", "name"))
+        return self
 
 
 # ------------------------------------------------------------------ overview rollups

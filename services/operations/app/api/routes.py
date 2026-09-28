@@ -47,6 +47,9 @@ from app.schemas import (
     ItemVariantIn,
     ItemVariantOut,
     ItemVariantPatch,
+    LocationIn,
+    LocationOut,
+    LocationPatch,
     OverviewOut,
     PurchaseOrderIn,
     PurchaseOrderOut,
@@ -119,6 +122,12 @@ IdempotencyKey = Annotated[
 ]
 WarehouseRead = Annotated[ScopeContext, Depends(require("operations.inventory.warehouse.read"))]
 WarehouseWrite = Annotated[ScopeContext, Depends(require("operations.inventory.warehouse.write"))]
+LocationRead = Annotated[ScopeContext, Depends(require("operations.inventory.location.read"))]
+#: The floor for a plain code/name/barcode/pick-sequence edit. Changing `kind` or a capacity
+#: column on a location that already has ledger history additionally needs
+#: `operations.inventory.layout.publish` — checked in `inv_services.update_location`, against
+#: that location's own history, not here (a route-level dependency cannot see the payload).
+LocationWrite = Annotated[ScopeContext, Depends(require("operations.inventory.location.write"))]
 #: Reservations narrow what everyone else in the org can promise, so there is no OWN reading.
 StockReserve = Annotated[
     ScopeContext, Depends(require("operations.inventory.stock.reserve", minimum=Scope.ORG))
@@ -1062,6 +1071,98 @@ async def delete_warehouse(
         raise NotFoundProblem("That warehouse is not part of this organization")
     await inv_services.delete_warehouse(session, ctx, warehouse, request=request)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ------------------------------------------------------------------ locations (ADR-0024 §5)
+
+
+@router.get(
+    "/operations/warehouses/{warehouse_id}/locations",
+    response_model=Page[LocationOut],
+    summary="A warehouse's location tree",
+    dependencies=[Entitled],
+)
+async def list_locations(
+    warehouse_id: uuid.UUID, session: SessionDep, ctx: LocationRead, params: PageQuery
+) -> Page[LocationOut]:
+    warehouse = await inv_selectors.get_warehouse(session, ctx.organization_id, warehouse_id)
+    if warehouse is None:
+        raise NotFoundProblem("That warehouse is not part of this organization")
+    stmt = inv_selectors.locations_stmt(ctx.organization_id, warehouse_id)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([inv_selectors.location_out(loc) for loc in rows], total=total, params=params)
+
+
+@router.post(
+    "/operations/warehouses/{warehouse_id}/locations",
+    response_model=LocationOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a location to a warehouse",
+    dependencies=[Entitled],
+)
+async def create_location(
+    warehouse_id: uuid.UUID,
+    payload: LocationIn,
+    session: SessionDep,
+    ctx: LocationWrite,
+    request: Request,
+) -> LocationOut:
+    warehouse = await inv_selectors.get_warehouse(session, ctx.organization_id, warehouse_id)
+    if warehouse is None:
+        raise NotFoundProblem("That warehouse is not part of this organization")
+    location = await inv_services.create_location(
+        session,
+        ctx,
+        warehouse,
+        kind=payload.kind,
+        code=payload.code,
+        name=payload.name,
+        parent_id=payload.parent_id,
+        barcode=payload.barcode,
+        pick_sequence=payload.pick_sequence,
+        max_weight_grams=payload.max_weight_grams,
+        max_volume_milli=payload.max_volume_milli,
+        storage_type=payload.storage_type,
+        request=request,
+    )
+    return inv_selectors.location_out(location)
+
+
+@router.get(
+    "/operations/locations/by-barcode/{barcode}",
+    response_model=LocationOut,
+    summary="Resolve a scanned barcode to its location",
+    dependencies=[Entitled],
+)
+async def read_location_by_barcode(
+    barcode: Annotated[str, Path(min_length=1, max_length=64)],
+    session: SessionDep,
+    ctx: LocationRead,
+) -> LocationOut:
+    location = await inv_selectors.get_location_by_barcode(session, ctx.organization_id, barcode)
+    if location is None:
+        raise NotFoundProblem("That barcode does not resolve to a location in this organization")
+    return inv_selectors.location_out(location)
+
+
+@router.patch(
+    "/operations/locations/{location_id}",
+    response_model=LocationOut,
+    summary="Update a location",
+    dependencies=[Entitled],
+)
+async def update_location(
+    location_id: uuid.UUID,
+    payload: LocationPatch,
+    session: SessionDep,
+    ctx: LocationWrite,
+    request: Request,
+) -> LocationOut:
+    location = await inv_selectors.get_location(session, ctx.organization_id, location_id)
+    if location is None:
+        raise NotFoundProblem("That location is not part of this organization")
+    updated = await inv_services.update_location(session, ctx, location, payload, request=request)
+    return inv_selectors.location_out(updated)
 
 
 # ------------------------------------------------------------------ overview

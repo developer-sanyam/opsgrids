@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { deleteWarehouse, listWarehouses } from "@/api/client";
 import type { WarehouseOut } from "@/api/types";
@@ -32,6 +33,7 @@ import { WarehouseFormDialog } from "@/forms/WarehouseFormDialog";
  * see the list.
  */
 export function WarehousesPage() {
+  const navigate = useNavigate();
   const toast = useToast();
   const canWrite = useCan("operations.inventory.warehouse.write", "ORG");
   const [creating, setCreating] = useState(false);
@@ -76,6 +78,7 @@ export function WarehousesPage() {
         <RowActions
           label={w.name}
           actions={[
+            { label: "Locations", onSelect: () => navigate(`/warehouses/${w.id}/locations`) },
             { label: "Edit", onSelect: () => setEditing(w), hidden: !canWrite },
             { label: "Delete", tone: "danger", onSelect: () => setDeleting(w), hidden: !canWrite },
           ]}
@@ -129,6 +132,7 @@ export function WarehousesPage() {
             rows={state.data.items}
             rowKey={(w) => w.id}
             caption="Warehouses"
+            onRowClick={(w) => navigate(`/warehouses/${w.id}/locations`)}
             emptyState={
               <EmptyState
                 icon={<WarehouseIcon className="size-6" />}
