@@ -14,7 +14,7 @@
  */
 
 /** Every deployable surface. An app is a leaf: nothing imports it. */
-const APP = "(product-[^/]+|opsgrids-dashboard|opsgrids-internal)";
+const APP = "(product-[^/]+|opsgrids-dashboard|opsgrids-internal|worker-app)";
 
 /** The only files of the shared packages an app may land on: their `exports` entries. */
 const UI_EXPORTS = "^opsgrids-ui/src/(index\\.ts|icons\\.tsx|styles/console\\.css)$";

@@ -13,6 +13,9 @@ packages:
   - "opsgrids-dashboard"
   - "opsgrids-admin"
   - "opsgrids-internal"
+  # The Fulfilment F3 worker PWA — its own surface (ADR-0024 §7 amends ADR-0001's "Mobile" line
+  # for it), not a product, so it sits outside the "product-*" glob below.
+  - "worker-app"
 
   # One application per product. A customer who bought only CRM downloads only CRM.
   - "product-*"
