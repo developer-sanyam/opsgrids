@@ -984,7 +984,11 @@ class OrderLineIn(BaseModel):
 class OrderOut(BaseModel):
     """Mirrors the SPA's `OrderOut`. `total_minor` is `subtotal_minor` (F2 carries no
     discount/tax/shipping line — those are a later phase's addition); both are `0` until `place`
-    prices the lines."""
+    prices the lines.
+
+    `invoice_id`/`paid_at`/`pickup_code_verified_at` are the billing-gate facts F4 adds
+    (ADR-0025 §1) — `pickup_code` itself is deliberately never on this model (`Order`'s own
+    docstring explains why)."""
 
     id: str
     number: str
@@ -998,6 +1002,9 @@ class OrderOut(BaseModel):
     subtotal_minor: int
     total_minor: int
     currency: str
+    invoice_id: str | None = None
+    paid_at: datetime | None = None
+    pickup_code_verified_at: datetime | None = None
     lines: list[OrderLineItem] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
@@ -1050,6 +1057,30 @@ class OrderCancelIn(OrderVersionIn):
     and the cancellation event, the same as a purchase order's cancel."""
 
     reason: str = Field(min_length=1, max_length=500)
+
+
+class OrderHandoverIn(OrderVersionIn):
+    """`POST /orders/{id}/hand-over` — the counter/walk-in path through ADR-0025 §1's billing
+    gate (`app.orders.services.check_billing_gate`; Fulfilment plan F4). For walk-in and counter
+    handover the handover *is* delivery (ADR-0025 §1), so a successful call moves the order
+    `READY -> HANDED_OVER -> DELIVERED` in one transaction.
+
+    `pickup_code` is what the customer presents at the counter, checked against the code issued
+    at READY when this org requires one (`fulfilment_settings.require_pickup_code`); omitted or
+    wrong when one is required is exactly the "pickup code unverified" gate failure.
+    `payment_confirmed` is the operator's own attestation that a cash/prepaid order's payment was
+    collected at the counter — a documented stand-in for `services/payment`'s tenant collections
+    module (ADR-0024 A4), not yet built; see this slice's own report. Both are inert for a
+    credit-terms order or an org that requires no pickup code — the gate simply never asks for
+    them."""
+
+    #: MINOR 3 (security review): must match the exact shape `_generate_pickup_code` issues — 6
+    #: ASCII digits, `secrets.choice("0123456789")` x 6 — not just a length bound. Without the
+    #: `pattern`, a non-ASCII code reaches `secrets.compare_digest(pickup_code, order.pickup_code)`
+    #: unfiltered, and that call raises `TypeError` (it refuses to compare `str` operands unless
+    #: both are ASCII-only), turning a bad request into an unhandled 500.
+    pickup_code: str | None = Field(default=None, max_length=20, pattern=r"^[0-9]{6}$")
+    payment_confirmed: bool = False
 
 
 class QuoteLineIn(BaseModel):

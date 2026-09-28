@@ -19,7 +19,7 @@ from app.models import Order
 from app.orders import selectors as order_selectors
 from app.orders import services as order_services
 from platform_core.auth import Scope
-from tests.helpers import ctx_for
+from tests.helpers import as_principal, ctx_for, principal_for
 from tests.order_fixtures import Shop, build_shop
 
 TASK_READ_PERM = "operations.fulfilment.task.read:ORG"
@@ -119,3 +119,75 @@ async def accept_order(
 
     accepted = await order_services.accept_order(session, accept_ctx, order.id, expected_version=1)
     return accepted
+
+
+# ------------------------------------------------------------------ carrying an order to READY
+# over HTTP (shared by the F4 billing-gate tests: `test_orders_handover.py`,
+# `test_orders_invoice_request.py`, `test_orders_invoice_issued_consumer.py`'s own siblings)
+
+
+async def create_tasks(client, org_id: uuid.UUID, order: Order) -> list[dict]:  # type: ignore[no-untyped-def]
+    principal = principal_for(org_id, [TASK_ASSIGN_PERM], subject_ref=uuid.uuid4())
+    with as_principal(principal):
+        response = await client.post(
+            "/api/v1/operations/fulfilment/tasks",
+            json={"order_id": str(order.id), "order_version": order.version},
+        )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def offer_task(client, org_id: uuid.UUID, task_id: str, worker_id: uuid.UUID) -> dict:  # type: ignore[no-untyped-def]
+    principal = principal_for(org_id, [TASK_ASSIGN_PERM], subject_ref=uuid.uuid4())
+    with as_principal(principal):
+        response = await client.post(
+            f"/api/v1/operations/fulfilment/tasks/{task_id}/offers",
+            json={"worker_id": str(worker_id)},
+        )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def accept_offer(  # type: ignore[no-untyped-def]
+    client, org_id: uuid.UUID, offer_id: str, worker_employee_id: uuid.UUID
+) -> dict:
+    principal = principal_for(org_id, [TASK_EXECUTE_PERM], subject_ref=worker_employee_id)
+    with as_principal(principal):
+        response = await client.post(f"/api/v1/operations/fulfilment/offers/{offer_id}/accept")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def confirm_pick(  # type: ignore[no-untyped-def]
+    client, org_id: uuid.UUID, task_id: str, line_id: str, worker_employee_id: uuid.UUID
+) -> dict:
+    principal = principal_for(org_id, [TASK_EXECUTE_PERM], subject_ref=worker_employee_id)
+    with as_principal(principal):
+        response = await client.post(
+            f"/api/v1/operations/fulfilment/tasks/{task_id}/lines/{line_id}/pick", json={}
+        )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def ready_order(  # type: ignore[no-untyped-def]
+    client, org_id: uuid.UUID, session: AsyncSession, floor: Floor, *, qty: str = "10"
+) -> uuid.UUID:
+    """Accepts a one-line order and drives it, through the real F3 write paths (one task, one
+    offer, one pick confirmation), all the way to `READY` — the single-task shape every F4
+    billing-gate test starts from. Returns the order id; re-read it (`app.orders.selectors
+    .get_order`) for its current `version`/facts, since the `Order` object `accept_order` handed
+    back does not see writes an HTTP call made on a different session."""
+    order = await accept_order(
+        session,
+        org_id,
+        floor.shop,
+        lines=[{"inventory_item_id": floor.shop.widget, "quantity": qty}],
+    )
+    tasks = await create_tasks(client, org_id, order)
+    task = tasks[0]
+    offer = await offer_task(client, org_id, task["id"], floor.worker_id)
+    await accept_offer(client, org_id, offer["id"], floor.worker_employee_id)
+    line_id = task["lines"][0]["id"]
+    await confirm_pick(client, org_id, task["id"], line_id, floor.worker_employee_id)
+    return order.id

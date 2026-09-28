@@ -62,6 +62,7 @@ from app.models import (
     WorkerZoneAccess,
 )
 from app.orders import selectors as order_selectors
+from app.orders import services as order_services
 from app.orders.services import EVT_ORDER_READY
 from platform_core.audit import record_audit
 from platform_core.auth import Principal, Scope, ScopeContext
@@ -480,7 +481,13 @@ async def _maybe_ready_order(
     least one is `PICKED`/`CLOSED`. Called from `confirm_pick` **after** the order row is already
     locked by that call — never acquires its own lock, so two workers finishing the two zones of
     one order at the same moment serialise on the order row and only the second confirmation moves
-    it (ADR-0025 §1's own worked example)."""
+    it (ADR-0025 §1's own worked example).
+
+    Also runs the two READY-triggered facts Fulfilment plan F4 adds
+    (`app.orders.services.handle_order_ready`: issues a pickup code if the org requires one,
+    requests an invoice from finance) in this same transaction — `app/orders/` is imported here,
+    never the other way (ADR-0024 §1), the same direction `EVT_ORDER_READY` above is already
+    imported from."""
     tasks = (
         (await session.execute(selectors.pick_tasks_stmt(ctx.organization_id, order_id=order.id)))
         .scalars()
@@ -537,6 +544,7 @@ async def _maybe_ready_order(
         },
         actor=_actor(ctx),
     )
+    await order_services.handle_order_ready(session, ctx, order, request=request)
 
 
 # ------------------------------------------------------------------ offers (ADR-0025 §3)

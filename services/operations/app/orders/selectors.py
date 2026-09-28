@@ -13,6 +13,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import Select, select
@@ -222,6 +223,9 @@ def order_out(
         subtotal_minor=order.subtotal_minor,
         total_minor=order.total_minor,
         currency=order.currency,
+        invoice_id=str(order.invoice_id) if order.invoice_id else None,
+        paid_at=order.paid_at,
+        pickup_code_verified_at=order.pickup_code_verified_at,
         lines=[
             order_line_out(
                 line,
@@ -254,6 +258,9 @@ class ResolvedSettings:
     #: "warehouse" | "organization" | "default" — which row (or lack of one) this came from.
     source: str
     warehouse_id: uuid.UUID | None = None
+    #: F4 additions (ADR-0025 §1's billing gate) — see `FulfilmentSettings`' own docstring.
+    require_pickup_code: bool = False
+    default_tax_rate_pct: Decimal = Decimal("0")
 
     def payment_term_for(self, channel: str) -> str:
         """The channel's payment term, defaulting to `"cash"` — never `"credit"` — for a channel
@@ -268,6 +275,11 @@ class ResolvedSettings:
             "offer_rounds": self.offer_rounds,
             "source": self.source,
             "warehouse_id": str(self.warehouse_id) if self.warehouse_id else None,
+            "require_pickup_code": self.require_pickup_code,
+            #: JSON has no decimal type — a string preserves the exact scale (`"5.00"`, not the
+            #: float `5.0`), the same reasoning `str(...)`-ing every other non-numeric-JSON value
+            #: on this snapshot already follows.
+            "default_tax_rate_pct": str(self.default_tax_rate_pct),
         }
 
 
@@ -280,6 +292,8 @@ _HARDCODED_DEFAULT = ResolvedSettings(
     offer_timeout_seconds=300,
     offer_rounds=3,
     source="default",
+    require_pickup_code=False,
+    default_tax_rate_pct=Decimal("0"),
 )
 
 
@@ -305,6 +319,8 @@ async def resolve_settings(
             offer_rounds=row.offer_rounds,
             source="warehouse",
             warehouse_id=warehouse_id,
+            require_pickup_code=row.require_pickup_code,
+            default_tax_rate_pct=row.default_tax_rate_pct,
         )
     stmt = select(FulfilmentSettings).where(
         FulfilmentSettings.organization_id == org_id,
@@ -319,6 +335,8 @@ async def resolve_settings(
             offer_timeout_seconds=row.offer_timeout_seconds,
             offer_rounds=row.offer_rounds,
             source="organization",
+            require_pickup_code=row.require_pickup_code,
+            default_tax_rate_pct=row.default_tax_rate_pct,
         )
     return _HARDCODED_DEFAULT
 

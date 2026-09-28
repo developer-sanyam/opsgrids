@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from app import domain
@@ -129,3 +131,26 @@ class TestOrderLineAmount:
 
         lines = [Line(100), Line(None), Line(250)]
         assert domain.order_subtotal_minor(lines) == 350
+
+
+class TestExpectedGstAmount:
+    """`domain.expected_gst_amount_minor` — deliberately mirrors
+    `services/finance/app/domain.py::gst_amount_minor` (same formula, same `Decimal`, same
+    `ROUND_HALF_UP`), which is what lets `request_invoice_for_order`'s `expected_tax_minor` agree
+    with finance's own independent recomputation (Fulfilment plan F4)."""
+
+    def test_a_flat_percentage(self) -> None:
+        assert domain.expected_gst_amount_minor(100_00, Decimal("18")) == 18_00
+
+    def test_zero_rate_is_zero_tax(self) -> None:
+        assert domain.expected_gst_amount_minor(999_99, Decimal("0")) == 0
+
+    def test_rounds_half_up_not_half_to_even(self) -> None:
+        # 0.125 * 100 = 12.5 -> 13 (half-up, away from zero), not 12 (banker's rounding, which
+        # `order_line_amount_minor` uses for a *different* calculation — the two must not be
+        # confused: this one mirrors finance's GST rule, not the stock-value rule).
+        assert domain.expected_gst_amount_minor(1000, Decimal("1.25")) == 13
+
+    def test_agrees_with_a_hand_computed_odd_rate(self) -> None:
+        # 12.5% of 333_33 (33333) = 4166.625 -> 4167 (half-up).
+        assert domain.expected_gst_amount_minor(333_33, Decimal("12.5")) == 4_167

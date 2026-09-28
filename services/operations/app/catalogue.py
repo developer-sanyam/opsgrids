@@ -264,6 +264,17 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Handover is where goods and (for cash/prepaid orders) money actually leave the business
+        # (ADR-0025 §1's billing gate; Fulfilment plan F4) — as much a commitment as `accept`, so
+        # it gets the same separation from `order.write` that `accept`/`cancel` already draw.
+        PermissionSpec(
+            "orders",
+            "order",
+            "hand_over",
+            "Hand an order over at the counter once the billing gate passes",
+            "ORG",
+            "ORG",
+        ),
         # Fulfilment (ADR-0024 §7, ADR-0025 §2/§3; Fulfilment plan F3). Tasks and workers are a
         # shared operational queue like orders — a dispatcher has to see and offer every task, so
         # `task.read`/`task.assign` default and top out at ORG, the same reasoning
@@ -386,10 +397,10 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
         product=PRODUCT,
         description=(
             "Raises, approves and receives purchase orders org-wide; maintains suppliers and "
-            "inventory (including stock adjustments); reads warehouses. Accepts and cancels "
-            "customer orders — the stock-commitment and stock-release steps — on top of the "
-            "ordinary counter work every Operations user does. Does not create or rename "
-            "warehouses — that stays with the admin."
+            "inventory (including stock adjustments); reads warehouses. Accepts, cancels and "
+            "hands over customer orders — the stock-commitment, stock-release and billing-gate "
+            "steps — on top of the ordinary counter work every Operations user does. Does not "
+            "create or rename warehouses — that stays with the admin."
         ),
         grants=OPERATIONS.pick(
             ("operations.procurement.purchase_order.read", "ORG"),
@@ -409,6 +420,7 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.orders.order.write", "ORG"),
             ("operations.orders.order.accept", "ORG"),
             ("operations.orders.order.cancel", "ORG"),
+            ("operations.orders.order.hand_over", "ORG"),
             ("operations.fulfilment.task.read", "ORG"),
             ("operations.fulfilment.task.assign", "ORG"),
             ("operations.fulfilment.task.override", "ORG"),

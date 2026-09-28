@@ -200,6 +200,15 @@
       "resource": "order"
     },
     {
+      "action": "hand_over",
+      "default_scope": "ORG",
+      "description": "Hand an order over at the counter once the billing gate passes",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "orders",
+      "resource": "order"
+    },
+    {
       "action": "read",
       "default_scope": "ORG",
       "description": "See orders, their lines, and price a quote",
@@ -359,6 +368,10 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.orders.order.hand_over",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.orders.order.read",
           "scope": "ORG"
         },
@@ -394,7 +407,7 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts and cancels customer orders \u2014 the stock-commitment and stock-release steps \u2014 on top of the ordinary counter work every Operations user does. Does not create or rename warehouses \u2014 that stays with the admin.",
+      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does. Does not create or rename warehouses \u2014 that stays with the admin.",
       "grants": [
         {
           "code": "operations.fulfilment.pack.execute",
@@ -466,6 +479,10 @@
         },
         {
           "code": "operations.orders.order.create",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.order.hand_over",
           "scope": "ORG"
         },
         {

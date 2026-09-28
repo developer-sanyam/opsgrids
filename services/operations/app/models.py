@@ -1111,6 +1111,29 @@ class Order(Base, TenantBase):
     (ADR-0024 §4's "an order records the resolved settings it was accepted under") — a JSONB copy,
     not a foreign key to the settings row, so a later settings edit never reinterprets an
     already-accepted order. NULL until `accept` runs.
+
+    Four more facts, all written by an event consumer or by the READY/handover write paths
+    themselves, never by a caller directly (`app/orders/services.py`; Fulfilment plan F4,
+    ADR-0025 §1's billing gate). Every one of them is a fact, never a second status
+    (ADR-0025 §1's own rule for invoice/payment references):
+
+    * `invoice_id` — a plain UUID into `finance.invoices`, recorded from finance's own
+      `finance.orders.invoice.issued` event (`app.consumers.finance_invoice_issued`). Never a
+      cross-schema FK (ADR-0000 §10). NULL until finance issues one.
+    * `paid_at` — when this order's payment was confirmed. **F4 honest gap:**
+      `services/payment` has no tenant-facing collections module yet (ADR-0024 A4, not built) —
+      there is no real capture to record a reference to. Today this is set only by the counter
+      handover's own operator attestation (`hand_over_order`'s `payment_confirmed` flag) — a
+      documented stand-in, not a verified capture. A real payment consumer would set the same
+      column once one exists; the billing gate does not care which wrote it.
+    * `pickup_code` / `pickup_code_verified_at` — issued at READY when
+      `fulfilment_settings.require_pickup_code` is set (snapshotted at accept), and verified (the
+      caller's presented code matched) in the same transaction as the handover write.
+      `pickup_code` itself is **never** returned by `OrderOut` (`app.orders.selectors.order_out`
+      deliberately omits it) — only `pickup_code_verified_at` is: the code is only useful as a
+      secret the customer presents back, and putting it on an ORG-wide read endpoint would let
+      any counter-read holder bypass the point of asking for it. How the code reaches the
+      customer at all (SMS/notification) is not built in this slice — see this slice's own report.
     """
 
     __tablename__ = "orders"
@@ -1138,6 +1161,12 @@ class Order(Base, TenantBase):
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
 
     settings_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+    #: See class docstring's "Four more facts" — ADR-0025 §1's billing gate (Fulfilment plan F4).
+    invoice_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pickup_code: Mapped[str | None] = mapped_column(String(20))
+    pickup_code_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         Index(
@@ -1247,6 +1276,14 @@ class FulfilmentSettings(Base, TenantBase):
     `offer_timeout_seconds`/`offer_rounds` govern the worker-offer rounds `app/fulfilment/` (F3)
     will run; carried here now because they are one settings row with the rest, not because F2
     reads them.
+
+    `require_pickup_code` and `default_tax_rate_pct` are F4's own additions (ADR-0025 §1's
+    billing gate; Fulfilment plan F4). `require_pickup_code` defaults `False` so an existing
+    organization's counter flow is unaffected until it opts in. `default_tax_rate_pct` is the
+    document-level GST rate `request_invoice_for_order` uses when the order names no rate of its
+    own (F2 carries no per-order tax field yet — a documented gap, see this slice's own report);
+    `Numeric(5, 2)`, the same shape `services/finance`'s own `tax_rate_pct` columns use, since
+    this value only ever travels to finance inside an `invoice_requested` payload.
     """
 
     __tablename__ = "fulfilment_settings"
@@ -1260,6 +1297,10 @@ class FulfilmentSettings(Base, TenantBase):
     payment_defaults: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False, default=dict)
     offer_timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
     offer_rounds: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    require_pickup_code: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    default_tax_rate_pct: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=Decimal("0")
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -1268,6 +1309,10 @@ class FulfilmentSettings(Base, TenantBase):
         ),
         CheckConstraint("offer_timeout_seconds > 0", name="offer_timeout_positive"),
         CheckConstraint("offer_rounds > 0", name="offer_rounds_positive"),
+        CheckConstraint(
+            "default_tax_rate_pct >= 0 AND default_tax_rate_pct <= 100",
+            name="default_tax_rate_pct_in_range",
+        ),
         Index(
             "uq_fulfilment_settings_org_default",
             "organization_id",

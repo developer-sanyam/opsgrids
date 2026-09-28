@@ -14,6 +14,15 @@ Two fulfilment handlers (ADR-0024 §1, ADR-0025 §3; `docs/fulfilment/plan.md` F
   event. This is how a cancelled order's fan-out reaches its open pick tasks: `app/orders/`
   never imports `app/fulfilment/` (ADR-0024 §1, enforced by `.importlinter`), so the only path
   from "order cancelled" to "its tasks are cancelled too" is this round trip through the outbox.
+
+One more, F4's own (ADR-0025 §1's billing gate; Fulfilment plan F4):
+
+* **`finance_invoice_issued`** — bound to `finance.orders.invoice.issued`, a **different
+  service's** own event (`services/finance/app/services.py::EVT_ORDER_INVOICE_ISSUED`, already
+  deployed). There is no cross-service import to bind against — the routing key is copied by hand
+  onto `app.orders.services.EVT_FINANCE_INVOICE_ISSUED`, the same contract-not-code discipline
+  `EVT_OFFER_EXPIRE_REQUESTED` already documents for `services/scheduler`. Writes the order's own
+  `invoice_id` fact, which `app.orders.services.check_billing_gate` reads.
 """
 
 from __future__ import annotations
@@ -29,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.fulfilment import services as fulfilment_services
 from app.models import ProcessedEvent
+from app.orders import services as order_services
 from platform_core.db import assert_app_role, init_engine, session_scope
 from platform_core.events import EventConsumer, already_processed, mark_processed
 from platform_core.logging import get_logger
@@ -110,6 +120,64 @@ async def order_cancelled(envelope: dict[str, Any]) -> None:
 
 
 consumer.on("operations.orders.order.cancelled")(order_cancelled)
+
+
+async def finance_invoice_issued(envelope: dict[str, Any]) -> None:
+    """Bound to `finance.orders.invoice.issued` — see this module's own docstring for why the
+    routing key is a copied string, not an import. **The GUC is set from the envelope's own
+    `organization_id`, never the payload's** — the payload is JSON this consumer cannot prove
+    nothing altered in transit, while the envelope's column is one finance's own row-level
+    security enforced; a mismatch is marked processed (so it is never retried into a loop) and
+    logged as an error rather than trusted, the identical guard
+    `services/finance/app/consumers.py::invoice_requested_from_order` already documents for the
+    same cross-service shape.
+    """
+    event_id = uuid.UUID(envelope["event_id"])
+    envelope_organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload = envelope["payload"]
+    payload_organization_id = uuid.UUID(str(payload["organization_id"]))
+
+    if payload_organization_id != envelope_organization_id:
+        async with _session_scope(envelope_organization_id) as session:
+            if await already_processed(session, ProcessedEvent, event_id):
+                log.info("orders.invoice_issued.duplicate", event_id=str(event_id))
+                return
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+        log.error(
+            "orders.invoice_issued.organization_mismatch",
+            event_id=str(event_id),
+            envelope_organization_id=str(envelope_organization_id),
+            payload_organization_id=str(payload_organization_id),
+        )
+        return
+
+    order_id = uuid.UUID(str(payload["order_id"]))
+    invoice_id = uuid.UUID(str(payload["invoice_id"]))
+    invoice_number = str(payload["invoice_number"])
+
+    async with _session_scope(envelope_organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("orders.invoice_issued.duplicate", event_id=str(event_id))
+            return
+        ctx = order_services.service_ctx(envelope_organization_id)
+        recorded = await order_services.record_invoice_issued(
+            session,
+            ctx,
+            order_id=order_id,
+            invoice_id=invoice_id,
+            invoice_number=invoice_number,
+        )
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+    log.info(
+        "orders.invoice_issued.handled",
+        event_id=str(event_id),
+        order_id=str(order_id),
+        invoice_id=str(invoice_id),
+        recorded=recorded,
+    )
+
+
+consumer.on(order_services.EVT_FINANCE_INVOICE_ISSUED)(finance_invoice_issued)
 
 
 async def main() -> None:
