@@ -90,16 +90,16 @@ own reversible migration (F1 §3) before the orders/fulfilment tables need it.
 
 ### F0 — Decisions and ADRs
 
-**Status: written, pending sign-off.** ADR-0024 (fulfilment boundaries: A1 orders live in
-`operations`, A2 selling price, A3 the worker PWA, A4 payment collections) and ADR-0025 (order and
-task state, the two state machines and their guards) are both written, in the same "Proposed —
-pending sign-off" state ADR-0014 used before Phase 0 shipped.
+**Status: done.** ADR-0024 (fulfilment boundaries: A1 orders live in `operations`, A2 selling
+price, A3 the worker PWA, A4 payment collections) and ADR-0025 (order and task state, the two
+state machines and their guards) were both signed off by the platform owner 2026-09-28 and merged
+(PR #76).
 
 **Scope:** no code. Sign-off on the two ADRs above.
 
 **Not in Phase 0:** any schema, any endpoint, any UI.
 
-**Exit criteria:** the person who owns this platform signs off on ADR-0024 and ADR-0025.
+**Exit criteria:** the person who owns this platform signs off on ADR-0024 and ADR-0025. Met.
 
 ### F1 — Locations and barcodes
 
@@ -321,7 +321,9 @@ already provides generically, any new finance ledger (finance owns its own).
    that pick and pack transferred (ADR-0024 §6) — the first point in the whole flow where the
    reservation is actually consumed, not merely relocated.
 3. E-way bill request when required: an event to `services/finance` (which already holds e-way
-   bill integration per ADR-0014 §8/GST work), never a second implementation in `operations`.
+   bill integration per ADR-0019's stub adapter — `services/finance/app/eway/`, real validation
+   and idempotency behind a `Protocol`, only the NIC/GSP wire call itself is stubbed), never a
+   second implementation in `operations`.
 4. Customer messages on the new events via `services/notification`: order placed, ready,
    dispatched, delivered — consuming the `operations.orders.*` and `operations.dispatch.*` events
    below.

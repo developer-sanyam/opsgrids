@@ -1,7 +1,7 @@
 # ADR-0025 — Order and task state: a short order status, and every other lifecycle on its own record
 
-**Status:** Proposed — pending sign-off · **Date:** 2026-09-28 ·
-**Plan:** [fulfilment/plan.md](../fulfilment/plan.md)
+**Status:** Accepted — signed off by the platform owner alongside ADR-0024, 2026-09-28 (PR #76) ·
+**Date:** 2026-09-28 · **Plan:** [fulfilment/plan.md](../fulfilment/plan.md)
 
 The fulfilment build adds orders, pick tasks and worker offers to `operations`. It puts them in
 `app/orders/` and `app/fulfilment/`, with the tables listed in the plan's §2. Each of these records
