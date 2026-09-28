@@ -471,6 +471,14 @@ async def create_pick_tasks_for_order(
     # No outbox event for the order's own `IN_FULFILMENT` transition — the plan's event
     # catalogue (docs/fulfilment/plan.md §5) has no matching `in_fulfilment` event, the same
     # precedent `app/orders/services.py::release_hold_order` sets for `ON_HOLD`'s own release.
+
+    # Auto-assignment's own hook (this build's scope item 1): every task above was just inserted
+    # in *this* transaction, so nothing else can see it yet — no concurrent auto-assign attempt on
+    # the same task is possible here, the same "uncommitted rows are invisible" reasoning that
+    # already makes the rest of this function race-free without an extra lock. A no-op (`None`
+    # back, nothing written beyond the failure reason) when the org has not opted in.
+    for task in created:
+        await attempt_auto_assign(session, task, request=request)
     return created
 
 
@@ -550,24 +558,42 @@ async def _maybe_ready_order(
 # ------------------------------------------------------------------ offers (ADR-0025 §3)
 
 
-def _has_permission(ctx: ScopeContext, code: str) -> bool:
-    return ctx.principal.has(code)
-
-
 async def offer_task(
     session: AsyncSession,
     ctx: ScopeContext,
     task: PickTask,
     *,
     worker_id: uuid.UUID,
+    has_override: bool = False,
+    score_breakdown: dict[str, Any] | None = None,
     request: Request | None = None,
 ) -> AssignmentOffer:
-    """`CREATED -> OFFERED` or `ESCALATED -> OFFERED` — a dispatcher offering a task to one
-    worker. Manual assignment is the only path into `OFFERED` in F3 (no auto-assign engine); a
-    manager assigning after escalation uses this exact same call (ADR-0025 §2)."""
+    """`CREATED -> OFFERED` or `ESCALATED -> OFFERED` — offering a task to one worker. Three
+    callers share this one function, never a state-machine fork (this build's own scope item 4:
+    "reuse the EXISTING offer/accept/decline/expire/escalate machinery completely"):
+
+    * a dispatcher's manual offer (F3, unchanged);
+    * `attempt_auto_assign`, auto-assignment's own caller — same call, `has_override=False`,
+      `score_breakdown={"kind": "auto", ...}`;
+    * a dispatcher's **override** of a live, not-yet-accepted offer — `has_override=True` (the
+      route computes this from `operations.fulfilment.task.override`'s own *scope*, the same
+      pattern `cancel_task`'s own route already uses for N4). The task's own status never moves
+      for an override (it is already `OFFERED`); only the offer row changes: the old one is
+      withdrawn, a new one takes its place, in the same transaction. Without `has_override=True`
+      a live offer is refused exactly as F3 has always refused a second one — this is strictly
+      additive, never a behaviour change for a plain `task.assign` caller (this build's own scope
+      item 6: auto-assignment off, or unused, is byte-for-byte the existing F3 behaviour).
+    """
     org_id = ctx.organization_id
-    if not domain.can_transition_pick_task(task.status, "OFFERED"):
+    live = await selectors.get_live_offer(session, org_id, task.id)
+    overriding = False
+    if live is not None:
+        if live.state != "OFFERED" or not has_override:
+            raise ConflictProblem("This task already has a live offer")
+        overriding = True
+    elif not domain.can_transition_pick_task(task.status, "OFFERED"):
         raise ConflictProblem(f"Task {task.id} is {task.status} and cannot be offered")
+
     # Security review BLOCKER 3: ADR-0025 §1 — "A hold stops new offers on the order's tasks."
     # Nothing else in this call ever looked at the order at all.
     order = await order_selectors.get_order(session, org_id, task.order_id)
@@ -588,23 +614,48 @@ async def offer_task(
         session, org_id, worker.id, task.zone_location_id
     ):
         raise ConflictProblem("That worker has no zone access for this task")
-    if await selectors.get_live_offer(session, org_id, task.id) is not None:
-        raise ConflictProblem("This task already has a live offer")
 
     now = datetime.now(UTC)
+    previous_worker_id: uuid.UUID | None = None
+    previous_offer_id: uuid.UUID | None = None
+    if overriding:
+        assert live is not None
+        previous_worker_id = live.worker_id
+        previous_offer_id = live.id
+        result = await session.execute(
+            update(AssignmentOffer)
+            .where(
+                AssignmentOffer.id == live.id,
+                AssignmentOffer.organization_id == org_id,
+                AssignmentOffer.state == "OFFERED",
+            )
+            .values(state="WITHDRAWN", responded_at=func.now())
+            .returning(AssignmentOffer.id)
+        )
+        if result.scalar_one_or_none() is None:
+            raise ConflictProblem("That live offer changed before the override could apply")
+
+    default_breakdown: dict[str, Any] = {"kind": "manual", "assigned_by": str(ctx.principal.sub)}
+    if previous_offer_id is not None:
+        default_breakdown["overrides_offer_id"] = str(previous_offer_id)
     offer = AssignmentOffer(
         organization_id=org_id,
         task_id=task.id,
         worker_id=worker.id,
-        round=task.round + 1,
+        round=live.round if overriding and live is not None else task.round + 1,
         state="OFFERED",
-        score_breakdown={"kind": "manual", "assigned_by": str(ctx.principal.sub)},
+        score_breakdown=score_breakdown or default_breakdown,
         offered_at=now,
         expires_at=now + timedelta(seconds=task.offer_timeout_seconds),
     )
     session.add(offer)
     before_status = task.status
-    task.status = "OFFERED"
+    if not overriding:
+        task.status = "OFFERED"
+    # Any offer — auto or manual, fresh or an override — is this task's own answer to "who is
+    # working it now"; a stale auto-assign failure reason from an earlier attempt must not linger
+    # once one exists (`PickTask.auto_assign_failure_reason`'s own docstring).
+    task.auto_assign_failure_reason = None
     task.updated_by = str(ctx.principal.sub)
     task.updated_at = now
     await session.flush()
@@ -626,11 +677,19 @@ async def offer_task(
         AuditLog,
         organization_id=org_id,
         actor_id=ctx.principal.sub,
-        action="pick_task.offered",
+        action="pick_task.offer_overridden" if overriding else "pick_task.offered",
         entity="pick_task",
         entity_id=task.id,
-        before={"status": before_status},
-        after={"status": "OFFERED", "worker_id": str(worker.id), "round": offer.round},
+        before={
+            "status": before_status,
+            "worker_id": str(previous_worker_id) if previous_worker_id else None,
+        },
+        after={
+            "status": "OFFERED",
+            "worker_id": str(worker.id),
+            "round": offer.round,
+            "kind": offer.score_breakdown.get("kind"),
+        },
         request=request,
     )
     publish_event(
@@ -647,10 +706,175 @@ async def offer_task(
             "worker_id": str(worker.id),
             "round": offer.round,
             "expires_at": offer.expires_at.isoformat(),
+            #: The plan's own event catalogue names no separate auto-assignment event (this
+            #: build's scope item 8) — `kind` is the one field genuinely needed to tell an auto
+            #: offer from a manual one downstream, mirroring `score_breakdown["kind"]` above.
+            "kind": offer.score_breakdown.get("kind"),
+            "overridden_worker_id": str(previous_worker_id) if previous_worker_id else None,
         },
         actor=_actor(ctx),
     )
     return offer
+
+
+# ------------------------------------------------------------------ auto-assignment (ADR-0024
+# §9; this build's own scope — F3 shipped manual-only, "deferred, no phase number assigned in
+# this MVP set")
+
+
+async def _required_skills_for_task(
+    session: AsyncSession, org_id: uuid.UUID, task_id: uuid.UUID
+) -> frozenset[str]:
+    """Every distinct `InventoryItem.required_skill` this task's own lines name — a task with no
+    such line (the common case, since the column defaults `NULL`) needs no skill at all."""
+    lines = await selectors.lines_for_task(session, org_id, task_id)
+    if not lines:
+        return frozenset()
+    items = await order_selectors.items_for_lines(
+        session, org_id, [line.inventory_item_id for line in lines]
+    )
+    return frozenset(item.required_skill for item in items.values() if item.required_skill)
+
+
+async def _worker_candidates(
+    session: AsyncSession, org_id: uuid.UUID, warehouse_id: uuid.UUID
+) -> list[domain.WorkerCandidate]:
+    """Every active worker at `warehouse_id`, with the batched facts
+    `domain.eligible_workers_for_task`/`rank_workers_for_offer` need — five queries total
+    regardless of how many workers the warehouse has (N+1 avoidance), never one query per worker."""
+    workers = await selectors.worker_candidates_for_warehouse(session, org_id, warehouse_id)
+    if not workers:
+        return []
+    worker_ids = [w.id for w in workers]
+    skills = await selectors.skills_for(session, org_id, worker_ids)
+    zones = await selectors.zone_access_map_for(session, org_id, worker_ids)
+    presence = await selectors.presence_for(session, org_id, worker_ids)
+    workload = await selectors.offer_workload_for(session, org_id, worker_ids)
+    last_offered = await selectors.last_offered_at_for(session, org_id, worker_ids)
+    return [
+        domain.WorkerCandidate(
+            worker_id=w.id,
+            is_active=w.is_active,
+            presence_status=presence[w.id].status if w.id in presence else "offline",
+            zone_location_ids=frozenset(zones.get(w.id, [])),
+            skills=frozenset(skills.get(w.id, [])),
+            open_task_count=workload.get(w.id, 0),
+            last_offered_at=last_offered.get(w.id),
+        )
+        for w in workers
+    ]
+
+
+async def _no_eligible_worker_reason(
+    session: AsyncSession, org_id: uuid.UUID, task: PickTask, required_skills: frozenset[str]
+) -> str:
+    """The dispatcher-board-visible sentence this build's scope item 4 asks for (e.g. "no eligible
+    worker in Zone B") — read once, only on the failure path, never on the (far more common)
+    success path."""
+    where = "this warehouse"
+    if task.zone_location_id is not None:
+        zone = await inv_selectors.get_location(session, org_id, task.zone_location_id)
+        where = f"zone {zone.code}" if zone is not None else "this task's zone"
+    skill_note = ""
+    if required_skills:
+        skill_note = f" with skill {', '.join(sorted(required_skills))}"
+    return f"No eligible worker online in {where}{skill_note}"
+
+
+async def attempt_auto_assign(
+    session: AsyncSession, task: PickTask, *, request: Request | None = None
+) -> AssignmentOffer | None:
+    """Auto-assignment's one entry point (this build's own scope item 1). Called only from inside
+    this module — right after a task is created (`create_pick_tasks_for_order`) and right after a
+    round fails without exhausting (`_fail_round`, the "re-offering after a decline/expiry" case)
+    — never from a route directly: it has no HTTP shape of its own, it only ever changes *how* the
+    next `offer_task` call is chosen.
+
+    Runs under a system `ScopeContext` (`service_ctx`, the same stable "the platform" actor the
+    offer-expiry sweep and the cancellation cascade already use), not the caller's own — an
+    automated decision is not any one dispatcher's action, whatever HTTP request happened to
+    trigger the task's creation.
+
+    A disabled org (`fulfilment_settings.auto_assignment_enabled`, default `False`) returns `None`
+    having read one settings row and written nothing else — F3's exact existing behaviour, byte
+    for byte (this build's own scope item 6). `task.status` must be `CREATED` with no live offer;
+    anything else is also a silent `None` — this function is never the thing that decides whether
+    a task is eligible to be offered *at all*, only who it is offered to when it is.
+
+    No eligible worker is not an exception: it is `domain.select_worker_for_offer` returning
+    `None`, which this function turns into `PickTask.auto_assign_failure_reason` plus an audit
+    row, leaving the task exactly where an unoffered F3 task already sits — `CREATED`, no live
+    offer, visible on the dispatcher board for a human to offer by hand (scope item 4: "never
+    silently stuck").
+
+    Reads `selectors.excluded_workers_for_task` and passes it through to
+    `domain.select_worker_for_offer` — ADR-0025 §2's own rule that a worker who declined, let an
+    offer expire, or released this exact task before starting is excluded from every later
+    **automatic** round of it (a manager may still pick them by hand). Without this a re-offering
+    call would usually rank that same worker first again next round — nothing else about them
+    changed — and the engine would re-offer them until the round budget ran out.
+
+    **Concurrency (this build's own scope note).** Both call sites already hold this exact task
+    row under a lock or under exclusivity before calling in: a just-created task is still
+    uncommitted (invisible to every other transaction); a task landing back on `CREATED` inside
+    `_fail_round` is already `FOR UPDATE`-locked by that call's own caller. So this function never
+    takes a lock of its own — it relies on, and never duplicates, the row-locking discipline this
+    module already established for F3's own offer race. The one thing it does **not** serialise
+    against is a worker's presence/workload changing between the candidate read and the offer
+    insert (e.g. two different tasks, in two different transactions, both ranking the same
+    lightly-loaded worker top); that is an accepted race, the same shape ADR-0025 §1 accepts for
+    the credit-check window — bounded, and `uq_assignment_offers_org_task_live` still guarantees
+    the one invariant that actually matters: never two live offers on the *same* task.
+    """
+    org_id = task.organization_id
+    resolved = await order_selectors.resolve_settings(session, org_id, task.warehouse_id)
+    if not resolved.auto_assignment_enabled:
+        return None
+    if task.status != "CREATED":
+        return None
+    if await selectors.get_live_offer(session, org_id, task.id) is not None:
+        return None
+
+    required_skills = await _required_skills_for_task(session, org_id, task.id)
+    candidates = await _worker_candidates(session, org_id, task.warehouse_id)
+    excluded = await selectors.excluded_workers_for_task(session, org_id, task.id)
+    chosen = domain.select_worker_for_offer(
+        candidates,
+        zone_location_id=task.zone_location_id,
+        required_skills=required_skills,
+        excluded_worker_ids=excluded,
+    )
+    ctx = service_ctx(org_id)
+    if chosen is None:
+        reason = await _no_eligible_worker_reason(session, org_id, task, required_skills)
+        task.auto_assign_failure_reason = reason
+        task.updated_by = str(ctx.principal.sub)
+        task.updated_at = datetime.now(UTC)
+        await session.flush()
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=org_id,
+            actor_id=ctx.principal.sub,
+            action="pick_task.auto_assign_failed",
+            entity="pick_task",
+            entity_id=task.id,
+            after={"reason": reason, "required_skills": sorted(required_skills)},
+            request=request,
+        )
+        return None
+
+    worker = await selectors.get_worker(session, org_id, chosen.worker_id)
+    assert worker is not None  # pragma: no cover - defensive, chosen came from this org's workers
+    breakdown = {
+        "kind": "auto",
+        "open_task_count": chosen.open_task_count,
+        "last_offered_at": chosen.last_offered_at.isoformat() if chosen.last_offered_at else None,
+        "required_skills": sorted(required_skills),
+    }
+    return await offer_task(
+        session, ctx, task, worker_id=worker.id, score_breakdown=breakdown, request=request
+    )
 
 
 async def _fail_round(
@@ -722,6 +946,18 @@ async def _fail_round(
             payload={"organization_id": str(org_id), "task_id": str(task.id), "round": task.round},
             actor=_actor(ctx),
         )
+    elif task.status == "CREATED":
+        # Auto-assignment's own re-offering hook (this build's scope item 1: "given a newly
+        # created *or re-offering, after a decline/expiry* pick task, select the best eligible
+        # worker automatically"). Never reached once escalated — an escalated task waits in the
+        # manager queue for a human, exactly as ADR-0025 §2 already describes.
+        #
+        # Concurrency: every caller of `_fail_round` (`decline_offer`, `release_task`,
+        # `expire_offer`) already holds this task row `FOR UPDATE` before calling in — the same
+        # "task row locked before the offer changes" discipline this module's own module
+        # docstring documents for the accept/decline/expire race, so no concurrent transaction can
+        # be re-offering (or cancelling) this same task while this runs.
+        await attempt_auto_assign(session, task, request=request)
 
 
 async def accept_offer(

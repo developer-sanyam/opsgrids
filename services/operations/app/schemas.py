@@ -1228,8 +1228,11 @@ class AssignmentOfferOut(BaseModel):
 
 
 class OfferIn(BaseModel):
-    """`POST /fulfilment/tasks/{id}/offers` — a dispatcher offering a task to one worker. F3 is
-    manual-only (no auto-assign engine), so this is the only way an offer is made."""
+    """`POST /fulfilment/tasks/{id}/offers` — a dispatcher offering a task to one worker. Also the
+    manual-override path when auto-assignment already made a live, not-yet-accepted offer: a
+    caller holding `operations.fulfilment.task.override` withdraws it and offers to whoever this
+    call names instead; a caller without it gets the same 409 F3 has always given a second offer
+    attempt."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1280,6 +1283,10 @@ class PickTaskOut(BaseModel):
     lines: list[PickTaskLineOut]
     offers: list[AssignmentOfferOut]
     exceptions: list[PickExceptionOut]
+    #: Set when auto-assignment ran and found no eligible worker (e.g. "No eligible worker online
+    #: for zone DOCK-A") — `null` otherwise, including whenever a live offer exists (auto or
+    #: manual). The dispatcher board's own visible reason to offer this task by hand.
+    auto_assign_failure_reason: str | None
     created_at: datetime
     updated_at: datetime
 

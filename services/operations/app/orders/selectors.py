@@ -320,6 +320,10 @@ class ResolvedSettings:
     #: F4 additions (ADR-0025 §1's billing gate) — see `FulfilmentSettings`' own docstring.
     require_pickup_code: bool = False
     default_tax_rate_pct: Decimal = Decimal("0")
+    #: Auto-assignment's own opt-in (ADR-0024 §9) — see `FulfilmentSettings`' own docstring.
+    #: Defaults `False`, so an org with no `fulfilment_settings` row at all (or one predating
+    #: this column) gets exactly F3's existing manual-only behaviour.
+    auto_assignment_enabled: bool = False
 
     def payment_term_for(self, channel: str) -> str:
         """The channel's payment term, defaulting to `"cash"` — never `"credit"` — for a channel
@@ -339,6 +343,7 @@ class ResolvedSettings:
             #: float `5.0`), the same reasoning `str(...)`-ing every other non-numeric-JSON value
             #: on this snapshot already follows.
             "default_tax_rate_pct": str(self.default_tax_rate_pct),
+            "auto_assignment_enabled": self.auto_assignment_enabled,
         }
 
 
@@ -353,6 +358,7 @@ _HARDCODED_DEFAULT = ResolvedSettings(
     source="default",
     require_pickup_code=False,
     default_tax_rate_pct=Decimal("0"),
+    auto_assignment_enabled=False,
 )
 
 
@@ -380,6 +386,7 @@ async def resolve_settings(
             warehouse_id=warehouse_id,
             require_pickup_code=row.require_pickup_code,
             default_tax_rate_pct=row.default_tax_rate_pct,
+            auto_assignment_enabled=row.auto_assignment_enabled,
         )
     stmt = select(FulfilmentSettings).where(
         FulfilmentSettings.organization_id == org_id,
@@ -396,6 +403,7 @@ async def resolve_settings(
             source="organization",
             require_pickup_code=row.require_pickup_code,
             default_tax_rate_pct=row.default_tax_rate_pct,
+            auto_assignment_enabled=row.auto_assignment_enabled,
         )
     return _HARDCODED_DEFAULT
 
