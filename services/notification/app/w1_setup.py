@@ -39,12 +39,11 @@ Meta's own end-user message, never an exception's text.
 from __future__ import annotations
 
 import asyncio
-import secrets
 import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, Final
 
 import httpx
@@ -77,10 +76,11 @@ WorkScope = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
 
 SYSTEM_ACTOR: Final = "system:whatsapp-signup"
 
-#: Meta allows ten `register` calls per number in 72 hours (error 133016) and blocks the number
-#: for the rest of the window past that. Stop two short of it.
-REGISTER_ATTEMPT_CAP: Final = 8
-REGISTER_WINDOW: Final = timedelta(hours=72)
+#: Re-exported from `w1_services` (the shared rate limit `reserve_registration_pin` enforces,
+#: also used by a manual connection's `register_number_if_needed`) so this module's own tests
+#: keep working unchanged.
+REGISTER_ATTEMPT_CAP: Final = w1_services.REGISTER_ATTEMPT_CAP
+REGISTER_WINDOW: Final = w1_services.REGISTER_WINDOW
 #: After registering, Meta takes a moment to report the number `CONNECTED`: the verify step reads
 #: it up to this many times, this many seconds apart, before it calls the number not ready.
 VERIFY_READS: Final = 4
@@ -566,31 +566,18 @@ async def _reserve_registration(ctx: Ctx, phone_number_id: str) -> str:
 
     Committed *before* the call: the step's own transaction rolls back when the step fails, and a
     forgotten attempt or a forgotten PIN is exactly what would burn Meta's ten calls per 72 hours
-    or leave a number registered under a PIN nobody kept. The PIN is generated once, sealed, and
-    reused by every later attempt on this number."""
+    or leave a number registered under a PIN nobody kept. The rate limit and the PIN reuse are
+    `w1_services.reserve_registration_pin` (shared with a manual connection's own registration);
+    what stays here is only the transaction of its own that call needs, and translating its
+    `ProblemError` into this step's `StepFailed`."""
     org = ctx.organization_id
     async with ctx.scope(org) as session:
-        row = await w1_selectors.number_by_phone_id(session, org, phone_number_id, for_update=True)
-        if row is None:
-            raise StepFailed("register_failed", "That phone number is not on the account.")
-        now = datetime.now(UTC)
-        last = row.registration_attempted_at
-        if last is None or now - last > REGISTER_WINDOW:
-            row.registration_attempts = 0
-        if row.registration_attempts >= REGISTER_ATTEMPT_CAP:
-            raise StepFailed(
-                "register_rate_limited",
-                "This number has been registered too many times in the last 72 hours. Wait "
-                "before connecting again.",
+        try:
+            return await w1_services.reserve_registration_pin(
+                session, ctx.cfg, org, phone_number_id
             )
-        if row.registration_pin_sealed:
-            pin = pii.open_sealed(row.registration_pin_sealed, settings=ctx.cfg)
-        else:
-            pin = f"{secrets.randbelow(10**6):06d}"
-            row.registration_pin_sealed, _ = pii.seal(pin, kind="generic", settings=ctx.cfg)
-        row.registration_attempts += 1
-        row.registration_attempted_at = now
-    return pin
+        except ProblemError as exc:
+            raise StepFailed(_problem_code(exc, "register_failed"), _safe(exc)) from exc
 
 
 async def _step_register(session: AsyncSession, run: SetupRun, ctx: Ctx) -> str:

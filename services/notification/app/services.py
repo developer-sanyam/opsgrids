@@ -2951,6 +2951,17 @@ async def create_whatsapp_connection(
     # `whatsapp_business_management` for this one call is not a reason to refuse the connection.
     await w1_services.subscribe_waba(waba_id, access_token)
 
+    # Embedded Signup also registers the number for the Cloud API as its own setup step
+    # (`w1_setup._step_register`); a manually connected number never goes through that wizard, so
+    # without this call it could sit here `connected` in our own eyes while Meta refuses every
+    # single send — a number that has never been registered cannot send or receive at all. Same
+    # best-effort rule as `subscribe_waba` just above: see `register_number_if_needed`'s docstring
+    # for why a registration refusal must not undo a connection Meta already proved this token
+    # controls.
+    await w1_services.register_number_if_needed(
+        session, ctx.organization_id, waba_id, phone_number_id, access_token
+    )
+
     record_audit(
         session,
         AuditLog,
@@ -3049,6 +3060,13 @@ async def replace_whatsapp_connection(
     # WABA was already subscribed, and it is exactly the fix for an org replacing credentials
     # because their webhooks never arrived in the first place.
     await w1_services.subscribe_waba(waba_id, access_token)
+
+    # Same gap `create_whatsapp_connection` closes, and just as needed on a replace: the new
+    # credentials may point at a number that was never registered for the Cloud API, and without
+    # this call the replacement would look `connected` while every send to it still failed.
+    await w1_services.register_number_if_needed(
+        session, ctx.organization_id, waba_id, phone_number_id, access_token
+    )
 
     record_audit(
         session,
