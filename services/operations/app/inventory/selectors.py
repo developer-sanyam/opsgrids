@@ -685,6 +685,8 @@ def inventory_out(item: InventoryItem) -> InventoryItemOut:
         track_expiry=item.track_expiry,
         track_quality=item.track_quality,
         is_active=item.is_active,
+        selling_price_minor=item.selling_price_minor,
+        selling_price_currency=item.selling_price_currency,
     )
 
 

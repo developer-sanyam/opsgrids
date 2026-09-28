@@ -67,6 +67,7 @@ from sqlalchemy import (
     select,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, column_property, mapped_column, relationship
 
@@ -474,6 +475,17 @@ class InventoryItem(Base, TenantBase):
     #: When stock last moved. Surfaced as `updated_at` on the wire.
     stocked_at: Mapped[date | None] = mapped_column(Date)
 
+    #: What a customer order line is priced at, per one whole stock UOM — integer minor units of
+    #: `selling_price_currency` (ADR-0024 §3, amending ADR-0014: `unit_value_minor` above is
+    #: **cost**, on the valuation side of §8, and using it as a selling price would make every
+    #: margin figure the platform computes equal to zero). Both null or both set
+    #: (`selling_price_currency_matches_minor`); an item with neither can still go on an order,
+    #: but only with an explicit per-line price (`app.orders.services`). Never itself changed by
+    #: an order — a line snapshots this at `place` so a later edit here never reprices one already
+    #: written.
+    selling_price_minor: Mapped[int | None] = mapped_column(BigInteger)
+    selling_price_currency: Mapped[str | None] = mapped_column(String(3))
+
     # --- item master (ADR-0014 Phase 1, plan §2) --------------------------------------------
     #: The org's own category tree — optional, additive to the fixed `category` enum above.
     item_category_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -525,6 +537,14 @@ class InventoryItem(Base, TenantBase):
         Index("ix_inventory_items_org_category", "organization_id", "category"),
         Index("ix_inventory_items_org_uom", "organization_id", "uom_id"),
         Index("ix_inventory_items_org_item_category", "organization_id", "item_category_id"),
+        CheckConstraint(
+            "(selling_price_minor IS NULL) = (selling_price_currency IS NULL)",
+            name="selling_price_currency_matches_minor",
+        ),
+        CheckConstraint(
+            "selling_price_minor IS NULL OR selling_price_minor >= 0",
+            name="selling_price_non_negative",
+        ),
     )
 
 
@@ -1031,6 +1051,215 @@ InventoryItem.available_milli = column_property(
     .correlate_except(InventoryBalance)
     .scalar_subquery()
 )
+
+
+# ------------------------------------------------------------------ orders (ADR-0024, ADR-0025)
+
+
+class Order(Base, TenantBase):
+    """A customer order — the sell-side document ADR-0024 §2 introduces (`app/orders/`), distinct
+    from `PurchaseOrder` (buy-side: a supplier, `draft -> approved -> received -> closed`) and
+    `storefront.Enquiry` (a pre-sale lead with opaque JSON lines, no pricing, no stock reference).
+
+    `status` runs the vocabulary ADR-0025 §1 fixes: `DRAFT, PLACED, ACCEPTED, IN_FULFILMENT,
+    ON_HOLD, READY, HANDED_OVER, DELIVERED, COMPLETED, CANCELLED, REJECTED`. `String(20)`, no
+    CHECK — the vocabulary lives in `app.domain.ORDER_TRANSITIONS`, enforced by the write path
+    (`app/orders/services.py`), the same precedent `PurchaseOrder.status` already sets for
+    `PO_TRANSITIONS`.
+
+    `version` is the optimistic lock ADR-0025 §1 requires on **every** order write: each
+    transition takes `SELECT ... FOR UPDATE` on this row, checks the caller's `version` against
+    this column (a stale value is a 409), and bumps it by one in the same transaction as the
+    status change, the `order_transitions` row, the audit row and the outbox row. Starts at 0.
+
+    `customer_id` is a plain UUID into `services/customer` — never a cross-schema foreign key
+    (ADR-0000 §10) — nullable because a walk-in or manual order may carry no CRM record at all.
+    `customer_name`/`customer_phone` are a snapshot taken when the order is created (from the CRM
+    lookup the frontend performs, or typed by hand for a walk-in), so the order keeps its own
+    record of who it was for even if the CRM contact is later renamed or deleted.
+
+    `subtotal_minor`/`total_minor` are **derived and stored**, not computed on every read (unlike
+    `PurchaseOrder`'s total, which is never stored) — an order's total is asked for by `accept`'s
+    credit check before the lines are necessarily still loaded, and storing it here means that ask
+    is a column read, not a join and a sum. Recomputed and rewritten every time `place` reprices
+    the lines; untouched after that (ADR-0024 §3's snapshot rule applies to the total the same way
+    it applies to each line's price).
+
+    `settings_snapshot` is the resolved `fulfilment_settings` this order was accepted under
+    (ADR-0024 §4's "an order records the resolved settings it was accepted under") — a JSONB copy,
+    not a foreign key to the settings row, so a later settings edit never reinterprets an
+    already-accepted order. NULL until `accept` runs.
+    """
+
+    __tablename__ = "orders"
+
+    number: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: phone | manual | sales | walk_in.
+    channel: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: See class docstring — vocabulary in `app.domain.ORDER_TRANSITIONS`.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="DRAFT")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    warehouse_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.warehouses.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    #: Plain UUID into `services/customer` — never a cross-schema FK (ADR-0000 §10).
+    customer_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    customer_name: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    customer_phone: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+
+    subtotal_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    total_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
+
+    settings_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+    __table_args__ = (
+        Index(
+            "uq_orders_org_number",
+            "organization_id",
+            "number",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_orders_org_status", "organization_id", "status"),
+        Index("ix_orders_org_channel", "organization_id", "channel"),
+        Index("ix_orders_org_customer", "organization_id", "customer_id"),
+        Index("ix_orders_org_warehouse", "organization_id", "warehouse_id"),
+        CheckConstraint("subtotal_minor >= 0", name="subtotal_non_negative"),
+        CheckConstraint("total_minor >= 0", name="total_non_negative"),
+        CheckConstraint("version >= 0", name="version_non_negative"),
+    )
+
+
+class OrderLine(Base, TenantBase):
+    """One line on an order. `quantity_milli` is milli-units of the item's stock UOM
+    (ADR-0014 §2, `app.inventory.quantity`).
+
+    `selling_price_minor` is nullable until `place` fills it — from the item's own
+    `InventoryItem.selling_price_minor`, unless `price_overridden` says the line already named its
+    own price at create time — and **NOT NULL from `place` onward** (ADR-0024 §3): once written
+    here, a later change to the item's price never reprices this line. `line_total_minor` is
+    `quantity_milli * selling_price_minor / 1000`, rounded half-to-even once
+    (`app.domain.order_line_amount_minor`), filled at the same moment as the price.
+    """
+
+    __tablename__ = "order_lines"
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.orders.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: Whether the line named its own price at create time — kept so `place` knows not to
+    #: overwrite a deliberate override with the item's current price.
+    price_overridden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    selling_price_minor: Mapped[int | None] = mapped_column(BigInteger)
+    line_total_minor: Mapped[int | None] = mapped_column(BigInteger)
+
+    __table_args__ = (
+        CheckConstraint("quantity_milli > 0", name="quantity_positive"),
+        CheckConstraint(
+            "selling_price_minor IS NULL OR selling_price_minor >= 0",
+            name="selling_price_non_negative",
+        ),
+        Index("ix_order_lines_org_order", "organization_id", "order_id"),
+        Index("ix_order_lines_org_item", "organization_id", "inventory_item_id"),
+    )
+
+
+class OrderTransition(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One append-only row per order status change (ADR-0025 §4) — `order_transitions` joins
+    `APPEND_ONLY_TABLES` in `services/operations/migrations/env.py`, the same privilege-enforced
+    append-only rule the stock ledger and `inventory_reservation_releases` already carry.
+
+    Never edited or deleted: a reopened or reversed order is a new row here, never a rewritten
+    old one (ADR-0000 §9).
+    """
+
+    __tablename__ = "order_transitions"
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.orders.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    from_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    reason: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (Index("ix_order_transitions_org_order", "organization_id", "order_id", "at"),)
+
+
+class FulfilmentSettings(Base, TenantBase):
+    """Per-organization fulfilment policy (ADR-0024 §4) — the platform's first per-org settings
+    table. One row has `warehouse_id IS NULL` (the organization's default); an optional second row
+    per warehouse overrides it **wholesale** — every column, not merged field by field, which
+    keeps resolution a single "prefer the warehouse row, else the org row, else a hardcoded
+    default" lookup (`app.orders.selectors.resolve_settings`) rather than a per-column merge no
+    caller has asked for yet. Two partial unique indexes enforce at most one of each.
+
+    `invoice_timing` says which order transition should make `operations` ask finance for an
+    invoice (`on_accept` | `on_dispatch` | `on_delivery`) — read by the billing gate (ADR-0025
+    §1's `READY -> HANDED_OVER` guard), not built until dispatch exists (F4/F5).
+
+    `payment_defaults` maps a `channel` (`phone | manual | sales | walk_in`) to a payment term
+    (`prepaid | cash | credit`) — free-form JSON rather than one column per channel, since the
+    channel vocabulary is itself app-level, not a schema fact. A channel missing from the map
+    defaults to `"cash"` wherever it is read, never `"credit"` — an unconfigured org's orders
+    never silently gain a credit check.
+
+    `offer_timeout_seconds`/`offer_rounds` govern the worker-offer rounds `app/fulfilment/` (F3)
+    will run; carried here now because they are one settings row with the rest, not because F2
+    reads them.
+    """
+
+    __tablename__ = "fulfilment_settings"
+
+    warehouse_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.warehouses.id", ondelete="RESTRICT")
+    )
+    #: on_accept | on_dispatch | on_delivery.
+    invoice_timing: Mapped[str] = mapped_column(String(20), nullable=False, default="on_accept")
+    #: {channel: "prepaid" | "cash" | "credit"}.
+    payment_defaults: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False, default=dict)
+    offer_timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    offer_rounds: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+
+    __table_args__ = (
+        CheckConstraint(
+            "invoice_timing IN ('on_accept', 'on_dispatch', 'on_delivery')",
+            name="invoice_timing_known",
+        ),
+        CheckConstraint("offer_timeout_seconds > 0", name="offer_timeout_positive"),
+        CheckConstraint("offer_rounds > 0", name="offer_rounds_positive"),
+        Index(
+            "uq_fulfilment_settings_org_default",
+            "organization_id",
+            unique=True,
+            postgresql_where=text("warehouse_id IS NULL AND deleted_at IS NULL"),
+        ),
+        Index(
+            "uq_fulfilment_settings_org_warehouse",
+            "organization_id",
+            "warehouse_id",
+            unique=True,
+            postgresql_where=text("warehouse_id IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
 
 class OutboxEvent(Base, OutboxMixin):

@@ -68,6 +68,26 @@ EVT_STOCK_RELEASED = "operations.inventory.stock.released"
 _NO_ID = uuid.UUID(int=0)
 
 
+def _bucket_key(
+    item_id: uuid.UUID,
+    location_id: uuid.UUID,
+    status: str,
+    lot_id: uuid.UUID | None,
+    roll_id: uuid.UUID | None,
+) -> tuple[str, str, str, str, str]:
+    """The one bucket ordering every multi-line caller locks in (item, location, status, lot,
+    roll) — factored out of `MoveLine.bucket()` so `post_move` and `reserve_many` sort their
+    locks with the exact same key, never two independently-written orderings that could drift
+    apart and deadlock against each other."""
+    return (
+        str(item_id),
+        str(location_id),
+        status,
+        str(lot_id or _NO_ID),
+        str(roll_id or _NO_ID),
+    )
+
+
 class InsufficientStock(ConflictProblem):
     """A move or reservation that would take a bucket below zero, or into reserved stock. The
     `errors` entry carries the numbers so a client can say *why*, not just *no*."""
@@ -106,13 +126,7 @@ class MoveLine:
     reservation_id: uuid.UUID | None = None
 
     def bucket(self) -> tuple[str, str, str, str, str]:
-        return (
-            str(self.item_id),
-            str(self.location_id),
-            self.status,
-            str(self.lot_id or _NO_ID),
-            str(self.roll_id or _NO_ID),
-        )
+        return _bucket_key(self.item_id, self.location_id, self.status, self.lot_id, self.roll_id)
 
 
 @dataclass(slots=True)
@@ -789,6 +803,237 @@ async def reserve(
     )
     await _refresh_items(session, [item_id])
     return ReservationResult(reservation)
+
+
+@dataclass(frozen=True, slots=True)
+class ReserveLine:
+    """One bucket's demand inside a `reserve_many` call — the same `AVAILABLE`-bucket promise
+    `reserve` makes for a single line, extended to many. A reservation only ever promises
+    `AVAILABLE` stock (ADR-0014 §3's "Available = quantity_milli minus reserved_milli in the
+    AVAILABLE bucket"), so unlike `MoveLine` there is no `status` to name here either — `reserve`
+    itself never takes one."""
+
+    item_id: uuid.UUID
+    location_id: uuid.UUID
+    quantity_milli: int
+    lot_id: uuid.UUID | None = None
+    roll_id: uuid.UUID | None = None
+    #: The caller's own stable id for this line (an `OrderLine.id`, say) — folded into this
+    #: line's derived idempotency key in `reserve_many` instead of its position in `lines`, so a
+    #: retry stays keyed to the same line even when the caller's own ordering is not guaranteed
+    #: stable across calls (review MINOR G). `None` for a caller with no such id of its own, which
+    #: falls back to the position (unchanged behaviour).
+    line_id: uuid.UUID | None = None
+
+    def bucket(self) -> tuple[str, str, str, str, str]:
+        return _bucket_key(self.item_id, self.location_id, "AVAILABLE", self.lot_id, self.roll_id)
+
+
+@dataclass(slots=True)
+class ReservedBatch:
+    reservations: list[InventoryReservation] = field(default_factory=list)
+    #: True when the idempotency key matched an earlier call: nothing new was written.
+    replayed: bool = False
+
+
+def _validate_reserve_lines(lines: Sequence[ReserveLine]) -> None:
+    if not lines:
+        raise ValidationProblem("A reservation batch needs at least one line")
+    for line in lines:
+        if not _is_int(line.quantity_milli) or line.quantity_milli <= 0:
+            raise ValidationProblem("A reservation is a positive integer of milli-units")
+        if line.quantity_milli > MAX_ABS_MILLI:
+            raise ValidationProblem("That quantity is too large")
+    if len({line.bucket() for line in lines}) != len(lines):
+        raise ValidationProblem("A reservation batch touches each bucket at most once")
+
+
+async def reserve_many(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    lines: Sequence[ReserveLine],
+    *,
+    reference_type: str,
+    reference_id: uuid.UUID,
+    idempotency_key: str,
+    request: Request | None = None,
+) -> ReservedBatch:
+    """Reserve every line of a multi-line demand atomically — an order's `accept`, reserving
+    every line's stock in one all-or-nothing call (ADR-0024 §1).
+
+    Locks every named bucket in `post_move`'s own deterministic order (`_bucket_key`: item,
+    location, status, lot, roll — the same helper, not a second copy of the ordering), then
+    checks every line's available quantity under those locks *before* writing a single
+    reservation. If any line is short, nothing reserves: `InsufficientStock.errors` carries one
+    entry per short line (ADR-0014 §11's shape, reused, not just the first one built).
+
+    One idempotency key covers the whole call, but `inventory_reservations.idempotency_key`
+    carries a per-row unique index — one call here writes one row per line, so each line's row is
+    keyed `f"{idempotency_key}:{line.line_id}"` when the line carries its own stable id, else
+    `f"{idempotency_key}:{i}"` by its position in `lines` (review MINOR G: a position is not a
+    safe key for a caller — an order's `accept` — whose own line order comes from a `created_at`
+    sort with no guaranteed-stable tiebreaker; `line_id` sidesteps that instead of trying to make
+    the sort stable). A retry is detected the same way `reserve` detects one, just per line:
+    locate each derived key's row and compare it against the line that would have produced it
+    (bucket, quantity, reference). If every line's row already exists and matches, this is a
+    replay and nothing is written again; if none exist, this is a fresh call; anything in between
+    is a conflict.
+
+    Every successful reservation carries the same `reference_type`/`reference_id` given here (an
+    order id, say); the caller matches the returned list back to its own lines by position to
+    know which reservation covers which line. One audit row and one outbox event cover the whole
+    call, keyed off `reference_id` — there is no per-call header row the way `post_move` has
+    `inventory_moves`, and `reference_id` is the one thing every line already shares.
+    """
+    _validate_reserve_lines(lines)
+    if not 1 <= len(idempotency_key) <= 128:
+        raise ValidationProblem("An idempotency key is 1-128 characters")
+    org_id = ctx.organization_id
+
+    items = await _items(session, org_id, (line.item_id for line in lines))
+    where = await _locations(session, org_id, (line.location_id for line in lines))
+
+    # Lock every distinct bucket once, in `post_move`'s exact order, before looking at or
+    # changing anything — this is the whole of the "no partial reservation" guarantee: every
+    # check below runs under every lock already held.
+    balances: dict[tuple[str, str, str, str, str], InventoryBalance | None] = {}
+    for line in sorted(lines, key=ReserveLine.bucket):
+        balances[line.bucket()] = await lock_bucket(
+            session,
+            org_id,
+            item_id=line.item_id,
+            location_id=line.location_id,
+            lot_id=line.lot_id,
+            roll_id=line.roll_id,
+            create=False,
+        )
+
+    keyed = [
+        (f"{idempotency_key}:{line.line_id if line.line_id is not None else i}", line)
+        for i, line in enumerate(lines)
+    ]
+    existing: dict[str, InventoryReservation] = {}
+    for key, _line in keyed:
+        row = (
+            await session.execute(
+                select(InventoryReservation).where(
+                    InventoryReservation.organization_id == org_id,
+                    InventoryReservation.idempotency_key == key,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is not None:
+            existing[key] = row
+
+    if existing:
+        if len(existing) != len(lines):
+            raise ConflictProblem(
+                "That idempotency key was already used for a different reservation batch"
+            )
+        replayed: list[InventoryReservation] = []
+        for key, line in keyed:
+            row = existing[key]
+            balance = balances[line.bucket()]
+            same = (
+                row.inventory_item_id == line.item_id
+                and balance is not None
+                and row.balance_id == balance.id
+                and row.quantity_milli == line.quantity_milli
+                and row.reference_type == reference_type
+                and row.reference_id == reference_id
+            )
+            if not same:
+                raise ConflictProblem(
+                    "That idempotency key was already used for a different reservation batch"
+                )
+            replayed.append(row)
+        return ReservedBatch(reservations=replayed, replayed=True)
+
+    shortfalls: list[dict[str, Any]] = []
+    for line in lines:
+        balance = balances[line.bucket()]
+        on_hand = balance.quantity_milli if balance else 0
+        reserved = balance.reserved_milli if balance else 0
+        if balance is None or on_hand - reserved < line.quantity_milli:
+            shortfalls.extend(
+                _shortfall(
+                    items[line.item_id],
+                    where[line.location_id],
+                    "AVAILABLE",
+                    wanted=line.quantity_milli,
+                    on_hand=on_hand,
+                    reserved=reserved,
+                ).errors
+                or []
+            )
+    if shortfalls:
+        raise InsufficientStock(
+            f"{len(shortfalls)} of {len(lines)} line(s) do not have enough available stock",
+            errors=shortfalls,
+        )
+
+    now = datetime.now(UTC)
+    reservations: list[InventoryReservation] = []
+    for key, line in keyed:
+        balance = balances[line.bucket()]
+        assert balance is not None  # checked above: every line passed its availability check
+        balance.reserved_milli += line.quantity_milli
+        balance.updated_at = now
+        reservation = InventoryReservation(
+            organization_id=org_id,
+            balance_id=balance.id,
+            inventory_item_id=line.item_id,
+            quantity_milli=line.quantity_milli,
+            consumed_milli=0,
+            status="active",
+            reference_type=reference_type,
+            reference_id=reference_id,
+            idempotency_key=key,
+            created_by=str(ctx.principal.sub),
+        )
+        session.add(reservation)
+        reservations.append(reservation)
+    await session.flush()
+
+    summary = [
+        {
+            "reservation_id": str(reservation.id),
+            "inventory_item_id": str(line.item_id),
+            "sku": items[line.item_id].sku,
+            "location": where[line.location_id],
+            "quantity": format_qty(line.quantity_milli),
+            "quantity_milli": line.quantity_milli,
+        }
+        for line, reservation in zip(lines, reservations, strict=True)
+    ]
+    detail = {
+        "reference_type": reference_type,
+        "reference_id": str(reference_id),
+        "lines": summary,
+    }
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=org_id,
+        actor_id=ctx.principal.sub,
+        action="inventory_reservation.created",
+        entity="inventory_reservation_batch",
+        entity_id=reference_id,
+        after=detail,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=org_id,
+        event_type=EVT_STOCK_RESERVED,
+        aggregate_type="inventory_reservation_batch",
+        aggregate_id=reference_id,
+        payload={"organization_id": str(org_id), **detail},
+        actor=_actor(ctx),
+    )
+    await _refresh_items(session, items)
+    return ReservedBatch(reservations=reservations)
 
 
 async def release(

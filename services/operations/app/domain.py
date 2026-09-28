@@ -13,7 +13,7 @@ from datetime import date
 from fractions import Fraction
 
 from app.inventory import quantity
-from app.models import InventoryItem, PurchaseOrder, PurchaseOrderLine, Supplier
+from app.models import InventoryItem, OrderLine, PurchaseOrder, PurchaseOrderLine, Supplier
 
 # ------------------------------------------------------------------ vocabulary (labels match SPA)
 
@@ -259,6 +259,84 @@ def low_stock_count(items: Sequence[InventoryItem]) -> int:
 
 def out_of_stock_count(items: Sequence[InventoryItem]) -> int:
     return sum(1 for it in items if is_out_of_stock(it))
+
+
+# ------------------------------------------------------------------ orders (ADR-0025)
+
+#: phone | manual | sales | walk_in — `Order.channel`'s vocabulary.
+ORDER_CHANNELS: tuple[str, ...] = ("phone", "manual", "sales", "walk_in")
+#: prepaid | cash | credit — `FulfilmentSettings.payment_defaults`' values.
+PAYMENT_TERMS: tuple[str, ...] = ("prepaid", "cash", "credit")
+
+#: ADR-0025 §1's exact vocabulary. `COMPLETED`, `CANCELLED` and `REJECTED` are terminal.
+ORDER_STATUSES: tuple[str, ...] = (
+    "DRAFT",
+    "PLACED",
+    "ACCEPTED",
+    "IN_FULFILMENT",
+    "ON_HOLD",
+    "READY",
+    "HANDED_OVER",
+    "DELIVERED",
+    "COMPLETED",
+    "CANCELLED",
+    "REJECTED",
+)
+ORDER_TERMINAL_STATUSES: frozenset[str] = frozenset({"COMPLETED", "CANCELLED", "REJECTED"})
+
+#: The content of ADR-0025 §1's transition table, in full. `IN_FULFILMENT`, `READY`,
+#: `HANDED_OVER`, `DELIVERED` and `COMPLETED` are real edges in this map even though no F2
+#: endpoint drives them yet — they wait on `app/fulfilment/`'s pick tasks (F3) and the billing
+#: gate (F4/F5). The map is the whole ADR, not only the door F2 builds through it, exactly as
+#: `PO_TRANSITIONS` above is the whole PO lifecycle and not only what one phase happened to need.
+ORDER_TRANSITIONS: dict[str, frozenset[str]] = {
+    "DRAFT": frozenset({"PLACED", "CANCELLED"}),
+    "PLACED": frozenset({"ACCEPTED", "REJECTED", "CANCELLED"}),
+    "ACCEPTED": frozenset({"IN_FULFILMENT", "ON_HOLD", "CANCELLED"}),
+    "IN_FULFILMENT": frozenset({"READY", "ON_HOLD", "CANCELLED"}),
+    "ON_HOLD": frozenset({"ACCEPTED", "IN_FULFILMENT", "READY", "CANCELLED"}),
+    "READY": frozenset({"HANDED_OVER", "ON_HOLD", "CANCELLED"}),
+    "HANDED_OVER": frozenset({"DELIVERED"}),
+    "DELIVERED": frozenset({"COMPLETED"}),
+    "COMPLETED": frozenset(),
+    "CANCELLED": frozenset(),
+    "REJECTED": frozenset(),
+}
+
+
+def can_transition_order(current: str, new: str) -> bool:
+    """Whether an order may move `current` -> `new`. Every other move — including a no-op "move"
+    to the same status — answers 409, the same convention `can_transition_po` documents."""
+    return new in ORDER_TRANSITIONS.get(current, frozenset())
+
+
+def order_release_target(*, has_open_tasks: bool, all_tasks_picked: bool) -> str:
+    """Where a hold released from `ON_HOLD` goes — **recomputed from facts, never remembered**
+    (ADR-0025 §1): no tasks yet (neither open nor picked) -> `ACCEPTED`; open tasks remain ->
+    `IN_FULFILMENT`; every task picked -> `READY`.
+
+    `app/orders/services.py` calls this with `has_open_tasks=False, all_tasks_picked=False`
+    today: `app/fulfilment/` (F3) has not landed, so there is never a task to ask about, and every
+    release lands on `ACCEPTED` until one exists.
+    """
+    if has_open_tasks:
+        return "IN_FULFILMENT"
+    if all_tasks_picked:
+        return "READY"
+    return "ACCEPTED"
+
+
+def order_line_amount_minor(quantity_milli: int, selling_price_minor: int) -> int:
+    """A line's total: `quantity_milli * selling_price_minor / 1000`, rounded half-to-even once
+    (ADR-0014 §2's money-times-quantity rule) — `quantity.value_minor`, reused rather than
+    reimplemented, since it is exactly the same arithmetic the stock-value rollup already does."""
+    return quantity.value_minor(quantity_milli, selling_price_minor)
+
+
+def order_subtotal_minor(lines: Sequence[OrderLine]) -> int:
+    """An order's subtotal — the sum of its lines' `line_total_minor`. A line still unpriced
+    (before `place` has run) contributes 0."""
+    return sum(line.line_total_minor or 0 for line in lines)
 
 
 # ------------------------------------------------------------------ needs-attention queue

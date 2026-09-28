@@ -18,3 +18,18 @@ export function useWarehouseOptions() {
   }, [state]);
   return { options, status: state.status, reload: state.reload };
 }
+
+/**
+ * The same directory, keyed on `id` rather than `name` — every order endpoint (Fulfilment F2)
+ * addresses a warehouse by `warehouse_id`, unlike a purchase order's denormalised `warehouse`
+ * name, so the orders screens read this one instead of `useWarehouseOptions`.
+ */
+export function useWarehouseIdOptions() {
+  const loader = () => listWarehouses({ size: FULL_PAGE });
+  const state = useAsync(loader, []);
+  const options: SelectOption[] = useMemo(() => {
+    if (state.status !== "success") return [];
+    return state.data.items.map((w) => ({ value: w.id, label: w.name }));
+  }, [state]);
+  return { options, status: state.status, reload: state.reload };
+}

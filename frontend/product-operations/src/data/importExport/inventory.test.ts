@@ -467,6 +467,8 @@ describe("inventory export", () => {
     track_expiry: false,
     track_quality: false,
     is_active: true,
+    selling_price_minor: null,
+    selling_price_currency: null,
   };
 
   it("asks for the page under the screen's current filters, not just the visible page", async () => {

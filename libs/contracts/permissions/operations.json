@@ -92,6 +92,51 @@
       "resource": "warehouse"
     },
     {
+      "action": "accept",
+      "default_scope": "ORG",
+      "description": "Accept a placed order, reserving its stock",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "orders",
+      "resource": "order"
+    },
+    {
+      "action": "cancel",
+      "default_scope": "ORG",
+      "description": "Cancel an order and release its reservations",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "orders",
+      "resource": "order"
+    },
+    {
+      "action": "create",
+      "default_scope": "ORG",
+      "description": "Create a draft order",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "orders",
+      "resource": "order"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See orders, their lines, and price a quote",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "orders",
+      "resource": "order"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Place a draft order, and hold/release an accepted one",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "orders",
+      "resource": "order"
+    },
+    {
       "action": "approve",
       "default_scope": "ORG",
       "description": "Approve a purchase order",
@@ -185,6 +230,26 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.orders.order.accept",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.order.cancel",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.order.create",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.order.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.procurement.purchase_order.approve",
           "scope": "ORG"
         },
@@ -212,7 +277,7 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Does not create or rename warehouses \u2014 that stays with the admin.",
+      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts and cancels customer orders \u2014 the stock-commitment and stock-release steps \u2014 on top of the ordinary counter work every Operations user does. Does not create or rename warehouses \u2014 that stays with the admin.",
       "grants": [
         {
           "code": "operations.inventory.item.read",
@@ -243,6 +308,26 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.orders.order.accept",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.order.cancel",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.order.create",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.order.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.procurement.purchase_order.approve",
           "scope": "ORG"
         },
@@ -270,7 +355,7 @@
     {
       "code": "OPERATIONS_USER",
       "cross_product": false,
-      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, and reads the shared suppliers, inventory, warehouses and locations.",
+      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, reads the shared suppliers, inventory, warehouses and locations, and runs the counter: creates and places customer orders, holds and releases them. Does not accept (commit stock to) or cancel an order \u2014 those stay with the manager, the same split `purchase_order.approve` draws from `purchase_order.write`.",
       "grants": [
         {
           "code": "operations.inventory.item.read",
@@ -282,6 +367,18 @@
         },
         {
           "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.order.create",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.order.write",
           "scope": "ORG"
         },
         {

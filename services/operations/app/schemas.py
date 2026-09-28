@@ -397,6 +397,10 @@ class InventoryItemOut(BaseModel):
     track_expiry: bool
     track_quality: bool
     is_active: bool
+    #: What a customer order line is priced at (ADR-0024 §3) — distinct from `unit_value_minor`
+    #: above, which is cost. Both null or both set.
+    selling_price_minor: int | None
+    selling_price_currency: str | None
 
 
 class InventoryItemIn(BaseModel):
@@ -427,6 +431,19 @@ class InventoryItemIn(BaseModel):
     track_expiry: bool = False
     track_quality: bool = False
     is_active: bool = True
+    #: What a customer order line is priced at (ADR-0024 §3), per one whole stock UOM. Both
+    #: given, or neither — an item created with neither can still go on an order, but only with
+    #: an explicit per-line price.
+    selling_price_minor: int | None = Field(default=None, ge=0)
+    selling_price_currency: str | None = Field(default=None, min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def _selling_price_paired(self) -> Self:
+        if (self.selling_price_minor is None) != (self.selling_price_currency is None):
+            raise ValueError(
+                "selling_price_minor and selling_price_currency must be given together"
+            )
+        return self
 
 
 class InventoryItemPatch(BaseModel):
@@ -451,11 +468,16 @@ class InventoryItemPatch(BaseModel):
     track_expiry: bool | None = None
     track_quality: bool | None = None
     is_active: bool | None = None
+    #: Both given, both explicitly `null` (clears the price — a real, meaningful state, unlike
+    #: the fields `_no_explicit_nulls` guards below), or both omitted.
+    selling_price_minor: int | None = Field(default=None, ge=0)
+    selling_price_currency: str | None = Field(default=None, min_length=3, max_length=3)
 
     @model_validator(mode="after")
     def _no_explicit_nulls(self) -> Self:
-        # `item_category_id` and `secondary_uom_id` are deliberately excluded — `null` on either
-        # is a real, meaningful state ("no category" / "no secondary unit"), not a malformed one.
+        # `item_category_id`, `secondary_uom_id` and the selling-price pair are deliberately
+        # excluded — `null` on any of them is a real, meaningful state ("no category", "no
+        # secondary unit", "no selling price"), not a malformed one.
         _reject_explicit_null(
             self,
             (
@@ -473,6 +495,20 @@ class InventoryItemPatch(BaseModel):
                 "is_active",
             ),
         )
+        return self
+
+    @model_validator(mode="after")
+    def _selling_price_paired(self) -> Self:
+        has_minor = "selling_price_minor" in self.model_fields_set
+        has_currency = "selling_price_currency" in self.model_fields_set
+        if has_minor != has_currency:
+            raise ValueError("selling_price_minor and selling_price_currency must be set together")
+        if has_minor and (self.selling_price_minor is None) != (
+            self.selling_price_currency is None
+        ):
+            raise ValueError(
+                "selling_price_minor and selling_price_currency must both be null, or neither"
+            )
         return self
 
 
@@ -876,3 +912,191 @@ class OverviewOut(BaseModel):
     po_status_mix: list[StatusSlice] = Field(default_factory=list)
     top_suppliers: list[SupplierSpend] = Field(default_factory=list)
     attention: list[AttentionItem] = Field(default_factory=list)
+
+
+# ------------------------------------------------------------------ orders (ADR-0024, ADR-0025)
+
+OrderChannel = Literal["phone", "manual", "sales", "walk_in"]
+OrderStatus = Literal[
+    "DRAFT",
+    "PLACED",
+    "ACCEPTED",
+    "IN_FULFILMENT",
+    "ON_HOLD",
+    "READY",
+    "HANDED_OVER",
+    "DELIVERED",
+    "COMPLETED",
+    "CANCELLED",
+    "REJECTED",
+]
+PaymentTerm = Literal["prepaid", "cash", "credit"]
+
+
+class OrderLineItem(BaseModel):
+    """One line on an order. `selling_price_minor`/`line_total_minor` are `null` until `place`
+    prices the line (ADR-0024 §3) — NOT NULL on every line of a `PLACED` order or later.
+
+    `price_overridden`/`catalogue_price_minor` (review MAJOR B) make an explicit per-line price
+    visible rather than a silent substitution: `price_overridden` is `True` when this line named
+    its own price at create time instead of taking the item's; `catalogue_price_minor` is the
+    item's own `selling_price_minor` as of this read, for a reviewer (e.g. whoever accepts the
+    order) to compare against `selling_price_minor` above. Neither is stored — both are computed
+    on every read (`app.orders.selectors.order_line_out`), so `catalogue_price_minor` always
+    reflects the item's *current* price, not the one in force when the line was created."""
+
+    id: str
+    inventory_item_id: str
+    sku: str
+    quantity: Qty
+    selling_price_minor: int | None
+    line_total_minor: int | None
+    price_overridden: bool
+    catalogue_price_minor: int | None
+
+
+class OrderLineIn(BaseModel):
+    """One line on `OrderIn`. `selling_price_minor`, when given, is this line's own price and
+    `place` will never overwrite it with the item's current `selling_price_minor`; when omitted,
+    `place` fills it from the item, and refuses the whole order if the item has none either
+    (ADR-0024 §3). Any caller holding `orders.order.create` may set this — ADR-0024 §3 means it
+    for an item that has no price of its own, not as a general override, but F2 does not restrict
+    who may use it; `OrderLineItem.price_overridden` and the create/place audit rows make every
+    use of it visible instead (review MAJOR B)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    inventory_item_id: UUID
+    #: Parsed and range-checked by `app.inventory.quantity.parse_qty` at the boundary
+    #: (`app/orders/services.py`) — a non-positive or non-UOM-discrete value is a 422 there, not
+    #: here, since whether a fraction is legal depends on the item's own UOM.
+    quantity: Qty
+    #: `le=MAX_ABS_MILLI` — the same order-of-magnitude ceiling `app.inventory.quantity` already
+    #: uses for a quantity, comfortably inside `BigInteger`'s ~9.22e18 ceiling — turns an absurd
+    #: value (`10**19`) into a clean 422 instead of an unhandled `DataError` at flush (review
+    #: MINOR D). It does not by itself bound `quantity * selling_price_minor`; `place_order`
+    #: refuses a line total that would still overflow.
+    selling_price_minor: int | None = Field(default=None, ge=0, le=MAX_ABS_MILLI)
+
+
+class OrderOut(BaseModel):
+    """Mirrors the SPA's `OrderOut`. `total_minor` is `subtotal_minor` (F2 carries no
+    discount/tax/shipping line — those are a later phase's addition); both are `0` until `place`
+    prices the lines."""
+
+    id: str
+    number: str
+    channel: OrderChannel
+    status: OrderStatus
+    version: int
+    warehouse_id: str
+    customer_id: str | None
+    customer_name: str
+    customer_phone: str
+    subtotal_minor: int
+    total_minor: int
+    currency: str
+    lines: list[OrderLineItem] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class OrderIn(BaseModel):
+    """`POST /orders`. Creates a `DRAFT`. `customer_id` names a `services/customer` contact by
+    plain UUID (ADR-0000 §10 — no cross-schema FK); a walk-in or no-CRM-record order instead (or
+    additionally) carries `customer_name`/`customer_phone` by hand. At least one of a customer id
+    or a manual name/phone pair is required — an order for nobody is not a real order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    channel: OrderChannel
+    warehouse_id: UUID
+    customer_id: UUID | None = None
+    customer_name: str = Field(default="", max_length=160)
+    customer_phone: str = Field(default="", max_length=32)
+    #: ISO-4217, uppercase letters only — the pattern `services/finance/app/schemas.py` and
+    #: `services/notification/app/m1_schemas.py` already use for a currency field (mirrored here
+    #: rather than inventing a new one); previously any 3-character string passed (review MAJOR A).
+    currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")] = "INR"
+    lines: list[OrderLineIn] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def _has_a_customer(self) -> Self:
+        if self.customer_id is None and not self.customer_name and not self.customer_phone:
+            raise ValueError("a customer_id, or a customer_name/customer_phone pair, is required")
+        return self
+
+
+class OrderVersionIn(BaseModel):
+    """The optimistic-lock envelope every order transition takes (ADR-0025 §1): the caller's
+    last-known `version`. A stale value is a 409, naming the order's current version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(ge=0)
+
+
+class OrderHoldIn(OrderVersionIn):
+    """`POST /orders/{id}/hold`. A reason is required — an operator hold, e.g. the customer
+    asked to delay collection (ADR-0025 §1)."""
+
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class OrderCancelIn(OrderVersionIn):
+    """`POST /orders/{id}/cancel`. A reason is required, recorded on the `order_transitions` row
+    and the cancellation event, the same as a purchase order's cancel."""
+
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class QuoteLineIn(BaseModel):
+    """One line of `POST /orders/quote`. Same shape as `OrderLineIn` — a quote is what an order's
+    lines would price to before any order exists."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    inventory_item_id: UUID
+    quantity: Qty
+    #: Same bound and reasoning as `OrderLineIn.selling_price_minor` (review MINOR D).
+    selling_price_minor: int | None = Field(default=None, ge=0, le=MAX_ABS_MILLI)
+
+
+class QuoteIn(BaseModel):
+    """`POST /orders/quote`. Read-only — posts nothing, creates no order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    warehouse_id: UUID
+    currency: str = Field(default="INR", min_length=3, max_length=3)
+    lines: list[QuoteLineIn] = Field(min_length=1, max_length=200)
+
+
+class QuoteLineOut(BaseModel):
+    """One priced (or unpriceable) line of a quote preview, with its availability against
+    `InventoryItem.available_milli` at the requested warehouse."""
+
+    inventory_item_id: str
+    sku: str
+    quantity: Qty
+    #: `False` when the item has no selling price and the line named none either — the same
+    #: refusal `place` would give, surfaced here instead so a preview never 422s over it.
+    priced: bool
+    selling_price_minor: int | None
+    line_total_minor: int | None
+    available_qty: Qty
+    sufficient: bool
+
+
+class QuoteOut(BaseModel):
+    """What `POST /orders/quote` answers with: a priced total (over the lines that could be
+    priced) plus each line's availability. `fully_priced` is `False` when any line named no price
+    and matched no item price either — `place` would refuse such an order outright."""
+
+    warehouse_id: str
+    currency: str
+    subtotal_minor: int
+    total_minor: int
+    fully_priced: bool
+    fully_available: bool
+    lines: list[QuoteLineOut]

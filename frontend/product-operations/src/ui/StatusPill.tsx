@@ -1,6 +1,6 @@
-import type { PoStatus, SupplierStatus } from "@/api/types";
+import type { OrderStatus, PoStatus, SupplierStatus } from "@/api/types";
 import { AlertTriangleIcon, StatusBadge } from "@opsgrids/ui";
-import type { StatusTone } from "@opsgrids/ui";
+import type { StatusTone, StatusWord } from "@opsgrids/ui";
 
 /*
  * Thin wrappers over the shared `StatusBadge`. "draft", "approved", "received", "closed" and
@@ -33,6 +33,46 @@ const SUPPLIER_LABEL: Record<SupplierStatus, string> = {
 
 export function SupplierStatusPill({ status }: { status: SupplierStatus }) {
   return <StatusBadge status={status} label={SUPPLIER_LABEL[status]} />;
+}
+
+/* ------------------------------- order status --------------------------- */
+/**
+ * ADR-0025 §1's order state machine. Registered words carry the registry's tone: `draft`
+ * (neutral), `accepted` (success), `on_hold` (warning), `delivered` (success), `completed`
+ * (success), `cancelled` (danger), `rejected` (danger). `placed`, `in_fulfilment`, `ready` and
+ * `handed_over` are not registered words — each takes an explicit `info` tone (in motion, outcome
+ * not yet known), the same reasoning the registry's own `sent`/`submitted` entries document.
+ */
+
+const ORDER_LABEL: Record<OrderStatus, string> = {
+  DRAFT: "Draft",
+  PLACED: "Placed",
+  ACCEPTED: "Accepted",
+  IN_FULFILMENT: "In fulfilment",
+  ON_HOLD: "On hold",
+  READY: "Ready",
+  HANDED_OVER: "Handed over",
+  DELIVERED: "Delivered",
+  COMPLETED: "Completed",
+  CANCELLED: "Cancelled",
+  REJECTED: "Rejected",
+};
+
+const ORDER_REGISTERED: Partial<Record<OrderStatus, StatusWord>> = {
+  DRAFT: "draft",
+  ACCEPTED: "accepted",
+  ON_HOLD: "on_hold",
+  DELIVERED: "delivered",
+  COMPLETED: "completed",
+  CANCELLED: "cancelled",
+  REJECTED: "rejected",
+};
+
+/** Order lifecycle (Fulfilment F2/ADR-0025). */
+export function OrderStatusPill({ status }: { status: OrderStatus }) {
+  const word = ORDER_REGISTERED[status];
+  if (word) return <StatusBadge status={word} label={ORDER_LABEL[status]} />;
+  return <StatusBadge tone="info" label={ORDER_LABEL[status]} />;
 }
 
 /* ------------------------------ stock level ---------------------------- */

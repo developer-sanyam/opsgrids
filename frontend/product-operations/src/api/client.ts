@@ -13,7 +13,8 @@
  */
 
 import { ApiError, apiRequest, settle } from "@opsgrids/client";
-import { milliToQty } from "@/lib/quantity";
+import type { ProblemJson } from "@opsgrids/client";
+import { milliToQty, qtyToMilli } from "@/lib/quantity";
 import {
   attentionItems,
   inventoryValueMinor,
@@ -34,6 +35,7 @@ import {
   ITEM_VARIANTS,
   LOCATIONS,
   MOVEMENTS,
+  ORDERS,
   PURCHASE_ORDERS,
   SUPPLIERS,
   UOMS,
@@ -56,12 +58,21 @@ import type {
   LocationIn,
   LocationOut,
   LocationPatch,
+  OrderCancelIn,
+  OrderChannel,
+  OrderHoldIn,
+  OrderIn,
+  OrderOut,
+  OrderStatus,
+  OrderVersionIn,
   OverviewOut,
   Page,
   PoStatus,
   PurchaseOrderIn,
   PurchaseOrderOut,
   PurchaseOrderPatch,
+  QuoteIn,
+  QuoteOut,
   ReceiveIn,
   StockAdjustmentIn,
   StockMovementKind,
@@ -698,6 +709,11 @@ export async function createInventoryItem(input: InventoryItemIn): Promise<Inven
       track_expiry: input.track_expiry ?? false,
       track_quality: input.track_quality ?? false,
       is_active: input.is_active ?? true,
+      // Fulfilment F2 (ADR-0024 §3): no create-item screen sets this yet — an item created here
+      // starts with no selling price, the same as a freshly created live item would, and an order
+      // line for it still needs its own explicit price.
+      selling_price_minor: null,
+      selling_price_currency: null,
     };
     INVENTORY.unshift(item);
     MOVEMENTS[item.id] = [
@@ -1362,10 +1378,403 @@ export async function getLocationByBarcode(barcode: string): Promise<LocationOut
   return apiRequest<LocationOut>(`/operations/locations/by-barcode/${encodeURIComponent(barcode)}`);
 }
 
+/* ---------------------------------- orders (Fulfilment F2) ---------------------------------- */
+/**
+ * Confirmed against the landed backend (`services/operations/app/schemas.py`,
+ * `app/api/routes.py`), not the plan doc's summary alone. Every mutating call carries the order's
+ * current `version`; a 409 on a stale one is ordinary optimistic-lock traffic — callers refetch
+ * with `getOrder` and let the operator retry from the current state, never a raw toast of the
+ * server's sentence as if the same request would work a second time. `libs/contracts/openapi/
+ * operations.json` already carries the `orders` paths for this slice (checked before writing this
+ * file), so this is a hand-typed mirror of a real, regenerable contract — not a guess the way F1's
+ * `locations` functions above had to be when their contract had not landed yet.
+ */
+
+export interface ListOrdersParams {
+  status?: OrderStatus | "all";
+  channel?: OrderChannel | "all";
+  warehouse_id?: string;
+  page?: number;
+  size?: number;
+}
+
+function matchesOrderFilters(order: OrderOut, params: ListOrdersParams): boolean {
+  const matchesStatus = !params.status || params.status === "all" || order.status === params.status;
+  const matchesChannel = !params.channel || params.channel === "all" || order.channel === params.channel;
+  const matchesWarehouse = !params.warehouse_id || order.warehouse_id === params.warehouse_id;
+  return matchesStatus && matchesChannel && matchesWarehouse;
+}
+
+/** `GET /operations/orders` — `operations.orders.order.read`, filterable by `status`/`channel`/
+ *  `warehouse_id`. */
+export async function listOrders(params: ListOrdersParams = {}): Promise<Page<OrderOut>> {
+  const page = params.page ?? 1;
+  const size = params.size ?? DEFAULT_PAGE_SIZE;
+  if (USE_FIXTURES) {
+    const filtered = ORDERS.filter((o) => matchesOrderFilters(o, params)).slice().sort((a, b) =>
+      b.created_at.localeCompare(a.created_at),
+    );
+    return settle(paginateFixture(filtered, page, size));
+  }
+  const query = buildQuery({
+    page,
+    size,
+    status: params.status === "all" ? undefined : params.status,
+    channel: params.channel === "all" ? undefined : params.channel,
+    warehouse_id: params.warehouse_id,
+  });
+  return apiRequest<Page<OrderOut>>(`/operations/orders${query}`);
+}
+
+export async function getOrder(id: string): Promise<OrderOut> {
+  if (USE_FIXTURES) {
+    const found = ORDERS.find((o) => o.id === id);
+    if (!found) throw new NotFoundError("That order could not be found.");
+    return settle(found);
+  }
+  return apiRequest<OrderOut>(`/operations/orders/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/orders/quote` — `operations.orders.order.read`. Read-only: posts nothing,
+ *  creates no order. Never 422s over a pricing or availability gap — `fully_priced`/
+ *  `fully_available` and each line's `priced`/`sufficient` flag say so instead, so a screen can
+ *  render "can't price this yet" / "short by N" rather than a refusal. */
+export async function quoteOrder(input: QuoteIn): Promise<QuoteOut> {
+  if (USE_FIXTURES) {
+    const warehouse = WAREHOUSES.find((w) => w.id === input.warehouse_id);
+    if (!warehouse) throw new NotFoundError("That warehouse is not part of this organization");
+    const currency = (input.currency ?? "INR").toUpperCase();
+    let fullyPriced = true;
+    let fullyAvailable = true;
+    let subtotal = 0;
+    const lines = input.lines.map((line) => {
+      const item = INVENTORY.find((i) => i.id === line.inventory_item_id);
+      const priceMinor = line.selling_price_minor ?? item?.selling_price_minor ?? null;
+      const priced = priceMinor !== null;
+      if (!priced) fullyPriced = false;
+      const lineTotal = priced ? Math.round((qtyToMilli(line.quantity) * (priceMinor ?? 0)) / 1000) : null;
+      if (lineTotal !== null) subtotal += lineTotal;
+      const availableQty = item?.available_qty ?? "0";
+      const sufficient = item !== undefined && qtyToMilli(availableQty) >= qtyToMilli(line.quantity);
+      if (!sufficient) fullyAvailable = false;
+      return {
+        inventory_item_id: line.inventory_item_id,
+        sku: item?.sku ?? "",
+        quantity: line.quantity,
+        priced,
+        selling_price_minor: priceMinor,
+        line_total_minor: lineTotal,
+        available_qty: availableQty,
+        sufficient,
+      };
+    });
+    return settle({
+      warehouse_id: input.warehouse_id,
+      currency,
+      subtotal_minor: subtotal,
+      total_minor: subtotal,
+      fully_priced: fullyPriced,
+      fully_available: fullyAvailable,
+      lines,
+    });
+  }
+  return apiRequest<QuoteOut>("/operations/orders/quote", { method: "POST", body: input });
+}
+
+let fixtureOrderSeq = ORDERS.length;
+
+/** `POST /operations/orders` — `operations.orders.order.create`. Creates a `DRAFT`; every line's
+ *  price starts `null` — `place` is what fills it. */
+export async function createOrder(input: OrderIn): Promise<OrderOut> {
+  if (USE_FIXTURES) {
+    if (!input.customer_id && !input.customer_name?.trim() && !input.customer_phone?.trim()) {
+      throw refusal(422, "a customer_id, or a customer_name/customer_phone pair, is required");
+    }
+    const warehouse = WAREHOUSES.find((w) => w.id === input.warehouse_id);
+    if (!warehouse) throw refusal(422, "warehouse_id does not match an existing warehouse");
+    if (input.lines.length === 0) throw refusal(422, "An order needs at least one line");
+    const lines = input.lines.map((line, i) => {
+      const item = INVENTORY.find((it) => it.id === line.inventory_item_id);
+      if (!item) throw refusal(422, "inventory_item_id does not match an existing item");
+      return {
+        id: fixtureId(`oline-${i}`),
+        inventory_item_id: item.id,
+        sku: item.sku,
+        quantity: line.quantity,
+        selling_price_minor: null,
+        line_total_minor: null,
+      };
+    });
+    fixtureOrderSeq += 1;
+    const now = new Date().toISOString();
+    const order: OrderOut = {
+      id: fixtureId("ord"),
+      number: `ORD-2026-${String(300 + fixtureOrderSeq).padStart(4, "0")}`,
+      channel: input.channel,
+      status: "DRAFT",
+      version: 0,
+      warehouse_id: input.warehouse_id,
+      customer_id: input.customer_id ?? null,
+      customer_name: input.customer_name ?? "",
+      customer_phone: input.customer_phone ?? "",
+      subtotal_minor: 0,
+      total_minor: 0,
+      currency: (input.currency ?? "INR").toUpperCase(),
+      lines,
+      created_at: now,
+      updated_at: now,
+    };
+    ORDERS.unshift(order);
+    return settle(order);
+  }
+  return apiRequest<OrderOut>("/operations/orders", { method: "POST", body: input });
+}
+
+function fixtureOrderOrThrow(id: string): OrderOut {
+  const found = ORDERS.find((o) => o.id === id);
+  if (!found) throw new NotFoundError("That order could not be found.");
+  return found;
+}
+
+/** ADR-0025 §1's order state machine, mirrored from `ORDER_TRANSITIONS` in
+ *  `services/operations/app/domain.py` — every other move, including a no-op "move" to the same
+ *  status, is refused with a 409, the same convention `can_transition_po` documents. */
+const ORDER_TRANSITIONS: Record<OrderStatus, readonly OrderStatus[]> = {
+  DRAFT: ["PLACED", "CANCELLED"],
+  PLACED: ["ACCEPTED", "REJECTED", "CANCELLED"],
+  ACCEPTED: ["IN_FULFILMENT", "ON_HOLD", "CANCELLED"],
+  IN_FULFILMENT: ["READY", "ON_HOLD", "CANCELLED"],
+  ON_HOLD: ["ACCEPTED", "IN_FULFILMENT", "READY", "CANCELLED"],
+  READY: ["HANDED_OVER", "ON_HOLD", "CANCELLED"],
+  HANDED_OVER: ["DELIVERED"],
+  DELIVERED: ["COMPLETED"],
+  COMPLETED: [],
+  CANCELLED: [],
+  REJECTED: [],
+};
+
+function canTransitionFixtureOrder(current: OrderStatus, next: OrderStatus): boolean {
+  return ORDER_TRANSITIONS[current].includes(next);
+}
+
+function assertFixtureVersion(order: OrderOut, expected: number): void {
+  if (order.version !== expected) {
+    throw refusal(
+      409,
+      `Order ${order.number} is at version ${order.version}, not ${expected}; reload and try again`,
+    );
+  }
+}
+
+/** The `InsufficientStock` shape (ADR-0014 §11) — distinct from the platform's ordinary
+ *  `{field, code, message}` field errors, so a client reads `problem.errors[]` here as
+ *  `{sku, requested, on_hand, reserved, available, …}` instead. */
+function fixtureInsufficientStock(item: InventoryItemOut, requestedQty: string): ApiError {
+  const detail =
+    `Cannot take ${requestedQty} ${item.uom} of ${item.sku}: ${item.on_hand_qty} on hand, ` +
+    `${item.reserved_qty} reserved, so ${item.available_qty} available`;
+  // `InsufficientStock.errors` (ADR-0014 §11) is not the platform's ordinary `{field, code,
+  // message}` extension shape `ProblemJson` declares — the same way `readProblem` in `http.ts`
+  // blindly casts an arbitrary wire body to `ProblemJson`, this fixture mirrors a real problem
+  // document's actual (wider) shape rather than the narrower type that shape is declared with.
+  const problem = {
+    type: "https://errors.opsgrids.dev/insufficient-stock",
+    title: "Not enough stock",
+    status: 409,
+    detail,
+    errors: [
+      {
+        sku: item.sku,
+        uom: item.uom,
+        requested: requestedQty,
+        on_hand: item.on_hand_qty,
+        reserved: item.reserved_qty,
+        available: item.available_qty,
+      },
+    ],
+  } as unknown as ProblemJson;
+  return new ApiError(409, detail, problem);
+}
+
+/** `POST /operations/orders/{id}/place` — `operations.orders.order.write`. `DRAFT -> PLACED`:
+ *  prices every line (from the line's own price, or the item's `selling_price_minor`) and
+ *  reserves nothing. A 409 names every SKU that still has no price, on either side, when pricing
+ *  fails — matching the real endpoint's own refusal shape. */
+export async function placeOrder(id: string, input: OrderVersionIn): Promise<OrderOut> {
+  if (USE_FIXTURES) {
+    const order = fixtureOrderOrThrow(id);
+    assertFixtureVersion(order, input.version);
+    if (!canTransitionFixtureOrder(order.status, "PLACED")) {
+      throw refusal(409, `Order ${order.number} is ${order.status} and cannot be placed`);
+    }
+    if (order.lines.length === 0) {
+      throw refusal(409, `Order ${order.number} has no lines to place`);
+    }
+    const unpriced: string[] = [];
+    const pricedLines = order.lines.map((line) => {
+      const item = INVENTORY.find((i) => i.id === line.inventory_item_id);
+      const priceMinor = line.selling_price_minor ?? item?.selling_price_minor ?? null;
+      if (priceMinor === null) unpriced.push(line.sku);
+      const lineTotal = priceMinor === null ? null : Math.round((qtyToMilli(line.quantity) * priceMinor) / 1000);
+      return { ...line, selling_price_minor: priceMinor, line_total_minor: lineTotal };
+    });
+    if (unpriced.length > 0) {
+      throw refusal(409, `Cannot place ${order.number}: no selling price for ${unpriced.join(", ")}`);
+    }
+    const subtotal = pricedLines.reduce((sum, l) => sum + (l.line_total_minor ?? 0), 0);
+    const index = ORDERS.indexOf(order);
+    const updated: OrderOut = {
+      ...order,
+      status: "PLACED",
+      version: order.version + 1,
+      lines: pricedLines,
+      subtotal_minor: subtotal,
+      total_minor: subtotal,
+      updated_at: new Date().toISOString(),
+    };
+    ORDERS[index] = updated;
+    return settle(updated);
+  }
+  return apiRequest<OrderOut>(`/operations/orders/${encodeURIComponent(id)}/place`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** `POST /operations/orders/{id}/accept` — `operations.orders.order.accept:ORG`. `PLACED ->
+ *  ACCEPTED`: every line checked against available stock before any is reserved — a short line
+ *  refuses the whole accept with `InsufficientStock`, and nothing reserves, the same
+ *  all-or-nothing shape the kernel's `reserve_many` guarantees live. */
+export async function acceptOrder(id: string, input: OrderVersionIn): Promise<OrderOut> {
+  if (USE_FIXTURES) {
+    const order = fixtureOrderOrThrow(id);
+    assertFixtureVersion(order, input.version);
+    if (!canTransitionFixtureOrder(order.status, "ACCEPTED")) {
+      throw refusal(409, `Order ${order.number} is ${order.status} and cannot be accepted`);
+    }
+    if (order.lines.length === 0) {
+      throw refusal(409, `Order ${order.number} has no lines to accept`);
+    }
+    const items = order.lines.map((line) => {
+      const item = INVENTORY.find((i) => i.id === line.inventory_item_id);
+      if (!item) throw refusal(409, "An order line names an item no longer in this organization");
+      if (qtyToMilli(item.available_qty) < qtyToMilli(line.quantity)) {
+        throw fixtureInsufficientStock(item, line.quantity);
+      }
+      return { item, line };
+    });
+    for (const { item, line } of items) {
+      const index = INVENTORY.indexOf(item);
+      const reservedMilli = qtyToMilli(item.reserved_qty) + qtyToMilli(line.quantity);
+      const availableMilli = qtyToMilli(item.available_qty) - qtyToMilli(line.quantity);
+      INVENTORY[index] = {
+        ...item,
+        reserved_qty: milliToQty(reservedMilli),
+        available_qty: milliToQty(availableMilli),
+      };
+    }
+    const orderIndex = ORDERS.indexOf(order);
+    const updated: OrderOut = {
+      ...order,
+      status: "ACCEPTED",
+      version: order.version + 1,
+      updated_at: new Date().toISOString(),
+    };
+    ORDERS[orderIndex] = updated;
+    return settle(updated);
+  }
+  return apiRequest<OrderOut>(`/operations/orders/${encodeURIComponent(id)}/accept`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** `POST /operations/orders/{id}/hold` — `operations.orders.order.write`. A reason is required. */
+export async function holdOrder(id: string, input: OrderHoldIn): Promise<OrderOut> {
+  if (USE_FIXTURES) {
+    const order = fixtureOrderOrThrow(id);
+    assertFixtureVersion(order, input.version);
+    if (!canTransitionFixtureOrder(order.status, "ON_HOLD")) {
+      throw refusal(409, `Order ${order.number} is ${order.status} and cannot be held`);
+    }
+    const index = ORDERS.indexOf(order);
+    const updated: OrderOut = { ...order, status: "ON_HOLD", version: order.version + 1, updated_at: new Date().toISOString() };
+    ORDERS[index] = updated;
+    return settle(updated);
+  }
+  return apiRequest<OrderOut>(`/operations/orders/${encodeURIComponent(id)}/hold`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** `POST /operations/orders/{id}/release` — `operations.orders.order.write`. The target is
+ *  recomputed from the order's own facts (ADR-0025 §1), never remembered: with no fulfilment
+ *  tasks yet (F3 has not landed), a release always lands back on `ACCEPTED`. */
+export async function releaseOrder(id: string, input: OrderVersionIn): Promise<OrderOut> {
+  if (USE_FIXTURES) {
+    const order = fixtureOrderOrThrow(id);
+    assertFixtureVersion(order, input.version);
+    if (order.status !== "ON_HOLD") {
+      throw refusal(409, `Order ${order.number} is ${order.status}, not on hold`);
+    }
+    const index = ORDERS.indexOf(order);
+    const updated: OrderOut = { ...order, status: "ACCEPTED", version: order.version + 1, updated_at: new Date().toISOString() };
+    ORDERS[index] = updated;
+    return settle(updated);
+  }
+  return apiRequest<OrderOut>(`/operations/orders/${encodeURIComponent(id)}/release`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** `POST /operations/orders/{id}/cancel` — `operations.orders.order.cancel:ORG`. A reason is
+ *  required; releases every open reservation the order holds (accepted lines that have not yet
+ *  moved past a reservation — pick/pack/dispatch are F3–F5, out of this phase). */
+export async function cancelOrder(id: string, input: OrderCancelIn): Promise<OrderOut> {
+  if (USE_FIXTURES) {
+    const order = fixtureOrderOrThrow(id);
+    assertFixtureVersion(order, input.version);
+    if (!canTransitionFixtureOrder(order.status, "CANCELLED")) {
+      throw refusal(409, `Order ${order.number} is ${order.status} and cannot be cancelled`);
+    }
+    if (order.status !== "DRAFT" && order.status !== "PLACED") {
+      for (const line of order.lines) {
+        const item = INVENTORY.find((i) => i.id === line.inventory_item_id);
+        if (!item) continue;
+        const index = INVENTORY.indexOf(item);
+        const reservedMilli = Math.max(0, qtyToMilli(item.reserved_qty) - qtyToMilli(line.quantity));
+        const availableMilli = qtyToMilli(item.available_qty) + qtyToMilli(line.quantity);
+        INVENTORY[index] = {
+          ...item,
+          reserved_qty: milliToQty(reservedMilli),
+          available_qty: milliToQty(availableMilli),
+        };
+      }
+    }
+    const index = ORDERS.indexOf(order);
+    const updated: OrderOut = { ...order, status: "CANCELLED", version: order.version + 1, updated_at: new Date().toISOString() };
+    ORDERS[index] = updated;
+    return settle(updated);
+  }
+  return apiRequest<OrderOut>(`/operations/orders/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    body: input,
+  });
+}
+
 /* -------------------------------- combobox helpers ------------------------ */
 
 /** For the PO line editor's SKU picker — a small cap search over the org's inventory. */
 export async function searchInventory(q: string): Promise<InventoryItemOut[]> {
+  const result = await listInventory({ q, size: 20, sort: "sku" });
+  return result.items;
+}
+
+/** For the order line editor's item picker — same small cap search, but keyed on the item id an
+ *  order line actually carries (`inventory_item_id`), not the free-text SKU a PO line takes. */
+export async function searchOrderableItems(q: string): Promise<InventoryItemOut[]> {
   const result = await listInventory({ q, size: 20, sort: "sku" });
   return result.items;
 }
