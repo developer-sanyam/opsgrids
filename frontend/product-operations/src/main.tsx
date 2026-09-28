@@ -87,6 +87,7 @@ const CountSessionsPage = lazy(() =>
 const CountSessionDetailPage = lazy(() =>
   import("./routes/CountSessionDetail").then((m) => ({ default: m.CountSessionDetailPage })),
 );
+const AutomationPage = lazy(() => import("./routes/Automation").then((m) => ({ default: m.AutomationPage })));
 
 function lazyRoute(path: string, element: ReactNode) {
   return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
@@ -144,6 +145,7 @@ const router = createBrowserRouter([
           lazyRoute("dispatch", <DispatchShipmentsPage />),
           lazyRoute("counting", <CountSessionsPage />),
           lazyRoute("counting/:id", <CountSessionDetailPage />),
+          lazyRoute("automation", <AutomationPage />),
           { path: "*", element: <NotFoundPage /> },
         ],
       },

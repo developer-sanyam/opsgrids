@@ -18,13 +18,15 @@ is refused another's by id.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Path, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
+from app.alerts import selectors as alert_selectors
+from app.alerts import services as alert_services
 from app.config import settings
 from app.counting import selectors as counting_selectors
 from app.counting import services as counting_services
@@ -59,6 +61,7 @@ from app.schemas import (
     CountSessionOut,
     CreatePickTasksIn,
     DiscrepancyResolveIn,
+    DiscrepancyTrendPointOut,
     ExceptionResolveIn,
     InventoryDiscrepancyOut,
     InventoryItemIn,
@@ -82,6 +85,7 @@ from app.schemas import (
     LocationOut,
     LocationPatch,
     OfferIn,
+    OperationalAlertOut,
     OrderCancelIn,
     OrderHandoverIn,
     OrderHoldIn,
@@ -117,8 +121,10 @@ from app.schemas import (
     SupplierIn,
     SupplierOut,
     SupplierPatch,
+    TaskBacklogOut,
     TaskCancelIn,
     TaskReleaseIn,
+    ThroughputOut,
     UomOut,
     WarehouseFloorIn,
     WarehouseFloorOut,
@@ -130,6 +136,8 @@ from app.schemas import (
     WorkerOut,
     WorkerPatch,
     WorkerPresenceIn,
+    WorkerWorkloadOut,
+    ZoneBottleneckOut,
 )
 from app.warehouse import selectors as wh_selectors
 from app.warehouse import services as wh_services
@@ -308,6 +316,19 @@ DispatchRead = Annotated[
 #: same billing gate) — floored at ORG the same way.
 DispatchWrite = Annotated[
     ScopeContext, Depends(require("operations.dispatch.shipment.write", minimum=Scope.ORG))
+]
+
+# ------------------------------------------------------------------ operational alerts and
+# insight dashboards (fulfilment plan §4; F12)
+
+AlertRead = Annotated[
+    ScopeContext, Depends(require("operations.automation.alert.read", minimum=Scope.ORG))
+]
+AlertManage = Annotated[
+    ScopeContext, Depends(require("operations.automation.alert.manage", minimum=Scope.ORG))
+]
+InsightRead = Annotated[
+    ScopeContext, Depends(require("operations.automation.insight.read", minimum=Scope.ORG))
 ]
 
 
@@ -2941,3 +2962,114 @@ async def overview(session: SessionDep, ctx: PoRead) -> OverviewOut:
         top_suppliers=domain.top_suppliers(suppliers),
         attention=domain.attention_items(pos, inventory, today),
     )
+
+
+# ------------------------------------------------------------------ operational alerts and
+# insight dashboards (fulfilment plan §4; F12)
+
+
+@router.get(
+    "/operations/alerts",
+    response_model=Page[OperationalAlertOut],
+    summary="Operational alerts the sweep found — low stock, delayed tasks, delayed shipments",
+    dependencies=[Entitled],
+)
+async def list_alerts(
+    session: SessionDep,
+    ctx: AlertRead,
+    params: PageQuery,
+    kind: Annotated[
+        str | None, Query(description="low_stock | task_delayed | shipment_delayed")
+    ] = None,
+    include_resolved: Annotated[bool, Query()] = False,
+) -> Page[OperationalAlertOut]:
+    stmt = alert_selectors.alerts_stmt(ctx, kind=kind, open_only=not include_resolved)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([alert_selectors.alert_out(a) for a in rows], total=total, params=params)
+
+
+@router.post(
+    "/operations/alerts/{alert_id}/resolve",
+    response_model=OperationalAlertOut,
+    summary="Dismiss an alert by hand, before the sweep would close it itself",
+    dependencies=[Entitled],
+)
+async def resolve_alert(
+    alert_id: uuid.UUID, session: SessionDep, ctx: AlertManage
+) -> OperationalAlertOut:
+    alert = await alert_services.resolve_alert(
+        session, ctx.organization_id, alert_id, resolved_by=str(ctx.principal.sub)
+    )
+    if alert is None:
+        raise NotFoundProblem("That alert is not part of this organization")
+    return alert_selectors.alert_out(alert)
+
+
+@router.get(
+    "/operations/insights/backlog",
+    response_model=list[TaskBacklogOut],
+    summary="Open pick-task count and age, per warehouse",
+    dependencies=[Entitled],
+)
+async def insight_backlog(session: SessionDep, ctx: InsightRead) -> list[TaskBacklogOut]:
+    rows = await alert_selectors.task_backlog_by_warehouse(session, ctx.organization_id)
+    return [TaskBacklogOut(**r) for r in rows]
+
+
+@router.get(
+    "/operations/insights/throughput",
+    response_model=list[ThroughputOut],
+    summary="Pick tasks closed in the last `days`, and their average cycle time, per warehouse",
+    dependencies=[Entitled],
+)
+async def insight_throughput(
+    session: SessionDep,
+    ctx: InsightRead,
+    days: Annotated[int, Query(ge=1, le=90)] = 7,
+) -> list[ThroughputOut]:
+    since = datetime.now(UTC) - timedelta(days=days)
+    rows = await alert_selectors.throughput_by_warehouse(session, ctx.organization_id, since=since)
+    return [ThroughputOut(**r) for r in rows]
+
+
+@router.get(
+    "/operations/insights/bottlenecks",
+    response_model=list[ZoneBottleneckOut],
+    summary="Which zone's tasks take longest to close, over the last `days`",
+    dependencies=[Entitled],
+)
+async def insight_bottlenecks(
+    session: SessionDep,
+    ctx: InsightRead,
+    days: Annotated[int, Query(ge=1, le=90)] = 7,
+) -> list[ZoneBottleneckOut]:
+    since = datetime.now(UTC) - timedelta(days=days)
+    rows = await alert_selectors.zone_bottlenecks(session, ctx.organization_id, since=since)
+    return [ZoneBottleneckOut(**r) for r in rows]
+
+
+@router.get(
+    "/operations/insights/workload",
+    response_model=list[WorkerWorkloadOut],
+    summary="Open task count per worker, busiest first",
+    dependencies=[Entitled],
+)
+async def insight_workload(session: SessionDep, ctx: InsightRead) -> list[WorkerWorkloadOut]:
+    rows = await alert_selectors.worker_workload(session, ctx.organization_id)
+    return [WorkerWorkloadOut(**r) for r in rows]
+
+
+@router.get(
+    "/operations/insights/discrepancies",
+    response_model=list[DiscrepancyTrendPointOut],
+    summary="Inventory discrepancies the reconciler found, per day and kind, over the last `days`",
+    dependencies=[Entitled],
+)
+async def insight_discrepancy_trend(
+    session: SessionDep,
+    ctx: InsightRead,
+    days: Annotated[int, Query(ge=1, le=90)] = 30,
+) -> list[DiscrepancyTrendPointOut]:
+    since = datetime.now(UTC) - timedelta(days=days)
+    rows = await alert_selectors.discrepancy_trend(session, ctx.organization_id, since=since)
+    return [DiscrepancyTrendPointOut(**r) for r in rows]
