@@ -17,6 +17,7 @@ export {
   DataTable,
   DeltaPill,
   DonutChart,
+  Drawer,
   EmptyState,
   ErrorState,
   FormDialog,
