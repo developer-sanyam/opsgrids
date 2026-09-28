@@ -13,6 +13,7 @@ import { LoginPage } from "./routes/Login";
 import { NotFoundPage } from "./routes/NotFound";
 import { RouteFallback } from "./routes/RouteFallback";
 import { LogoMark } from "./ui/LogoMark";
+import { WorkerProvider } from "./worker/WorkerProvider";
 
 // ADR-0003 addendum: sign-in only ever happens on the dashboard, the one host the refresh
 // cookie lives on. Set in production builds only (`publish-web.sh`); unset in dev, where this
@@ -21,11 +22,21 @@ const AUTH_ORIGIN = import.meta.env.VITE_AUTH_ORIGIN as string | undefined;
 if (AUTH_ORIGIN) configureAuthOrigin(AUTH_ORIGIN);
 
 /**
- * Profile is the only lazy split point today — Home and Login stay on the critical path (Home is
- * where a session lands after sign-in). There is nothing else to split yet: task detail, scan and
- * pick/pack confirmation have no backend (`docs/fulfilment/plan.md` F3) and are not routed here.
+ * Home and Login stay on the critical path (Home is where a session lands after sign-in and is
+ * the app's whole reason to exist). Everything reached by drilling into a task — detail, scan,
+ * pick and pack confirmation — is a lazy split point: none of it is needed until a worker taps
+ * into a task, and the barcode-scanning code in particular (`lib/useBarcodeScanner.ts`) is worth
+ * keeping off the boot bundle for a phone on a warehouse's own signal.
  */
 const ProfilePage = lazy(() => import("./routes/Profile").then((m) => ({ default: m.ProfilePage })));
+const TaskDetailPage = lazy(() =>
+  import("./routes/TaskDetail").then((m) => ({ default: m.TaskDetailPage })),
+);
+const ScanPage = lazy(() => import("./routes/Scan").then((m) => ({ default: m.ScanPage })));
+const PickConfirmPage = lazy(() =>
+  import("./routes/PickConfirm").then((m) => ({ default: m.PickConfirmPage })),
+);
+const PackPage = lazy(() => import("./routes/Pack").then((m) => ({ default: m.PackPage })));
 
 const router = createBrowserRouter([
   {
@@ -48,7 +59,9 @@ const router = createBrowserRouter([
         path: "/",
         element: (
           <RequireAuth>
-            <AppShell />
+            <WorkerProvider>
+              <AppShell />
+            </WorkerProvider>
           </RequireAuth>
         ),
         children: [
@@ -58,6 +71,38 @@ const router = createBrowserRouter([
             element: (
               <Suspense fallback={<RouteFallback />}>
                 <ProfilePage />
+              </Suspense>
+            ),
+          },
+          {
+            path: "tasks/:taskId",
+            element: (
+              <Suspense fallback={<RouteFallback />}>
+                <TaskDetailPage />
+              </Suspense>
+            ),
+          },
+          {
+            path: "tasks/:taskId/scan",
+            element: (
+              <Suspense fallback={<RouteFallback />}>
+                <ScanPage />
+              </Suspense>
+            ),
+          },
+          {
+            path: "tasks/:taskId/lines/:lineId/pick",
+            element: (
+              <Suspense fallback={<RouteFallback />}>
+                <PickConfirmPage />
+              </Suspense>
+            ),
+          },
+          {
+            path: "orders/:orderId/pack",
+            element: (
+              <Suspense fallback={<RouteFallback />}>
+                <PackPage />
               </Suspense>
             ),
           },
