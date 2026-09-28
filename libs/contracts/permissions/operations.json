@@ -20,6 +20,33 @@
       "resource": "item"
     },
     {
+      "action": "publish",
+      "default_scope": "ORG",
+      "description": "Change kind or capacity on a location already in use",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "layout"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See a warehouse's locations and their barcodes",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "location"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create locations and edit their code, name, barcode and pick sequence",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "location"
+    },
+    {
       "action": "adjust",
       "default_scope": "ORG",
       "description": "Adjust or count an item's stock on hand",
@@ -126,6 +153,18 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.layout.publish",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.location.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.location.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.stock.adjust",
           "scope": "ORG"
         },
@@ -184,6 +223,14 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.location.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.location.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.stock.adjust",
           "scope": "ORG"
         },
@@ -223,10 +270,14 @@
     {
       "code": "OPERATIONS_USER",
       "cross_product": false,
-      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, and reads the shared suppliers, inventory and warehouses.",
+      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, and reads the shared suppliers, inventory, warehouses and locations.",
       "grants": [
         {
           "code": "operations.inventory.item.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.location.read",
           "scope": "ORG"
         },
         {

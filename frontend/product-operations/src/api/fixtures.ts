@@ -14,6 +14,7 @@ import type {
   ItemAttributeOut,
   ItemCategoryOut,
   ItemVariantOut,
+  LocationOut,
   PurchaseOrderOut,
   StockMovementOut,
   SupplierOut,
@@ -402,6 +403,83 @@ export const WAREHOUSES: WarehouseOut[] = WAREHOUSE_SEEDS.map((w, i) => ({
   name: w.name,
   location: w.location,
 }));
+
+/* -------------------------------- locations -------------------------------- */
+
+const locUuid = (n: number): string => `70560000-0000-4000-8000-${n.toString().padStart(12, "0")}`;
+
+/**
+ * The Bhiwandi DC tree (`WAREHOUSES[0]`) — a zone nested down to bin, a couple of functional
+ * top-level areas, and the default bin every warehouse is created with. Every other warehouse
+ * carries none, on purpose: fixture mode renders the tree's empty state exactly as a brand-new
+ * warehouse's does live.
+ */
+const BHIWANDI_ID = whUuid(1);
+
+interface LocationSeed {
+  n: number;
+  parentN: number | null;
+  kind: LocationOut["kind"];
+  code: string;
+  name: string;
+  isDefault?: boolean;
+  barcode?: string;
+  pickSequence?: number;
+  maxWeightGrams?: number;
+  maxVolumeMilli?: number;
+  storageType?: string;
+}
+
+const LOCATION_SEEDS: LocationSeed[] = [
+  { n: 1, parentN: null, kind: "zone", code: "ZONE-A", name: "Zone A — Raw materials", pickSequence: 1 },
+  { n: 2, parentN: 1, kind: "aisle", code: "A1", name: "Aisle A1", pickSequence: 1 },
+  { n: 3, parentN: 2, kind: "rack", code: "A1-R1", name: "Rack A1-R1", pickSequence: 1 },
+  { n: 4, parentN: 3, kind: "shelf", code: "A1-R1-S1", name: "Shelf A1-R1-S1", pickSequence: 1 },
+  {
+    n: 5,
+    parentN: 4,
+    kind: "bin",
+    code: "A1-R1-S1-B1",
+    name: "Bin A1-R1-S1-B1",
+    barcode: "LOC-A1R1S1B1",
+    pickSequence: 1,
+    maxWeightGrams: 25000,
+    maxVolumeMilli: 40000,
+    storageType: "pallet",
+  },
+  {
+    n: 6,
+    parentN: 4,
+    kind: "bin",
+    code: "A1-R1-S1-B2",
+    name: "Bin A1-R1-S1-B2",
+    barcode: "LOC-A1R1S1B2",
+    pickSequence: 2,
+    maxWeightGrams: 25000,
+    maxVolumeMilli: 40000,
+    storageType: "pallet",
+  },
+  { n: 7, parentN: null, kind: "receiving", code: "RECV", name: "Receiving dock" },
+  { n: 8, parentN: null, kind: "dock", code: "DOCK-1", name: "Dispatch dock 1" },
+  { n: 9, parentN: null, kind: "bin", code: "DEFAULT", name: "Default bin", isDefault: true },
+];
+
+export const LOCATIONS: Record<string, LocationOut[]> = {
+  [BHIWANDI_ID]: LOCATION_SEEDS.map((s) => ({
+    id: locUuid(s.n),
+    warehouse_id: BHIWANDI_ID,
+    parent_id: s.parentN === null ? null : locUuid(s.parentN),
+    kind: s.kind,
+    code: s.code,
+    name: s.name,
+    is_default: s.isDefault ?? false,
+    barcode: s.barcode ?? null,
+    pick_sequence: s.pickSequence ?? null,
+    max_weight_grams: s.maxWeightGrams ?? null,
+    max_volume_milli: s.maxVolumeMilli ?? null,
+    storage_type: s.storageType ?? null,
+  })),
+};
 
 /* ---------------------------- stock movements ------------------------------ */
 

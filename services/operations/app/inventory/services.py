@@ -46,16 +46,28 @@ from app.schemas import (
     ItemAttributeIn,
     ItemCategoryPatch,
     ItemVariantPatch,
+    LocationPatch,
     WarehousePatch,
 )
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
-from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
+from platform_core.errors import (
+    ConflictProblem,
+    ForbiddenProblem,
+    NotFoundProblem,
+    ValidationProblem,
+)
 from platform_core.events import publish_event
 
 EVT_WAREHOUSE_CREATED = "operations.inventory.warehouse.created"
 EVT_WAREHOUSE_UPDATED = "operations.inventory.warehouse.updated"
 EVT_WAREHOUSE_DELETED = "operations.inventory.warehouse.deleted"
+EVT_LOCATION_CREATED = "operations.inventory.location.created"
+EVT_LOCATION_UPDATED = "operations.inventory.location.updated"
+#: Kind and the capacity columns (ADR-0024 §5's "capacity columns" — max weight, max volume,
+#: storage type). Changing any of these on a location that already has ledger history needs
+#: `layout.publish`, not plain `location.write`.
+LAYOUT_GUARDED_FIELDS = ("kind", "max_weight_grams", "max_volume_milli", "storage_type")
 EVT_INVENTORY_CREATED = "operations.inventory.item.created"
 EVT_INVENTORY_UPDATED = "operations.inventory.item.updated"
 EVT_INVENTORY_DELETED = "operations.inventory.item.deleted"
@@ -93,6 +105,21 @@ async def _home_for(session: AsyncSession, org_id: uuid.UUID, warehouse_name: st
     if home is None:  # every warehouse gets one at creation; a missing one is a data bug
         raise ConflictProblem(f"{warehouse_name} has no default bin to hold stock")
     return home
+
+
+async def _resolve_location_parent(
+    session: AsyncSession, org_id: uuid.UUID, warehouse_id: uuid.UUID, value: str | None
+) -> uuid.UUID | None:
+    if value is None:
+        return None
+    try:
+        parent_id = uuid.UUID(value)
+    except ValueError as exc:
+        raise ValidationProblem("parent_id must be a UUID") from exc
+    parent = await inv_selectors.get_location(session, org_id, parent_id)
+    if parent is None or parent.warehouse_id != warehouse_id:
+        raise ValidationProblem("parent_id does not match an existing location in this warehouse")
+    return parent_id
 
 
 async def _flush_item(session: AsyncSession, item: InventoryItem) -> None:
@@ -393,6 +420,170 @@ async def delete_warehouse(
         payload={"organization_id": str(org_id), "warehouse_id": str(warehouse.id)},
         actor=_actor(ctx),
     )
+
+
+# ------------------------------------------------------------------ locations (ADR-0024 §5)
+
+
+async def create_location(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    warehouse: Warehouse,
+    *,
+    kind: str,
+    code: str,
+    name: str,
+    parent_id: str | None = None,
+    barcode: str | None = None,
+    pick_sequence: int | None = None,
+    max_weight_grams: int | None = None,
+    max_volume_milli: int | None = None,
+    storage_type: str | None = None,
+    request: Request | None = None,
+) -> Location:
+    """Add a location to a warehouse's tree. `code` is unique within the warehouse (like
+    `uq_locations_org_warehouse_code`); `barcode`, when given, is unique across every live
+    location in the organization."""
+    org_id = ctx.organization_id
+    if await inv_selectors.get_location_by_code(session, org_id, warehouse.id, code):
+        raise _duplicate("code", f"A location coded {code!r} already exists in this warehouse")
+    resolved_parent = await _resolve_location_parent(session, org_id, warehouse.id, parent_id)
+    if barcode is not None:
+        existing = await inv_selectors.get_location_by_barcode(session, org_id, barcode)
+        if existing is not None:
+            raise _duplicate("barcode", f"Barcode {barcode!r} is already in use")
+
+    location = Location(
+        organization_id=org_id,
+        created_by=str(ctx.principal.sub),
+        warehouse_id=warehouse.id,
+        parent_id=resolved_parent,
+        kind=kind,
+        code=code,
+        name=name,
+        barcode=barcode,
+        pick_sequence=pick_sequence,
+        max_weight_grams=max_weight_grams,
+        max_volume_milli=max_volume_milli,
+        storage_type=storage_type,
+    )
+    session.add(location)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=org_id,
+        actor_id=ctx.principal.sub,
+        action="location.created",
+        entity="location",
+        entity_id=location.id,
+        after={"warehouse_id": str(warehouse.id), "kind": kind, "code": code, "name": name},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=org_id,
+        event_type=EVT_LOCATION_CREATED,
+        aggregate_type="location",
+        aggregate_id=location.id,
+        payload={
+            "organization_id": str(org_id),
+            "location_id": str(location.id),
+            "warehouse_id": str(warehouse.id),
+            "kind": kind,
+        },
+        actor=_actor(ctx),
+    )
+    return location
+
+
+async def update_location(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    location: Location,
+    payload: LocationPatch,
+    *,
+    request: Request | None = None,
+) -> Location:
+    """Patch a location. `code`, `name`, `barcode` and `pick_sequence` are a plain
+    `location.write`; changing `kind` or a capacity column (`max_weight_grams`,
+    `max_volume_milli`, `storage_type`) on a location that already has ledger history is a
+    layout decision, not a labelling one, and needs `layout.publish` instead (ADR-0024 §5) —
+    checked here, against this location's own history, since the same field change is harmless
+    on a location nothing has ever stocked."""
+    org_id = ctx.organization_id
+    changes = payload.model_dump(exclude_unset=True)
+
+    guarded = {
+        field
+        for field in LAYOUT_GUARDED_FIELDS
+        if field in changes and changes[field] != getattr(location, field)
+    }
+    # Short-circuits on the permission first: a caller who already holds `layout.publish` never
+    # pays for the history lookup, and one who does not is refused without it ever mattering
+    # whether this particular location has history yet.
+    needs_publish = guarded and not ctx.principal.has("operations.inventory.layout.publish")
+    if needs_publish and await inv_selectors.location_has_ledger_history(
+        session, org_id, location.id
+    ):
+        raise ForbiddenProblem(
+            "This location already has stock history; changing "
+            f"{', '.join(sorted(guarded))} needs operations.inventory.layout.publish, "
+            "not just location.write"
+        )
+
+    if "code" in changes and changes["code"] != location.code:
+        existing = await inv_selectors.get_location_by_code(
+            session, org_id, location.warehouse_id, changes["code"]
+        )
+        if existing is not None and existing.id != location.id:
+            raise _duplicate(
+                "code", f"A location coded {changes['code']!r} already exists in this warehouse"
+            )
+    if (
+        "barcode" in changes
+        and changes["barcode"] is not None
+        and changes["barcode"] != location.barcode
+    ):
+        existing = await inv_selectors.get_location_by_barcode(session, org_id, changes["barcode"])
+        if existing is not None and existing.id != location.id:
+            raise _duplicate("barcode", f"Barcode {changes['barcode']!r} is already in use")
+
+    before = {field: getattr(location, field) for field in changes}
+    for field, value in changes.items():
+        setattr(location, field, value)
+    location.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=org_id,
+        actor_id=ctx.principal.sub,
+        action="location.updated",
+        entity="location",
+        entity_id=location.id,
+        before=before,
+        after=changes,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=org_id,
+        event_type=EVT_LOCATION_UPDATED,
+        aggregate_type="location",
+        aggregate_id=location.id,
+        payload={
+            "organization_id": str(org_id),
+            "location_id": str(location.id),
+            "changed": sorted(changes),
+        },
+        actor=_actor(ctx),
+    )
+    return location
 
 
 # ------------------------------------------------------------------ item categories

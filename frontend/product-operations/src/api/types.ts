@@ -379,6 +379,78 @@ export interface WarehousePatch {
   location?: string;
 }
 
+/* -------------------------------- locations -------------------------------- */
+
+/**
+ * The full `Location.kind` vocabulary (Fulfilment plan F1, ADR-0024 §5). Not every kind nests
+ * the same way — `zone` sits at the top of a warehouse's tree; `staging`, `pack_station`, `dock`,
+ * `receiving`, `returns` and `quarantine` are also usually top-level, functional areas rather than
+ * storage; `aisle`, `rack`, `shelf` and `bin` usually nest under a `zone`. The server does not
+ * enforce a parent/child shape beyond the tree itself, so this UI does not either.
+ */
+export type LocationKind =
+  | "zone"
+  | "aisle"
+  | "rack"
+  | "shelf"
+  | "bin"
+  | "staging"
+  | "pack_station"
+  | "dock"
+  | "receiving"
+  | "returns"
+  | "quarantine";
+
+/**
+ * A node in a warehouse's location tree — mirrors `LocationOut` (`services/operations/app/schemas.py`).
+ * `barcode` is unique per org where set; `pick_sequence` orders a picker's walk through a zone.
+ * The three capacity fields (`max_weight_grams`, `max_volume_milli`, `storage_type`) and `kind`
+ * are guarded by `operations.inventory.layout.publish` once a location has stock history, on top
+ * of the ordinary `operations.inventory.location.write`.
+ */
+export interface LocationOut {
+  id: string;
+  warehouse_id: string;
+  parent_id: string | null;
+  kind: LocationKind;
+  code: string;
+  name: string;
+  is_default: boolean;
+  barcode: string | null;
+  pick_sequence: number | null;
+  max_weight_grams: number | null;
+  max_volume_milli: number | null;
+  storage_type: string | null;
+}
+
+/** `POST /warehouses/{warehouse_id}/locations` — `operations.inventory.location.write`. 409 on a
+ *  duplicate code (per warehouse) or a duplicate barcode (per org). */
+export interface LocationIn {
+  kind: LocationKind;
+  code: string;
+  name: string;
+  parent_id?: string | null;
+  barcode?: string | null;
+  pick_sequence?: number | null;
+  max_weight_grams?: number | null;
+  max_volume_milli?: number | null;
+  storage_type?: string | null;
+}
+
+/** `PATCH /locations/{id}`. Changing `kind` or a capacity field on a location that already has
+ *  stock history needs `operations.inventory.layout.publish`, not just `.write` — the API answers
+ *  403 rather than silently accepting the base-write scope for those fields. */
+export interface LocationPatch {
+  kind?: LocationKind;
+  code?: string;
+  name?: string;
+  barcode?: string | null;
+  pick_sequence?: number | null;
+  max_weight_grams?: number | null;
+  max_volume_milli?: number | null;
+  storage_type?: string | null;
+}
+
 /* --------------------------- dashboard rollups --------------------------- */
 
 /** One category's share of committed spend — grouped live from purchase orders. */

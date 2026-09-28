@@ -32,6 +32,7 @@ import {
   ITEM_ATTRIBUTES,
   ITEM_CATEGORIES,
   ITEM_VARIANTS,
+  LOCATIONS,
   MOVEMENTS,
   PURCHASE_ORDERS,
   SUPPLIERS,
@@ -52,6 +53,9 @@ import type {
   ItemVariantIn,
   ItemVariantOut,
   ItemVariantPatch,
+  LocationIn,
+  LocationOut,
+  LocationPatch,
   OverviewOut,
   Page,
   PoStatus,
@@ -1123,6 +1127,20 @@ export async function listWarehouses(params: ListWarehousesParams = {}): Promise
   return apiRequest<Page<WarehouseOut>>(`/operations/warehouses${query}`, { signal: params.signal });
 }
 
+/**
+ * One warehouse, by id — there is no `GET /operations/warehouses/{id}` endpoint today, so this
+ * reads it off the same full list every warehouse picker already fetches (`FULL_PAGE`, a small
+ * working set for one org) rather than inventing a route. Throws when the id doesn't match —
+ * a bad link or a warehouse from another organization, which reads as a 404 the same way a real
+ * single-resource fetch would.
+ */
+export async function getWarehouseById(id: string): Promise<WarehouseOut> {
+  const page = await listWarehouses({ size: FULL_PAGE });
+  const found = page.items.find((w) => w.id === id);
+  if (!found) throw new NotFoundError("That warehouse could not be found.");
+  return found;
+}
+
 /** `POST /operations/warehouses` — `operations.inventory.warehouse.write` (admin only). 409 on a
  *  duplicate code or name. */
 export async function createWarehouse(input: WarehouseIn): Promise<WarehouseOut> {
@@ -1199,6 +1217,149 @@ export async function deleteWarehouse(id: string): Promise<void> {
     return settle(undefined);
   }
   await apiRequest<undefined>(`/operations/warehouses/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/* -------------------------------- locations -------------------------------- */
+/**
+ * Fulfilment plan F1 (`docs/fulfilment/plan.md`). These wire types and calls are hand-rolled
+ * against the plan's documented contract rather than generated: `libs/contracts/openapi/operations.json`
+ * does not carry a `locations` path yet (checked 2026-09-28 — the backend half of F1 was still in
+ * flight). Regenerate `opsgrids-client`'s types and swap these for the generated client once it
+ * lands; nothing about this file's shape should need to change if the contract matches what this
+ * slice was built against.
+ *
+ * Confirmed against the landed backend (`services/operations/app/api/routes.py`): the list route
+ * returns `Page[LocationOut]` like every other list here, not a bare array — `listLocations` below
+ * fetches it at `FULL_PAGE` (200, the offset endpoint's own max `size`) and unwraps `.items`, the
+ * same "whole working set in one page" pattern `getWarehouseById` already uses in this file. A
+ * warehouse holding more than 200 locations would silently lose the rest of its tree; there is no
+ * pagination or virtualisation in the tree UI to fall back on, so that ceiling is a real one, just
+ * not one F1 needs to solve (per the plan, warehouses this phase serves are dozens of locations).
+ */
+
+/**
+ * A warehouse's whole location tree — `GET /warehouses/{warehouse_id}/locations`, fetched at
+ * `FULL_PAGE` and unwrapped, since a tree is rendered whole or not at all.
+ */
+export async function listLocations(
+  warehouseId: string,
+  params: { signal?: AbortSignal } = {},
+): Promise<LocationOut[]> {
+  if (USE_FIXTURES) {
+    return settle(LOCATIONS[warehouseId] ?? []);
+  }
+  const query = buildQuery({ size: FULL_PAGE });
+  const page = await apiRequest<Page<LocationOut>>(
+    `/operations/warehouses/${encodeURIComponent(warehouseId)}/locations${query}`,
+    { signal: params.signal },
+  );
+  return page.items;
+}
+
+/** `POST /warehouses/{warehouse_id}/locations` — `operations.inventory.location.write`. 409 on a
+ *  duplicate code (per warehouse) or a duplicate barcode (per org), 422 an unknown parent. */
+export async function createLocation(warehouseId: string, input: LocationIn): Promise<LocationOut> {
+  if (USE_FIXTURES) {
+    const list = LOCATIONS[warehouseId] ?? [];
+    if (list.some((l) => l.code === input.code)) {
+      throw refusal(409, `A location coded '${input.code}' already exists in this warehouse`, "code");
+    }
+    const barcode = input.barcode?.trim() || null;
+    if (barcode && Object.values(LOCATIONS).flat().some((l) => l.barcode === barcode)) {
+      throw refusal(409, `A location with barcode '${barcode}' already exists`, "barcode");
+    }
+    if (input.parent_id != null && !list.some((l) => l.id === input.parent_id)) {
+      throw refusal(422, "parent_id does not match an existing location in this warehouse");
+    }
+    const location: LocationOut = {
+      id: fixtureId("loc"),
+      warehouse_id: warehouseId,
+      parent_id: input.parent_id ?? null,
+      kind: input.kind,
+      code: input.code,
+      name: input.name,
+      is_default: false,
+      barcode,
+      pick_sequence: input.pick_sequence ?? null,
+      max_weight_grams: input.max_weight_grams ?? null,
+      max_volume_milli: input.max_volume_milli ?? null,
+      storage_type: input.storage_type ?? null,
+    };
+    list.push(location);
+    LOCATIONS[warehouseId] = list;
+    return settle(location);
+  }
+  return apiRequest<LocationOut>(
+    `/operations/warehouses/${encodeURIComponent(warehouseId)}/locations`,
+    { method: "POST", body: input },
+  );
+}
+
+/** `PATCH /locations/{id}` — `operations.inventory.location.write`; `kind` and the capacity
+ *  fields additionally need `operations.inventory.layout.publish` once the location has stock
+ *  history (403 otherwise — this function passes that straight through as an `ApiError`). */
+export async function updateLocation(id: string, patch: LocationPatch): Promise<LocationOut> {
+  if (USE_FIXTURES) {
+    for (const warehouseId of Object.keys(LOCATIONS)) {
+      const list = LOCATIONS[warehouseId] ?? [];
+      const index = list.findIndex((l) => l.id === id);
+      if (index === -1) continue;
+      const current = list[index];
+      if (!current) continue;
+      if (
+        patch.code !== undefined &&
+        list.some((l) => l.id !== id && l.code === patch.code)
+      ) {
+        throw refusal(409, `A location coded '${patch.code}' already exists in this warehouse`, "code");
+      }
+      const barcode = patch.barcode !== undefined ? patch.barcode?.trim() || null : current.barcode;
+      if (
+        barcode &&
+        patch.barcode !== undefined &&
+        Object.values(LOCATIONS).flat().some((l) => l.id !== id && l.barcode === barcode)
+      ) {
+        throw refusal(409, `A location with barcode '${barcode}' already exists`, "barcode");
+      }
+      const updated: LocationOut = {
+        ...current,
+        ...(patch.kind !== undefined ? { kind: patch.kind } : {}),
+        ...(patch.code !== undefined ? { code: patch.code } : {}),
+        ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.barcode !== undefined ? { barcode } : {}),
+        ...(patch.pick_sequence !== undefined ? { pick_sequence: patch.pick_sequence } : {}),
+        ...(patch.max_weight_grams !== undefined ? { max_weight_grams: patch.max_weight_grams } : {}),
+        ...(patch.max_volume_milli !== undefined ? { max_volume_milli: patch.max_volume_milli } : {}),
+        ...(patch.storage_type !== undefined ? { storage_type: patch.storage_type } : {}),
+      };
+      list[index] = updated;
+      LOCATIONS[warehouseId] = list;
+      return settle(updated);
+    }
+    throw new NotFoundError("That location could not be found.");
+  }
+  return apiRequest<LocationOut>(`/operations/locations/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: patch,
+  });
+}
+
+/**
+ * `GET /locations/by-barcode/{barcode}` — resolves a scanned or typed barcode to the exact
+ * location it was printed for (the F1 exit criterion: printed label → scanned value → the same
+ * location id). Not scoped to one warehouse — the result's own `warehouse_id` says which one.
+ * No screen in this slice calls this yet (F1's UI scope is the tree and its labels, not a lookup
+ * tool); it is here so the contract is exercised and ready for the worker app or a future
+ * "find by barcode" affordance to reuse.
+ */
+export async function getLocationByBarcode(barcode: string): Promise<LocationOut> {
+  if (USE_FIXTURES) {
+    const found = Object.values(LOCATIONS)
+      .flat()
+      .find((l) => l.barcode === barcode);
+    if (!found) throw new NotFoundError("No location has that barcode.");
+    return settle(found);
+  }
+  return apiRequest<LocationOut>(`/operations/locations/by-barcode/${encodeURIComponent(barcode)}`);
 }
 
 /* -------------------------------- combobox helpers ------------------------ */

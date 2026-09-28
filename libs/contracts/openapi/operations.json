@@ -1152,6 +1152,367 @@
         "title": "ItemVariantPatch",
         "type": "object"
       },
+      "LocationIn": {
+        "additionalProperties": false,
+        "description": "`POST /warehouses/{warehouse_id}/locations`. `parent_id`, when given, must name an\nexisting location in the same warehouse. `barcode`, when given, must be unique across every\nlive location in the organization.",
+        "properties": {
+          "barcode": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[!-.0-~]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barcode"
+          },
+          "code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Code",
+            "type": "string"
+          },
+          "kind": {
+            "default": "bin",
+            "enum": [
+              "zone",
+              "aisle",
+              "rack",
+              "shelf",
+              "bin",
+              "staging",
+              "pack_station",
+              "dock",
+              "receiving",
+              "returns",
+              "quarantine"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "max_volume_milli": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Volume Milli"
+          },
+          "max_weight_grams": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Weight Grams"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "pick_sequence": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pick Sequence"
+          },
+          "storage_type": {
+            "anyOf": [
+              {
+                "maxLength": 30,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Type"
+          }
+        },
+        "required": [
+          "code",
+          "name"
+        ],
+        "title": "LocationIn",
+        "type": "object"
+      },
+      "LocationOut": {
+        "description": "A node in a warehouse's location tree \u2014 zone, aisle, rack, shelf, bin, staging, pack\nstation, dock, receiving, returns or quarantine (ADR-0024 \u00a75).",
+        "properties": {
+          "barcode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barcode"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "zone",
+              "aisle",
+              "rack",
+              "shelf",
+              "bin",
+              "staging",
+              "pack_station",
+              "dock",
+              "receiving",
+              "returns",
+              "quarantine"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "max_volume_milli": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Volume Milli"
+          },
+          "max_weight_grams": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Weight Grams"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "pick_sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pick Sequence"
+          },
+          "storage_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Type"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "warehouse_id",
+          "parent_id",
+          "kind",
+          "code",
+          "name",
+          "is_default",
+          "barcode",
+          "pick_sequence",
+          "max_weight_grams",
+          "max_volume_milli",
+          "storage_type"
+        ],
+        "title": "LocationOut",
+        "type": "object"
+      },
+      "LocationPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /locations/{id}`. Changing `kind` or either capacity field on a location that\nalready has ledger history needs `operations.inventory.layout.publish`, not just\n`location.write` (ADR-0024 \u00a75) \u2014 enforced in the route, since which permission applies\ndepends on what changed and on the location's own history, not on the shape of this\npayload alone.",
+        "properties": {
+          "barcode": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[!-.0-~]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barcode"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "zone",
+                  "aisle",
+                  "rack",
+                  "shelf",
+                  "bin",
+                  "staging",
+                  "pack_station",
+                  "dock",
+                  "receiving",
+                  "returns",
+                  "quarantine"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "max_volume_milli": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Volume Milli"
+          },
+          "max_weight_grams": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Weight Grams"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "pick_sequence": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pick Sequence"
+          },
+          "storage_type": {
+            "anyOf": [
+              {
+                "maxLength": 30,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Type"
+          }
+        },
+        "title": "LocationPatch",
+        "type": "object"
+      },
       "OverviewOut": {
         "description": "The Operations overview's server-side rollup. The SPA can derive all of this from the\nlist endpoints; this exposes the same arithmetic once, so a reporting view can share it.\n\n`open_pos` counts POs still in flight (draft or approved); `inventory_value_minor` is the\nvalue of stock on hand; `low_stock_count` is items at or below their reorder point;\n`out_of_stock_count` is items with nothing on hand; `on_time_pct` is the real, spend-weighted\non-time delivery rate computed from received purchase orders (`expected_date` vs\n`received_date`) \u2014 `None` when this organization has not received a PO yet, never a\nmanufactured percentage. The series and breakdowns feed the charts.",
         "properties": {
@@ -1339,6 +1700,42 @@
           "pages"
         ],
         "title": "Page[ItemCategoryOut]",
+        "type": "object"
+      },
+      "Page_LocationOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LocationOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[LocationOut]",
         "type": "object"
       },
       "Page_PurchaseOrderOut_": {
@@ -4403,6 +4800,103 @@
         ]
       }
     },
+    "/api/v1/operations/locations/by-barcode/{barcode}": {
+      "get": {
+        "operationId": "read_location_by_barcode_api_v1_operations_locations_by_barcode__barcode__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "barcode",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Barcode",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve a scanned barcode to its location",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/locations/{location_id}": {
+      "patch": {
+        "operationId": "update_location_api_v1_operations_locations__location_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "location_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Location Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LocationPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a location",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
     "/api/v1/operations/overview": {
       "get": {
         "operationId": "overview_api_v1_operations_overview_get",
@@ -5399,6 +5893,123 @@
           }
         },
         "summary": "Update a warehouse",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/warehouses/{warehouse_id}/locations": {
+      "get": {
+        "operationId": "list_locations_api_v1_operations_warehouses__warehouse_id__locations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "warehouse_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Warehouse Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_LocationOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A warehouse's location tree",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "create_location_api_v1_operations_warehouses__warehouse_id__locations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "warehouse_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Warehouse Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LocationIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a location to a warehouse",
         "tags": [
           "operations"
         ]

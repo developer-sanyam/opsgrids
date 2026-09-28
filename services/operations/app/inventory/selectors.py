@@ -37,6 +37,7 @@ from app.schemas import (
     ItemAttributeOut,
     ItemCategoryOut,
     ItemVariantOut,
+    LocationOut,
     StockBalanceOut,
     StockMovementOut,
     UomOut,
@@ -580,6 +581,83 @@ async def count_open_purchase_orders_for_warehouse(
     return (await session.execute(stmt)).scalar_one()
 
 
+def locations_stmt(org_id: uuid.UUID, warehouse_id: uuid.UUID) -> Select[Any]:
+    """A warehouse's location tree, every kind (ADR-0024 §5), ordered for a readable walk:
+    pick sequence first (locations with none sort last), then code."""
+    return (
+        select(Location)
+        .where(
+            Location.organization_id == org_id,
+            Location.warehouse_id == warehouse_id,
+            Location.deleted_at.is_(None),
+        )
+        .order_by(Location.pick_sequence.asc().nulls_last(), Location.code.asc())
+    )
+
+
+async def get_location(
+    session: AsyncSession, org_id: uuid.UUID, location_id: uuid.UUID
+) -> Location | None:
+    stmt = select(Location).where(
+        Location.id == location_id,
+        Location.organization_id == org_id,
+        Location.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_location_by_code(
+    session: AsyncSession, org_id: uuid.UUID, warehouse_id: uuid.UUID, code: str
+) -> Location | None:
+    stmt = select(Location).where(
+        Location.organization_id == org_id,
+        Location.warehouse_id == warehouse_id,
+        Location.code == code,
+        Location.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_location_by_barcode(
+    session: AsyncSession, org_id: uuid.UUID, barcode: str
+) -> Location | None:
+    """Resolve a scanned barcode to its location — org-scoped, exact string match. `None` for a
+    barcode that does not exist in this org *and* for one that belongs to another org — a scan
+    is refused the same 404 either way, never a 403 that would confirm the barcode is real."""
+    stmt = select(Location).where(
+        Location.organization_id == org_id,
+        Location.barcode == barcode,
+        Location.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def location_has_ledger_history(
+    session: AsyncSession, org_id: uuid.UUID, location_id: uuid.UUID
+) -> bool:
+    """Whether any ledger entry or balance row has ever referenced this location — the gate
+    between a plain `location.write` kind/capacity edit and one that needs `layout.publish`
+    (ADR-0024 §5). Checking the ledger and the balances covers every mover: a move with no
+    surviving balance (fully issued back out) still left a ledger row behind, and a balance
+    always traces back to at least one."""
+    ledger_stmt = (
+        select(func.count())
+        .select_from(LedgerEntry)
+        .where(LedgerEntry.organization_id == org_id, LedgerEntry.location_id == location_id)
+    )
+    if (await session.execute(ledger_stmt)).scalar_one():
+        return True
+    balance_stmt = (
+        select(func.count())
+        .select_from(InventoryBalance)
+        .where(
+            InventoryBalance.organization_id == org_id,
+            InventoryBalance.location_id == location_id,
+        )
+    )
+    return bool((await session.execute(balance_stmt)).scalar_one())
+
+
 # ------------------------------------------------------------------ projections (ORM → wire)
 
 
@@ -688,4 +766,21 @@ def warehouse_out(warehouse: Warehouse) -> WarehouseOut:
         code=warehouse.code,
         name=warehouse.name,
         location=warehouse.location,
+    )
+
+
+def location_out(location: Location) -> LocationOut:
+    return LocationOut(
+        id=str(location.id),
+        warehouse_id=str(location.warehouse_id),
+        parent_id=str(location.parent_id) if location.parent_id else None,
+        kind=location.kind,
+        code=location.code,
+        name=location.name,
+        is_default=location.is_default,
+        barcode=location.barcode,
+        pick_sequence=location.pick_sequence,
+        max_weight_grams=location.max_weight_grams,
+        max_volume_milli=location.max_volume_milli,
+        storage_type=location.storage_type,
     )

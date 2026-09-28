@@ -13,6 +13,7 @@ import {
   createInventoryItem,
   createItemCategory,
   createItemVariant,
+  createLocation,
   createPurchaseOrder,
   createSupplier,
   createWarehouse,
@@ -24,10 +25,13 @@ import {
   deleteSupplier,
   deleteWarehouse,
   getInventoryItem,
+  getLocationByBarcode,
+  getWarehouseById,
   listInventory,
   listItemAttributes,
   listItemCategories,
   listItemVariants,
+  listLocations,
   listMovements,
   listPurchaseOrders,
   listSuppliers,
@@ -38,6 +42,7 @@ import {
   updateInventoryItem,
   updateItemCategory,
   updateItemVariant,
+  updateLocation,
   updatePurchaseOrder,
   updateSupplier,
   updateWarehouse,
@@ -337,6 +342,68 @@ describe("deleteWarehouse", () => {
     const { url, init } = requested(fetchMock);
     expect(url).toBe("/api/v1/operations/warehouses/wh-1");
     expect(init.method).toBe("DELETE");
+  });
+});
+
+describe("getWarehouseById", () => {
+  it("reads the full list and picks the matching one — there is no single-warehouse endpoint", async () => {
+    const fetchMock = stubFetch({
+      items: [{ id: "wh-1", code: "WH-1", name: "Bhiwandi DC", location: "" }],
+      total: 1,
+      page: 1,
+      size: 200,
+    });
+    const warehouse = await getWarehouseById("wh-1");
+    const { url } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/warehouses?page=1&size=200");
+    expect(warehouse.name).toBe("Bhiwandi DC");
+  });
+
+  it("throws when no warehouse in the list matches the id", async () => {
+    stubFetch({ items: [], total: 0, page: 1, size: 200 });
+    await expect(getWarehouseById("missing")).rejects.toThrow();
+  });
+});
+
+describe("listLocations", () => {
+  it("calls GET /operations/warehouses/{warehouse_id}/locations at FULL_PAGE and unwraps items", async () => {
+    const fetchMock = stubFetch({ items: [{ id: "loc-1" }], total: 1, page: 1, size: 200 });
+    const locations = await listLocations("wh-1");
+    const { url } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/warehouses/wh-1/locations?size=200");
+    expect(locations).toEqual([{ id: "loc-1" }]);
+  });
+});
+
+describe("createLocation", () => {
+  it("POSTs the LocationIn body verbatim to the warehouse's own locations route", async () => {
+    const fetchMock = stubFetch({ id: "loc-1" }, 201);
+    const body = { kind: "zone" as const, code: "ZONE-A", name: "Zone A" };
+    await createLocation("wh-1", body);
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/warehouses/wh-1/locations");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual(body);
+  });
+});
+
+describe("updateLocation", () => {
+  it("PATCHes /operations/locations/{id}", async () => {
+    const fetchMock = stubFetch({ id: "loc-1" });
+    await updateLocation("loc-1", { name: "Renamed zone" });
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/locations/loc-1");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body as string)).toEqual({ name: "Renamed zone" });
+  });
+});
+
+describe("getLocationByBarcode", () => {
+  it("calls GET /operations/locations/by-barcode/{barcode}", async () => {
+    const fetchMock = stubFetch({ id: "loc-1", barcode: "LOC-A1R1S1B1" });
+    await getLocationByBarcode("LOC-A1R1S1B1");
+    const { url } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/locations/by-barcode/LOC-A1R1S1B1");
   });
 });
 

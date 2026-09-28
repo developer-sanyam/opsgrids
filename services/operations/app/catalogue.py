@@ -169,6 +169,41 @@ OPERATIONS = PermissionCatalogue(
         PermissionSpec(
             "inventory", "warehouse", "write", "Create, edit and delete warehouses", "ORG", "ORG"
         ),
+        # Locations (ADR-0024 §5, Fulfilment plan F1): the zone/aisle/rack/shelf/bin/staging/
+        # pack_station/dock/receiving/returns/quarantine tree inside a warehouse. Org
+        # infrastructure like the warehouse itself, so ORG for everyone with a seat.
+        PermissionSpec(
+            "inventory",
+            "location",
+            "read",
+            "See a warehouse's locations and their barcodes",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inventory",
+            "location",
+            "write",
+            "Create locations and edit their code, name, barcode and pick sequence",
+            "ORG",
+            "ORG",
+        ),
+        # Distinct from `location.write`: changing what a location *is* (its kind) or how much
+        # it can hold (capacity) is a layout decision, not a labelling one, and once a location
+        # already has ledger history behind it, changing either can silently misdescribe stock
+        # that is already sitting there. Dangerous — a plain `location.write` grant (held by
+        # `OPERATIONS_MANAGER`, not `OPERATIONS_USER`, which only reads) is never enough on its
+        # own for a location with history; a location with none can still have its kind/capacity
+        # set under plain `write`.
+        PermissionSpec(
+            "inventory",
+            "layout",
+            "publish",
+            "Change kind or capacity on a location already in use",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
         # Promising stock to a demand without moving it, and giving that promise back — the
         # kernel has carried this since Phase 0 (`ledger.reserve`/`release`); this is the first
         # permission that lets a caller reach it over HTTP (ADR-0014 §11's release endpoint).
@@ -222,6 +257,8 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.inventory.stock.adjust", "ORG"),
             ("operations.inventory.stock.reserve", "ORG"),
             ("operations.inventory.warehouse.read", "ORG"),
+            ("operations.inventory.location.read", "ORG"),
+            ("operations.inventory.location.write", "ORG"),
         ),
     ),
     RoleTemplate(
@@ -230,7 +267,7 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
         product=PRODUCT,
         description=(
             "Every person with an Operations seat. Raises and sees their own purchase orders, and "
-            "reads the shared suppliers, inventory and warehouses."
+            "reads the shared suppliers, inventory, warehouses and locations."
         ),
         is_default=True,
         grants=OPERATIONS.pick(
@@ -239,6 +276,7 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.procurement.supplier.read", "ORG"),
             ("operations.inventory.item.read", "ORG"),
             ("operations.inventory.warehouse.read", "ORG"),
+            ("operations.inventory.location.read", "ORG"),
         ),
     ),
 ]

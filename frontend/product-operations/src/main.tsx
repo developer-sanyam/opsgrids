@@ -56,6 +56,12 @@ const SupplierDetailPage = lazy(() =>
 const WarehousesPage = lazy(() =>
   import("./routes/Warehouses").then((m) => ({ default: m.WarehousesPage })),
 );
+const WarehouseLocationsPage = lazy(() =>
+  import("./routes/WarehouseLocations").then((m) => ({ default: m.WarehouseLocationsPage })),
+);
+const WarehouseLocationLabelsPage = lazy(() =>
+  import("./routes/WarehouseLocationLabels").then((m) => ({ default: m.WarehouseLocationLabelsPage })),
+);
 
 function lazyRoute(path: string, element: ReactNode) {
   return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
@@ -101,8 +107,22 @@ const router = createBrowserRouter([
           lazyRoute("suppliers", <SuppliersPage />),
           lazyRoute("suppliers/:id", <SupplierDetailPage />),
           lazyRoute("warehouses", <WarehousesPage />),
+          lazyRoute("warehouses/:id/locations", <WarehouseLocationsPage />),
           { path: "*", element: <NotFoundPage /> },
         ],
+      },
+      // Its own route, outside `AppShell`: a printed label sheet has no use for a sidebar and top
+      // bar, and this sidesteps fighting them with print stylesheets. Still behind `RequireAuth` —
+      // it reads the same permissioned location data the tree screen does.
+      {
+        path: "/warehouses/:id/locations/labels",
+        element: (
+          <RequireAuth>
+            <Suspense fallback={<RouteFallback />}>
+              <WarehouseLocationLabelsPage />
+            </Suspense>
+          </RequireAuth>
+        ),
       },
     ],
   },
