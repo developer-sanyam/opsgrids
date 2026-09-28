@@ -44,6 +44,14 @@ class Settings(ServiceSettings):
     #: (`app/worker.py`) rather than a container of its own.
     filing_reclaim_poll_interval_seconds: float = 60.0
 
+    # ----------------------------------------------------------------- identity bridge
+    #: Where `ensure_customer_for_crm_contact` asks for a CRM contact's directory identity, on
+    #: a cache miss only — the same shape lead-service's `clients.py` already takes to ask
+    #: customer for a company (+ contact). Not a secret, and never touched on the replay path
+    #: (an existing `crm_contact_id` match needs no network call at all).
+    customer_internal_url: str = "http://localhost:8130"
+    customer_timeout_seconds: float = 5.0
+
     #: Runs this service's worker loops — the filing consumer and the filing-reclaim sweep
     #: (`app/worker.py`) — as supervised background tasks inside the API process instead of the
     #: separate `finance-worker` container (the memory-headroom follow-up that folds every

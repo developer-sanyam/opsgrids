@@ -309,6 +309,29 @@ async def get_contact_by_email(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_contact_with_company(
+    session: AsyncSession, org_id: uuid.UUID, contact_id: uuid.UUID
+) -> tuple[Contact, Company] | None:
+    """A live contact and its company, in one query — the internal `contacts/{id}` route's own
+    read. `None` on a tenant mismatch or a soft-deleted contact, the same "not found" shape
+    `get_contact` already gives; confirming an id exists in *some* organization is itself a
+    disclosure. `company_id` is NOT NULL and a company with live contacts cannot be deleted
+    (`delete_company`'s own 409), so a live contact's company is always resolvable — the join
+    is an `INNER JOIN`, never a candidate for a silent `None`."""
+    stmt = (
+        select(Contact, Company)
+        .join(Company, Company.id == Contact.company_id)
+        .where(
+            Contact.id == contact_id,
+            Contact.organization_id == org_id,
+            Contact.deleted_at.is_(None),
+            Company.organization_id == org_id,
+        )
+    )
+    row = (await session.execute(stmt)).first()
+    return (row[0], row[1]) if row is not None else None
+
+
 # ------------------------------------------------------------------ projections (ORM → wire)
 
 

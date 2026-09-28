@@ -98,6 +98,15 @@ class Customer(Base, TenantBase):
     city: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     state: Mapped[str] = mapped_column(String(120), nullable=False, default="")
 
+    #: The CRM contact (`services/customer`) this billed party was resolved from, when it was
+    #: — `ensure_customer_for_crm_contact`'s own idempotency key. A plain UUID, never a foreign
+    #: key (ADR-0000 §10: `customer` is a different schema); validated against customer-service
+    #: over the internal API, not by Postgres. Null for every customer entered by hand through
+    #: finance's own principal routes, which is every customer before this slice and every one
+    #: a finance user still types in directly — the identity bridge is opt-in, not the only way
+    #: to become a billed party.
+    crm_contact_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
     # ---------------------------------------------------------------- withholding
     # Three facts about the *buyer* that decide whether tax is withheld on what this organization
     # bills them. They live on the customer because that is what they are facts about, and they
@@ -121,6 +130,18 @@ class Customer(Base, TenantBase):
         # Every index leads with `organization_id`: under RLS the policy qual is ANDed into
         # every query, so a non-tenant-first index would scan the platform's rows (ADR-0002).
         Index("ix_customers_org_name", "organization_id", "name"),
+        # At most one finance customer per CRM contact, among live rows — the guarantee
+        # `ensure_customer_for_crm_contact`'s own lookup-before-create leans on, and the same
+        # shape as employee-service's `uq_employees_org_membership`. Partial: `crm_contact_id`
+        # is null for every customer never bridged from CRM, and a soft-deleted row must not
+        # hold a contact id hostage against a fresh resolve.
+        Index(
+            "uq_customers_org_crm_contact",
+            "organization_id",
+            "crm_contact_id",
+            unique=True,
+            postgresql_where=text("crm_contact_id IS NOT NULL AND deleted_at IS NULL"),
+        ),
     )
 
 

@@ -419,6 +419,22 @@ async def get_customer(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_customer_by_crm_contact(
+    session: AsyncSession, org_id: uuid.UUID, crm_contact_id: uuid.UUID
+) -> Customer | None:
+    """The billed party already bridged from this CRM contact, if one exists —
+    `ensure_customer_for_crm_contact`'s own lookup, both on the replay path (no network call
+    needed) and re-checked for a concurrent creator before a fresh insert. None on a tenant
+    mismatch, an unbridged contact, or a soft-deleted row, backed by
+    `uq_customers_org_crm_contact`."""
+    stmt = select(Customer).where(
+        Customer.crm_contact_id == crm_contact_id,
+        Customer.organization_id == org_id,
+        Customer.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def invoice_exists(session: AsyncSession, org_id: uuid.UUID, invoice_id: uuid.UUID) -> bool:
     stmt = select(Invoice.id).where(
         Invoice.id == invoice_id,

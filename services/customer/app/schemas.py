@@ -253,6 +253,28 @@ class ContactPhoneRevealed(BaseModel):
     phone: str | None
 
 
+class ContactSummaryOut(BaseModel):
+    """A contact's directory identity, for a service that needs to resolve a CRM contact into
+    its own record of the same party — finance's `ensure_customer_for_crm_contact`, the only
+    caller today.
+
+    Deliberately thin, and deliberately **not** `phone`: finance's own `Customer` has no phone
+    column at all to put one in, and a contact's number is sealed, audited PII that has no
+    reason to leave this service to answer "what is this billed party called". `full_name` and
+    `email` are plain columns on `Contact` — never sealed, so no audit row is owed for reading
+    them, unlike `resolve_messaging_phone`'s number.
+    """
+
+    contact_id: str
+    full_name: str
+    email: str
+    #: `Contact.company_id` is NOT NULL (a real in-schema FK), so a live contact always names a
+    #: live company — `delete_company` refuses while it still has contacts — and both fields
+    #: below are always present, never optional.
+    company_id: str
+    company_name: str
+
+
 class MessagingTargetOut(BaseModel):
     """A contact's messaging address, for a service that is about to send to them.
 
