@@ -37,6 +37,7 @@ from app import (
     e1_tracking,
     memberships,
     selectors,
+    w1_services,
     webhooks,
     whatsapp_provider,
 )
@@ -2943,6 +2944,13 @@ async def create_whatsapp_connection(
     except IntegrityError as exc:
         raise ConflictProblem("This WhatsApp phone number is already connected elsewhere.") from exc
 
+    # Embedded Signup subscribes the app to the WABA as its own setup step; a manual connection
+    # needs the same call or Meta never has anywhere to deliver this account's inbound messages
+    # and delivery statuses — the connection would look `connected` and sending would still work,
+    # with nothing ever heard back. Best-effort: a token that can read the number but lacks
+    # `whatsapp_business_management` for this one call is not a reason to refuse the connection.
+    await w1_services.subscribe_waba(waba_id, access_token)
+
     record_audit(
         session,
         AuditLog,
@@ -3036,6 +3044,11 @@ async def replace_whatsapp_connection(
         await session.flush()
     except IntegrityError as exc:
         raise ConflictProblem("This WhatsApp phone number is already connected elsewhere.") from exc
+
+    # Same reasoning as `create_whatsapp_connection`: re-subscribing is a harmless no-op if the
+    # WABA was already subscribed, and it is exactly the fix for an org replacing credentials
+    # because their webhooks never arrived in the first place.
+    await w1_services.subscribe_waba(waba_id, access_token)
 
     record_audit(
         session,

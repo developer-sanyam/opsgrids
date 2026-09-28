@@ -725,6 +725,28 @@ async def disconnect(
     return released
 
 
+async def subscribe_waba(
+    waba_id: str, token: str, *, transport: httpx.AsyncBaseTransport | None = None
+) -> bool:
+    """Best-effort: subscribe this app to `waba_id`'s webhooks. True when Meta confirmed.
+
+    Embedded Signup does this as its own setup step (`w1_setup.py`'s `_step_webhook`); a manually
+    connected or replaced account (`services.create_whatsapp_connection`,
+    `replace_whatsapp_connection`) needs the same call, or its inbound messages and delivery
+    statuses never arrive here at all — the connection looks `connected` and nothing about sending
+    fails, but nothing sent to it is ever heard back from. Never raises: a token that can read the
+    number (already proved by `verify_ownership`) but lacks `whatsapp_business_management` for
+    this one call is not a reason to refuse the whole connection, so a refusal is logged (status
+    and code only, never the token or Meta's body) and reported as False.
+    """
+    try:
+        await MetaGraph(settings(), transport=transport).subscribe_app(waba_id, token)
+    except GraphError as exc:
+        log.warning("w1.subscribe_failed", status=exc.status, code=exc.code)
+        return False
+    return True
+
+
 async def unsubscribe_waba(
     waba_id: str, token: str, *, transport: httpx.AsyncBaseTransport | None = None
 ) -> bool:
