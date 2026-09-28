@@ -68,7 +68,7 @@ beforeEach(() => {
     [STEP_UP]: () => stepUpToken(),
     [REVEAL_1]: () => json({ contact_id: "con-1", phone: PHONE_1 }),
     [REVEAL_2]: () => json({ contact_id: "con-2", phone: PHONE_2 }),
-    [ME]: () => json({ user_id: "u-1" }),
+    [ME]: () => json({ user_id: "u-1", mfa_enabled: true }),
   };
   setAccessToken(SESSION_TOKEN);
   clearStepUpToken();
@@ -118,6 +118,18 @@ describe("Contacts reveal: who is offered it", () => {
   it("offers nothing without the grant, and keeps the phone masked", async () => {
     const user = userEvent.setup();
     await openContacts(["crm.book.contact.write:ORG", "crm.lead.lead.read_sensitive:ORG"]);
+
+    await expand(user);
+
+    expect(screen.queryByRole("button", { name: /reveal/i })).toBeNull();
+    expect(screen.getByText("+91 98••• ••210")).toBeTruthy();
+    expect(gateway.callsTo(STEP_UP)).toHaveLength(0);
+  });
+
+  it("offers nothing without a second factor set up, and keeps the phone masked", async () => {
+    const user = userEvent.setup();
+    routes[ME] = () => json({ user_id: "u-1", mfa_enabled: false });
+    await openContacts();
 
     await expand(user);
 

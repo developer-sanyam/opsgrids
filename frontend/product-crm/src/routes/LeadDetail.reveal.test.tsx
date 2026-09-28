@@ -77,7 +77,7 @@ beforeEach(() => {
     "GET /api/v1/leads/lead-2": () => json({ ...LEAD, id: "lead-2", full_name: "Devansh Rao", phone: "•••••• 1177" }),
     [STEP_UP]: () => stepUpToken(),
     [REVEAL]: revealAnswer,
-    [ME]: () => json({ user_id: "u-1" }),
+    [ME]: () => json({ user_id: "u-1", mfa_enabled: true }),
   };
   setAccessToken(SESSION_TOKEN);
   clearStepUpToken();
@@ -133,6 +133,18 @@ describe("LeadDetail reveal: who is offered it", () => {
     expect(screen.queryByRole("button", { name: /reveal/i })).toBeNull();
     expect(screen.getByText("•••••• 4821")).toBeTruthy();
     expect(screen.getByText(/Ask an administrator if you need the real values/)).toBeTruthy();
+    expect(gateway.callsTo(STEP_UP)).toHaveLength(0);
+  });
+
+  it("offers nothing without a second factor set up, keeps the values masked, and points at the Security page instead", async () => {
+    routes[ME] = () => json({ user_id: "u-1", mfa_enabled: false });
+    await openLead();
+
+    expect(screen.queryByRole("button", { name: /reveal/i })).toBeNull();
+    expect(screen.getByText("•••••• 4821")).toBeTruthy();
+    const note = screen.getByText(/Email and phone are masked\./);
+    expect(note.textContent).toContain("Set up two-factor authentication on the Security page");
+    expect(screen.getByRole("link", { name: "Security page" })).toBeTruthy();
     expect(gateway.callsTo(STEP_UP)).toHaveLength(0);
   });
 

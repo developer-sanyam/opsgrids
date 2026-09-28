@@ -1,5 +1,6 @@
 export { StepUpCancelledError, isStepUpCancelled } from "./cancelled";
 export { clearStepUpToken } from "./holder";
+export { useMfaEnrolled } from "./useMfaEnrolled";
 export { revealRequest } from "./reveal";
 export type { RevealHeaders, RevealRequestOptions } from "./reveal";
 export { useStepUp } from "./useStepUp";
