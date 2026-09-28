@@ -153,6 +153,18 @@ export function AssignmentOfferStatusPill({ state }: { state: OfferState }) {
   return <StatusBadge tone={OFFER_EXPLICIT_TONE[state] ?? "neutral"} label={OFFER_LABEL[state]} />;
 }
 
+/** Auto vs manual, read off `AssignmentOfferOut.score_breakdown.kind` (auto-assignment; not a
+ *  registered status word — the offer's own history, not its lifecycle). `undefined`/anything
+ *  else falls back to "Manual", since every offer before this build only ever had `"kind":
+ *  "manual"` or no `kind` at all. */
+export function AssignmentKindPill({ kind }: { kind: unknown }) {
+  return kind === "auto" ? (
+    <StatusBadge tone="info" label="Auto" />
+  ) : (
+    <StatusBadge tone="neutral" label="Manual" />
+  );
+}
+
 /* ------------------------------ shipment status -------------------------- */
 /**
  * The carrier lifecycle (`app.domain.SHIPMENT_TRANSITIONS`, Fulfilment F5). Registered words

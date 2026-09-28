@@ -13,13 +13,15 @@ interface OfferTaskDialogProps {
 }
 
 /**
- * `POST /operations/fulfilment/tasks/{id}/offers` — `operations.fulfilment.task.assign:ORG`.
- * Manual assignment: F3 ships no auto-assign engine, so every offer — the task's first and a
- * manager's hand-pick after `ESCALATED` alike — goes through this one dialog.
+ * `POST /operations/fulfilment/tasks/{id}/offers` — `operations.fulfilment.task.assign:ORG`, or
+ * `operations.fulfilment.task.override:ORG` when the task already has a live offer (auto-assigned
+ * or manual): every offer, whether it's the task's first, a manager's hand-pick after
+ * `ESCALATED`, or an override of a live one, goes through this one dialog, the same one endpoint.
  */
 export function OfferTaskDialog({ task, onClose, onOffered }: OfferTaskDialogProps) {
   const [workerId, setWorkerId] = useState("");
   const [workerIdError, setWorkerIdError] = useState<string | undefined>(undefined);
+  const overriding = task.status === "OFFERED";
 
   const workersState = useAsync(
     () => listWorkers({ warehouse_id: task.warehouse_id, is_active: true, size: 200 }),
@@ -48,9 +50,13 @@ export function OfferTaskDialog({ task, onClose, onOffered }: OfferTaskDialogPro
       open
       onClose={onClose}
       onSubmit={submit}
-      title="Offer this task to a worker"
-      description={`Round ${task.round + 1} of ${task.max_rounds}.`}
-      submitLabel="Send offer"
+      title={overriding ? "Reassign this task to a different worker" : "Offer this task to a worker"}
+      description={
+        overriding
+          ? "This withdraws the current offer and sends a new one instead."
+          : `Round ${task.round + 1} of ${task.max_rounds}.`
+      }
+      submitLabel={overriding ? "Reassign" : "Send offer"}
       pendingLabel="Sending…"
       pending={offer.pending}
       {...formDialogError(offer.error, offer.fieldErrors)}

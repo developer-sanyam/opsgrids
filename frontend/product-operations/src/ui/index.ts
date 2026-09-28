@@ -62,6 +62,7 @@ export type {
 export { useNavGroups } from "./useNavGroups";
 export { NeedsAttention } from "./NeedsAttention";
 export {
+  AssignmentKindPill,
   AssignmentOfferStatusPill,
   OrderStatusPill,
   PickTaskStatusPill,

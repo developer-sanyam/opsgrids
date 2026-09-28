@@ -776,12 +776,18 @@ export interface PickTaskOut {
   lines: PickTaskLineOut[];
   offers: AssignmentOfferOut[];
   exceptions: PickExceptionOut[];
+  /** Set when auto-assignment ran and found no eligible worker (e.g. "No eligible worker online
+   *  for zone DOCK-A") — `null` otherwise, including whenever a live offer exists (auto or
+   *  manual). The board's own visible reason to offer this task by hand. */
+  auto_assign_failure_reason: string | null;
   created_at: string;
   updated_at: string;
 }
 
 /** `POST /operations/fulfilment/tasks/{id}/offers` — a dispatcher offering a task to one worker.
- *  Manual assignment is the only path into `OFFERED` in F3. */
+ *  Also the manual-override path when auto-assignment already made a live, not-yet-accepted
+ *  offer: a caller holding `operations.fulfilment.task.override` withdraws it and offers to
+ *  whoever this call names instead. */
 export interface OfferIn {
   worker_id: string;
 }

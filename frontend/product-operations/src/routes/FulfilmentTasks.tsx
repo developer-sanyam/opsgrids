@@ -2,9 +2,10 @@ import { useState } from "react";
 
 import { cancelTask, listTasks, listWorkers } from "@/api/client";
 import type { PickTaskOut, PickTaskStatus } from "@/api/types";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import { OfferTaskDialog } from "@/forms/OfferTaskDialog";
 import {
+  AssignmentKindPill,
   AssignmentOfferStatusPill,
   Card,
   ConfirmDialog,
@@ -99,7 +100,16 @@ export function FulfilmentTasksPage() {
   }
 
   function canOffer(task: PickTaskOut): boolean {
-    return canAssign && (task.status === "CREATED" || task.status === "ESCALATED");
+    if (task.status === "CREATED" || task.status === "ESCALATED") return canAssign;
+    // Auto-assignment's own override path (this build): a live, not-yet-accepted offer —
+    // auto-picked or manual — can be redirected by a caller holding task.override. A plain
+    // task.assign caller sees no "Offer" action here at all, the same as F3 has always shown.
+    if (task.status === "OFFERED") return canOverride;
+    return false;
+  }
+
+  function isOverride(task: PickTaskOut): boolean {
+    return task.status === "OFFERED";
   }
 
   function submitCancel() {
@@ -147,10 +157,18 @@ export function FulfilmentTasksPage() {
       header: "Current offer",
       render: (t) => {
         const live = t.offers.find((o) => o.state === "OFFERED" || o.state === "ACCEPTED");
-        if (!live) return <span className="text-faint">—</span>;
+        if (!live) {
+          if (t.auto_assign_failure_reason) {
+            return <span className="text-xs text-danger">{t.auto_assign_failure_reason}</span>;
+          }
+          return <span className="text-faint">—</span>;
+        }
         return (
           <div className="flex flex-col gap-1">
-            <AssignmentOfferStatusPill state={live.state} />
+            <div className="flex items-center gap-2">
+              <AssignmentOfferStatusPill state={live.state} />
+              <AssignmentKindPill kind={live.score_breakdown?.["kind"]} />
+            </div>
             <span className="text-xs text-faint">{workerName.get(live.worker_id) ?? "Unknown worker"}</span>
           </div>
         );
@@ -164,7 +182,11 @@ export function FulfilmentTasksPage() {
         <RowActions
           label={`Task on order ${t.order_id.slice(0, 8)}`}
           actions={[
-            { label: "Offer", onSelect: () => setOffering(t), hidden: !canOffer(t) },
+            {
+              label: isOverride(t) ? "Reassign" : "Offer",
+              onSelect: () => setOffering(t),
+              hidden: !canOffer(t),
+            },
             {
               label: "Cancel",
               tone: "danger",
@@ -252,17 +274,19 @@ export function FulfilmentTasksPage() {
         ) : null}
       </Card>
 
-      {offering ? (
-        <Can permission="operations.fulfilment.task.assign" scope="ORG">
-          <OfferTaskDialog
-            task={offering}
-            onClose={() => setOffering(null)}
-            onOffered={() => {
-              setOffering(null);
-              state.reload();
-            }}
-          />
-        </Can>
+      {/* `canOffer` already decides task.assign vs task.override by the task's own status
+          (`Can` only ever checks one permission, and a fresh offer and an override need
+          different ones) — the row action that opened this dialog already passed that gate, so
+          this mirrors it rather than re-checking a single hardcoded permission. */}
+      {offering && canOffer(offering) ? (
+        <OfferTaskDialog
+          task={offering}
+          onClose={() => setOffering(null)}
+          onOffered={() => {
+            setOffering(null);
+            state.reload();
+          }}
+        />
       ) : null}
 
       <ConfirmDialog
