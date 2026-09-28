@@ -22,6 +22,7 @@ from app.models import (
     OrderTransition,
     OutboxEvent,
 )
+from app.orders import selectors as order_selectors
 from platform_core.auth import Scope
 from tests.helpers import as_principal, ctx_for, principal_for
 from tests.order_fixtures import (
@@ -1046,6 +1047,36 @@ class TestCancelOrder:
         assert all(r.quantity_milli == r.released_milli for r in rows)
 
         await _assert_reconciles_clean(session, org_id)
+
+    async def test_open_reservations_are_read_in_the_kernels_own_bucket_order(
+        self, client, org_id, data, session, shop
+    ) -> None:
+        """N6 (security review): `open_reservations_for_order` must sort by the exact same bucket
+        key (item, location, status, lot, roll) `app.inventory.ledger` locks buckets in — with no
+        `ORDER BY` at all, two orders cancelling at once could release their (now-shared, F3
+        staging) buckets in different orders and deadlock against each other."""
+        order = await _create_order(
+            client,
+            org_id,
+            data,
+            shop,
+            lines=[
+                {"inventory_item_id": str(shop.widget), "quantity": "2"},
+                {"inventory_item_id": str(shop.gizmo), "quantity": "3"},
+            ],
+        )
+        placed = await _place(client, org_id, data, order)
+        accept_response = await _accept(client, org_id, data, placed)
+        assert accept_response.status_code == 200, accept_response.text
+        accepted = accept_response.json()
+
+        async with session.begin():
+            rows = await order_selectors.open_reservations_for_order(
+                session, org_id, uuid.UUID(accepted["id"])
+            )
+        assert len(rows) == 2
+        item_ids = [r.inventory_item_id for r in rows]
+        assert item_ids == sorted(item_ids, key=str)
 
     async def test_cancel_without_a_reason_is_422(self, client, org_id, data, shop) -> None:
         order = await _create_order(client, org_id, data, shop)

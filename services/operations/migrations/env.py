@@ -86,6 +86,7 @@ APPEND_ONLY_TABLES = (
     "inventory_moves",
     "inventory_reservation_releases",
     "order_transitions",
+    "scan_events",
 )
 #: What the ledger reconciler's discovery reads cross-tenant (`app/cron.py`).
 RECONCILE_DISCOVERY_TABLES = ("inventory_balances", "inventory_ledger")

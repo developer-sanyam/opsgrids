@@ -43,6 +43,12 @@ EVT_ORDER_PLACED = "operations.orders.order.placed"
 EVT_ORDER_ACCEPTED = "operations.orders.order.accepted"
 EVT_ORDER_HELD = "operations.orders.order.held"
 EVT_ORDER_CANCELLED = "operations.orders.order.cancelled"
+#: `IN_FULFILMENT -> READY` (ADR-0025 §1) — published from `app/fulfilment/services.py`, not from
+#: here: the transition fires when a pick task reports every line settled, a fact `app/orders/`
+#: never imports `app/fulfilment/` to learn (ADR-0024 §1). Declared here, alongside this module's
+#: other order event names, so the plan's event catalogue (docs/fulfilment/plan.md §5) has one
+#: home for every `operations.orders.order.*` constant.
+EVT_ORDER_READY = "operations.orders.order.ready"
 
 #: A priced line above this is refused before `place` ever flushes it — comfortably inside
 #: `BigInteger`'s ~9.22e18 ceiling even summed over `OrderIn.lines`'s max 200 lines, and the same
@@ -657,10 +663,15 @@ async def release_hold_order(
     request: Request | None = None,
 ) -> Order:
     """Hold released (ADR-0025 §1) — the target is **recomputed from facts, not remembered**
-    (`app.domain.order_release_target`). `app/fulfilment/`'s pick tasks (F3) have not landed, so
-    there is never an open or picked task to ask about, and every release lands on `ACCEPTED`
-    until one exists — this call always passes `has_open_tasks=False, all_tasks_picked=False`,
-    revisited the day F3 ships. `order` must already be locked by the caller."""
+    (`app.domain.order_release_target`), from the order's own pick tasks: no tasks yet ->
+    `ACCEPTED`; an open task remains -> `IN_FULFILMENT`; no task is open and at least one is
+    settled -> `READY` — the exact reading `app.fulfilment.services._maybe_ready_order` uses for
+    the same edge (MAJOR 1 #2, security review; replaces the F2-era `TODO(F3)` that hardcoded
+    "no tasks yet" regardless of what fulfilment had actually done). `PickTask.status` is read
+    directly (`app.orders.selectors.pick_task_statuses_for_order`) rather than through
+    `app.fulfilment.selectors`, which `app/orders/` may never import (ADR-0024 §1) — a plain
+    model read is not that boundary. `order` must already be locked by the caller.
+    """
     if order.version != expected_version:
         raise ConflictProblem(
             f"Order {order.number} is at version {order.version}, not {expected_version}; "
@@ -669,9 +680,12 @@ async def release_hold_order(
     if order.status != "ON_HOLD":
         raise ConflictProblem(f"Order {order.number} is {order.status}, not on hold")
 
-    # TODO(F3 fulfilment): once `pick_tasks` exists, resolve these from the order's own tasks
-    # instead of hardcoding "none yet".
-    target = domain.order_release_target(has_open_tasks=False, all_tasks_picked=False)
+    statuses = await selectors.pick_task_statuses_for_order(session, ctx.organization_id, order.id)
+    has_open_tasks = any(s in domain.PICK_TASK_OPEN_STATUSES for s in statuses)
+    has_settled_tasks = any(s in domain.PICK_TASK_SETTLED_STATUSES for s in statuses)
+    target = domain.order_release_target(
+        has_open_tasks=has_open_tasks, all_tasks_picked=has_settled_tasks
+    )
     if not domain.can_transition_order(order.status, target):  # pragma: no cover - defensive
         raise ConflictProblem(f"Order {order.number} cannot be released to {target}")
 

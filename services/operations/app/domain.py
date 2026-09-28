@@ -339,6 +339,110 @@ def order_subtotal_minor(lines: Sequence[OrderLine]) -> int:
     return sum(line.line_total_minor or 0 for line in lines)
 
 
+# ------------------------------------------------------------------ fulfilment (ADR-0025 §2)
+
+#: ADR-0025 §2's exact vocabulary. `CLOSED` and `CANCELLED` are terminal.
+PICK_TASK_STATUSES: tuple[str, ...] = (
+    "CREATED",
+    "OFFERED",
+    "ESCALATED",
+    "ACCEPTED",
+    "IN_PROGRESS",
+    "EXCEPTION",
+    "PICKED",
+    "CLOSED",
+    "CANCELLED",
+)
+PICK_TASK_TERMINAL_STATUSES: frozenset[str] = frozenset({"CLOSED", "CANCELLED"})
+
+#: The content of ADR-0025 §2's transition table, in full — the same shape `PO_TRANSITIONS` and
+#: `ORDER_TRANSITIONS` above use, and the same "even a no-op move to the same status is a miss"
+#: convention `can_transition_po`/`can_transition_order` document. A few edges are worth calling
+#: out because they read like they might be missing:
+#:
+#: * There is no `OFFERED -> ESCALATED` edge. A failed round always lands the task on `CREATED`
+#:   first (the offer's own failure), and *separately*, `CREATED -> ESCALATED` fires when that
+#:   landing finds the round budget spent — two edges taken in the same transaction when a round
+#:   is the last one, never a direct hop the ADR's table does not draw.
+#: * `PICKED` has exactly one way out, `CLOSED` — a picked task is not cancellable (ADR-0025 §2:
+#:   "Its work happened"); reversing it is a putaway task on the order's cancellation, a different
+#:   transition on a different record, not this map growing a `PICKED -> CANCELLED` edge.
+#: * `ESCALATED -> OFFERED` is a manager assigning by hand — manual assignment is just another
+#:   path into `OFFERED`, the same edge `CREATED -> OFFERED` uses, not a second status.
+PICK_TASK_TRANSITIONS: dict[str, frozenset[str]] = {
+    "CREATED": frozenset({"OFFERED", "ESCALATED", "CANCELLED"}),
+    "OFFERED": frozenset({"CREATED", "ACCEPTED", "CANCELLED"}),
+    "ESCALATED": frozenset({"OFFERED", "CANCELLED"}),
+    "ACCEPTED": frozenset({"CREATED", "IN_PROGRESS", "CANCELLED"}),
+    "IN_PROGRESS": frozenset({"EXCEPTION", "PICKED", "CANCELLED"}),
+    "EXCEPTION": frozenset({"IN_PROGRESS", "CANCELLED"}),
+    "PICKED": frozenset({"CLOSED"}),
+    "CLOSED": frozenset(),
+    "CANCELLED": frozenset(),
+}
+
+#: A task in one of these statuses has a live worker actively holding it — cancelling out from
+#: here is the "stronger permission on an edge that IS in the map" ADR-0025 §2 describes for
+#: `operations.fulfilment.task.override`; cancelling from any other open status is ordinary
+#: dispatcher work (`operations.fulfilment.task.assign`).
+PICK_TASK_OVERRIDE_REQUIRED_FOR_CANCEL: frozenset[str] = frozenset(
+    {"ACCEPTED", "IN_PROGRESS", "EXCEPTION"}
+)
+
+
+def can_transition_pick_task(current: str, new: str) -> bool:
+    """Whether a pick task may move `current` -> `new`. Every other move — including a no-op
+    "move" to the same status — answers 409, the same convention `can_transition_order`
+    documents."""
+    return new in PICK_TASK_TRANSITIONS.get(current, frozenset())
+
+
+#: `AssignmentOffer.state`'s exact vocabulary (ADR-0025 §3).
+OFFER_STATES: tuple[str, ...] = (
+    "OFFERED",
+    "ACCEPTED",
+    "DECLINED",
+    "EXPIRED",
+    "WITHDRAWN",
+    "RELEASED",
+)
+#: An offer in one of these states is no longer answerable — the conditional updates in
+#: `app.fulfilment.services` all guard on the complement of this set (`state = 'OFFERED'`).
+OFFER_TERMINAL_STATES: frozenset[str] = frozenset(
+    {"ACCEPTED", "DECLINED", "EXPIRED", "WITHDRAWN", "RELEASED"}
+)
+
+#: `pick_exceptions.reason`'s vocabulary (plan F3: "short pick, damaged, not found").
+PICK_EXCEPTION_REASONS: tuple[str, ...] = ("short_pick", "damaged", "not_found", "other")
+
+#: `worker_presence.status`'s vocabulary.
+WORKER_PRESENCE_STATES: tuple[str, ...] = ("online", "offline")
+
+#: `packages.status`'s vocabulary — F3 always writes `PACKED` directly (`Package`'s own
+#: docstring); `OPEN` is reserved for a later phase that splits pack into steps.
+PACKAGE_STATUSES: tuple[str, ...] = ("OPEN", "PACKED")
+
+
+#: A task with a live worker still working it, or waiting to be — "open" in the exact reading
+#: `app.fulfilment.services._maybe_ready_order` and `order_release_target`'s own caller
+#: (`app.orders.services.release_hold_order`, MAJOR 1 #2, security review) both need. Kept here,
+#: not only as a private constant in `app.fulfilment.services`, so `app/orders/` can share the
+#: exact same vocabulary without importing `app.fulfilment` (ADR-0024 §1 forbids that direction).
+PICK_TASK_OPEN_STATUSES: frozenset[str] = frozenset(
+    {"CREATED", "OFFERED", "ESCALATED", "ACCEPTED", "IN_PROGRESS", "EXCEPTION"}
+)
+#: A task whose picking work is done — `PICKED` or already `CLOSED` — the other half of the same
+#: reading.
+PICK_TASK_SETTLED_STATUSES: frozenset[str] = frozenset({"PICKED", "CLOSED"})
+
+
+def pick_task_line_settled(*, quantity_milli: int, picked_milli: int, short_milli: int) -> bool:
+    """A task line is settled once every one of its units is accounted for — picked, or formally
+    shorted — never left implicit. `PickTask` reaches `PICKED` only once every one of its lines
+    is settled (plan F3's exit criterion: a short line is visibly flagged, not silently dropped)."""
+    return picked_milli + short_milli >= quantity_milli
+
+
 # ------------------------------------------------------------------ needs-attention queue
 
 

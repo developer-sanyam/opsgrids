@@ -264,6 +264,106 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Fulfilment (ADR-0024 §7, ADR-0025 §2/§3; Fulfilment plan F3). Tasks and workers are a
+        # shared operational queue like orders — a dispatcher has to see and offer every task, so
+        # `task.read`/`task.assign` default and top out at ORG, the same reasoning
+        # `orders.order.read` already documents. `task.execute` is the one exception: it is a
+        # worker acting on *their own* offered/accepted task, never any worker's, so its ceiling
+        # is `OWN` — even `OPERATIONS_ADMIN`'s `all("ORG")` grant is clamped down to `OWN` by
+        # `min_scope`, which is deliberate (CLAUDE.md: holding a permission is not holding scope;
+        # an admin executing someone else's pick is `task.override`'s job, not a wider grant
+        # here).
+        PermissionSpec(
+            "fulfilment",
+            "task",
+            "read",
+            "See pick tasks, their lines and offer history",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "fulfilment",
+            "task",
+            "execute",
+            "Accept/decline your own offer, scan, confirm a pick line, raise or resolve an "
+            "exception — always on a task currently offered or accepted to you",
+            "OWN",
+            "OWN",
+        ),
+        PermissionSpec(
+            "fulfilment",
+            "task",
+            "assign",
+            "Create an accepted order's pick tasks, offer or reassign one to a worker, cancel a "
+            "task nobody has started yet",
+            "ORG",
+            "ORG",
+        ),
+        # A stronger permission on edges that ARE in `app.domain.PICK_TASK_TRANSITIONS`, never a
+        # way around the map (ADR-0025 §2): cancelling a task a worker already has in hand
+        # (`ACCEPTED`/`IN_PROGRESS`/`EXCEPTION`), and manually closing a `PICKED` task — the
+        # automatic close-on-handover path is a later phase's addition, so F3 has no other door
+        # into `CLOSED`.
+        PermissionSpec(
+            "fulfilment",
+            "task",
+            "override",
+            "Cancel a task a worker already has in hand, or force-close a picked one",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        # Worker directory. The plan (`docs/fulfilment/plan.md` §4) names `read`/`location_read`
+        # only; `write` is this build's own addition — the dispatcher's roster screen has to
+        # create and edit worker rows somehow, and there is no permission-free write path in this
+        # codebase. Scoped `OWN`-default so a worker can hold it just to set their *own*
+        # presence (`app.fulfilment.services.set_presence`, gated by `ScopeContext
+        # .assert_can_touch` against `employee_id`), while a dispatcher role is granted it at ORG
+        # for the rest of the roster (create, warehouse reassignment, skills, zone access).
+        PermissionSpec(
+            "fulfilment",
+            "worker",
+            "read",
+            "See the worker roster and presence",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "fulfilment",
+            "worker",
+            "write",
+            "Create and edit worker records, and set your own presence",
+            "OWN",
+            "ORG",
+        ),
+        # Separate from `worker.read`: which zones a worker may be offered tasks in is read here,
+        # progressive disclosure on top of the ordinary roster fields (`WorkerOut
+        # .zone_location_ids` is `null` without it).
+        PermissionSpec(
+            "fulfilment",
+            "worker",
+            "location_read",
+            "See which zones a worker may be offered tasks in",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "fulfilment",
+            "pack",
+            "read",
+            "See packages, their lines and packaging materials",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "fulfilment",
+            "pack",
+            "execute",
+            "Confirm a package (posts the staging -> pack/dock relocation) and maintain "
+            "packaging materials",
+            "ORG",
+            "ORG",
+        ),
     ],
 )
 
@@ -309,6 +409,34 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.orders.order.write", "ORG"),
             ("operations.orders.order.accept", "ORG"),
             ("operations.orders.order.cancel", "ORG"),
+            ("operations.fulfilment.task.read", "ORG"),
+            ("operations.fulfilment.task.assign", "ORG"),
+            ("operations.fulfilment.task.override", "ORG"),
+            ("operations.fulfilment.worker.read", "ORG"),
+            ("operations.fulfilment.worker.write", "ORG"),
+            ("operations.fulfilment.worker.location_read", "ORG"),
+            ("operations.fulfilment.pack.read", "ORG"),
+            ("operations.fulfilment.pack.execute", "ORG"),
+        ),
+    ),
+    RoleTemplate(
+        code="OPERATIONS_WORKER",
+        name="Warehouse worker",
+        product=PRODUCT,
+        description=(
+            "The picker/packer role the worker PWA authenticates as (plan F3). Sees the task "
+            "board and the worker roster read-only, executes only the tasks offered or accepted "
+            "to them (`task.execute` tops out at OWN — even this role cannot execute another "
+            "worker's task), sets their own presence, and confirms packages. Does not offer, "
+            "reassign or override a task — that stays with the dispatcher (`OPERATIONS_MANAGER`)."
+        ),
+        grants=OPERATIONS.pick(
+            ("operations.fulfilment.task.read", "ORG"),
+            ("operations.fulfilment.task.execute", "OWN"),
+            ("operations.fulfilment.worker.read", "ORG"),
+            ("operations.fulfilment.worker.write", "OWN"),
+            ("operations.fulfilment.pack.read", "ORG"),
+            ("operations.fulfilment.pack.execute", "ORG"),
         ),
     ),
     RoleTemplate(

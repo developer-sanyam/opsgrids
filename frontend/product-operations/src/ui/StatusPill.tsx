@@ -1,4 +1,4 @@
-import type { OrderStatus, PoStatus, SupplierStatus } from "@/api/types";
+import type { OfferState, OrderStatus, PickTaskStatus, PoStatus, SupplierStatus } from "@/api/types";
 import { AlertTriangleIcon, StatusBadge } from "@opsgrids/ui";
 import type { StatusTone, StatusWord } from "@opsgrids/ui";
 
@@ -73,6 +73,77 @@ export function OrderStatusPill({ status }: { status: OrderStatus }) {
   const word = ORDER_REGISTERED[status];
   if (word) return <StatusBadge status={word} label={ORDER_LABEL[status]} />;
   return <StatusBadge tone="info" label={ORDER_LABEL[status]} />;
+}
+
+/* ---------------------------- pick task status --------------------------- */
+/**
+ * ADR-0025 §2's pick-task state machine. Registered words carry the registry's tone: `accepted`
+ * (success), `in_progress` (info), `closed` (neutral), `cancelled` (danger). `created`, `offered`,
+ * `escalated`, `exception` and `picked` are not registered words — each takes an explicit tone.
+ */
+
+const TASK_LABEL: Record<PickTaskStatus, string> = {
+  CREATED: "Created",
+  OFFERED: "Offered",
+  ESCALATED: "Escalated",
+  ACCEPTED: "Accepted",
+  IN_PROGRESS: "In progress",
+  EXCEPTION: "Exception",
+  PICKED: "Picked",
+  CLOSED: "Closed",
+  CANCELLED: "Cancelled",
+};
+
+const TASK_REGISTERED: Partial<Record<PickTaskStatus, StatusWord>> = {
+  ACCEPTED: "accepted",
+  IN_PROGRESS: "in_progress",
+  CLOSED: "closed",
+  CANCELLED: "cancelled",
+};
+
+const TASK_EXPLICIT_TONE: Partial<Record<PickTaskStatus, StatusTone>> = {
+  CREATED: "neutral",
+  OFFERED: "info",
+  ESCALATED: "warning",
+  EXCEPTION: "danger",
+  PICKED: "success",
+};
+
+/** Pick-task lifecycle (Fulfilment F3/ADR-0025 §2). */
+export function PickTaskStatusPill({ status }: { status: PickTaskStatus }) {
+  const word = TASK_REGISTERED[status];
+  if (word) return <StatusBadge status={word} label={TASK_LABEL[status]} />;
+  return <StatusBadge tone={TASK_EXPLICIT_TONE[status] ?? "neutral"} label={TASK_LABEL[status]} />;
+}
+
+/* -------------------------- assignment offer state ------------------------- */
+/** ADR-0025 §3's offer state machine. */
+
+const OFFER_LABEL: Record<OfferState, string> = {
+  OFFERED: "Offered",
+  ACCEPTED: "Accepted",
+  DECLINED: "Declined",
+  EXPIRED: "Expired",
+  WITHDRAWN: "Withdrawn",
+  RELEASED: "Released",
+};
+
+const OFFER_REGISTERED: Partial<Record<OfferState, StatusWord>> = {
+  ACCEPTED: "accepted",
+  DECLINED: "declined",
+  EXPIRED: "expired",
+};
+
+const OFFER_EXPLICIT_TONE: Partial<Record<OfferState, StatusTone>> = {
+  OFFERED: "info",
+  WITHDRAWN: "danger",
+  RELEASED: "warning",
+};
+
+export function AssignmentOfferStatusPill({ state }: { state: OfferState }) {
+  const word = OFFER_REGISTERED[state];
+  if (word) return <StatusBadge status={word} label={OFFER_LABEL[state]} />;
+  return <StatusBadge tone={OFFER_EXPLICIT_TONE[state] ?? "neutral"} label={OFFER_LABEL[state]} />;
 }
 
 /* ------------------------------ stock level ---------------------------- */

@@ -27,7 +27,16 @@ def test_every_template_belongs_to_the_operations_product() -> None:
 def test_admin_is_built_from_the_operations_catalogue_alone() -> None:
     admin = next(t for t in OPERATIONS_ROLE_TEMPLATES if t.code == "OPERATIONS_ADMIN")
     assert {g.code for g in admin.grants} == set(OPERATIONS.codes())
-    assert all(g.scope == "ORG" for g in admin.grants)
+    # Every grant tops out at ORG *unless* the permission's own `max_scope` is narrower —
+    # `fulfilment.task.execute`'s ceiling is `OWN` (ADR-0025 §2/§3, plan F3): acting on another
+    # worker's own offered/accepted task is `task.override`'s job, never a wider blanket grant,
+    # so even `OPERATIONS_ADMIN`'s `all("ORG")` is clamped down to `OWN` here by `min_scope`,
+    # deliberately (CLAUDE.md: holding a permission is not holding enough scope).
+    for grant in admin.grants:
+        if grant.code == "operations.fulfilment.task.execute":
+            assert grant.scope == "OWN"
+        else:
+            assert grant.scope == "ORG"
 
 
 def test_there_is_exactly_one_default_role() -> None:

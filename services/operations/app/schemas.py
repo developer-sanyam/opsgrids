@@ -1102,3 +1102,270 @@ class QuoteOut(BaseModel):
     fully_priced: bool
     fully_available: bool
     lines: list[QuoteLineOut]
+
+
+# ------------------------------------------------------------------ fulfilment (ADR-0024 §7,
+# ADR-0025 §2/§3; docs/fulfilment/plan.md F3)
+
+PickTaskStatus = Literal[
+    "CREATED",
+    "OFFERED",
+    "ESCALATED",
+    "ACCEPTED",
+    "IN_PROGRESS",
+    "EXCEPTION",
+    "PICKED",
+    "CLOSED",
+    "CANCELLED",
+]
+OfferState = Literal["OFFERED", "ACCEPTED", "DECLINED", "EXPIRED", "WITHDRAWN", "RELEASED"]
+PickExceptionReason = Literal["short_pick", "damaged", "not_found", "other"]
+PresenceStatus = Literal["online", "offline"]
+PackageStatus = Literal["OPEN", "PACKED"]
+
+
+class WorkerOut(BaseModel):
+    """Mirrors the SPA's `WorkerOut`. `zone_location_ids` is `null` unless the caller also holds
+    `operations.fulfilment.worker.location_read` — a separate permission from the rest of the
+    roster (`app.catalogue`), so it is progressive disclosure, not always-present data."""
+
+    id: str
+    employee_id: str
+    warehouse_id: str
+    display_name: str
+    is_active: bool
+    skills: list[str]
+    presence_status: PresenceStatus
+    presence_last_seen_at: datetime | None
+    zone_location_ids: list[str] | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkerIn(BaseModel):
+    """`POST /fulfilment/workers`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    employee_id: UUID
+    warehouse_id: UUID
+    display_name: str = Field(default="", max_length=120)
+    is_active: bool = True
+    skills: list[str] = Field(default_factory=list, max_length=50)
+    zone_location_ids: list[UUID] = Field(default_factory=list, max_length=200)
+
+
+class WorkerPatch(BaseModel):
+    """`PATCH /fulfilment/workers/{id}`. `skills`/`zone_location_ids`, when given, **replace** the
+    whole set — the same full-replace shape simpler than a per-item add/remove pair, matching how
+    few rows either set ever holds."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    warehouse_id: UUID | None = None
+    display_name: str | None = Field(default=None, max_length=120)
+    is_active: bool | None = None
+    skills: list[str] | None = Field(default=None, max_length=50)
+    zone_location_ids: list[UUID] | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> Self:
+        _reject_explicit_null(self, ("warehouse_id", "display_name", "is_active"))
+        return self
+
+
+class WorkerPresenceIn(BaseModel):
+    """`POST /fulfilment/workers/{id}/presence`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: PresenceStatus
+
+
+class AssignmentOfferOut(BaseModel):
+    """Mirrors `assignment_offers` (ADR-0025 §3's exact row shape)."""
+
+    id: str
+    task_id: str
+    worker_id: str
+    round: int
+    state: OfferState
+    score_breakdown: dict[str, object]
+    offered_at: datetime
+    expires_at: datetime
+    responded_at: datetime | None
+
+
+class OfferIn(BaseModel):
+    """`POST /fulfilment/tasks/{id}/offers` — a dispatcher offering a task to one worker. F3 is
+    manual-only (no auto-assign engine), so this is the only way an offer is made."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    worker_id: UUID
+
+
+PickTaskLineStatus = Literal["pending", "partial", "picked", "short"]
+
+
+class PickTaskLineOut(BaseModel):
+    id: str
+    order_line_id: str
+    inventory_item_id: str
+    sku: str
+    source_location_id: str
+    destination_location_id: str
+    quantity: Qty
+    picked: Qty
+    short: Qty
+    sequence: int | None
+    status: PickTaskLineStatus
+
+
+class PickExceptionOut(BaseModel):
+    id: str
+    task_id: str
+    task_line_id: str
+    reason: PickExceptionReason
+    quantity: Qty
+    note: str
+    status: Literal["open", "resolved"]
+    raised_at: datetime
+    resolved_at: datetime | None
+
+
+class PickTaskOut(BaseModel):
+    """Mirrors the SPA's `PickTaskOut` — the dispatcher board's one row per task, with its lines,
+    its whole offer history (ADR-0025 §3's "why did this take forty minutes") and any open
+    exceptions."""
+
+    id: str
+    order_id: str
+    warehouse_id: str
+    zone_location_id: str | None
+    status: PickTaskStatus
+    round: int
+    max_rounds: int
+    lines: list[PickTaskLineOut]
+    offers: list[AssignmentOfferOut]
+    exceptions: list[PickExceptionOut]
+    created_at: datetime
+    updated_at: datetime
+
+
+class CreatePickTasksIn(BaseModel):
+    """`POST /fulfilment/tasks` — derives every pick task an accepted order needs, from its lines
+    (ADR-0025 §1: `ACCEPTED -> IN_FULFILMENT` fires when the first one is created)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order_id: UUID
+    #: The order's own optimistic-lock version (ADR-0025 §1) — this call moves the order
+    #: `ACCEPTED -> IN_FULFILMENT` in the same transaction as the tasks it creates.
+    order_version: int = Field(ge=0)
+
+
+class TaskReleaseIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ScanIn(BaseModel):
+    """`POST /fulfilment/tasks/{id}/scan` — one row in the append-only `scan_events` (plan F3).
+    The task's own first scan additionally moves it `ACCEPTED -> IN_PROGRESS` (ADR-0025 §2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    barcode: str = Field(min_length=1, max_length=64)
+    location_id: UUID | None = None
+    inventory_item_id: UUID | None = None
+
+
+class PickConfirmIn(BaseModel):
+    """`POST /fulfilment/tasks/{id}/lines/{line_id}/pick`. `quantity` defaults to the line's whole
+    remaining request; giving less records the rest as a `short_pick` exception (ADR-0025 §2's
+    `IN_PROGRESS -> EXCEPTION`) rather than silently dropping it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    quantity: Qty | None = None
+    #: Named only when `quantity` is less than the line's remaining request — the reason a
+    #: `pick_exceptions` row is raised for the shortfall. Required together with a short quantity.
+    reason: PickExceptionReason | None = None
+    note: str = Field(default="", max_length=500)
+
+
+class ExceptionResolveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str = Field(default="", max_length=500)
+
+
+class TaskCancelIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class PackagingMaterialOut(BaseModel):
+    id: str
+    code: str
+    name: str
+    length_mm: int | None
+    width_mm: int | None
+    height_mm: int | None
+    max_weight_grams: int | None
+    tare_weight_grams: int | None
+    is_active: bool
+
+
+class PackagingMaterialIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=40)
+    name: str = Field(min_length=1, max_length=120)
+    length_mm: int | None = Field(default=None, ge=0)
+    width_mm: int | None = Field(default=None, ge=0)
+    height_mm: int | None = Field(default=None, ge=0)
+    max_weight_grams: int | None = Field(default=None, ge=0)
+    tare_weight_grams: int | None = Field(default=None, ge=0)
+    is_active: bool = True
+
+
+class PackageLineOut(BaseModel):
+    id: str
+    pick_task_line_id: str
+    inventory_item_id: str
+    sku: str
+    quantity: Qty
+
+
+class PackageLineIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pick_task_line_id: UUID
+    quantity: Qty
+
+
+class PackageOut(BaseModel):
+    id: str
+    order_id: str
+    packaging_material_id: str | None
+    destination_location_id: str
+    status: PackageStatus
+    weight_grams: int | None
+    lines: list[PackageLineOut]
+    created_at: datetime
+
+
+class PackageIn(BaseModel):
+    """`POST /fulfilment/packages` — one call opens the package, adds its lines and posts the
+    staging -> pack/dock relocation, transferring each line's own destination reservation onward
+    (ADR-0024 §6). There is no separate confirm step in F3 (`Package`'s own docstring)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order_id: UUID
+    packaging_material_id: UUID | None = None
+    destination_location_id: UUID
+    weight_grams: int | None = Field(default=None, ge=0)
+    lines: list[PackageLineIn] = Field(min_length=1, max_length=200)

@@ -655,3 +655,139 @@ export interface QuoteOut {
   fully_available: boolean;
   lines: QuoteLineOut[];
 }
+
+/* --------------------------- fulfilment (Fulfilment F3, ADR-0024 §7, ADR-0025 §2/§3) -------------------------- */
+/**
+ * Mirrors `services/operations/app/schemas.py`'s fulfilment section exactly. `product-operations`
+ * is the dispatcher's surface — the worker PWA (`frontend/worker-app`) is a separate app and is
+ * not what these types serve; only the shapes the dispatcher board and the worker roster actually
+ * render or submit are declared here.
+ */
+
+export type PresenceStatus = "online" | "offline";
+
+/** Mirrors `WorkerOut`. `zone_location_ids` is `null` unless the caller also holds
+ *  `operations.fulfilment.worker.location_read` — progressive disclosure, not always-present data. */
+export interface WorkerOut {
+  id: string;
+  employee_id: string;
+  warehouse_id: string;
+  display_name: string;
+  is_active: boolean;
+  skills: string[];
+  presence_status: PresenceStatus;
+  presence_last_seen_at: string | null;
+  zone_location_ids: string[] | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `POST /operations/fulfilment/workers` — `operations.fulfilment.worker.write`, ORG scope. */
+export interface WorkerIn {
+  employee_id: string;
+  warehouse_id: string;
+  display_name?: string;
+  is_active?: boolean;
+  skills?: string[];
+  zone_location_ids?: string[];
+}
+
+/** `PATCH /operations/fulfilment/workers/{id}`. `skills`/`zone_location_ids`, when given,
+ *  **replace** the whole set. */
+export interface WorkerPatch {
+  warehouse_id?: string;
+  display_name?: string;
+  is_active?: boolean;
+  skills?: string[];
+  zone_location_ids?: string[];
+}
+
+/** ADR-0025 §2's exact vocabulary. `CLOSED` and `CANCELLED` are terminal. */
+export type PickTaskStatus =
+  | "CREATED"
+  | "OFFERED"
+  | "ESCALATED"
+  | "ACCEPTED"
+  | "IN_PROGRESS"
+  | "EXCEPTION"
+  | "PICKED"
+  | "CLOSED"
+  | "CANCELLED";
+
+/** ADR-0025 §3's exact vocabulary for `assignment_offers.state`. */
+export type OfferState = "OFFERED" | "ACCEPTED" | "DECLINED" | "EXPIRED" | "WITHDRAWN" | "RELEASED";
+
+export type PickTaskLineStatus = "pending" | "partial" | "picked" | "short";
+
+/** One order line's worth of picking inside a task. */
+export interface PickTaskLineOut {
+  id: string;
+  order_line_id: string;
+  inventory_item_id: string;
+  sku: string;
+  source_location_id: string;
+  destination_location_id: string;
+  quantity: Qty;
+  picked: Qty;
+  short: Qty;
+  sequence: number | null;
+  status: PickTaskLineStatus;
+}
+
+/** Mirrors `assignment_offers` (ADR-0025 §3's exact row shape) — one row per offer, kept as
+ *  history rather than summarised away, so "why did this take forty minutes" stays answerable. */
+export interface AssignmentOfferOut {
+  id: string;
+  task_id: string;
+  worker_id: string;
+  round: number;
+  state: OfferState;
+  score_breakdown: Record<string, unknown>;
+  offered_at: string;
+  expires_at: string;
+  responded_at: string | null;
+}
+
+export type PickExceptionReason = "short_pick" | "damaged" | "not_found" | "other";
+
+export interface PickExceptionOut {
+  id: string;
+  task_id: string;
+  task_line_id: string;
+  reason: PickExceptionReason;
+  quantity: Qty;
+  note: string;
+  status: "open" | "resolved";
+  raised_at: string;
+  resolved_at: string | null;
+}
+
+/** Mirrors `PickTaskOut` — the dispatcher board's one row per task, with its lines, its whole
+ *  offer history and any open exceptions embedded, so the board renders from one list call with
+ *  no per-row follow-up request (N+1 avoidance). */
+export interface PickTaskOut {
+  id: string;
+  order_id: string;
+  warehouse_id: string;
+  zone_location_id: string | null;
+  status: PickTaskStatus;
+  round: number;
+  max_rounds: number;
+  lines: PickTaskLineOut[];
+  offers: AssignmentOfferOut[];
+  exceptions: PickExceptionOut[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** `POST /operations/fulfilment/tasks/{id}/offers` — a dispatcher offering a task to one worker.
+ *  Manual assignment is the only path into `OFFERED` in F3. */
+export interface OfferIn {
+  worker_id: string;
+}
+
+/** `POST /operations/fulfilment/tasks/{id}/cancel`. In-flight tasks (`ACCEPTED`, `IN_PROGRESS`,
+ *  `EXCEPTION`) additionally need `operations.fulfilment.task.override`. */
+export interface TaskCancelIn {
+  reason: string;
+}

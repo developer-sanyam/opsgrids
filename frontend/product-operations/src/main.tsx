@@ -62,9 +62,16 @@ const WarehouseLocationsPage = lazy(() =>
 const WarehouseLocationLabelsPage = lazy(() =>
   import("./routes/WarehouseLocationLabels").then((m) => ({ default: m.WarehouseLocationLabelsPage })),
 );
+const Warehouse3DPage = lazy(() => import("./routes/Warehouse3D").then((m) => ({ default: m.Warehouse3DPage })));
 const OrdersPage = lazy(() => import("./routes/Orders").then((m) => ({ default: m.OrdersPage })));
 const OrderFormPage = lazy(() => import("./routes/OrderForm").then((m) => ({ default: m.OrderFormPage })));
 const OrderDetailPage = lazy(() => import("./routes/OrderDetail").then((m) => ({ default: m.OrderDetailPage })));
+const FulfilmentTasksPage = lazy(() =>
+  import("./routes/FulfilmentTasks").then((m) => ({ default: m.FulfilmentTasksPage })),
+);
+const FulfilmentWorkersPage = lazy(() =>
+  import("./routes/FulfilmentWorkers").then((m) => ({ default: m.FulfilmentWorkersPage })),
+);
 
 function lazyRoute(path: string, element: ReactNode) {
   return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
@@ -111,9 +118,12 @@ const router = createBrowserRouter([
           lazyRoute("suppliers/:id", <SupplierDetailPage />),
           lazyRoute("warehouses", <WarehousesPage />),
           lazyRoute("warehouses/:id/locations", <WarehouseLocationsPage />),
+          lazyRoute("warehouses/:id/3d", <Warehouse3DPage />),
           lazyRoute("orders", <OrdersPage />),
           lazyRoute("orders/new", <OrderFormPage />),
           lazyRoute("orders/:id", <OrderDetailPage />),
+          lazyRoute("fulfilment/tasks", <FulfilmentTasksPage />),
+          lazyRoute("fulfilment/workers", <FulfilmentWorkersPage />),
           { path: "*", element: <NotFoundPage /> },
         ],
       },
