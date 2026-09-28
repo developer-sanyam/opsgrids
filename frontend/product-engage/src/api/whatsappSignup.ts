@@ -29,12 +29,17 @@ export interface SignupConfig {
   reason?: "not_configured";
 }
 
-/** `POST /engage/whatsapp/signup/complete`. The two ids come from Meta's `WA_EMBEDDED_SIGNUP`
- *  message and are hints: the server discovers the business and its numbers from the token. */
+/** `POST /engage/whatsapp/signup/complete`. `waba_id`/`phone_number_id` come from Meta's
+ *  `WA_EMBEDDED_SIGNUP` message and are hints: the server discovers the business and its numbers
+ *  from the token. `meta_user_id` comes from a different place — `FB.login`'s own response
+ *  (`authResponse.userID`) — and is never verified against Meta; it is captured only so a later
+ *  deauthorize or data-deletion callback naming this same id can be attributed back to this
+ *  connection (`docs/whatsapp/webhooks.md`). */
 export interface SignupCompleteIn {
   code: string;
   waba_id?: string;
   phone_number_id?: string;
+  meta_user_id?: string;
 }
 
 export interface SignupCompleteOut {
@@ -131,7 +136,14 @@ export type WebhookState = "receiving" | "silent" | "unverified";
 /** `GET /engage/whatsapp/health`. */
 export interface WhatsAppHealth {
   connected: boolean;
-  token: { state: TokenState; checked_at: string | null };
+  token: {
+    state: TokenState;
+    checked_at: string | null;
+    /** When Meta's deauthorize or data-deletion callback last reported the Facebook login behind
+     *  this connection as revoked. Informational only — it never changes `state` above and never
+     *  means sends have stopped; see `labels.ts`'s copy for this field. */
+    identity_revoked_at: string | null;
+  };
   webhook: { state: WebhookState; last_event_at: string | null };
   templates: { count: number; synced_at: string | null };
   number: { quality_rating: string; messaging_limit: string } | null;

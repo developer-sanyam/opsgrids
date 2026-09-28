@@ -116,6 +116,32 @@ async def last_webhook_event_at(
     return max(candidates) if candidates else None
 
 
+async def setup_run_organizations_for_meta_user_id_hint(
+    session: AsyncSession, meta_user_id: str
+) -> list[uuid.UUID]:
+    """Every organization holding a `w1_setup_runs.meta_user_id_hint` naming this Facebook user
+    id — deliberately **not** filtered by whether a `ProviderAccount` still carries the same id.
+
+    `apply_meta_deauthorize` nulls `ProviderAccount.meta_user_id` as it goes. If a deauthorize
+    callback is delivered before the matching data-deletion callback, `accounts_for_meta_user_id`
+    (`app/selectors.py`) then finds no account for this id at all, and `apply_meta_data_deletion`'s
+    own hint-clearing — gated on that same account lookup — never runs, orphaning the hint. This
+    selector is what lets the data-deletion route find and clear it anyway, independent of whether
+    an account match survived.
+
+    **Deliberately not org-scoped**, for the same reason `accounts_for_meta_user_id` is: a
+    Meta-scoped user id names a person, not one organization. Runs on the directory session
+    (SELECT-only, BYPASSRLS); the caller binds each returned organization id before touching
+    anything else, the same rule that selector documents.
+    """
+    stmt = (
+        select(SetupRun.organization_id)
+        .where(SetupRun.meta_user_id_hint == meta_user_id)
+        .distinct()
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
 async def provider_template(
     session: AsyncSession, organization_id: uuid.UUID, name: str, language: str
 ) -> ProviderTemplate | None:

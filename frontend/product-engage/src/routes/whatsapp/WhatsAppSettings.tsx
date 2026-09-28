@@ -41,6 +41,7 @@ import {
 } from "@/ui";
 import {
   displayNameLabel,
+  IDENTITY_REVOKED_TEXT,
   limitLabel,
   maskedId,
   numberStatus,
@@ -305,6 +306,12 @@ function ConnectionHealth({
             <>
               {" "}
               Checked <When iso={token.checked_at}>{(relative) => relative}</When>.
+            </>
+          ) : null}
+          {token.identity_revoked_at !== null ? (
+            <>
+              {" "}
+              {IDENTITY_REVOKED_TEXT}
             </>
           ) : null}
         </HealthRow>

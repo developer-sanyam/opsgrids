@@ -80,7 +80,7 @@ export const UNVERIFIED_NUMBER: WhatsAppNumber = {
 
 export const HEALTH_OK: WhatsAppHealth = {
   connected: true,
-  token: { state: "valid", checked_at: "2026-09-26T05:50:00Z" },
+  token: { state: "valid", checked_at: "2026-09-26T05:50:00Z", identity_revoked_at: null },
   webhook: { state: "receiving", last_event_at: "2026-09-26T05:58:00Z" },
   templates: { count: 24, synced_at: "2026-09-26T05:48:00Z" },
   number: { quality_rating: "green", messaging_limit: "TIER_1K" },
@@ -88,7 +88,7 @@ export const HEALTH_OK: WhatsAppHealth = {
 
 export const HEALTH_DISCONNECTED: WhatsAppHealth = {
   connected: false,
-  token: { state: "unknown", checked_at: null },
+  token: { state: "unknown", checked_at: null, identity_revoked_at: null },
   webhook: { state: "unverified", last_event_at: null },
   templates: { count: 24, synced_at: "2026-09-26T05:48:00Z" },
   number: null,

@@ -89,6 +89,74 @@ async def test_a_token_that_cannot_read_the_number_is_refused(
         await _verify(_handler(number=number_denied), monkeypatch)
 
 
+async def test_meta_s_own_reason_is_added_to_the_refusal_so_the_person_knows_what_to_fix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every refusal used to read identically whatever Meta actually said. `error_user_msg` is
+    the one field Meta documents as safe to show a person — never `message`, which is for a
+    developer reading logs."""
+
+    def expired(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401,
+            json={
+                "error": {
+                    "message": "Error validating access token: Session has expired",
+                    "error_user_msg": "Your access token has expired. Generate a new one.",
+                }
+            },
+        )
+
+    with pytest.raises(WhatsAppOwnershipError) as excinfo:
+        await _verify(_handler(number=expired), monkeypatch)
+    assert "Your access token has expired. Generate a new one." in str(excinfo.value)
+    assert "Session has expired" not in str(excinfo.value)
+
+
+async def test_the_waba_call_s_own_reason_is_added_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing_permission(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={
+                "error": {
+                    "message": "(#200) Requires whatsapp_business_management permission",
+                    "error_user_msg": "This app does not have permission for this action.",
+                }
+            },
+        )
+
+    with pytest.raises(WhatsAppOwnershipError) as excinfo:
+        await _verify(_handler(waba=missing_permission), monkeypatch)
+    assert "This app does not have permission for this action." in str(excinfo.value)
+
+
+async def test_a_developer_only_message_is_not_shown_as_a_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`message` is for a developer reading logs, not a person connecting an account: with no
+    `error_user_msg`, the refusal still reads as one plain sentence."""
+
+    def developer_message_only(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"message": "Invalid OAuth access token"}})
+
+    with pytest.raises(WhatsAppOwnershipError) as excinfo:
+        await _verify(_handler(number=developer_message_only), monkeypatch)
+    assert str(excinfo.value) == "this access token could not read that phone number from Meta"
+
+
+async def test_a_blank_reason_falls_back_to_the_plain_sentence_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def blank_user_msg(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": {"error_user_msg": "   "}})
+
+    with pytest.raises(WhatsAppOwnershipError) as excinfo:
+        await _verify(_handler(waba=blank_user_msg), monkeypatch)
+    assert str(excinfo.value) == (
+        "this access token could not list that WhatsApp Business Account's numbers"
+    )
+
+
 async def test_a_mismatched_number_id_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     """Meta answered, but not about the number that was asked for — never trusted on faith."""
 

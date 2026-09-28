@@ -47,24 +47,41 @@ Mounted at `/api/v1/webhooks/whatsapp` (the path app-gateway forwards, unchanged
 `/webhooks/whatsapp` (for a tunnel pointed straight at this service), and excluded from the
 OpenAPI document: this is Meta's endpoint, not public API, and it must not appear as though anyone
 else should call it.
+
+This module also carries three routes for a *different* Meta trust scheme — Facebook Login's
+deauthorize and data-deletion callbacks (`/whatsapp/deauthorize`, `/whatsapp/data-deletion`, and
+the public status check the second one's response links to), verified through `signed_request`
+rather than `X-Hub-Signature-256`. See `app/meta_signed_request.py` for that scheme and
+`docs/whatsapp/webhooks.md` for the full contract; they are grouped with the callback above because
+they are mounted the same schema-excluded way, not because they share its signature scheme.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import selectors, services, w2_webhooks, webhooks
+from app import (
+    meta_signed_request,
+    selectors,
+    services,
+    w1_selectors,
+    w1_services,
+    w2_webhooks,
+    webhooks,
+)
 from app.config import meta_app_secret, settings
 from app.models import ProcessedEvent
 from platform_core.db import get_directory_session, session_scope
-from platform_core.errors import PayloadTooLargeProblem, UnauthorizedProblem
+from platform_core.errors import NotFoundProblem, PayloadTooLargeProblem, UnauthorizedProblem
 from platform_core.logging import get_logger
 
 log = get_logger("notification.webhooks")
@@ -504,3 +521,213 @@ async def _mark_processed(
         )
         return False
     return True
+
+
+# --------------------------------------------------------------------- Meta deauthorize / data
+# deletion
+#
+# Facebook Login's own callbacks, not the WhatsApp Business Platform's `X-Hub-Signature-256` ones
+# above — Meta's current documentation configures both through the same App Dashboard entry as the
+# "Data Deletion Request Callback" (see `docs/whatsapp/webhooks.md`'s "Verified against" note), and
+# both are trusted the same way: a form-encoded `signed_request`, verified by
+# `app/meta_signed_request.py` before a single field of it is read as data. Mounted on this same
+# router (same prefix, same schema exclusion) so they are reachable at
+# `/api/v1/webhooks/whatsapp/...` through the gateway exactly like the callback above.
+
+
+async def _verify_signed_request(request: Request) -> meta_signed_request.SignedRequestPayload:
+    """Read, cap and verify one callback's `signed_request` form field. Raises
+    `PayloadTooLargeProblem` (413) or `UnauthorizedProblem` (401, `Invalid signed_request`) —
+    never anything about *which* check failed, mirroring `receive`'s own signature refusal above.
+    """
+    cfg = settings()
+    app_secret = meta_app_secret(cfg)
+    if not app_secret:
+        log.error("webhook.meta_privacy.no_app_secret_configured")
+        raise UnauthorizedProblem("Webhook signature verification is not configured")
+    raw = await _read_capped_body(request, meta_signed_request.MAX_SIGNED_REQUEST_BYTES)
+    try:
+        value = meta_signed_request.extract_signed_request(raw)
+        return meta_signed_request.parse_signed_request(value, app_secret)
+    except meta_signed_request.SignedRequestError as exc:
+        log.warning("webhook.meta_privacy.signed_request_refused", reason=type(exc).__name__)
+        raise UnauthorizedProblem("Invalid signed_request") from exc
+
+
+@router.post("/whatsapp/deauthorize", response_class=Response)
+async def deauthorize(request: Request, directory: DirectorySessionDep) -> Response:
+    """Meta's deauthorize callback: a Facebook login was deauthorized from our app.
+
+    Always 200 once the signed_request itself verifies — a user id this platform cannot attribute
+    to any connection (every connection made before `meta_user_id` was captured, one that never
+    completed Embedded Signup at all, or one already processed by an earlier callback — see
+    `w1_services.apply_meta_deauthorize`'s one-shot docstring) is not an error, and the response
+    must never differ in a way that reveals whether the id was recognised. Meta documents no
+    particular response body for this callback (see the "Verified against" note); a bare 200 is
+    what a plain notification owes.
+
+    503 only when applying a match itself hit a transient failure (a dropped connection, a
+    deadlock) — Meta redelivers a non-200, and every match already applied finds nothing left to
+    act on the second time (`apply_meta_deauthorize` clears `meta_user_id` as it goes).
+    """
+    payload = await _verify_signed_request(request)
+    accounts = await selectors.accounts_for_meta_user_id(directory, payload.user_id)
+    had_transient_failure = False
+    for account in accounts:
+        organization_id = account.organization_id
+        try:
+            async with session_scope(organization_id=organization_id) as session:
+                await w1_services.apply_meta_deauthorize(
+                    session,
+                    organization_id,
+                    account.id,
+                    user_id=payload.user_id,
+                    request=request,
+                )
+        except Exception as exc:
+            log.error(
+                "webhook.deauthorize.apply_failed",
+                organization_id=str(organization_id),
+                error_type=type(exc).__name__,
+            )
+            had_transient_failure = True
+    log.info("webhook.deauthorize.processed", matches=len(accounts))
+    if had_transient_failure:
+        return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return Response(status_code=status.HTTP_200_OK)
+
+
+@router.post("/whatsapp/data-deletion", response_class=JSONResponse)
+async def data_deletion(request: Request, directory: DirectorySessionDep) -> JSONResponse:
+    """Meta's data-deletion callback: respond with `{"url", "confirmation_code"}` — the exact
+    shape Meta's current "Data Deletion Request Callback" documentation specifies — regardless of
+    whether the named Facebook user id matches any connection here, for the same never-reveal-
+    recognition reason `deauthorize` above states.
+
+    Clears the *identity link* only (`w1_services.apply_meta_data_deletion`): the organization's
+    own WhatsApp business records — message history, contacts, templates, conversations — are
+    never touched by this callback. See that function's docstring and `docs/whatsapp/webhooks.md`.
+
+    **Also clears any orphaned `meta_user_id_hint`**, for an organization whose `ProviderAccount`
+    no longer matches this Facebook user id because an earlier deauthorize callback already nulled
+    it (`w1_selectors.setup_run_organizations_for_meta_user_id_hint`'s docstring explains the
+    ordering). Without this, a data-deletion request delivered after its own deauthorize would
+    find no account to key off and silently leave the hint in place.
+
+    **The confirmation is minted only after every match has been applied**, not before: minting it
+    first (the previous shape) meant a permanent failure resolving or applying a match still ended
+    in a row saying "processed" — the one thing this endpoint's response is supposed to mean. A
+    503 below leaves nothing minted yet, so Meta's redelivery is a genuine retry of the whole
+    thing, not a replay of an answer already given.
+    """
+    payload = await _verify_signed_request(request)
+    cfg = settings()
+
+    accounts = await selectors.accounts_for_meta_user_id(directory, payload.user_id)
+    had_transient_failure = False
+    matched_organization_ids: set[uuid.UUID] = set()
+    for account in accounts:
+        organization_id = account.organization_id
+        matched_organization_ids.add(organization_id)
+        try:
+            async with session_scope(organization_id=organization_id) as session:
+                await w1_services.apply_meta_data_deletion(
+                    session,
+                    organization_id,
+                    account.id,
+                    user_id=payload.user_id,
+                    request=request,
+                )
+        except Exception as exc:
+            log.error(
+                "webhook.data_deletion.apply_failed",
+                organization_id=str(organization_id),
+                error_type=type(exc).__name__,
+            )
+            had_transient_failure = True
+
+    hint_organization_ids = await w1_selectors.setup_run_organizations_for_meta_user_id_hint(
+        directory, payload.user_id
+    )
+    orphaned_organization_ids = [
+        oid for oid in hint_organization_ids if oid not in matched_organization_ids
+    ]
+    for organization_id in orphaned_organization_ids:
+        try:
+            async with session_scope(organization_id=organization_id) as session:
+                await w1_services.clear_stale_meta_user_id_hint(
+                    session, organization_id, payload.user_id
+                )
+        except Exception as exc:
+            log.error(
+                "webhook.data_deletion.hint_clear_failed",
+                organization_id=str(organization_id),
+                error_type=type(exc).__name__,
+            )
+            had_transient_failure = True
+    log.info(
+        "webhook.data_deletion.processed",
+        matches=len(accounts),
+        orphaned_hints=len(orphaned_organization_ids),
+    )
+    if had_transient_failure:
+        return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={})
+
+    async with session_scope(organization_id=None) as session:
+        confirmation = await w1_services.mint_or_reuse_confirmation(
+            session, payload_segment=payload.payload_segment, cfg=cfg
+        )
+        confirmation_code = confirmation.confirmation_code
+
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "url": w1_services.data_deletion_status_url(cfg, confirmation_code),
+            "confirmation_code": confirmation_code,
+        },
+    )
+
+
+#: A confirmation code is `secrets.token_hex(16)` — 32 lowercase hex characters, never anything
+#: else — so a query value of any other shape cannot possibly name a row and is refused as 404
+#: without a query, the same way an unrecognised one is: neither answer tells a stranger anything.
+_CONFIRMATION_CODE_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _status_page(*, status_text: str, confirmation_code: str, processed_at: str | None) -> str:
+    """A minimal HTML page, not a JSON body: Meta's own documentation describes this URL as one "a
+    person can go to ... to check the status of their data deletion", and a real App Review
+    reviewer may click the link rather than curl it. No personal data is in it — the page has
+    nothing to reveal that the response shape below did not already say."""
+    processed_line = f"<p>Processed at: {processed_at}</p>" if processed_at else ""
+    return (
+        "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+        "<title>Data deletion status</title></head><body>"
+        f"<p>Status: {status_text}</p>"
+        f"<p>Confirmation code: {confirmation_code}</p>"
+        f"{processed_line}"
+        "</body></html>"
+    )
+
+
+@router.get("/whatsapp/data-deletion-status", response_class=HTMLResponse)
+async def data_deletion_status(
+    code: Annotated[str, Query(max_length=64)],
+) -> HTMLResponse:
+    """Public, unauthenticated status check for a data-deletion confirmation code — the `url`
+    Meta's own response above names. Carries no personal data at all: a hit answers with a small
+    HTML page saying `processed` and the timestamp; a miss (unknown code, or one that never matched
+    this service's shape) is a plain 404, indistinguishable from each other."""
+    if not _CONFIRMATION_CODE_RE.fullmatch(code):
+        raise NotFoundProblem("No such data deletion request.")
+    async with session_scope(organization_id=None) as session:
+        row = await w1_services.data_deletion_confirmation_status(session, code)
+    if row is None:
+        raise NotFoundProblem("No such data deletion request.")
+    return HTMLResponse(
+        content=_status_page(
+            status_text="processed",
+            confirmation_code=row.confirmation_code,
+            processed_at=row.processed_at.isoformat(),
+        )
+    )

@@ -659,7 +659,7 @@ async def test_health_when_nothing_is_connected(
     assert response.status_code == 200
     assert response.json() == {
         "connected": False,
-        "token": {"state": "unknown", "checked_at": None},
+        "token": {"state": "unknown", "checked_at": None, "identity_revoked_at": None},
         "webhook": {"state": "unverified", "last_event_at": None},
         "templates": {"count": 0, "synced_at": None},
         "number": None,

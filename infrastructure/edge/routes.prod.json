@@ -42,7 +42,12 @@
     "documented payload ceiling, rather than the 2 MiB default. tests/infra/",
     "test_route_table_parity.py fails when this entry, the dev table, the policy or that cap",
     "drift apart. `/api/v1/webhooks/razorpay` is routed but deliberately NOT public in the",
-    "gateway yet; that is a separate decision."
+    "gateway yet; that is a separate decision.",
+    "",
+    "The three `/api/v1/webhooks/whatsapp/deauthorize|data-deletion|data-deletion-status`",
+    "entries are Facebook Login's deauthorize and data-deletion callbacks — see the matching",
+    "comment in services/app-gateway/routes.json. Same upstream as the rest of notification,",
+    "own small `max_body_bytes`, also declared in `WEBHOOK_PUBLIC_PATHS`."
   ],
   "routes": [
     { "prefix": "/api/v1/auth/operator", "upstream": "http://auth:8000", "blocked": true },
@@ -75,6 +80,9 @@
     { "prefix": "/api/v1/notifications", "upstream": "http://notification:8000", "product": "notification" },
     { "prefix": "/api/v1/engage", "upstream": "http://notification:8000", "product": "engage" },
     { "prefix": "/api/v1/webhooks/whatsapp", "upstream": "http://notification:8000", "max_body_bytes": 3145728 },
+    { "prefix": "/api/v1/webhooks/whatsapp/deauthorize", "upstream": "http://notification:8000", "max_body_bytes": 4096 },
+    { "prefix": "/api/v1/webhooks/whatsapp/data-deletion-status", "upstream": "http://notification:8000", "max_body_bytes": 4096 },
+    { "prefix": "/api/v1/webhooks/whatsapp/data-deletion", "upstream": "http://notification:8000", "max_body_bytes": 4096 },
 
     { "prefix": "/api/v1/approvals", "upstream": "http://approval:8000" },
     { "prefix": "/api/v1/employees", "upstream": "http://employee:8000", "product": "hrms" },

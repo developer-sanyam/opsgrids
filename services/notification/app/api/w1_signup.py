@@ -144,6 +144,7 @@ async def signup_complete(
         code=body.code,
         waba_id=body.waba_id,
         phone_number_id=body.phone_number_id,
+        meta_user_id=body.meta_user_id,
         request=request,
         transport=transport,
         bind=_bind,

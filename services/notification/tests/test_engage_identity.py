@@ -17,16 +17,22 @@ import contextlib
 import json
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import models, services, w1_services, whatsapp_provider
 from app.config import settings
 from app.main import app
 from app.transports import RecordingTransport, TransportRefused, TransportUnavailable
+from app.w1_graph import MetaGraph
+from app.w1_models import WhatsAppNumber
+from app.w1_services import register_number_if_needed as _real_register_number_if_needed
 from platform_core.auth import Principal, Scope, ScopeContext, get_principal
 from platform_core.errors import (
     BusinessRuleProblem,
@@ -38,6 +44,8 @@ from platform_core.errors import (
 )
 from platform_core.pii import open_sealed
 from tests.helpers import ctx_for, principal_for
+from tests.w1_helpers import WABA, FakeMeta
+from tests.w1_helpers import number as w1_number
 
 pytestmark = pytest.mark.integration
 
@@ -48,10 +56,12 @@ def _assume_whatsapp_ownership_proven(monkeypatch: pytest.MonkeyPatch) -> None:
     connection *row* — its shape, its secrecy, its uniqueness — not about proving a token against
     Meta's Graph API, which is exercised on its own with `httpx.MockTransport` in that file.
     Patched here, once, rather than in each test that reaches `connect_whatsapp`/
-    `replace_whatsapp`. The same goes for the webhook-subscribe call `create_whatsapp_connection`/
-    `replace_whatsapp_connection` make afterwards: `w1_graph.py`'s own tests exercise that call
-    against a mock transport; here it would otherwise be a real, unmocked HTTP request every
-    time."""
+    `replace_whatsapp`. The same goes for the webhook-subscribe call and the Cloud API
+    registration `create_whatsapp_connection`/`replace_whatsapp_connection` make afterwards:
+    `w1_graph.py`'s own tests exercise those calls against a mock transport; here they would
+    otherwise be a real, unmocked HTTP request every time. The registration tests below undo
+    this one patch (`_enable_real_registration`) to exercise the real function against a
+    `FakeMeta` instead."""
 
     async def _pass(*args: object, **kwargs: object) -> None:
         return None
@@ -61,6 +71,7 @@ def _assume_whatsapp_ownership_proven(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(whatsapp_provider, "verify_ownership", _pass)
     monkeypatch.setattr(w1_services, "subscribe_waba", _subscribed)
+    monkeypatch.setattr(w1_services, "register_number_if_needed", _pass)
 
 
 class FakeResolver:
@@ -1895,6 +1906,199 @@ async def test_replacing_whatsapp_subscribes_the_app_again_with_the_new_token(
 
     assert response.status_code == 200
     assert calls == [("101000000000001", "new-token")]
+
+
+def _enable_real_registration(monkeypatch: pytest.MonkeyPatch, meta: FakeMeta) -> None:
+    """Undo the autouse `register_number_if_needed` no-op above and run the real function
+    against `meta` instead of a live Graph call. Same idea as `_spy` above does for
+    `subscribe_waba`, but the real body has to run here — it is what decides whether
+    `register_number` is even called."""
+    monkeypatch.setattr(w1_services, "register_number_if_needed", _real_register_number_if_needed)
+    monkeypatch.setattr(
+        w1_services,
+        "MetaGraph",
+        lambda cfg, *, transport=None: MetaGraph(cfg, transport=httpx.MockTransport(meta)),
+    )
+
+
+async def _wa_number(
+    session: AsyncSession, org_id: uuid.UUID, phone_number_id: str
+) -> WhatsAppNumber | None:
+    rows = (
+        (
+            await session.execute(
+                select(WhatsAppNumber).where(
+                    WhatsAppNumber.organization_id == org_id,
+                    WhatsAppNumber.phone_number_id == phone_number_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return rows[0] if rows else None
+
+
+async def test_connecting_whatsapp_registers_an_unregistered_number_with_a_generated_pin(
+    client, session, org_id, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manually connected number never goes through Embedded Signup's own `register` step
+    (`w1_setup._step_register`) — without `register_number_if_needed`, a number Meta has not
+    registered for the Cloud API cannot send or receive a single message, however `connected`
+    it looks here."""
+    meta = FakeMeta()
+    meta.numbers = [w1_number("106540000000001", "+1 555 0100", status="PENDING")]
+    _enable_real_registration(monkeypatch, meta)
+
+    with as_principal(engage_caller(org_id, [f"{W_WRITE}:ORG"])):
+        response = await client.post(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": WABA,
+                "phone_number_id": "106540000000001",
+                "display_number": "+1 555 0100",
+                "access_token": "super-secret-token",  # pragma: allowlist secret
+            },
+        )
+
+    assert response.status_code == 201
+    (body,) = meta.register_bodies
+    pin = body["pin"]
+    assert isinstance(pin, str) and len(pin) == 6 and pin.isdigit()
+
+    row = await _wa_number(session, org_id, "106540000000001")
+    assert row is not None
+    assert row.registration_attempts == 1
+    assert row.registration_pin_sealed is not None
+    assert pin.encode() not in row.registration_pin_sealed
+    assert open_sealed(row.registration_pin_sealed, settings=settings()) == pin
+
+
+async def test_connecting_whatsapp_skips_registration_when_meta_already_reports_connected(
+    client, org_id, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Idempotent, the same as Embedded Signup's own step: a number already `CONNECTED` is left
+    alone, so a connection never spends one of Meta's ten attempts per 72 hours for nothing."""
+    meta = FakeMeta()
+    meta.numbers = [w1_number("106540000000001", "+1 555 0100", status="CONNECTED")]
+    _enable_real_registration(monkeypatch, meta)
+
+    with as_principal(engage_caller(org_id, [f"{W_WRITE}:ORG"])):
+        response = await client.post(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": WABA,
+                "phone_number_id": "106540000000001",
+                "display_number": "+1 555 0100",
+                "access_token": "super-secret-token",  # pragma: allowlist secret
+            },
+        )
+
+    assert response.status_code == 201
+    assert meta.registers() == []
+
+
+async def test_a_failed_registration_does_not_block_the_connection(
+    client, org_id, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Best-effort, the same rule as a failed `subscribe_waba` above: a `register` Meta refuses
+    is not a reason to refuse a connection Meta already proved this token controls."""
+    meta = FakeMeta()
+    meta.numbers = [w1_number("106540000000001", "+1 555 0100", status="PENDING")]
+    meta.register_error = {"status": 400, "error": {"code": 131000, "message": "boom"}}
+    _enable_real_registration(monkeypatch, meta)
+
+    with as_principal(engage_caller(org_id, [f"{W_WRITE}:ORG"])):
+        response = await client.post(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": WABA,
+                "phone_number_id": "106540000000001",
+                "display_number": "+1 555 0100",
+                "access_token": "super-secret-token",  # pragma: allowlist secret
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "connected"
+
+
+async def test_reconnecting_the_same_number_reuses_its_sealed_pin(
+    client, session, org_id, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Meta needs the exact PIN a number was last registered with, so a second connection of the
+    same number must reuse it rather than mint a fresh one — mirrors
+    `test_a_second_attempt_reuses_the_stored_pin_and_counts_the_attempt` in
+    `test_w1_signup_flow.py`, which proves the same thing for Embedded Signup's own step."""
+    meta = FakeMeta()
+    meta.numbers = [w1_number("106540000000001", "+1 555 0100", status="PENDING")]
+    # Meta normally flips the number to `CONNECTED` once registered, which would make the second
+    # connection below skip registration entirely (the idempotent check) rather than reach the
+    # PIN reuse this test is about — held `PENDING` so both connections actually register.
+    meta.register_connects = False
+    _enable_real_registration(monkeypatch, meta)
+
+    with as_principal(engage_caller(org_id, [f"{W_WRITE}:ORG"])):
+        await client.post(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": WABA,
+                "phone_number_id": "106540000000001",
+                "display_number": "+1 555 0100",
+                "access_token": "token-one",  # pragma: allowlist secret
+            },
+        )
+        first = await _wa_number(session, org_id, "106540000000001")
+        assert first is not None and first.registration_pin_sealed is not None
+        first_pin = open_sealed(first.registration_pin_sealed, settings=settings())
+        # The read above autobegan a transaction on the session the client shares; close it so
+        # `get_tenant_session` can open its own for the next request.
+        await session.rollback()
+
+        response = await client.put(
+            WHATSAPP_CONNECTION,
+            json={
+                "waba_id": WABA,
+                "phone_number_id": "106540000000001",
+                "display_number": "+1 555 0100",
+                "access_token": "token-two",  # pragma: allowlist secret
+            },
+        )
+
+    assert response.status_code == 200
+    second = await _wa_number(session, org_id, "106540000000001")
+    assert second is not None and second.registration_pin_sealed is not None
+    second_pin = open_sealed(second.registration_pin_sealed, settings=settings())
+    assert second_pin == first_pin
+    assert second.registration_attempts == 2
+    assert meta.register_bodies[0]["pin"] == meta.register_bodies[1]["pin"] == first_pin
+
+
+async def test_registration_is_rate_limited_like_embedded_signups_own_register_step(
+    session, org_id
+) -> None:
+    """`reserve_registration_pin` is `w1_setup._step_register`'s own rate limit, factored out so
+    a manual connection's registration enforces the identical cap —
+    `test_registration_stops_short_of_metas_ten_calls_in_72_hours` in `test_w1_signup_flow.py`
+    proves the same limit end to end through the Embedded Signup worker; this proves the
+    extraction kept it, calling the shared function directly."""
+    async with session.begin():
+        session.add(
+            WhatsAppNumber(
+                organization_id=org_id,
+                waba_id=WABA,
+                phone_number_id="106540000000001",
+                registration_attempts=w1_services.REGISTER_ATTEMPT_CAP,
+                registration_attempted_at=datetime.now(UTC),
+            )
+        )
+
+    with pytest.raises(ConflictProblem) as exc_info:
+        async with session.begin():
+            await w1_services.reserve_registration_pin(
+                session, settings(), org_id, "106540000000001"
+            )
+    assert exc_info.value.errors == [{"code": "register_rate_limited"}]
 
 
 async def test_reading_the_whatsapp_connection_returns_that_same_shape(client, org_id) -> None:

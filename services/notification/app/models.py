@@ -300,10 +300,30 @@ class ProviderAccount(Base, TenantBase):
     #: number keeps routing inbound webhooks, so its messages are not lost.)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="connected")
 
+    #: The Facebook-scoped user id (`FB.login`'s `authResponse.userID`) of whoever completed
+    #: Embedded Signup for this connection -- captured going forward only (nullable: every
+    #: connection made before this column existed has none, and cannot be attributed to a Meta
+    #: deauthorize or data-deletion callback). Not a phone number or email: an opaque id Meta
+    #: mints per person per app, and the same id the deauthorize and data-deletion callbacks name.
+    #: Global, not unique -- the same Facebook user can be the one who connected more than one
+    #: organization's WhatsApp Business Account, and a deauthorize/data-deletion callback naming
+    #: this id fans out to every organization it matches (`app/selectors.
+    #: accounts_for_meta_user_id`, the same directory-reader shape as `phone_number_id`'s own
+    #: lookup). See `docs/whatsapp/webhooks.md`.
+    meta_user_id: Mapped[str | None] = mapped_column(String(40))
+
     __table_args__ = (
         Index("ix_provider_accounts_org_channel", "organization_id", "channel"),
         # Global, deliberately. See the class docstring: this is the routing key.
         UniqueConstraint("phone_number_id", name="uq_provider_accounts_phone_number_id"),
+        # Partial: most rows have no `meta_user_id` (every connection made before it existed, and
+        # any channel other than whatsapp), so indexing only the rows a deauthorize/data-deletion
+        # lookup could ever match keeps the index small.
+        Index(
+            "ix_provider_accounts_meta_user_id",
+            "meta_user_id",
+            postgresql_where=text("meta_user_id IS NOT NULL"),
+        ),
     )
 
 

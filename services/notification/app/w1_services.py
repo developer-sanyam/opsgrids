@@ -14,14 +14,16 @@ reader that no other organization already holds it.
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -30,7 +32,7 @@ from app import selectors, services, w1_domain, w1_selectors, w2_selectors, what
 from app.config import Settings, graph_version, meta_app_secret, settings
 from app.models import AuditLog, OutboxEvent, ProviderAccount
 from app.w1_graph import CodeExpiredError, GraphError, MetaGraph
-from app.w1_models import ConnectionHealth, SetupRun, WhatsAppNumber
+from app.w1_models import ConnectionHealth, MetaDataDeletionRequest, SetupRun, WhatsAppNumber
 from app.w1_schemas import (
     HealthOut,
     NumberHealthOut,
@@ -45,6 +47,7 @@ from app.w1_schemas import (
 from platform_core import pii
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
+from platform_core.db import session_scope
 from platform_core.errors import (
     ConflictProblem,
     NotFoundProblem,
@@ -68,6 +71,14 @@ STEPS: Final = (
     ("templates", "Syncing message templates"),
     ("verify", "Testing the connection"),
 )
+
+#: Meta allows ten `register` calls per number in 72 hours (error 133016) and blocks the number
+#: for the rest of the window past that. Stop two short of it. Shared by Embedded Signup's own
+#: `register` step (`w1_setup._step_register`, via `reserve_registration_pin` below) and a manual
+#: connection's registration (`register_number_if_needed`) -- one number, one attempt count,
+#: whichever path is registering it.
+REGISTER_ATTEMPT_CAP: Final = 8
+REGISTER_WINDOW: Final = timedelta(hours=72)
 
 
 def problem(cls: type[ProblemError], detail: str, code: str) -> ProblemError:
@@ -129,6 +140,7 @@ async def start_signup(
     code: str,
     waba_id: str | None,
     phone_number_id: str | None,
+    meta_user_id: str | None = None,
     request: Request | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     bind: Callable[[], Awaitable[None]] = _noop_bind,
@@ -174,6 +186,7 @@ async def start_signup(
             code_hash=code_hash,
             waba_id=waba_id,
             phone_number_id=phone_number_id,
+            meta_user_id=meta_user_id,
             request=request,
         )
     run_id, fresh = reserved
@@ -241,6 +254,7 @@ async def _reserve_run(
     code_hash: str,
     waba_id: str | None,
     phone_number_id: str | None,
+    meta_user_id: str | None,
     request: Request | None,
 ) -> tuple[uuid.UUID, bool]:
     """Step 1 of `start_signup`, inside its transaction: `(run id, created)`. `created` is False
@@ -269,6 +283,7 @@ async def _reserve_run(
         code_hash=code_hash,
         waba_hint=waba_id,
         phone_number_hint=phone_number_id,
+        meta_user_id_hint=meta_user_id,
         started_by=str(ctx.principal.sub),
     )
     _set_step(run, "token", "running", None)
@@ -317,6 +332,7 @@ def _fail(run: SetupRun, code: str, now: datetime) -> None:
     run.finished_at = now
     run.code_enc = None
     run.token_enc = None
+    run.meta_user_id_hint = None
 
 
 async def get_run_or_404(session: AsyncSession, ctx: ScopeContext, setup_id: uuid.UUID) -> SetupRun:
@@ -446,6 +462,58 @@ def numbers_stale(rows: list[WhatsAppNumber], now: datetime | None = None) -> bo
     if not rows:
         return True
     return any(r.refreshed_at is None or now - r.refreshed_at > w1_domain.NUMBERS_TTL for r in rows)
+
+
+async def reserve_registration_pin(
+    session: AsyncSession, cfg: Settings, organization_id: uuid.UUID, phone_number_id: str
+) -> str:
+    """Commit, in the caller's own transaction, the fact that a `register` call is about to be
+    made, and return the PIN to make it with (never logged).
+
+    Shared by Embedded Signup's own `register` step (`w1_setup._step_register`, which wraps this
+    in a transaction of its own — see that call site's comment for why) and a manual connection's
+    registration (`register_number_if_needed`). Requires a cached `WhatsAppNumber` row for
+    `phone_number_id` to rate-limit and seal a PIN against; the caller creates or refreshes one
+    first (`apply_numbers`) when the number might not be cached yet.
+
+    Rate-limited to `REGISTER_ATTEMPT_CAP` attempts per `REGISTER_WINDOW` (Meta allows ten
+    `register` calls per number per 72 hours, error 133016). The PIN is generated once, sealed,
+    and reused by every later attempt on this number — Meta needs the exact PIN a number was last
+    registered with, so a regenerated PIN would make a *correct* retry look like a PIN mismatch.
+
+    Raises `ConflictProblem` (`errors[0].code` `register_failed` when there is no cached row for
+    this number, `register_rate_limited` past the cap) rather than returning — the same shape
+    every other refusal in this module raises, so a caller outside the step-runner (a request)
+    gets an ordinary problem+json response, and `w1_setup._run_step`'s generic `ProblemError`
+    handling turns it into the matching `StepFailed` for a caller inside it.
+    """
+    row = await w1_selectors.number_by_phone_id(
+        session, organization_id, phone_number_id, for_update=True
+    )
+    if row is None:
+        raise problem(
+            ConflictProblem, "That phone number is not on the account.", "register_failed"
+        )
+    now = datetime.now(UTC)
+    last = row.registration_attempted_at
+    if last is None or now - last > REGISTER_WINDOW:
+        row.registration_attempts = 0
+    if row.registration_attempts >= REGISTER_ATTEMPT_CAP:
+        raise problem(
+            ConflictProblem,
+            "This number has been registered too many times in the last 72 hours. Wait "
+            "before connecting again.",
+            "register_rate_limited",
+        )
+    if row.registration_pin_sealed:
+        pin = pii.open_sealed(row.registration_pin_sealed, settings=cfg)
+    else:
+        pin = f"{secrets.randbelow(10**6):06d}"
+        row.registration_pin_sealed, _ = pii.seal(pin, kind="generic", settings=cfg)
+    row.registration_attempts += 1
+    row.registration_attempted_at = now
+    await session.flush()
+    return pin
 
 
 # --------------------------------------------------------------------- default number
@@ -634,6 +702,9 @@ async def health_snapshot(session: AsyncSession, organization_id: uuid.UUID) -> 
         token=TokenHealthOut(
             state=token_state,
             checked_at=_iso(health.token_checked_at) if health is not None else None,
+            # Advisory only -- shown whether or not the connection is otherwise healthy. See
+            # `ConnectionHealth.identity_revoked_at`'s docstring for why this never feeds `state`.
+            identity_revoked_at=_iso(health.identity_revoked_at) if health is not None else None,
         ),
         webhook=WebhookHealthOut(
             state=webhook,
@@ -686,6 +757,10 @@ async def disconnect(
     account.access_token_enc = None
     account.released_phone_number_id = released_number
     account.phone_number_id = None
+    # The identity link goes with the connection: a future reconnect (by this person or another)
+    # must not inherit an old Facebook login's attribution, and a deauthorize/data-deletion
+    # callback for the login that made *this* connection has nothing left here to act on.
+    account.meta_user_id = None
     account.updated_by = str(ctx.principal.sub)
     for row in await w1_selectors.numbers(session, org):
         row.status = "disconnected"
@@ -731,6 +806,90 @@ async def subscribe_waba(
         log.warning("w1.subscribe_failed", status=exc.status, code=exc.code)
         return False
     return True
+
+
+async def register_number_if_needed(
+    organization_id: uuid.UUID,
+    waba_id: str,
+    phone_number_id: str,
+    access_token: str,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> None:
+    """Register a manually connected number for the Cloud API, unless Meta already reports it
+    `CONNECTED` — the same call and idempotent check Embedded Signup's own `register` step makes
+    (`w1_setup._step_register`), which a manually pasted token
+    (`services.create_whatsapp_connection`, `replace_whatsapp_connection`) never goes through
+    otherwise. A number Meta has not registered for the Cloud API cannot send or receive a single
+    message, so without this a manual connection could show `connected` in the UI while every
+    send silently failed.
+
+    **Deliberately takes no `session` from the caller** and commits its own numbers-cache write
+    and its own PIN reservation each in a short transaction of their own, *before* calling Meta —
+    the same reason `w1_setup._reserve_registration`'s docstring gives for committing early: the
+    caller's transaction (the whole connection create/replace) can still roll back after this
+    returns, and a PIN Meta has already accepted as this number's two-step PIN must not be lost
+    with it, or `register_number` cannot be retried without first turning that verification off
+    again in WhatsApp Manager. Each step:
+
+    1. Reads the number back from Meta and folds it into the numbers cache (`apply_numbers`, one
+       item, `mark_missing=False` so this never disconnects any other number this organization has
+       cached — the same partial-list call `w1_setup._step_verify` already makes), committed
+       before the next step, because `reserve_registration_pin` needs a cached `WhatsAppNumber` row
+       to rate-limit and seal a PIN against, and a manual connection has never had one written
+       before.
+    2. If Meta already reports the number connected, stops there.
+    3. Otherwise reserves a PIN (`reserve_registration_pin`, its own committed transaction) and
+       only then calls `register_number`.
+
+    Best-effort, like `subscribe_waba` right above it and for the same reason: a token that can
+    read the number (already proved by `whatsapp_provider.verify_ownership`) but is refused by
+    `register` — a stale PIN, Meta's ten-per-72-hours limit, a transient failure, or anything else
+    going wrong in the steps above — is not a reason to refuse the whole connection. An admin can
+    retry registration once whatever Meta is complaining about is fixed; refusing to save
+    credentials Meta itself already accepted as valid would leave the organization with nothing
+    connected at all. Genuinely never raises past this function — every step is its own `try`, and
+    a refusal is logged (the error code or exception type only, never the PIN) rather than
+    surfaced. Writes no audit row: a best-effort background call that may or may not have
+    happened is not itself an auditable action; `create_whatsapp_connection` and
+    `replace_whatsapp_connection` already audit the connection it was made from.
+    """
+    cfg = settings()
+    graph = MetaGraph(cfg, transport=transport)
+    try:
+        number = await graph.get_number(phone_number_id, access_token)
+    except GraphError as exc:
+        log.warning("whatsapp_provider.manual_register_failed", status=exc.status, code=exc.code)
+        return
+
+    try:
+        async with session_scope(organization_id=organization_id) as cache_session:
+            await apply_numbers(
+                cache_session,
+                organization_id,
+                waba_id=waba_id,
+                remote=[number],
+                default_phone_number_id=phone_number_id,
+                mark_missing=False,
+            )
+    except Exception as exc:  # best-effort: see the docstring above
+        log.warning("whatsapp_provider.manual_register_failed", error_type=type(exc).__name__)
+        return
+
+    if w1_domain.status_from_meta(number.get("status")) == "connected":
+        return
+
+    try:
+        async with session_scope(organization_id=organization_id) as pin_session:
+            pin = await reserve_registration_pin(pin_session, cfg, organization_id, phone_number_id)
+    except Exception as exc:  # best-effort: see the docstring above
+        log.warning("whatsapp_provider.manual_register_failed", error_type=type(exc).__name__)
+        return
+
+    try:
+        await graph.register_number(phone_number_id, access_token, pin)
+    except GraphError as exc:
+        log.warning("whatsapp_provider.manual_register_failed", status=exc.status, code=exc.code)
 
 
 async def unsubscribe_waba(
@@ -921,3 +1080,289 @@ async def numbers_refresh_inputs(
     if token is None or account.phone_number_id is None:
         return None
     return account.waba_id, token, account.phone_number_id
+
+
+# --------------------------------------------------------------------- Meta deauthorize / data
+# deletion (app/api/webhooks.py's `/whatsapp/deauthorize` and `/whatsapp/data-deletion`)
+#
+# Both react to a `signed_request` naming a Facebook user id (`app/meta_signed_request.py`
+# verifies it before either function below is called, and refuses outright anything shaped like
+# the Facebook JS SDK's own login response -- see that module's docstring).
+#
+# **Neither function may flip `token_state`.** Embedded Signup mints a business-integration
+# token; a person removing the app from *their own* Facebook settings does not necessarily revoke
+# that token, so a genuine callback is not proof the connection has stopped working. Worse, the
+# same app secret signs `FB.login`'s own response (`authResponse.signedRequest`, and the
+# `fbsr_<appid>` cookie) in a shape indistinguishable from a real callback but for the fields
+# `meta_signed_request` refuses on sight -- so anyone who was ever shown Embedded Signup's popup
+# for a connection (a departed employee, a consultant who set several customers up) could
+# otherwise mint one on demand and stop that organization's sends at will, with no OpsGrids
+# account. Both functions instead record `ConnectionHealth.identity_revoked_at` -- an advisory
+# timestamp `app/dispatcher.py` never reads, shown on the health card as a plain, informational
+# note. Only Meta's own Graph API answering for the *token itself* (`w1_setup`'s own token checks,
+# `record_token_check`) may ever flip `token_state`. Neither function disconnects the account
+# (`disconnect`, above, is the full wipe a person asks for explicitly) or touches any business
+# record -- numbers, templates, conversations, message history.
+#
+# **Both are one-shot per connection.** `ProviderAccount.meta_user_id` is cleared the moment either
+# effect is applied, so a second callback naming the same Facebook user id -- Meta genuinely
+# redelivering, or a fresh, validly-signed blob for the same id minted the way the paragraph above
+# describes -- finds nothing left to act on: `selectors.accounts_for_meta_user_id`'s own lookup no
+# longer matches the row. This is idempotency *and* the fix for the lever above: closing the
+# identity link is what makes a repeat, however it was obtained, powerless.
+#
+# **Both re-check the identity before acting.** The account is loaded `FOR UPDATE` and the
+# callback's own `user_id` is compared against the row's current `meta_user_id` a second time,
+# under the lock -- not just by the directory reader's own `WHERE` a moment earlier, which a
+# concurrent reconnect (a new token, a new identity link) could have already raced past. A mismatch
+# is treated exactly like "no match at all": nothing is touched, nothing is audited.
+
+#: Meta's deauthorize callback reported that the Facebook login behind a connection was
+#: deauthorized from our app. The dedicated source/reason pair `apply_meta_deauthorize`'s audit
+#: row carries, in the shape `consent.SOURCE_META_PREFERENCE`'s own docstring documents: a fixed,
+#: non-PII evidence sentence, never anything read from the callback's own payload.
+SOURCE_META_DEAUTHORIZE: Final = "meta_deauthorize"
+_META_DEAUTHORIZE_REASON: Final = (
+    "Meta's deauthorize callback reported that the Facebook login behind this WhatsApp "
+    "connection was deauthorized from our app."
+)
+
+#: Meta's data-deletion callback asked that the data tied to one Facebook login be deleted. Scoped
+#: to *that person's identity link* only -- see `apply_meta_data_deletion`'s docstring for what
+#: this deliberately does not touch.
+SOURCE_META_DATA_DELETION: Final = "meta_data_deletion"
+_META_DATA_DELETION_REASON: Final = (
+    "Meta's data-deletion callback asked that the data tied to the Facebook login behind this "
+    "WhatsApp connection be deleted."
+)
+
+
+async def _record_identity_revoked(session: AsyncSession, organization_id: uuid.UUID) -> None:
+    """Advisory only -- see the module-level note above. Never writes `token_state`; creates the
+    health row (as `unknown`, the same default `record_token_check` gives a fresh one) if a
+    callback somehow arrives before any setup or token check ever has."""
+    now = datetime.now(UTC)
+    health = await w1_selectors.get_health(session, organization_id)
+    if health is None:
+        health = ConnectionHealth(organization_id=organization_id)
+        health.token_state = "unknown"  # noqa: S105 - a state word, not a credential
+        session.add(health)
+    health.identity_revoked_at = now
+    await session.flush()
+
+
+async def apply_meta_deauthorize(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    account_id: uuid.UUID,
+    *,
+    user_id: str,
+    request: Request | None = None,
+) -> bool:
+    """One connection's reaction to a deauthorize callback naming its `meta_user_id`. Records the
+    advisory `identity_revoked_at` signal (never `token_state` -- see the module-level note above)
+    and writes an audit row with a fixed, non-PII evidence sentence -- never the Meta user id
+    itself.
+
+    One-shot: `meta_user_id` is cleared here, so a second callback for the same id -- genuine or
+    not -- finds this row un-matched by `selectors.accounts_for_meta_user_id` and never reaches
+    this function again. The account is loaded `FOR UPDATE` and `user_id` is re-checked against it
+    under the lock, which is what makes two overlapping deliveries of the same callback resolve to
+    exactly one audit row without a separate `processed_events` entry: the loser's own re-check
+    fails once the winner has committed. Returns whether this call actually did anything, for the
+    route's own logging.
+    """
+    stmt = select(ProviderAccount).where(ProviderAccount.id == account_id).with_for_update()
+    account = (await session.execute(stmt)).scalar_one_or_none()
+    if (
+        account is None
+        or account.organization_id != organization_id
+        or account.meta_user_id != user_id
+    ):
+        return False
+    account.meta_user_id = None
+    await _record_identity_revoked(session, organization_id)
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        action="engage.whatsapp.meta_deauthorized",
+        entity="provider_account",
+        entity_id=account.id,
+        reason=_META_DEAUTHORIZE_REASON,
+        request=request,
+    )
+    return True
+
+
+async def apply_meta_data_deletion(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    account_id: uuid.UUID,
+    *,
+    user_id: str,
+    request: Request | None = None,
+) -> bool:
+    """One organization's reaction to a data-deletion callback matching one of its connections.
+
+    Nulls `ProviderAccount.meta_user_id` -- the connection can no longer be tied to that Facebook
+    login -- and records the advisory `identity_revoked_at` signal the same way
+    `apply_meta_deauthorize` does (never `token_state`; see the module-level note above).
+
+    **Scope, stated plainly because it matters for App Review as much as for correctness.** This
+    touches only the identity link: `meta_user_id`, the connection health note, and every
+    `w1_setup_runs.meta_user_id_hint` this organization's runs carried for the same id (a run still
+    in progress must not copy a since-deleted identity onto the connection later). It does not
+    delete, disconnect, or otherwise touch the organization's own WhatsApp business records --
+    `w1_numbers`, `provider_templates`, `conversations`, `inbound_messages`, `messages` -- which
+    are the tenant's business data, not personal data about the person who once completed Embedded
+    Signup. See `docs/whatsapp/webhooks.md`.
+
+    The account is loaded `FOR UPDATE` and `user_id` is re-checked against it under the lock --
+    the same re-check, and for the same race, `apply_meta_deauthorize`'s docstring explains.
+    Idempotent by absence: once `meta_user_id` is nulled, a retried callback's own account lookup
+    (`selectors.accounts_for_meta_user_id`, run again by the caller before this is reached) simply
+    no longer finds this row, so a second call for the same account never happens. Returns whether
+    this call actually did anything (False when the account was already cleared, replaced, or
+    removed by the time this ran, or the id no longer matches under the lock).
+    """
+    stmt = select(ProviderAccount).where(ProviderAccount.id == account_id).with_for_update()
+    account = (await session.execute(stmt)).scalar_one_or_none()
+    if (
+        account is None
+        or account.organization_id != organization_id
+        or account.meta_user_id != user_id
+    ):
+        return False
+    account.meta_user_id = None
+    await _record_identity_revoked(session, organization_id)
+    # Same tenant transaction as the rest of this effect: a run still `running` that copies
+    # `meta_user_id_hint` onto the connection after this commits (`w1_setup._step_number`) would
+    # otherwise re-arm the identity link this same request just asked to have forgotten.
+    await clear_stale_meta_user_id_hint(session, organization_id, user_id)
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        action="engage.whatsapp.meta_data_deletion",
+        entity="provider_account",
+        entity_id=account.id,
+        reason=_META_DATA_DELETION_REASON,
+        request=request,
+    )
+    return True
+
+
+async def clear_stale_meta_user_id_hint(
+    session: AsyncSession, organization_id: uuid.UUID, user_id: str
+) -> None:
+    """Clears `w1_setup_runs.meta_user_id_hint` for this organization's runs that still carry
+    this Facebook user id — independent of whether a `ProviderAccount` still matches it.
+
+    Called from two places: from `apply_meta_data_deletion` above, for the organization whose
+    account the ordinary lookup found; and directly from the data-deletion webhook route
+    (`api/webhooks.py`) for an organization whose account was already cleared by an earlier
+    deauthorize callback (`apply_meta_deauthorize`, which nulls `meta_user_id` but does not touch
+    `meta_user_id_hint`) — the race `w1_selectors.setup_run_organizations_for_meta_user_id_hint`'s
+    docstring explains. Idempotent (a second call finds nothing left to clear); no audit row,
+    since this alone deletes nothing a person asked to have deleted, only a cached identity hint on
+    an in-progress or abandoned setup attempt.
+    """
+    await session.execute(
+        sa_update(SetupRun)
+        .where(SetupRun.organization_id == organization_id, SetupRun.meta_user_id_hint == user_id)
+        .values(meta_user_id_hint=None)
+    )
+
+
+# --------------------------------------------------------------------- data-deletion confirmation
+
+
+def _data_deletion_request_key(payload_segment: str, cfg: Settings) -> str:
+    """Blind index of the still-encoded `signed_request` payload segment -- see
+    `MetaDataDeletionRequest`'s docstring for why this, and not the id itself, is what
+    `w1_meta_deletion_requests` carries.
+
+    Hashing the raw segment rather than `f"{user_id}:{issued_at}"` means this key never depends on
+    `issued_at` being present or well-typed: Meta fixes the *whole* payload at sign time and
+    resends the identical bytes on a genuine redelivery, so this key is exactly as idempotent as
+    the old one for a real retry, and unlike it never collapses two distinct requests that both
+    happen to omit `issued_at` onto the shared key `f"{user_id}:None"` would have produced.
+    """
+    return pii.blind_index(payload_segment, kind="generic", settings=cfg)
+
+
+def data_deletion_status_url(cfg: Settings, confirmation_code: str) -> str:
+    """The URL this platform's own answer to Meta names -- `engage_public_api_base` is the
+    gateway's public base (the same one campaign unsubscribe links use), not an Engage-specific
+    one despite its name."""
+    base = cfg.engage_public_api_base.rstrip("/")
+    return f"{base}/webhooks/whatsapp/data-deletion-status?code={confirmation_code}"
+
+
+async def mint_or_reuse_confirmation(
+    session: AsyncSession, *, payload_segment: str, cfg: Settings
+) -> MetaDataDeletionRequest:
+    """The confirmation record for one data-deletion callback -- minted fresh, or the one an
+    earlier, identical callback already minted.
+
+    Idempotent on `request_key` (`_data_deletion_request_key`): "the same request" is a
+    byte-identical `signed_request` payload segment, which is what a genuine Meta redelivery of
+    one callback carries and what a person's second, later "Send Request" click does not (Meta
+    stamps a fresh `issued_at` into the payload on each, which changes the segment). This session
+    carries no tenant GUC (`session_scope(organization_id=None)`, the caller's own choice) -- see
+    `MetaDataDeletionRequest`'s docstring for why this table has no organization to bind one to in
+    the first place.
+
+    The insert races the same way `_reserve_run` above does, and is fixed the same way: `add`
+    happens *inside* the savepoint, so a losing `IntegrityError` leaves the outer transaction
+    exactly as usable as it was before this was called, and the winner's own row is still there to
+    read back.
+    """
+    request_key = _data_deletion_request_key(payload_segment, cfg)
+    existing = (
+        await session.execute(
+            select(MetaDataDeletionRequest).where(
+                MetaDataDeletionRequest.request_key == request_key
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    try:
+        async with session.begin_nested():
+            row = MetaDataDeletionRequest(
+                confirmation_code=secrets.token_hex(16), request_key=request_key
+            )
+            session.add(row)
+            await session.flush()
+    except IntegrityError:
+        # Lost a race with another request carrying the identical key (two concurrent redeliveries
+        # of the same callback): the winner's row is the one to hand back. The savepoint's own
+        # rollback already undid the loser's failed insert, so the outer transaction this session
+        # is still in is exactly as usable as it was before `begin_nested` -- the bug this fixes
+        # was adding the row *outside* the savepoint, so the outer transaction was left aborted by
+        # the time this `SELECT` ran.
+        winner = (
+            await session.execute(
+                select(MetaDataDeletionRequest).where(
+                    MetaDataDeletionRequest.request_key == request_key
+                )
+            )
+        ).scalar_one()
+        return winner
+    return row
+
+
+async def data_deletion_confirmation_status(
+    session: AsyncSession, confirmation_code: str
+) -> MetaDataDeletionRequest | None:
+    """The one thing `GET .../data-deletion-status` may answer with: this code's own row, or
+    None. See `MetaDataDeletionRequest`'s docstring for why the row itself carries nothing else."""
+    stmt = select(MetaDataDeletionRequest).where(
+        MetaDataDeletionRequest.confirmation_code == confirmation_code
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()

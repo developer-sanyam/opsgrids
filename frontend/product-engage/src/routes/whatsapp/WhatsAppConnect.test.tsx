@@ -232,6 +232,46 @@ describe("the Meta window", () => {
     expect(complete).toHaveBeenCalledTimes(1);
   });
 
+  it("forwards the Facebook user id from FB.login's own response alongside the code", async () => {
+    const complete = vi.spyOn(api, "completeSignup").mockResolvedValue({ setup_id: SETUP_ID, status: "running" });
+    vi.spyOn(api, "listWhatsAppNumbers").mockResolvedValue({ items: [MAIN_NUMBER] });
+    const user = userEvent.setup();
+    renderWizard();
+    await startMeta(user);
+
+    postFromMeta(FINISH);
+    playLogin({ authResponse: { code: "AQB-with-user-id", userID: "218471" } });
+
+    await waitFor(() =>
+      expect(complete).toHaveBeenCalledWith({
+        code: "AQB-with-user-id",
+        waba_id: CONNECTION.waba_id,
+        phone_number_id: MAIN_NUMBER.phone_number_id,
+        meta_user_id: "218471",
+      }),
+    );
+  });
+
+  it("completes signup with no meta_user_id when FB.login's response does not carry one", async () => {
+    const complete = vi.spyOn(api, "completeSignup").mockResolvedValue({ setup_id: SETUP_ID, status: "running" });
+    vi.spyOn(api, "listWhatsAppNumbers").mockResolvedValue({ items: [MAIN_NUMBER] });
+    const user = userEvent.setup();
+    renderWizard();
+    await startMeta(user);
+
+    postFromMeta(FINISH);
+    playLogin({ authResponse: { code: "AQB-no-user-id" } });
+
+    await waitFor(() =>
+      expect(complete).toHaveBeenCalledWith({
+        code: "AQB-no-user-id",
+        waba_id: CONNECTION.waba_id,
+        phone_number_id: MAIN_NUMBER.phone_number_id,
+      }),
+    );
+    expect(complete.mock.calls[0]?.[0]).not.toHaveProperty("meta_user_id");
+  });
+
   it("offers a fresh window, not a stuck spinner, when the customer goes back to this step after signup started", async () => {
     vi.spyOn(api, "completeSignup").mockResolvedValue({ setup_id: SETUP_ID, status: "running" });
     vi.spyOn(api, "listWhatsAppNumbers").mockResolvedValue({ items: [MAIN_NUMBER] });

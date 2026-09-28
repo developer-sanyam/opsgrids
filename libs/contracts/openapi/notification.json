@@ -5348,10 +5348,22 @@
             "title": "Code",
             "type": "string"
           },
+          "meta_user_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9]{1,30}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta User Id"
+          },
           "phone_number_id": {
             "anyOf": [
               {
-                "pattern": "^\\d{1,30}$",
+                "pattern": "^[0-9]{1,30}$",
                 "type": "string"
               },
               {
@@ -5363,7 +5375,7 @@
           "waba_id": {
             "anyOf": [
               {
-                "pattern": "^\\d{1,30}$",
+                "pattern": "^[0-9]{1,30}$",
                 "type": "string"
               },
               {
@@ -6433,6 +6445,17 @@
               }
             ],
             "title": "Checked At"
+          },
+          "identity_revoked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identity Revoked At"
           },
           "state": {
             "enum": [
