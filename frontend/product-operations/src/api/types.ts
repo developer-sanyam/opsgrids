@@ -1001,3 +1001,83 @@ export interface RouteOut {
   node_ids: string[];
   distance_mm: number;
 }
+
+/* --------------------------------- counting (ADR-0026, Fulfilment plan F8) --------------------------------- */
+/**
+ * Mirrors `services/operations/app/schemas.py`'s counting section exactly. This screen is the
+ * manager's — opening a session, moving it to review, and approving or rejecting each
+ * discrepancy. Counting a line itself is the worker PWA's job (`frontend/worker-app`), a separate
+ * app, and is not what these types serve beyond what the review screen needs to render.
+ */
+
+export type CountScopeKind = "WAREHOUSE" | "ZONE" | "LOCATIONS";
+export type CountSessionStatus = "ACTIVE" | "REVIEW" | "CLOSED" | "CANCELLED";
+export type CountLineReviewStatus = "NONE" | "PENDING" | "APPROVED" | "REJECTED";
+export type CountMethod = "scan" | "manual";
+
+/** Mirrors `CountSessionOut`. `line_count`/`counted_count`/`pending_review_count` are computed
+ *  read-model rollups (never stored), the same "derived, not cached" shape `Supplier.open_pos`
+ *  and this build's other rollups already use. */
+export interface CountSessionOut {
+  id: string;
+  warehouse_id: string;
+  scope_kind: CountScopeKind;
+  zone_location_id: string | null;
+  location_ids: string[] | null;
+  status: CountSessionStatus;
+  label: string;
+  line_count: number;
+  counted_count: number;
+  pending_review_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `POST /counting/sessions` — refused (409) while the warehouse already has a session `ACTIVE`
+ *  or under `REVIEW` (ADR-0026 §5, one session per warehouse at a time). */
+export interface CountSessionIn {
+  warehouse_id: string;
+  scope_kind: CountScopeKind;
+  zone_location_id?: string;
+  location_ids?: string[];
+  label?: string;
+}
+
+/** `POST /counting/sessions/{id}/cancel`. */
+export interface CountSessionCancelIn {
+  reason?: string;
+}
+
+/** Mirrors `CountLineOut`. `expected` is the open-time snapshot; a live balance that moved since
+ *  is not re-fetched here — `app.inventory.ledger.post_move` recomputes the real delta from the
+ *  live figure at approval time regardless (ADR-0026 §6). */
+export interface CountLineOut {
+  id: string;
+  session_id: string;
+  inventory_item_id: string;
+  sku: string;
+  location_id: string;
+  status: string;
+  lot_id: string | null;
+  roll_id: string | null;
+  is_unlisted: boolean;
+  expected: Qty;
+  counted: Qty | null;
+  count_method: CountMethod | null;
+  scanned_barcode: string | null;
+  counted_by: string | null;
+  counted_at: string | null;
+  review_status: CountLineReviewStatus;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_note: string;
+  posted_move_id: string | null;
+  created_at: string;
+}
+
+/** `POST /counting/sessions/{id}/lines/{line_id}/review` — approving posts through the kernel in
+ *  the same call; rejecting needs a note and never touches the ledger. */
+export interface CountLineReviewIn {
+  decision: "approve" | "reject";
+  note?: string;
+}

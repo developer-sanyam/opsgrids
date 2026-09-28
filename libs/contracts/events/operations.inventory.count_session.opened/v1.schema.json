@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.count_session.opened/v1",
+  "title": "operations.inventory.count_session.opened",
+  "description": "A cycle-count session was opened for a warehouse and its lines were snapshotted from the current stock (ADR-0026 §6). At most one session is ever ACTIVE or REVIEW per warehouse at a time (ADR-0026 §5).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "session_id", "warehouse_id", "scope_kind", "line_count"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "session_id": { "type": "string", "format": "uuid" },
+    "warehouse_id": { "type": "string", "format": "uuid" },
+    "scope_kind": { "type": "string", "enum": ["WAREHOUSE", "ZONE", "LOCATIONS"] },
+    "line_count": { "type": "integer", "minimum": 0 }
+  }
+}

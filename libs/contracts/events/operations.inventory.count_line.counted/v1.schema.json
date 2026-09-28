@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.count_line.counted/v1",
+  "title": "operations.inventory.count_line.counted",
+  "description": "A worker recorded a physical count for one bucket of a session (ADR-0026 §6) — either a line already on the session's open-time snapshot, or a new `is_unlisted` line for a bucket nothing was expected at. `counted_milli`/`expected_milli` are integer milli-units of the item's UOM, the same scale `operations.inventory.stock.posted` uses. Nothing has posted to the ledger yet; that only happens on `count_line.discrepancy_approved`, or never, if the count matched what was expected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "session_id", "line_id", "counted_milli", "expected_milli"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "session_id": { "type": "string", "format": "uuid" },
+    "line_id": { "type": "string", "format": "uuid" },
+    "counted_milli": { "type": "integer", "minimum": 0 },
+    "expected_milli": { "type": "integer", "minimum": 0 },
+    "is_unlisted": { "type": "boolean" }
+  }
+}

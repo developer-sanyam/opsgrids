@@ -1,4 +1,6 @@
 import type {
+  CountLineReviewStatus,
+  CountSessionStatus,
   OfferState,
   OrderStatus,
   PickTaskStatus,
@@ -226,4 +228,52 @@ export function StockPill({ level }: { level: StockLevel }) {
       <StatusBadge tone={STOCK_TONE[level]} label={STOCK_LABEL[level]} />
     </span>
   );
+}
+
+/* ---------------------------- count session status ---------------------------- */
+/**
+ * ADR-0026 §6's `COUNT_SESSION_TRANSITIONS` vocabulary. `REVIEW` is the registered word
+ * `in_review` (info) — an exact semantic match, not a coincidence of spelling. `ACTIVE` takes the
+ * registered `in_progress` (info) rather than `active` (success): a count in flight is not yet a
+ * good outcome, only a fact in motion.
+ */
+
+const COUNT_SESSION_LABEL: Record<CountSessionStatus, string> = {
+  ACTIVE: "Active",
+  REVIEW: "In review",
+  CLOSED: "Closed",
+  CANCELLED: "Cancelled",
+};
+
+const COUNT_SESSION_WORD: Record<CountSessionStatus, StatusWord> = {
+  ACTIVE: "in_progress",
+  REVIEW: "in_review",
+  CLOSED: "closed",
+  CANCELLED: "cancelled",
+};
+
+export function CountSessionStatusPill({ status }: { status: CountSessionStatus }) {
+  return <StatusBadge status={COUNT_SESSION_WORD[status]} label={COUNT_SESSION_LABEL[status]} />;
+}
+
+/* -------------------------- count line review status -------------------------- */
+/** `NONE` (nothing to review) is not a registered word and is shown quietly, neutral. */
+
+const COUNT_LINE_LABEL: Record<CountLineReviewStatus, string> = {
+  NONE: "—",
+  PENDING: "Pending review",
+  APPROVED: "Approved",
+  REJECTED: "Rejected",
+};
+
+const COUNT_LINE_REGISTERED: Partial<Record<CountLineReviewStatus, StatusWord>> = {
+  PENDING: "pending",
+  APPROVED: "approved",
+  REJECTED: "rejected",
+};
+
+export function CountLineReviewStatusPill({ status }: { status: CountLineReviewStatus }) {
+  const word = COUNT_LINE_REGISTERED[status];
+  if (word) return <StatusBadge status={word} label={COUNT_LINE_LABEL[status]} />;
+  return <StatusBadge tone="neutral" label={COUNT_LINE_LABEL[status]} />;
 }

@@ -1,4 +1,5 @@
 import {
+  CheckSquareIcon,
   ClipboardCheckIcon,
   ClipboardListIcon,
   FactoryIcon,
@@ -29,6 +30,7 @@ const GROUPS: NavGroup[] = [
       { to: "/purchase-orders", label: "Purchase Orders", icon: ClipboardListIcon },
       { to: "/inventory", label: "Inventory", icon: LayersIcon },
       { to: "/inventory/categories", label: "Item Categories", icon: FolderIcon },
+      { to: "/counting", label: "Cycle Counts", icon: CheckSquareIcon },
       { to: "/suppliers", label: "Suppliers", icon: FactoryIcon },
       { to: "/warehouses", label: "Warehouses", icon: WarehouseIcon },
     ],

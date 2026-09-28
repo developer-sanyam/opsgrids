@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.count_line.discrepancy_approved/v1",
+  "title": "operations.inventory.count_line.discrepancy_approved",
+  "description": "A manager approved a counted discrepancy (ADR-0026 §3/§6). In the same transaction this posted through `app.inventory.ledger.post_move` (kind `count`), idempotent on `count:<line_id>` — `posted_move_id` names that move. The kernel computed the actual posted delta from the *live* balance under its own lock at post time, which can differ from `counted_milli - expected_milli` if the bucket moved between the count and this approval; the resulting balance always lands on `counted_milli` exactly regardless.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "session_id", "line_id", "counted_milli", "expected_milli", "posted_move_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "session_id": { "type": "string", "format": "uuid" },
+    "line_id": { "type": "string", "format": "uuid" },
+    "counted_milli": { "type": "integer", "minimum": 0 },
+    "expected_milli": { "type": "integer", "minimum": 0 },
+    "posted_move_id": { "type": "string", "format": "uuid" }
+  }
+}

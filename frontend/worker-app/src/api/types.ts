@@ -197,3 +197,59 @@ export interface LocationOut {
   name: string;
   barcode: string | null;
 }
+
+// ------------------------------------------------------------------ counting (ADR-0026, plan F8)
+// Opening a session, moving it to review, and approving/rejecting a discrepancy are the
+// manager's job (product-operations, a separate app) and are not declared here.
+
+export type CountSessionStatus = "ACTIVE" | "REVIEW" | "CLOSED" | "CANCELLED";
+
+export interface CountSessionOut {
+  id: string;
+  warehouse_id: string;
+  scope_kind: "WAREHOUSE" | "ZONE" | "LOCATIONS";
+  status: CountSessionStatus;
+  label: string;
+  line_count: number;
+  counted_count: number;
+  pending_review_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type CountLineReviewStatus = "NONE" | "PENDING" | "APPROVED" | "REJECTED";
+export type CountMethod = "scan" | "manual";
+
+export interface CountLineOut {
+  id: string;
+  session_id: string;
+  inventory_item_id: string;
+  sku: string;
+  location_id: string;
+  status: string;
+  is_unlisted: boolean;
+  expected: string;
+  counted: string | null;
+  count_method: CountMethod | null;
+  scanned_barcode: string | null;
+  counted_by: string | null;
+  counted_at: string | null;
+  review_status: CountLineReviewStatus;
+}
+
+/** `POST /counting/sessions/{id}/lines/{line_id}/count`. */
+export interface CountLineSubmitIn {
+  counted: string;
+  count_method: CountMethod;
+  scanned_barcode?: string;
+}
+
+/** `POST /counting/sessions/{id}/lines` — a bucket the session's snapshot did not expect. */
+export interface CountLineAddIn {
+  inventory_item_id: string;
+  location_id: string;
+  status?: string;
+  counted: string;
+  count_method: CountMethod;
+  scanned_barcode?: string;
+}

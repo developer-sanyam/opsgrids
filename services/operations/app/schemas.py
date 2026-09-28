@@ -1705,3 +1705,117 @@ class ShipmentRefusalIn(BaseModel):
     @classmethod
     def _reason_is_not_blank(cls, value: str) -> str:
         return _reject_blank_or_control(value, field_name="reason")
+
+
+# ------------------------------------------------------------------ counting (ADR-0026;
+# `docs/fulfilment/plan.md` F8)
+
+CountScopeKind = Literal["WAREHOUSE", "ZONE", "LOCATIONS"]
+CountSessionStatus = Literal["ACTIVE", "REVIEW", "CLOSED", "CANCELLED"]
+CountLineReviewStatus = Literal["NONE", "PENDING", "APPROVED", "REJECTED"]
+CountMethod = Literal["scan", "manual"]
+
+
+class CountSessionOut(BaseModel):
+    id: str
+    warehouse_id: str
+    scope_kind: CountScopeKind
+    zone_location_id: str | None
+    location_ids: list[str] | None
+    status: CountSessionStatus
+    label: str
+    line_count: int
+    counted_count: int
+    pending_review_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class CountSessionIn(BaseModel):
+    """`POST /counting/sessions` — opens a session and snapshots its lines from the current
+    `inventory_balances` in scope (ADR-0026 §6). Refused (409) while the warehouse already has a
+    session `ACTIVE` or under `REVIEW` (ADR-0026 §5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    warehouse_id: UUID
+    scope_kind: CountScopeKind
+    #: Required (and only meaningful) when `scope_kind == "ZONE"` — every location at or below
+    #: this one is in scope.
+    zone_location_id: UUID | None = None
+    #: Required (and only meaningful) when `scope_kind == "LOCATIONS"`.
+    location_ids: list[UUID] | None = Field(default=None, max_length=500)
+    label: str = Field(default="", max_length=200)
+
+
+class CountSessionCancelIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(default="", max_length=500)
+
+
+class CountLineOut(BaseModel):
+    id: str
+    session_id: str
+    inventory_item_id: str
+    sku: str
+    location_id: str
+    status: str
+    lot_id: str | None
+    roll_id: str | None
+    is_unlisted: bool
+    expected: Qty
+    counted: Qty | None
+    count_method: CountMethod | None
+    scanned_barcode: str | None
+    counted_by: str | None
+    counted_at: datetime | None
+    review_status: CountLineReviewStatus
+    reviewed_by: str | None
+    reviewed_at: datetime | None
+    review_note: str
+    posted_move_id: str | None
+    created_at: datetime
+
+
+class CountLineSubmitIn(BaseModel):
+    """`POST /counting/sessions/{id}/lines/{line_id}/count` — a worker's physical reading for a
+    line already on the session's open-time snapshot. A line may be counted once; a mistaken entry
+    is corrected by a manager rejecting it (never a silent overwrite) — recounting a rejected line
+    is a new session (ADR-0026 §4, "not in scope: a dedicated recount state")."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    counted: Qty
+    count_method: CountMethod
+    scanned_barcode: str | None = Field(default=None, max_length=64)
+
+
+class CountLineAddIn(BaseModel):
+    """`POST /counting/sessions/{id}/lines` — a worker reporting stock at a bucket the session's
+    snapshot did not expect anything at (`is_unlisted=True` on the created line). Refused if the
+    bucket is already tracked by this session (use the count endpoint on that line instead) or is
+    outside the session's own scope."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    inventory_item_id: UUID
+    location_id: UUID
+    status: str = "AVAILABLE"
+    lot_id: UUID | None = None
+    roll_id: UUID | None = None
+    counted: Qty
+    count_method: CountMethod
+    scanned_barcode: str | None = Field(default=None, max_length=64)
+
+
+class CountLineReviewIn(BaseModel):
+    """`POST /counting/sessions/{id}/lines/{line_id}/review` — a manager's decision on one
+    `PENDING` discrepancy. Approving posts through `app.inventory.ledger.post_move` in the same
+    call (ADR-0026 §3); rejecting never touches the ledger. A rejection needs a note — the same
+    "a refusal names why" convention `PickConfirmIn`'s short-pick `reason` sets."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "reject"]
+    note: str = Field(default="", max_length=500)

@@ -26,7 +26,8 @@ if (AUTH_ORIGIN) configureAuthOrigin(AUTH_ORIGIN);
  * the app's whole reason to exist). Everything reached by drilling into a task — detail, scan,
  * pick and pack confirmation — is a lazy split point: none of it is needed until a worker taps
  * into a task, and the barcode-scanning code in particular (`lib/useBarcodeScanner.ts`) is worth
- * keeping off the boot bundle for a phone on a warehouse's own signal.
+ * keeping off the boot bundle for a phone on a warehouse's own signal. Counting (ADR-0026, plan
+ * F8) is the same story — a worker never touches a count session on a normal picking shift.
  */
 const ProfilePage = lazy(() => import("./routes/Profile").then((m) => ({ default: m.ProfilePage })));
 const TaskDetailPage = lazy(() =>
@@ -37,6 +38,13 @@ const PickConfirmPage = lazy(() =>
   import("./routes/PickConfirm").then((m) => ({ default: m.PickConfirmPage })),
 );
 const PackPage = lazy(() => import("./routes/Pack").then((m) => ({ default: m.PackPage })));
+const CountsPage = lazy(() => import("./routes/Counts").then((m) => ({ default: m.CountsPage })));
+const CountSessionLinesPage = lazy(() =>
+  import("./routes/CountSessionLines").then((m) => ({ default: m.CountSessionLinesPage })),
+);
+const CountLineEntryPage = lazy(() =>
+  import("./routes/CountLineEntry").then((m) => ({ default: m.CountLineEntryPage })),
+);
 
 const router = createBrowserRouter([
   {
@@ -66,6 +74,30 @@ const router = createBrowserRouter([
         ),
         children: [
           { index: true, element: <HomePage /> },
+          {
+            path: "counts",
+            element: (
+              <Suspense fallback={<RouteFallback />}>
+                <CountsPage />
+              </Suspense>
+            ),
+          },
+          {
+            path: "counts/:sessionId",
+            element: (
+              <Suspense fallback={<RouteFallback />}>
+                <CountSessionLinesPage />
+              </Suspense>
+            ),
+          },
+          {
+            path: "counts/:sessionId/lines/:lineId",
+            element: (
+              <Suspense fallback={<RouteFallback />}>
+                <CountLineEntryPage />
+              </Suspense>
+            ),
+          },
           {
             path: "profile",
             element: (

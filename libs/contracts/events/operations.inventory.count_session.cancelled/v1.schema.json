@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.count_session.cancelled/v1",
+  "title": "operations.inventory.count_session.cancelled",
+  "description": "A count session was abandoned from ACTIVE or REVIEW (ADR-0026 §6). Nothing posts for any line that had not already been approved before cancellation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "session_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "session_id": { "type": "string", "format": "uuid" }
+  }
+}
