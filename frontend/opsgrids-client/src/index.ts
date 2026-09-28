@@ -39,6 +39,7 @@ export {
   clearStepUpToken,
   isStepUpCancelled,
   revealRequest,
+  useMfaEnrolled,
   useStepUp,
   withStepUp,
 } from "./stepup";

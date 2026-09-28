@@ -13,7 +13,15 @@ import {
 import { isOpen, STAGES } from "@/data/stages";
 import { formatDate, formatMoney, formatRelative } from "@/lib/format";
 import { RevealableField } from "@/reveal/RevealableField";
-import { Can, problemMessage, useAsync, useCan, useMutation, useStepUp } from "@opsgrids/client";
+import {
+  Can,
+  problemMessage,
+  useAsync,
+  useCan,
+  useMfaEnrolled,
+  useMutation,
+  useStepUp,
+} from "@opsgrids/client";
 import {
   ActivityTimeline,
   Avatar,
@@ -90,7 +98,12 @@ export function DealDetailPage() {
   const directory = useDirectory();
   const { owners, companies, contacts } = directory;
   const canLog = useCan("crm.pipeline.activity.write", "OWN");
-  const canReveal = useCan("crm.book.contact.read_sensitive", "OWN");
+  const hasRevealPermission = useCan("crm.book.contact.read_sensitive", "OWN");
+  const mfaEnabled = useMfaEnrolled();
+  // Both halves of whether a reveal can actually succeed: the permission (presentation-only —
+  // the server refuses regardless) and a second factor to complete the step-up with. Same rule
+  // as LeadDetail.tsx's RevealNotice: an absent button, not a disabled one, for either reason.
+  const canReveal = hasRevealPermission && mfaEnabled;
   const stepUp = useStepUp();
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);

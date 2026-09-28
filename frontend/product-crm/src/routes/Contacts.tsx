@@ -11,7 +11,16 @@ import { ArrowRightIcon, ChevronDown, cn, ImportExportButton, MailIcon, PlusIcon
 import { formatDate, formatRelative } from "@/lib/format";
 import { RevealableField } from "@/reveal/RevealableField";
 import type { UseStepUpResult } from "@opsgrids/client";
-import { Can, problemMessage, useAsync, useCan, useImportExport, useMutation, useStepUp } from "@opsgrids/client";
+import {
+  Can,
+  problemMessage,
+  useAsync,
+  useCan,
+  useImportExport,
+  useMfaEnrolled,
+  useMutation,
+  useStepUp,
+} from "@opsgrids/client";
 import {
   Avatar,
   Button,
@@ -119,7 +128,12 @@ export function ContactsPage() {
   const directory = useDirectory();
   const { owners, companies } = directory;
   const canWrite = useCan("crm.book.contact.write", "OWN");
-  const canReveal = useCan("crm.book.contact.read_sensitive", "OWN");
+  const hasRevealPermission = useCan("crm.book.contact.read_sensitive", "OWN");
+  const mfaEnabled = useMfaEnrolled();
+  // Both halves of whether a reveal can actually succeed: the permission (presentation-only —
+  // the server refuses regardless) and a second factor to complete the step-up with. Same rule
+  // as LeadDetail.tsx's RevealNotice: an absent button, not a disabled one, for either reason.
+  const canReveal = hasRevealPermission && mfaEnabled;
   const stepUp = useStepUp();
 
   const loader = useCallback(

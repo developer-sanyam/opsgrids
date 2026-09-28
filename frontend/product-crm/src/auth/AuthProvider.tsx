@@ -26,7 +26,11 @@ const FIXTURE_USER: MeOut = {
   roles: FIXTURE_ORG.roles,
   amr: ["pwd"],
   must_change_password: false,
-  mfa_enabled: false,
+  // True, alongside FIXTURE_GRANTS' two `read_sensitive` grants below, for the same reason:
+  // fixture mode demonstrates the whole CRUD surface offline, and `useMfaEnrolled` gates Reveal
+  // on both. A `false` here would hide the button in every demo and screenshot, contradicting
+  // exactly what those grants were added for.
+  mfa_enabled: true,
   organizations: [FIXTURE_ORG],
 };
 

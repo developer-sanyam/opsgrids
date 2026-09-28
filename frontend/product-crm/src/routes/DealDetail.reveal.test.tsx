@@ -88,7 +88,7 @@ beforeEach(() => {
     "GET /api/v1/deals/activities": () => json({ items: [], total: 0, page: 1, size: 200, pages: 0 }),
     [STEP_UP]: () => stepUpToken(),
     [REVEAL]: () => json({ contact_id: "con-1", phone: PHONE }),
-    [ME]: () => json({ user_id: "u-1" }),
+    [ME]: () => json({ user_id: "u-1", mfa_enabled: true }),
   };
   setAccessToken(SESSION_TOKEN);
   clearStepUpToken();
@@ -127,6 +127,14 @@ describe("DealDetail reveal", () => {
 
   it("offers nothing without the grant, and keeps the phone masked", async () => {
     await openDeal(["crm.pipeline.deal.write:ORG", "crm.lead.lead.read_sensitive:ORG"]);
+
+    expect(screen.queryByRole("button", { name: /reveal/i })).toBeNull();
+    expect(screen.getByText("+91 98••• ••210")).toBeTruthy();
+  });
+
+  it("offers nothing without a second factor set up, and keeps the phone masked", async () => {
+    routes[ME] = () => json({ user_id: "u-1", mfa_enabled: false });
+    await openDeal();
 
     expect(screen.queryByRole("button", { name: /reveal/i })).toBeNull();
     expect(screen.getByText("+91 98••• ••210")).toBeTruthy();
