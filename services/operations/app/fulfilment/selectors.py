@@ -25,9 +25,10 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.inventory.quantity import format_qty
@@ -81,8 +82,6 @@ def workers_stmt(
         stmt = stmt.where(Worker.is_active == is_active)
     if q:
         needle = f"%{q.lower()}%"
-        from sqlalchemy import func
-
         stmt = stmt.where(func.lower(Worker.display_name).like(needle))
     return stmt.order_by(Worker.display_name.asc(), Worker.created_at.asc())
 
@@ -144,6 +143,85 @@ async def has_zone_access(
         WorkerZoneAccess.location_id == location_id,
     )
     return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+async def zone_access_map_for(
+    session: AsyncSession, org_id: uuid.UUID, worker_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, list[uuid.UUID]]:
+    """Every worker's own zone grants, grouped by worker — the batched sibling of
+    `zone_access_for`/`has_zone_access` (N+1 avoidance), built for auto-assignment's own candidate
+    pass (`app.fulfilment.services._worker_candidates`), which has to check every warehouse
+    worker's zone access in one page, not one query per worker."""
+    if not worker_ids:
+        return {}
+    stmt = select(WorkerZoneAccess.worker_id, WorkerZoneAccess.location_id).where(
+        WorkerZoneAccess.organization_id == org_id, WorkerZoneAccess.worker_id.in_(worker_ids)
+    )
+    out: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for worker_id, location_id in await session.execute(stmt):
+        out.setdefault(worker_id, []).append(location_id)
+    return out
+
+
+async def worker_candidates_for_warehouse(
+    session: AsyncSession, org_id: uuid.UUID, warehouse_id: uuid.UUID
+) -> list[Worker]:
+    """The raw pool auto-assignment ranks from — every active worker at this warehouse.
+    Deliberately filters no further than `is_active`: presence, zone access and skills are the
+    domain layer's job (`app.domain.is_worker_eligible_for_task`), never a second copy of that
+    rule written again in SQL."""
+    stmt = select(Worker).where(
+        Worker.organization_id == org_id,
+        Worker.warehouse_id == warehouse_id,
+        Worker.deleted_at.is_(None),
+        Worker.is_active.is_(True),
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def offer_workload_for(
+    session: AsyncSession, org_id: uuid.UUID, worker_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    """How many **live** offers (`OFFERED`/`ACCEPTED`) each worker currently holds — the ranking's
+    own "current open-task workload" (ADR-0024 §9). Reads `assignment_offers` rather than walking
+    `pick_tasks` task-by-task: at most one live offer per task
+    (`uq_assignment_offers_org_task_live`), so counting a worker's live offers **is** counting
+    their open tasks, in one grouped query (N+1 avoidance)."""
+    if not worker_ids:
+        return {}
+    stmt = (
+        select(AssignmentOffer.worker_id, func.count(AssignmentOffer.id))
+        .where(
+            AssignmentOffer.organization_id == org_id,
+            AssignmentOffer.worker_id.in_(worker_ids),
+            AssignmentOffer.state.in_(("OFFERED", "ACCEPTED")),
+        )
+        .group_by(AssignmentOffer.worker_id)
+    )
+    out: dict[uuid.UUID, int] = {}
+    for worker_id, count in await session.execute(stmt):
+        out[worker_id] = count
+    return out
+
+
+async def last_offered_at_for(
+    session: AsyncSession, org_id: uuid.UUID, worker_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, datetime]:
+    """Each worker's most recent `offered_at`, across every round whether it is still live or long
+    since answered — the ranking's own idle-time tiebreak (ADR-0024 §9). A worker with no row here
+    has never been offered anything, which `domain.rank_workers_for_offer` reads as "most idle of
+    all"."""
+    if not worker_ids:
+        return {}
+    stmt = (
+        select(AssignmentOffer.worker_id, func.max(AssignmentOffer.offered_at))
+        .where(AssignmentOffer.organization_id == org_id, AssignmentOffer.worker_id.in_(worker_ids))
+        .group_by(AssignmentOffer.worker_id)
+    )
+    out: dict[uuid.UUID, datetime] = {}
+    for worker_id, last_at in await session.execute(stmt):
+        out[worker_id] = last_at
+    return out
 
 
 async def presence_for(
@@ -423,6 +501,22 @@ async def offers_for_task(
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def excluded_workers_for_task(
+    session: AsyncSession, org_id: uuid.UUID, task_id: uuid.UUID
+) -> frozenset[uuid.UUID]:
+    """Every worker ADR-0025 §2 excludes from this task's later **automatic** rounds — one whose
+    offer on this exact task was `DECLINED`, `EXPIRED` or `RELEASED` (a "failed round"; `WITHDRAWN`
+    is a dispatcher's own override, not a failure, so it does not exclude). A manual assignment is
+    unaffected — a manager may still pick an excluded worker by hand (`offer_task`'s own
+    `has_override` path never calls through this)."""
+    stmt = select(AssignmentOffer.worker_id).where(
+        AssignmentOffer.organization_id == org_id,
+        AssignmentOffer.task_id == task_id,
+        AssignmentOffer.state.in_(("DECLINED", "EXPIRED", "RELEASED")),
+    )
+    return frozenset((await session.execute(stmt)).scalars().all())
+
+
 async def get_live_offer(
     session: AsyncSession, org_id: uuid.UUID, task_id: uuid.UUID
 ) -> AssignmentOffer | None:
@@ -644,6 +738,7 @@ def pick_task_out(
         lines=list(lines),
         offers=list(offers),
         exceptions=list(exceptions),
+        auto_assign_failure_reason=task.auto_assign_failure_reason,
         created_at=task.created_at,
         updated_at=task.updated_at,
     )

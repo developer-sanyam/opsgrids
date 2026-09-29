@@ -474,6 +474,13 @@ class InventoryItem(Base, TenantBase):
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
     #: When stock last moved. Surfaced as `updated_at` on the wire.
     stocked_at: Mapped[date | None] = mapped_column(Date)
+    #: A free-text skill tag (the same vocabulary `WorkerSkill.skill` uses) a picker needs to be
+    #: offered a task touching this item — `NULL` (the default, every existing item) means no
+    #: skill is required. Auto-assignment's own scope: schema-only for now, read by
+    #: `app.fulfilment.services._required_skills_for_task`; no write path yet exposes it on
+    #: `ItemIn`/`ItemPatch` — the same "later phase adds the write path, not a migration"
+    #: precedent `WorkerPositionSample` sets below for coarse location pings.
+    required_skill: Mapped[str | None] = mapped_column(String(40))
 
     #: What a customer order line is priced at, per one whole stock UOM — integer minor units of
     #: `selling_price_currency` (ADR-0024 §3, amending ADR-0014: `unit_value_minor` above is
@@ -1284,6 +1291,12 @@ class FulfilmentSettings(Base, TenantBase):
     own (F2 carries no per-order tax field yet — a documented gap, see this slice's own report);
     `Numeric(5, 2)`, the same shape `services/finance`'s own `tax_rate_pct` columns use, since
     this value only ever travels to finance inside an `invoice_requested` payload.
+
+    `auto_assignment_enabled` is auto-assignment's own opt-in (ADR-0024 §9): defaults `False` so
+    an org with production dispatchers already relying on F3's manual-only offering sees **no**
+    change in behaviour until it explicitly turns this on — there is deliberately no admin
+    endpoint yet (the same gap every other column here already has; a settings-management surface
+    is a later phase's addition, not this one's).
     """
 
     __tablename__ = "fulfilment_settings"
@@ -1301,6 +1314,7 @@ class FulfilmentSettings(Base, TenantBase):
     default_tax_rate_pct: Mapped[Decimal] = mapped_column(
         Numeric(5, 2), nullable=False, default=Decimal("0")
     )
+    auto_assignment_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     __table_args__ = (
         CheckConstraint(
@@ -1499,6 +1513,13 @@ class PickTask(Base, TenantBase):
     `Order.settings_snapshot` freezes the policy an order was accepted under — a later settings
     edit must never reinterpret a round already in flight). `offer_timeout_seconds` is snapshotted
     the same way, for the expiry `schedule_event` each offer schedules.
+
+    `auto_assign_failure_reason` is set by `app.fulfilment.services.attempt_auto_assign` when an
+    org has opted into auto-assignment but no worker was eligible for this task — a dispatcher-
+    readable sentence (e.g. "No eligible worker online for zone DOCK-A"), never a silent stall:
+    the task simply sits `CREATED` with no live offer, exactly where an unoffered F3 task already
+    sits, for a human to offer by hand. Cleared back to `NULL` the moment any offer — auto or
+    manual — is made for this task (`offer_task`).
     """
 
     __tablename__ = "pick_tasks"
@@ -1527,6 +1548,8 @@ class PickTask(Base, TenantBase):
     round: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_rounds: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     offer_timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    #: See class docstring — set on a failed auto-assignment attempt, cleared on the next offer.
+    auto_assign_failure_reason: Mapped[str | None] = mapped_column(String(200))
 
     __table_args__ = (
         Index("ix_pick_tasks_org_order", "organization_id", "order_id"),
@@ -1608,8 +1631,13 @@ class AssignmentOffer(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     `state`: `OFFERED, ACCEPTED, DECLINED, EXPIRED, WITHDRAWN, RELEASED`. At most one live offer
     per task — `uq_assignment_offers_org_task_live`, a partial unique index on `(organization_id,
     task_id) WHERE state IN ('OFFERED', 'ACCEPTED')`. `score_breakdown` records why this worker was
-    chosen; for the manual-only assignment F3 ships, it names who assigned it (`{"kind": "manual",
-    "assigned_by": "<principal id>"}`), not a scored factor.
+    chosen. F3's manual offer names who assigned it (`{"kind": "manual", "assigned_by": "<principal
+    id>"}`); auto-assignment (ADR-0024 §9) names the ranking it believed at offer time instead
+    (`{"kind": "auto", "open_task_count": <int>, "last_offered_at": <iso ts or null>,
+    "required_skills": [...]}`) — kept as JSON, not re-derived later, since the engine's own
+    scoring may change and this is what it believed *then* (ADR-0025 §3's own reasoning for this
+    column). A manual override of a live offer records `{"kind": "manual", "assigned_by": ...,
+    "overrides_offer_id": "<id>"}`.
     """
 
     __tablename__ = "assignment_offers"

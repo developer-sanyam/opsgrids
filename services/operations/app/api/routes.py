@@ -1805,7 +1805,10 @@ async def create_tasks(
     "/operations/fulfilment/tasks/{task_id}/offers",
     response_model=AssignmentOfferOut,
     status_code=status.HTTP_201_CREATED,
-    summary="Offer a task to a worker (manual assignment — F3 has no auto-assign engine)",
+    summary=(
+        "Offer a task to a worker — manual assignment, and the override path for a live offer "
+        "auto-assignment already made (needs task.override)"
+    ),
     dependencies=[Entitled],
 )
 async def offer_task(
@@ -1816,8 +1819,17 @@ async def offer_task(
     )
     if task is None:
         raise NotFoundProblem("That task is not part of this organization")
+    # N4 (security review) shape — see `cancel_task`'s own comment: `.has(...)` is true for a
+    # grant at *any* scope, but `task.override` is a stronger, org-wide permission, so this checks
+    # the scope itself rather than mere possession.
+    has_override = ctx.principal.scope_for("operations.fulfilment.task.override") == Scope.ORG
     offer = await fulfilment_services.offer_task(
-        session, ctx, task, worker_id=payload.worker_id, request=request
+        session,
+        ctx,
+        task,
+        worker_id=payload.worker_id,
+        has_override=has_override,
+        request=request,
     )
     return fulfilment_selectors.assignment_offer_out(offer)
 

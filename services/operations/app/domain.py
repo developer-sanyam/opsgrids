@@ -8,8 +8,10 @@ tables render, exactly as the SPA derives them, so the numbers agree whichever s
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Sequence
-from datetime import date
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from fractions import Fraction
 
@@ -508,6 +510,127 @@ def can_transition_shipment(current: str, new: str) -> bool:
     "move" to the same status — answers 409, the same convention `can_transition_order`/
     `can_transition_pick_task` document."""
     return new in SHIPMENT_TRANSITIONS.get(current, frozenset())
+
+
+# ------------------------------------------------------------------ fulfilment auto-assignment
+# (ADR-0024 §9: "every fulfilment decision is a pure function ... with a total order so the same
+# inputs always give the same answer"; this build closes the gap ADR-0025 §2 left open: "Until
+# auto-assignment ships ... every offer is a manual one")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerCandidate:
+    """One worker's eligibility/ranking inputs for one auto-assignment pass — plain values, no
+    ORM, no session (`app.fulfilment.services._worker_candidates` builds these from a handful of
+    batched selector queries), so `eligible_workers_for_task`/`rank_workers_for_offer` are
+    testable without a database, exactly like `PICK_TASK_TRANSITIONS`/`can_transition_pick_task`
+    above."""
+
+    worker_id: uuid.UUID
+    is_active: bool
+    #: `WORKER_PRESENCE_STATES` — "online" | "offline".
+    presence_status: str
+    zone_location_ids: frozenset[uuid.UUID]
+    skills: frozenset[str]
+    #: This worker's current count of live offers (`OFFERED`/`ACCEPTED`) — the ranking's "current
+    #: open-task workload" (ADR-0024 §9), since at most one live offer exists per task
+    #: (`uq_assignment_offers_org_task_live`), so counting live offers **is** counting open tasks.
+    open_task_count: int
+    #: The most recent `offered_at` across every round this worker has ever been offered, live or
+    #: not — `None` for a worker never offered anything, which ranks as the most idle of all.
+    last_offered_at: datetime | None = None
+
+
+def is_worker_eligible_for_task(
+    candidate: WorkerCandidate,
+    *,
+    zone_location_id: uuid.UUID | None,
+    required_skills: frozenset[str],
+    excluded_worker_ids: frozenset[uuid.UUID] = frozenset(),
+) -> bool:
+    """Eligibility, in the exact order this build's own scope names it: active, presence online,
+    zone access (a task whose lines could not all be grouped under one zone — a single-bin shop —
+    has `zone_location_id is None` and imposes no zone requirement at all, mirroring
+    `offer_task`'s own manual-path check), every skill the task's lines require is one this worker
+    holds (a task with no `required_skill`'d lines imposes no skill requirement — the common case,
+    since `InventoryItem.required_skill` defaults `NULL`), and not previously excluded.
+
+    `excluded_worker_ids` is ADR-0025 §2's own rule, carried over unchanged: a worker whose offer
+    on *this task* was declined, expired or released "is excluded from every later automatic round
+    of this task (a manager may still pick them by hand)". Without it, a worker who just declined
+    would usually still rank first next round (nothing else about them changed) and the engine
+    would re-offer them forever until the round budget ran out — the exact ping-pong that sentence
+    exists to prevent. A manual override (`offer_task`'s own `has_override` path) is untouched by
+    this: it never calls through here at all."""
+    if candidate.worker_id in excluded_worker_ids:
+        return False
+    if not candidate.is_active:
+        return False
+    if candidate.presence_status != "online":
+        return False
+    if zone_location_id is not None and zone_location_id not in candidate.zone_location_ids:
+        return False
+    return required_skills.issubset(candidate.skills)
+
+
+def eligible_workers_for_task(
+    candidates: Sequence[WorkerCandidate],
+    *,
+    zone_location_id: uuid.UUID | None,
+    required_skills: frozenset[str],
+    excluded_worker_ids: frozenset[uuid.UUID] = frozenset(),
+) -> list[WorkerCandidate]:
+    """Every candidate `is_worker_eligible_for_task` admits, in input order (ranking is a separate
+    step, `rank_workers_for_offer` below) — an empty list is a legitimate answer, not an error:
+    the caller turns "nobody eligible" into a visible, dispatcher-facing reason rather than a
+    silently stuck task."""
+    return [
+        c
+        for c in candidates
+        if is_worker_eligible_for_task(
+            c,
+            zone_location_id=zone_location_id,
+            required_skills=required_skills,
+            excluded_worker_ids=excluded_worker_ids,
+        )
+    ]
+
+
+def rank_workers_for_offer(candidates: Sequence[WorkerCandidate]) -> list[WorkerCandidate]:
+    """Deterministic ranking among **already eligible** workers (ADR-0024 §9's own example:
+    "open-task count, then idle time ... a final tie-break on id"): fewest open tasks first, then
+    longest idle first (a worker never yet offered anything sorts before one offered a moment
+    ago), then worker id ascending so two workers tied on both keys still resolve to one, stable
+    answer regardless of query or dict iteration order — the same total-order guarantee
+    `PICK_TASK_TRANSITIONS`'s own module comment documents for the state maps."""
+    epoch = datetime.min.replace(tzinfo=UTC)
+    return sorted(
+        candidates,
+        key=lambda c: (c.open_task_count, c.last_offered_at or epoch, str(c.worker_id)),
+    )
+
+
+def select_worker_for_offer(
+    candidates: Sequence[WorkerCandidate],
+    *,
+    zone_location_id: uuid.UUID | None,
+    required_skills: frozenset[str],
+    excluded_worker_ids: frozenset[uuid.UUID] = frozenset(),
+) -> WorkerCandidate | None:
+    """The whole auto-assignment decision in one pure call: eligible, then ranked, then the front
+    of the queue — or `None` when nobody qualifies. `app.fulfilment.services.attempt_auto_assign`
+    is the only caller; everything about *why* a worker was or was not chosen is decidable from
+    this function's own inputs and outputs alone, which is what "explainable to a warehouse lead"
+    (ADR-0024 §9) means in practice."""
+    ranked = rank_workers_for_offer(
+        eligible_workers_for_task(
+            candidates,
+            zone_location_id=zone_location_id,
+            required_skills=required_skills,
+            excluded_worker_ids=excluded_worker_ids,
+        )
+    )
+    return ranked[0] if ranked else None
 
 
 # ------------------------------------------------------------------ needs-attention queue
