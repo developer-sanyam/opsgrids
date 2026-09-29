@@ -14,7 +14,7 @@ the read models (`supplier_name`, `warehouse`) so a list renders without a cross
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
 from pydantic import (
@@ -737,6 +737,71 @@ class DiscrepancyResolveIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     note: str = Field(min_length=1, max_length=500)
+
+
+# ------------------------------------------------------------------ operational alerts and
+# insight dashboards (fulfilment plan §4; F12)
+
+
+class OperationalAlertOut(BaseModel):
+    """One open (or recently closed) operational condition the alert sweep found. `detail` is
+    exactly what the alert's own domain event carried — enough to render the row without
+    rejoining the subject table."""
+
+    id: str
+    kind: Literal["low_stock", "task_delayed", "shipment_delayed"]
+    subject_type: Literal["inventory_item", "pick_task", "shipment"]
+    subject_id: str
+    warehouse_id: str | None
+    detail: dict[str, Any]
+    detected_at: datetime
+    last_seen_at: datetime
+    resolved_at: datetime | None
+    resolved_by: str | None
+
+
+class TaskBacklogOut(BaseModel):
+    """Open pick-task count and age per warehouse — the backlog half of the task
+    backlog/throughput insight view."""
+
+    warehouse_id: str
+    open_tasks: int
+    avg_age_minutes: float
+    max_age_minutes: float
+
+
+class ThroughputOut(BaseModel):
+    """Tasks closed since the window started, and their average cycle time — the throughput half
+    of the same view."""
+
+    warehouse_id: str
+    closed_tasks: int
+    avg_cycle_minutes: float
+
+
+class ZoneBottleneckOut(BaseModel):
+    """Which zone's tasks took longest to close, most recently — slowest first."""
+
+    zone_location_id: str
+    closed_tasks: int
+    avg_cycle_minutes: float
+
+
+class WorkerWorkloadOut(BaseModel):
+    """Open task count per worker, busiest first — the workload-distribution view."""
+
+    worker_id: str
+    worker_name: str
+    open_tasks: int
+
+
+class DiscrepancyTrendPointOut(BaseModel):
+    """One day's count of a discrepancy kind — the exception-trend view over the reconciler's own
+    findings (`InventoryDiscrepancyOut`), never a synthetic series."""
+
+    date: str
+    kind: Literal["balance", "reserved"]
+    count: int
 
 
 # ------------------------------------------------------------------ warehouses (reference)

@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from app import consumers
 from app.api.routes import router
 from app.config import settings
-from app.cron import ReconcileSweep
+from app.cron import AlertSweep, ReconcileSweep
 from platform_core.app import create_app
 from platform_core.db import (
     assert_outbox_role,
@@ -78,6 +78,40 @@ async def _stop_reconcile_sweep(app: FastAPI) -> None:
         await engine.dispose()
 
 
+async def _start_alert_sweep(app: FastAPI) -> None:
+    """Starts the operational alert sweep (fulfilment plan §4; F12) as a supervised background
+    task, the same shape and the same `Settings.run_sweeps_in_api` gate `_start_reconcile_sweep`
+    uses — a separate task, not folded into that one, so one sweep's own failure (or a future
+    independent restart) never touches the other's schedule."""
+    app.state.alert_sweep_task = None
+    app.state.alert_sweep_engine = None
+    cfg = settings()
+    if not cfg.run_sweeps_in_api:
+        return
+    try:
+        init_outbox_engine(cfg)
+        await assert_outbox_role(get_outbox_engine(), environment=cfg.environment)
+    except Exception:
+        log.exception("operations.alerts.not_started", reason="outbox role precondition failed")
+        register_sweep_health("operations.alerts").record_failure()
+        return
+    engine = create_bulkhead_engine(cfg, name="alert-sweep")
+    app.state.alert_sweep_engine = engine
+    sweep = AlertSweep(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=bulkhead_scope(engine),
+        interval=cfg.alert_interval_seconds,
+    )
+    app.state.alert_sweep_task = start_background_sweep(sweep.run(), name="operations.alerts")
+
+
+async def _stop_alert_sweep(app: FastAPI) -> None:
+    await stop_background_sweep(getattr(app.state, "alert_sweep_task", None))
+    engine = getattr(app.state, "alert_sweep_engine", None)
+    if engine is not None:
+        await engine.dispose()
+
+
 async def _start_background_worker(app: FastAPI) -> None:
     """Starts this service's two event consumers (`app/consumers.py` — the fulfilment offer-
     expiry sweep and the order-cancellation cascade, ADR-0025 §3/§1), exactly what `bin/worker`
@@ -123,11 +157,13 @@ async def _stop_background_worker(app: FastAPI) -> None:
 
 async def _startup(app: FastAPI) -> None:
     await _start_reconcile_sweep(app)
+    await _start_alert_sweep(app)
     await _start_background_worker(app)
 
 
 async def _shutdown(app: FastAPI) -> None:
     await _stop_background_worker(app)
+    await _stop_alert_sweep(app)
     await _stop_reconcile_sweep(app)
 
 

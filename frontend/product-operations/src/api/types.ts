@@ -1081,3 +1081,61 @@ export interface CountLineReviewIn {
   decision: "approve" | "reject";
   note?: string;
 }
+
+/* ------------------------- operational alerts and insights (F12) ------------------------- */
+
+export type AlertKind = "low_stock" | "task_delayed" | "shipment_delayed";
+export type AlertSubjectType = "inventory_item" | "pick_task" | "shipment";
+
+/** Mirrors `OperationalAlertOut`. `detail` is exactly what the alert's own domain event
+ *  carried — enough to render the row without a further fetch. */
+export interface OperationalAlertOut {
+  id: string;
+  kind: AlertKind;
+  subject_type: AlertSubjectType;
+  subject_id: string;
+  warehouse_id: string | null;
+  detail: Record<string, unknown>;
+  detected_at: string;
+  last_seen_at: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+}
+
+/** Open pick-task count and age per warehouse — the backlog half of the backlog/throughput
+ *  insight view. */
+export interface TaskBacklogOut {
+  warehouse_id: string;
+  open_tasks: number;
+  avg_age_minutes: number;
+  max_age_minutes: number;
+}
+
+/** Tasks closed in the reporting window, and their average cycle time — the throughput half. */
+export interface ThroughputOut {
+  warehouse_id: string;
+  closed_tasks: number;
+  avg_cycle_minutes: number;
+}
+
+/** Which zone's tasks took longest to close, most recently — slowest first. */
+export interface ZoneBottleneckOut {
+  zone_location_id: string;
+  closed_tasks: number;
+  avg_cycle_minutes: number;
+}
+
+/** Open task count per worker, busiest first. */
+export interface WorkerWorkloadOut {
+  worker_id: string;
+  worker_name: string;
+  open_tasks: number;
+}
+
+/** One day's count of a discrepancy kind — the reconciler's own findings, never a synthetic
+ *  series. */
+export interface DiscrepancyTrendPointOut {
+  date: string;
+  kind: "balance" | "reserved";
+  count: number;
+}

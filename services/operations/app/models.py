@@ -1051,6 +1051,66 @@ class InventoryDiscrepancy(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     )
 
 
+class OperationalAlert(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One open operational condition F12's alert sweep found — low stock, or a pick task or
+    shipment sitting past its SLA. Recorded and surfaced the same way `InventoryDiscrepancy` is:
+    a sweep opens (or refreshes) one row per subject and stages an alert event only the first
+    time it opens; the condition clearing (stock replenished, the task or shipment reaching a
+    terminal status) closes the row automatically on the next sweep. Nothing here repairs
+    anything — this is the read model an automation (and the insight dashboard) hangs off, not a
+    corrective action.
+
+    `kind`: `low_stock` (an `inventory_items` row), `task_delayed` (a `pick_tasks` row still open
+    past `fulfilment_settings.task_sla_minutes`), or `shipment_delayed` (a `shipments` row still
+    non-terminal past the same window). `subject_type`/`subject_id` name the row the alert is
+    about; `warehouse_id` is denormalised from it so the insight views can group by warehouse
+    without a join back to three different tables.
+    """
+
+    __tablename__ = "operational_alerts"
+
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: inventory_item | pick_task | shipment.
+    subject_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    subject_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    warehouse_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: Everything the alert event's own payload also carries — enough to render the row without
+    #: rejoining the subject table.
+    detail: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: `"system:alert_sweep"` when the condition cleared on its own; a principal id when a person
+    #: dismissed it by hand (`POST /operations/alerts/{id}/resolve`).
+    resolved_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('low_stock', 'task_delayed', 'shipment_delayed')", name="kind_known"
+        ),
+        CheckConstraint(
+            "subject_type IN ('inventory_item', 'pick_task', 'shipment')",
+            name="subject_type_known",
+        ),
+        Index(
+            "uq_operational_alerts_open_subject",
+            "organization_id",
+            "kind",
+            "subject_type",
+            "subject_id",
+            unique=True,
+            postgresql_where=text("resolved_at IS NULL"),
+        ),
+        Index("ix_operational_alerts_org_detected", "organization_id", "detected_at"),
+        Index("ix_operational_alerts_org_warehouse", "organization_id", "warehouse_id"),
+        Index("ix_operational_alerts_org_kind_open", "organization_id", "kind", "resolved_at"),
+    )
+
+
 def _on_hand_expr(column: Any) -> Any:
     # `SUM(bigint)` is NUMERIC in PostgreSQL, which asyncpg hands back as a Decimal; the cast keeps
     # every quantity a plain int from the database to the wire.
@@ -1307,6 +1367,15 @@ class FulfilmentSettings(Base, TenantBase):
     change in behaviour until it explicitly turns this on — there is deliberately no admin
     endpoint yet (the same gap every other column here already has; a settings-management surface
     is a later phase's addition, not this one's).
+
+    `task_sla_minutes`, `alert_email` and `alert_phone` are F12's own additions (fulfilment plan
+    §4, operational automation). `task_sla_minutes` is how long a pick task may stay open
+    (`domain.PICK_TASK_OPEN_STATUSES`) or a shipment non-terminal before `app.alerts`'s sweep
+    opens a `task_delayed`/`shipment_delayed` alert for it. `alert_email`/`alert_phone` are the
+    address an operational alert's event payload (`payload.alert_contact.*`) carries so a
+    notification automation has somewhere to send it without inventing its own directory lookup —
+    null until an organization opts in, in which case the alert carries no contact and only the
+    in-product alert list (`GET /operations/alerts`) shows it.
     """
 
     __tablename__ = "fulfilment_settings"
@@ -1325,6 +1394,9 @@ class FulfilmentSettings(Base, TenantBase):
         Numeric(5, 2), nullable=False, default=Decimal("0")
     )
     auto_assignment_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    task_sla_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    alert_email: Mapped[str | None] = mapped_column(String(254))
+    alert_phone: Mapped[str | None] = mapped_column(String(20))
 
     __table_args__ = (
         CheckConstraint(
@@ -1337,6 +1409,7 @@ class FulfilmentSettings(Base, TenantBase):
             "default_tax_rate_pct >= 0 AND default_tax_rate_pct <= 100",
             name="default_tax_rate_pct_in_range",
         ),
+        CheckConstraint("task_sla_minutes > 0", name="task_sla_minutes_positive"),
         Index(
             "uq_fulfilment_settings_org_default",
             "organization_id",

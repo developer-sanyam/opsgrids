@@ -1,4 +1,5 @@
 import {
+  AlertTriangleIcon,
   CheckSquareIcon,
   ClipboardCheckIcon,
   ClipboardListIcon,
@@ -27,6 +28,7 @@ const GROUPS: NavGroup[] = [
       { to: "/fulfilment/tasks", label: "Tasks", icon: ClipboardCheckIcon },
       { to: "/fulfilment/workers", label: "Workers", icon: UsersIcon },
       { to: "/dispatch", label: "Dispatch", icon: TruckIcon },
+      { to: "/automation", label: "Automation", icon: AlertTriangleIcon },
       { to: "/purchase-orders", label: "Purchase Orders", icon: ClipboardListIcon },
       { to: "/inventory", label: "Inventory", icon: LayersIcon },
       { to: "/inventory/categories", label: "Item Categories", icon: FolderIcon },

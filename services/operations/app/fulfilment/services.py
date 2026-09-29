@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import domain
+from app.alerts import selectors as alert_selectors
 from app.fulfilment import selectors
 from app.inventory import ledger
 from app.inventory import selectors as inv_selectors
@@ -947,6 +948,12 @@ async def _fail_round(
             after={"status": task.status, "round": task.round},
             request=request,
         )
+        # `alert_contact` (F12) — the same `fulfilment_settings` resolution `app.alerts` itself
+        # uses for the sweep-raised alerts, so an escalation alert automation
+        # (`operations.fulfilment.task.escalated`, once subscribable) has somewhere to send it.
+        escalation_settings = await alert_selectors.resolve_alert_settings(
+            session, org_id, task.warehouse_id
+        )
         publish_event(
             session,
             OutboxEvent,
@@ -954,7 +961,13 @@ async def _fail_round(
             event_type=EVT_TASK_ESCALATED,
             aggregate_type="pick_task",
             aggregate_id=task.id,
-            payload={"organization_id": str(org_id), "task_id": str(task.id), "round": task.round},
+            payload={
+                "organization_id": str(org_id),
+                "task_id": str(task.id),
+                "round": task.round,
+                "warehouse_id": str(task.warehouse_id),
+                "alert_contact": domain.alert_contact(escalation_settings),
+            },
             actor=_actor(ctx),
         )
     elif task.status == "CREATED":
@@ -1447,6 +1460,9 @@ async def confirm_pick(
             after={"reason": reason, "short_milli": shortfall, "task_line_id": str(line.id)},
             request=request,
         )
+        exception_settings = await alert_selectors.resolve_alert_settings(
+            session, org_id, task.warehouse_id
+        )
         publish_event(
             session,
             OutboxEvent,
@@ -1460,6 +1476,8 @@ async def confirm_pick(
                 "task_line_id": str(line.id),
                 "reason": reason,
                 "quantity_milli": shortfall,
+                "warehouse_id": str(task.warehouse_id),
+                "alert_contact": domain.alert_contact(exception_settings),
             },
             actor=_actor(ctx),
         )

@@ -181,7 +181,18 @@ SUBSCRIBABLE_EVENTS: Final[tuple[str, ...]] = (
     "marketing.analytics.audience.created",
     "marketing.analytics.campaign.created",
     # operations
+    # Fulfilment plan §4 (F12, operational automation) — alerts an automation may act on. All
+    # seven read the same way order-lifecycle events did (`e42c9ae1`): the routing key and the
+    # documented payload only, never an import, so a rule or automation on one works whether or
+    # not that phase of `operations` is deployed on this branch.
+    "operations.dispatch.shipment.delayed",
+    "operations.dispatch.shipment.failed",
+    "operations.fulfilment.pick.exception_raised",
+    "operations.fulfilment.task.delayed",
+    "operations.fulfilment.task.escalated",
+    "operations.inventory.inconsistency_detected",
     "operations.inventory.item.created",
+    "operations.inventory.item.low_stock",
     "operations.inventory.warehouse.created",
     # `operations.orders.order.held` is deliberately absent — an operator pausing a warehouse
     # task is an internal operational state, not a commercial milestone a customer is told

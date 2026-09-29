@@ -490,6 +490,30 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Operational alerts and insight dashboards (fulfilment plan §4; F12) — read-model rows
+        # over org-wide data (low stock, delayed tasks/shipments, backlog and workload), so ORG
+        # only, matching `inventory.item.read`'s own reasoning. `manage` is the one write this
+        # module has: dismissing an alert by hand before the sweep would close it itself.
+        PermissionSpec(
+            "automation",
+            "alert",
+            "read",
+            "See operational alerts (low stock, delayed tasks and shipments)",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "automation", "alert", "manage", "Dismiss an operational alert", "ORG", "ORG"
+        ),
+        PermissionSpec(
+            "automation",
+            "insight",
+            "read",
+            "See the operational insight dashboards (backlog, bottlenecks, workload, "
+            "discrepancy trend)",
+            "ORG",
+            "ORG",
+        ),
     ],
 )
 
@@ -558,6 +582,9 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.fulfilment.pack.execute", "ORG"),
             ("operations.dispatch.shipment.read", "ORG"),
             ("operations.dispatch.shipment.write", "ORG"),
+            ("operations.automation.alert.read", "ORG"),
+            ("operations.automation.alert.manage", "ORG"),
+            ("operations.automation.insight.read", "ORG"),
         ),
     ),
     RoleTemplate(

@@ -42,6 +42,7 @@ import {
   WAREHOUSES,
 } from "./fixtures";
 import type {
+  AlertKind,
   AssignmentOfferOut,
   CancelIn,
   Category,
@@ -52,6 +53,7 @@ import type {
   CountSessionIn,
   CountSessionOut,
   CountSessionStatus,
+  DiscrepancyTrendPointOut,
   InventoryItemIn,
   InventoryItemOut,
   InventoryItemPatch,
@@ -72,6 +74,7 @@ import type {
   LocationOut,
   LocationPatch,
   OfferIn,
+  OperationalAlertOut,
   OrderCancelIn,
   OrderChannel,
   OrderHoldIn,
@@ -103,7 +106,9 @@ import type {
   SupplierOut,
   SupplierPatch,
   SupplierStatus,
+  TaskBacklogOut,
   TaskCancelIn,
+  ThroughputOut,
   UomOut,
   WorkerIn,
   WorkerOut,
@@ -114,6 +119,8 @@ import type {
   WarehouseIn,
   WarehouseOut,
   WarehousePatch,
+  WorkerWorkloadOut,
+  ZoneBottleneckOut,
 } from "./types";
 
 /** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures.
@@ -2246,4 +2253,67 @@ export async function reviewCountLine(
     `/operations/counting/sessions/${encodeURIComponent(sessionId)}/lines/${encodeURIComponent(lineId)}/review`,
     { method: "POST", body: input },
   );
+}
+
+/* ----------------------------- operational alerts and insights (F12) ----------------------------
+ * No fixture data of its own yet (`USE_FIXTURES` renders an empty list/zero series rather than
+ * fabricated numbers) — every value on these screens is a live read from `app.alerts`, and this
+ * module ships no synthetic series to stand in for it. */
+
+export interface ListAlertsParams {
+  kind?: AlertKind | undefined;
+  include_resolved?: boolean;
+  page?: number;
+  size?: number;
+  signal?: AbortSignal;
+}
+
+/** `GET /operations/alerts` — `operations.automation.alert.read:ORG`. */
+export async function listAlerts(params: ListAlertsParams = {}): Promise<Page<OperationalAlertOut>> {
+  const page = params.page ?? 1;
+  const size = params.size ?? DEFAULT_PAGE_SIZE;
+  if (USE_FIXTURES) {
+    return settle({ items: [], total: 0, page, size, pages: 0 });
+  }
+  const query = buildQuery({ page, size, kind: params.kind, include_resolved: params.include_resolved });
+  return apiRequest<Page<OperationalAlertOut>>(`/operations/alerts${query}`, { signal: params.signal });
+}
+
+/** `POST /operations/alerts/{id}/resolve` — `operations.automation.alert.manage:ORG`. Dismisses
+ *  an open alert by hand, before the sweep would close it itself. */
+export async function resolveAlert(id: string): Promise<OperationalAlertOut> {
+  if (USE_FIXTURES) throw new NotFoundError("That alert could not be found.");
+  return apiRequest<OperationalAlertOut>(`/operations/alerts/${encodeURIComponent(id)}/resolve`, {
+    method: "POST",
+  });
+}
+
+/** `GET /operations/insights/backlog` — `operations.automation.insight.read:ORG`. */
+export async function insightBacklog(): Promise<TaskBacklogOut[]> {
+  if (USE_FIXTURES) return settle([]);
+  return apiRequest<TaskBacklogOut[]>("/operations/insights/backlog");
+}
+
+/** `GET /operations/insights/throughput` — `operations.automation.insight.read:ORG`. */
+export async function insightThroughput(days = 7): Promise<ThroughputOut[]> {
+  if (USE_FIXTURES) return settle([]);
+  return apiRequest<ThroughputOut[]>(`/operations/insights/throughput${buildQuery({ days })}`);
+}
+
+/** `GET /operations/insights/bottlenecks` — `operations.automation.insight.read:ORG`. */
+export async function insightBottlenecks(days = 7): Promise<ZoneBottleneckOut[]> {
+  if (USE_FIXTURES) return settle([]);
+  return apiRequest<ZoneBottleneckOut[]>(`/operations/insights/bottlenecks${buildQuery({ days })}`);
+}
+
+/** `GET /operations/insights/workload` — `operations.automation.insight.read:ORG`. */
+export async function insightWorkload(): Promise<WorkerWorkloadOut[]> {
+  if (USE_FIXTURES) return settle([]);
+  return apiRequest<WorkerWorkloadOut[]>("/operations/insights/workload");
+}
+
+/** `GET /operations/insights/discrepancies` — `operations.automation.insight.read:ORG`. */
+export async function insightDiscrepancyTrend(days = 30): Promise<DiscrepancyTrendPointOut[]> {
+  if (USE_FIXTURES) return settle([]);
+  return apiRequest<DiscrepancyTrendPointOut[]>(`/operations/insights/discrepancies${buildQuery({ days })}`);
 }

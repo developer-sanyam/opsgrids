@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import domain
+from app.alerts import selectors as alert_selectors
 from app.dispatch import selectors
 from app.inventory.quantity import format_qty
 from app.models import AuditLog, Order, OutboxEvent, Shipment, ShipmentTransition
@@ -306,6 +307,15 @@ async def transition_shipment(
         after={"status": to_status, "reason": reason} if reason else {"status": to_status},
         request=request,
     )
+    # `alert_contact` (F12) — only on the one transition an alert automation cares about
+    # (`operations.dispatch.shipment.failed`, once subscribable); every other transition's
+    # payload is unchanged, so this settings read never runs on the common path.
+    failure_contact: dict[str, dict[str, str | None]] = {}
+    if to_status == "FAILED":
+        failure_settings = await alert_selectors.resolve_alert_settings(
+            session, org_id, shipment.warehouse_id
+        )
+        failure_contact = {"alert_contact": domain.alert_contact(failure_settings)}
     publish_event(
         session,
         OutboxEvent,
@@ -317,7 +327,9 @@ async def transition_shipment(
             "organization_id": str(org_id),
             "shipment_id": str(shipment.id),
             "order_id": str(shipment.order_id),
+            "warehouse_id": str(shipment.warehouse_id),
             **({"reason": reason} if reason else {}),
+            **failure_contact,
         },
         actor=_actor(ctx),
     )
