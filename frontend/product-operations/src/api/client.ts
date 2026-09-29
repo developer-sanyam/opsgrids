@@ -56,6 +56,11 @@ import type {
   ItemVariantIn,
   ItemVariantOut,
   ItemVariantPatch,
+  LayoutGeometryIn,
+  LayoutGeometryOut,
+  LayoutValidationOut,
+  LayoutVersionCreateIn,
+  LayoutVersionOut,
   LocationIn,
   LocationOut,
   LocationPatch,
@@ -78,6 +83,7 @@ import type {
   QuoteIn,
   QuoteOut,
   ReceiveIn,
+  RouteOut,
   ShipmentAdvanceIn,
   ShipmentIn,
   ShipmentOut,
@@ -95,6 +101,9 @@ import type {
   WorkerIn,
   WorkerOut,
   WorkerPatch,
+  WarehouseFloorIn,
+  WarehouseFloorOut,
+  WarehouseFloorPatch,
   WarehouseIn,
   WarehouseOut,
   WarehousePatch,
@@ -1987,5 +1996,147 @@ export async function returnShipment(id: string, input: ShipmentRefusalIn): Prom
   return apiRequest<ShipmentOut>(`/operations/dispatch/shipments/${encodeURIComponent(id)}/return`, {
     method: "POST",
     body: input,
+  });
+}
+
+/* -------------------------------- warehouse geometry (Fulfilment plan §2/F7) -------------------------------- */
+/**
+ * Floors, versioned layouts, a draft's placements/walk graph, validation, publish/rollback, and
+ * routing — `app.warehouse` on the backend (`services/operations/app/api/routes.py`). Hand-rolled
+ * against the landed contract (`libs/contracts/openapi/operations.json`), the same convention
+ * every other section of this file follows.
+ *
+ * **Live only — no `USE_FIXTURES` branch.** This is a back-office floor-plan editor a handful of
+ * warehouse admins use, not a screen any fixture-mode demo or component test exercises; adding a
+ * second, in-memory implementation of a full versioned-geometry-and-graph-routing backend for a
+ * page nothing reads in that mode was not a good trade against the size that code would be. If a
+ * fixture-mode demo of this screen is ever wanted, add it the same way every function above does.
+ */
+
+export async function listWarehouseFloors(
+  warehouseId: string,
+  params: { signal?: AbortSignal } = {},
+): Promise<WarehouseFloorOut[]> {
+  const query = buildQuery({ size: FULL_PAGE });
+  const page = await apiRequest<Page<WarehouseFloorOut>>(
+    `/operations/warehouses/${encodeURIComponent(warehouseId)}/floors${query}`,
+    { signal: params.signal },
+  );
+  return page.items;
+}
+
+/** `GET /warehouse-floors/{id}` — one floor. */
+export async function getWarehouseFloor(id: string): Promise<WarehouseFloorOut> {
+  return apiRequest<WarehouseFloorOut>(`/operations/warehouse-floors/${encodeURIComponent(id)}`);
+}
+
+/** `POST /warehouses/{warehouse_id}/floors` — `operations.warehouse.floor.write`. 409 on a
+ *  duplicate floor number in this warehouse. */
+export async function createWarehouseFloor(
+  warehouseId: string,
+  input: WarehouseFloorIn,
+): Promise<WarehouseFloorOut> {
+  return apiRequest<WarehouseFloorOut>(`/operations/warehouses/${encodeURIComponent(warehouseId)}/floors`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** `PATCH /warehouse-floors/{id}` — `operations.warehouse.floor.write`. */
+export async function updateWarehouseFloor(id: string, patch: WarehouseFloorPatch): Promise<WarehouseFloorOut> {
+  return apiRequest<WarehouseFloorOut>(`/operations/warehouse-floors/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: patch,
+  });
+}
+
+/** A floor's whole version history — draft, published and archived alike (never deleted once
+ *  published), newest first. What the version-history / rollback list renders. */
+export async function listLayoutVersions(
+  floorId: string,
+  params: { signal?: AbortSignal } = {},
+): Promise<LayoutVersionOut[]> {
+  const query = buildQuery({ size: FULL_PAGE });
+  const page = await apiRequest<Page<LayoutVersionOut>>(
+    `/operations/warehouse-floors/${encodeURIComponent(floorId)}/layout-versions${query}`,
+    { signal: params.signal },
+  );
+  return page.items;
+}
+
+/** `POST /warehouse-floors/{floor_id}/layout-versions` — `operations.warehouse.layout.write`.
+ *  409 while a draft is already open for this floor. */
+export async function createLayoutVersion(
+  floorId: string,
+  input: LayoutVersionCreateIn = {},
+): Promise<LayoutVersionOut> {
+  return apiRequest<LayoutVersionOut>(
+    `/operations/warehouse-floors/${encodeURIComponent(floorId)}/layout-versions`,
+    { method: "POST", body: input },
+  );
+}
+
+/** `GET /layout-versions/{id}` — one version's full geometry (placements + walk graph), what the
+ *  canvas editor loads to render a draft or inspect a past published/archived version. */
+export async function getLayoutGeometry(
+  versionId: string,
+  params: { signal?: AbortSignal } = {},
+): Promise<LayoutGeometryOut> {
+  return apiRequest<LayoutGeometryOut>(`/operations/layout-versions/${encodeURIComponent(versionId)}`, {
+    signal: params.signal,
+  });
+}
+
+/** `PUT /layout-versions/{id}/geometry` — `operations.warehouse.layout.write`. A full replace;
+ *  see `LayoutGeometryIn`'s own docstring. 409 on anything but a `draft` version. */
+export async function saveLayoutGeometry(
+  versionId: string,
+  input: LayoutGeometryIn,
+): Promise<LayoutGeometryOut> {
+  return apiRequest<LayoutGeometryOut>(`/operations/layout-versions/${encodeURIComponent(versionId)}/geometry`, {
+    method: "PUT",
+    body: input,
+  });
+}
+
+/** `DELETE /layout-versions/{id}` — `operations.warehouse.layout.write`. Discards a draft
+ *  outright; 409 on anything but a `draft` version. */
+export async function discardLayoutVersion(versionId: string): Promise<void> {
+  await apiRequest<undefined>(`/operations/layout-versions/${encodeURIComponent(versionId)}`, {
+    method: "DELETE",
+  });
+}
+
+/** `POST /layout-versions/{id}/validate` — `operations.warehouse.layout.read`. Read-only: checks
+ *  for overlapping placements and disconnected required walk nodes without publishing anything. */
+export async function validateLayoutVersion(versionId: string): Promise<LayoutValidationOut> {
+  return apiRequest<LayoutValidationOut>(
+    `/operations/layout-versions/${encodeURIComponent(versionId)}/validate`,
+    { method: "POST" },
+  );
+}
+
+/** `POST /layout-versions/{id}/publish` — `operations.warehouse.layout.publish` (dangerous).
+ *  Publishes a draft, or rolls back by re-publishing an `archived` version. 422 when the layout
+ *  fails validation; 409 when the version is not eligible to publish at all. */
+export async function publishLayoutVersion(versionId: string): Promise<LayoutVersionOut> {
+  return apiRequest<LayoutVersionOut>(`/operations/layout-versions/${encodeURIComponent(versionId)}/publish`, {
+    method: "POST",
+  });
+}
+
+/** `GET /warehouse-floors/{floor_id}/route?from_location_id=&to_location_id=` —
+ *  `operations.warehouse.layout.read`. The shortest walk path between two locations on the
+ *  floor's **published** layout. 404 when there is no published layout or either location has no
+ *  walk node in it; 409 when the graph has no traversable path between them. */
+export async function computeWarehouseRoute(
+  floorId: string,
+  fromLocationId: string,
+  toLocationId: string,
+  params: { signal?: AbortSignal } = {},
+): Promise<RouteOut> {
+  const query = buildQuery({ from_location_id: fromLocationId, to_location_id: toLocationId });
+  return apiRequest<RouteOut>(`/operations/warehouse-floors/${encodeURIComponent(floorId)}/route${query}`, {
+    signal: params.signal,
   });
 }

@@ -844,3 +844,160 @@ export interface ShipmentAdvanceIn {
 export interface ShipmentRefusalIn {
   reason: string;
 }
+
+/* -------------------------------- warehouse geometry (Fulfilment plan §2/F7) -------------------------------- */
+/**
+ * Floors, versioned layouts, a draft's placements and walk graph, validation, publish/rollback,
+ * and routing over a floor's published layout — `app.warehouse`
+ * (`services/operations/app/api/routes.py`). A `LayoutVersion` is `draft -> published ->
+ * archived -> published` (a rollback is `POST .../publish` called again on an `archived`
+ * version, never a distinct action). Coordinates are integer millimetres throughout, mirroring
+ * the backend's no-float rule.
+ */
+
+export type LayoutVersionStatus = "draft" | "published" | "archived";
+
+export interface WarehouseFloorOut {
+  id: string;
+  warehouse_id: string;
+  floor_number: number;
+  name: string;
+}
+
+/** `POST /warehouses/{warehouse_id}/floors` — `operations.warehouse.floor.write`. 409 on a
+ *  duplicate `floor_number` within the warehouse. */
+export interface WarehouseFloorIn {
+  floor_number: number;
+  name?: string;
+}
+
+/** `PATCH /warehouse-floors/{id}` — `operations.warehouse.floor.write`. */
+export interface WarehouseFloorPatch {
+  floor_number?: number;
+  name?: string;
+}
+
+export interface LayoutVersionOut {
+  id: string;
+  warehouse_floor_id: string;
+  version_number: number;
+  status: LayoutVersionStatus;
+  label: string;
+  published_at: string | null;
+  published_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `POST /warehouse-floors/{floor_id}/layout-versions` — `operations.warehouse.layout.write`.
+ *  409 while a draft is already open for this floor. `clone_from_published` (default `true`)
+ *  starts the new draft from a copy of the floor's current published geometry. */
+export interface LayoutVersionCreateIn {
+  label?: string;
+  clone_from_published?: boolean;
+}
+
+/** One entry of `LayoutGeometryIn.placements` — where `location_id` sits on this floor, in this
+ *  draft version only (never leaks into what is published until it is). */
+export interface LocationPlacementIn {
+  location_id: string;
+  x_mm: number;
+  y_mm: number;
+  z_mm?: number | null;
+  width_mm?: number;
+  depth_mm?: number;
+  height_mm?: number | null;
+}
+
+/** Mirrors `LocationPlacementIn`, plus the location's own `code`/`kind` so a canvas can render a
+ *  placement without a second lookup. */
+export interface LocationPlacementOut {
+  location_id: string;
+  x_mm: number;
+  y_mm: number;
+  z_mm: number | null;
+  width_mm: number;
+  depth_mm: number;
+  height_mm: number | null;
+  location_code: string;
+  location_kind: LocationKind;
+}
+
+/** One entry of `LayoutGeometryIn.walk_nodes`. `code` is this draft's own reference for the
+ *  node — what a `WalkEdgeIn` names in `from_code`/`to_code` — never a database id. */
+export interface WalkNodeIn {
+  code: string;
+  location_id?: string | null;
+  x_mm: number;
+  y_mm: number;
+  z_mm?: number | null;
+}
+
+export interface WalkNodeOut {
+  id: string;
+  code: string;
+  location_id: string | null;
+  x_mm: number;
+  y_mm: number;
+  z_mm: number | null;
+}
+
+/** One entry of `LayoutGeometryIn.walk_edges`, naming its endpoints by the `code`s in the same
+ *  payload's `walk_nodes`. `bidirectional` (default `true`) makes routing treat this one row as
+ *  two directed edges; `is_traversable` (default `true`) blocks it without deleting it. */
+export interface WalkEdgeIn {
+  from_code: string;
+  to_code: string;
+  distance_mm: number;
+  is_traversable?: boolean;
+  bidirectional?: boolean;
+}
+
+export interface WalkEdgeOut {
+  id: string;
+  from_node_id: string;
+  to_node_id: string;
+  from_code: string;
+  to_code: string;
+  distance_mm: number;
+  is_traversable: boolean;
+  bidirectional: boolean;
+}
+
+/** `PUT /layout-versions/{id}/geometry` — the whole "save draft" payload a canvas editor posts.
+ *  A **full replace**: everything the draft had is dropped and rebuilt from exactly this. 409 on
+ *  anything but a `draft` version. */
+export interface LayoutGeometryIn {
+  placements: LocationPlacementIn[];
+  walk_nodes: WalkNodeIn[];
+  walk_edges: WalkEdgeIn[];
+}
+
+export interface LayoutGeometryOut {
+  version: LayoutVersionOut;
+  placements: LocationPlacementOut[];
+  walk_nodes: WalkNodeOut[];
+  walk_edges: WalkEdgeOut[];
+}
+
+/** One problem `POST /layout-versions/{id}/validate` (or a refused publish) found. */
+export interface LayoutValidationIssueOut {
+  kind: string;
+  message: string;
+  location_ids: string[];
+  node_id: string | null;
+}
+
+export interface LayoutValidationOut {
+  is_valid: boolean;
+  issues: LayoutValidationIssueOut[];
+}
+
+/** `GET /warehouse-floors/{floor_id}/route?from_location_id=&to_location_id=` — a computed path
+ *  over the floor's **published** layout only. */
+export interface RouteOut {
+  from_location_id: string;
+  to_location_id: string;
+  node_ids: string[];
+  distance_mm: number;
+}

@@ -204,6 +204,52 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             is_dangerous=True,
         ),
+        # Warehouse geometry (plan §2/F7): floors, versioned layouts, the walk graph and routing
+        # over it — a distinct `warehouse` module rather than folded into `inventory` above,
+        # because this is new resource surface (`warehouse_floors`, `layout_versions`,
+        # `walk_nodes`, `walk_edges`), not an extension of the location CRUD `inventory.location.*`
+        # already covers. Floors and reading a layout are org infrastructure like a warehouse or a
+        # location, so ORG for everyone with a seat, the same reasoning `inventory.warehouse.read`/
+        # `inventory.location.read` already document.
+        PermissionSpec("warehouse", "floor", "read", "See a warehouse's floors", "ORG", "ORG"),
+        PermissionSpec(
+            "warehouse", "floor", "write", "Create and edit a warehouse's floors", "ORG", "ORG"
+        ),
+        PermissionSpec(
+            "warehouse",
+            "layout",
+            "read",
+            "See a floor's layout versions, their geometry, validation and computed routes",
+            "ORG",
+            "ORG",
+        ),
+        # Opening, editing and discarding a *draft* — never a published version, which only
+        # `layout.publish` can touch (below). A draft is working state, the floor-plan equivalent
+        # of a purchase order's own draft, before `purchase_order.approve`'s own commitment step.
+        PermissionSpec(
+            "warehouse",
+            "layout",
+            "write",
+            "Open a draft layout version and edit its placements and walk graph",
+            "ORG",
+            "ORG",
+        ),
+        # Reserved in the plan's own permission table (§4) for exactly this: making a layout
+        # version the floor's current one, or rolling back to a prior published one. Dangerous —
+        # every worker's pick routing and the F9 3D viewer both read whatever is published, so
+        # publishing is a platform-wide change the instant it commits, not a private edit.
+        # `OPERATIONS_MANAGER` does not hold it by default, the same "dangerous stays with the
+        # admin unless picked deliberately" precedent `inventory.layout.publish`/
+        # `fulfilment.task.override`/`inventory.stock.reconcile` already set.
+        PermissionSpec(
+            "warehouse",
+            "layout",
+            "publish",
+            "Publish a draft layout version, or roll back to a prior published one",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
         # Promising stock to a demand without moving it, and giving that promise back — the
         # kernel has carried this since Phase 0 (`ledger.reserve`/`release`); this is the first
         # permission that lets a caller reach it over HTTP (ADR-0014 §11's release endpoint).
@@ -429,7 +475,9 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "hands over customer orders — the stock-commitment, stock-release and billing-gate "
             "steps — on top of the ordinary counter work every Operations user does, and hands "
             "orders to a carrier (the same billing gate, on the delivery path). Does not create "
-            "or rename warehouses — that stays with the admin."
+            "or rename warehouses — that stays with the admin. Creates floors and edits a draft "
+            "layout's placements and walk graph, but does not publish one — a floor plan going "
+            "live is as dangerous as it gets here, so that stays with the admin too."
         ),
         grants=OPERATIONS.pick(
             ("operations.procurement.purchase_order.read", "ORG"),
@@ -444,6 +492,10 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.inventory.warehouse.read", "ORG"),
             ("operations.inventory.location.read", "ORG"),
             ("operations.inventory.location.write", "ORG"),
+            ("operations.warehouse.floor.read", "ORG"),
+            ("operations.warehouse.floor.write", "ORG"),
+            ("operations.warehouse.layout.read", "ORG"),
+            ("operations.warehouse.layout.write", "ORG"),
             ("operations.orders.order.read", "ORG"),
             ("operations.orders.order.create", "ORG"),
             ("operations.orders.order.write", "ORG"),
@@ -491,7 +543,8 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "reads the shared suppliers, inventory, warehouses and locations, and runs the "
             "counter: creates and places customer orders, holds and releases them. Does not "
             "accept (commit stock to) or cancel an order — those stay with the manager, the same "
-            "split `purchase_order.approve` draws from `purchase_order.write`."
+            "split `purchase_order.approve` draws from `purchase_order.write`. Sees floors and "
+            "published layouts (pick routing, the 3D viewer's data) read-only."
         ),
         is_default=True,
         grants=OPERATIONS.pick(
@@ -501,6 +554,8 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.inventory.item.read", "ORG"),
             ("operations.inventory.warehouse.read", "ORG"),
             ("operations.inventory.location.read", "ORG"),
+            ("operations.warehouse.floor.read", "ORG"),
+            ("operations.warehouse.layout.read", "ORG"),
             ("operations.orders.order.read", "ORG"),
             ("operations.orders.order.create", "ORG"),
             ("operations.orders.order.write", "ORG"),

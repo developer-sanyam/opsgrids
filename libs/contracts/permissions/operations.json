@@ -288,6 +288,51 @@
       "max_scope": "ORG",
       "module": "procurement",
       "resource": "supplier"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See a warehouse's floors",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "warehouse",
+      "resource": "floor"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create and edit a warehouse's floors",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "warehouse",
+      "resource": "floor"
+    },
+    {
+      "action": "publish",
+      "default_scope": "ORG",
+      "description": "Publish a draft layout version, or roll back to a prior published one",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "warehouse",
+      "resource": "layout"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See a floor's layout versions, their geometry, validation and computed routes",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "warehouse",
+      "resource": "layout"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Open a draft layout version and edit its placements and walk graph",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "warehouse",
+      "resource": "layout"
     }
   ],
   "product": "operations",
@@ -424,6 +469,26 @@
         {
           "code": "operations.procurement.supplier.write",
           "scope": "ORG"
+        },
+        {
+          "code": "operations.warehouse.floor.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.warehouse.floor.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.warehouse.layout.publish",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.warehouse.layout.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.warehouse.layout.write",
+          "scope": "ORG"
         }
       ],
       "is_admin": true,
@@ -433,7 +498,7 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Does not create or rename warehouses \u2014 that stays with the admin.",
+      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Does not create or rename warehouses \u2014 that stays with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
       "grants": [
         {
           "code": "operations.dispatch.shipment.read",
@@ -546,6 +611,22 @@
         {
           "code": "operations.procurement.supplier.write",
           "scope": "ORG"
+        },
+        {
+          "code": "operations.warehouse.floor.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.warehouse.floor.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.warehouse.layout.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.warehouse.layout.write",
+          "scope": "ORG"
         }
       ],
       "is_admin": false,
@@ -589,7 +670,7 @@
     {
       "code": "OPERATIONS_USER",
       "cross_product": false,
-      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, reads the shared suppliers, inventory, warehouses and locations, and runs the counter: creates and places customer orders, holds and releases them. Does not accept (commit stock to) or cancel an order \u2014 those stay with the manager, the same split `purchase_order.approve` draws from `purchase_order.write`.",
+      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, reads the shared suppliers, inventory, warehouses and locations, and runs the counter: creates and places customer orders, holds and releases them. Does not accept (commit stock to) or cancel an order \u2014 those stay with the manager, the same split `purchase_order.approve` draws from `purchase_order.write`. Sees floors and published layouts (pick routing, the 3D viewer's data) read-only.",
       "grants": [
         {
           "code": "operations.inventory.item.read",
@@ -625,6 +706,14 @@
         },
         {
           "code": "operations.procurement.supplier.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.warehouse.floor.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.warehouse.layout.read",
           "scope": "ORG"
         }
       ],

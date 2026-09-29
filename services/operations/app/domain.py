@@ -8,6 +8,7 @@ tables render, exactly as the SPA derives them, so the numbers agree whichever s
 
 from __future__ import annotations
 
+import heapq
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -688,3 +689,221 @@ def attention_items(
     combined = late + stock
     combined.sort(key=lambda a: 0 if a["tone"] == "danger" else 1)
     return combined
+
+
+# ------------------------------------------------------------------ warehouse geometry (plan §2/
+# F7) — layout-version lifecycle, draft validation, and the walk-graph routing algorithm. Every
+# function here is pure (ADR-0024 §9: deterministic, testable without a database, explainable) —
+# `app.warehouse.selectors`/`.services` load rows and hand plain values in.
+
+#: draft -> published is the ordinary publish; published -> archived happens as a *side effect* of
+#: publishing a different version, never a direct caller-requested move, so it is not an edge
+#: here. archived -> published is a rollback (`publish_layout_version` called again on an old
+#: version). draft has no edge back from anywhere — an abandoned draft is discarded outright
+#: (`DELETE /layout-versions/{id}`), never reached by "transitioning" a stale one into a fresh
+#: draft.
+LAYOUT_VERSION_TRANSITIONS: dict[str, frozenset[str]] = {
+    "draft": frozenset({"published"}),
+    "published": frozenset(),
+    "archived": frozenset({"published"}),
+}
+
+
+def can_transition_layout_version(current: str, new: str) -> bool:
+    """Whether a layout version may move `current` -> `new` by a direct publish/rollback call.
+    The complementary `published -> archived` move is written by `publish_layout_version` itself,
+    on the version being *superseded* — never requested as a transition of its own."""
+    return new in LAYOUT_VERSION_TRANSITIONS.get(current, frozenset())
+
+
+@dataclass(frozen=True, slots=True)
+class PlacementBox:
+    """One location's footprint on a floor, in the units `app.warehouse.selectors` reads off
+    `LocationPlacement` — enough to check for overlap and nothing else, so this function has no
+    reason to touch the database."""
+
+    location_id: uuid.UUID
+    x_mm: int
+    y_mm: int
+    width_mm: int
+    depth_mm: int
+
+
+def _boxes_overlap(a: PlacementBox, b: PlacementBox) -> bool:
+    """Axis-aligned bounding-box intersection — strict, so two boxes that merely touch edges
+    (`a`'s right edge exactly at `b`'s left edge) do not count as overlapping."""
+    return (
+        a.x_mm < b.x_mm + b.width_mm
+        and b.x_mm < a.x_mm + a.width_mm
+        and a.y_mm < b.y_mm + b.depth_mm
+        and b.y_mm < a.y_mm + a.depth_mm
+    )
+
+
+def overlapping_placements(
+    placements: Sequence[PlacementBox],
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """Every pair of placements whose footprints overlap, each pair reported once. O(n²) — a
+    floor's placement count is admin-authored geometry, not a live-traffic table, so the simple
+    pairwise check is the right trade against a spatial index nothing here needs yet. Sorted
+    input so the result (and which of a pair is first) is stable across calls regardless of the
+    order the caller happened to load rows in."""
+    items = sorted(placements, key=lambda p: str(p.location_id))
+    pairs: list[tuple[uuid.UUID, uuid.UUID]] = []
+    for i, a in enumerate(items):
+        for b in items[i + 1 :]:
+            if _boxes_overlap(a, b):
+                pairs.append((a.location_id, b.location_id))
+    return pairs
+
+
+@dataclass(frozen=True, slots=True)
+class GraphNode:
+    """One `WalkNode`, reduced to what connectivity and routing need."""
+
+    id: uuid.UUID
+    location_id: uuid.UUID | None
+
+
+@dataclass(frozen=True, slots=True)
+class GraphEdge:
+    """One `WalkEdge`, reduced to what connectivity and routing need."""
+
+    from_node_id: uuid.UUID
+    to_node_id: uuid.UUID
+    distance_mm: int
+    is_traversable: bool
+    bidirectional: bool
+
+
+def disconnected_required_nodes(
+    nodes: Sequence[GraphNode], edges: Sequence[GraphEdge]
+) -> list[uuid.UUID]:
+    """Which "required" nodes — the ones standing for an actual location, `location_id is not
+    None` — cannot reach the rest of the required nodes over *any* traversable edge.
+
+    Connectivity here is checked as an **undirected** graph even though `bidirectional=False`
+    edges make routing itself directed: two one-way edges pointing opposite ways would otherwise
+    print as "connected" for validation while being unusable for a real round trip (walk out one
+    way, and there is no way back). This is deliberately the more conservative reading — it can
+    flag a graph a one-way-aware search would still route through, never the other way round.
+
+    Zero or one required node is trivially fully connected (nothing else to reach), so both
+    return `[]`. Junction-only nodes (`location_id is None`) still participate as connective
+    tissue between two required nodes; they are just never themselves reported as disconnected.
+    """
+    required = {n.id for n in nodes if n.location_id is not None}
+    if len(required) <= 1:
+        return []
+
+    adjacency: dict[uuid.UUID, set[uuid.UUID]] = {n.id: set() for n in nodes}
+    for e in edges:
+        if not e.is_traversable:
+            continue
+        if e.from_node_id not in adjacency or e.to_node_id not in adjacency:
+            continue  # defensive — an edge naming a node outside this graph
+        adjacency[e.from_node_id].add(e.to_node_id)
+        adjacency[e.to_node_id].add(e.from_node_id)  # undirected for connectivity, see docstring
+
+    # Flood-fill from one required node; every required node not reached is disconnected from it
+    # — and, because "connected to" is symmetric here, from every other required node too.
+    start = min(required, key=str)
+    seen: set[uuid.UUID] = {start}
+    frontier = [start]
+    while frontier:
+        current = frontier.pop()
+        for neighbour in adjacency.get(current, ()):
+            if neighbour not in seen:
+                seen.add(neighbour)
+                frontier.append(neighbour)
+
+    return sorted((required - seen), key=str)
+
+
+@dataclass(frozen=True, slots=True)
+class RoutePlan:
+    """A computed walk path: the ordered nodes it passes through, and its total distance."""
+
+    node_ids: list[uuid.UUID]
+    distance_mm: int
+
+
+def shortest_walk_path(
+    nodes: Sequence[GraphNode],
+    edges: Sequence[GraphEdge],
+    start_node_id: uuid.UUID,
+    end_node_id: uuid.UUID,
+) -> RoutePlan | None:
+    """Dijkstra's algorithm over a floor's walk graph, weighted by `distance_mm`.
+
+    **Why Dijkstra, not A\\*:** every `WalkEdge.distance_mm` is a real, non-negative walking
+    distance (the `distance_positive` CHECK), which is exactly Dijkstra's precondition, and a
+    warehouse floor's graph is small (tens to low hundreds of nodes — an admin draws it by hand).
+    A\\* only buys anything over Dijkstra when an admissible heuristic prunes a search space too
+    big to explore in full; at this scale the extra machinery (and the risk of a heuristic that is
+    accidentally inadmissible, which silently breaks optimality rather than merely slowing down)
+    is not worth it for the distance it saves. Both are equally deterministic; this codebase's own
+    total-order requirement (ADR-0024 §9) is met by tie-breaking on node id below, not by which of
+    the two algorithms is chosen.
+
+    Returns `None` when either endpoint is not in `nodes` at all, or no traversable path connects
+    them (a disconnected graph, or every connecting edge currently blocked) — never raises, so the
+    caller (`app.warehouse.selectors.compute_route`) turns "no path" into its own 409, not this
+    function's job to know about HTTP.
+    """
+    node_ids = {n.id for n in nodes}
+    if start_node_id not in node_ids or end_node_id not in node_ids:
+        return None
+    if start_node_id == end_node_id:
+        return RoutePlan(node_ids=[start_node_id], distance_mm=0)
+
+    # Adjacency, pre-sorted by (weight, neighbour id) so that whenever two edges out of the same
+    # node tie exactly on distance, the neighbour explored — and so recorded as `prev` — is always
+    # the same one regardless of the order the caller's `edges` happened to list them in.
+    adjacency: dict[uuid.UUID, list[tuple[uuid.UUID, int]]] = {n.id: [] for n in nodes}
+    for e in edges:
+        if not e.is_traversable:
+            continue
+        if e.from_node_id not in adjacency or e.to_node_id not in adjacency:
+            continue  # defensive — an edge naming a node outside this graph
+        adjacency[e.from_node_id].append((e.to_node_id, e.distance_mm))
+        if e.bidirectional:
+            adjacency[e.to_node_id].append((e.from_node_id, e.distance_mm))
+    for neighbours in adjacency.values():
+        neighbours.sort(key=lambda pair: (pair[1], str(pair[0])))
+
+    INF = float("inf")
+    best: dict[uuid.UUID, float] = {n.id: INF for n in nodes}
+    prev: dict[uuid.UUID, uuid.UUID | None] = {n.id: None for n in nodes}
+    best[start_node_id] = 0
+    visited: set[uuid.UUID] = set()
+    # `str(node_id)` as the tie-break key on the heap: two entries at the same distance pop in a
+    # fixed order regardless of insertion order, so a tie in the frontier never makes the result
+    # depend on dict/set iteration order.
+    heap: list[tuple[float, str, uuid.UUID]] = [(0.0, str(start_node_id), start_node_id)]
+    while heap:
+        dist, _, node_id = heapq.heappop(heap)
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        if node_id == end_node_id:
+            break
+        for neighbour_id, weight in adjacency[node_id]:
+            if neighbour_id in visited:
+                continue
+            candidate = dist + weight
+            if candidate < best[neighbour_id]:
+                best[neighbour_id] = candidate
+                prev[neighbour_id] = node_id
+                heapq.heappush(heap, (candidate, str(neighbour_id), neighbour_id))
+
+    if best[end_node_id] == INF:
+        return None
+
+    path: list[uuid.UUID] = []
+    cursor: uuid.UUID | None = end_node_id
+    while cursor is not None:
+        path.append(cursor)
+        cursor = prev[cursor]
+    path.reverse()
+    return RoutePlan(node_ids=path, distance_mm=int(best[end_node_id]))

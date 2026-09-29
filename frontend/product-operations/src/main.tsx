@@ -62,6 +62,12 @@ const WarehouseLocationsPage = lazy(() =>
 const WarehouseLocationLabelsPage = lazy(() =>
   import("./routes/WarehouseLocationLabels").then((m) => ({ default: m.WarehouseLocationLabelsPage })),
 );
+const WarehouseFloorsPage = lazy(() =>
+  import("./routes/WarehouseFloors").then((m) => ({ default: m.WarehouseFloorsPage })),
+);
+const FloorLayoutEditorPage = lazy(() =>
+  import("./routes/FloorLayoutEditor").then((m) => ({ default: m.FloorLayoutEditorPage })),
+);
 const Warehouse3DPage = lazy(() => import("./routes/Warehouse3D").then((m) => ({ default: m.Warehouse3DPage })));
 const OrdersPage = lazy(() => import("./routes/Orders").then((m) => ({ default: m.OrdersPage })));
 const OrderFormPage = lazy(() => import("./routes/OrderForm").then((m) => ({ default: m.OrderFormPage })));
@@ -121,6 +127,8 @@ const router = createBrowserRouter([
           lazyRoute("suppliers/:id", <SupplierDetailPage />),
           lazyRoute("warehouses", <WarehousesPage />),
           lazyRoute("warehouses/:id/locations", <WarehouseLocationsPage />),
+          lazyRoute("warehouses/:id/floors", <WarehouseFloorsPage />),
+          lazyRoute("warehouses/:id/floors/:floorId", <FloorLayoutEditorPage />),
           lazyRoute("warehouses/:id/3d", <Warehouse3DPage />),
           lazyRoute("orders", <OrdersPage />),
           lazyRoute("orders/new", <OrderFormPage />),
