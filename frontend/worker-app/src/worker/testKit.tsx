@@ -69,7 +69,7 @@ export function stubGateway(routes: Record<string, Answer>): { calls: Call[] } {
   return { calls };
 }
 
-const NOW = "2026-09-29T09:00:00.000Z";
+export const NOW = "2026-09-29T09:00:00.000Z";
 
 export function makeWorker(overrides: Partial<WorkerOut> = {}): WorkerOut {
   return {
