@@ -299,6 +299,29 @@ https://ops.opsgrids.com {
 	}
 }
 
+# ---------------------------------------------------------------------------- Worker
+#
+# The picker/packer PWA (Fulfilment plan F3, ADR-0024 §7) — its own host, not a route under
+# Inventory above, the same one-hostname-per-product-surface shape (ADR-0001). Published by
+# `make edge-web APP=worker`. Same static-bundle-plus-SPA-fallback shape as every other app
+# here — no new container, no new process, just files Caddy already knows how to serve.
+https://worker.opsgrids.com {
+	import edge
+
+	handle {
+		root * /srv/web/worker/current
+		try_files {path} /index.html
+		file_server
+
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache"
+	}
+
+	handle_errors {
+		respond "OpsGrids Worker is not published on this box yet." {err.status_code}
+	}
+}
+
 # ---------------------------------------------------------------------------- OpsGrids People
 # Published by `make edge-web APP=hrms`. Same shape as Inventory above.
 https://people.opsgrids.com {

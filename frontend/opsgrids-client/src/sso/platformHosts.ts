@@ -13,6 +13,7 @@
 export const PLATFORM_APP_HOSTS: readonly string[] = [
   "app.opsgrids.com",
   "ops.opsgrids.com",
+  "worker.opsgrids.com",
   "people.opsgrids.com",
   "revenue.opsgrids.com",
   "pulse.opsgrids.com",
