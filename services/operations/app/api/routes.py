@@ -27,6 +27,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import domain, scope, selectors, services
 from app.alerts import selectors as alert_selectors
 from app.alerts import services as alert_services
+from app.channels import selectors as channel_selectors
+from app.channels import services as channel_services
+from app.channels.base import ChannelClient
 from app.config import settings
 from app.counting import selectors as counting_selectors
 from app.counting import services as counting_services
@@ -40,6 +43,7 @@ from app.inventory import services as inv_services
 from app.inventory.quantity import QuantityError, parse_qty
 from app.models import (
     SCHEMA,
+    Channel,
     CountLine,
     CountSession,
     LayoutVersion,
@@ -53,6 +57,16 @@ from app.orders.payment_client import CollectionsClient, get_collections_client
 from app.schemas import (
     AssignmentOfferOut,
     CancelIn,
+    ChannelConfigPatch,
+    ChannelConnectIn,
+    ChannelHealthCheckOut,
+    ChannelOut,
+    ChannelReconnectIn,
+    ChannelRetryResultOut,
+    ChannelSkuMappingIn,
+    ChannelSkuMappingOut,
+    ChannelSyncLogOut,
+    ChannelSyncResultOut,
     CheckoutPrefillOut,
     CountLineAddIn,
     CountLineOut,
@@ -149,7 +163,7 @@ from app.schemas import (
 from app.warehouse import selectors as wh_selectors
 from app.warehouse import services as wh_services
 from platform_core.auth import Scope, ScopeContext, require, require_product
-from platform_core.db import get_session, get_tenant_session
+from platform_core.db import get_session, get_tenant_session, set_tenant
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
@@ -345,6 +359,20 @@ AlertManage = Annotated[
 ]
 InsightRead = Annotated[
     ScopeContext, Depends(require("operations.automation.insight.read", minimum=Scope.ORG))
+]
+
+# ------------------------------------------------------------------ channels (Fulfilment plan F11)
+
+ChannelRead = Annotated[
+    ScopeContext, Depends(require("operations.channels.channel.read", minimum=Scope.ORG))
+]
+#: Dangerous (`app.catalogue`'s own flag) — holds and rotates a tenant credential. Floored at ORG,
+#: the same belt-and-suspenders every other ORG-ceilinged write permission in this router uses.
+ChannelWrite = Annotated[
+    ScopeContext, Depends(require("operations.channels.channel.write", minimum=Scope.ORG))
+]
+ChannelSync = Annotated[
+    ScopeContext, Depends(require("operations.channels.channel.sync", minimum=Scope.ORG))
 ]
 
 
@@ -3119,6 +3147,333 @@ async def review_count_line(
         request=request,
     )
     return await _count_line_out(session, ctx.organization_id, line)
+
+
+# ------------------------------------------------------------------ channels (Fulfilment plan F11)
+# `app.channels.services`'s own module docstring draws the transaction-shape line this section
+# follows: connection/mapping CRUD takes `SessionDep` (the ordinary ambient-transaction shape);
+# order/inventory sync, health checks and retries make a real outbound HTTP call and so take
+# `RawSessionDep`, the same shape `POST /orders/{id}/accept` already uses for its own network call.
+
+
+@router.post(
+    "/operations/channels",
+    response_model=ChannelOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Connect a new external sales channel",
+    dependencies=[Entitled],
+)
+async def connect_channel(
+    payload: ChannelConnectIn, session: SessionDep, ctx: ChannelWrite, request: Request
+) -> ChannelOut:
+    channel = await channel_services.connect_channel(
+        session,
+        ctx,
+        provider=payload.provider,
+        name=payload.name,
+        external_shop_id=payload.external_shop_id,
+        api_key=payload.api_key,
+        default_warehouse_id=payload.default_warehouse_id,
+        default_currency=payload.default_currency,
+        auto_accept_orders=payload.auto_accept_orders,
+        request=request,
+    )
+    return channel_selectors.channel_out(channel)
+
+
+@router.get(
+    "/operations/channels",
+    response_model=Page[ChannelOut],
+    summary="Connected channels",
+    dependencies=[Entitled],
+)
+async def list_channels(
+    session: SessionDep,
+    ctx: ChannelRead,
+    params: PageQuery,
+    channel_status: Annotated[str | None, Query(alias="status")] = None,
+) -> Page[ChannelOut]:
+    stmt = channel_selectors.channels_stmt(ctx, status=channel_status)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([channel_selectors.channel_out(c) for c in rows], total=total, params=params)
+
+
+async def _get_channel_or_404(
+    session: AsyncSession, ctx: ScopeContext, channel_id: uuid.UUID
+) -> Channel:
+    channel = await channel_selectors.get_channel(session, ctx.organization_id, channel_id)
+    if channel is None:
+        raise NotFoundProblem("That channel is not part of this organization")
+    return channel
+
+
+@router.get(
+    "/operations/channels/{channel_id}",
+    response_model=ChannelOut,
+    summary="One channel",
+    dependencies=[Entitled],
+)
+async def read_channel(channel_id: uuid.UUID, session: SessionDep, ctx: ChannelRead) -> ChannelOut:
+    channel = await _get_channel_or_404(session, ctx, channel_id)
+    return channel_selectors.channel_out(channel)
+
+
+@router.patch(
+    "/operations/channels/{channel_id}",
+    response_model=ChannelOut,
+    summary="Rename or reconfigure a channel (name, default warehouse, auto-accept)",
+    dependencies=[Entitled],
+)
+async def patch_channel(
+    channel_id: uuid.UUID,
+    payload: ChannelConfigPatch,
+    session: SessionDep,
+    ctx: ChannelWrite,
+    request: Request,
+) -> ChannelOut:
+    channel = await channel_selectors.get_channel(
+        session, ctx.organization_id, channel_id, for_update=True
+    )
+    if channel is None:
+        raise NotFoundProblem("That channel is not part of this organization")
+    channel = await channel_services.update_channel_config(
+        session,
+        ctx,
+        channel,
+        name=payload.name,
+        default_warehouse_id=payload.default_warehouse_id,
+        auto_accept_orders=payload.auto_accept_orders,
+        request=request,
+    )
+    return channel_selectors.channel_out(channel)
+
+
+@router.post(
+    "/operations/channels/{channel_id}/reconnect",
+    response_model=ChannelOut,
+    summary="Rotate this channel's credential and clear an error status",
+    dependencies=[Entitled],
+)
+async def reconnect_channel(
+    channel_id: uuid.UUID,
+    payload: ChannelReconnectIn,
+    session: SessionDep,
+    ctx: ChannelWrite,
+    request: Request,
+) -> ChannelOut:
+    channel = await channel_selectors.get_channel(
+        session, ctx.organization_id, channel_id, for_update=True
+    )
+    if channel is None:
+        raise NotFoundProblem("That channel is not part of this organization")
+    channel = await channel_services.reconnect_channel(
+        session, ctx, channel, api_key=payload.api_key, request=request
+    )
+    return channel_selectors.channel_out(channel)
+
+
+@router.post(
+    "/operations/channels/{channel_id}/disconnect",
+    response_model=ChannelOut,
+    summary="Disconnect a channel — stops all sync until reconnected",
+    dependencies=[Entitled],
+)
+async def disconnect_channel(
+    channel_id: uuid.UUID, session: SessionDep, ctx: ChannelWrite, request: Request
+) -> ChannelOut:
+    channel = await channel_selectors.get_channel(
+        session, ctx.organization_id, channel_id, for_update=True
+    )
+    if channel is None:
+        raise NotFoundProblem("That channel is not part of this organization")
+    channel = await channel_services.disconnect_channel(session, ctx, channel, request=request)
+    return channel_selectors.channel_out(channel)
+
+
+@router.get(
+    "/operations/channels/{channel_id}/sku-mappings",
+    response_model=Page[ChannelSkuMappingOut],
+    summary="This channel's external-SKU -> inventory-item mappings",
+    dependencies=[Entitled],
+)
+async def list_sku_mappings(
+    channel_id: uuid.UUID, session: SessionDep, ctx: ChannelRead, params: PageQuery
+) -> Page[ChannelSkuMappingOut]:
+    await _get_channel_or_404(session, ctx, channel_id)
+    stmt = channel_selectors.sku_mappings_stmt(ctx, channel_id=channel_id)
+    rows, total = await paginate(session, stmt, params)
+    return Page.build(
+        [channel_selectors.sku_mapping_out(m) for m in rows], total=total, params=params
+    )
+
+
+@router.post(
+    "/operations/channels/{channel_id}/sku-mappings",
+    response_model=ChannelSkuMappingOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Map an external SKU to an inventory item (creates or updates)",
+    dependencies=[Entitled],
+)
+async def upsert_sku_mapping(
+    channel_id: uuid.UUID,
+    payload: ChannelSkuMappingIn,
+    session: SessionDep,
+    ctx: ChannelWrite,
+    request: Request,
+) -> ChannelSkuMappingOut:
+    channel = await _get_channel_or_404(session, ctx, channel_id)
+    mapping = await channel_services.upsert_sku_mapping(
+        session,
+        ctx,
+        channel,
+        external_sku=payload.external_sku,
+        inventory_item_id=payload.inventory_item_id,
+        request=request,
+    )
+    return channel_selectors.sku_mapping_out(mapping)
+
+
+@router.delete(
+    "/operations/channels/{channel_id}/sku-mappings/{mapping_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove a SKU mapping",
+    dependencies=[Entitled],
+)
+async def delete_sku_mapping(
+    channel_id: uuid.UUID,
+    mapping_id: uuid.UUID,
+    session: SessionDep,
+    ctx: ChannelWrite,
+    request: Request,
+) -> Response:
+    mapping = await channel_selectors.get_sku_mapping(session, ctx.organization_id, mapping_id)
+    if mapping is None or mapping.channel_id != channel_id:
+        raise NotFoundProblem("That SKU mapping is not part of this channel")
+    await channel_services.delete_sku_mapping(session, ctx, mapping, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/operations/channels/{channel_id}/sync-logs",
+    response_model=Page[ChannelSyncLogOut],
+    summary="This channel's sync attempts: order imports, inventory/fulfilment pushes, health",
+    dependencies=[Entitled],
+)
+async def list_sync_logs(
+    channel_id: uuid.UUID,
+    session: SessionDep,
+    ctx: ChannelRead,
+    params: PageQuery,
+    sync_type: Annotated[str | None, Query()] = None,
+    log_status: Annotated[str | None, Query(alias="status")] = None,
+) -> Page[ChannelSyncLogOut]:
+    await _get_channel_or_404(session, ctx, channel_id)
+    stmt = channel_selectors.sync_logs_stmt(
+        ctx, channel_id=channel_id, sync_type=sync_type, status=log_status
+    )
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([channel_selectors.sync_log_out(s) for s in rows], total=total, params=params)
+
+
+async def _client_for(
+    session: AsyncSession, ctx: ScopeContext, channel_id: uuid.UUID
+) -> tuple[Channel, ChannelClient]:
+    return await channel_services.load_client_for_channel(session, ctx, channel_id)
+
+
+async def _close(client: ChannelClient) -> None:
+    aclose = getattr(client, "aclose", None)
+    if aclose is not None:
+        await aclose()
+
+
+@router.post(
+    "/operations/channels/{channel_id}/sync/orders",
+    response_model=ChannelSyncResultOut,
+    summary="Poll this channel for new orders now, instead of waiting for the scheduled sync",
+    dependencies=[Entitled],
+)
+async def sync_channel_orders_now(
+    channel_id: uuid.UUID, session: RawSessionDep, ctx: ChannelSync, request: Request
+) -> ChannelSyncResultOut:
+    _channel, client = await _client_for(session, ctx, channel_id)
+    try:
+        summary = await channel_services.sync_orders_for_channel(
+            session, ctx, channel_id, client, request=request
+        )
+    finally:
+        await _close(client)
+    return ChannelSyncResultOut(
+        attempted=summary.attempted, succeeded=summary.succeeded, rejected=summary.rejected
+    )
+
+
+@router.post(
+    "/operations/channels/{channel_id}/sync/inventory",
+    response_model=ChannelSyncResultOut,
+    summary="Push every mapped SKU's available quantity to this channel now",
+    dependencies=[Entitled],
+)
+async def sync_channel_inventory_now(
+    channel_id: uuid.UUID, session: RawSessionDep, ctx: ChannelSync, request: Request
+) -> ChannelSyncResultOut:
+    _channel, client = await _client_for(session, ctx, channel_id)
+    try:
+        summary = await channel_services.push_inventory_for_channel(
+            session, ctx, channel_id, client, request=request
+        )
+    finally:
+        await _close(client)
+    return ChannelSyncResultOut(
+        attempted=summary.attempted, succeeded=summary.succeeded, rejected=0
+    )
+
+
+@router.post(
+    "/operations/channels/{channel_id}/health-check",
+    response_model=ChannelHealthCheckOut,
+    summary="Check whether this channel's credential and connection still work",
+    dependencies=[Entitled],
+)
+async def health_check_channel(
+    channel_id: uuid.UUID, session: RawSessionDep, ctx: ChannelSync
+) -> ChannelHealthCheckOut:
+    _channel, client = await _client_for(session, ctx, channel_id)
+    try:
+        healthy = await channel_services.check_channel_health(session, ctx, channel_id, client)
+    finally:
+        await _close(client)
+    return ChannelHealthCheckOut(healthy=healthy)
+
+
+@router.post(
+    "/operations/channels/{channel_id}/sync-logs/{log_id}/retry",
+    response_model=ChannelRetryResultOut,
+    summary="Retry a failed sync log entry, from current data",
+    dependencies=[Entitled],
+)
+async def retry_channel_sync_log(
+    channel_id: uuid.UUID,
+    log_id: uuid.UUID,
+    session: RawSessionDep,
+    ctx: ChannelSync,
+    request: Request,
+) -> ChannelRetryResultOut:
+    async with session.begin():
+        await set_tenant(session, ctx.organization_id)
+        log_entry = await channel_selectors.get_sync_log(session, ctx.organization_id, log_id)
+    if log_entry is None or log_entry.channel_id != channel_id:
+        raise NotFoundProblem("That sync log entry is not part of this channel")
+    if log_entry.status != "failed":
+        raise ValidationProblem("Only a failed sync log entry can be retried")
+    _channel, client = await _client_for(session, ctx, channel_id)
+    try:
+        succeeded = await channel_services.retry_sync_log(
+            session, ctx, channel_id, client, log_entry, request=request
+        )
+    finally:
+        await _close(client)
+    return ChannelRetryResultOut(succeeded=succeeded)
 
 
 # ------------------------------------------------------------------ overview

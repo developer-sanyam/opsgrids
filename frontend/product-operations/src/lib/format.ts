@@ -73,6 +73,20 @@ export function formatDate(iso: string | null): string {
   });
 }
 
+/** Date and time together, the viewer's own local zone — for a timestamp where *when today* it
+ *  happened matters (a sync attempt, a health check), not just which day. */
+export function formatDateTime(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 
 
 /**

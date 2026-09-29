@@ -33,6 +33,19 @@ And two for online payment (ADR-0024 A4, `services/payment`'s tenant collections
 * **`payment_collection_refunded`** — bound to `payment.collections.payment.refunded`. A full
   refund of the collection that paid the order reverses that fact; a refund that then fails
   restores it.
+
+One more, F11's own (channel fulfilment/tracking sync; Fulfilment plan F11):
+
+* **`dispatch_shipment_transitioned`** — bound to all four of `app.dispatch.services`'
+  `EVT_SHIPMENT_DISPATCHED`/`DELIVERED`/`FAILED`/`RETURNED`. This is the one place `app.channels`
+  reaches `app.dispatch`'s own tables at all — `app.channels.services` itself never imports
+  `app.dispatch` (its own module boundary, `.importlinter`'s `channels-boundary` contract), so the
+  shipment's `tracking_reference`/`carrier_name` (not carried on the event payload itself) are read
+  here, at the one layer already allowed to import both, and handed to
+  `app.channels.services.push_fulfilment_update_for_order` as plain arguments. That function makes
+  a real outbound HTTP call and manages its own transactions (claim → call → record,
+  `docs/io-outside-transactions.md`), so — unlike the three handlers above — this one runs on a
+  **raw**, un-transacted session (`_raw_session_scope`), never `_session_scope`'s ambient one.
 """
 
 from __future__ import annotations
@@ -44,13 +57,22 @@ from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from app.channels import services as channel_services
 from app.config import settings
+from app.dispatch import selectors as dispatch_selectors
+from app.dispatch import services as dispatch_services
 from app.fulfilment import services as fulfilment_services
 from app.models import ProcessedEvent
 from app.orders import services as order_services
-from platform_core.db import assert_app_role, init_engine, session_scope
+from platform_core.db import (
+    assert_app_role,
+    get_sessionmaker,
+    init_engine,
+    session_scope,
+    set_tenant,
+)
 from platform_core.events import EventConsumer, already_processed, mark_processed
 from platform_core.logging import get_logger
 
@@ -61,26 +83,61 @@ consumer = EventConsumer(amqp_url=settings().rabbitmq_url, queue_name="operation
 #: Same shape as every service's `app.cron.WorkScope` — this service has no sweep of its own to
 #: import it from, so it is defined here rather than imported.
 WorkScope = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
+#: A raw, un-transacted session factory — `platform_core.db.get_session`'s own shape (no ambient
+#: `session.begin()`), needed by `dispatch_shipment_transitioned` because the function it calls
+#: manages its own transactions. Not exported by `platform_core.db` as a `WorkScope`-shaped
+#: callable, so it is built the same way `bulkhead_scope` builds its own sessionmaker.
+RawScope = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
 
 def _default_session_scope(organization_id: uuid.UUID) -> Any:
     return session_scope(organization_id=organization_id)
 
 
-#: The transaction scope both handlers below open. Defaults to the process-wide engine — this
-#: consumer's own connection pool when it runs standalone (`python -m app.consumers`,
-#: `bin/worker`). `app/main.py` swaps it to a bulkhead scope (`platform_core.db.bulkhead_scope`)
-#: before starting this consumer as a supervised background task inside the API process, on
-#: `Settings.run_consumers_in_api` (MAJOR 2, security review) — so a folded consumer's per-message
-#: transactions can neither take a connection from request traffic nor be starved by it.
+def _default_raw_scope() -> AbstractAsyncContextManager[AsyncSession]:
+    return get_sessionmaker()()
+
+
+#: The transaction scope the three ordinary handlers below open. Defaults to the process-wide
+#: engine — this consumer's own connection pool when it runs standalone (`python -m
+#: app.consumers`, `bin/worker`). `app/main.py` swaps it to a bulkhead scope
+#: (`platform_core.db.bulkhead_scope`) before starting this consumer as a supervised background
+#: task inside the API process, on `Settings.run_consumers_in_api` (MAJOR 2, security review) —
+#: so a folded consumer's per-message transactions can neither take a connection from request
+#: traffic nor be starved by it.
 _session_scope: WorkScope = _default_session_scope
+#: The raw scope `dispatch_shipment_transitioned` opens. Defaults the same way `_session_scope`
+#: does; `app/main.py` swaps both to the same bulkhead engine together.
+_raw_session_scope: RawScope = _default_raw_scope
 
 
 def use_session_scope(scope: WorkScope) -> None:
-    """Point both handlers above at `scope` instead of the default engine. Called once, before
-    this consumer starts, by whichever entrypoint constructs it that way — never by a handler."""
+    """Point the three ordinary handlers at `scope` instead of the default engine. Called once,
+    before this consumer starts, by whichever entrypoint constructs it that way — never by a
+    handler."""
     global _session_scope
     _session_scope = scope
+
+
+def use_raw_session_scope(scope: RawScope) -> None:
+    """Point `dispatch_shipment_transitioned` at `scope` instead of the default engine — called
+    alongside `use_session_scope`, on the same engine, so the two share one bulkhead."""
+    global _raw_session_scope
+    _raw_session_scope = scope
+
+
+def bulkhead_raw_scope(engine: AsyncEngine) -> RawScope:
+    """`get_session`'s own shape (no ambient transaction), on `engine` instead of the process-wide
+    one — the raw counterpart to `platform_core.db.bulkhead_scope`, which only ever opens an
+    ambient transaction and so cannot serve a handler that manages its own."""
+    sessionmaker = async_sessionmaker(
+        engine, expire_on_commit=False, autoflush=False, class_=AsyncSession
+    )
+
+    def scope() -> AbstractAsyncContextManager[AsyncSession]:
+        return sessionmaker()
+
+    return scope
 
 
 async def expire_offer_requested(envelope: dict[str, Any]) -> None:
@@ -191,6 +248,8 @@ async def finance_invoice_issued(envelope: dict[str, Any]) -> None:
 consumer.on(order_services.EVT_FINANCE_INVOICE_ISSUED)(finance_invoice_issued)
 
 
+
+
 async def _collection_envelope(
     envelope: dict[str, Any], *, log_prefix: str
 ) -> tuple[uuid.UUID, uuid.UUID, dict[str, Any]] | None:
@@ -284,6 +343,75 @@ async def payment_collection_refunded(envelope: dict[str, Any]) -> None:
 
 
 consumer.on(order_services.EVT_PAYMENT_COLLECTION_REFUNDED)(payment_collection_refunded)
+
+
+
+async def dispatch_shipment_transitioned(envelope: dict[str, Any], *, channel_status: str) -> None:
+    """Bound four times below, once per `app.dispatch.services` shipment-transition event, each
+    with its own `channel_status` (`app.channels.services.shipment_status_to_channel_status`'s
+    own vocabulary) — see module docstring for why this handler, alone, runs on a raw session.
+    """
+    event_id = uuid.UUID(envelope["event_id"])
+    organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload = envelope["payload"]
+    shipment_id = uuid.UUID(str(payload["shipment_id"]))
+    order_id = uuid.UUID(str(payload["order_id"]))
+
+    async with _raw_session_scope() as session:
+        async with session.begin():
+            await set_tenant(session, organization_id)
+            if await already_processed(session, ProcessedEvent, event_id):
+                log.info("channels.fulfilment_push.duplicate", event_id=str(event_id))
+                return
+            shipment = await dispatch_selectors.get_shipment(session, organization_id, shipment_id)
+            tracking_number = shipment.tracking_reference if shipment else None
+            carrier = shipment.carrier_name if shipment else None
+
+        ctx = channel_services.service_ctx(organization_id)
+        pushed = await channel_services.push_fulfilment_update_for_order(
+            session,
+            ctx,
+            order_id,
+            status=channel_status,
+            tracking_number=tracking_number,
+            carrier=carrier,
+            occurred_at=datetime.now(UTC),
+        )
+
+        async with session.begin():
+            await set_tenant(session, organization_id)
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+    log.info(
+        "channels.fulfilment_push.handled",
+        event_id=str(event_id),
+        order_id=str(order_id),
+        channel_status=channel_status,
+        pushed=pushed,
+    )
+
+
+#: Event -> the `Shipment.status` it fires on (`app.dispatch.services._TRANSITION_EVENTS`,
+#: mirrored rather than imported since it is a private module constant). Translated through
+#: `channel_services.shipment_status_to_channel_status` at bind time rather than duplicating that
+#: vocabulary here a second time.
+for _event_name, _shipment_status in (
+    (dispatch_services.EVT_SHIPMENT_DISPATCHED, "IN_TRANSIT"),
+    (dispatch_services.EVT_SHIPMENT_DELIVERED, "DELIVERED"),
+    (dispatch_services.EVT_SHIPMENT_FAILED, "FAILED"),
+    (dispatch_services.EVT_SHIPMENT_RETURNED, "RETURNED"),
+):
+
+    def _bind_dispatch_handler(
+        shipment_status: str = _shipment_status,
+    ) -> Callable[[dict[str, Any]], Any]:
+        channel_status = channel_services.shipment_status_to_channel_status(shipment_status)
+
+        async def _handler(envelope: dict[str, Any]) -> None:
+            await dispatch_shipment_transitioned(envelope, channel_status=channel_status)
+
+        return _handler
+
+    consumer.on(_event_name)(_bind_dispatch_handler())
 
 
 async def main() -> None:

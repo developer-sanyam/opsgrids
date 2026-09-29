@@ -1,4 +1,6 @@
 import type {
+  ChannelStatus,
+  ChannelSyncStatus,
   CollectionState,
   CountLineReviewStatus,
   CountSessionStatus,
@@ -224,6 +226,43 @@ const COLLECTION_TONE: Record<CollectionState, StatusTone> = {
 
 export function CollectionStatusPill({ state }: { state: CollectionState }) {
   return <StatusBadge tone={COLLECTION_TONE[state]} label={COLLECTION_LABEL[state]} />;
+}
+
+/* ------------------------------ channel status --------------------------- */
+/** A channel connection's own health (Fulfilment F11) — `connected` (success), `disconnected`
+ *  (neutral, a deliberate state, not a failure), `error` (danger — the last sync hit an auth
+ *  failure and needs a fresh credential, `app.models.Channel`'s own docstring). */
+
+const CHANNEL_LABEL: Record<ChannelStatus, string> = {
+  connected: "Connected",
+  disconnected: "Disconnected",
+  error: "Needs reconnect",
+};
+
+const CHANNEL_TONE: Record<ChannelStatus, StatusTone> = {
+  connected: "success",
+  disconnected: "neutral",
+  error: "danger",
+};
+
+export function ChannelStatusPill({ status }: { status: ChannelStatus }) {
+  return <StatusBadge tone={CHANNEL_TONE[status]} label={CHANNEL_LABEL[status]} />;
+}
+
+/* ---------------------------- channel sync status ------------------------- */
+
+const CHANNEL_SYNC_LABEL: Record<ChannelSyncStatus, string> = {
+  success: "Success",
+  failed: "Failed",
+};
+
+const CHANNEL_SYNC_TONE: Record<ChannelSyncStatus, StatusTone> = {
+  success: "success",
+  failed: "danger",
+};
+
+export function ChannelSyncStatusPill({ status }: { status: ChannelSyncStatus }) {
+  return <StatusBadge tone={CHANNEL_SYNC_TONE[status]} label={CHANNEL_SYNC_LABEL[status]} />;
 }
 
 /* ------------------------------ stock level ---------------------------- */

@@ -268,8 +268,12 @@ def out_of_stock_count(items: Sequence[InventoryItem]) -> int:
 
 # ------------------------------------------------------------------ orders (ADR-0025)
 
-#: phone | manual | sales | walk_in — `Order.channel`'s vocabulary.
-ORDER_CHANNELS: tuple[str, ...] = ("phone", "manual", "sales", "walk_in")
+#: phone | manual | sales | walk_in | marketplace — `Order.channel`'s vocabulary: how the order
+#: was *taken*. `"marketplace"` (Fulfilment plan F11) is the one value an external channel
+#: connector (`app.channels`) ever writes — never to be confused with a `Channel` row itself,
+#: which is the *connector*, not an intake mode. An order's own `Channel` (if any) is recorded by
+#: `ChannelOrderImport.order_id`, a link table, not a second column on `Order`.
+ORDER_CHANNELS: tuple[str, ...] = ("phone", "manual", "sales", "walk_in", "marketplace")
 #: prepaid | cash | credit — `FulfilmentSettings.payment_defaults`' values.
 PAYMENT_TERMS: tuple[str, ...] = ("prepaid", "cash", "credit")
 
@@ -991,3 +995,39 @@ def shortest_walk_path(
         cursor = prev[cursor]
     path.reverse()
     return RoutePlan(node_ids=path, distance_mm=int(best[end_node_id]))
+
+
+# ------------------------------------------------------------------ channels (Fulfilment plan F11)
+
+#: `Channel.provider`'s vocabulary. Only the self-hosted sandbox this build proves the connector
+#: boundary against exists today — no real Shopify/Amazon credentials or sandbox account exist in
+#: this environment (see `app/channels/mock_marketplace.py`). A real provider is a new
+#: `ChannelClient` (`app/channels/base.py`) plus a new entry here; nothing else about the module
+#: changes shape.
+CHANNEL_PROVIDERS: tuple[str, ...] = ("mock_marketplace",)
+
+#: `Channel.status`'s vocabulary. `error` means the last sync attempt hit an auth failure (an
+#: expired or revoked credential) — the row is still configured, but nothing syncs again until it
+#: is reconnected with a fresh key (`app.channels.services.reconnect_channel`).
+CHANNEL_STATUSES: tuple[str, ...] = ("connected", "disconnected", "error")
+
+#: `ChannelSyncLog.sync_type`'s vocabulary.
+CHANNEL_SYNC_TYPES: tuple[str, ...] = (
+    "order_import",
+    "inventory_push",
+    "fulfilment_push",
+    "health_check",
+)
+
+#: A connection is given up on (marked `error` rather than retried forever) after this many
+#: consecutive failed attempts of any kind — the same "a climbing streak is the thing worth paging
+#: on" reasoning `GuardedSweep.consecutive_failures` documents, applied per connection rather than
+#: per sweep process. Chosen so one or two transient blips (a timeout, a 500) never flip a healthy
+#: connection to `error`, but a genuinely dead or de-authorised one does not retry forever either.
+CHANNEL_MAX_CONSECUTIVE_FAILURES = 5
+
+
+def channel_should_suspend(consecutive_failures: int) -> bool:
+    """Whether a connection's next failure should flip it to `error` instead of staying
+    `connected` — a pure predicate so the threshold is testable without a sweep or a database."""
+    return consecutive_failures + 1 >= CHANNEL_MAX_CONSECUTIVE_FAILURES

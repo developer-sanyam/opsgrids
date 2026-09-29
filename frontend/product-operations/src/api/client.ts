@@ -57,6 +57,19 @@ import type {
   InventoryItemIn,
   InventoryItemOut,
   InventoryItemPatch,
+  ChannelConfigPatch,
+  ChannelConnectIn,
+  ChannelHealthCheckOut,
+  ChannelOut,
+  ChannelReconnectIn,
+  ChannelRetryResultOut,
+  ChannelSkuMappingIn,
+  ChannelSkuMappingOut,
+  ChannelStatus,
+  ChannelSyncLogOut,
+  ChannelSyncResultOut,
+  ChannelSyncStatus,
+  ChannelSyncType,
   ItemAttributeIn,
   ItemAttributeOut,
   ItemCategoryIn,
@@ -2326,6 +2339,7 @@ export async function insightDiscrepancyTrend(days = 30): Promise<DiscrepancyTre
   return apiRequest<DiscrepancyTrendPointOut[]>(`/operations/insights/discrepancies${buildQuery({ days })}`);
 }
 
+
 /* ------------------------------------ online payment (ADR-0024 A4, Fulfilment F10) ------------------------------------ */
 /**
  * An order's online payment, and the organization's own Razorpay connection. No fixture-mode
@@ -2402,4 +2416,155 @@ export async function removeMerchantAccount(): Promise<void> {
  *  Read-only: it lists disagreements with the provider and corrects nothing. */
 export async function getPaymentReconciliation(): Promise<ReconciliationOut> {
   return apiRequest<ReconciliationOut>("/payment/collections/reconciliation");
+}
+
+
+/* ------------------------------------ channels (Fulfilment F11) ------------------------------------ */
+/**
+ * External sales-channel connections. No fixture-mode branch — the same precedent dispatch sets
+ * above: every function here always calls the real endpoint through `apiRequest`, backed by the
+ * real connector and the self-hosted sandbox marketplace (`bin/mock_marketplace`), never fake
+ * numbers.
+ */
+
+export interface ListChannelsParams {
+  status?: ChannelStatus | "all";
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/channels` — `operations.channels.channel.read`. */
+export async function listChannels(params: ListChannelsParams = {}): Promise<Page<ChannelOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    status: params.status === "all" ? undefined : params.status,
+  });
+  return apiRequest<Page<ChannelOut>>(`/operations/channels${query}`);
+}
+
+export async function getChannel(id: string): Promise<ChannelOut> {
+  return apiRequest<ChannelOut>(`/operations/channels/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/channels` — `operations.channels.channel.write:ORG`. Connects a new channel;
+ *  only `provider: "mock_marketplace"` exists in this build. */
+export async function connectChannel(input: ChannelConnectIn): Promise<ChannelOut> {
+  return apiRequest<ChannelOut>("/operations/channels", { method: "POST", body: input });
+}
+
+/** `PATCH /operations/channels/{id}` — `operations.channels.channel.write:ORG`. */
+export async function updateChannel(id: string, patch: ChannelConfigPatch): Promise<ChannelOut> {
+  return apiRequest<ChannelOut>(`/operations/channels/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: patch,
+  });
+}
+
+/** `POST /operations/channels/{id}/reconnect` — `operations.channels.channel.write:ORG`. Rotates
+ *  the credential and clears an `error` status. */
+export async function reconnectChannel(id: string, input: ChannelReconnectIn): Promise<ChannelOut> {
+  return apiRequest<ChannelOut>(`/operations/channels/${encodeURIComponent(id)}/reconnect`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** `POST /operations/channels/{id}/disconnect` — `operations.channels.channel.write:ORG`. */
+export async function disconnectChannel(id: string): Promise<ChannelOut> {
+  return apiRequest<ChannelOut>(`/operations/channels/${encodeURIComponent(id)}/disconnect`, {
+    method: "POST",
+  });
+}
+
+/** `GET /operations/channels/{id}/sku-mappings` — `operations.channels.channel.read`. */
+export async function listSkuMappings(
+  channelId: string,
+  params: { page?: number; size?: number } = {},
+): Promise<Page<ChannelSkuMappingOut>> {
+  const query = buildQuery({ page: params.page ?? 1, size: params.size ?? FULL_PAGE });
+  return apiRequest<Page<ChannelSkuMappingOut>>(
+    `/operations/channels/${encodeURIComponent(channelId)}/sku-mappings${query}`,
+  );
+}
+
+/** `POST /operations/channels/{id}/sku-mappings` — `operations.channels.channel.write:ORG`. Creates
+ *  or updates the mapping for `input.external_sku`. */
+export async function upsertSkuMapping(
+  channelId: string,
+  input: ChannelSkuMappingIn,
+): Promise<ChannelSkuMappingOut> {
+  return apiRequest<ChannelSkuMappingOut>(
+    `/operations/channels/${encodeURIComponent(channelId)}/sku-mappings`,
+    { method: "POST", body: input },
+  );
+}
+
+/** `DELETE /operations/channels/{id}/sku-mappings/{mappingId}` —
+ *  `operations.channels.channel.write:ORG`. */
+export async function deleteSkuMapping(channelId: string, mappingId: string): Promise<void> {
+  await apiRequest<void>(
+    `/operations/channels/${encodeURIComponent(channelId)}/sku-mappings/${encodeURIComponent(mappingId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export interface ListSyncLogsParams {
+  sync_type?: ChannelSyncType;
+  status?: ChannelSyncStatus | "all";
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/channels/{id}/sync-logs` — `operations.channels.channel.read`. */
+export async function listSyncLogs(
+  channelId: string,
+  params: ListSyncLogsParams = {},
+): Promise<Page<ChannelSyncLogOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    sync_type: params.sync_type,
+    status: params.status === "all" ? undefined : params.status,
+  });
+  return apiRequest<Page<ChannelSyncLogOut>>(
+    `/operations/channels/${encodeURIComponent(channelId)}/sync-logs${query}`,
+  );
+}
+
+/** `POST /operations/channels/{id}/sync/orders` — `operations.channels.channel.sync:ORG`. Polls
+ *  the channel for new orders right now instead of waiting for the scheduled sync. */
+export async function syncChannelOrdersNow(channelId: string): Promise<ChannelSyncResultOut> {
+  return apiRequest<ChannelSyncResultOut>(
+    `/operations/channels/${encodeURIComponent(channelId)}/sync/orders`,
+    { method: "POST" },
+  );
+}
+
+/** `POST /operations/channels/{id}/sync/inventory` — `operations.channels.channel.sync:ORG`. */
+export async function syncChannelInventoryNow(channelId: string): Promise<ChannelSyncResultOut> {
+  return apiRequest<ChannelSyncResultOut>(
+    `/operations/channels/${encodeURIComponent(channelId)}/sync/inventory`,
+    { method: "POST" },
+  );
+}
+
+/** `POST /operations/channels/{id}/health-check` — `operations.channels.channel.sync:ORG`. */
+export async function checkChannelHealth(channelId: string): Promise<ChannelHealthCheckOut> {
+  return apiRequest<ChannelHealthCheckOut>(
+    `/operations/channels/${encodeURIComponent(channelId)}/health-check`,
+    { method: "POST" },
+  );
+}
+
+/** `POST /operations/channels/{id}/sync-logs/{logId}/retry` —
+ *  `operations.channels.channel.sync:ORG`. Re-attempts a failed sync log entry from current data. */
+export async function retryChannelSyncLog(
+  channelId: string,
+  logId: string,
+): Promise<ChannelRetryResultOut> {
+  return apiRequest<ChannelRetryResultOut>(
+    `/operations/channels/${encodeURIComponent(channelId)}/sync-logs/${encodeURIComponent(logId)}/retry`,
+    { method: "POST" },
+  );
 }

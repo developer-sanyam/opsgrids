@@ -1191,7 +1191,7 @@ class OverviewOut(BaseModel):
 
 # ------------------------------------------------------------------ orders (ADR-0024, ADR-0025)
 
-OrderChannel = Literal["phone", "manual", "sales", "walk_in"]
+OrderChannel = Literal["phone", "manual", "sales", "walk_in", "marketplace"]
 OrderStatus = Literal[
     "DRAFT",
     "PLACED",
@@ -1997,3 +1997,129 @@ class OrderRefundIn(BaseModel):
 
     amount_minor: int = Field(gt=0, le=MAX_ABS_MILLI)
     reason: str = Field(min_length=1, max_length=200)
+
+
+
+# ------------------------------------------------------------------ channels (Fulfilment plan F11)
+
+ChannelProvider = Literal["mock_marketplace"]
+ChannelStatus = Literal["connected", "disconnected", "error"]
+ChannelSyncType = Literal["order_import", "inventory_push", "fulfilment_push", "health_check"]
+ChannelSyncStatus = Literal["success", "failed"]
+
+
+class ChannelOut(BaseModel):
+    id: str
+    provider: ChannelProvider
+    name: str
+    status: ChannelStatus
+    external_shop_id: str
+    #: Never the credential itself — see `app.models.Channel`'s own docstring.
+    api_key_masked: str
+    default_warehouse_id: str | None
+    default_currency: str
+    auto_accept_orders: bool
+    last_orders_synced_at: datetime | None
+    last_inventory_synced_at: datetime | None
+    last_health_check_at: datetime | None
+    consecutive_failures: int
+    last_error_code: str | None
+    last_error_message: str | None
+    connected_at: datetime | None
+    disconnected_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChannelConnectIn(BaseModel):
+    """`POST /operations/channels` — connects a new channel. Only `mock_marketplace` exists
+    today (`app.domain.CHANNEL_PROVIDERS`) — this build's self-hosted sandbox, in place of the
+    real Shopify/Amazon credentials this environment does not have."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: ChannelProvider
+    name: str = Field(min_length=1, max_length=120)
+    external_shop_id: str = Field(min_length=1, max_length=120)
+    api_key: str = Field(min_length=1, max_length=500)
+    default_warehouse_id: UUID
+    default_currency: str = Field(default="INR", min_length=3, max_length=3)
+    auto_accept_orders: bool = True
+
+    @field_validator("name", "external_shop_id", "api_key")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        return _reject_blank_or_control(value, field_name="value")
+
+
+class ChannelConfigPatch(BaseModel):
+    """`PATCH /operations/channels/{id}` — configuration only; the credential is rotated
+    separately (`ChannelReconnectIn`) so a plain rename can never accidentally touch it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    default_warehouse_id: UUID | None = None
+    auto_accept_orders: bool | None = None
+
+
+class ChannelReconnectIn(BaseModel):
+    """`POST /operations/channels/{id}/reconnect` — rotates the credential and clears an `error`
+    status. Also how a deliberately `disconnected` connection is brought back."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    api_key: str = Field(min_length=1, max_length=500)
+
+
+class ChannelSkuMappingOut(BaseModel):
+    id: str
+    channel_id: str
+    external_sku: str
+    inventory_item_id: str
+    last_pushed_available_milli: int | None
+    last_pushed_at: datetime | None
+    last_push_status: Literal["ok", "failed"] | None
+    last_push_error: str | None
+
+
+class ChannelSkuMappingIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    external_sku: str = Field(min_length=1, max_length=120)
+    inventory_item_id: UUID
+
+    @field_validator("external_sku")
+    @classmethod
+    def _sku_not_blank(cls, value: str) -> str:
+        return _reject_blank_or_control(value, field_name="external_sku")
+
+
+class ChannelSyncLogOut(BaseModel):
+    id: str
+    channel_id: str
+    sync_type: ChannelSyncType
+    status: ChannelSyncStatus
+    external_ref: str
+    detail: dict[str, object] | None
+    error_code: str | None
+    error_message: str | None
+    duration_ms: int | None
+    attempted_at: datetime
+
+
+class ChannelSyncResultOut(BaseModel):
+    """What a manual "sync now" or "retry" action returns — real counts from the sync that just
+    ran, never a fixed success message (F11's own "no fake dashboard numbers" rule)."""
+
+    attempted: int
+    succeeded: int
+    rejected: int
+
+
+class ChannelRetryResultOut(BaseModel):
+    succeeded: bool
+
+
+class ChannelHealthCheckOut(BaseModel):
+    healthy: bool

@@ -4,6 +4,33 @@
     {
       "action": "read",
       "default_scope": "ORG",
+      "description": "See connected channels, their SKU mappings and their sync status/logs",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "channels",
+      "resource": "channel"
+    },
+    {
+      "action": "sync",
+      "default_scope": "ORG",
+      "description": "Trigger a manual order/inventory sync, a health check, or retry a failed sync log entry",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "channels",
+      "resource": "channel"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Connect, configure, reconnect and disconnect a channel; create and remove its SKU mappings",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "channels",
+      "resource": "channel"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
       "description": "See shipments and their carrier handover history",
       "is_dangerous": false,
       "max_scope": "ORG",
@@ -388,6 +415,18 @@
       "description": "Administers procurement and inventory across the organization. Built from the Operations catalogue alone \u2014 running operations is not the same job as owning the account.",
       "grants": [
         {
+          "code": "operations.channels.channel.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.channels.channel.sync",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.channels.channel.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.dispatch.shipment.read",
           "scope": "ORG"
         },
@@ -565,6 +604,14 @@
       "cross_product": false,
       "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Takes and refunds orders' online payments and reads the payment reconciliation. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that, like creating or renaming warehouses and connecting or changing the organization's payment-provider account, stays with the admin.",
       "grants": [
+        {
+          "code": "operations.channels.channel.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.channels.channel.sync",
+          "scope": "ORG"
+        },
         {
           "code": "operations.dispatch.shipment.read",
           "scope": "ORG"

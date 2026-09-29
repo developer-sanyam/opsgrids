@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from app import consumers
 from app.api.routes import router
+from app.channels.sweep import ChannelSyncSweep
 from app.config import settings
 from app.cron import AlertSweep, ReconcileSweep
 from platform_core.app import create_app
@@ -112,6 +113,41 @@ async def _stop_alert_sweep(app: FastAPI) -> None:
         await engine.dispose()
 
 
+async def _start_channel_sync_sweep(app: FastAPI) -> None:
+    """The channel order-import/inventory-push sweep (Fulfilment plan F11), folded into this
+    process on the same `Settings.run_sweeps_in_api` flag and the identical shape
+    `_start_reconcile_sweep` uses just above — its own bulkhead engine (never the reconcile
+    sweep's, and never the request pool), a failed outbox-role precondition skips only this
+    sweep, and it is visible on `/metrics` under its own name (`channels.sync`)."""
+    app.state.channel_sweep_task = None
+    app.state.channel_sweep_engine = None
+    cfg = settings()
+    if not cfg.run_sweeps_in_api:
+        return
+    try:
+        init_outbox_engine(cfg)
+        await assert_outbox_role(get_outbox_engine(), environment=cfg.environment)
+    except Exception:
+        log.exception("channels.sync.not_started", reason="outbox role precondition failed")
+        register_sweep_health("channels.sync").record_failure()
+        return
+    engine = create_bulkhead_engine(cfg, name="channel-sweep")
+    app.state.channel_sweep_engine = engine
+    sweep = ChannelSyncSweep(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=bulkhead_scope(engine),
+        interval=cfg.channel_sync_interval_seconds,
+    )
+    app.state.channel_sweep_task = start_background_sweep(sweep.run(), name="channels.sync")
+
+
+async def _stop_channel_sync_sweep(app: FastAPI) -> None:
+    await stop_background_sweep(getattr(app.state, "channel_sweep_task", None))
+    engine = getattr(app.state, "channel_sweep_engine", None)
+    if engine is not None:
+        await engine.dispose()
+
+
 async def _start_background_worker(app: FastAPI) -> None:
     """Starts this service's two event consumers (`app/consumers.py` — the fulfilment offer-
     expiry sweep and the order-cancellation cascade, ADR-0025 §3/§1), exactly what `bin/worker`
@@ -136,6 +172,10 @@ async def _start_background_worker(app: FastAPI) -> None:
     try:
         engine = create_bulkhead_engine(cfg, name="worker")
         consumers.use_session_scope(bulkhead_scope(engine))
+        # Same engine, so `dispatch_shipment_transitioned`'s raw session shares this one
+        # bulkhead with the other three handlers' ambient-transaction one (`bulkhead_scope`'s
+        # own docstring: "two background loops... still an order below the request pool").
+        consumers.use_raw_session_scope(consumers.bulkhead_raw_scope(engine))
     except Exception:
         log.exception("operations.worker.not_started")
         return
@@ -158,12 +198,14 @@ async def _stop_background_worker(app: FastAPI) -> None:
 async def _startup(app: FastAPI) -> None:
     await _start_reconcile_sweep(app)
     await _start_alert_sweep(app)
+    await _start_channel_sync_sweep(app)
     await _start_background_worker(app)
 
 
 async def _shutdown(app: FastAPI) -> None:
     await _stop_background_worker(app)
     await _stop_alert_sweep(app)
+    await _stop_channel_sync_sweep(app)
     await _stop_reconcile_sweep(app)
 
 

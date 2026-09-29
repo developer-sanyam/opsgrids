@@ -570,6 +570,44 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Channels (Fulfilment plan F11) — an external sales-channel connection is a shared
+        # operational resource like a shipment, not a personal one, so both permissions are
+        # ORG-only, the same reasoning `dispatch.shipment.*` gives just above.
+        PermissionSpec(
+            "channels",
+            "channel",
+            "read",
+            "See connected channels, their SKU mappings and their sync status/logs",
+            "ORG",
+            "ORG",
+        ),
+        # Dangerous: connecting, reconfiguring or disconnecting a channel holds and rotates a
+        # tenant credential, and controls which warehouse an external order lands in and whether
+        # it is auto-accepted (committing stock) — the same weight `warehouse.layout.publish`
+        # carries for a capacity change already in use.
+        PermissionSpec(
+            "channels",
+            "channel",
+            "write",
+            "Connect, configure, reconnect and disconnect a channel; create and remove its SKU "
+            "mappings",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        # A manual "sync now" or a retry is not itself dangerous (every write it can cause is the
+        # same idempotent, validated path the scheduled sweep already runs unattended) — read
+        # access to trigger one is enough; it does not need `channel.write`'s credential-handling
+        # weight.
+        PermissionSpec(
+            "channels",
+            "channel",
+            "sync",
+            "Trigger a manual order/inventory sync, a health check, or retry a failed sync log "
+            "entry",
+            "ORG",
+            "ORG",
+        ),
     ],
 )
 
@@ -647,6 +685,11 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.orders.payment.refund", "ORG"),
             ("operations.payments.merchant_account.read", "ORG"),
             ("operations.payments.reconciliation.read", "ORG"),
+            # Monitors and triggers channel sync, but does not connect, reconfigure or
+            # disconnect one (a credential-handling act — stays with the admin, the same split
+            # `warehouse.layout.publish` already draws for this role).
+            ("operations.channels.channel.read", "ORG"),
+            ("operations.channels.channel.sync", "ORG"),
         ),
     ),
     RoleTemplate(

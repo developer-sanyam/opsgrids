@@ -1278,3 +1278,108 @@ export interface DiscrepancyTrendPointOut {
   kind: "balance" | "reserved";
   count: number;
 }
+
+/* --------------------------------- channels (Fulfilment F11) --------------------------------- */
+/**
+ * External sales-channel connections — a marketplace/storefront platform this business also
+ * sells on. Mirrors `services/operations/app/schemas.py`'s channels section exactly. Not to be
+ * confused with `OrderOut.channel` (the intake-mode string `phone | manual | sales | walk_in |
+ * marketplace`): a `ChannelOut` row is the connector itself.
+ */
+
+export type ChannelProvider = "mock_marketplace";
+export type ChannelStatus = "connected" | "disconnected" | "error";
+export type ChannelSyncType = "order_import" | "inventory_push" | "fulfilment_push" | "health_check";
+export type ChannelSyncStatus = "success" | "failed";
+
+export interface ChannelOut {
+  id: string;
+  provider: ChannelProvider;
+  name: string;
+  status: ChannelStatus;
+  external_shop_id: string;
+  api_key_masked: string;
+  default_warehouse_id: string | null;
+  default_currency: string;
+  auto_accept_orders: boolean;
+  last_orders_synced_at: string | null;
+  last_inventory_synced_at: string | null;
+  last_health_check_at: string | null;
+  consecutive_failures: number;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  connected_at: string | null;
+  disconnected_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `POST /operations/channels`. Only `provider: "mock_marketplace"` exists today — this build's
+ *  self-hosted sandbox, in place of real Shopify/Amazon credentials this environment does not
+ *  have. */
+export interface ChannelConnectIn {
+  provider: ChannelProvider;
+  name: string;
+  external_shop_id: string;
+  api_key: string;
+  default_warehouse_id: string;
+  default_currency?: string;
+  auto_accept_orders?: boolean;
+}
+
+/** `PATCH /operations/channels/{id}` — configuration only; the credential is rotated separately
+ *  (`ChannelReconnectIn`). */
+export interface ChannelConfigPatch {
+  name?: string;
+  default_warehouse_id?: string;
+  auto_accept_orders?: boolean;
+}
+
+/** `POST /operations/channels/{id}/reconnect`. */
+export interface ChannelReconnectIn {
+  api_key: string;
+}
+
+export interface ChannelSkuMappingOut {
+  id: string;
+  channel_id: string;
+  external_sku: string;
+  inventory_item_id: string;
+  last_pushed_available_milli: number | null;
+  last_pushed_at: string | null;
+  last_push_status: "ok" | "failed" | null;
+  last_push_error: string | null;
+}
+
+export interface ChannelSkuMappingIn {
+  external_sku: string;
+  inventory_item_id: string;
+}
+
+export interface ChannelSyncLogOut {
+  id: string;
+  channel_id: string;
+  sync_type: ChannelSyncType;
+  status: ChannelSyncStatus;
+  external_ref: string;
+  detail: Record<string, unknown> | null;
+  error_code: string | null;
+  error_message: string | null;
+  duration_ms: number | null;
+  attempted_at: string;
+}
+
+/** What a manual "sync now" or "retry" action returns — real counts from the sync that just ran. */
+export interface ChannelSyncResultOut {
+  attempted: number;
+  succeeded: number;
+  rejected: number;
+}
+
+export interface ChannelRetryResultOut {
+  succeeded: boolean;
+}
+
+export interface ChannelHealthCheckOut {
+  healthy: boolean;
+}

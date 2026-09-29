@@ -176,6 +176,545 @@
         "title": "CategorySpend",
         "type": "object"
       },
+      "ChannelConfigPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /operations/channels/{id}` \u2014 configuration only; the credential is rotated\nseparately (`ChannelReconnectIn`) so a plain rename can never accidentally touch it.",
+        "properties": {
+          "auto_accept_orders": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Accept Orders"
+          },
+          "default_warehouse_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Warehouse Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "ChannelConfigPatch",
+        "type": "object"
+      },
+      "ChannelConnectIn": {
+        "additionalProperties": false,
+        "description": "`POST /operations/channels` \u2014 connects a new channel. Only `mock_marketplace` exists\ntoday (`app.domain.CHANNEL_PROVIDERS`) \u2014 this build's self-hosted sandbox, in place of the\nreal Shopify/Amazon credentials this environment does not have.",
+        "properties": {
+          "api_key": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Api Key",
+            "type": "string"
+          },
+          "auto_accept_orders": {
+            "default": true,
+            "title": "Auto Accept Orders",
+            "type": "boolean"
+          },
+          "default_currency": {
+            "default": "INR",
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Default Currency",
+            "type": "string"
+          },
+          "default_warehouse_id": {
+            "format": "uuid",
+            "title": "Default Warehouse Id",
+            "type": "string"
+          },
+          "external_shop_id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "External Shop Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "provider": {
+            "const": "mock_marketplace",
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "name",
+          "external_shop_id",
+          "api_key",
+          "default_warehouse_id"
+        ],
+        "title": "ChannelConnectIn",
+        "type": "object"
+      },
+      "ChannelHealthCheckOut": {
+        "properties": {
+          "healthy": {
+            "title": "Healthy",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "healthy"
+        ],
+        "title": "ChannelHealthCheckOut",
+        "type": "object"
+      },
+      "ChannelOut": {
+        "properties": {
+          "api_key_masked": {
+            "title": "Api Key Masked",
+            "type": "string"
+          },
+          "auto_accept_orders": {
+            "title": "Auto Accept Orders",
+            "type": "boolean"
+          },
+          "connected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connected At"
+          },
+          "consecutive_failures": {
+            "title": "Consecutive Failures",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "default_currency": {
+            "title": "Default Currency",
+            "type": "string"
+          },
+          "default_warehouse_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Warehouse Id"
+          },
+          "disconnected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disconnected At"
+          },
+          "external_shop_id": {
+            "title": "External Shop Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "last_error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Message"
+          },
+          "last_health_check_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Health Check At"
+          },
+          "last_inventory_synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Inventory Synced At"
+          },
+          "last_orders_synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Orders Synced At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "provider": {
+            "const": "mock_marketplace",
+            "title": "Provider",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "connected",
+              "disconnected",
+              "error"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "name",
+          "status",
+          "external_shop_id",
+          "api_key_masked",
+          "default_warehouse_id",
+          "default_currency",
+          "auto_accept_orders",
+          "last_orders_synced_at",
+          "last_inventory_synced_at",
+          "last_health_check_at",
+          "consecutive_failures",
+          "last_error_code",
+          "last_error_message",
+          "connected_at",
+          "disconnected_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ChannelOut",
+        "type": "object"
+      },
+      "ChannelReconnectIn": {
+        "additionalProperties": false,
+        "description": "`POST /operations/channels/{id}/reconnect` \u2014 rotates the credential and clears an `error`\nstatus. Also how a deliberately `disconnected` connection is brought back.",
+        "properties": {
+          "api_key": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Api Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "api_key"
+        ],
+        "title": "ChannelReconnectIn",
+        "type": "object"
+      },
+      "ChannelRetryResultOut": {
+        "properties": {
+          "succeeded": {
+            "title": "Succeeded",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "succeeded"
+        ],
+        "title": "ChannelRetryResultOut",
+        "type": "object"
+      },
+      "ChannelSkuMappingIn": {
+        "additionalProperties": false,
+        "properties": {
+          "external_sku": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "External Sku",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "external_sku",
+          "inventory_item_id"
+        ],
+        "title": "ChannelSkuMappingIn",
+        "type": "object"
+      },
+      "ChannelSkuMappingOut": {
+        "properties": {
+          "channel_id": {
+            "title": "Channel Id",
+            "type": "string"
+          },
+          "external_sku": {
+            "title": "External Sku",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "last_push_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Push Error"
+          },
+          "last_push_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ok",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Push Status"
+          },
+          "last_pushed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Pushed At"
+          },
+          "last_pushed_available_milli": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Pushed Available Milli"
+          }
+        },
+        "required": [
+          "id",
+          "channel_id",
+          "external_sku",
+          "inventory_item_id",
+          "last_pushed_available_milli",
+          "last_pushed_at",
+          "last_push_status",
+          "last_push_error"
+        ],
+        "title": "ChannelSkuMappingOut",
+        "type": "object"
+      },
+      "ChannelSyncLogOut": {
+        "properties": {
+          "attempted_at": {
+            "format": "date-time",
+            "title": "Attempted At",
+            "type": "string"
+          },
+          "channel_id": {
+            "title": "Channel Id",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "external_ref": {
+            "title": "External Ref",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "success",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "sync_type": {
+            "enum": [
+              "order_import",
+              "inventory_push",
+              "fulfilment_push",
+              "health_check"
+            ],
+            "title": "Sync Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "channel_id",
+          "sync_type",
+          "status",
+          "external_ref",
+          "detail",
+          "error_code",
+          "error_message",
+          "duration_ms",
+          "attempted_at"
+        ],
+        "title": "ChannelSyncLogOut",
+        "type": "object"
+      },
+      "ChannelSyncResultOut": {
+        "description": "What a manual \"sync now\" or \"retry\" action returns \u2014 real counts from the sync that just\nran, never a fixed success message (F11's own \"no fake dashboard numbers\" rule).",
+        "properties": {
+          "attempted": {
+            "title": "Attempted",
+            "type": "integer"
+          },
+          "rejected": {
+            "title": "Rejected",
+            "type": "integer"
+          },
+          "succeeded": {
+            "title": "Succeeded",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attempted",
+          "succeeded",
+          "rejected"
+        ],
+        "title": "ChannelSyncResultOut",
+        "type": "object"
+      },
       "CheckoutPrefillOut": {
         "properties": {
           "contact": {
@@ -300,6 +839,527 @@
         "title": "CollectionRefundOut",
         "type": "object"
       },
+      "CountLineAddIn": {
+        "additionalProperties": false,
+        "description": "`POST /counting/sessions/{id}/lines` \u2014 a worker reporting stock at a bucket the session's\nsnapshot did not expect anything at (`is_unlisted=True` on the created line). Refused if the\nbucket is already tracked by this session (use the count endpoint on that line instead) or is\noutside the session's own scope.",
+        "properties": {
+          "count_method": {
+            "enum": [
+              "scan",
+              "manual"
+            ],
+            "title": "Count Method",
+            "type": "string"
+          },
+          "counted": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Counted",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "location_id": {
+            "format": "uuid",
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "scanned_barcode": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scanned Barcode"
+          },
+          "status": {
+            "default": "AVAILABLE",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "location_id",
+          "counted",
+          "count_method"
+        ],
+        "title": "CountLineAddIn",
+        "type": "object"
+      },
+      "CountLineOut": {
+        "properties": {
+          "count_method": {
+            "anyOf": [
+              {
+                "enum": [
+                  "scan",
+                  "manual"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Count Method"
+          },
+          "counted": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counted"
+          },
+          "counted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counted At"
+          },
+          "counted_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counted By"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expected": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Expected",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "is_unlisted": {
+            "title": "Is Unlisted",
+            "type": "boolean"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "posted_move_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Posted Move Id"
+          },
+          "review_note": {
+            "title": "Review Note",
+            "type": "string"
+          },
+          "review_status": {
+            "enum": [
+              "NONE",
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ],
+            "title": "Review Status",
+            "type": "string"
+          },
+          "reviewed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed At"
+          },
+          "reviewed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed By"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "scanned_barcode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scanned Barcode"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "inventory_item_id",
+          "sku",
+          "location_id",
+          "status",
+          "lot_id",
+          "roll_id",
+          "is_unlisted",
+          "expected",
+          "counted",
+          "count_method",
+          "scanned_barcode",
+          "counted_by",
+          "counted_at",
+          "review_status",
+          "reviewed_by",
+          "reviewed_at",
+          "review_note",
+          "posted_move_id",
+          "created_at"
+        ],
+        "title": "CountLineOut",
+        "type": "object"
+      },
+      "CountLineReviewIn": {
+        "additionalProperties": false,
+        "description": "`POST /counting/sessions/{id}/lines/{line_id}/review` \u2014 a manager's decision on one\n`PENDING` discrepancy. Approving posts through `app.inventory.ledger.post_move` in the same\ncall (ADR-0026 \u00a73); rejecting never touches the ledger. A rejection needs a note \u2014 the same\n\"a refusal names why\" convention `PickConfirmIn`'s short-pick `reason` sets.",
+        "properties": {
+          "decision": {
+            "enum": [
+              "approve",
+              "reject"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "title": "CountLineReviewIn",
+        "type": "object"
+      },
+      "CountLineSubmitIn": {
+        "additionalProperties": false,
+        "description": "`POST /counting/sessions/{id}/lines/{line_id}/count` \u2014 a worker's physical reading for a\nline already on the session's open-time snapshot. A line may be counted once; a mistaken entry\nis corrected by a manager rejecting it (never a silent overwrite) \u2014 recounting a rejected line\nis a new session (ADR-0026 \u00a74, \"not in scope: a dedicated recount state\").",
+        "properties": {
+          "count_method": {
+            "enum": [
+              "scan",
+              "manual"
+            ],
+            "title": "Count Method",
+            "type": "string"
+          },
+          "counted": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Counted",
+            "type": "string"
+          },
+          "scanned_barcode": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scanned Barcode"
+          }
+        },
+        "required": [
+          "counted",
+          "count_method"
+        ],
+        "title": "CountLineSubmitIn",
+        "type": "object"
+      },
+      "CountSessionCancelIn": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "title": "CountSessionCancelIn",
+        "type": "object"
+      },
+      "CountSessionIn": {
+        "additionalProperties": false,
+        "description": "`POST /counting/sessions` \u2014 opens a session and snapshots its lines from the current\n`inventory_balances` in scope (ADR-0026 \u00a76). Refused (409) while the warehouse already has a\nsession `ACTIVE` or under `REVIEW` (ADR-0026 \u00a75).",
+        "properties": {
+          "label": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Label",
+            "type": "string"
+          },
+          "location_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Ids"
+          },
+          "scope_kind": {
+            "enum": [
+              "WAREHOUSE",
+              "ZONE",
+              "LOCATIONS"
+            ],
+            "title": "Scope Kind",
+            "type": "string"
+          },
+          "warehouse_id": {
+            "format": "uuid",
+            "title": "Warehouse Id",
+            "type": "string"
+          },
+          "zone_location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Zone Location Id"
+          }
+        },
+        "required": [
+          "warehouse_id",
+          "scope_kind"
+        ],
+        "title": "CountSessionIn",
+        "type": "object"
+      },
+      "CountSessionOut": {
+        "properties": {
+          "counted_count": {
+            "title": "Counted Count",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "line_count": {
+            "title": "Line Count",
+            "type": "integer"
+          },
+          "location_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Ids"
+          },
+          "pending_review_count": {
+            "title": "Pending Review Count",
+            "type": "integer"
+          },
+          "scope_kind": {
+            "enum": [
+              "WAREHOUSE",
+              "ZONE",
+              "LOCATIONS"
+            ],
+            "title": "Scope Kind",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ACTIVE",
+              "REVIEW",
+              "CLOSED",
+              "CANCELLED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          },
+          "zone_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Zone Location Id"
+          }
+        },
+        "required": [
+          "id",
+          "warehouse_id",
+          "scope_kind",
+          "zone_location_id",
+          "location_ids",
+          "status",
+          "label",
+          "line_count",
+          "counted_count",
+          "pending_review_count",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "CountSessionOut",
+        "type": "object"
+      },
       "CreatePickTasksIn": {
         "additionalProperties": false,
         "description": "`POST /fulfilment/tasks` \u2014 derives every pick task an accepted order needs, from its lines\n(ADR-0025 \u00a71: `ACCEPTED -> IN_FULFILMENT` fires when the first one is created).",
@@ -337,6 +1397,34 @@
           "note"
         ],
         "title": "DiscrepancyResolveIn",
+        "type": "object"
+      },
+      "DiscrepancyTrendPointOut": {
+        "description": "One day's count of a discrepancy kind \u2014 the exception-trend view over the reconciler's own\nfindings (`InventoryDiscrepancyOut`), never a synthetic series.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "balance",
+              "reserved"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "kind",
+          "count"
+        ],
+        "title": "DiscrepancyTrendPointOut",
         "type": "object"
       },
       "ExceptionResolveIn": {
@@ -2197,7 +3285,7 @@
       },
       "OfferIn": {
         "additionalProperties": false,
-        "description": "`POST /fulfilment/tasks/{id}/offers` \u2014 a dispatcher offering a task to one worker. F3 is\nmanual-only (no auto-assign engine), so this is the only way an offer is made.",
+        "description": "`POST /fulfilment/tasks/{id}/offers` \u2014 a dispatcher offering a task to one worker. Also the\nmanual-override path when auto-assignment already made a live, not-yet-accepted offer: a\ncaller holding `operations.fulfilment.task.override` withdraws it and offers to whoever this\ncall names instead; a caller without it gets the same 409 F3 has always given a second offer\nattempt.",
         "properties": {
           "worker_id": {
             "format": "uuid",
@@ -2209,6 +3297,100 @@
           "worker_id"
         ],
         "title": "OfferIn",
+        "type": "object"
+      },
+      "OperationalAlertOut": {
+        "description": "One open (or recently closed) operational condition the alert sweep found. `detail` is\nexactly what the alert's own domain event carried \u2014 enough to render the row without\nrejoining the subject table.",
+        "properties": {
+          "detail": {
+            "additionalProperties": true,
+            "title": "Detail",
+            "type": "object"
+          },
+          "detected_at": {
+            "format": "date-time",
+            "title": "Detected At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "low_stock",
+              "task_delayed",
+              "shipment_delayed"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved By"
+          },
+          "subject_id": {
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "subject_type": {
+            "enum": [
+              "inventory_item",
+              "pick_task",
+              "shipment"
+            ],
+            "title": "Subject Type",
+            "type": "string"
+          },
+          "warehouse_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warehouse Id"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "subject_type",
+          "subject_id",
+          "warehouse_id",
+          "detail",
+          "detected_at",
+          "last_seen_at",
+          "resolved_at",
+          "resolved_by"
+        ],
+        "title": "OperationalAlertOut",
         "type": "object"
       },
       "OrderCancelIn": {
@@ -2489,7 +3671,8 @@
               "phone",
               "manual",
               "sales",
-              "walk_in"
+              "walk_in",
+              "marketplace"
             ],
             "title": "Channel",
             "type": "string"
@@ -2667,7 +3850,8 @@
               "phone",
               "manual",
               "sales",
-              "walk_in"
+              "walk_in",
+              "marketplace"
             ],
             "title": "Channel",
             "type": "string"
@@ -3412,6 +4596,186 @@
         "title": "PackagingMaterialOut",
         "type": "object"
       },
+      "Page_ChannelOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ChannelOut]",
+        "type": "object"
+      },
+      "Page_ChannelSkuMappingOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelSkuMappingOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ChannelSkuMappingOut]",
+        "type": "object"
+      },
+      "Page_ChannelSyncLogOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelSyncLogOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ChannelSyncLogOut]",
+        "type": "object"
+      },
+      "Page_CountLineOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CountLineOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[CountLineOut]",
+        "type": "object"
+      },
+      "Page_CountSessionOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CountSessionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[CountSessionOut]",
+        "type": "object"
+      },
       "Page_InventoryDiscrepancyOut_": {
         "properties": {
           "items": {
@@ -3590,6 +4954,42 @@
           "pages"
         ],
         "title": "Page[LocationOut]",
+        "type": "object"
+      },
+      "Page_OperationalAlertOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OperationalAlertOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[OperationalAlertOut]",
         "type": "object"
       },
       "Page_OrderOut_": {
@@ -4237,6 +5637,17 @@
       "PickTaskOut": {
         "description": "Mirrors the SPA's `PickTaskOut` \u2014 the dispatcher board's one row per task, with its lines,\nits whole offer history (ADR-0025 \u00a73's \"why did this take forty minutes\") and any open\nexceptions.",
         "properties": {
+          "auto_assign_failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Assign Failure Reason"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -4326,6 +5737,7 @@
           "lines",
           "offers",
           "exceptions",
+          "auto_assign_failure_reason",
           "created_at",
           "updated_at"
         ],
@@ -6040,6 +7452,35 @@
         "title": "SupplierSpend",
         "type": "object"
       },
+      "TaskBacklogOut": {
+        "description": "Open pick-task count and age per warehouse \u2014 the backlog half of the task\nbacklog/throughput insight view.",
+        "properties": {
+          "avg_age_minutes": {
+            "title": "Avg Age Minutes",
+            "type": "number"
+          },
+          "max_age_minutes": {
+            "title": "Max Age Minutes",
+            "type": "number"
+          },
+          "open_tasks": {
+            "title": "Open Tasks",
+            "type": "integer"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "warehouse_id",
+          "open_tasks",
+          "avg_age_minutes",
+          "max_age_minutes"
+        ],
+        "title": "TaskBacklogOut",
+        "type": "object"
+      },
       "TaskCancelIn": {
         "additionalProperties": false,
         "properties": {
@@ -6060,6 +7501,30 @@
         "additionalProperties": false,
         "properties": {},
         "title": "TaskReleaseIn",
+        "type": "object"
+      },
+      "ThroughputOut": {
+        "description": "Tasks closed since the window started, and their average cycle time \u2014 the throughput half\nof the same view.",
+        "properties": {
+          "avg_cycle_minutes": {
+            "title": "Avg Cycle Minutes",
+            "type": "number"
+          },
+          "closed_tasks": {
+            "title": "Closed Tasks",
+            "type": "integer"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "warehouse_id",
+          "closed_tasks",
+          "avg_cycle_minutes"
+        ],
+        "title": "ThroughputOut",
         "type": "object"
       },
       "UomOut": {
@@ -6749,6 +8214,54 @@
         ],
         "title": "WorkerPresenceIn",
         "type": "object"
+      },
+      "WorkerWorkloadOut": {
+        "description": "Open task count per worker, busiest first \u2014 the workload-distribution view.",
+        "properties": {
+          "open_tasks": {
+            "title": "Open Tasks",
+            "type": "integer"
+          },
+          "worker_id": {
+            "title": "Worker Id",
+            "type": "string"
+          },
+          "worker_name": {
+            "title": "Worker Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "worker_id",
+          "worker_name",
+          "open_tasks"
+        ],
+        "title": "WorkerWorkloadOut",
+        "type": "object"
+      },
+      "ZoneBottleneckOut": {
+        "description": "Which zone's tasks took longest to close, most recently \u2014 slowest first.",
+        "properties": {
+          "avg_cycle_minutes": {
+            "title": "Avg Cycle Minutes",
+            "type": "number"
+          },
+          "closed_tasks": {
+            "title": "Closed Tasks",
+            "type": "integer"
+          },
+          "zone_location_id": {
+            "title": "Zone Location Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "zone_location_id",
+          "closed_tasks",
+          "avg_cycle_minutes"
+        ],
+        "title": "ZoneBottleneckOut",
+        "type": "object"
       }
     }
   },
@@ -6759,6 +8272,1446 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/operations/alerts": {
+      "get": {
+        "operationId": "list_alerts_api_v1_operations_alerts_get",
+        "parameters": [
+          {
+            "description": "low_stock | task_delayed | shipment_delayed",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "low_stock | task_delayed | shipment_delayed",
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_resolved",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Resolved",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_OperationalAlertOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Operational alerts the sweep found \u2014 low stock, delayed tasks, delayed shipments",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/alerts/{alert_id}/resolve": {
+      "post": {
+        "operationId": "resolve_alert_api_v1_operations_alerts__alert_id__resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "alert_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Alert Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationalAlertOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dismiss an alert by hand, before the sweep would close it itself",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/channels": {
+      "get": {
+        "operationId": "list_channels_api_v1_operations_channels_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ChannelOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Connected channels",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "connect_channel_api_v1_operations_channels_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelConnectIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Connect a new external sales channel",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/channels/{channel_id}": {
+      "get": {
+        "operationId": "read_channel_api_v1_operations_channels__channel_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One channel",
+        "tags": [
+          "operations"
+        ]
+      },
+      "patch": {
+        "operationId": "patch_channel_api_v1_operations_channels__channel_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelConfigPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename or reconfigure a channel (name, default warehouse, auto-accept)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/channels/{channel_id}/disconnect": {
+      "post": {
+        "operationId": "disconnect_channel_api_v1_operations_channels__channel_id__disconnect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect a channel \u2014 stops all sync until reconnected",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/channels/{channel_id}/health-check": {
+      "post": {
+        "operationId": "health_check_channel_api_v1_operations_channels__channel_id__health_check_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelHealthCheckOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Check whether this channel's credential and connection still work",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/channels/{channel_id}/reconnect": {
+      "post": {
+        "operationId": "reconnect_channel_api_v1_operations_channels__channel_id__reconnect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelReconnectIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rotate this channel's credential and clear an error status",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/channels/{channel_id}/sku-mappings": {
+      "get": {
+        "operationId": "list_sku_mappings_api_v1_operations_channels__channel_id__sku_mappings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ChannelSkuMappingOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "This channel's external-SKU -> inventory-item mappings",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "upsert_sku_mapping_api_v1_operations_channels__channel_id__sku_mappings_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelSkuMappingIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelSkuMappingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Map an external SKU to an inventory item (creates or updates)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/channels/{channel_id}/sku-mappings/{mapping_id}": {
+      "delete": {
+        "operationId": "delete_sku_mapping_api_v1_operations_channels__channel_id__sku_mappings__mapping_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "mapping_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mapping Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove a SKU mapping",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/channels/{channel_id}/sync-logs": {
+      "get": {
+        "operationId": "list_sync_logs_api_v1_operations_channels__channel_id__sync_logs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sync_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sync Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ChannelSyncLogOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "This channel's sync attempts: order imports, inventory/fulfilment pushes, health",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/channels/{channel_id}/sync-logs/{log_id}/retry": {
+      "post": {
+        "operationId": "retry_channel_sync_log_api_v1_operations_channels__channel_id__sync_logs__log_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "log_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Log Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelRetryResultOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry a failed sync log entry, from current data",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/channels/{channel_id}/sync/inventory": {
+      "post": {
+        "operationId": "sync_channel_inventory_now_api_v1_operations_channels__channel_id__sync_inventory_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelSyncResultOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Push every mapped SKU's available quantity to this channel now",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/channels/{channel_id}/sync/orders": {
+      "post": {
+        "operationId": "sync_channel_orders_now_api_v1_operations_channels__channel_id__sync_orders_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelSyncResultOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Poll this channel for new orders now, instead of waiting for the scheduled sync",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/counting/sessions": {
+      "get": {
+        "operationId": "list_count_sessions_api_v1_operations_counting_sessions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "warehouse_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warehouse Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CountSessionOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Count sessions \u2014 cycle counting and stocktaking (ADR-0026)",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "open_count_session_api_v1_operations_counting_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CountSessionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountSessionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open a count session \u2014 snapshots its lines from the current stock (ADR-0026 \u00a76)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/counting/sessions/{session_id}": {
+      "get": {
+        "operationId": "read_count_session_api_v1_operations_counting_sessions__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountSessionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One count session",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/counting/sessions/{session_id}/cancel": {
+      "post": {
+        "operationId": "cancel_count_session_api_v1_operations_counting_sessions__session_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CountSessionCancelIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountSessionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Abandon a session \u2014 posts nothing for any line not already approved",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/counting/sessions/{session_id}/close": {
+      "post": {
+        "operationId": "close_count_session_api_v1_operations_counting_sessions__session_id__close_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountSessionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Close a session \u2014 refused while any line still needs review (REVIEW -> CLOSED)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/counting/sessions/{session_id}/lines": {
+      "get": {
+        "operationId": "list_count_lines_api_v1_operations_counting_sessions__session_id__lines_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "review_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Review Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CountLineOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A session's count lines",
+        "tags": [
+          "operations"
+        ]
+      },
+      "post": {
+        "operationId": "add_count_line_api_v1_operations_counting_sessions__session_id__lines_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CountLineAddIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountLineOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Report stock at a bucket the session's snapshot did not expect anything at",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/counting/sessions/{session_id}/lines/{line_id}/count": {
+      "post": {
+        "operationId": "submit_count_line_api_v1_operations_counting_sessions__session_id__lines__line_id__count_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "line_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Line Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CountLineSubmitIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountLineOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit a physical count for one line \u2014 once only; a mistake is corrected on review",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/counting/sessions/{session_id}/lines/{line_id}/review": {
+      "post": {
+        "operationId": "review_count_line_api_v1_operations_counting_sessions__session_id__lines__line_id__review_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "line_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Line Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CountLineReviewIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountLineOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve (posts through the kernel) or reject one PENDING discrepancy",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/counting/sessions/{session_id}/review": {
+      "post": {
+        "operationId": "start_count_review_api_v1_operations_counting_sessions__session_id__review_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountSessionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop accepting new counts and start reviewing discrepancies (ACTIVE -> REVIEW)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
     "/api/v1/operations/dispatch/shipments": {
       "get": {
         "operationId": "list_shipments_api_v1_operations_dispatch_shipments_get",
@@ -7956,7 +10909,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Offer a task to a worker (manual assignment \u2014 F3 has no auto-assign engine)",
+        "summary": "Offer a task to a worker \u2014 manual assignment, and the override path for a live offer auto-assignment already made (needs task.override)",
         "tags": [
           "operations"
         ]
@@ -8377,6 +11330,203 @@
           }
         },
         "summary": "What this service is",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/insights/backlog": {
+      "get": {
+        "operationId": "insight_backlog_api_v1_operations_insights_backlog_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TaskBacklogOut"
+                  },
+                  "title": "Response Insight Backlog Api V1 Operations Insights Backlog Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Open pick-task count and age, per warehouse",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/insights/bottlenecks": {
+      "get": {
+        "operationId": "insight_bottlenecks_api_v1_operations_insights_bottlenecks_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 7,
+              "maximum": 90,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ZoneBottleneckOut"
+                  },
+                  "title": "Response Insight Bottlenecks Api V1 Operations Insights Bottlenecks Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Which zone's tasks take longest to close, over the last `days`",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/insights/discrepancies": {
+      "get": {
+        "operationId": "insight_discrepancy_trend_api_v1_operations_insights_discrepancies_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 90,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DiscrepancyTrendPointOut"
+                  },
+                  "title": "Response Insight Discrepancy Trend Api V1 Operations Insights Discrepancies Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inventory discrepancies the reconciler found, per day and kind, over the last `days`",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/insights/throughput": {
+      "get": {
+        "operationId": "insight_throughput_api_v1_operations_insights_throughput_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 7,
+              "maximum": 90,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ThroughputOut"
+                  },
+                  "title": "Response Insight Throughput Api V1 Operations Insights Throughput Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pick tasks closed in the last `days`, and their average cycle time, per warehouse",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/insights/workload": {
+      "get": {
+        "operationId": "insight_workload_api_v1_operations_insights_workload_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WorkerWorkloadOut"
+                  },
+                  "title": "Response Insight Workload Api V1 Operations Insights Workload Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Open task count per worker, busiest first",
         "tags": [
           "operations"
         ]
@@ -11745,6 +14895,47 @@
       }
     },
     "/api/v1/operations/warehouse-floors/{floor_id}": {
+      "get": {
+        "operationId": "read_floor_api_v1_operations_warehouse_floors__floor_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "floor_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Floor Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarehouseFloorOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One floor",
+        "tags": [
+          "operations"
+        ]
+      },
       "patch": {
         "operationId": "update_floor_api_v1_operations_warehouse_floors__floor_id__patch",
         "parameters": [
