@@ -79,6 +79,18 @@ operations)
 	entry="index.html"
 	app_host="ops.opsgrids.com"
 	;;
+worker)
+	# The picker/packer PWA (Fulfilment plan F3, ADR-0024 §7) — its own host, not a route under
+	# `operations`, the same "one hostname per product surface" ADR-0001 gives every other app.
+	# Same auth shape as every other product SPA (`RedirectToCentralLogin`,
+	# `configureSession("opsgrids.worker.access_token")`), so it needs the same
+	# AUTH_REFRESH_CORS_ORIGINS entry below that every other app_host does.
+	app_dir="$repo_root/frontend/worker-app"
+	build_script="build"
+	dist_dir="dist"
+	entry="index.html"
+	app_host="worker.opsgrids.com"
+	;;
 hrms)
 	app_dir="$repo_root/frontend/product-hrms"
 	build_script="build"
@@ -159,7 +171,7 @@ internal)
 	entry="index.html"
 	;;
 *)
-	echo "unknown APP '$app' — one of: buyer, dashboard, operations, hrms, crm, pulseboard, projects, support, marketing, finance, itsm, storefront, engage, internal" >&2
+	echo "unknown APP '$app' — one of: buyer, dashboard, operations, worker, hrms, crm, pulseboard, projects, support, marketing, finance, itsm, storefront, engage, internal" >&2
 	exit 64
 	;;
 esac
