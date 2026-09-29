@@ -102,9 +102,11 @@ export function FulfilmentTasksPage() {
   function canOffer(task: PickTaskOut): boolean {
     if (task.status === "CREATED" || task.status === "ESCALATED") return canAssign;
     // Auto-assignment's own override path (this build): a live, not-yet-accepted offer —
-    // auto-picked or manual — can be redirected by a caller holding task.override. A plain
-    // task.assign caller sees no "Offer" action here at all, the same as F3 has always shown.
-    if (task.status === "OFFERED") return canOverride;
+    // auto-picked or manual — can be redirected by a caller holding task.override. The server
+    // (`offer_task`'s own `has_override` gate) requires BOTH task.assign and task.override at
+    // ORG scope, not override alone (security review MINOR 1) — an override-only caller would
+    // see a Reassign button that always 403s otherwise.
+    if (task.status === "OFFERED") return canAssign && canOverride;
     return false;
   }
 

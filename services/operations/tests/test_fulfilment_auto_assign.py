@@ -480,3 +480,98 @@ class TestConcurrentAutoAssignment:
         # live offers, never two live offers on the *same* task (the partial unique index would
         # have refused that, and the assertions above already confirm one each).
         assert len(live_count) == 2
+
+
+# ------------------------------------------------------------------ order status guard
+# (security review MAJOR M1)
+
+
+async def _hold_order(  # type: ignore[no-untyped-def]
+    client, org_id, order_id, version: int, *, reason: str = "customer asked to wait"
+):
+    principal = principal_for(
+        org_id, ["operations.orders.order.write:ORG"], subject_ref=uuid.uuid4()
+    )
+    with as_principal(principal):
+        response = await client.post(
+            f"/api/v1/operations/orders/{order_id}/hold",
+            json={"version": version, "reason": reason},
+        )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _release_order(client, org_id, order_id, version: int):  # type: ignore[no-untyped-def]
+    principal = principal_for(
+        org_id, ["operations.orders.order.write:ORG"], subject_ref=uuid.uuid4()
+    )
+    with as_principal(principal):
+        response = await client.post(
+            f"/api/v1/operations/orders/{order_id}/release", json={"version": version}
+        )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+class TestOrderStatusGuard:
+    """Security review MAJOR M1: `_fail_round`'s auto-assignment hook must never fail its own
+    caller. Before the fix, declining/releasing a task on a held order 409'd (the hook's own
+    `offer_task` call raised `ON_HOLD`), and the offer-expiry consumer would dead-letter for the
+    same reason, leaving an expired offer stuck OFFERED forever."""
+
+    async def test_declining_a_task_on_a_held_order_still_succeeds(
+        self, client, org_id, session, floor: Floor
+    ) -> None:
+        await _seed_settings(session, org_id, auto_assignment_enabled=True)
+        await _set_online(session, org_id, floor.worker_id)
+        order = await _accepted_order(session, org_id, floor)
+        tasks = await _create_tasks(client, org_id, order)
+        task = tasks[0]
+        assert task["status"] == "OFFERED"  # auto-assigned to the one online worker
+        offer_id = task["offers"][0]["id"]
+
+        held = await _hold_order(client, org_id, order.id, order.version)
+        assert held["status"] == "ON_HOLD"
+
+        # Before the fix: 409, because the hook's own re-offer attempt raised into this call.
+        decline = await _decline(client, org_id, offer_id, floor.worker_employee_id)
+        assert decline.status_code == 200, decline.text
+
+        task_after = await _get_task(client, org_id, task["id"])
+        assert task_after["status"] == "CREATED"
+        # No new live offer was created while the order is on hold — the guard inside
+        # `attempt_auto_assign` no-ops rather than attempting one.
+        assert task_after["offers"][-1]["state"] == "DECLINED"
+        assert not any(o["state"] == "OFFERED" for o in task_after["offers"])
+
+        # Releasing the hold and re-creating a task-worthy state still lets auto-assignment work
+        # normally afterward — this was never broken, just proving the guard doesn't overreach.
+        released = await _release_order(client, org_id, order.id, held["version"])
+        assert released["status"] == "IN_FULFILMENT"
+
+    async def test_a_held_orders_offer_expiring_does_not_dead_letter(
+        self, client, org_id, session, floor: Floor
+    ) -> None:
+        """The expiry path is the same hook, reached through `expire_offer` instead of
+        `decline_offer` — proven directly at the service layer since driving a real expiry over
+        HTTP needs the scheduler's own timing."""
+        await _seed_settings(session, org_id, auto_assignment_enabled=True)
+        await _set_online(session, org_id, floor.worker_id)
+        order = await _accepted_order(session, org_id, floor)
+        tasks = await _create_tasks(client, org_id, order)
+        task_id = uuid.UUID(tasks[0]["id"])
+        offer_id = uuid.UUID(tasks[0]["offers"][0]["id"])
+
+        await _hold_order(client, org_id, order.id, order.version)
+
+        ctx = ctx_for(org_id, "operations.fulfilment.task.assign", Scope.ORG)
+        async with session.begin():
+            # Does not raise — before the fix, this call would propagate the hook's own
+            # `ConflictProblem` ("Order ... is on hold") straight out of `expire_offer`.
+            fired = await fulfilment_services.expire_offer(session, ctx, offer_id=offer_id)
+        assert fired is True
+
+        async with session.begin():
+            task = await fulfilment_selectors.get_pick_task(session, org_id, task_id)
+            assert task is not None
+            assert task.status == "CREATED"

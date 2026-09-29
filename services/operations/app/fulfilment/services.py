@@ -70,6 +70,7 @@ from platform_core.errors import (
     ConflictProblem,
     ForbiddenProblem,
     NotFoundProblem,
+    ProblemError,
     ValidationProblem,
 )
 from platform_core.events import publish_event, schedule_event
@@ -834,6 +835,16 @@ async def attempt_auto_assign(
         return None
     if await selectors.get_live_offer(session, org_id, task.id) is not None:
         return None
+    # Security review MAJOR M1: `offer_task` itself refuses (409) unless the order is
+    # `IN_FULFILMENT` — a held order most commonly, but also the narrow window between
+    # `cancel_order` committing and its async consumer actually cancelling this task. Checked
+    # here too, not only inside `offer_task`, so a disabled org (or any other future no-op
+    # condition above) never has to pay for a network round-trip this function doesn't need —
+    # and so a caller of this function can trust a `None` return means "nothing attempted",
+    # never "attempted and about to raise."
+    order = await order_selectors.get_order(session, org_id, task.order_id)
+    if order is None or order.status != "IN_FULFILMENT":
+        return None
 
     required_skills = await _required_skills_for_task(session, org_id, task.id)
     candidates = await _worker_candidates(session, org_id, task.warehouse_id)
@@ -957,7 +968,32 @@ async def _fail_round(
         # "task row locked before the offer changes" discipline this module's own module
         # docstring documents for the accept/decline/expire race, so no concurrent transaction can
         # be re-offering (or cancelling) this same task while this runs.
-        await attempt_auto_assign(session, task, request=request)
+        #
+        # Security review MAJOR M1: a re-offering *attempt* failing must never fail the round-
+        # failure bookkeeping this function was already committed to when it got here — the
+        # order-status guard inside `attempt_auto_assign` closes the one known way this could
+        # raise, but this SAVEPOINT is the belt to that suspenders: any future `ProblemError` from
+        # deeper in the offer path rolls back only the attempt, never the decline/release/expiry
+        # itself, which finishes exactly as it would have with auto-assignment off.
+        try:
+            async with session.begin_nested():
+                await attempt_auto_assign(session, task, request=request)
+        except ProblemError as exc:
+            task.auto_assign_failure_reason = f"auto-assignment attempt failed: {exc}"[:500]
+            task.updated_by = str(ctx.principal.sub)
+            task.updated_at = datetime.now(UTC)
+            await session.flush()
+            record_audit(
+                session,
+                AuditLog,
+                organization_id=org_id,
+                actor_id=ctx.principal.sub,
+                action="pick_task.auto_assign_failed",
+                entity="pick_task",
+                entity_id=task.id,
+                after={"reason": task.auto_assign_failure_reason},
+                request=request,
+            )
 
 
 async def accept_offer(
