@@ -58,6 +58,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -2448,6 +2449,253 @@ class CountLine(Base, TenantBase):
     )
 
 
+class Channel(Base, TenantBase):
+    """One organization's connection to an external sales channel — a marketplace or storefront
+    platform this business also sells on (Fulfilment plan F11; not to be confused with
+    `Order.channel`, the `phone | manual | sales | walk_in | marketplace` intake-mode string that
+    records *how one order was taken*. A `Channel` row is the connector itself; an order that
+    arrived through one is tagged `Order.channel = "marketplace"` and linked back to the specific
+    row that imported it via `ChannelOrderImport`).
+
+    Shaped after `services/notification`'s `ProviderAccount` (`channel` column so the table holds
+    the next provider without a new table; a sealed credential; connected/disconnected status) —
+    the platform's own precedent for "one row per organization's connection to an external
+    provider, with a sealed secret". Only `provider = "mock_marketplace"` exists today: a
+    self-hosted sandbox this build proves the whole integration boundary against, in place of
+    real Shopify/Amazon credentials this environment does not have (see
+    `app/channels/mock_marketplace.py`). Adding a real provider is a new `ChannelClient`
+    implementation behind `app/channels/base.py`'s `Protocol` — nothing here changes shape.
+
+    `api_key_enc` is the tenant's own credential for the connected shop, sealed with
+    `platform_core.pii.seal` and bound (`aad`) to this row's own id — the same envelope
+    `gst_portal_credentials` (ADR-0019) and `provider_accounts.access_token_enc` (notification)
+    use, and the same rule: no route ever returns it, masked or otherwise reveals only
+    `api_key_masked`. Nobody sees the plaintext; it is opened only inside this service's own
+    sync/sweep code, for the one HTTP call to the provider (ADR-0019 §3's "not a sensitive read"
+    reasoning — a worker using its own credential to do its own job is not a human unmasking one).
+
+    `api_base_url` is null for the mock provider (platform-configured, `Settings
+    .mock_marketplace_api_base` — the same "fixed, operator-configured base" reasoning
+    `whatsapp_provider.py`'s module docstring gives for skipping `EgressGuard`). A **real**
+    provider that lets a tenant name their own shop domain (a Shopify `*.myshopify.com` handle,
+    say) would store it here and must route every call through `platform_core.egress.EgressGuard`
+    before reuse — that is a tenant-supplied URL, the exact SSRF shape ADR-0016 exists for, and is
+    flagged rather than built because no such provider exists yet to prove it against.
+
+    `consecutive_failures` / `last_error_code` / `last_error_message` are this connection's own
+    health: what the admin UI's sync-status screen renders, and what
+    `app.channels.sweep.ChannelSyncSweep` backs off on (ADR-0014-style discovery/act split, `app
+    .cron.ReconcileSweep`'s own precedent) — a channel that is failing must slow itself down, not
+    hammer a struggling or misconfigured provider.
+    """
+
+    __tablename__ = "channels"
+
+    #: mock_marketplace today; a real provider (shopify, amazon, ...) is a new `ChannelClient`
+    #: behind the same `Protocol`, not a new table (`app.domain.CHANNEL_PROVIDERS`).
+    provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    #: connected | disconnected | error — `app.domain.CHANNEL_STATUSES`. `error` is set by a sync
+    #: attempt that hit `ChannelAuthError` (an expired or revoked credential): the connection is
+    #: still configured, but nothing will sync again until it is reconnected with a fresh key.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="disconnected")
+
+    #: The provider's own identifier for the shop/store this row is connected to — the mock
+    #: provider's per-shop sandbox id. Global to the provider, not this org, the same reason
+    #: `provider_accounts.phone_number_id` is a global unique key: a shop is one tenant's, but the
+    #: id itself is the provider's namespace.
+    external_shop_id: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    #: Null for the mock provider (platform-configured — see class docstring). Present so a real
+    #: provider that takes a tenant-supplied domain has somewhere to store it.
+    api_base_url: Mapped[str | None] = mapped_column(String(300))
+
+    #: The tenant's credential for the connected shop, sealed. Never returned by any API — see
+    #: class docstring.
+    api_key_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    api_key_masked: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+
+    #: Where an imported order lands and what it is priced in.
+    default_warehouse_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.warehouses.id", ondelete="RESTRICT")
+    )
+    default_currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
+    #: Whether an imported order is also accepted (reserving its stock) as part of import, or only
+    #: placed and left for a person to accept. On by default: a real marketplace order already
+    #: represents a paying, committed customer — the same reasoning a `prepaid` channel's
+    #: `fulfilment_settings.payment_defaults` already encodes — so holding every imported order for
+    #: manual acceptance would make the integration announce stock it will not actually commit.
+    auto_accept_orders: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    #: The order-import poll's own bookmark (`ChannelClient.list_new_orders`'s cursor) — provider
+    #: state, not a business fact, so it lives on the connection row rather than a table of its
+    #: own.
+    last_order_cursor: Mapped[str | None] = mapped_column(String(120))
+    last_orders_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_inventory_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_health_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Consecutive failed sync attempts of any kind (order import, inventory push, fulfilment
+    #: push, health check) — reset to 0 the moment one succeeds. What the sweep backs off on and
+    #: the admin UI's own health indicator reads.
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error_code: Mapped[str | None] = mapped_column(String(40))
+    last_error_message: Mapped[str | None] = mapped_column(String(500))
+
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index(
+            "uq_channels_org_provider_shop",
+            "organization_id",
+            "provider",
+            "external_shop_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_channels_org_status", "organization_id", "status"),
+        CheckConstraint("consecutive_failures >= 0", name="consecutive_failures_non_negative"),
+    )
+
+
+class ChannelSkuMapping(Base, TenantBase):
+    """One external SKU's link to this org's own item master (Fulfilment plan F11) — what lets an
+    imported order line and an outbound inventory push resolve to the same `InventoryItem`. No
+    mapping, no import: `app.channels.services.import_channel_order` refuses (never guesses) an
+    order line naming a SKU with no row here, and no mapping means no inventory push for that item
+    either (`app.channels.sweep`).
+
+    `last_pushed_available_milli` / `last_pushed_at` / `last_push_status` / `last_push_error` are
+    this one SKU's own push history — what the admin UI's sync-log screen reads before ever
+    joining `channel_sync_logs`, and what the sweep diffs the item's current `available_milli`
+    against so a quiet SKU is never re-pushed for no reason.
+    """
+
+    __tablename__ = "channel_sku_mappings"
+
+    channel_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.channels.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    external_sku: Mapped[str] = mapped_column(String(120), nullable=False)
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    last_pushed_available_milli: Mapped[int | None] = mapped_column(BigInteger)
+    last_pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: ok | failed. Null until the first push attempt.
+    last_push_status: Mapped[str | None] = mapped_column(String(20))
+    last_push_error: Mapped[str | None] = mapped_column(String(500))
+
+    __table_args__ = (
+        Index(
+            "uq_channel_sku_mappings_org_channel_sku",
+            "organization_id",
+            "channel_id",
+            "external_sku",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_channel_sku_mappings_org_item", "organization_id", "inventory_item_id"),
+    )
+
+
+class ChannelOrderImport(Base, TenantBase):
+    """The idempotency claim and audit trail for one external order (Fulfilment plan F11) — the
+    `ProcessedEvent`-style ledger this platform uses everywhere an external trigger must not be
+    allowed to create a duplicate, keyed here on the provider's own order id rather than an
+    envelope's `event_id` because a poll (unlike a queue delivery) has no envelope at all.
+
+    `order_id` is null until the real F2 order exists (`app.orders.services.create_order`) —
+    `app.channels.services.import_channel_order` claims this row **first**, in the same
+    transaction that creates the order, via `INSERT ... ON CONFLICT (organization_id, channel_id,
+    external_order_id) DO NOTHING`: a concurrent second import of the same external order id loses
+    the race on this unique index and finds the winner's row instead of inserting its own, never
+    creating a second `Order`. `rejected_reason` is set instead of `order_id` when the order could
+    not be created at all (an order line naming a SKU with no `ChannelSkuMapping`) — a permanent
+    outcome distinct from "not attempted yet" (`order_id IS NULL AND rejected_reason IS NULL`,
+    which is what an import interrupted between the claim and `create_order` leaves behind, and
+    what a resumed import or a retry resolves by re-attempting from wherever it actually got to,
+    reading `Order.status` itself rather than a second status column here — the same "never a
+    second status" rule `Order`'s own docstring already draws for `invoice_id`/`paid_at`).
+
+    `raw_payload` is the external order exactly as the provider sent it (small — order-sized, not
+    a catalogue), kept for support and for a person to see why a rejected import was rejected.
+    """
+
+    __tablename__ = "channel_order_imports"
+
+    channel_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.channels.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    external_order_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    order_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.orders.id", ondelete="RESTRICT")
+    )
+    rejected_reason: Mapped[str | None] = mapped_column(String(500))
+    raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+    __table_args__ = (
+        Index(
+            "uq_channel_order_imports_org_channel_external",
+            "organization_id",
+            "channel_id",
+            "external_order_id",
+            unique=True,
+        ),
+        Index(
+            "uq_channel_order_imports_org_order",
+            "organization_id",
+            "order_id",
+            unique=True,
+            postgresql_where=text("order_id IS NOT NULL"),
+        ),
+    )
+
+
+class ChannelSyncLog(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One append-only row per sync attempt (Fulfilment plan F11) — `channel_sync_logs` joins
+    `APPEND_ONLY_TABLES` in `services/operations/migrations/env.py`, the same privilege-enforced
+    append-only rule `order_transitions` and `scan_events` already carry: what actually happened
+    is a fact, and a retry is a new attempt, never a rewrite of the one it is retrying. This is
+    what the admin UI's sync-status screen renders and what a "retry" action re-reads to know what
+    to re-attempt (`sync_type` + `external_ref`).
+    """
+
+    __tablename__ = "channel_sync_logs"
+
+    channel_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.channels.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: order_import | inventory_push | fulfilment_push | health_check —
+    #: `app.domain.CHANNEL_SYNC_TYPES`.
+    sync_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: success | failed.
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: The external order id, SKU, or shipment id this attempt concerned — what a retry re-reads;
+    #: blank for a health check, which concerns the channel as a whole.
+    external_ref: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    error_code: Mapped[str | None] = mapped_column(String(40))
+    error_message: Mapped[str | None] = mapped_column(String(500))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    attempted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_channel_sync_logs_org_channel_at", "organization_id", "channel_id", "attempted_at"
+        ),
+        Index("ix_channel_sync_logs_org_channel_status", "organization_id", "channel_id", "status"),
+    )
 
 
 class OutboxEvent(Base, OutboxMixin):

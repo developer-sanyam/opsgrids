@@ -49,14 +49,16 @@ def _clean_sweep_registry():  # type: ignore[no-untyped-def]
 
 @pytest.fixture(autouse=True)
 def _restore_session_scope():  # type: ignore[no-untyped-def]
-    """`use_session_scope` mutates `app.consumers`' module-level `_session_scope` — process-wide,
-    not test-scoped. Left pointed at a fake `("bulkhead", engine)` tuple after this test, the next
-    test in the same process that happens to run later would call it as a plain callable and get
-    a confusing `TypeError` instead of a session, for a reason with nothing to do with what it was
+    """`use_session_scope`/`use_raw_session_scope` mutate `app.consumers`' module-level
+    `_session_scope`/`_raw_session_scope` — process-wide, not test-scoped. Left pointed at a fake
+    `("bulkhead", engine)` tuple (or a fake engine's sessionmaker) after this test, the next test
+    in the same process that happens to run later would call it as a plain callable and get a
+    confusing `TypeError` instead of a session, for a reason with nothing to do with what it was
     testing (`services/leave/tests/test_main_worker_wiring.py`'s own fixture states the same
     hazard). Restored here, every time."""
     yield
     main.consumers.use_session_scope(main.consumers._default_session_scope)
+    main.consumers.use_raw_session_scope(main.consumers._default_raw_scope)
 
 
 @pytest.fixture
@@ -104,6 +106,11 @@ async def test_the_consumer_runs_as_a_supervised_background_task(
     await asyncio.wait_for(started.wait(), timeout=1)
     assert not app.state.background_worker_task.done()
     assert main.consumers._session_scope == ("bulkhead", engines[0])
+    # `consumers.bulkhead_raw_scope` is the real function (not faked by this file's `engines`
+    # fixture) — it just closes over the same fake engine, so the meaningful assertion is that
+    # wiring actually swapped it away from the process-wide default (F11: `dispatch_shipment_
+    # transitioned` must share the worker's own bulkhead, not fall back to it silently).
+    assert main.consumers._raw_session_scope is not main.consumers._default_raw_scope
     health = get_sweep_health("operations.worker")
     assert health is not None and health.alive is True
 

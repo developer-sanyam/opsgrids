@@ -66,6 +66,21 @@ forbidden_modules =
     app.fulfilment
     app.dispatch
 
+# Fulfilment plan F11: `channels` depends on `orders` (the real order-creation path) and
+# `inventory` (SKU resolution, `available_milli`), never on `fulfilment` or `dispatch` — a
+# shipment's tracking fact reaches `app.channels.services.push_fulfilment_update_for_order` only
+# through the outbox/consumer round trip (`app.consumers.dispatch_shipment_transitioned`), the
+# same "no direct import across this boundary" rule `orders-fulfilment-independence` already sets
+# for `app.orders`, extended to the newest module rather than given a different shape.
+[importlinter:contract:channels-boundary]
+name = channels must not import fulfilment or dispatch (Fulfilment plan F11)
+type = forbidden
+source_modules =
+    app.channels
+forbidden_modules =
+    app.fulfilment
+    app.dispatch
+
 [importlinter:contract:service-layers]
 name = the service anatomy, enforced: nothing imports upward, no cycles
 type = layers

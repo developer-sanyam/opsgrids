@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# The self-hosted sandbox external marketplace (Fulfilment plan F11; `app.channels
+# .mock_marketplace`) — a genuine sandbox a person can point `curl` or a browser's `/docs` at,
+# standing in for the real Shopify/Amazon account this environment does not have. Its default
+# port (8811) matches `Settings.mock_marketplace_api_base`'s own default; override both together
+# if a box already uses 8811. Runs as its own tiny process — never imported into `app.main:app`,
+# because it is the *other side* of the integration this service calls out to, not a route of
+# this service's own API.
+exec uvicorn app.channels.mock_marketplace:app --host 0.0.0.0 --port "${MOCK_MARKETPLACE_PORT:-8811}"

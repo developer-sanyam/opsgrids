@@ -39,6 +39,17 @@ class Settings(ServiceSettings):
     #: `bin/worker` (`python -m app.consumers`) still runs standalone unchanged, and setting this
     #: to `false` while adding `split-workers` to `EDGE_PROFILES` is the rollback (RUNBOOK.md).
     run_consumers_in_api: bool = False
+    #: How often `bin/cron` (or the in-API fold, `run_sweeps_in_api`) polls every connected
+    #: channel for new orders and pushes moved inventory (Fulfilment plan F11,
+    #: `app.channels.sweep.ChannelSyncSweep`). Short relative to the daily reconcile sweep — a
+    #: real channel integration is polled on the order of minutes, not once a day.
+    channel_sync_interval_seconds: float = 300
+    #: The self-hosted sandbox marketplace's base URL (`app.channels.mock_marketplace`) —
+    #: platform configuration, not a value a tenant supplies (`app.channels.mock_provider`'s own
+    #: module docstring: the same "fixed, operator-configured base" reasoning
+    #: `whatsapp_provider.py` gives for skipping `EgressGuard`). Defaults to the in-process
+    #: sandbox's own dev port; `bin/mock_marketplace` binds there by default too.
+    mock_marketplace_api_base: str = "http://localhost:8811"
 
     #: Where `services/payment`'s internal API answers (tenant collections, ADR-0024 A4): an
     #: order's online payment is opened, checked, cancelled and refunded there, never here —
