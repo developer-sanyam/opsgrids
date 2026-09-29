@@ -392,11 +392,11 @@ export async function listWhatsAppTemplateOptions(): Promise<TemplateOption[]> {
     });
 }
 
-/** Email templates: `GET /notifications/templates?channel=email`. */
+/** Email templates: `GET /engage/email/templates`. */
 export async function listEmailTemplateOptions(): Promise<TemplateOption[]> {
-  const query = new URLSearchParams({ channel: "email", size: String(FULL_PAGE) });
+  const query = new URLSearchParams({ size: String(FULL_PAGE) });
   const page = await apiRequest<Page<EmailTemplateRow>>(
-    `/notifications/templates?${query.toString()}`,
+    `/engage/email/templates?${query.toString()}`,
   );
   return page.items.map((row) => ({
     ref: row.id,
