@@ -23,7 +23,7 @@ import { TemplatesFailure } from "./TemplatesFailure";
  * working set every Engage list takes.
  */
 
-const CREATE_PERMISSION = "notification.delivery.template.write";
+const CREATE_PERMISSION = "engage.email.template.write";
 
 function matches(template: EmailTemplateOut, query: string): boolean {
   const needle = query.trim().toLowerCase();

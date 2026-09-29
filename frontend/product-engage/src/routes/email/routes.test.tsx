@@ -58,7 +58,7 @@ describe("the email routes", () => {
       size: 200,
       pages: 0,
     });
-    mount("/email/templates", ["notification.delivery.template.read:ORG"]);
+    mount("/email/templates", ["engage.email.template.read:ORG"]);
     expect(await screen.findByText("No email templates yet")).toBeTruthy();
   });
 

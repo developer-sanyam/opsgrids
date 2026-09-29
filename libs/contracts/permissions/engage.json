@@ -85,6 +85,24 @@
     {
       "action": "read",
       "default_scope": "ORG",
+      "description": "See the organization's email templates",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "email",
+      "resource": "template"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create and edit an email template",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "email",
+      "resource": "template"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
       "description": "See WhatsApp conversations and their message threads, bodies masked",
       "is_dangerous": false,
       "max_scope": "ORG",
@@ -253,6 +271,14 @@
           "scope": "ORG"
         },
         {
+          "code": "engage.email.template.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "engage.email.template.write",
+          "scope": "ORG"
+        },
+        {
           "code": "engage.inbox.conversation.read",
           "scope": "ORG"
         },
@@ -335,6 +361,10 @@
           "scope": "ORG"
         },
         {
+          "code": "engage.email.template.read",
+          "scope": "ORG"
+        },
+        {
           "code": "engage.inbox.conversation.read",
           "scope": "ORG"
         },
@@ -368,6 +398,10 @@
       "cross_product": false,
       "description": "Works the WhatsApp inbox: reads conversations, replies inside the service window, assigns and closes threads. No unmasking of a customer's message history, and no sending setup or campaigns.",
       "grants": [
+        {
+          "code": "engage.email.template.read",
+          "scope": "ORG"
+        },
         {
           "code": "engage.inbox.conversation.read",
           "scope": "ORG"

@@ -22,8 +22,9 @@ import { TemplatesFailure } from "./TemplatesFailure";
 import { VariablesPanel } from "./VariablesPanel";
 
 /**
- * Create or edit one email template — `PUT /notifications/templates`, which creates the template or
- * replaces the one with the same code.
+ * Create or edit one email template — `PUT /engage/email/templates`, which creates the template or
+ * replaces the one with the same code. Gated on `engage.email.template.write`, held by
+ * `ENGAGE_ADMIN` alone (`app/catalogue.py`).
  *
  * What is here is what the service stores: a code, a subject, a body and a description. The design
  * also has a category, a preview text, a block designer and an HTML mode; the service has nowhere to
@@ -33,7 +34,7 @@ import { VariablesPanel } from "./VariablesPanel";
  * There is no test-send: the service has no template test route, only sender and campaign tests.
  */
 
-const WRITE = "notification.delivery.template.write";
+const WRITE = "engage.email.template.write";
 
 type Field = "code" | "subject" | "body" | "description";
 type Errors = Partial<Record<Field, string>>;

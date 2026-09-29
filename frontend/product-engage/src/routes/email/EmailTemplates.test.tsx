@@ -40,7 +40,7 @@ function page(items: EmailTemplateOut[]): Page<EmailTemplateOut> {
   return { items, total: items.length, page: 1, size: 200, pages: items.length ? 1 : 0 };
 }
 
-const WRITE = "notification.delivery.template.write:ORG";
+const WRITE = "engage.email.template.write:ORG";
 
 function renderPage(grants: string[] = [WRITE]) {
   return render(
@@ -130,7 +130,7 @@ describe("populated", () => {
 
   it("hides Create Template from someone who may not", async () => {
     vi.spyOn(email, "listEmailTemplates").mockResolvedValue(page([SHIPPED]));
-    renderPage(["notification.delivery.template.read:ORG"]);
+    renderPage(["engage.email.template.read:ORG"]);
     await screen.findByRole("link", { name: "order_shipped" });
     expect(screen.queryByRole("button", { name: "Create Template" })).toBeNull();
   });
@@ -162,12 +162,12 @@ describe("error", () => {
     expect(read).toHaveBeenCalledTimes(2);
   });
 
-  it("shows the plan-gated state, not an error, when the product is not active", async () => {
-    vi.spyOn(email, "listEmailTemplates").mockRejectedValue(new ApiError(402, "Not entitled", null));
+  it("shows the ordinary Engage not-active state, not an error, when Engage is not active", async () => {
+    vi.spyOn(email, "listEmailTemplates").mockRejectedValue(
+      new ApiError(402, "engage is not active for this organization", null),
+    );
     renderPage();
-    expect(
-      await screen.findByText("Email templates aren't part of this organization's plan yet"),
-    ).toBeTruthy();
+    expect(await screen.findByText("Engage isn't active for this organization yet")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   });
 });
