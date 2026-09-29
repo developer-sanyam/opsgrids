@@ -53,6 +53,78 @@ export const RECIPES: Recipe[] = [
     description: "When an enquiry comes in, ask the sales team to follow up.",
     build: () => addStep(emptyGraph("storefront.enquiry.created"), { from: "trigger" }, "create_task").graph,
   },
+  {
+    id: "low-stock-alert",
+    name: "Low-stock alert",
+    description: "When an item falls to or below its reorder point, email whoever operations has set as the alert contact.",
+    build: () => {
+      const graph = addStep(emptyGraph("operations.inventory.item.low_stock"), { from: "trigger" }, "send_message").graph;
+      return replaceNode(graph, {
+        id: "send_message_1",
+        type: "send_message",
+        config: {
+          channel: "email",
+          template: { ref: "" },
+          recipient_path: "payload.alert_contact.email",
+          variable_map: { sku: "payload.sku", name: "payload.name", on_hand: "payload.on_hand" },
+        },
+      });
+    },
+  },
+  {
+    id: "delayed-task-alert",
+    name: "Delayed pick-task alert",
+    description: "When a pick task has sat open past the warehouse's SLA, email the alert contact.",
+    build: () => {
+      const graph = addStep(emptyGraph("operations.fulfilment.task.delayed"), { from: "trigger" }, "send_message").graph;
+      return replaceNode(graph, {
+        id: "send_message_1",
+        type: "send_message",
+        config: {
+          channel: "email",
+          template: { ref: "" },
+          recipient_path: "payload.alert_contact.email",
+          variable_map: { task_id: "payload.task_id", age_minutes: "payload.age_minutes" },
+        },
+      });
+    },
+  },
+  {
+    id: "delayed-shipment-alert",
+    name: "Delayed shipment alert",
+    description: "When a shipment has sat non-terminal past the warehouse's SLA, email the alert contact.",
+    build: () => {
+      const graph = addStep(emptyGraph("operations.dispatch.shipment.delayed"), { from: "trigger" }, "send_message").graph;
+      return replaceNode(graph, {
+        id: "send_message_1",
+        type: "send_message",
+        config: {
+          channel: "email",
+          template: { ref: "" },
+          recipient_path: "payload.alert_contact.email",
+          variable_map: { shipment_id: "payload.shipment_id", age_minutes: "payload.age_minutes" },
+        },
+      });
+    },
+  },
+  {
+    id: "task-escalated",
+    name: "Pick-task escalation",
+    description: "When a pick task exhausts its offer rounds and escalates, email the alert contact.",
+    build: () => {
+      const graph = addStep(emptyGraph("operations.fulfilment.task.escalated"), { from: "trigger" }, "send_message").graph;
+      return replaceNode(graph, {
+        id: "send_message_1",
+        type: "send_message",
+        config: {
+          channel: "email",
+          template: { ref: "" },
+          recipient_path: "payload.alert_contact.email",
+          variable_map: { task_id: "payload.task_id", round: "payload.round" },
+        },
+      });
+    },
+  },
 ];
 
 export function findRecipe(id: string | null): Recipe | undefined {

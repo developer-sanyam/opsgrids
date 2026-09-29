@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from fractions import Fraction
+from typing import Protocol
 
 from app.inventory import quantity
 from app.models import InventoryItem, OrderLine, PurchaseOrder, PurchaseOrderLine, Supplier
@@ -655,6 +656,35 @@ def can_transition_count_session(current: str, new: str) -> bool:
     "move" to the same status — answers 409, the same convention `can_transition_pick_task`/
     `can_transition_shipment` document."""
     return new in COUNT_SESSION_TRANSITIONS.get(current, frozenset())
+
+
+# ------------------------------------------------------------------ operational alerts (plan
+# §4; F12) — `OperationalAlert.kind`'s exact vocabulary.
+
+ALERT_KINDS: tuple[str, ...] = ("low_stock", "task_delayed", "shipment_delayed")
+
+
+class _AlertContactSource(Protocol):
+    """Structural, not `FulfilmentSettings` itself: `app.alerts.selectors.AlertSettings` (the
+    sweep's own lightweight resolution, a frozen dataclass) and the ORM row both satisfy this,
+    and `domain` may not import `app.alerts` (it sits above `domain` in the service anatomy).
+    Read-only properties, not plain attributes: a frozen dataclass's fields are read-only from
+    the type checker's own view, and a protocol member only both sides can satisfy is one
+    neither is required to let this function *write*, which nothing here ever does."""
+
+    @property
+    def alert_email(self) -> str | None: ...
+    @property
+    def alert_phone(self) -> str | None: ...
+
+
+def alert_contact(settings: _AlertContactSource) -> dict[str, str | None]:
+    """The `payload.alert_contact` block every alert event carries — an organization's resolved
+    fulfilment settings, the same three-step (warehouse row, else org row, else hardcoded
+    default) preference `task_sla_minutes` is resolved through. Both fields null is a valid
+    answer: an organization that has not opted in gets an alert row (`GET /operations/alerts`)
+    but no automation can address it from the event payload alone."""
+    return {"email": settings.alert_email, "phone": settings.alert_phone}
 
 
 # ------------------------------------------------------------------ needs-attention queue

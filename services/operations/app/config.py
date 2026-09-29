@@ -15,6 +15,10 @@ class Settings(ServiceSettings):
     db_outbox_role: str | None = "opsgrids_outbox"
     #: How often `bin/cron` reconciles every organization's ledger against its balances.
     reconcile_interval_seconds: float = 86_400
+    #: How often `bin/cron` checks every organization for low stock, a delayed pick task or a
+    #: delayed shipment (fulfilment plan §4; F12) — far more often than the nightly reconciliation,
+    #: since these are conditions an operator should hear about within minutes.
+    alert_interval_seconds: float = 900
     #: Runs the reconcile sweep as a supervised background task inside the API process itself
     #: instead of `operations-cron`'s own container (the memory-headroom slice's fix round 2:
     #: a background process costs about as much as an API one — see memory-budget.json's own
