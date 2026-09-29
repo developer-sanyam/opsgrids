@@ -10329,6 +10329,103 @@
         ]
       }
     },
+    "/api/v1/engage/email/templates": {
+      "get": {
+        "description": "The same rows `notification`'s own `GET /notifications/templates` reads\n(`selectors.templates_stmt`) \u2014 read here under Engage's own permission so an organization\nthat has bought Engage but not the transactional `notification` product can still see the\nemail templates it sends through its own account, rather than a 403 for a permission it was\nnever sold.",
+        "operationId": "list_email_templates_api_v1_engage_email_templates_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_TemplateOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Email templates",
+        "tags": [
+          "engage"
+        ]
+      },
+      "put": {
+        "description": "Same write `notification`'s own `PUT /notifications/templates` makes\n(`services.upsert_template`) \u2014 the row is the platform's, the permission is Engage's own.",
+        "operationId": "put_email_template_api_v1_engage_email_templates_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create or replace an email template",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
     "/api/v1/engage/lists": {
       "get": {
         "operationId": "list_lists_api_v1_engage_lists_get",

@@ -375,6 +375,29 @@ ENGAGE = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # An email template lives in the same `Template` row `notification`'s own
+        # `delivery.template.*` reads and writes — this is Engage's own name for the same read
+        # and write, so an organization that has bought Engage but not the transactional
+        # `notification` product can still see and edit the email templates it sends through its
+        # own account. Its own module, the same shape as `whatsapp.template.*` above: that pair
+        # protects the WhatsApp wording, this protects the email wording, and neither is folded
+        # into `setup.connection.*`, which protects the sending identity rather than the text.
+        PermissionSpec(
+            "email",
+            "template",
+            "read",
+            "See the organization's email templates",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "email",
+            "template",
+            "write",
+            "Create and edit an email template",
+            "ORG",
+            "ORG",
+        ),
         # The WhatsApp inbox: a customer's two-way conversation with the organization, not a
         # one-shot campaign send. `conversation.read`/`.write` are the triage surface (the list,
         # the thread, assignment, closing); `message.reply` is its own grant because sending words
@@ -447,6 +470,7 @@ ENGAGE_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("engage.setup.sender.read", "ORG"),
             ("engage.setup.whatsapp.read", "ORG"),
             ("engage.whatsapp.template.read", "ORG"),
+            ("engage.email.template.read", "ORG"),
             ("engage.audience.contact.read", "ORG"),
             ("engage.audience.suppression.read", "ORG"),
             ("engage.audience.list.read", "ORG"),
@@ -471,6 +495,10 @@ ENGAGE_ROLE_TEMPLATES: list[RoleTemplate] = [
             # are approved to reach a customer once that window has closed — reading, not
             # registering one, which stays the administrator's job.
             ("engage.whatsapp.template.read", "ORG"),
+            # Mirrors the WhatsApp grant above, for the same reason and the same symmetry: an
+            # inbox agent may need to see the wording of an email template referenced from a
+            # conversation without holding a `notification` seat of their own.
+            ("engage.email.template.read", "ORG"),
         ),
     ),
 ]

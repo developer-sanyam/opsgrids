@@ -129,6 +129,30 @@ async def test_provider_templates_still_require_the_notification_permission(clie
     assert read.status_code == 200
 
 
+async def test_templates_still_require_the_notification_permission(client, org_id) -> None:
+    """The route Engage's email screen moved off of. Unchanged: an Engage grant must not reach
+    it — only `notification.delivery.template.*`, gated on the `notification` entitlement, does.
+    """
+    with as_principal(
+        principal_for(
+            org_id,
+            ["engage.email.template.read:ORG", "engage.email.template.write:ORG"],
+            entitlements=["engage"],
+        )
+    ):
+        read = await client.get("/api/v1/notifications/templates")
+        write = await client.put(
+            "/api/v1/notifications/templates",
+            json=WRITE_BODIES["/api/v1/notifications/templates"],
+        )
+    assert read.status_code == 402  # not entitled to `notification` at all
+    assert write.status_code == 402
+
+    with as_principal(principal_for(org_id, [f"{T_READ}:ORG"])):
+        read = await client.get("/api/v1/notifications/templates")
+    assert read.status_code == 200
+
+
 async def test_reading_messages_needs_its_own_permission(client, org_id) -> None:
     """The load-bearing split. Template reading is not message reading."""
     with as_principal(principal_for(org_id, [f"{T_READ}:ORG"])):

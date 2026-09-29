@@ -42,6 +42,7 @@ from app.models import (
     ProviderTemplate,
     Sender,
     Suppression,
+    Template,
 )
 from app.schemas import (
     CampaignIn,
@@ -95,6 +96,8 @@ from app.schemas import (
     SuppressionOut,
     SuppressionReason,
     TemplateCategory,
+    TemplateIn,
+    TemplateOut,
     TemplateStatus,
     TestSendIn,
     UnmaskedMessageOut,
@@ -174,6 +177,14 @@ WhatsAppTemplateRead = Annotated[
 ]
 WhatsAppTemplateWrite = Annotated[
     ScopeContext, Depends(require("engage.whatsapp.template.write", minimum=Scope.ORG))
+]
+#: Its own permission from the account credential above, mirroring `whatsapp.template.*` — see
+#: the catalogue note on `email.template.*` for why the two are not folded together.
+EmailTemplateRead = Annotated[
+    ScopeContext, Depends(require("engage.email.template.read", minimum=Scope.ORG))
+]
+EmailTemplateWrite = Annotated[
+    ScopeContext, Depends(require("engage.email.template.write", minimum=Scope.ORG))
 ]
 ContactRead = Annotated[
     ScopeContext, Depends(require("engage.audience.contact.read", minimum=Scope.ORG))
@@ -612,6 +623,73 @@ async def put_whatsapp_template(
         request=request,
     )
     return _provider_template_out(row)
+
+
+# --------------------------------------------------------------------- email templates
+
+
+def _template_out(row: Template) -> TemplateOut:
+    """Same shape as `routes._template_out` — each router keeps its own assembler rather than
+    importing the other's, the pattern every `_x_out` function in this file follows. Only the
+    permission that reaches it differs; the row and the fields never do."""
+    refs = _rules.placeholders(row.body) | _rules.placeholders(row.subject or "")
+    return TemplateOut(
+        id=row.code,
+        channel=row.channel,
+        subject=row.subject,
+        body=row.body,
+        description=row.description,
+        placeholders=sorted(refs),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+@router.get(
+    "/engage/email/templates",
+    response_model=Page[TemplateOut],
+    summary="Email templates",
+    dependencies=[Entitled],
+)
+async def list_email_templates(
+    session: SessionDep,
+    ctx: EmailTemplateRead,
+    params: PageQuery,
+) -> Page[TemplateOut]:
+    """The same rows `notification`'s own `GET /notifications/templates` reads
+    (`selectors.templates_stmt`) — read here under Engage's own permission so an organization
+    that has bought Engage but not the transactional `notification` product can still see the
+    email templates it sends through its own account, rather than a 403 for a permission it was
+    never sold.
+    """
+    stmt = selectors.templates_stmt(ctx, channel="email")
+    rows, total = await paginate(session, stmt, params)
+    return Page.build([_template_out(r) for r in rows], total=total, params=params)
+
+
+@router.put(
+    "/engage/email/templates",
+    response_model=TemplateOut,
+    status_code=status.HTTP_200_OK,
+    summary="Create or replace an email template",
+    dependencies=[Entitled],
+)
+async def put_email_template(
+    body: TemplateIn, session: SessionDep, ctx: EmailTemplateWrite, request: Request
+) -> TemplateOut:
+    """Same write `notification`'s own `PUT /notifications/templates` makes
+    (`services.upsert_template`) — the row is the platform's, the permission is Engage's own."""
+    row = await services.upsert_template(
+        session,
+        ctx,
+        code=body.code,
+        channel=body.channel,
+        subject=body.subject,
+        body=body.body,
+        description=body.description,
+        request=request,
+    )
+    return _template_out(row)
 
 
 # --------------------------------------------------------------------- setup checklist

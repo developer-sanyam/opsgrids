@@ -100,6 +100,8 @@ def test_engage_catalogue_declares_setup_and_audience_permissions() -> None:
         "engage.setup.whatsapp.write",
         "engage.whatsapp.template.read",
         "engage.whatsapp.template.write",
+        "engage.email.template.read",
+        "engage.email.template.write",
         "engage.audience.contact.read",
         "engage.audience.contact.write",
         "engage.audience.suppression.read",
@@ -178,6 +180,23 @@ def test_only_the_engage_admin_can_write_a_whatsapp_template() -> None:
         assert "engage.whatsapp.template.write" not in {g.code for g in template.grants}
     admin = next(t for t in ENGAGE_ROLE_TEMPLATES if t.code == "ENGAGE_ADMIN")
     assert "engage.whatsapp.template.write" in {g.code for g in admin.grants}
+
+
+def test_email_template_read_is_granted_to_every_engage_seat() -> None:
+    """`ENGAGE_ADMIN`, `ENGAGE_VIEWER` and `ENGAGE_INBOX_AGENT` all read templates — the same fix,
+    for the same bug, on the Email -> Templates screen: an Engage seat with no `notification`
+    role could not load it at all."""
+    for code in ("ENGAGE_ADMIN", "ENGAGE_VIEWER", "ENGAGE_INBOX_AGENT"):
+        template = next(t for t in ENGAGE_ROLE_TEMPLATES if t.code == code)
+        assert "engage.email.template.read" in {g.code for g in template.grants}
+
+
+def test_only_the_engage_admin_can_write_an_email_template() -> None:
+    for code in ("ENGAGE_VIEWER", "ENGAGE_INBOX_AGENT"):
+        template = next(t for t in ENGAGE_ROLE_TEMPLATES if t.code == code)
+        assert "engage.email.template.write" not in {g.code for g in template.grants}
+    admin = next(t for t in ENGAGE_ROLE_TEMPLATES if t.code == "ENGAGE_ADMIN")
+    assert "engage.email.template.write" in {g.code for g in admin.grants}
 
 
 def test_both_products_are_exported() -> None:

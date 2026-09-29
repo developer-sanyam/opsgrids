@@ -14,16 +14,18 @@ export type { AppRoute } from "./routeTypes";
  * The email area's screens, for the orchestrator to wire into the router and the navigation.
  *
  * Each screen sits behind the read permission of the API it is built on, so a member without it sees
- * the denial rather than an empty list: templates are served by the notification service under
- * `notification.delivery.template.read`, campaigns under the Engage campaign permission, and the
- * settings screen reads the connection. The gate hides the screen; the service refuses the read
- * regardless.
+ * the denial rather than an empty list: templates are read and written through Engage's own route
+ * (`GET`/`PUT /engage/email/templates`), gated on `engage.email.template.read`/`.write` — its own
+ * Engage permission, held by every Engage seat by default, rather than `notification`'s permission
+ * of the same shape, which no Engage role ever granted. Campaigns sit behind the Engage campaign
+ * permission, and the settings screen reads the connection. The gate hides the screen; the service
+ * refuses the read regardless.
  *
  * `/email/templates/new` is listed before `/email/templates/:id` for readability; the router ranks a
  * fixed segment above a parameter either way.
  */
 const templates = (page: AppRoute["element"]) =>
-  createElement(RequireGrant, { permission: "notification.delivery.template.read", what: "email templates", children: page });
+  createElement(RequireGrant, { permission: "engage.email.template.read", what: "email templates", children: page });
 
 export const routes: AppRoute[] = [
   {

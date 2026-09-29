@@ -30,7 +30,7 @@ function page(items: EmailTemplateOut[]): Page<EmailTemplateOut> {
   return { items, total: items.length, page: 1, size: 200, pages: items.length ? 1 : 0 };
 }
 
-const WRITE = "notification.delivery.template.write:ORG";
+const WRITE = "engage.email.template.write:ORG";
 
 function renderEditor(path: string, grants: string[] = [WRITE]) {
   return render(
@@ -123,7 +123,7 @@ describe("editing an existing template", () => {
 
   it("is read-only, with no Save, for someone who may not write templates", async () => {
     mockList();
-    renderEditor("/email/templates/order_shipped", ["notification.delivery.template.read:ORG"]);
+    renderEditor("/email/templates/order_shipped", ["engage.email.template.read:ORG"]);
 
     await screen.findByRole("heading", { name: "Edit Template" });
     expect(screen.queryByRole("button", { name: "Save Template" })).toBeNull();
