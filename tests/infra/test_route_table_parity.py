@@ -94,6 +94,9 @@ WHATSAPP = "/api/v1/webhooks/whatsapp"
 DEAUTHORIZE = "/api/v1/webhooks/whatsapp/deauthorize"
 DATA_DELETION = "/api/v1/webhooks/whatsapp/data-deletion"
 DATA_DELETION_STATUS = "/api/v1/webhooks/whatsapp/data-deletion-status"
+#: A tenant's own Razorpay webhook (tenant payment collection, ADR-0024 §8) — payment-service,
+#: not notification. The platform's own `/api/v1/webhooks/razorpay` stays routed-but-not-public.
+RAZORPAY_COLLECTIONS = "/api/v1/webhooks/razorpay/collections"
 WEBHOOK_PREFIX = "/api/v1/webhooks/"
 
 #: Meta documents WhatsApp Business Platform webhook payloads up to 3 MB. Above the gateway's
@@ -105,6 +108,9 @@ WHATSAPP_BODY_CAP = 3 * 1024 * 1024
 #: `app.meta_signed_request.MAX_SIGNED_REQUEST_BYTES` on notification's own side, which
 #: `test_notification_will_buffer_exactly_what_the_gateway_lets_through` holds this number to.
 META_PRIVACY_BODY_CAP = 4096
+#: Razorpay webhooks are a few kilobytes; payment buffers no more than this behind the gateway
+#: (`app.api.collections.MAX_COLLECTION_WEBHOOK_BODY_BYTES`).
+RAZORPAY_COLLECTIONS_BODY_CAP = 256 * 1024
 
 #: Every public webhook path, and the HTTP methods each is public for. Pinned, not just compared:
 #: widening this is a security decision, made here, on purpose, once.
@@ -113,6 +119,7 @@ EXPECTED_WEBHOOK_PATHS: dict[str, list[str]] = {
     DEAUTHORIZE: ["POST"],
     DATA_DELETION: ["POST"],
     DATA_DELETION_STATUS: ["GET"],
+    RAZORPAY_COLLECTIONS: ["POST"],
 }
 #: The body cap every public webhook route above must carry, in both route tables.
 EXPECTED_BODY_CAPS: dict[str, int] = {
@@ -120,7 +127,18 @@ EXPECTED_BODY_CAPS: dict[str, int] = {
     DEAUTHORIZE: META_PRIVACY_BODY_CAP,
     DATA_DELETION: META_PRIVACY_BODY_CAP,
     DATA_DELETION_STATUS: META_PRIVACY_BODY_CAP,
+    RAZORPAY_COLLECTIONS: RAZORPAY_COLLECTIONS_BODY_CAP,
 }
+#: Which service serves each public webhook — the upstream both tables must route it to, named by
+#: another prefix of the same service in that table (a host/port a hand-edit could get wrong).
+WEBHOOK_SERVICE_PREFIX: dict[str, str] = {
+    WHATSAPP: "/api/v1/notifications",
+    DEAUTHORIZE: "/api/v1/notifications",
+    DATA_DELETION: "/api/v1/notifications",
+    DATA_DELETION_STATUS: "/api/v1/notifications",
+    RAZORPAY_COLLECTIONS: "/api/v1/payment",
+}
+NOTIFICATION_WEBHOOKS = [p for p, prefix in WEBHOOK_SERVICE_PREFIX.items() if "notifications" in prefix]
 #: Routed in the production table but deliberately NOT public in app-gateway: Razorpay's callback,
 #: which the owner decides separately. A new `/api/v1/webhooks/*` route must be added here or
 #: declared public — silently being neither is the defect this file exists to prevent.
@@ -196,6 +214,34 @@ def _app_gateway_policy() -> dict[str, Any]:
 @functools.lru_cache(maxsize=1)
 def _notification() -> dict[str, Any]:
     return _in_service("notification", _NOTIFICATION_SCRIPT)
+
+
+_PAYMENT_SCRIPT = """
+import asyncio
+import json
+
+import httpx
+
+from app.api.collections import MAX_COLLECTION_WEBHOOK_BODY_BYTES
+from app.main import app
+
+
+async def main() -> dict:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://probe"
+    ) as client:
+        paths = ("/api/v1/webhooks/razorpay/collections", "/api/v1/nowhere")
+        status = {path: (await client.request("PUT", path)).status_code for path in paths}
+    return {"max_webhook_body_bytes": MAX_COLLECTION_WEBHOOK_BODY_BYTES, "put_status": status}
+
+
+print(json.dumps(asyncio.run(main())))
+"""
+
+
+@functools.lru_cache(maxsize=1)
+def _payment() -> dict[str, Any]:
+    return _in_service("payment", _PAYMENT_SCRIPT)
 
 
 def _webhook_routes(path: Path) -> dict[str, dict[str, object]]:
@@ -304,15 +350,26 @@ def test_notification_serves_the_path_the_gateway_forwards() -> None:
     every path behind it is served by the same include, not a distinct routing decision per path."""
     status = _notification()["put_status"]
     assert status["/api/v1/nowhere"] == 404, "probe cannot tell a mounted path from a missing one"
-    for path in EXPECTED_WEBHOOK_PATHS:
+    for path in NOTIFICATION_WEBHOOKS:
         assert status[path] == 405, f"{path} not mounted where the gateway forwards it"
     assert status["/webhooks/whatsapp"] == 405, "the root mount for a developer's tunnel is gone"
 
 
 @pytest.mark.parametrize("table", TABLES)
-def test_every_public_webhook_is_routed_to_notification(table: Path) -> None:
-    """Same upstream as the rest of notification's routes in that table: the wrong host or port is
-    what a hand-edit of one file gets wrong."""
+def test_every_public_webhook_is_routed_to_its_own_service(table: Path) -> None:
+    """Same upstream as the rest of the serving service's routes in that table: the wrong host or
+    port is what a hand-edit of one file gets wrong."""
+    assert set(WEBHOOK_SERVICE_PREFIX) == set(EXPECTED_WEBHOOK_PATHS)
     routes = {str(r["prefix"]): r for r in _routes(table)}
-    for path in EXPECTED_WEBHOOK_PATHS:
-        assert routes[path]["upstream"] == routes["/api/v1/notifications"]["upstream"]
+    for path, sibling in WEBHOOK_SERVICE_PREFIX.items():
+        assert routes[path]["upstream"] == routes[sibling]["upstream"], path
+
+
+def test_payment_serves_the_collections_webhook_and_buffers_what_the_gateway_allows() -> None:
+    """The tenant Razorpay webhook (ADR-0024 §8) is mounted where the gateway forwards it, and
+    payment's own body ceiling is exactly the gateway's — neither narrower (a legitimate delivery
+    refused behind the gateway) nor wider (no second line of defence)."""
+    payment = _payment()
+    assert payment["put_status"]["/api/v1/nowhere"] == 404
+    assert payment["put_status"][RAZORPAY_COLLECTIONS] == 405
+    assert payment["max_webhook_body_bytes"] == RAZORPAY_COLLECTIONS_BODY_CAP

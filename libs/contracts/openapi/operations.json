@@ -176,6 +176,130 @@
         "title": "CategorySpend",
         "type": "object"
       },
+      "CheckoutPrefillOut": {
+        "properties": {
+          "contact": {
+            "title": "Contact",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "contact"
+        ],
+        "title": "CheckoutPrefillOut",
+        "type": "object"
+      },
+      "CollectionHistoryOut": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "from_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From State"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "to_state": {
+            "title": "To State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_state",
+          "to_state",
+          "source",
+          "reason",
+          "at"
+        ],
+        "title": "CollectionHistoryOut",
+        "type": "object"
+      },
+      "CollectionRefundOut": {
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "provider_refund_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Refund Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "provider_refund_id",
+          "amount_minor",
+          "currency",
+          "state",
+          "reason",
+          "created_at"
+        ],
+        "title": "CollectionRefundOut",
+        "type": "object"
+      },
       "CreatePickTasksIn": {
         "additionalProperties": false,
         "description": "`POST /fulfilment/tasks` \u2014 derives every pick task an accepted order needs, from its lines\n(ADR-0025 \u00a71: `ACCEPTED -> IN_FULFILMENT` fires when the first one is created).",
@@ -2110,6 +2234,195 @@
         "title": "OrderCancelIn",
         "type": "object"
       },
+      "OrderCheckoutOut": {
+        "properties": {
+          "checkout": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OrderCheckoutSessionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "collection": {
+            "$ref": "#/components/schemas/OrderCollectionOut"
+          }
+        },
+        "required": [
+          "collection",
+          "checkout"
+        ],
+        "title": "OrderCheckoutOut",
+        "type": "object"
+      },
+      "OrderCheckoutSessionOut": {
+        "description": "Exactly what the browser needs to open the provider's hosted Checkout \u2014 the **public** key\nid and the provider Order id \u2014 plus the prefill it may show. Never a secret.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "key_id": {
+            "title": "Key Id",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "test",
+              "live"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "openable": {
+            "title": "Openable",
+            "type": "boolean"
+          },
+          "order_number": {
+            "title": "Order Number",
+            "type": "string"
+          },
+          "prefill": {
+            "$ref": "#/components/schemas/CheckoutPrefillOut"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_order_id": {
+            "title": "Provider Order Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "key_id",
+          "provider_order_id",
+          "amount_minor",
+          "currency",
+          "mode",
+          "openable",
+          "order_number",
+          "prefill"
+        ],
+        "title": "OrderCheckoutSessionOut",
+        "type": "object"
+      },
+      "OrderCollectionOut": {
+        "description": "One online payment attempt for the order, as `services/payment` records it.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/CollectionHistoryOut"
+            },
+            "title": "History",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_order_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Order Id"
+          },
+          "provider_payment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Payment Id"
+          },
+          "refunded_minor": {
+            "title": "Refunded Minor",
+            "type": "integer"
+          },
+          "refunds": {
+            "items": {
+              "$ref": "#/components/schemas/CollectionRefundOut"
+            },
+            "title": "Refunds",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "created",
+              "authorized",
+              "captured",
+              "failed",
+              "cancelled",
+              "expired"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "amount_minor",
+          "currency",
+          "provider",
+          "provider_order_id",
+          "provider_payment_id",
+          "failure_reason",
+          "refunded_minor",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "OrderCollectionOut",
+        "type": "object"
+      },
       "OrderHandoverIn": {
         "additionalProperties": false,
         "description": "`POST /orders/{id}/hand-over` \u2014 the counter/walk-in path through ADR-0025 \u00a71's billing\ngate (`app.orders.services.check_billing_gate`; Fulfilment plan F4). For walk-in and counter\nhandover the handover *is* delivery (ADR-0025 \u00a71), so a successful call moves the order\n`READY -> HANDED_OVER -> DELIVERED` in one transaction.\n\n`pickup_code` is what the customer presents at the counter, checked against the code issued\nat READY when this org requires one (`fulfilment_settings.require_pickup_code`); omitted or\nwrong when one is required is exactly the \"pickup code unverified\" gate failure.\n`payment_confirmed` is the operator's own attestation that a cash/prepaid order's payment was\ncollected at the counter \u2014 a documented stand-in for `services/payment`'s tenant collections\nmodule (ADR-0024 A4), not yet built; see this slice's own report. Both are inert for a\ncredit-terms order or an org that requires no pickup code \u2014 the gate simply never asks for\nthem.",
@@ -2425,6 +2738,17 @@
             ],
             "title": "Paid At"
           },
+          "paid_via_charge_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paid Via Charge Id"
+          },
           "pickup_code_verified_at": {
             "anyOf": [
               {
@@ -2493,6 +2817,139 @@
           "updated_at"
         ],
         "title": "OrderOut",
+        "type": "object"
+      },
+      "OrderPaymentsOut": {
+        "description": "`GET /orders/{id}/payments` \u2014 the order's paid fact, whether it can be paid online now (and\nif not, why), and every online payment attempt for it, newest first.",
+        "properties": {
+          "can_collect": {
+            "title": "Can Collect",
+            "type": "boolean"
+          },
+          "collect_blocked_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collect Blocked Reason"
+          },
+          "collections": {
+            "items": {
+              "$ref": "#/components/schemas/OrderCollectionOut"
+            },
+            "title": "Collections",
+            "type": "array"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "test",
+                  "live"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "online_payments_configured": {
+            "title": "Online Payments Configured",
+            "type": "boolean"
+          },
+          "order_id": {
+            "title": "Order Id",
+            "type": "string"
+          },
+          "paid_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paid At"
+          },
+          "paid_via_charge_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paid Via Charge Id"
+          },
+          "payment_term": {
+            "title": "Payment Term",
+            "type": "string"
+          },
+          "total_minor": {
+            "title": "Total Minor",
+            "type": "integer"
+          },
+          "wire": {
+            "enum": [
+              "stub",
+              "razorpay"
+            ],
+            "title": "Wire",
+            "type": "string"
+          }
+        },
+        "required": [
+          "order_id",
+          "total_minor",
+          "currency",
+          "paid_at",
+          "paid_via_charge_id",
+          "payment_term",
+          "can_collect",
+          "collect_blocked_reason",
+          "online_payments_configured",
+          "mode",
+          "wire",
+          "collections"
+        ],
+        "title": "OrderPaymentsOut",
+        "type": "object"
+      },
+      "OrderRefundIn": {
+        "additionalProperties": false,
+        "description": "`POST /orders/{id}/payments/{charge_id}/refunds`. The `Idempotency-Key` header is required:\nthe same key is the same refund, here and at the provider.",
+        "properties": {
+          "amount_minor": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1000000000000000.0,
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "reason": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_minor",
+          "reason"
+        ],
+        "title": "OrderRefundIn",
         "type": "object"
       },
       "OrderVersionIn": {
@@ -10079,6 +10536,284 @@
           }
         },
         "summary": "Put an order on hold (reason required)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/orders/{order_id}/payments": {
+      "get": {
+        "operationId": "order_payments_api_v1_operations_orders__order_id__payments_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderPaymentsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The order's online payments, and whether it can be paid online now",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/orders/{order_id}/payments/checkout": {
+      "post": {
+        "description": "Returns what the browser needs to open the provider's own hosted checkout. The amount is\nthe order's stored total \u2014 nothing the browser sends is read. Opening a checkout records\nnothing about payment on the order: it is paid when the provider says so.",
+        "operationId": "start_order_checkout_api_v1_operations_orders__order_id__payments_checkout_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderCheckoutOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open (or reuse) the provider's hosted checkout for the order's total",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/orders/{order_id}/payments/{charge_id}/cancel": {
+      "post": {
+        "operationId": "cancel_order_payment_api_v1_operations_orders__order_id__payments__charge_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "charge_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Charge Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderCollectionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel an unpaid online payment (checked with the provider first)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/orders/{order_id}/payments/{charge_id}/refunds": {
+      "post": {
+        "description": "`Idempotency-Key` is required: retrying with the same key is the same refund \u2014 here, in\npayment, and at the provider. A full refund of the payment that paid the order makes it unpaid\nagain (by event, `payment.collections.payment.refunded`).",
+        "operationId": "refund_order_payment_api_v1_operations_orders__order_id__payments__charge_id__refunds_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "charge_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Charge Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderRefundIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderCollectionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refund part or all of one of the order's online payments",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/orders/{order_id}/payments/{charge_id}/sync": {
+      "post": {
+        "description": "The verified status check the checkout screen calls when the provider's Checkout closes.\nTakes no body: whatever the browser's Checkout callback said is never evidence \u2014 payment asks\nthe provider itself, with the merchant's own keys.",
+        "operationId": "sync_order_payment_api_v1_operations_orders__order_id__payments__charge_id__sync_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "charge_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Charge Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderCollectionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask the payment provider what happened to one of the order's online payments",
         "tags": [
           "operations"
         ]

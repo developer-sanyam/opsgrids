@@ -22,8 +22,10 @@ const acceptOrder = vi.fn();
 const holdOrder = vi.fn();
 const releaseOrder = vi.fn();
 const cancelOrder = vi.fn();
+const getOrderPayments = vi.fn();
 
 vi.mock("@/api/client", () => ({
+  getOrderPayments: (...args: unknown[]) => getOrderPayments(...args),
   getOrder: (...args: unknown[]) => getOrder(...args),
   getWarehouseById: (...args: unknown[]) => getWarehouseById(...args),
   quoteOrder: (...args: unknown[]) => quoteOrder(...args),
@@ -132,6 +134,20 @@ describe("OrderDetailPage", () => {
     holdOrder.mockReset();
     releaseOrder.mockReset();
     cancelOrder.mockReset();
+    getOrderPayments.mockResolvedValue({
+      order_id: "ord-1",
+      total_minor: 374500,
+      currency: "INR",
+      paid_at: null,
+      paid_via_charge_id: null,
+      payment_term: "cash",
+      can_collect: false,
+      collect_blocked_reason: "Online payments are not set up for this organization",
+      online_payments_configured: false,
+      mode: null,
+      wire: "stub",
+      collections: [],
+    });
   });
 
   it("shows Place only with write permission, and not on a placed order", async () => {

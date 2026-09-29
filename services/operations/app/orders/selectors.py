@@ -284,6 +284,7 @@ def order_out(
         currency=order.currency,
         invoice_id=str(order.invoice_id) if order.invoice_id else None,
         paid_at=order.paid_at,
+        paid_via_charge_id=str(order.paid_via_charge_id) if order.paid_via_charge_id else None,
         pickup_code_verified_at=order.pickup_code_verified_at,
         lines=[
             order_line_out(

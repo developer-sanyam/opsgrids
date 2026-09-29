@@ -78,6 +78,9 @@ const FulfilmentTasksPage = lazy(() =>
 const FulfilmentWorkersPage = lazy(() =>
   import("./routes/FulfilmentWorkers").then((m) => ({ default: m.FulfilmentWorkersPage })),
 );
+const PaymentSettingsPage = lazy(() =>
+  import("./routes/PaymentSettings").then((m) => ({ default: m.PaymentSettingsPage })),
+);
 const DispatchShipmentsPage = lazy(() =>
   import("./routes/DispatchShipments").then((m) => ({ default: m.DispatchShipmentsPage })),
 );
@@ -146,6 +149,7 @@ const router = createBrowserRouter([
           lazyRoute("counting", <CountSessionsPage />),
           lazyRoute("counting/:id", <CountSessionDetailPage />),
           lazyRoute("automation", <AutomationPage />),
+          lazyRoute("settings/payments", <PaymentSettingsPage />),
           { path: "*", element: <NotFoundPage /> },
         ],
       },

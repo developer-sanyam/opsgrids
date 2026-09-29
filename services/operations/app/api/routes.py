@@ -49,9 +49,11 @@ from app.models import (
 )
 from app.orders import selectors as order_selectors
 from app.orders import services as order_services
+from app.orders.payment_client import CollectionsClient, get_collections_client
 from app.schemas import (
     AssignmentOfferOut,
     CancelIn,
+    CheckoutPrefillOut,
     CountLineAddIn,
     CountLineOut,
     CountLineReviewIn,
@@ -87,10 +89,15 @@ from app.schemas import (
     OfferIn,
     OperationalAlertOut,
     OrderCancelIn,
+    OrderCheckoutOut,
+    OrderCheckoutSessionOut,
+    OrderCollectionOut,
     OrderHandoverIn,
     OrderHoldIn,
     OrderIn,
     OrderOut,
+    OrderPaymentsOut,
+    OrderRefundIn,
     OrderVersionIn,
     OverviewOut,
     PackageIn,
@@ -143,7 +150,7 @@ from app.warehouse import selectors as wh_selectors
 from app.warehouse import services as wh_services
 from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.db import get_session, get_tenant_session
-from platform_core.errors import NotFoundProblem, ValidationProblem
+from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 # Registering the operations scope resolver at import of the api module ties it to the product it
@@ -259,6 +266,15 @@ OrderCancel = Annotated[
 ]
 OrderHandOver = Annotated[
     ScopeContext, Depends(require("operations.orders.order.hand_over", minimum=Scope.ORG))
+]
+#: Online payment (ADR-0024 A4). Taking a payment (opening the provider's checkout, checking it,
+#: abandoning an unpaid one) is ordinary counter work; sending money back is its own, dangerous
+#: permission. Both floored at ORG like every order permission.
+OrderPaymentCollect = Annotated[
+    ScopeContext, Depends(require("operations.orders.payment.collect", minimum=Scope.ORG))
+]
+OrderPaymentRefund = Annotated[
+    ScopeContext, Depends(require("operations.orders.payment.refund", minimum=Scope.ORG))
 ]
 
 # ------------------------------------------------------------------ fulfilment (ADR-0024 §7,
@@ -1878,6 +1894,186 @@ async def hand_over_order(
         request=request,
     )
     return await _order_out(session, ctx, order)
+
+
+# ------------------------------------------------------------------ orders: online payment
+# (ADR-0024 A4 — `services/payment`'s tenant collections; Fulfilment F10)
+#
+# Every route below reads the order in one short tenant-bound transaction, closes it, and only
+# then calls payment (`docs/io-outside-transactions.md`: never a network call under a
+# transaction). The amount is always the order's own stored total. None of them can mark the
+# order paid: that fact arrives only by `payment.collections.payment.captured`, which payment emits
+# after verifying the capture with the provider.
+
+
+async def _order_for_payment(
+    session: AsyncSession, ctx: ScopeContext, order_id: uuid.UUID
+) -> tuple[Order, str | None, str]:
+    """The order (404 if it is not this organization's), why it cannot be paid online now (or
+    None), and its payment term — read in its own short transaction."""
+    async with session.begin():
+        await order_services._bind_tenant(session, ctx.organization_id)
+        order = await order_selectors.get_order(session, ctx.organization_id, order_id)
+        if order is None:
+            raise NotFoundProblem("That order is not part of this organization")
+        term = await order_services.payment_term_for_order(session, ctx.organization_id, order)
+        blocker = await order_services.online_payment_blocker(session, ctx.organization_id, order)
+    return order, blocker, term
+
+
+def _collections(raw: list[dict[str, object]]) -> list[OrderCollectionOut]:
+    return [OrderCollectionOut.model_validate(item) for item in raw]
+
+
+@router.get(
+    "/operations/orders/{order_id}/payments",
+    response_model=OrderPaymentsOut,
+    summary="The order's online payments, and whether it can be paid online now",
+    dependencies=[Entitled],
+)
+async def order_payments(
+    order_id: uuid.UUID,
+    session: RawSessionDep,
+    ctx: OrderRead,
+    collections: Annotated[CollectionsClient, Depends(get_collections_client)],
+) -> OrderPaymentsOut:
+    order, blocker, term = await _order_for_payment(session, ctx, order_id)
+    listed = await collections.list_for_order(ctx.organization_id, order.id)
+    configured = bool(listed.get("merchant_account_configured"))
+    if blocker is None and not configured:
+        blocker = "Online payments are not set up for this organization"
+    return OrderPaymentsOut(
+        order_id=str(order.id),
+        total_minor=order.total_minor,
+        currency=order.currency,
+        paid_at=order.paid_at,
+        paid_via_charge_id=str(order.paid_via_charge_id) if order.paid_via_charge_id else None,
+        payment_term=term,
+        can_collect=blocker is None,
+        collect_blocked_reason=blocker,
+        online_payments_configured=configured,
+        mode=listed.get("mode"),
+        wire=listed.get("wire", "stub"),
+        collections=_collections(listed.get("collections", [])),
+    )
+
+
+@router.post(
+    "/operations/orders/{order_id}/payments/checkout",
+    response_model=OrderCheckoutOut,
+    summary="Open (or reuse) the provider's hosted checkout for the order's total",
+    dependencies=[Entitled],
+)
+async def start_order_checkout(
+    order_id: uuid.UUID,
+    session: RawSessionDep,
+    ctx: OrderPaymentCollect,
+    collections: Annotated[CollectionsClient, Depends(get_collections_client)],
+    request: Request,
+) -> OrderCheckoutOut:
+    """Returns what the browser needs to open the provider's own hosted checkout. The amount is
+    the order's stored total — nothing the browser sends is read. Opening a checkout records
+    nothing about payment on the order: it is paid when the provider says so."""
+    order, blocker, _ = await _order_for_payment(session, ctx, order_id)
+    if blocker is not None:
+        raise ConflictProblem(blocker)
+    opened = await collections.checkout(
+        ctx.organization_id, order.id, amount_minor=order.total_minor, currency=order.currency
+    )
+    collection = OrderCollectionOut.model_validate(opened["collection"])
+    async with session.begin():
+        await order_services._bind_tenant(session, ctx.organization_id)
+        order_services.record_payment_checkout_opened(
+            session, ctx, order, charge_id=collection.id, request=request
+        )
+    raw_checkout = opened.get("checkout")
+    checkout = (
+        OrderCheckoutSessionOut(
+            **raw_checkout,
+            order_number=order.number,
+            prefill=CheckoutPrefillOut(name=order.customer_name, contact=order.customer_phone),
+        )
+        if isinstance(raw_checkout, dict)
+        else None
+    )
+    return OrderCheckoutOut(collection=collection, checkout=checkout)
+
+
+@router.post(
+    "/operations/orders/{order_id}/payments/{charge_id}/sync",
+    response_model=OrderCollectionOut,
+    summary="Ask the payment provider what happened to one of the order's online payments",
+    dependencies=[Entitled],
+)
+async def sync_order_payment(
+    order_id: uuid.UUID,
+    charge_id: uuid.UUID,
+    session: RawSessionDep,
+    ctx: OrderPaymentCollect,
+    collections: Annotated[CollectionsClient, Depends(get_collections_client)],
+) -> OrderCollectionOut:
+    """The verified status check the checkout screen calls when the provider's Checkout closes.
+    Takes no body: whatever the browser's Checkout callback said is never evidence — payment asks
+    the provider itself, with the merchant's own keys."""
+    order, _, _ = await _order_for_payment(session, ctx, order_id)
+    return OrderCollectionOut.model_validate(
+        await collections.sync(ctx.organization_id, order.id, charge_id)
+    )
+
+
+@router.post(
+    "/operations/orders/{order_id}/payments/{charge_id}/cancel",
+    response_model=OrderCollectionOut,
+    summary="Cancel an unpaid online payment (checked with the provider first)",
+    dependencies=[Entitled],
+)
+async def cancel_order_payment(
+    order_id: uuid.UUID,
+    charge_id: uuid.UUID,
+    session: RawSessionDep,
+    ctx: OrderPaymentCollect,
+    collections: Annotated[CollectionsClient, Depends(get_collections_client)],
+) -> OrderCollectionOut:
+    order, _, _ = await _order_for_payment(session, ctx, order_id)
+    return OrderCollectionOut.model_validate(
+        await collections.cancel(
+            ctx.organization_id, order.id, charge_id, actor_id=ctx.principal.sub
+        )
+    )
+
+
+@router.post(
+    "/operations/orders/{order_id}/payments/{charge_id}/refunds",
+    response_model=OrderCollectionOut,
+    summary="Refund part or all of one of the order's online payments",
+    dependencies=[Entitled],
+)
+async def refund_order_payment(
+    order_id: uuid.UUID,
+    charge_id: uuid.UUID,
+    payload: OrderRefundIn,
+    session: RawSessionDep,
+    ctx: OrderPaymentRefund,
+    collections: Annotated[CollectionsClient, Depends(get_collections_client)],
+    idempotency_key: IdempotencyKey = None,
+) -> OrderCollectionOut:
+    """`Idempotency-Key` is required: retrying with the same key is the same refund — here, in
+    payment, and at the provider. A full refund of the payment that paid the order makes it unpaid
+    again (by event, `payment.collections.payment.refunded`)."""
+    if idempotency_key is None or len(idempotency_key) < 8:
+        raise ValidationProblem("A refund needs an Idempotency-Key header of at least 8 characters")
+    order, _, _ = await _order_for_payment(session, ctx, order_id)
+    return OrderCollectionOut.model_validate(
+        await collections.refund(
+            ctx.organization_id,
+            order.id,
+            charge_id,
+            amount_minor=payload.amount_minor,
+            reason=payload.reason,
+            idempotency_key=idempotency_key,
+            actor_id=ctx.principal.sub,
+        )
+    )
 
 
 # ------------------------------------------------------------------ fulfilment: workers

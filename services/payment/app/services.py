@@ -39,6 +39,7 @@ from app.models import (
     INBOX_CONFLICT,
     INBOX_PROCESSED,
     MANDATE_ACTIVE,
+    PAYEE_PLATFORM,
     REFUND_CREATED,
     AuditLog,
     Charge,
@@ -276,6 +277,9 @@ async def claim_charge_lease(
         .where(
             Charge.organization_id == organization_id,
             Charge.id == charge_id,
+            # The platform's right-to-call lease only: a merchant charge is never debited by the
+            # platform's provider (`app/collections/` claims its own).
+            Charge.payee == PAYEE_PLATFORM,
             Charge.state == CHARGE_CREATED,
             Charge.provider_payment_id.is_(None),
             Charge.deleted_at.is_(None),
@@ -511,6 +515,7 @@ async def claim_stuck_charge(
     charge = await selectors.lock_charge(session, organization_id, charge_id, skip_locked=True)
     if (
         charge is None
+        or charge.payee != PAYEE_PLATFORM
         or charge.state != CHARGE_CREATED
         or charge.provider_payment_id is not None
         or charge.deleted_at is not None
@@ -548,7 +553,12 @@ async def fail_exhausted_charge(
     may have landed while the lookup was out), then fail it as `attempts_exhausted` and stage
     `commerce.payment.failed` so dunning proceeds. None when something else resolved it first."""
     charge = await selectors.lock_charge(session, organization_id, charge_id)
-    if charge is None or charge.state != CHARGE_CREATED or charge.provider_payment_id is not None:
+    if (
+        charge is None
+        or charge.payee != PAYEE_PLATFORM
+        or charge.state != CHARGE_CREATED
+        or charge.provider_payment_id is not None
+    ):
         return None
     _fail_locally(session, charge, domain.FAILURE_ATTEMPTS_EXHAUSTED)
     await session.flush()
@@ -676,10 +686,16 @@ async def _insert_inbox(
     signature: str | None,
     disposition: str,
     reason: str | None,
+    payee: str = PAYEE_PLATFORM,
+    payload: dict[str, Any] | None = None,
 ) -> uuid.UUID | None:
     """The idempotent inbox insert: `ON CONFLICT (organization_id, provider_event_id) DO NOTHING`.
     Returns the new row's id, or None when the event is already there — a redelivery. The table is
-    insert-only, so `disposition` and `reason` are stated here, at the one moment they can be."""
+    insert-only, so `disposition` and `reason` are stated here, at the one moment they can be.
+
+    `payload` overrides what is stored (the verbatim body by default): a merchant webhook stores
+    the reduced body `app.collections.domain.redact_webhook_body` returns, never the tenant's
+    customer's personal data (see `ProviderEvent.payee`)."""
     stmt = (
         pg_insert(ProviderEvent)
         .values(
@@ -689,10 +705,11 @@ async def _insert_inbox(
             provider_event_id=event.provider_event_id,
             event_name=event.event_name,
             charge_id=charge_id,
-            payload=event.raw,
+            payload=event.raw if payload is None else payload,
             signature=signature,
             disposition=disposition,
             disposition_reason=reason,
+            payee=payee,
         )
         .on_conflict_do_nothing(index_elements=["organization_id", "provider_event_id"])
         .returning(ProviderEvent.id)
@@ -882,6 +899,8 @@ async def _record_not_applied(
     signature: str | None,
     verdict: domain.WebhookNotApplied,
     request: Request | None,
+    payee: str = PAYEE_PLATFORM,
+    payload: dict[str, Any] | None = None,
 ) -> WebhookAck:
     """Keep an authentic webhook this platform cannot reconcile: the inbox row (stating why), an
     audit row, and a log line an operator can count — and answer 200.
@@ -901,6 +920,8 @@ async def _record_not_applied(
         signature=signature,
         disposition=verdict.disposition,
         reason=verdict.reason,
+        payee=payee,
+        payload=payload,
     )
     if inbox_id is None:
         return WebhookAck(
@@ -967,7 +988,11 @@ async def _resolve_charge(
     if charge_id is not None:
         charge = await selectors.lock_charge(session, organization_id, charge_id)
         if charge is not None:
-            return charge
+            # A platform-signed webhook never reconciles a tenant's collection charge, whatever
+            # id its notes carry: that charge's truth comes only from the merchant's own signed
+            # callbacks (`app/collections/`), and moving it here would emit `commerce.payment.*`
+            # and start subscription dunning for somebody's order (ADR-0024 §8).
+            return charge if charge.payee == PAYEE_PLATFORM else None
     if event.provider_payment_id:
         found = await selectors.get_charge_by_provider_payment_id(
             session, organization_id, event.provider_payment_id
@@ -1315,6 +1340,8 @@ async def create_refund(
     the local append-only table recorded a new row with a different amount — a silent,
     permanent divergence between the platform and provider ledgers.
     """
+    if charge.payee != PAYEE_PLATFORM:
+        raise BusinessRuleProblem("a collection charge is refunded through app/collections")
     if charge.state != CHARGE_CAPTURED:
         raise BusinessRuleProblem(
             f"only a captured charge can be refunded; this one is {charge.state!r}"

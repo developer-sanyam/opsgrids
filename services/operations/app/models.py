@@ -1197,12 +1197,15 @@ class Order(Base, TenantBase):
     * `invoice_id` — a plain UUID into `finance.invoices`, recorded from finance's own
       `finance.orders.invoice.issued` event (`app.consumers.finance_invoice_issued`). Never a
       cross-schema FK (ADR-0000 §10). NULL until finance issues one.
-    * `paid_at` — when this order's payment was confirmed. **F4 honest gap:**
-      `services/payment` has no tenant-facing collections module yet (ADR-0024 A4, not built) —
-      there is no real capture to record a reference to. Today this is set only by the counter
-      handover's own operator attestation (`hand_over_order`'s `payment_confirmed` flag) — a
-      documented stand-in, not a verified capture. A real payment consumer would set the same
-      column once one exists; the billing gate does not care which wrote it.
+    * `paid_at` — when this order's payment was confirmed. Two writers, and the billing gate does
+      not care which: the counter/carrier operator's own attestation at handover
+      (`attest_payment_if_confirmed`, cash at handover), and — for an order paid online —
+      `services/payment`'s tenant collections (ADR-0024 A4): a **verified** capture (a signed
+      webhook or a server-to-server status check, never a browser's word) arrives here as
+      `payment.collections.payment.captured` and `app.orders.services.record_online_payment`
+      sets it. `paid_via_charge_id` names that collection, so a later full refund of *it* can
+      reverse the fact (and a failed refund restore it) without ever touching a paid fact an
+      operator attested.
     * `pickup_code` / `pickup_code_verified_at` — issued at READY when
       `fulfilment_settings.require_pickup_code` is set (snapshotted at accept), and verified (the
       caller's presented code matched) in the same transaction as the handover write.
@@ -1242,6 +1245,9 @@ class Order(Base, TenantBase):
     #: See class docstring's "Four more facts" — ADR-0025 §1's billing gate (Fulfilment plan F4).
     invoice_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The `services/payment` collection whose verified capture set `paid_at` — a plain UUID
+    #: (ADR-0000 §10, no cross-schema FK). NULL when the order was not paid online.
+    paid_via_charge_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     pickup_code: Mapped[str | None] = mapped_column(String(20))
     pickup_code_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

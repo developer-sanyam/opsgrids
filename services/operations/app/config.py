@@ -40,6 +40,17 @@ class Settings(ServiceSettings):
     #: to `false` while adding `split-workers` to `EDGE_PROFILES` is the rollback (RUNBOOK.md).
     run_consumers_in_api: bool = False
 
+    #: Where `services/payment`'s internal API answers (tenant collections, ADR-0024 A4): an
+    #: order's online payment is opened, checked, cancelled and refunded there, never here —
+    #: operations holds no payment-provider secret and no payment state, only the order's own
+    #: `paid_at` fact, which arrives by event. Local `make run` port by default; the edge's
+    #: compose file points it at `http://payment:8000`.
+    payment_service_url: str = "http://localhost:8163"
+    #: How long one call to payment may take. payment bounds its own provider call at 15 s
+    #: (`collections_call_timeout_seconds`); this stays under the gateway's 30 s so a slow
+    #: provider is a clean 503 here rather than the gateway's own timeout.
+    payment_call_timeout_seconds: float = 25.0
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

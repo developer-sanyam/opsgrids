@@ -1039,6 +1039,12 @@ services:
       RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
       RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
       RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET}
+      # Tenant collections (ADR-0024 A4): each tenant's own Razorpay keys live sealed in the
+      # database, not here. These two are the owner's switches: whether a tenant's adapter talks
+      # to Razorpay at all (`stub` until turned on), and whether live (`rzp_live_`) keys may be
+      # connected. Both default to the safe side.
+      COLLECTIONS_WIRE: ${COLLECTIONS_WIRE:-stub}
+      COLLECTIONS_ALLOW_LIVE_KEYS: ${COLLECTIONS_ALLOW_LIVE_KEYS:-false}
     networks:
       - back
 
@@ -1276,6 +1282,10 @@ services:
       # is the one container this box runs of this service, so "on" here can never mean two
       # copies of the reconciliation sweep running at once.
       RUN_SWEEPS_IN_API: ${RUN_SWEEPS_IN_API:-true}
+      # An order's online payment is opened, checked, cancelled and refunded in payment's
+      # tenant collections (ADR-0024 A4) over its internal API — operations holds no payment
+      # secret or state. Service-to-service on `back`, never through a gateway.
+      PAYMENT_SERVICE_URL: http://payment:8000
     networks:
       - back
 

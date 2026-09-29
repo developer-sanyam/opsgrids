@@ -71,15 +71,21 @@ import type {
   LayoutVersionCreateIn,
   LayoutVersionOut,
   LocationIn,
+  MerchantAccountIn,
+  MerchantAccountOut,
   LocationOut,
   LocationPatch,
   OfferIn,
   OperationalAlertOut,
   OrderCancelIn,
   OrderChannel,
+  OrderCheckoutOut,
+  OrderCollectionOut,
   OrderHoldIn,
   OrderIn,
   OrderOut,
+  OrderPaymentsOut,
+  OrderRefundIn,
   OrderStatus,
   OrderVersionIn,
   OverviewOut,
@@ -93,6 +99,7 @@ import type {
   QuoteIn,
   QuoteOut,
   ReceiveIn,
+  ReconciliationOut,
   RouteOut,
   ShipmentAdvanceIn,
   ShipmentIn,
@@ -2013,6 +2020,7 @@ export async function returnShipment(id: string, input: ShipmentRefusalIn): Prom
   });
 }
 
+
 /* -------------------------------- warehouse geometry (Fulfilment plan §2/F7) -------------------------------- */
 /**
  * Floors, versioned layouts, a draft's placements/walk graph, validation, publish/rollback, and
@@ -2316,4 +2324,82 @@ export async function insightWorkload(): Promise<WorkerWorkloadOut[]> {
 export async function insightDiscrepancyTrend(days = 30): Promise<DiscrepancyTrendPointOut[]> {
   if (USE_FIXTURES) return settle([]);
   return apiRequest<DiscrepancyTrendPointOut[]>(`/operations/insights/discrepancies${buildQuery({ days })}`);
+}
+
+/* ------------------------------------ online payment (ADR-0024 A4, Fulfilment F10) ------------------------------------ */
+/**
+ * An order's online payment, and the organization's own Razorpay connection. No fixture-mode
+ * branch (the dispatch section's precedent): every function calls the real endpoint.
+ *
+ * Nothing here can mark an order paid. `startOrderCheckout` returns what Razorpay's hosted
+ * Checkout needs (a public key id and an Order id); whether the customer then paid is asked of
+ * the provider server-side by `syncOrderPayment`, which sends no body at all — the Checkout
+ * callback's payment id and signature are never sent anywhere.
+ */
+
+/** `GET /operations/orders/{id}/payments` — `operations.orders.order.read`. */
+export async function getOrderPayments(orderId: string): Promise<OrderPaymentsOut> {
+  return apiRequest<OrderPaymentsOut>(`/operations/orders/${encodeURIComponent(orderId)}/payments`);
+}
+
+/** `POST /operations/orders/{id}/payments/checkout` — `operations.orders.payment.collect:ORG`.
+ *  The amount is the order's own stored total, decided by the server; nothing is sent. */
+export async function startOrderCheckout(orderId: string): Promise<OrderCheckoutOut> {
+  return apiRequest<OrderCheckoutOut>(`/operations/orders/${encodeURIComponent(orderId)}/payments/checkout`, {
+    method: "POST",
+  });
+}
+
+/** `POST /operations/orders/{id}/payments/{charge}/sync` — the server asks the provider. */
+export async function syncOrderPayment(orderId: string, chargeId: string): Promise<OrderCollectionOut> {
+  return apiRequest<OrderCollectionOut>(
+    `/operations/orders/${encodeURIComponent(orderId)}/payments/${encodeURIComponent(chargeId)}/sync`,
+    { method: "POST" },
+  );
+}
+
+/** `POST /operations/orders/{id}/payments/{charge}/cancel` — only an unpaid checkout. */
+export async function cancelOrderPayment(orderId: string, chargeId: string): Promise<OrderCollectionOut> {
+  return apiRequest<OrderCollectionOut>(
+    `/operations/orders/${encodeURIComponent(orderId)}/payments/${encodeURIComponent(chargeId)}/cancel`,
+    { method: "POST" },
+  );
+}
+
+/** `POST /operations/orders/{id}/payments/{charge}/refunds` — `operations.orders.payment.refund:ORG`.
+ *  `idempotencyKey` is minted once per refund the operator means to make, and re-sent on a retry,
+ *  so a retry after a lost answer is the same refund — here and at the provider. */
+export async function refundOrderPayment(
+  orderId: string,
+  chargeId: string,
+  input: OrderRefundIn,
+  idempotencyKey: string,
+): Promise<OrderCollectionOut> {
+  return apiRequest<OrderCollectionOut>(
+    `/operations/orders/${encodeURIComponent(orderId)}/payments/${encodeURIComponent(chargeId)}/refunds`,
+    { method: "POST", body: input, headers: { "Idempotency-Key": idempotencyKey } },
+  );
+}
+
+/** `GET /payment/collections/merchant-account` — `operations.payments.merchant_account.read:ORG`.
+ *  Secrets come back masked, always. */
+export async function getMerchantAccount(): Promise<MerchantAccountOut> {
+  return apiRequest<MerchantAccountOut>("/payment/collections/merchant-account");
+}
+
+/** `PUT /payment/collections/merchant-account` — `operations.payments.merchant_account.write:ORG`.
+ *  Connects, or rotates in place (the webhook URL is kept). The secrets are sealed on arrival. */
+export async function saveMerchantAccount(input: MerchantAccountIn): Promise<MerchantAccountOut> {
+  return apiRequest<MerchantAccountOut>("/payment/collections/merchant-account", { method: "PUT", body: input });
+}
+
+/** `DELETE /payment/collections/merchant-account` — `operations.payments.merchant_account.write:ORG`. */
+export async function removeMerchantAccount(): Promise<void> {
+  await apiRequest<undefined>("/payment/collections/merchant-account", { method: "DELETE" });
+}
+
+/** `GET /payment/collections/reconciliation` — `operations.payments.reconciliation.read:ORG`.
+ *  Read-only: it lists disagreements with the provider and corrects nothing. */
+export async function getPaymentReconciliation(): Promise<ReconciliationOut> {
+  return apiRequest<ReconciliationOut>("/payment/collections/reconciliation");
 }

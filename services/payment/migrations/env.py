@@ -17,6 +17,7 @@ from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from app.collections.selectors import MERCHANT_ACCOUNT_LOOKUP_COLUMNS
 from app.config import settings
 from app.models import SCHEMA, Base
 from app.selectors import SWEEP_READER_CHARGE_COLUMNS
@@ -84,6 +85,20 @@ def grant_sweep_reader(connection: Connection) -> None:
         )
         columns = ", ".join(c for c in SWEEP_READER_CHARGE_COLUMNS if c in present)
         connection.execute(text(f'GRANT SELECT ({columns}) ON "{SCHEMA}"."charges" TO "{reader}"'))
+    # The merchant webhook's pre-tenant lookup (ADR-0024 §8, `app/collections/selectors.py
+    # ::merchant_account_org`): which organization a merchant account named in a webhook URL
+    # belongs to, asked before any tenant can be bound. Column-scoped to exactly
+    # `MERCHANT_ACCOUNT_LOOKUP_COLUMNS` — the role can never select a sealed secret, a key id or a
+    # mode, and a future `SELECT *` fails with 42501 instead of widening the bypass. Revoked first
+    # on every run, like the charges grant above.
+    if connection.execute(
+        text("SELECT to_regclass(:name)"), {"name": f"{SCHEMA}.merchant_accounts"}
+    ).scalar():
+        connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."merchant_accounts" FROM "{reader}"'))
+        lookup = ", ".join(MERCHANT_ACCOUNT_LOOKUP_COLUMNS)
+        connection.execute(
+            text(f'GRANT SELECT ({lookup}) ON "{SCHEMA}"."merchant_accounts" TO "{reader}"')
+        )
     connection.commit()
 
 

@@ -77,6 +77,9 @@ CLIENT_TYPE_NAMES: frozenset[str] = frozenset(
         "EwayClient",
         "ImsClient",
         "PaymentProvider",
+        # payment's tenant-collections seam (app/providers/base.py, ADR-0024 §8): a merchant's
+        # adapter, which reaches Razorpay over HTTP when the collections wire is enabled.
+        "CollectionsProvider",
         "ProductRegistry",
         "ObjectStore",
         "Resolver",

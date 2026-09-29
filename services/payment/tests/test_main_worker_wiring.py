@@ -118,8 +118,16 @@ async def test_the_consumer_and_sweep_both_run_inside_one_supervised_group(
         sweeps_built.append(sweep)
         return sweep
 
+    expiry_built: list[_FakeSweep] = []
+
+    def fake_build_expiry_sweep(*, work_scope: Any) -> _FakeSweep:
+        sweep = _FakeSweep(work_scope=work_scope)
+        expiry_built.append(sweep)
+        return sweep
+
     monkeypatch.setattr(main.consumers.consumer, "run", fake_consumer_run)
     monkeypatch.setattr(main, "build_sweep", fake_build_sweep)
+    monkeypatch.setattr(main, "build_expiry_sweep", fake_build_expiry_sweep)
 
     app = FastAPI()
     await main._start_background_worker(app)
@@ -127,6 +135,10 @@ async def test_the_consumer_and_sweep_both_run_inside_one_supervised_group(
     assert len(sweeps_built) == 1
     assert sweeps_built[0].work_scope == ("bulkhead", engines[0])
     await asyncio.wait_for(sweeps_built[0].ran.wait(), timeout=1)
+    # The collection expiry sweep (ADR-0024 §8) folds into the same group, on the same bulkhead.
+    assert len(expiry_built) == 1
+    assert expiry_built[0].work_scope == ("bulkhead", engines[0])
+    await asyncio.wait_for(expiry_built[0].ran.wait(), timeout=1)
     for _ in range(50):
         if "consumer" in ran:
             break

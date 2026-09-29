@@ -1,4 +1,5 @@
 import type {
+  CollectionState,
   CountLineReviewStatus,
   CountSessionStatus,
   OfferState,
@@ -197,6 +198,32 @@ export function ShipmentStatusPill({ status }: { status: ShipmentStatus }) {
   const word = SHIPMENT_REGISTERED[status];
   if (word) return <StatusBadge status={word} label={SHIPMENT_LABEL[status]} />;
   return <StatusBadge tone={SHIPMENT_EXPLICIT_TONE[status] ?? "neutral"} label={SHIPMENT_LABEL[status]} />;
+}
+
+/* ------------------------------ online payment (ADR-0024 A4) ---------------------------- */
+
+const COLLECTION_LABEL: Record<CollectionState, string> = {
+  created: "Awaiting payment",
+  authorized: "Authorized",
+  captured: "Paid",
+  failed: "Attempt failed",
+  cancelled: "Cancelled",
+  expired: "Expired",
+};
+
+/** None of these is a registered status word in the sense this screen means it ("failed" here is
+ *  one attempt that the customer may still retry), so each takes an explicit tone. */
+const COLLECTION_TONE: Record<CollectionState, StatusTone> = {
+  created: "info",
+  authorized: "warning",
+  captured: "success",
+  failed: "danger",
+  cancelled: "neutral",
+  expired: "neutral",
+};
+
+export function CollectionStatusPill({ state }: { state: CollectionState }) {
+  return <StatusBadge tone={COLLECTION_TONE[state]} label={COLLECTION_LABEL[state]} />;
 }
 
 /* ------------------------------ stock level ---------------------------- */

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/payment.collections.payment.failed/v1",
+  "title": "payment.collections.payment.failed",
+  "description": "A tenant's customer's online payment attempt failed (ADR-0024 §8). The collection stays open: the customer may retry against the same provider Order, and a later capture emits `payment.collections.payment.captured`. Never `commerce.payment.failed` — a merchant's failed payment must never suspend anyone's subscription. `failure_code` is the provider's stable code, never its free text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "charge_id",
+    "reference_type",
+    "reference_id",
+    "amount_minor",
+    "currency",
+    "provider",
+    "provider_payment_id",
+    "provider_order_id",
+    "state",
+    "occurred_at"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "charge_id": { "type": "string", "format": "uuid" },
+    "reference_type": { "type": "string", "enum": ["operations.order"] },
+    "reference_id": { "type": "string", "format": "uuid" },
+    "amount_minor": { "type": "integer", "minimum": 1 },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "provider": { "type": "string", "minLength": 1 },
+    "provider_payment_id": { "type": ["string", "null"] },
+    "provider_order_id": { "type": ["string", "null"] },
+    "state": { "const": "failed" },
+    "failure_code": { "type": ["string", "null"], "maxLength": 64 },
+    "occurred_at": { "type": "string", "format": "date-time" }
+  }
+}

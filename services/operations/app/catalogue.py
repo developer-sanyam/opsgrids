@@ -514,6 +514,62 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Online payment for an order (ADR-0024 A4, tenant collections in `services/payment`;
+        # Fulfilment F10). Taking a customer's payment is ordinary counter work — opening the
+        # provider's hosted checkout, checking with the provider whether it was paid, abandoning
+        # an unpaid one — so `collect` sits beside `order.write`, ORG-only like every order
+        # permission. The paid fact itself is never this permission's to set: only a verified
+        # provider capture sets it.
+        PermissionSpec(
+            "orders",
+            "payment",
+            "collect",
+            "Take an order's payment online (open the provider's checkout), check its status "
+            "with the provider, and cancel an unpaid one",
+            "ORG",
+            "ORG",
+        ),
+        # Sending money back is a commitment the other way — kept apart from `collect` for the
+        # reason `order.cancel` is kept apart from `order.write`.
+        PermissionSpec(
+            "orders",
+            "payment",
+            "refund",
+            "Refund part or all of an order's online payment",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        # The organization's own payment-provider connection. These codes are minted here and
+        # enforced by `services/payment` (which holds the sealed credentials, ADR-0024 §8) — the
+        # same "minted in one catalogue, enforced in the service that holds the data" shape core's
+        # `identity.sso.*` takes into auth-service. `write` is dangerous: whoever holds it decides
+        # which provider account this organization's customers' money is paid into.
+        PermissionSpec(
+            "payments",
+            "merchant_account",
+            "read",
+            "See the organization's online-payment provider connection (secrets masked)",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "payments",
+            "merchant_account",
+            "write",
+            "Connect, rotate or remove the organization's online-payment provider account",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        PermissionSpec(
+            "payments",
+            "reconciliation",
+            "read",
+            "Compare recent online payments with the payment provider's own records",
+            "ORG",
+            "ORG",
+        ),
     ],
 )
 
@@ -540,8 +596,10 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "hands over customer orders — the stock-commitment, stock-release and billing-gate "
             "steps — on top of the ordinary counter work every Operations user does, and hands "
             "orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and "
-            "closes cycle counts and approves the discrepancies they raise (ADR-0026). Does not "
-            "create or rename warehouses — that stays with the admin. Creates floors and edits a "
+            "closes cycle counts and approves the discrepancies they raise (ADR-0026). Takes and "
+            "refunds orders' online payments and reads the payment reconciliation. Does not "
+            "create or rename warehouses, or connect or change the organization's "
+            "payment-provider account — those stay with the admin. Creates floors and edits a "
             "draft layout's placements and walk graph, but does not publish one — a floor plan "
             "going live is as dangerous as it gets here, so that stays with the admin too."
         ),
@@ -585,6 +643,10 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.automation.alert.read", "ORG"),
             ("operations.automation.alert.manage", "ORG"),
             ("operations.automation.insight.read", "ORG"),
+            ("operations.orders.payment.collect", "ORG"),
+            ("operations.orders.payment.refund", "ORG"),
+            ("operations.payments.merchant_account.read", "ORG"),
+            ("operations.payments.reconciliation.read", "ORG"),
         ),
     ),
     RoleTemplate(
@@ -618,9 +680,10 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
         description=(
             "Every person with an Operations seat. Raises and sees their own purchase orders, "
             "reads the shared suppliers, inventory, warehouses and locations, and runs the "
-            "counter: creates and places customer orders, holds and releases them. Does not "
-            "accept (commit stock to) or cancel an order — those stay with the manager, the same "
-            "split `purchase_order.approve` draws from `purchase_order.write`. Sees floors and "
+            "counter: creates and places customer orders, holds and releases them, and takes an "
+            "order's payment online. Does not accept (commit stock to) or cancel an order, or "
+            "refund a payment — those stay with the manager, the same split "
+            "`purchase_order.approve` draws from `purchase_order.write`. Sees floors and "
             "published layouts (pick routing, the 3D viewer's data) read-only."
         ),
         is_default=True,
@@ -636,6 +699,7 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.orders.order.read", "ORG"),
             ("operations.orders.order.create", "ORG"),
             ("operations.orders.order.write", "ORG"),
+            ("operations.orders.payment.collect", "ORG"),
         ),
     ),
 ]

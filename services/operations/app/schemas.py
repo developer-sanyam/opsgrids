@@ -1277,6 +1277,9 @@ class OrderOut(BaseModel):
     currency: str
     invoice_id: str | None = None
     paid_at: datetime | None = None
+    #: The online payment (a `services/payment` collection id) whose verified capture set
+    #: `paid_at`; None when the order was not paid online (ADR-0024 A4).
+    paid_via_charge_id: str | None = None
     pickup_code_verified_at: datetime | None = None
     lines: list[OrderLineItem] = Field(default_factory=list)
     created_at: datetime
@@ -1772,6 +1775,8 @@ class ShipmentRefusalIn(BaseModel):
         return _reject_blank_or_control(value, field_name="reason")
 
 
+
+
 # ------------------------------------------------------------------ counting (ADR-0026;
 # `docs/fulfilment/plan.md` F8)
 
@@ -1884,3 +1889,111 @@ class CountLineReviewIn(BaseModel):
 
     decision: Literal["approve", "reject"]
     note: str = Field(default="", max_length=500)
+
+# ------------------------------------------------------------------ online payment (ADR-0024 A4;
+# Fulfilment F10). Mirrors `services/payment`'s collection shapes — operations relays them, it
+# holds no payment state of its own beyond the order's `paid_at` fact. No card, bank or UPI
+# detail exists anywhere in these models: the customer pays in the provider's own hosted checkout.
+
+CollectionState = Literal["created", "authorized", "captured", "failed", "cancelled", "expired"]
+
+
+class CollectionRefundOut(BaseModel):
+    id: str
+    provider_refund_id: str | None
+    amount_minor: int
+    currency: str
+    #: `created` (pending at the provider) | `processed` | `failed`.
+    state: str
+    reason: str | None
+    created_at: datetime
+
+
+class CollectionHistoryOut(BaseModel):
+    from_state: str | None
+    to_state: str
+    #: `api` | `webhook` | `sync` | `sweep` — what moved it.
+    source: str
+    reason: str | None
+    at: datetime
+
+
+class OrderCollectionOut(BaseModel):
+    """One online payment attempt for the order, as `services/payment` records it."""
+
+    id: str
+    state: CollectionState
+    amount_minor: int
+    currency: str
+    provider: str
+    provider_order_id: str | None
+    provider_payment_id: str | None
+    failure_reason: str | None
+    refunded_minor: int
+    refunds: list[CollectionRefundOut] = Field(default_factory=list)
+    history: list[CollectionHistoryOut] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class OrderPaymentsOut(BaseModel):
+    """`GET /orders/{id}/payments` — the order's paid fact, whether it can be paid online now (and
+    if not, why), and every online payment attempt for it, newest first."""
+
+    order_id: str
+    total_minor: int
+    currency: str
+    paid_at: datetime | None
+    paid_via_charge_id: str | None
+    payment_term: str
+    can_collect: bool
+    collect_blocked_reason: str | None
+    online_payments_configured: bool
+    mode: Literal["test", "live"] | None
+    #: `stub` when no provider call leaves the platform — a checkout cannot be paid for real.
+    wire: Literal["stub", "razorpay"]
+    collections: list[OrderCollectionOut]
+
+
+class CheckoutPrefillOut(BaseModel):
+    name: str
+    contact: str
+
+
+class OrderCheckoutSessionOut(BaseModel):
+    """Exactly what the browser needs to open the provider's hosted Checkout — the **public** key
+    id and the provider Order id — plus the prefill it may show. Never a secret."""
+
+    provider: str
+    key_id: str
+    provider_order_id: str
+    amount_minor: int
+    currency: str
+    mode: Literal["test", "live"]
+    openable: bool
+    order_number: str
+    prefill: CheckoutPrefillOut
+
+
+class OrderCheckoutOut(BaseModel):
+    collection: OrderCollectionOut
+    #: None while payment is still creating the provider Order — retry in a moment.
+    checkout: OrderCheckoutSessionOut | None
+
+
+class OrderPaymentActionIn(BaseModel):
+    """`POST /orders/{id}/payments/{charge_id}/sync|cancel` — no body is needed or read. In
+    particular there is **no** "the payment succeeded" field: whether it did is asked of the
+    provider, server to server."""
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class OrderRefundIn(BaseModel):
+    """`POST /orders/{id}/payments/{charge_id}/refunds`. The `Idempotency-Key` header is required:
+    the same key is the same refund, here and at the provider."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    amount_minor: int = Field(gt=0, le=MAX_ABS_MILLI)
+    reason: str = Field(min_length=1, max_length=200)

@@ -35,6 +35,7 @@ PROD_ROUTES = Path(__file__).resolve().parents[3] / "infrastructure/edge/routes.
 
 WHATSAPP = "/api/v1/webhooks/whatsapp"
 RAZORPAY = "/api/v1/webhooks/razorpay"
+RAZORPAY_COLLECTIONS = "/api/v1/webhooks/razorpay/collections"
 #: Meta documents payloads up to 3 MB; the route says so in both tables.
 WHATSAPP_BODY_CAP = 3 * 1024 * 1024
 
@@ -257,7 +258,19 @@ class TestNothingElseIsPublic:
                 await call(app, method, route.prefix)
                 if len(probe_upstream.calls) != before:
                     reached.add((method, route.prefix))
-        assert reached == {("GET", WHATSAPP), ("POST", WHATSAPP)}
+        # Pinned, not derived from the policy: every public webhook, by exact path and method.
+        # Meta's WhatsApp callback; Facebook Login's deauthorize / data-deletion callbacks; and a
+        # tenant's own Razorpay webhook (tenant collections, ADR-0024 §8) — never the platform's
+        # own `/api/v1/webhooks/razorpay`, which stays routed-but-not-public.
+        assert reached == {
+            ("GET", WHATSAPP),
+            ("POST", WHATSAPP),
+            ("POST", f"{WHATSAPP}/deauthorize"),
+            ("POST", f"{WHATSAPP}/data-deletion"),
+            ("GET", f"{WHATSAPP}/data-deletion-status"),
+            ("POST", RAZORPAY_COLLECTIONS),
+        }
+        assert ("POST", RAZORPAY) not in reached
 
 
 class TestNoCredentialSurface:
