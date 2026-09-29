@@ -1,6 +1,347 @@
 {
   "components": {
     "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "MerchantAccountIn": {
+        "additionalProperties": false,
+        "description": "`PUT /payment/collections/merchant-account` \u2014 connect the organization's Razorpay account,\nor rotate its credentials in place. The key id is public (the browser gets it); the key secret\nand webhook secret are sealed on arrival and never returned \u2014 only a masked hint of each.",
+        "properties": {
+          "key_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Key Id",
+            "type": "string"
+          },
+          "key_secret": {
+            "format": "password",
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "Key Secret",
+            "type": "string",
+            "writeOnly": true
+          },
+          "provider": {
+            "const": "razorpay",
+            "default": "razorpay",
+            "title": "Provider",
+            "type": "string"
+          },
+          "webhook_secret": {
+            "format": "password",
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "Webhook Secret",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "key_id",
+          "key_secret",
+          "webhook_secret"
+        ],
+        "title": "MerchantAccountIn",
+        "type": "object"
+      },
+      "MerchantAccountOut": {
+        "description": "The organization's payment-provider connection as an admin may see it: masked secrets\nonly, and the webhook URL path to register at the provider (`?account=` names this account).",
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "key_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Id"
+          },
+          "key_secret_masked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Secret Masked"
+          },
+          "live_keys_allowed": {
+            "title": "Live Keys Allowed",
+            "type": "boolean"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "test",
+                  "live"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "rotated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rotated At"
+          },
+          "webhook_events": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Webhook Events",
+            "type": "array"
+          },
+          "webhook_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Path"
+          },
+          "webhook_secret_masked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Secret Masked"
+          },
+          "wire": {
+            "enum": [
+              "stub",
+              "razorpay"
+            ],
+            "title": "Wire",
+            "type": "string"
+          }
+        },
+        "required": [
+          "configured",
+          "live_keys_allowed",
+          "wire"
+        ],
+        "title": "MerchantAccountOut",
+        "type": "object"
+      },
+      "ReconciliationOut": {
+        "description": "A read-only comparison of this platform's collection records with the provider's. It\ncorrects nothing: a mismatch is for a person to look at (a status check, or the provider's\nown dashboard, is what settles it).",
+        "properties": {
+          "checked": {
+            "title": "Checked",
+            "type": "integer"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "mismatched": {
+            "title": "Mismatched",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ReconciliationRowOut"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "unchecked": {
+            "title": "Unchecked",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "generated_at",
+          "checked",
+          "mismatched",
+          "unchecked",
+          "rows"
+        ],
+        "title": "ReconciliationOut",
+        "type": "object"
+      },
+      "ReconciliationRowOut": {
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "charge_id": {
+            "format": "uuid",
+            "title": "Charge Id",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "lookup_failed": {
+            "title": "Lookup Failed",
+            "type": "boolean"
+          },
+          "mismatches": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Mismatches",
+            "type": "array"
+          },
+          "provider_order_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Order Id"
+          },
+          "provider_payment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Payment Id"
+          },
+          "provider_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Status"
+          },
+          "reference_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Id"
+          },
+          "reference_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Type"
+          },
+          "refunded_minor": {
+            "title": "Refunded Minor",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "charge_id",
+          "reference_type",
+          "reference_id",
+          "state",
+          "amount_minor",
+          "currency",
+          "provider_order_id",
+          "provider_payment_id",
+          "refunded_minor",
+          "provider_status",
+          "mismatches",
+          "lookup_failed"
+        ],
+        "title": "ReconciliationRowOut",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -17,6 +358,46 @@
           "schema_name"
         ],
         "title": "ServiceInfo",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
         "type": "object"
       },
       "WebhookAck": {
@@ -68,6 +449,100 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/payment/collections/merchant-account": {
+      "delete": {
+        "operationId": "delete_merchant_account_api_v1_payment_collections_merchant_account_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Disconnect the organization's payment-provider account",
+        "tags": [
+          "collections"
+        ]
+      },
+      "get": {
+        "operationId": "get_merchant_account_api_v1_payment_collections_merchant_account_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MerchantAccountOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The organization's payment-provider connection (masked)",
+        "tags": [
+          "collections"
+        ]
+      },
+      "put": {
+        "operationId": "put_merchant_account_api_v1_payment_collections_merchant_account_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MerchantAccountIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MerchantAccountOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Connect the organization's Razorpay account, or rotate its credentials",
+        "tags": [
+          "collections"
+        ]
+      }
+    },
+    "/api/v1/payment/collections/reconciliation": {
+      "get": {
+        "description": "Asks the provider, server to server, about the most recent collections and lists every\ndisagreement. **Corrects nothing** \u2014 a status check from the order, or the provider's own\ndashboard, is what settles a mismatch.",
+        "operationId": "reconciliation_api_v1_payment_collections_reconciliation_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconciliationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Compare recent online payments with the provider's records (read-only)",
+        "tags": [
+          "collections"
+        ]
+      }
+    },
     "/api/v1/payment/info": {
       "get": {
         "operationId": "info_api_v1_payment_info_get",
@@ -106,6 +581,51 @@
           }
         },
         "summary": "Razorpay webhook \u2014 signature-verified, idempotent, reconciling",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    },
+    "/api/v1/webhooks/razorpay/collections": {
+      "post": {
+        "description": "One merchant's Razorpay webhook. The body is read raw \u2014 the signature is over exactly\nthese bytes. An unknown or removed account, a bad signature and an unparseable account id all\nanswer the same 400, so a prober learns nothing about which accounts exist.",
+        "operationId": "merchant_webhook_api_v1_webhooks_razorpay_collections_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Account",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookAck"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A tenant's Razorpay webhook \u2014 per-merchant signature, idempotent, reconciling",
         "tags": [
           "webhooks"
         ]

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/payment.collections.payment.captured/v1",
+  "title": "payment.collections.payment.captured",
+  "description": "A tenant's customer paid the tenant online (ADR-0024 §8, tenant collections): a collection moved to `captured` on a signature-verified merchant webhook or a server-to-server status check against the provider — never on a browser's word. Emitted exactly once per collection. Deliberately never `commerce.payment.*`: a merchant's payments must never reach the subscription dunning loop. `operations` consumes it to record the order's `paid_at` fact. Carries identifiers and money only — no person.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "charge_id",
+    "reference_type",
+    "reference_id",
+    "amount_minor",
+    "currency",
+    "provider",
+    "provider_payment_id",
+    "provider_order_id",
+    "state",
+    "occurred_at"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "charge_id": { "type": "string", "format": "uuid" },
+    "reference_type": { "type": "string", "enum": ["operations.order"] },
+    "reference_id": { "type": "string", "format": "uuid" },
+    "amount_minor": { "type": "integer", "minimum": 1 },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "provider": { "type": "string", "minLength": 1 },
+    "provider_payment_id": { "type": ["string", "null"] },
+    "provider_order_id": { "type": ["string", "null"] },
+    "state": { "const": "captured" },
+    "occurred_at": { "type": "string", "format": "date-time" }
+  }
+}

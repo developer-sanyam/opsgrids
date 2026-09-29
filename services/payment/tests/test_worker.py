@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import app.worker as worker
+from app.collections.cron import CollectionExpirySweep
 from app.cron import StuckChargeSweep
 from app.supervise import LoopExited, run_supervised
 
@@ -30,6 +32,17 @@ def _idle_sweep(**over: Any) -> StuckChargeSweep:
     }
     kwargs.update(over)
     return StuckChargeSweep(**kwargs)
+
+
+def _idle_expiry_sweep(**over: Any) -> CollectionExpirySweep:
+    kwargs: dict[str, Any] = {
+        "discovery_factory": None,
+        "work_scope": None,
+        "provider_factory": lambda: None,
+        "ttl": timedelta(days=1),
+    }
+    kwargs.update(over)
+    return CollectionExpirySweep(**kwargs)
 
 
 @pytest.fixture
@@ -46,6 +59,7 @@ def _no_database(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker, "assert_app_role", _ok)
     monkeypatch.setattr(worker, "assert_outbox_role", _ok)
     monkeypatch.setattr(worker, "build_sweep", _idle_sweep)
+    monkeypatch.setattr(worker, "build_expiry_sweep", _idle_expiry_sweep)
 
 
 @pytest.mark.usefixtures("_no_database")
@@ -54,6 +68,7 @@ async def test_the_worker_runs_the_consumers_and_the_stuck_charge_sweep(
 ) -> None:
     consumer_started = asyncio.Event()
     sweep_started = asyncio.Event()
+    expiry_started = asyncio.Event()
 
     async def _consume() -> None:
         consumer_started.set()
@@ -63,11 +78,18 @@ async def test_the_worker_runs_the_consumers_and_the_stuck_charge_sweep(
         sweep_started.set()
         await asyncio.Event().wait()
 
+    async def _expiry(self: CollectionExpirySweep) -> None:
+        expiry_started.set()
+        await asyncio.Event().wait()
+
     monkeypatch.setattr(worker.consumers.consumer, "run", _consume)
     monkeypatch.setattr(StuckChargeSweep, "run", _sweep)
+    monkeypatch.setattr(CollectionExpirySweep, "run", _expiry)
 
     task = asyncio.create_task(worker.main())
-    await asyncio.wait_for(asyncio.gather(consumer_started.wait(), sweep_started.wait()), 5)
+    await asyncio.wait_for(
+        asyncio.gather(consumer_started.wait(), sweep_started.wait(), expiry_started.wait()), 5
+    )
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -86,8 +108,12 @@ async def test_a_consumer_that_returns_ends_the_process(monkeypatch: pytest.Monk
         finally:
             sweep_cancelled.set()
 
+    async def _expiry(self: CollectionExpirySweep) -> None:
+        await asyncio.Event().wait()
+
     monkeypatch.setattr(worker.consumers.consumer, "run", _consume)
     monkeypatch.setattr(StuckChargeSweep, "run", _sweep)
+    monkeypatch.setattr(CollectionExpirySweep, "run", _expiry)
 
     with pytest.raises(LoopExited, match="consumer"):
         await asyncio.wait_for(worker.main(), timeout=5)

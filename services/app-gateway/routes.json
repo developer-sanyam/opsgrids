@@ -39,7 +39,12 @@
     "trust scheme, `signed_request` rather than `X-Hub-Signature-256` — see docs/whatsapp/",
     "webhooks.md), also declared public in `WEBHOOK_PUBLIC_PATHS`. Their own body cap is far",
     "smaller than the WhatsApp webhook's: a signed_request is a couple hundred bytes, never a",
-    "batch of events."
+    "batch of events.",
+    "",
+    "`/api/v1/payment` is payment-service's tenant surface (the organization's own Razorpay",
+    "connection and the collections reconciliation report, ADR-0024 §8) and",
+    "`/api/v1/webhooks/razorpay/collections` is a tenant's own Razorpay webhook — public in",
+    "`WEBHOOK_PUBLIC_PATHS` (POST only), authenticated by that merchant's HMAC, 256 KiB cap."
   ],
   "routes": [
     { "prefix": "/api/v1/auth/operator", "upstream": "http://localhost:8110", "blocked": true },
@@ -93,6 +98,8 @@
     { "prefix": "/api/v1/billing", "upstream": "http://localhost:8160" },
     { "prefix": "/api/v1/subscriptions", "upstream": "http://localhost:8161" },
     { "prefix": "/api/v1/usage", "upstream": "http://localhost:8162" },
+    { "prefix": "/api/v1/payment", "upstream": "http://localhost:8163" },
+    { "prefix": "/api/v1/webhooks/razorpay/collections", "upstream": "http://localhost:8163", "max_body_bytes": 262144 },
 
     { "prefix": "/api/v1/plans", "upstream": "http://localhost:8164" },
     { "prefix": "/api/v1/catalog", "upstream": "http://localhost:8164" },

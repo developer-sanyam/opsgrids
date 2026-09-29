@@ -584,9 +584,148 @@ export interface OrderOut {
   subtotal_minor: number;
   total_minor: number;
   currency: string;
+  /** Billing-gate facts (ADR-0025 §1). Optional on the wire type because fixture orders omit
+   *  them; the live API always sends them. `paid_at` is set by a counter/carrier attestation or
+   *  — for an order paid online — only by a provider-verified capture. */
+  invoice_id?: string | null;
+  paid_at?: string | null;
+  /** The online payment whose verified capture set `paid_at`, when it was paid online. */
+  paid_via_charge_id?: string | null;
+  pickup_code_verified_at?: string | null;
   lines: OrderLineItem[];
   created_at: string;
   updated_at: string;
+}
+
+/* ------------------------------ online payment (ADR-0024 A4, Fulfilment F10) ------------------------------ */
+
+/** One online payment attempt's state, `services/payment`'s vocabulary. "Pending" is `created`;
+ *  `authorized` is money held with capture on its way; only `captured` is paid. */
+export type CollectionState = "created" | "authorized" | "captured" | "failed" | "cancelled" | "expired";
+
+export interface CollectionRefundOut {
+  id: string;
+  provider_refund_id: string | null;
+  amount_minor: number;
+  currency: string;
+  /** `created` (pending at the provider) | `processed` | `failed`. */
+  state: string;
+  reason: string | null;
+  created_at: string;
+}
+
+export interface CollectionHistoryOut {
+  from_state: string | null;
+  to_state: string;
+  /** What moved it: `api` | `webhook` | `sync` | `sweep`. */
+  source: string;
+  reason: string | null;
+  at: string;
+}
+
+export interface OrderCollectionOut {
+  id: string;
+  state: CollectionState;
+  amount_minor: number;
+  currency: string;
+  provider: string;
+  provider_order_id: string | null;
+  provider_payment_id: string | null;
+  failure_reason: string | null;
+  refunded_minor: number;
+  refunds: CollectionRefundOut[];
+  history: CollectionHistoryOut[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** `GET /orders/{id}/payments`. */
+export interface OrderPaymentsOut {
+  order_id: string;
+  total_minor: number;
+  currency: string;
+  paid_at: string | null;
+  paid_via_charge_id: string | null;
+  payment_term: string;
+  can_collect: boolean;
+  collect_blocked_reason: string | null;
+  online_payments_configured: boolean;
+  mode: "test" | "live" | null;
+  /** `stub`: no provider call leaves the platform — a checkout cannot be paid for real. */
+  wire: "stub" | "razorpay";
+  collections: OrderCollectionOut[];
+}
+
+/** What the browser needs to open Razorpay's hosted Checkout — the **public** key id and the
+ *  provider Order id. There is no secret here, and there never will be. */
+export interface OrderCheckoutSessionOut {
+  provider: string;
+  key_id: string;
+  provider_order_id: string;
+  amount_minor: number;
+  currency: string;
+  mode: "test" | "live";
+  openable: boolean;
+  order_number: string;
+  prefill: { name: string; contact: string };
+}
+
+export interface OrderCheckoutOut {
+  collection: OrderCollectionOut;
+  checkout: OrderCheckoutSessionOut | null;
+}
+
+export interface OrderRefundIn {
+  amount_minor: number;
+  reason: string;
+}
+
+/** `GET/PUT /payment/collections/merchant-account` — the organization's own Razorpay account. */
+export interface MerchantAccountOut {
+  configured: boolean;
+  id?: string | null;
+  provider?: string | null;
+  key_id?: string | null;
+  mode?: "test" | "live" | null;
+  key_secret_masked?: string | null;
+  webhook_secret_masked?: string | null;
+  /** Path (with `?account=`) to register as the webhook URL in the Razorpay dashboard. */
+  webhook_path?: string | null;
+  webhook_events: string[];
+  rotated_at?: string | null;
+  created_at?: string | null;
+  live_keys_allowed: boolean;
+  wire: "stub" | "razorpay";
+}
+
+export interface MerchantAccountIn {
+  provider: "razorpay";
+  key_id: string;
+  key_secret: string;
+  webhook_secret: string;
+}
+
+export interface ReconciliationRowOut {
+  charge_id: string;
+  reference_type: string | null;
+  reference_id: string | null;
+  state: string;
+  amount_minor: number;
+  currency: string;
+  provider_order_id: string | null;
+  provider_payment_id: string | null;
+  refunded_minor: number;
+  provider_status: string | null;
+  mismatches: string[];
+  lookup_failed: boolean;
+}
+
+export interface ReconciliationOut {
+  generated_at: string;
+  checked: number;
+  mismatched: number;
+  unchecked: number;
+  rows: ReconciliationRowOut[];
 }
 
 /** `POST /orders`. Creates a `DRAFT`. At least one of `customer_id` or a `customer_name`/

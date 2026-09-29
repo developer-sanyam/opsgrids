@@ -53,19 +53,48 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.providers.base import (
     ChargeResult,
+    CollectionsProvider,
     MalformedWebhook,
     MandateResult,
     OrderResult,
     PaymentProvider,
+    PaymentSnapshot,
+    ProviderCallError,
     RefundResult,
     WebhookEvent,
 )
 
+if TYPE_CHECKING:  # the wire imports this module's timeouts; only the type flows back
+    from app.providers.razorpay_wire import RazorpayWire
+
 PROVIDER = "razorpay"
+
+#: Razorpay's payment statuses → the charge state each means. `refunded` is a captured payment
+#: whose money has since gone back: the *charge* stays captured and the refund is its own record.
+_PAYMENT_STATUS_STATES: dict[str, str] = {
+    "created": "created",
+    "authorized": "authorized",
+    "captured": "captured",
+    "refunded": "captured",
+    "failed": "failed",
+}
+#: Razorpay's refund statuses → the platform's refund states.
+_REFUND_STATUS_STATES: dict[str, str] = {
+    "pending": "created",
+    "processed": "processed",
+    "failed": "failed",
+}
+#: Which attempt answers "what happened to this Order": money moved beats money held beats an
+#: attempt in progress beats an attempt that failed. Most recent first within a rank.
+_PAYMENT_RANK = {"captured": 0, "refunded": 0, "authorized": 1, "created": 2, "failed": 3}
+
+#: How many Orders one receipt lookup reads. A receipt is unique by Razorpay's own rule, and the
+#: filter is a "contains" match, so a handful is plenty to find the exact one.
+_RECEIPT_LOOKUP_COUNT = 10
 
 #: The longest `event_name` the inbox column holds (`provider_events.event_name`, String(80)).
 _EVENT_NAME_MAX = 80
@@ -125,6 +154,38 @@ def _entity_id(payload: dict[str, Any], event_name: str) -> str | None:
     return None
 
 
+def _snapshot(item: Any) -> PaymentSnapshot | None:
+    """One Razorpay payment entity as a `PaymentSnapshot` — ids, status, money and the error
+    code only. The entity's `email`, `contact`, `card`, `vpa`, `notes` and the rest are never
+    copied out of the response."""
+    entity = _as_dict(item)
+    payment_id = _as_text(entity.get("id"))
+    status = _as_text(entity.get("status"))
+    amount = _as_int(entity.get("amount"))
+    currency = _as_text(entity.get("currency"))
+    if payment_id is None or status is None or amount is None or currency is None:
+        return None
+    return PaymentSnapshot(
+        provider_payment_id=payment_id,
+        status=status,
+        amount_minor=amount,
+        currency=currency.upper(),
+        amount_refunded_minor=_as_int(entity.get("amount_refunded")) or 0,
+        error_code=_as_text(entity.get("error_code")),
+        error_description=_as_text(entity.get("error_description")),
+        created_at=_as_int(entity.get("created_at")),
+    )
+
+
+def best_attempt(payments: list[PaymentSnapshot]) -> PaymentSnapshot | None:
+    """The attempt that says what happened to an Order: captured (or captured-then-refunded)
+    first, then authorized, then one still in progress, then the most recent failure."""
+    ranked = [p for p in payments if p.status in _PAYMENT_RANK]
+    if not ranked:
+        return None
+    return min(ranked, key=lambda p: (_PAYMENT_RANK[p.status], -(p.created_at or 0)))
+
+
 def _fake_id(prefix: str, idempotency_key: str) -> str:
     """A deterministic stand-in for a Razorpay id, derived from the platform idempotency key.
 
@@ -154,16 +215,37 @@ class RazorpayProvider:
         key_id: str | None,
         key_secret: str | None,
         webhook_secret: str,
+        wire: RazorpayWire | None = None,
     ) -> None:
         # Kept for parity with a real adapter and to prove the point: these are None in
         # development, and every method below still works, because the wire is stubbed.
         self._key_id = key_id
         self._key_secret = key_secret
         self._webhook_secret = webhook_secret
+        #: The live HTTP wire (`razorpay_wire.RazorpayHttpWire`), given **only** to a tenant
+        #: collections adapter (`app/collections/`) when the deployment enables it. None — the
+        #: platform provider always, and collections by default — keeps every call on the stub.
+        self._wire = wire
         # The stubbed account's own state — what the real Razorpay would hold and answer lookups
         # from: Orders by receipt, and the payments made against each Order.
         self._orders_by_receipt: dict[str, str] = {}
         self._payments_by_order: dict[str, ChargeResult] = {}
+        self._stub_order_payments: dict[str, list[PaymentSnapshot]] = {}
+
+    def __repr__(self) -> str:  # never the key secret or the webhook secret
+        return f"RazorpayProvider(key_id={self._key_id!r}, live_wire={self._wire is not None})"
+
+    @property
+    def is_live(self) -> bool:
+        """Whether calls reach Razorpay over the network (a live wire) or the in-process stub."""
+        return self._wire is not None
+
+    def _refuse_debit_on_wire(self, what: str) -> None:
+        """The collections wire never debits: a collection is paid by the customer in Razorpay's
+        own Checkout. A server-side debit over the live wire is platform billing's B5g, bound by
+        `ProviderContract`, and not built here."""
+        if self._wire is not None:
+            raise NotImplementedError(f"{what} is not available on the collections wire")
 
     # ------------------------------------------------------------------ the stubbed wire
 
@@ -192,6 +274,7 @@ class RazorpayProvider:
         currency: str,
         notes: dict[str, str],
     ) -> MandateResult:
+        self._refuse_debit_on_wire("create_mandate")
         response = self._call(
             "mandates",
             {
@@ -230,6 +313,21 @@ class RazorpayProvider:
         The stub answers the lookup from the state the create left behind."""
         found = self.find_order(receipt=receipt)
         existing = found.provider_order_id if found is not None else None
+        if existing is None and self._wire is not None:
+            created = self._wire.request(
+                "POST",
+                "/orders",
+                json={
+                    "amount": amount_minor,
+                    "currency": currency,
+                    "receipt": receipt,
+                    "notes": notes,
+                },
+            )
+            order_id = _as_text(created.get("id"))
+            if order_id is None:
+                raise ProviderCallError("razorpay created an order and returned no id")
+            return OrderResult(provider=PROVIDER, provider_order_id=order_id, receipt=receipt)
         if existing is None:
             response = self._call(
                 "orders",
@@ -249,13 +347,79 @@ class RazorpayProvider:
 
     def find_order(self, *, receipt: str) -> OrderResult | None:
         """`GET /orders?receipt=…` — the lookup alone, never a create."""
+        if self._wire is not None:
+            found = self._wire.request(
+                "GET", "/orders", params={"receipt": receipt, "count": _RECEIPT_LOOKUP_COUNT}
+            )
+            items = found.get("items")
+            for item in items if isinstance(items, list) else []:
+                entity = _as_dict(item)
+                # Razorpay's filter "contains" the value; only the exact receipt is ours.
+                if entity.get("receipt") == receipt and _as_text(entity.get("id")):
+                    return OrderResult(
+                        provider=PROVIDER, provider_order_id=str(entity["id"]), receipt=receipt
+                    )
+            return None
         existing = self._orders_by_receipt.get(receipt)
         if existing is None:
             return None
         return OrderResult(provider=PROVIDER, provider_order_id=existing, receipt=receipt)
 
+    def order_payments(self, *, order_id: str) -> list[PaymentSnapshot]:
+        """`GET /orders/{id}/payments` — every attempt against the Order, as Razorpay reports it
+        now. The stub answers from what a test recorded (`stub_record_payment`) plus any payment
+        its own `charge` made."""
+        if self._wire is not None:
+            found = self._wire.request("GET", f"/orders/{order_id}/payments")
+            items = found.get("items")
+            snapshots = [_snapshot(item) for item in (items if isinstance(items, list) else [])]
+            return [s for s in snapshots if s is not None]
+        recorded = list(self._stub_order_payments.get(order_id, []))
+        made = self._payments_by_order.get(order_id)
+        if made is not None and all(
+            s.provider_payment_id != made.provider_payment_id for s in recorded
+        ):
+            recorded.append(
+                PaymentSnapshot(
+                    provider_payment_id=made.provider_payment_id,
+                    status=made.state,
+                    amount_minor=made.amount_minor,
+                    currency=made.currency,
+                )
+            )
+        return recorded
+
+    def stub_record_payment(self, order_id: str, snapshot: PaymentSnapshot) -> None:
+        """What a customer paying in Checkout would leave behind at the provider — for tests and
+        local development against the stub only; a live wire has no such door. Replaces an
+        earlier snapshot of the same payment, so a test can move one attempt through states."""
+        if self._wire is not None:
+            raise RuntimeError("a live provider's payments are made by customers, not recorded")
+        kept = [
+            s
+            for s in self._stub_order_payments.get(order_id, [])
+            if s.provider_payment_id != snapshot.provider_payment_id
+        ]
+        self._stub_order_payments[order_id] = [*kept, snapshot]
+
     def find_payment(self, *, order_id: str, charge_id: str) -> ChargeResult | None:
-        """`GET /orders/{id}/payments`, matched on the `notes.charge_id` the platform stamped."""
+        """`GET /orders/{id}/payments`, matched on the `notes.charge_id` the platform stamped.
+
+        On the collections wire every attempt on the Order is the charge's (its receipt is the
+        charge's id), so the answer is the attempt that says what happened (`best_attempt`)."""
+        if self._wire is not None:
+            best = best_attempt(self.order_payments(order_id=order_id))
+            if best is None:
+                return None
+            return ChargeResult(
+                provider=PROVIDER,
+                provider_payment_id=best.provider_payment_id,
+                state=_PAYMENT_STATUS_STATES.get(best.status, "created"),
+                amount_minor=best.amount_minor,
+                currency=best.currency,
+                failure_reason=best.error_code,
+                provider_order_id=order_id,
+            )
         return self._payments_by_order.get(order_id)
 
     # ------------------------------------------------------------------ charges
@@ -270,6 +434,7 @@ class RazorpayProvider:
         notes: dict[str, str],
         order_id: str | None = None,
     ) -> ChargeResult:
+        self._refuse_debit_on_wire("charge")
         response = self._call(
             "payments",
             {
@@ -308,6 +473,26 @@ class RazorpayProvider:
         amount_minor: int,
         currency: str,
     ) -> RefundResult:
+        if self._wire is not None:
+            # `X-Refund-Idempotency`: the same key is the same refund at Razorpay, so a call
+            # abandoned on timeout and retried never refunds twice. `speed: normal` — the only
+            # speed every payment method supports; `optimum` is a merchant pricing decision.
+            created = self._wire.request(
+                "POST",
+                f"/payments/{provider_payment_id}/refund",
+                json={"amount": amount_minor, "speed": "normal"},
+                headers={"X-Refund-Idempotency": idempotency_key},
+            )
+            refund_id = _as_text(created.get("id"))
+            if refund_id is None:
+                raise ProviderCallError("razorpay created a refund and returned no id")
+            return RefundResult(
+                provider=PROVIDER,
+                provider_refund_id=refund_id,
+                state=_REFUND_STATUS_STATES.get(str(created.get("status")), "created"),
+                amount_minor=_as_int(created.get("amount")) or amount_minor,
+                currency=(_as_text(created.get("currency")) or currency).upper(),
+            )
         response = self._call(
             "refunds",
             {"_id_prefix": "rfnd_", "_status": "processed", "payment_id": provider_payment_id},
@@ -392,3 +577,14 @@ def build_provider(
     """Construct the configured provider. Only Razorpay exists today; a `StripeProvider` would be
     selected here, and because it satisfies the same `Protocol`, nothing downstream changes."""
     return RazorpayProvider(key_id=key_id, key_secret=key_secret, webhook_secret=webhook_secret)
+
+
+def build_collections_provider(
+    *, key_id: str, key_secret: str, webhook_secret: str, wire: RazorpayWire | None
+) -> CollectionsProvider:
+    """One merchant account's adapter (ADR-0024 §8: "one adapter instance per merchant account,
+    built from that account's sealed keys"). `wire` is the live HTTP wire, or None for the stub —
+    `app.deps.get_collections_provider_factory` decides which from configuration."""
+    return RazorpayProvider(
+        key_id=key_id, key_secret=key_secret, webhook_secret=webhook_secret, wire=wire
+    )

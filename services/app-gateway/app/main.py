@@ -119,8 +119,16 @@ ENGAGE_TRACKING_PREFIX = "/api/v1/engage/t/"
 #: CORS surface. The route sets its own `max_body_bytes` in both route tables, and
 #: `tests/infra/test_route_table_parity.py` pins that this set, both tables and that cap agree.
 #:
-#: **Not here, deliberately:** Razorpay's `/api/v1/webhooks/razorpay`. It is routed in production
-#: but declaring it public is a separate decision that has not been taken.
+#: **Not here, deliberately:** Razorpay's `/api/v1/webhooks/razorpay` — the *platform's* own
+#: billing webhook. It is routed in production but declaring it public is a separate decision that
+#: has not been taken.
+#:
+#: **Here:** `/api/v1/webhooks/razorpay/collections` — a *tenant's* Razorpay webhook (tenant payment
+#: collection, ADR-0024 §8). POST only. Each tenant registers it in their own Razorpay dashboard
+#: with `?account=<their merchant account id>` appended (a query, not a path variable, which is what
+#: keeps it an exact path here — Razorpay's own WooCommerce plugin registers a query-string URL the
+#: same way), and payment-service verifies every body against **that merchant's** sealed webhook
+#: secret before it trusts a byte of it. An unknown account and a bad signature are the same 400.
 #:
 #: The three `/whatsapp/deauthorize`, `/whatsapp/data-deletion` and
 #: `/whatsapp/data-deletion-status` entries are Facebook Login's deauthorize and data-deletion
@@ -139,6 +147,7 @@ WEBHOOK_PUBLIC_PATHS: Mapping[str, frozenset[str]] = MappingProxyType(
         "/api/v1/webhooks/whatsapp/deauthorize": frozenset({"POST"}),
         "/api/v1/webhooks/whatsapp/data-deletion": frozenset({"POST"}),
         "/api/v1/webhooks/whatsapp/data-deletion-status": frozenset({"GET"}),
+        "/api/v1/webhooks/razorpay/collections": frozenset({"POST"}),
     }
 )
 

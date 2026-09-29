@@ -21,6 +21,7 @@ from app.models import (
     CHARGE_CAPTURED,
     CHARGE_CREATED,
     MANDATE_ACTIVE,
+    PAYEE_PLATFORM,
     REFUND_FAILED,
     Charge,
     Mandate,
@@ -85,13 +86,20 @@ async def get_charge_by_idempotency_key(
 
 
 async def get_charge_by_provider_payment_id(
-    session: AsyncSession, organization_id: uuid.UUID, provider_payment_id: str
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    provider_payment_id: str,
+    *,
+    payee: str = PAYEE_PLATFORM,
 ) -> Charge | None:
-    """The charge a webhook reconciles against, matched on the provider's payment id."""
+    """The charge a webhook reconciles against, matched on the provider's payment id — within one
+    payee. The platform webhook (signed with OpsGrids' own secret) must never find a tenant's
+    collection charge, and the reverse (ADR-0024 §8)."""
     result = await session.execute(
         select(Charge).where(
             Charge.organization_id == organization_id,
             Charge.provider_payment_id == provider_payment_id,
+            Charge.payee == payee,
         )
     )
     return result.scalar_one_or_none()
@@ -113,6 +121,7 @@ async def captured_charges_for_invoice(
             Charge.organization_id == organization_id,
             Charge.invoice_id == invoice_id,
             Charge.state == CHARGE_CAPTURED,
+            Charge.payee == PAYEE_PLATFORM,
         )
     )
     return list(result.scalars())
@@ -158,6 +167,9 @@ SWEEP_READER_CHARGE_COLUMNS: tuple[str, ...] = (
     "attempts",
     "next_attempt_at",
     "lease_until",
+    # Both sweeps filter on it: the stuck-charge sweep reads platform charges only, the
+    # collection expiry sweep (`app/collections/cron.py`) merchant ones only.
+    "payee",
 )
 
 
@@ -179,10 +191,16 @@ async def due_stuck_charges(
     (`lease_until` passed), not backing off (`next_attempt_at` passed), and — for rows staged
     before the lease columns existed — older than `older_than`. Charges past their attempt budget
     are returned too: the sweep's next act for them is to fail them.
+
+    **Platform charges only.** A merchant (collection) charge is also `created` with no provider
+    payment until its customer pays — by design, not because a call was lost — and resuming it
+    here would call *the platform's* provider to debit somebody for a tenant's order, then fail
+    it into `commerce.payment.failed` and the subscription dunning ladder (ADR-0024 §8).
     """
     stmt = (
         select(Charge.organization_id, Charge.id)
         .where(
+            Charge.payee == PAYEE_PLATFORM,
             Charge.state == CHARGE_CREATED,
             Charge.provider_payment_id.is_(None),
             Charge.deleted_at.is_(None),

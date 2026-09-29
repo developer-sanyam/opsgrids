@@ -27,6 +27,24 @@ written out per table (ADR-0002 §5):
   truth. Idempotent on `provider_event_id` (unique per organization), so a provider re-delivering
   a webhook lands exactly one row and reconciles exactly once.
 
+**Two payees (ADR-0024 §8, A4).** Everything above was built for OpsGrids collecting its own
+subscription charges from tenants — `payee = 'platform'`. Tenant payment collection (`app/
+collections/`) is the opposite direction: a tenant's own customer paying the tenant, into the
+tenant's own Razorpay account — `payee = 'merchant'`. The same `charges`, `refunds` and
+`provider_events` tables carry both, told apart by `payee`, and two more tables exist for the
+merchant side only:
+
+* **`merchant_accounts`** — one per organization: the tenant's own provider key id and its key
+  secret and webhook secret, **sealed** (`platform_core.pii.seal`); only masked hints are ever
+  read back.
+* **`status_history`** — **append-only**: every state a merchant charge or refund has been in,
+  and what moved it there (the API, a verified webhook, a server-to-server status check, the
+  expiry sweep). The charge's own `state` column is the current truth; this is how it got there.
+
+A merchant charge never emits `commerce.payment.*` and is never picked up by the platform's
+stuck-charge sweep: a tenant's customer's failed UPI payment must never suspend the tenant's
+own subscription (ADR-0024 §8).
+
 The platform tables (`outbox`, `audit_logs`, `processed_events`) come from the scaffold.
 """
 
@@ -43,6 +61,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     UniqueConstraint,
     func,
@@ -67,7 +86,41 @@ CHARGE_CREATED = "created"
 CHARGE_AUTHORIZED = "authorized"
 CHARGE_CAPTURED = "captured"
 CHARGE_FAILED = "failed"
-CHARGE_STATES = (CHARGE_CREATED, CHARGE_AUTHORIZED, CHARGE_CAPTURED, CHARGE_FAILED)
+#: Merchant (collection) charges only: the operator abandoned a checkout nobody paid, or the
+#: expiry sweep closed one that stayed unpaid past `collection_checkout_ttl_seconds`. Both are
+#: this platform's own decision, so a provider capture that lands later is still recorded — the
+#: money moved (`app.collections.domain`). A CHECK keeps them off platform charges.
+CHARGE_CANCELLED = "cancelled"
+CHARGE_EXPIRED = "expired"
+CHARGE_STATES = (
+    CHARGE_CREATED,
+    CHARGE_AUTHORIZED,
+    CHARGE_CAPTURED,
+    CHARGE_FAILED,
+    CHARGE_CANCELLED,
+    CHARGE_EXPIRED,
+)
+
+# --- payees (ADR-0024 §8) --------------------------------------------------------------
+#: Who the money is for. `platform`: OpsGrids collecting its own subscription charge from a
+#: tenant (everything that existed before collections). `merchant`: a tenant's customer paying the
+#: tenant, into the tenant's own provider account (`app/collections/`). A column with a server
+#: default rather than a backfill, because `refunds` and `provider_events` refuse any UPDATE.
+PAYEE_PLATFORM = "platform"
+PAYEE_MERCHANT = "merchant"
+PAYEES = (PAYEE_PLATFORM, PAYEE_MERCHANT)
+
+# --- merchant account states -----------------------------------------------------------
+MERCHANT_ACCOUNT_ACTIVE = "active"
+#: Soft-removed: the sealed secrets are wiped, `deleted_at` is set, and nothing can verify a
+#: webhook or call the provider with it any more. A new account is a new row (and a new webhook
+#: URL), so a removed one is never silently revived.
+MERCHANT_ACCOUNT_REMOVED = "removed"
+MERCHANT_ACCOUNT_STATES = (MERCHANT_ACCOUNT_ACTIVE, MERCHANT_ACCOUNT_REMOVED)
+#: `test` keys (`rzp_test_…`) move no money; `live` keys (`rzp_live_…`) do, and are refused unless
+#: the deployment says otherwise (`Settings.collections_allow_live_keys`).
+MERCHANT_MODE_TEST = "test"
+MERCHANT_MODE_LIVE = "live"
 
 # --- mandate states ------------------------------------------------------------------
 #: A Razorpay eMandate is `created`, `pending` while the bank confirms (multi-day), `active` once
@@ -162,6 +215,59 @@ class Mandate(Base, TenantBase):
     )
 
 
+class MerchantAccount(Base, TenantBase):
+    """A tenant's own provider account — where *its* customers' payments go (ADR-0024 §8, A4).
+
+    One live row per organization. The provider's key id is public by design (Razorpay Checkout
+    is opened in the customer's browser with it), so it is plaintext. The key secret (which can
+    create orders and refunds as the tenant) and the webhook secret (which authenticates every
+    callback about the tenant's money) are **sealed** with `platform_core.pii.seal`, bound by AAD
+    to this row's organization and id and to the field, so a ciphertext copied onto another row
+    does not open. Only `*_masked` hints — a fixed run of bullets and the last four characters,
+    never the length — are ever returned by an API or written to an audit row.
+
+    The webhook delivery URL names this row's `id` (`?account=<id>`): with one secret per merchant
+    the secret has to be found *before* the body is trusted, so the account is the one thing a
+    callback is resolved by before any tenant is bound. That lookup reads `id`,
+    `organization_id` and `deleted_at` only, on a column-scoped BYPASSRLS grant
+    (`migrations/env.py`), and never these secrets.
+    """
+
+    __tablename__ = "merchant_accounts"
+
+    #: `razorpay` — the only provider this platform has an adapter for.
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: The provider's public key id (`rzp_test_…` / `rzp_live_…`). What the browser is given.
+    key_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: `test` or `live`, derived from `key_id` and never set independently of it.
+    mode: Mapped[str] = mapped_column(String(8), nullable=False)
+    #: Sealed. NULL only once the account is removed (the secrets are wiped, not kept).
+    key_secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    key_secret_masked: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    webhook_secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    webhook_secret_masked: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default=MERCHANT_ACCOUNT_ACTIVE)
+    #: When the credentials were last replaced in place (the row, and so the webhook URL, kept).
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("status in ('active', 'removed')", name="status"),
+        CheckConstraint("mode in ('test', 'live')", name="mode"),
+        CheckConstraint(
+            "(status = 'active') = (key_secret_enc IS NOT NULL AND webhook_secret_enc IS NOT NULL)",
+            name="secrets_present_iff_active",
+        ),
+        # One live account per organization. Partial, so a removed row stays as history and a
+        # new one can be connected beside it.
+        Index(
+            "uq_merchant_accounts_org_live",
+            "organization_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+
 class Charge(Base, TenantBase):
     """One collection attempt against a billing invoice. Tenant-scoped, mutable through its states.
 
@@ -231,6 +337,23 @@ class Charge(Base, TenantBase):
     #: retry of the same key, or the sweep. Claimed by a conditional `UPDATE … RETURNING`.
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # --- tenant collections (ADR-0024 §8) ----------------------------------------------
+    #: `platform` (every charge above) or `merchant` (a tenant's customer paying the tenant).
+    #: What keeps a merchant charge out of the subscription dunning loop entirely.
+    payee: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=PAYEE_PLATFORM, server_default=PAYEE_PLATFORM
+    )
+    #: The tenant account a merchant charge is collected into. Set exactly when `payee` is
+    #: `merchant`. Intra-schema FK (ADR-0000 §10 forbids only cross-schema keys).
+    merchant_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.merchant_accounts.id", name="fk_charges_merchant_account_id"),
+    )
+    #: What a merchant charge is *for*, by plain reference — `operations.order` and the order's
+    #: id today. Never a foreign key: the order lives in another schema (ADR-0000 §10).
+    reference_type: Mapped[str | None] = mapped_column(String(40))
+    reference_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
     refunds: Mapped[list[Refund]] = relationship(back_populates="charge")
 
     __table_args__ = (
@@ -241,7 +364,48 @@ class Charge(Base, TenantBase):
         ),
         CheckConstraint("length(currency) = 3", name="currency_iso"),
         CheckConstraint("amount_minor >= 0", name="amount_non_negative"),
-        CheckConstraint("state in ('created', 'authorized', 'captured', 'failed')", name="state"),
+        CheckConstraint(
+            "state in ('created', 'authorized', 'captured', 'failed', 'cancelled', 'expired')",
+            name="state",
+        ),
+        CheckConstraint("payee in ('platform', 'merchant')", name="payee"),
+        # A merchant charge always names its account and what it is for; a platform charge never
+        # does — so neither can be mistaken for the other by a query that forgets `payee`.
+        CheckConstraint(
+            "(payee = 'merchant') = (merchant_account_id IS NOT NULL)",
+            name="merchant_account_iff_merchant",
+        ),
+        CheckConstraint(
+            "payee = 'platform' OR (reference_type IS NOT NULL AND reference_id IS NOT NULL)",
+            name="merchant_charge_has_reference",
+        ),
+        # `cancelled` / `expired` are collection states; the platform's charge machine never
+        # reaches them, and its dunning consumers must never have to reason about them.
+        CheckConstraint(
+            "payee = 'merchant' OR state in ('created', 'authorized', 'captured', 'failed')",
+            name="platform_charge_states",
+        ),
+        Index(
+            "ix_charges_org_reference",
+            "organization_id",
+            "reference_type",
+            "reference_id",
+            postgresql_where=text("reference_id IS NOT NULL"),
+        ),
+        # At most one *open* collection per thing being paid for: a second "collect" for an
+        # order reuses the open one (the same provider Order, which the customer may retry
+        # against) instead of opening a second checkout that could be paid twice. `failed` is
+        # open on purpose — a failed attempt can be retried on the same provider Order.
+        Index(
+            "uq_charges_open_collection",
+            "organization_id",
+            "reference_type",
+            "reference_id",
+            unique=True,
+            postgresql_where=text(
+                "payee = 'merchant' AND state IN ('created', 'authorized', 'failed')"
+            ),
+        ),
         # The webhook reconciles a charge by its provider payment id, under a bound tenant.
         Index(
             "uq_charges_org_provider_payment_id",
@@ -289,12 +453,32 @@ class Refund(Base, TenantBase):
 
     amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    #: The state the refund was **recorded** in. The table is append-only, so a later provider
+    #: outcome for a merchant refund (`refund.processed` / `refund.failed`) is a `status_history`
+    #: row, never an edit here — `app.collections.selectors.effective_refund_states` reads both.
     state: Mapped[str] = mapped_column(String(20), nullable=False, default=REFUND_CREATED)
     reason: Mapped[str | None] = mapped_column(String(200))
+    #: See `Charge.payee`. Server default, never backfilled: this table refuses every UPDATE.
+    payee: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=PAYEE_PLATFORM, server_default=PAYEE_PLATFORM
+    )
+    #: The caller's key for a merchant refund — a retried refund request with the same key is the
+    #: same refund here and, through the provider's own refund idempotency header, at the
+    #: provider. NULL for a platform refund and for one the provider reported that this platform
+    #: never asked for (a refund made in the merchant's own provider dashboard).
+    idempotency_key: Mapped[str | None] = mapped_column(String(200))
 
     charge: Mapped[Charge] = relationship(back_populates="refunds")
 
     __table_args__ = (
+        CheckConstraint("payee in ('platform', 'merchant')", name="payee"),
+        Index(
+            "uq_refunds_org_idempotency_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
         CheckConstraint("length(currency) = 3", name="currency_iso"),
         # Zero refunds nothing and negative would mint money; both are refused in the service
         # too, but a CHECK is the layer a stray script cannot argue with.
@@ -366,8 +550,17 @@ class ProviderEvent(Base, TenantBase):
     )
     #: Why it was not reconciled — a stable code, set exactly when `disposition` is not `processed`.
     disposition_reason: Mapped[str | None] = mapped_column(String(40))
+    #: See `Charge.payee`. A merchant webhook's `payload` is **not** the provider's verbatim body:
+    #: it names the tenant's own customer (email, phone, card and UPI details), and this table is
+    #: append-only, so PII written here could never be erased. It is stored reduced to the fields
+    #: reconciliation reads (`app.collections.domain.redact_webhook_body`); the provider keeps the
+    #: full record, fetchable by the ids that are kept.
+    payee: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=PAYEE_PLATFORM, server_default=PAYEE_PLATFORM
+    )
 
     __table_args__ = (
+        CheckConstraint("payee in ('platform', 'merchant')", name="payee"),
         UniqueConstraint(
             "organization_id", "provider_event_id", name="uq_provider_events_org_event_id"
         ),
@@ -380,6 +573,57 @@ class ProviderEvent(Base, TenantBase):
             "(disposition = 'processed') = (disposition_reason IS NULL)",
             name="disposition_reason_matches",
         ),
+    )
+
+
+#: What moved a merchant charge or refund (`StatusHistory.source`).
+HISTORY_SOURCE_API = "api"  # an operator's request, through operations
+HISTORY_SOURCE_WEBHOOK = "webhook"  # a signature-verified provider callback
+HISTORY_SOURCE_SYNC = "sync"  # a server-to-server status check against the provider's API
+HISTORY_SOURCE_SWEEP = "sweep"  # the collection expiry sweep
+HISTORY_SOURCES = (
+    HISTORY_SOURCE_API,
+    HISTORY_SOURCE_WEBHOOK,
+    HISTORY_SOURCE_SYNC,
+    HISTORY_SOURCE_SWEEP,
+)
+
+
+class StatusHistory(Base, TenantBase):
+    """Every state a merchant charge or refund has been in, and what put it there. **Append-only**.
+
+    `charges.state` is mutable — it is the current truth a read needs — so the path it took is
+    kept here, one row per move, the same discipline `order_transitions` keeps for orders. For a
+    refund it is also where its *current* state lives after it was recorded: `refunds` is
+    append-only, so a later `refund.processed` / `refund.failed` from the provider is a row here
+    (`app.collections.selectors.effective_refund_states`).
+
+    Never carries a body or a person: states, a source, the provider's event id and a stable
+    reason code only. Written only by `app/collections/`; platform charges keep their audit rows.
+    """
+
+    __tablename__ = "status_history"
+
+    #: `charge` | `refund`.
+    entity: Mapped[str] = mapped_column(String(16), nullable=False)
+    entity_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: NULL for the row that records the entity coming into existence.
+    from_state: Mapped[str | None] = mapped_column(String(20))
+    to_state: Mapped[str] = mapped_column(String(20), nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: The inbox key of the webhook that moved it, when a webhook did.
+    provider_event_id: Mapped[str | None] = mapped_column(String(120))
+    #: A stable code (`cancelled_by_operator`, `checkout_expired`, the provider's `error_code`),
+    #: never free text.
+    reason: Mapped[str | None] = mapped_column(String(64))
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("entity in ('charge', 'refund')", name="entity"),
+        CheckConstraint("source in ('api', 'webhook', 'sync', 'sweep')", name="source"),
+        Index("ix_status_history_org_entity", "organization_id", "entity", "entity_id", "at"),
     )
 
 

@@ -1438,3 +1438,228 @@ async def record_invoice_issued(
         request=request,
     )
     return True
+
+
+# ------------------------------------------------------------------ online payment (ADR-0024 A4;
+# Fulfilment F10) — the order's side of `services/payment`'s tenant collections
+
+#: `payment.collections.payment.*` — `services/payment`'s own event names
+#: (`app/collections/domain.py` there), copied by hand like every cross-service contract string.
+EVT_PAYMENT_COLLECTION_CAPTURED = "payment.collections.payment.captured"
+EVT_PAYMENT_COLLECTION_REFUNDED = "payment.collections.payment.refunded"
+#: What an order is to payment's collections (`REFERENCE_OPERATIONS_ORDER` there).
+PAYMENT_REFERENCE_ORDER = "operations.order"
+
+
+async def payment_term_for_order(session: AsyncSession, org_id: uuid.UUID, order: Order) -> str:
+    """The order's payment term: the one it was accepted under (`settings_snapshot`, the same
+    place `check_billing_gate` reads it), or — for a `PLACED` order not yet accepted — the one its
+    warehouse's settings resolve to now."""
+    snapshot = order.settings_snapshot
+    if snapshot is not None:
+        return str(snapshot.get("payment_defaults", {}).get(order.channel, "cash"))
+    resolved = await selectors.resolve_settings(session, org_id, order.warehouse_id)
+    return resolved.payment_term_for(order.channel)
+
+
+async def online_payment_blocker(
+    session: AsyncSession, org_id: uuid.UUID, order: Order
+) -> str | None:
+    """Why `order` cannot be paid online right now (`domain.online_payment_blocker`), or None."""
+    return domain.online_payment_blocker(
+        number=order.number,
+        status=order.status,
+        total_minor=order.total_minor,
+        paid=order.paid_at is not None,
+        payment_term=await payment_term_for_order(session, org_id, order),
+    )
+
+
+def _bump(order: Order, ctx: ScopeContext) -> None:
+    order.version += 1
+    order.updated_by = str(ctx.principal.sub)
+    order.updated_at = datetime.now(UTC)
+
+
+async def record_online_payment(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    order_id: uuid.UUID,
+    charge_id: uuid.UUID,
+    amount_minor: int,
+    currency: str,
+    paid_at: datetime,
+) -> str:
+    """Write the paid fact `check_billing_gate` reads, from a **verified** online capture
+    (`payment.collections.payment.captured` — payment moved the collection to captured only on a
+    signature-verified provider webhook or a server-to-server status check). Returns what it did,
+    for the consumer's log line.
+
+    Idempotent twice over, like `record_invoice_issued`: the consumer's `ProcessedEvent` is the
+    first layer; here a second delivery for the same collection is a no-op. Never overwrites a
+    `paid_at` already set — by the counter/carrier operator's attestation, or another collection:
+    that is a customer who may have paid twice, audited and logged so a person refunds one of
+    them. A payment for another amount or currency than the order's own total is refused the same
+    visible way; it must never pass the gate."""
+    order = await selectors.get_order(session, ctx.organization_id, order_id, for_update=True)
+    if order is None:
+        log.warning(
+            "orders.online_payment.unknown_order",
+            organization_id=str(ctx.organization_id),
+            order_id=str(order_id),
+        )
+        return "unknown_order"
+    if order.paid_via_charge_id == charge_id and order.paid_at is not None:
+        return "already_recorded"
+    facts = {"charge_id": str(charge_id), "amount_minor": amount_minor, "currency": currency}
+    if currency.upper() != order.currency or amount_minor != order.total_minor:
+        log.error(
+            "orders.online_payment.amount_mismatch",
+            organization_id=str(ctx.organization_id),
+            order_id=str(order.id),
+            charge_id=str(charge_id),
+        )
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=ctx.organization_id,
+            actor_id=None,
+            acting_as="payment",
+            action="order.online_payment_mismatch",
+            entity="order",
+            entity_id=order.id,
+            after={
+                **facts,
+                "order_total_minor": order.total_minor,
+                "order_currency": order.currency,
+            },
+        )
+        return "mismatch"
+    if order.paid_at is not None:
+        log.warning(
+            "orders.online_payment.already_paid",
+            organization_id=str(ctx.organization_id),
+            order_id=str(order.id),
+            charge_id=str(charge_id),
+        )
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=ctx.organization_id,
+            actor_id=None,
+            acting_as="payment",
+            action="order.online_payment_while_already_paid",
+            entity="order",
+            entity_id=order.id,
+            after={
+                **facts,
+                "paid_via_charge_id": (
+                    str(order.paid_via_charge_id) if order.paid_via_charge_id else None
+                ),
+            },
+        )
+        return "already_paid"
+
+    order.paid_at = paid_at
+    order.paid_via_charge_id = charge_id
+    _bump(order, ctx)
+    await session.flush()
+    after: dict[str, Any] = {**facts, "status": order.status}
+    if order.status in ("CANCELLED", "REJECTED"):
+        # The customer paid for an order that will not be fulfilled: the fact is recorded (the
+        # money did move) and flagged, because a refund is owed.
+        log.warning(
+            "orders.online_payment.after_cancellation",
+            organization_id=str(ctx.organization_id),
+            order_id=str(order.id),
+        )
+        after["refund_due"] = True
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=None,
+        acting_as="payment",
+        action="order.paid_online",
+        entity="order",
+        entity_id=order.id,
+        after=after,
+    )
+    return "recorded"
+
+
+async def record_online_refund(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    order_id: uuid.UUID,
+    charge_id: uuid.UUID,
+    fully_refunded: bool,
+    refunded_total_minor: int,
+) -> str:
+    """Keep the order's paid fact in step with refunds of the collection that paid it
+    (`payment.collections.payment.refunded`). A **full** refund reverses it — the customer has
+    their money back, so the order is unpaid again and the billing gate refuses until it is paid
+    again. A later refund failure (the total falls back below the amount) restores it. Only ever
+    touches a fact this same collection set (`paid_via_charge_id`): a `paid_at` the counter or
+    carrier operator attested is never reversed by an online refund."""
+    order = await selectors.get_order(session, ctx.organization_id, order_id, for_update=True)
+    if order is None:
+        return "unknown_order"
+    if order.paid_via_charge_id != charge_id:
+        return "not_this_payment"
+    action: str | None = None
+    if fully_refunded and order.paid_at is not None:
+        order.paid_at = None
+        action = "order.online_payment_reversed"
+    elif not fully_refunded and order.paid_at is None:
+        order.paid_at = datetime.now(UTC)
+        action = "order.online_payment_restored"
+    if action is None:
+        return "no_change"
+    _bump(order, ctx)
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=None,
+        acting_as="payment",
+        action=action,
+        entity="order",
+        entity_id=order.id,
+        after={
+            "charge_id": str(charge_id),
+            "refunded_total_minor": refunded_total_minor,
+            "status": order.status,
+        },
+    )
+    return action.removeprefix("order.online_payment_")
+
+
+def record_payment_checkout_opened(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    order: Order,
+    *,
+    charge_id: str,
+    request: Request | None = None,
+) -> None:
+    """The order's own trail of who opened an online checkout for it (payment keeps the money's
+    trail). No state change: the order is paid only when a verified capture says so."""
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="order.online_payment_started",
+        entity="order",
+        entity_id=order.id,
+        after={
+            "charge_id": charge_id,
+            "amount_minor": order.total_minor,
+            "currency": order.currency,
+        },
+        request=request,
+    )

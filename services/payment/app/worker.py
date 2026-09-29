@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 
 from app import consumers
+from app.collections.cron import build_expiry_sweep
 from app.config import settings
 from app.cron import build_sweep
 from app.supervise import run_supervised
@@ -48,8 +49,17 @@ async def main() -> None:
     await assert_outbox_role(get_outbox_engine(), environment=cfg.environment)
 
     sweep = build_sweep()
-    log.info("payment.worker.starting", queue="payment.events", sweep="stuck_charge")
-    await run_supervised(consumer=consumers.consumer.run(), stuck_charge=sweep.run())
+    expiry = build_expiry_sweep()
+    log.info(
+        "payment.worker.starting",
+        queue="payment.events",
+        sweeps=["stuck_charge", "collection_expiry"],
+    )
+    await run_supervised(
+        consumer=consumers.consumer.run(),
+        stuck_charge=sweep.run(),
+        collection_expiry=expiry.run(),
+    )
 
 
 if __name__ == "__main__":

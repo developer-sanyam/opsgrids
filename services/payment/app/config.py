@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import SecretStr, model_validator
 
 from platform_core.config import ServiceSettings, settings_for
@@ -64,6 +66,38 @@ class Settings(ServiceSettings):
     #: `.env`: `bin/worker` still runs `app.worker` standalone unchanged, and setting this to
     #: `false` while adding `split-workers` to `EDGE_PROFILES` is the rollback (RUNBOOK.md).
     run_consumers_in_api: bool = False
+
+    # --- tenant collections (app/collections/, ADR-0024 §8) ---------------------------------
+    #: `stub` (the default, everywhere): a merchant's adapter answers from the in-process stub —
+    #: no socket is opened, no money can move, and a checkout is marked as not openable in a
+    #: browser. `razorpay`: a merchant's adapter talks to Razorpay over HTTPS with **that
+    #: merchant's own keys** (`app/providers/razorpay_wire.py`). The platform's own provider never
+    #: gets a wire either way (`app/deps.py`) — that is B5g. Turning this on is an owner decision,
+    #: made in the box's `.env`.
+    collections_wire: Literal["stub", "razorpay"] = "stub"
+    #: Whether a merchant may connect **live** keys (`rzp_live_…`). Off: only test-mode keys are
+    #: accepted, so nothing a tenant configures can move real money until the owner says so.
+    collections_allow_live_keys: bool = False
+    #: How long one collection provider call (an Order create, a status check, a refund) may take
+    #: before the caller stops waiting. The call runs on a worker thread; an abandoned one is safe
+    #: to repeat (Orders are looked up by receipt first, refunds carry an idempotency key).
+    collections_call_timeout_seconds: float = 15.0
+    #: How long an unpaid checkout stays open before the expiry sweep closes it (after asking the
+    #: provider, server to server, that nothing was paid). A day: long enough for a customer to
+    #: come back to a payment link, short enough that a stale checkout is not left payable.
+    collection_checkout_ttl_seconds: int = 86_400
+    collection_sweep_poll_interval_seconds: float = 300.0
+    #: The most collections one reconciliation report asks the provider about, and how long the
+    #: whole report may spend asking — under the gateway's 30 s, so a slow provider shows up as
+    #: "unchecked" rows rather than a gateway timeout.
+    collections_reconciliation_limit: int = 50
+    collections_reconciliation_budget_seconds: float = 20.0
+
+    @property
+    def collection_lease_seconds(self) -> int:
+        """The right-to-call lease on one collection: longer than any call it covers, twice over
+        plus a minute — the same margin `charge_reclaim_after_seconds` is held to."""
+        return int(2 * self.collections_call_timeout_seconds + 60)
 
     @model_validator(mode="after")
     def _lease_outlives_the_call(self) -> Settings:

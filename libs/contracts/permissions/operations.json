@@ -245,6 +245,51 @@
       "resource": "order"
     },
     {
+      "action": "collect",
+      "default_scope": "ORG",
+      "description": "Take an order's payment online (open the provider's checkout), check its status with the provider, and cancel an unpaid one",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "orders",
+      "resource": "payment"
+    },
+    {
+      "action": "refund",
+      "default_scope": "ORG",
+      "description": "Refund part or all of an order's online payment",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "orders",
+      "resource": "payment"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See the organization's online-payment provider connection (secrets masked)",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "payments",
+      "resource": "merchant_account"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Connect, rotate or remove the organization's online-payment provider account",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "payments",
+      "resource": "merchant_account"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "Compare recent online payments with the payment provider's own records",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "payments",
+      "resource": "reconciliation"
+    },
+    {
       "action": "approve",
       "default_scope": "ORG",
       "description": "Approve a purchase order",
@@ -451,6 +496,26 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.orders.payment.collect",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.payment.refund",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.payments.merchant_account.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.payments.merchant_account.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.payments.reconciliation.read",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.procurement.purchase_order.approve",
           "scope": "ORG"
         },
@@ -498,7 +563,7 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Does not create or rename warehouses \u2014 that stays with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
+      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Takes and refunds orders' online payments and reads the payment reconciliation. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that, like creating or renaming warehouses and connecting or changing the organization's payment-provider account, stays with the admin.",
       "grants": [
         {
           "code": "operations.dispatch.shipment.read",
@@ -593,6 +658,22 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.orders.payment.collect",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.payment.refund",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.payments.merchant_account.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.payments.reconciliation.read",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.procurement.purchase_order.approve",
           "scope": "ORG"
         },
@@ -670,7 +751,7 @@
     {
       "code": "OPERATIONS_USER",
       "cross_product": false,
-      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, reads the shared suppliers, inventory, warehouses and locations, and runs the counter: creates and places customer orders, holds and releases them. Does not accept (commit stock to) or cancel an order \u2014 those stay with the manager, the same split `purchase_order.approve` draws from `purchase_order.write`. Sees floors and published layouts (pick routing, the 3D viewer's data) read-only.",
+      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, reads the shared suppliers, inventory, warehouses and locations, and runs the counter: creates and places customer orders, holds and releases them, and takes an order's payment online. Does not accept (commit stock to) or cancel an order, or refund a payment \u2014 those stay with the manager, the same split `purchase_order.approve` draws from `purchase_order.write`. Sees floors and published layouts (pick routing, the 3D viewer's data) read-only.",
       "grants": [
         {
           "code": "operations.inventory.item.read",
@@ -694,6 +775,10 @@
         },
         {
           "code": "operations.orders.order.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.orders.payment.collect",
           "scope": "ORG"
         },
         {

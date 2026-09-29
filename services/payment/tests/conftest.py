@@ -16,6 +16,7 @@ import sys
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -45,7 +46,9 @@ from platform_core.db import (
 PAYMENT_TABLES = (
     "refunds",
     "provider_events",
+    "status_history",
     "charges",
+    "merchant_accounts",
     "mandates",
     "audit_logs",
     "outbox",
@@ -165,6 +168,19 @@ async def client(session: AsyncSession, provider: RazorpayProvider) -> AsyncIter
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def merchant_providers(client: AsyncClient) -> Any:
+    """Tenant collections' provider factory, replaced by a stub-backed one that keeps each
+    merchant's stub account across calls (`tests.collections_support.MerchantProviders`). Built
+    after `client`, whose teardown clears every override."""
+    from app.deps import get_collections_provider_factory
+    from tests.collections_support import MerchantProviders
+
+    providers = MerchantProviders()
+    app.dependency_overrides[get_collections_provider_factory] = lambda: providers
+    return providers
 
 
 @pytest_asyncio.fixture

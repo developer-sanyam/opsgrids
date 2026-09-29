@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 class ServiceInfo(BaseModel):
@@ -103,3 +104,190 @@ class WebhookAck(BaseModel):
     duplicate: bool
     reconciled: bool
     ignored_reason: str | None = None
+
+
+# ===================================================================== tenant collections
+# (ADR-0024 §8). A tenant's own customers paying the tenant. Every amount is integer minor units
+# with an explicit ISO currency. **No card, bank or UPI detail appears in any model here** — the
+# customer pays in the provider's own hosted Checkout, and the platform only ever holds the
+# provider's identifiers.
+
+
+#: The Razorpay events a merchant should enable on the webhook it registers.
+COLLECTION_WEBHOOK_EVENTS = (
+    "payment.authorized",
+    "payment.captured",
+    "payment.failed",
+    "order.paid",
+    "refund.created",
+    "refund.processed",
+    "refund.failed",
+)
+
+
+class MerchantAccountIn(BaseModel):
+    """`PUT /payment/collections/merchant-account` — connect the organization's Razorpay account,
+    or rotate its credentials in place. The key id is public (the browser gets it); the key secret
+    and webhook secret are sealed on arrival and never returned — only a masked hint of each."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Literal["razorpay"] = "razorpay"
+    key_id: str = Field(min_length=1, max_length=64)
+    key_secret: SecretStr = Field(min_length=8, max_length=128)
+    webhook_secret: SecretStr = Field(min_length=8, max_length=128)
+
+
+class MerchantAccountOut(BaseModel):
+    """The organization's payment-provider connection as an admin may see it: masked secrets
+    only, and the webhook URL path to register at the provider (`?account=` names this account)."""
+
+    configured: bool
+    id: uuid.UUID | None = None
+    provider: str | None = None
+    key_id: str | None = None
+    mode: Literal["test", "live"] | None = None
+    key_secret_masked: str | None = None
+    webhook_secret_masked: str | None = None
+    webhook_path: str | None = None
+    webhook_events: list[str] = Field(default_factory=lambda: list(COLLECTION_WEBHOOK_EVENTS))
+    rotated_at: datetime | None = None
+    created_at: datetime | None = None
+    #: Whether this deployment accepts `rzp_live_…` keys at all (`COLLECTIONS_ALLOW_LIVE_KEYS`).
+    live_keys_allowed: bool
+    #: `stub` when no provider call leaves this platform (checkouts cannot be paid for real).
+    wire: Literal["stub", "razorpay"]
+
+
+class CollectionRefundOut(BaseModel):
+    id: uuid.UUID
+    provider_refund_id: str | None
+    amount_minor: int
+    currency: str
+    #: The refund's *current* state (`created` = pending at the provider, `processed`, `failed`).
+    state: str
+    reason: str | None
+    created_at: datetime
+
+
+class StatusHistoryOut(BaseModel):
+    from_state: str | None
+    to_state: str
+    #: `api` | `webhook` | `sync` | `sweep` — what moved it.
+    source: str
+    reason: str | None
+    at: datetime
+
+
+class CollectionOut(BaseModel):
+    """One online payment taken for one order: its state, its provider identifiers, its refunds
+    and the history of how it got here. `pending` in the plain-language sense is `created` (or
+    `authorized`, money held); `captured` is paid."""
+
+    id: uuid.UUID
+    reference_type: str
+    reference_id: uuid.UUID
+    state: Literal["created", "authorized", "captured", "failed", "cancelled", "expired"]
+    amount_minor: int
+    currency: str
+    provider: str
+    provider_order_id: str | None
+    provider_payment_id: str | None
+    failure_reason: str | None
+    refunded_minor: int
+    refunds: list[CollectionRefundOut] = Field(default_factory=list)
+    history: list[StatusHistoryOut] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class CheckoutSessionOut(BaseModel):
+    """Everything the browser needs to open the provider's own hosted Checkout — and nothing a
+    browser must not have: the **public** key id and the provider Order id. The amount is the
+    Order's (fixed server-side from the order's own total); Checkout charges exactly it."""
+
+    provider: str
+    key_id: str
+    provider_order_id: str
+    amount_minor: int
+    currency: str
+    mode: Literal["test", "live"]
+    #: False on the stub wire: the Order id is a local stand-in no real Checkout would accept.
+    openable: bool
+
+
+class CheckoutOut(BaseModel):
+    collection: CollectionOut
+    #: None while another request is still creating the provider Order — try again shortly.
+    checkout: CheckoutSessionOut | None
+
+
+class ReferenceCollectionsOut(BaseModel):
+    """Every online payment taken for one order, newest first, and whether the organization can
+    take one at all."""
+
+    merchant_account_configured: bool
+    mode: Literal["test", "live"] | None = None
+    wire: Literal["stub", "razorpay"]
+    collections: list[CollectionOut]
+
+
+class CheckoutIn(BaseModel):
+    """Internal (operations → payment): open or reuse the checkout for one order. The amount is
+    the order's own stored total, sent by the service that owns the order — never a browser."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    amount_minor: int = Field(gt=0)
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+
+
+class CollectionActorIn(BaseModel):
+    """Internal: who, at operations, asked for this (for payment's own audit row)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    actor_id: uuid.UUID | None = None
+
+
+class CollectionRefundIn(BaseModel):
+    """Internal: refund part or all of a captured collection. `idempotency_key` is the caller's
+    own (the operator's request key): the same key is the same refund here and at the provider."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    amount_minor: int = Field(gt=0)
+    reason: str | None = Field(default=None, max_length=200)
+    idempotency_key: str = Field(min_length=8, max_length=128, pattern=r"^[\x21-\x7e]+$")
+    actor_id: uuid.UUID | None = None
+
+
+class ReconciliationRowOut(BaseModel):
+    charge_id: uuid.UUID
+    reference_type: str | None
+    reference_id: uuid.UUID | None
+    state: str
+    amount_minor: int
+    currency: str
+    provider_order_id: str | None
+    provider_payment_id: str | None
+    refunded_minor: int
+    #: What the provider says about the Order's deciding attempt, or None if it holds none.
+    provider_status: str | None
+    #: Stable codes (`captured_at_provider_only`, `not_captured_at_provider`,
+    #: `payment_id_mismatch`, `amount_mismatch`, `currency_mismatch`, `refund_mismatch`).
+    mismatches: list[str]
+    #: The provider could not be asked: unknown — neither a match nor a mismatch.
+    lookup_failed: bool
+
+
+class ReconciliationOut(BaseModel):
+    """A read-only comparison of this platform's collection records with the provider's. It
+    corrects nothing: a mismatch is for a person to look at (a status check, or the provider's
+    own dashboard, is what settles it)."""
+
+    generated_at: datetime
+    checked: int
+    mismatched: int
+    unchecked: int
+    rows: list[ReconciliationRowOut]

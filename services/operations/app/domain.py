@@ -366,6 +366,37 @@ def expected_gst_amount_minor(taxable_minor: int, rate_pct: Decimal) -> int:
     return int(exact.to_integral_value(rounding=ROUND_HALF_UP))
 
 
+#: The order states an online payment may be taken in (ADR-0024 A4; Fulfilment F10): priced
+#: (`PLACED` onward — the total is fixed at `place` and never repriced) and not yet gone. After
+#: handover the counter or carrier path has already settled payment, and a cancelled or rejected
+#: order has nothing to pay for.
+ONLINE_PAYMENT_STATUSES: frozenset[str] = frozenset(
+    {"PLACED", "ACCEPTED", "IN_FULFILMENT", "ON_HOLD", "READY"}
+)
+
+
+def online_payment_blocker(
+    *, number: str, status: str, total_minor: int, paid: bool, payment_term: str
+) -> str | None:
+    """Why this order cannot be paid online right now, as the sentence a 409 carries — or None.
+
+    The same payment terms the billing gate reads (`check_billing_gate`): `prepaid` and `cash`
+    orders are paid before the goods leave, so either may be paid online instead of at the
+    counter; a `credit` order is paid against its invoice later, never here."""
+    if status not in ONLINE_PAYMENT_STATUSES:
+        return f"Order {number} is {status}; there is nothing to pay online"
+    if total_minor <= 0:
+        return f"Order {number} has no amount to pay"
+    if paid:
+        return f"Order {number} is already paid"
+    if payment_term not in ("prepaid", "cash"):
+        return (
+            f"Order {number} is on {payment_term} terms; it is paid against its invoice, "
+            "not online here"
+        )
+    return None
+
+
 # ------------------------------------------------------------------ fulfilment (ADR-0025 §2)
 
 #: ADR-0025 §2's exact vocabulary. `CLOSED` and `CANCELLED` are terminal.

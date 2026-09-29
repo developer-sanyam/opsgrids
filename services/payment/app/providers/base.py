@@ -63,6 +63,13 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 
+class ProviderCallError(Exception):
+    """A provider call that reached the provider and came back unusable — an error status, or a
+    success with no id in it. Its message never carries a response body or a credential, so it is
+    safe to log; the caller treats it as "the provider did not do it" only where that is provably
+    true, and as "unknown" everywhere else."""
+
+
 class MalformedWebhook(ValueError):
     """A body that verified but cannot be read as a provider event — not JSON, or not an object.
     Raised by `parse_webhook`; the service answers 400 and records nothing. It carries no part of
@@ -169,6 +176,30 @@ class WebhookEvent:
     currency: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class PaymentSnapshot:
+    """One payment attempt against a provider Order, **as the provider reports it now** — the
+    answer a server-to-server status check gets (`CollectionsProvider.order_payments`), used by
+    tenant collections (`app/collections/`) where a client's word is never evidence.
+
+    `status` is the provider's own vocabulary, mapped to a charge state by
+    `app.collections.domain.state_for_provider_status`, never compared as a string anywhere else.
+    Carries no person: no email, phone, card or UPI handle — the adapter never copies them out.
+    """
+
+    provider_payment_id: str
+    status: str
+    amount_minor: int
+    currency: str
+    amount_refunded_minor: int = 0
+    #: The provider's stable error code for a failed attempt (Razorpay `error_code`), and its
+    #: human description, which is only ever stored truncated, never logged.
+    error_code: str | None = None
+    error_description: str | None = None
+    #: Epoch seconds, the provider's own.
+    created_at: int | None = None
+
+
 @runtime_checkable
 class PaymentProvider(Protocol):
     """The contract `app/services.py` depends on — never a concrete processor.
@@ -264,4 +295,26 @@ class PaymentProvider(Protocol):
         `MalformedWebhook`, and any field of an otherwise valid body may be missing or oddly typed.
         Leaves `provider_event_id` empty when the body carries none; it never invents one.
         """
+        ...
+
+
+@runtime_checkable
+class CollectionsProvider(PaymentProvider, Protocol):
+    """The seam tenant collections (`app/collections/`, ADR-0024 §8) holds: the same
+    `PaymentProvider` — one instance per merchant account, built from that account's own sealed
+    keys — plus the one question collections asks that platform billing never needed.
+
+    A collection's payment is made by the customer, in the provider's own hosted checkout, against
+    an Order this platform created; there is no server-side `charge`. So what collections needs
+    beyond Order creation (`ensure_order`, lookup-before-create by receipt) and refunds is to ask
+    the provider, server to server, what has happened to that Order: every payment attempt made
+    against it and its status. That answer — or a signature-verified webhook — is the only thing
+    that may ever move a collection to `captured`; the customer's browser saying "paid" is never
+    evidence.
+    """
+
+    def order_payments(self, *, order_id: str) -> list[PaymentSnapshot]:
+        """Every payment attempt against `order_id`, as the provider reports it now (Razorpay:
+        `GET /orders/{id}/payments`). An Order this platform created has `receipt` = the charge's
+        own id, so every attempt on it belongs to that charge."""
         ...

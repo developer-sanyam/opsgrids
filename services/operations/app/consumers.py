@@ -23,6 +23,16 @@ One more, F4's own (ADR-0025 §1's billing gate; Fulfilment plan F4):
   onto `app.orders.services.EVT_FINANCE_INVOICE_ISSUED`, the same contract-not-code discipline
   `EVT_OFFER_EXPIRE_REQUESTED` already documents for `services/scheduler`. Writes the order's own
   `invoice_id` fact, which `app.orders.services.check_billing_gate` reads.
+
+And two for online payment (ADR-0024 A4, `services/payment`'s tenant collections; Fulfilment F10):
+
+* **`payment_collection_captured`** — bound to `payment.collections.payment.captured`. The only
+  path by which an online payment sets the order's `paid_at` (the fact the billing gate reads):
+  payment emits it only after a signature-verified provider webhook or a server-to-server status
+  check, never on a browser's word.
+* **`payment_collection_refunded`** — bound to `payment.collections.payment.refunded`. A full
+  refund of the collection that paid the order reverses that fact; a refund that then fails
+  restores it.
 """
 
 from __future__ import annotations
@@ -31,6 +41,7 @@ import asyncio
 import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -178,6 +189,101 @@ async def finance_invoice_issued(envelope: dict[str, Any]) -> None:
 
 
 consumer.on(order_services.EVT_FINANCE_INVOICE_ISSUED)(finance_invoice_issued)
+
+
+async def _collection_envelope(
+    envelope: dict[str, Any], *, log_prefix: str
+) -> tuple[uuid.UUID, uuid.UUID, dict[str, Any]] | None:
+    """The shared front half of both payment-collection handlers: the envelope's organization is
+    the tenant (never the payload's — a mismatch is marked processed and logged, never trusted,
+    the same guard `finance_invoice_issued` documents), and only a collection *for an order* is
+    this service's business. Returns `(organization_id, event_id, payload)`, or None when the
+    delivery has been dealt with already (a duplicate, a mismatch, not an order)."""
+    event_id = uuid.UUID(envelope["event_id"])
+    organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload = envelope["payload"]
+    mismatch = uuid.UUID(str(payload["organization_id"])) != organization_id
+    not_ours = payload.get("reference_type") != order_services.PAYMENT_REFERENCE_ORDER
+    if mismatch or not_ours:
+        async with _session_scope(organization_id) as session:
+            if await already_processed(session, ProcessedEvent, event_id):
+                return None
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+        (log.error if mismatch else log.info)(
+            f"{log_prefix}.skipped",
+            event_id=str(event_id),
+            reason="organization_mismatch" if mismatch else "not_an_order",
+        )
+        return None
+    return organization_id, event_id, payload
+
+
+async def payment_collection_captured(envelope: dict[str, Any]) -> None:
+    """Bound to `payment.collections.payment.captured` (`services/payment`'s tenant collections,
+    ADR-0024 A4) — a customer paid an order online, verified by payment against the provider
+    (a signed webhook or a server-to-server status check). Sets the order's `paid_at`, the fact
+    `check_billing_gate` reads — the one path by which an online payment can ever satisfy it."""
+    front = await _collection_envelope(envelope, log_prefix="orders.online_payment")
+    if front is None:
+        return
+    organization_id, event_id, payload = front
+    occurred = payload.get("occurred_at")
+    paid_at = datetime.fromisoformat(occurred) if occurred else datetime.now(UTC)
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("orders.online_payment.duplicate", event_id=str(event_id))
+            return
+        outcome = await order_services.record_online_payment(
+            session,
+            order_services.service_ctx(organization_id),
+            order_id=uuid.UUID(str(payload["reference_id"])),
+            charge_id=uuid.UUID(str(payload["charge_id"])),
+            amount_minor=int(payload["amount_minor"]),
+            currency=str(payload["currency"]),
+            paid_at=paid_at,
+        )
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+    log.info(
+        "orders.online_payment.handled",
+        event_id=str(event_id),
+        order_id=str(payload["reference_id"]),
+        outcome=outcome,
+    )
+
+
+consumer.on(order_services.EVT_PAYMENT_COLLECTION_CAPTURED)(payment_collection_captured)
+
+
+async def payment_collection_refunded(envelope: dict[str, Any]) -> None:
+    """Bound to `payment.collections.payment.refunded` — the order's online payment's standing
+    refund total changed. A full refund reverses the paid fact that payment set; a refund that
+    later failed restores it (`record_online_refund`)."""
+    front = await _collection_envelope(envelope, log_prefix="orders.online_refund")
+    if front is None:
+        return
+    organization_id, event_id, payload = front
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("orders.online_refund.duplicate", event_id=str(event_id))
+            return
+        outcome = await order_services.record_online_refund(
+            session,
+            order_services.service_ctx(organization_id),
+            order_id=uuid.UUID(str(payload["reference_id"])),
+            charge_id=uuid.UUID(str(payload["charge_id"])),
+            fully_refunded=bool(payload["fully_refunded"]),
+            refunded_total_minor=int(payload["refunded_total_minor"]),
+        )
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+    log.info(
+        "orders.online_refund.handled",
+        event_id=str(event_id),
+        order_id=str(payload["reference_id"]),
+        outcome=outcome,
+    )
+
+
+consumer.on(order_services.EVT_PAYMENT_COLLECTION_REFUNDED)(payment_collection_refunded)
 
 
 async def main() -> None:

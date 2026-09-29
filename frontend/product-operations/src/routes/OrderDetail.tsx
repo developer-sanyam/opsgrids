@@ -17,6 +17,7 @@ import { isStaleOrderConflict, stockShortfalls } from "@/lib/orderErrors";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import { formatDate, formatMoney } from "@/lib/format";
 import { formatQty } from "@/lib/quantity";
+import { OrderPaymentCard } from "@/forms/OrderPaymentCard";
 import { QuotePreview } from "@/forms/QuotePreview";
 import {
   Button,
@@ -369,6 +370,9 @@ export function OrderDetailPage() {
               </div>
             </dl>
           </Card>
+
+          {/* Online payment (ADR-0024 A4): once the order is priced there is a total to pay. */}
+          {order.status !== "DRAFT" ? <OrderPaymentCard order={order} onOrderChanged={state.reload} /> : null}
 
           {showQuote ? (
             <Card className="p-6 flex flex-col gap-4">

@@ -3,6 +3,7 @@ import {
   CheckSquareIcon,
   ClipboardCheckIcon,
   ClipboardListIcon,
+  CreditCardIcon,
   FactoryIcon,
   FolderIcon,
   HomeIcon,
@@ -35,6 +36,8 @@ const GROUPS: NavGroup[] = [
       { to: "/counting", label: "Cycle Counts", icon: CheckSquareIcon },
       { to: "/suppliers", label: "Suppliers", icon: FactoryIcon },
       { to: "/warehouses", label: "Warehouses", icon: WarehouseIcon },
+      // The organization's own Razorpay account and payment reconciliation (ADR-0024 A4).
+      { to: "/settings/payments", label: "Online Payments", icon: CreditCardIcon },
     ],
   },
 ];
