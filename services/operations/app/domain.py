@@ -634,6 +634,29 @@ def select_worker_for_offer(
     return ranked[0] if ranked else None
 
 
+# ------------------------------------------------------------------ counting (ADR-0026, plan F8)
+
+#: A count session's lifecycle. `ACTIVE` is where workers submit counts; a manager moves it to
+#: `REVIEW` to stop accepting new counts and start approving/rejecting discrepancies; `CLOSED` is
+#: only reachable once every line's `review_status` has left `PENDING` (checked in
+#: `app.counting.services.close_session`, not representable in this map alone). `CANCELLED` is
+#: reachable from either open state — abandoning a count posts nothing for any line that had not
+#: already been approved.
+COUNT_SESSION_TRANSITIONS: dict[str, frozenset[str]] = {
+    "ACTIVE": frozenset({"REVIEW", "CANCELLED"}),
+    "REVIEW": frozenset({"CLOSED", "CANCELLED"}),
+    "CLOSED": frozenset(),
+    "CANCELLED": frozenset(),
+}
+
+
+def can_transition_count_session(current: str, new: str) -> bool:
+    """Whether a count session may move `current` -> `new`. Every other move — including a no-op
+    "move" to the same status — answers 409, the same convention `can_transition_pick_task`/
+    `can_transition_shipment` document."""
+    return new in COUNT_SESSION_TRANSITIONS.get(current, frozenset())
+
+
 # ------------------------------------------------------------------ needs-attention queue
 
 

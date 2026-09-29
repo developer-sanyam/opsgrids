@@ -26,6 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, scope, selectors, services
 from app.config import settings
+from app.counting import selectors as counting_selectors
+from app.counting import services as counting_services
 from app.dispatch import selectors as dispatch_selectors
 from app.dispatch import services as dispatch_services
 from app.fulfilment import selectors as fulfilment_selectors
@@ -34,12 +36,27 @@ from app.inventory import ledger as inv_ledger
 from app.inventory import selectors as inv_selectors
 from app.inventory import services as inv_services
 from app.inventory.quantity import QuantityError, parse_qty
-from app.models import SCHEMA, LayoutVersion, Order, PurchaseOrderLine, WarehouseFloor
+from app.models import (
+    SCHEMA,
+    CountLine,
+    CountSession,
+    LayoutVersion,
+    Order,
+    PurchaseOrderLine,
+    WarehouseFloor,
+)
 from app.orders import selectors as order_selectors
 from app.orders import services as order_services
 from app.schemas import (
     AssignmentOfferOut,
     CancelIn,
+    CountLineAddIn,
+    CountLineOut,
+    CountLineReviewIn,
+    CountLineSubmitIn,
+    CountSessionCancelIn,
+    CountSessionIn,
+    CountSessionOut,
     CreatePickTasksIn,
     DiscrepancyResolveIn,
     ExceptionResolveIn,
@@ -191,6 +208,20 @@ LayoutWrite = Annotated[ScopeContext, Depends(require("operations.warehouse.layo
 #: platform-wide change the instant it commits, not a private edit.
 LayoutPublish = Annotated[
     ScopeContext, Depends(require("operations.warehouse.layout.publish", minimum=Scope.ORG))
+]
+
+# ------------------------------------------------------------------ counting (ADR-0026)
+
+CountRead = Annotated[ScopeContext, Depends(require("operations.inventory.count.read"))]
+CountManage = Annotated[
+    ScopeContext, Depends(require("operations.inventory.count.manage", minimum=Scope.ORG))
+]
+CountExecute = Annotated[
+    ScopeContext, Depends(require("operations.inventory.count.execute", minimum=Scope.ORG))
+]
+#: The step that posts through the kernel — dangerous in the catalogue, ORG-floored here too.
+CountReview = Annotated[
+    ScopeContext, Depends(require("operations.inventory.count.review", minimum=Scope.ORG))
 ]
 
 # ------------------------------------------------------------------ orders (ADR-0024, ADR-0025)
@@ -2599,6 +2630,278 @@ async def shipment_return(
     return await _transition_shipment(
         shipment_id, session, ctx, to_status="RETURNED", reason=payload.reason, request=request
     )
+
+
+# ------------------------------------------------------------------ counting (ADR-0026, plan F8)
+
+
+async def _count_session_out(
+    session: AsyncSession, org_id: uuid.UUID, count_session: CountSession
+) -> CountSessionOut:
+    line_count, counted_count, pending = await counting_selectors.session_counters(
+        session, org_id, count_session.id
+    )
+    return counting_selectors.session_out(
+        count_session,
+        line_count=line_count,
+        counted_count=counted_count,
+        pending_review_count=pending,
+    )
+
+
+async def _get_count_session_or_404(
+    session: AsyncSession, org_id: uuid.UUID, session_id: uuid.UUID, *, for_update: bool = False
+) -> CountSession:
+    count_session = await counting_selectors.get_session(
+        session, org_id, session_id, for_update=for_update
+    )
+    if count_session is None:
+        raise NotFoundProblem("That count session is not part of this organization")
+    return count_session
+
+
+async def _count_line_out(
+    session: AsyncSession, org_id: uuid.UUID, line: CountLine
+) -> CountLineOut:
+    skus = await counting_selectors.skus_for_items(session, org_id, [line.inventory_item_id])
+    return counting_selectors.line_out(line, sku=skus.get(line.inventory_item_id, ""))
+
+
+@router.get(
+    "/operations/counting/sessions",
+    response_model=Page[CountSessionOut],
+    summary="Count sessions — cycle counting and stocktaking (ADR-0026)",
+    dependencies=[Entitled],
+)
+async def list_count_sessions(
+    session: SessionDep,
+    ctx: CountRead,
+    params: PageQuery,
+    warehouse_id: Annotated[uuid.UUID | None, Query()] = None,
+    session_status: Annotated[str | None, Query(alias="status")] = None,
+) -> Page[CountSessionOut]:
+    stmt = counting_selectors.count_sessions_stmt(
+        ctx.organization_id, warehouse_id=warehouse_id, session_status=session_status
+    )
+    rows, total = await paginate(session, stmt, params)
+    out = [await _count_session_out(session, ctx.organization_id, row) for row in rows]
+    return Page.build(out, total=total, params=params)
+
+
+@router.post(
+    "/operations/counting/sessions",
+    response_model=CountSessionOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Open a count session — snapshots its lines from the current stock (ADR-0026 §6)",
+    dependencies=[Entitled],
+)
+async def open_count_session(
+    payload: CountSessionIn, session: SessionDep, ctx: CountManage, request: Request
+) -> CountSessionOut:
+    count_session = await counting_services.open_session(
+        session,
+        ctx,
+        warehouse_id=payload.warehouse_id,
+        scope_kind=payload.scope_kind,
+        zone_location_id=payload.zone_location_id,
+        location_ids=payload.location_ids,
+        label=payload.label,
+        request=request,
+    )
+    return await _count_session_out(session, ctx.organization_id, count_session)
+
+
+@router.get(
+    "/operations/counting/sessions/{session_id}",
+    response_model=CountSessionOut,
+    summary="One count session",
+    dependencies=[Entitled],
+)
+async def read_count_session(
+    session_id: uuid.UUID, session: SessionDep, ctx: CountRead
+) -> CountSessionOut:
+    count_session = await _get_count_session_or_404(session, ctx.organization_id, session_id)
+    return await _count_session_out(session, ctx.organization_id, count_session)
+
+
+@router.post(
+    "/operations/counting/sessions/{session_id}/review",
+    response_model=CountSessionOut,
+    summary="Stop accepting new counts and start reviewing discrepancies (ACTIVE -> REVIEW)",
+    dependencies=[Entitled],
+)
+async def start_count_review(
+    session_id: uuid.UUID, session: SessionDep, ctx: CountManage, request: Request
+) -> CountSessionOut:
+    count_session = await _get_count_session_or_404(
+        session, ctx.organization_id, session_id, for_update=True
+    )
+    await counting_services.start_review(session, ctx, count_session, request=request)
+    return await _count_session_out(session, ctx.organization_id, count_session)
+
+
+@router.post(
+    "/operations/counting/sessions/{session_id}/close",
+    response_model=CountSessionOut,
+    summary="Close a session — refused while any line still needs review (REVIEW -> CLOSED)",
+    dependencies=[Entitled],
+)
+async def close_count_session(
+    session_id: uuid.UUID, session: SessionDep, ctx: CountManage, request: Request
+) -> CountSessionOut:
+    count_session = await _get_count_session_or_404(
+        session, ctx.organization_id, session_id, for_update=True
+    )
+    await counting_services.close_session(session, ctx, count_session, request=request)
+    return await _count_session_out(session, ctx.organization_id, count_session)
+
+
+@router.post(
+    "/operations/counting/sessions/{session_id}/cancel",
+    response_model=CountSessionOut,
+    summary="Abandon a session — posts nothing for any line not already approved",
+    dependencies=[Entitled],
+)
+async def cancel_count_session(
+    session_id: uuid.UUID,
+    payload: CountSessionCancelIn,
+    session: SessionDep,
+    ctx: CountManage,
+    request: Request,
+) -> CountSessionOut:
+    count_session = await _get_count_session_or_404(
+        session, ctx.organization_id, session_id, for_update=True
+    )
+    await counting_services.cancel_session(
+        session, ctx, count_session, reason=payload.reason, request=request
+    )
+    return await _count_session_out(session, ctx.organization_id, count_session)
+
+
+@router.get(
+    "/operations/counting/sessions/{session_id}/lines",
+    response_model=Page[CountLineOut],
+    summary="A session's count lines",
+    dependencies=[Entitled],
+)
+async def list_count_lines(
+    session_id: uuid.UUID,
+    session: SessionDep,
+    ctx: CountRead,
+    params: PageQuery,
+    review_status: Annotated[str | None, Query()] = None,
+) -> Page[CountLineOut]:
+    await _get_count_session_or_404(session, ctx.organization_id, session_id)
+    stmt = counting_selectors.count_lines_stmt(
+        ctx.organization_id, session_id, review_status=review_status
+    )
+    rows, total = await paginate(session, stmt, params)
+    skus = await counting_selectors.skus_for_items(
+        session, ctx.organization_id, [line.inventory_item_id for line in rows]
+    )
+    out = [
+        counting_selectors.line_out(line, sku=skus.get(line.inventory_item_id, "")) for line in rows
+    ]
+    return Page.build(out, total=total, params=params)
+
+
+@router.post(
+    "/operations/counting/sessions/{session_id}/lines",
+    response_model=CountLineOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Report stock at a bucket the session's snapshot did not expect anything at",
+    dependencies=[Entitled],
+)
+async def add_count_line(
+    session_id: uuid.UUID,
+    payload: CountLineAddIn,
+    session: SessionDep,
+    ctx: CountExecute,
+    request: Request,
+) -> CountLineOut:
+    count_session = await _get_count_session_or_404(
+        session, ctx.organization_id, session_id, for_update=True
+    )
+    line = await counting_services.add_unlisted_line(
+        session,
+        ctx,
+        count_session,
+        inventory_item_id=payload.inventory_item_id,
+        location_id=payload.location_id,
+        status=payload.status,
+        lot_id=payload.lot_id,
+        roll_id=payload.roll_id,
+        counted=payload.counted,
+        count_method=payload.count_method,
+        scanned_barcode=payload.scanned_barcode,
+        request=request,
+    )
+    return await _count_line_out(session, ctx.organization_id, line)
+
+
+@router.post(
+    "/operations/counting/sessions/{session_id}/lines/{line_id}/count",
+    response_model=CountLineOut,
+    summary="Submit a physical count for one line — once only; a mistake is corrected on review",
+    dependencies=[Entitled],
+)
+async def submit_count_line(
+    session_id: uuid.UUID,
+    line_id: uuid.UUID,
+    payload: CountLineSubmitIn,
+    session: SessionDep,
+    ctx: CountExecute,
+    request: Request,
+) -> CountLineOut:
+    count_session = await _get_count_session_or_404(
+        session, ctx.organization_id, session_id, for_update=True
+    )
+    line = await counting_selectors.get_line(session, ctx.organization_id, line_id, for_update=True)
+    if line is None:
+        raise NotFoundProblem("That line is not part of this organization")
+    line = await counting_services.submit_count(
+        session,
+        ctx,
+        count_session,
+        line,
+        counted=payload.counted,
+        count_method=payload.count_method,
+        scanned_barcode=payload.scanned_barcode,
+        request=request,
+    )
+    return await _count_line_out(session, ctx.organization_id, line)
+
+
+@router.post(
+    "/operations/counting/sessions/{session_id}/lines/{line_id}/review",
+    response_model=CountLineOut,
+    summary="Approve (posts through the kernel) or reject one PENDING discrepancy",
+    dependencies=[Entitled],
+)
+async def review_count_line(
+    session_id: uuid.UUID,
+    line_id: uuid.UUID,
+    payload: CountLineReviewIn,
+    session: SessionDep,
+    ctx: CountReview,
+    request: Request,
+) -> CountLineOut:
+    count_session = await _get_count_session_or_404(
+        session, ctx.organization_id, session_id, for_update=True
+    )
+    line = await counting_selectors.get_line(session, ctx.organization_id, line_id, for_update=True)
+    if line is None:
+        raise NotFoundProblem("That line is not part of this organization")
+    line = await counting_services.review_line(
+        session,
+        ctx,
+        count_session,
+        line,
+        decision=payload.decision,
+        note=payload.note,
+        request=request,
+    )
+    return await _count_line_out(session, ctx.organization_id, line)
 
 
 # ------------------------------------------------------------------ overview

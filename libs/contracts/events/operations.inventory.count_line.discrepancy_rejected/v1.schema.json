@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.count_line.discrepancy_rejected/v1",
+  "title": "operations.inventory.count_line.discrepancy_rejected",
+  "description": "A manager rejected a counted discrepancy (ADR-0026 §3/§6) — the ledger is never touched. `posted_move_id` is intentionally absent, unlike `count_line.discrepancy_approved`'s.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "session_id", "line_id", "counted_milli", "expected_milli"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "session_id": { "type": "string", "format": "uuid" },
+    "line_id": { "type": "string", "format": "uuid" },
+    "counted_milli": { "type": "integer", "minimum": 0 },
+    "expected_milli": { "type": "integer", "minimum": 0 }
+  }
+}

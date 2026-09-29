@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.count_session.closed/v1",
+  "title": "operations.inventory.count_session.closed",
+  "description": "A count session moved REVIEW -> CLOSED (ADR-0026 §6) — every line's discrepancy, if any, had already left PENDING before this could fire.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "session_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "session_id": { "type": "string", "format": "uuid" }
+  }
+}

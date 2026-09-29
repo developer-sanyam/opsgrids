@@ -342,6 +342,23 @@ handed to a carrier or collected, and the customer is notified at each step (F5)
 E2E suite exercising all four channels, against a real build, with negative-authz and
 cross-tenant tests on every endpoint introduced across F1–F5.
 
+### F8 — Cycle counting and stocktaking
+
+**Scope decision: [ADR-0026](../adr/0026-fulfilment-f8-scope.md).** F8 was never scoped anywhere
+in this repository — no ADR, no prior plan section, no committed code. ADR-0026 documents that
+investigation in full and scopes F8 as cycle counting / stocktaking, the explicit fallback for
+exactly this situation: a manager opens a count session (a warehouse, a zone, or an explicit
+location list), it snapshots the current stock, a worker counts each bucket (scan or manual
+entry, `frontend/worker-app`), and every discrepancy a count raises is approved or rejected by a
+manager (`frontend/product-operations`) before anything posts. Approving reuses
+`app.inventory.ledger.post_move`'s existing `kind="count"` support unchanged — no kernel
+prerequisite, unlike every other phase above.
+
+**Not part of F1–F5's numbering above** (F6, F7, F9–F12 are other, separately scoped phases; this
+plan's F0–F5 sequence predates all of them) — placed here because it is the one phase whose scope
+this file did not already carry, and ADR-0026 is where its reasoning, data model and acceptance
+criteria live.
+
 ---
 
 ## 4. Permissions
@@ -355,6 +372,8 @@ cross-tenant tests on every endpoint introduced across F1–F5.
 | `fulfilment.pack.read`, `.execute` | |
 | `dispatch.shipment.read`, `.write` | |
 | `warehouse.layout.publish` | ✔ |
+| `inventory.count.read`, `.manage`, `.execute` (F8, ADR-0026) | |
+| `inventory.count.review` (F8, ADR-0026) | ✔ |
 
 Role templates stay built from the operations catalogue only (CLAUDE.md), each with a
 negative-authz test per list endpoint, matching `services/operations/app/catalogue.py`'s existing
@@ -366,7 +385,9 @@ guard.
 `operations.fulfilment.task.offered|accepted|declined|expired|escalated|started|completed`,
 `operations.fulfilment.pick.confirmed|exception_raised`,
 `operations.fulfilment.pack.started|completed`,
-`operations.dispatch.shipment.created|dispatched|delivered|failed|returned`.
+`operations.dispatch.shipment.created|dispatched|delivered|failed|returned`,
+`operations.inventory.count_session.opened|review_started|closed|cancelled` (F8, ADR-0026),
+`operations.inventory.count_line.counted|discrepancy_approved|discrepancy_rejected` (F8, ADR-0026).
 Schemas go in `libs/contracts`, envelope v1 per ADR-0000 §7.
 
 ## 6. Definition of done (per phase)

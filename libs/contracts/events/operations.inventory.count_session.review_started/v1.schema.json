@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.count_session.review_started/v1",
+  "title": "operations.inventory.count_session.review_started",
+  "description": "A count session moved ACTIVE -> REVIEW (ADR-0026 §6): it stops accepting new counts and its discrepancies become reviewable.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "session_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "session_id": { "type": "string", "format": "uuid" }
+  }
+}

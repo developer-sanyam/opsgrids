@@ -64,6 +64,8 @@ export { NeedsAttention } from "./NeedsAttention";
 export {
   AssignmentKindPill,
   AssignmentOfferStatusPill,
+  CountLineReviewStatusPill,
+  CountSessionStatusPill,
   OrderStatusPill,
   PickTaskStatusPill,
   PoStatusPill,

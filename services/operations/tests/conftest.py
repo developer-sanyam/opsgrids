@@ -42,6 +42,8 @@ from platform_core.db import TENANT_GUC, get_session
 from tests.helpers import ctx_for
 
 TENANT_TABLES = (
+    "count_lines",
+    "count_sessions",
     "package_lines",
     "packages",
     "packaging_materials",

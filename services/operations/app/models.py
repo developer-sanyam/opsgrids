@@ -2217,6 +2217,160 @@ class WalkEdge(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     )
 
 
+
+
+class CountSession(Base, TenantBase):
+    """One scoped physical stock count (Fulfilment plan F8, ADR-0026) — a whole warehouse, one
+    zone, or an explicit list of locations. `status` runs `app.domain.COUNT_SESSION_TRANSITIONS`'s
+    vocabulary (`ACTIVE, REVIEW, CLOSED, CANCELLED`); like `PickTask`, there is no dedicated
+    transitions table — this is an operational trail, served by `AuditLog`, not a customer-facing
+    document the way `Order`/`Shipment` are.
+
+    `uq_count_sessions_org_warehouse_live` (a partial unique index, `WHERE status IN ('ACTIVE',
+    'REVIEW')`) is the whole concurrency story (ADR-0026 §5): at most one session in flight per
+    warehouse, regardless of how narrow its own `scope_kind` is — two nominally disjoint zone
+    counts in one warehouse can still race (locations nest; stock relocates mid-count), so
+    exclusivity is enforced one level coarser than the count's own declared scope.
+    """
+
+    __tablename__ = "count_sessions"
+
+    warehouse_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.warehouses.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: WAREHOUSE | ZONE | LOCATIONS.
+    scope_kind: Mapped[str] = mapped_column(String(12), nullable=False)
+    #: Set iff scope_kind == 'ZONE'.
+    zone_location_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
+    )
+    #: Set iff scope_kind == 'LOCATIONS' — a JSON array of location id strings. Not a join table:
+    #: this list is read once, at session open, to resolve the snapshot; it is never queried by
+    #: its contents afterwards.
+    location_ids: Mapped[list[str] | None] = mapped_column(JSONB)
+    #: See class docstring — vocabulary in `app.domain.COUNT_SESSION_TRANSITIONS`.
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="ACTIVE")
+    label: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+
+    __table_args__ = (
+        CheckConstraint(
+            "scope_kind IN ('WAREHOUSE', 'ZONE', 'LOCATIONS')", name="scope_kind_known"
+        ),
+        CheckConstraint(
+            "status IN ('ACTIVE', 'REVIEW', 'CLOSED', 'CANCELLED')", name="status_known"
+        ),
+        CheckConstraint(
+            "(scope_kind <> 'ZONE') OR (zone_location_id IS NOT NULL)", name="zone_needs_location"
+        ),
+        CheckConstraint(
+            "(scope_kind <> 'LOCATIONS') OR (location_ids IS NOT NULL)",
+            name="locations_needs_list",
+        ),
+        Index(
+            "uq_count_sessions_org_warehouse_live",
+            "organization_id",
+            "warehouse_id",
+            unique=True,
+            postgresql_where=text("status IN ('ACTIVE', 'REVIEW')"),
+        ),
+        Index("ix_count_sessions_org_warehouse", "organization_id", "warehouse_id"),
+        Index("ix_count_sessions_org_status", "organization_id", "status"),
+    )
+
+
+class CountLine(Base, TenantBase):
+    """One bucket's worth of a count session (Fulfilment plan F8, ADR-0026) — the exact
+    `(inventory_item_id, location_id, status, lot_id, roll_id)` tuple
+    `app.inventory.ledger.Bucket` already keys on.
+
+    `expected_milli` is frozen at line creation (the session's open-time snapshot of
+    `inventory_balances`) and never rewritten — the count's own `counted_milli` is compared
+    against *both* this frozen figure and the live balance at review time (the live balance can
+    have moved since the snapshot; `app.inventory.ledger.post_move` always computes the actual
+    posted delta from the live figure under lock, never from this snapshot). `is_unlisted` marks a
+    line a worker added for a bucket that had no balance row at snapshot time — stock found where
+    none was expected is a real stocktake outcome, not refused.
+
+    `review_status` starts `NONE` (nothing to review — either not yet counted, or counted and it
+    matched) and only ever becomes `PENDING` when a submitted count disagrees with `expected_milli`
+    at that moment. A manager's `APPROVED` is what allows the post; `REJECTED` closes the line with
+    no ledger write, ever.
+    """
+
+    __tablename__ = "count_lines"
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.count_sessions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.locations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="AVAILABLE")
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    is_unlisted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    expected_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    expected_snapshot_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    counted_milli: Mapped[int | None] = mapped_column(BigInteger)
+    #: scan | manual — how the counted quantity was entered. Null until counted.
+    count_method: Mapped[str | None] = mapped_column(String(10))
+    scanned_barcode: Mapped[str | None] = mapped_column(String(64))
+    counted_by: Mapped[str | None] = mapped_column(String(64))
+    counted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: NONE | PENDING | APPROVED | REJECTED.
+    review_status: Mapped[str] = mapped_column(String(10), nullable=False, default="NONE")
+    reviewed_by: Mapped[str | None] = mapped_column(String(64))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    posted_move_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.inventory_moves.id", ondelete="RESTRICT")
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"status IN ({_STATUS_SQL})", name="status_known"),
+        CheckConstraint(
+            "count_method IS NULL OR count_method IN ('scan', 'manual')", name="count_method_known"
+        ),
+        CheckConstraint(
+            "review_status IN ('NONE', 'PENDING', 'APPROVED', 'REJECTED')",
+            name="review_status_known",
+        ),
+        CheckConstraint("expected_milli >= 0", name="expected_non_negative"),
+        CheckConstraint("counted_milli IS NULL OR counted_milli >= 0", name="counted_non_negative"),
+        # One row per bucket per session. NULLS NOT DISTINCT — the same technique
+        # `uq_inventory_balances_bucket` uses, since lot_id/roll_id are usually NULL.
+        Index(
+            "uq_count_lines_session_bucket",
+            "organization_id",
+            "session_id",
+            "inventory_item_id",
+            "location_id",
+            "status",
+            "lot_id",
+            "roll_id",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+        ),
+        Index("ix_count_lines_org_session", "organization_id", "session_id"),
+        Index("ix_count_lines_org_review", "organization_id", "review_status"),
+    )
+
+
+
+
 class OutboxEvent(Base, OutboxMixin):
     """Domain events staged in the same transaction as the change they describe."""
 

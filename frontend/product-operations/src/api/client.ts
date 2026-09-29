@@ -45,6 +45,13 @@ import type {
   AssignmentOfferOut,
   CancelIn,
   Category,
+  CountLineOut,
+  CountLineReviewIn,
+  CountLineReviewStatus,
+  CountSessionCancelIn,
+  CountSessionIn,
+  CountSessionOut,
+  CountSessionStatus,
   InventoryItemIn,
   InventoryItemOut,
   InventoryItemPatch,
@@ -2139,4 +2146,104 @@ export async function computeWarehouseRoute(
   return apiRequest<RouteOut>(`/operations/warehouse-floors/${encodeURIComponent(floorId)}/route${query}`, {
     signal: params.signal,
   });
+}
+
+/* ------------------------------------ counting (ADR-0026, Fulfilment plan F8) ------------------------------------ */
+/**
+ * The manager's surface: open/review/close/cancel a session, and approve or reject a discrepancy.
+ * Counting a line is the worker PWA's job (`frontend/worker-app`) — this file declares no
+ * function for it. No fixture-mode branch, the same "live by default" shape `fulfilment`/
+ * `dispatch` above already set.
+ */
+
+export interface ListCountSessionsParams {
+  warehouse_id?: string;
+  status?: CountSessionStatus | "all";
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/counting/sessions` — `operations.inventory.count.read`. */
+export async function listCountSessions(
+  params: ListCountSessionsParams = {},
+): Promise<Page<CountSessionOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    warehouse_id: params.warehouse_id,
+    status: params.status === "all" ? undefined : params.status,
+  });
+  return apiRequest<Page<CountSessionOut>>(`/operations/counting/sessions${query}`);
+}
+
+export async function getCountSession(id: string): Promise<CountSessionOut> {
+  return apiRequest<CountSessionOut>(`/operations/counting/sessions/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/counting/sessions` — `operations.inventory.count.manage:ORG`. Refused (409)
+ *  while the warehouse already has a session `ACTIVE` or under `REVIEW` (ADR-0026 §5). */
+export async function openCountSession(input: CountSessionIn): Promise<CountSessionOut> {
+  return apiRequest<CountSessionOut>("/operations/counting/sessions", { method: "POST", body: input });
+}
+
+/** `POST /operations/counting/sessions/{id}/review` — ACTIVE -> REVIEW. */
+export async function startCountReview(id: string): Promise<CountSessionOut> {
+  return apiRequest<CountSessionOut>(
+    `/operations/counting/sessions/${encodeURIComponent(id)}/review`,
+    { method: "POST" },
+  );
+}
+
+/** `POST /operations/counting/sessions/{id}/close` — REVIEW -> CLOSED. Refused (409) while any
+ *  line is still `PENDING` review. */
+export async function closeCountSession(id: string): Promise<CountSessionOut> {
+  return apiRequest<CountSessionOut>(`/operations/counting/sessions/${encodeURIComponent(id)}/close`, {
+    method: "POST",
+  });
+}
+
+/** `POST /operations/counting/sessions/{id}/cancel`. */
+export async function cancelCountSession(
+  id: string,
+  input: CountSessionCancelIn = {},
+): Promise<CountSessionOut> {
+  return apiRequest<CountSessionOut>(`/operations/counting/sessions/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+export interface ListCountLinesParams {
+  review_status?: CountLineReviewStatus;
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/counting/sessions/{id}/lines` — `operations.inventory.count.read`. */
+export async function listCountLines(
+  sessionId: string,
+  params: ListCountLinesParams = {},
+): Promise<Page<CountLineOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    review_status: params.review_status,
+  });
+  return apiRequest<Page<CountLineOut>>(
+    `/operations/counting/sessions/${encodeURIComponent(sessionId)}/lines${query}`,
+  );
+}
+
+/** `POST /operations/counting/sessions/{id}/lines/{line_id}/review` —
+ *  `operations.inventory.count.review:ORG`. Approving posts through the stock kernel in the same
+ *  call; rejecting needs a note and never touches the ledger. */
+export async function reviewCountLine(
+  sessionId: string,
+  lineId: string,
+  input: CountLineReviewIn,
+): Promise<CountLineOut> {
+  return apiRequest<CountLineOut>(
+    `/operations/counting/sessions/${encodeURIComponent(sessionId)}/lines/${encodeURIComponent(lineId)}/review`,
+    { method: "POST", body: input },
+  );
 }

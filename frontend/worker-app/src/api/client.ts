@@ -13,6 +13,11 @@ import { apiRequest } from "@opsgrids/client";
 
 import type {
   AssignmentOfferOut,
+  CountLineAddIn,
+  CountLineOut,
+  CountLineSubmitIn,
+  CountSessionOut,
+  CountSessionStatus,
   ExceptionResolveIn,
   LocationOut,
   Page,
@@ -208,4 +213,49 @@ export async function confirmPackage(input: PackageIn): Promise<PackageOut> {
  */
 export async function resolveLocationByBarcode(barcode: string): Promise<LocationOut> {
   return apiRequest<LocationOut>(`/operations/locations/by-barcode/${encodeURIComponent(barcode)}`);
+}
+
+// ------------------------------------------------------------------ counting (ADR-0026, plan F8)
+
+/** `GET /operations/counting/sessions` — `operations.inventory.count.read`. A worker sees every
+ *  session in the org (there is no per-warehouse scoping on this permission, ADR-0026 §7); in
+ *  practice there is at most one `ACTIVE` session per warehouse at a time (ADR-0026 §5). */
+export async function listActiveCountSessions(): Promise<Page<CountSessionOut>> {
+  const query = buildQuery({ status: "ACTIVE" satisfies CountSessionStatus, size: FULL_PAGE });
+  return apiRequest<Page<CountSessionOut>>(`/operations/counting/sessions${query}`);
+}
+
+export async function getCountSession(id: string): Promise<CountSessionOut> {
+  return apiRequest<CountSessionOut>(`/operations/counting/sessions/${encodeURIComponent(id)}`);
+}
+
+/** `GET /operations/counting/sessions/{id}/lines` — `operations.inventory.count.read`. */
+export async function listCountLines(sessionId: string): Promise<Page<CountLineOut>> {
+  const query = buildQuery({ size: FULL_PAGE });
+  return apiRequest<Page<CountLineOut>>(
+    `/operations/counting/sessions/${encodeURIComponent(sessionId)}/lines${query}`,
+  );
+}
+
+/** `POST /operations/counting/sessions/{id}/lines/{line_id}/count` —
+ *  `operations.inventory.count.execute:ORG`. Once only per line — a mistaken entry is corrected
+ *  by the manager rejecting it on review, never a second submit here. */
+export async function submitCount(
+  sessionId: string,
+  lineId: string,
+  input: CountLineSubmitIn,
+): Promise<CountLineOut> {
+  return apiRequest<CountLineOut>(
+    `/operations/counting/sessions/${encodeURIComponent(sessionId)}/lines/${encodeURIComponent(lineId)}/count`,
+    { method: "POST", body: input },
+  );
+}
+
+/** `POST /operations/counting/sessions/{id}/lines` — `operations.inventory.count.execute:ORG`.
+ *  Stock found at a bucket the session's snapshot did not expect anything at. */
+export async function addCountLine(sessionId: string, input: CountLineAddIn): Promise<CountLineOut> {
+  return apiRequest<CountLineOut>(`/operations/counting/sessions/${encodeURIComponent(sessionId)}/lines`, {
+    method: "POST",
+    body: input,
+  });
 }

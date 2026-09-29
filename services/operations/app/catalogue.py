@@ -263,6 +263,47 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Cycle counting / stocktaking (ADR-0026, Fulfilment plan F8). A count session is a shared
+        # operational object, the same reasoning `orders.order.*`/`dispatch.shipment.*` already
+        # give for ORG-only, no-OWN-reading permissions: any worker with `count.execute` counts
+        # any line in the one session currently open for their warehouse, the same way any picker
+        # can be offered any task — there is no meaningful "the lines I personally counted" reading
+        # narrower than the session itself. `count.review` is dangerous, the same flag
+        # `stock.adjust`/`stock.reconcile` already carry: approving a discrepancy is the step that
+        # changes recorded stock (it posts through `ledger.post_move`, ADR-0026 §3).
+        PermissionSpec(
+            "inventory",
+            "count",
+            "read",
+            "See count sessions, their lines and discrepancies",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inventory",
+            "count",
+            "manage",
+            "Open, move to review, close or cancel a count session",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inventory",
+            "count",
+            "execute",
+            "Submit a counted quantity on a line in an active count session",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inventory",
+            "count",
+            "review",
+            "Approve or reject a counted discrepancy — approving posts the adjustment",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
         # Item master reference data: categories, typed attributes, variants, tracking flags,
         # HSN/tax fields and secondary UOM (ADR-0014 Phase 1). Reuses `inventory.item.read/write`
         # rather than a permission per sub-resource: these are all facets of the one item master
@@ -474,10 +515,11 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "inventory (including stock adjustments); reads warehouses. Accepts, cancels and "
             "hands over customer orders — the stock-commitment, stock-release and billing-gate "
             "steps — on top of the ordinary counter work every Operations user does, and hands "
-            "orders to a carrier (the same billing gate, on the delivery path). Does not create "
-            "or rename warehouses — that stays with the admin. Creates floors and edits a draft "
-            "layout's placements and walk graph, but does not publish one — a floor plan going "
-            "live is as dangerous as it gets here, so that stays with the admin too."
+            "orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and "
+            "closes cycle counts and approves the discrepancies they raise (ADR-0026). Does not "
+            "create or rename warehouses — that stays with the admin. Creates floors and edits a "
+            "draft layout's placements and walk graph, but does not publish one — a floor plan "
+            "going live is as dangerous as it gets here, so that stays with the admin too."
         ),
         grants=OPERATIONS.pick(
             ("operations.procurement.purchase_order.read", "ORG"),
@@ -489,6 +531,10 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.inventory.item.write", "ORG"),
             ("operations.inventory.stock.adjust", "ORG"),
             ("operations.inventory.stock.reserve", "ORG"),
+            ("operations.inventory.count.read", "ORG"),
+            ("operations.inventory.count.manage", "ORG"),
+            ("operations.inventory.count.execute", "ORG"),
+            ("operations.inventory.count.review", "ORG"),
             ("operations.inventory.warehouse.read", "ORG"),
             ("operations.inventory.location.read", "ORG"),
             ("operations.inventory.location.write", "ORG"),
@@ -522,12 +568,16 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "The picker/packer role the worker PWA authenticates as (plan F3). Sees the task "
             "board and the worker roster read-only, executes only the tasks offered or accepted "
             "to them (`task.execute` tops out at OWN — even this role cannot execute another "
-            "worker's task), sets their own presence, and confirms packages. Does not offer, "
-            "reassign or override a task — that stays with the dispatcher (`OPERATIONS_MANAGER`)."
+            "worker's task), sets their own presence, and confirms packages. Counts lines in "
+            "whichever count session is open for their warehouse (ADR-0026) — never opens, "
+            "reviews or closes one; that stays with the dispatcher (`OPERATIONS_MANAGER`). Does "
+            "not offer, reassign or override a task either."
         ),
         grants=OPERATIONS.pick(
             ("operations.fulfilment.task.read", "ORG"),
             ("operations.fulfilment.task.execute", "OWN"),
+            ("operations.inventory.count.read", "ORG"),
+            ("operations.inventory.count.execute", "ORG"),
             ("operations.fulfilment.worker.read", "ORG"),
             ("operations.fulfilment.worker.write", "OWN"),
             ("operations.fulfilment.pack.read", "ORG"),

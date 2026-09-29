@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import BigInteger, Select, cast, func, or_, select
+from sqlalchemy import BigInteger, Select, cast, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import contains_eager
 
@@ -648,6 +648,55 @@ async def get_location_by_barcode(
         Location.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def descendant_location_ids(
+    session: AsyncSession, org_id: uuid.UUID, root_location_id: uuid.UUID
+) -> list[uuid.UUID]:
+    """Every location at or below `root_location_id` in the warehouse tree (ADR-0026 §6, a count
+    session's `ZONE` scope). `Location.parent_id` is a plain adjacency list — the same shape
+    `ItemCategory` uses and, per that model's own docstring, never needed a recursive query
+    because that tree stays two or three levels deep. A warehouse's zone -> aisle -> rack -> shelf
+    -> bin tree does not make the same promise, so this is a real `WITH RECURSIVE`, org-filtered
+    at every level (a location's `organization_id` never differs from its parent's, but the filter
+    costs nothing and this never trusts a join alone for tenant isolation)."""
+    cte_sql = text(
+        """
+        WITH RECURSIVE descendants AS (
+            SELECT id FROM operations.locations
+             WHERE id = :root AND organization_id = :org AND deleted_at IS NULL
+            UNION ALL
+            SELECT l.id
+              FROM operations.locations l
+              JOIN descendants d ON l.parent_id = d.id
+             WHERE l.organization_id = :org AND l.deleted_at IS NULL
+        )
+        SELECT id FROM descendants
+        """
+    )
+    rows = (await session.execute(cte_sql, {"root": root_location_id, "org": org_id})).all()
+    return [row.id for row in rows]
+
+
+async def balances_in_locations(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    location_ids: Sequence[uuid.UUID],
+    *,
+    status: str = "AVAILABLE",
+) -> list[InventoryBalance]:
+    """Every balance row in a set of locations, one status — a count session's open-time snapshot
+    source (ADR-0026 §6). Empty `location_ids` returns no rows rather than every bucket in the
+    org; the caller resolving an empty scope is a bug to see immediately, not a full-warehouse
+    surprise."""
+    if not location_ids:
+        return []
+    stmt = select(InventoryBalance).where(
+        InventoryBalance.organization_id == org_id,
+        InventoryBalance.location_id.in_(location_ids),
+        InventoryBalance.status == status,
+    )
+    return list((await session.execute(stmt)).scalars().all())
 
 
 async def location_has_ledger_history(
