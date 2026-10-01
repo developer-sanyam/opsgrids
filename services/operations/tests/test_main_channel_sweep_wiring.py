@@ -4,6 +4,14 @@ starts as a background task on its own bulkhead engine when `Settings.run_sweeps
 stays off otherwise, survives a failing tick, and a failed outbox-role precondition skips only
 this sweep rather than the API's own startup.
 
+Wired on `raw_bulkhead_scope`, not `bulkhead_scope` — the one sweep of the three whose own
+downstream code (`app.channels.services.load_client_for_channel` and its siblings) opens its own
+short transaction around each piece of work, closed before the call to the marketplace is made
+(`docs/io-outside-transactions.md`); a pre-opened transaction here collided with that as a second
+`session.begin()` (production incident, 2026-10-01 — see `platform_core.db.raw_bulkhead_scope`'s
+own docstring). `test_main_sweep_wiring.py`'s `ReconcileSweep`/`AlertSweep` correctly keep
+`bulkhead_scope`: neither opens a transaction inside the one `work_scope` already gives them.
+
 No real database or broker: the bulkhead engine constructor is faked to a no-op, the same
 `test_main_sweep_wiring.py` shape.
 """
@@ -55,7 +63,7 @@ def engines(monkeypatch: pytest.MonkeyPatch) -> list[_FakeEngine]:
         return engine
 
     monkeypatch.setattr(main, "create_bulkhead_engine", fake_create)
-    monkeypatch.setattr(main, "bulkhead_scope", lambda engine: ("bulkhead", engine))
+    monkeypatch.setattr(main, "raw_bulkhead_scope", lambda engine: ("raw_bulkhead", engine))
     return created
 
 
@@ -103,7 +111,7 @@ async def test_sweep_starts_as_a_background_task_on_its_own_bulkhead_and_dispose
     await asyncio.wait_for(started.wait(), timeout=1)
     assert not app.state.channel_sweep_task.done()
     assert len(engines) == 1
-    assert scopes == [("bulkhead", engines[0])]
+    assert scopes == [("raw_bulkhead", engines[0])]
     health = get_sweep_health("channels.sync")
     assert health is not None and health.alive is True
     assert engines[0].disposed is False

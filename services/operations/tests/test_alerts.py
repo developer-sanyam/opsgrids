@@ -10,10 +10,12 @@ simply been sitting for a while). HTTP tests cover the read/resolve endpoints' a
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.alerts.services import (
     EVT_LOW_STOCK,
@@ -21,7 +23,17 @@ from app.alerts.services import (
     resolve_alert,
     sweep_organization,
 )
-from app.models import FulfilmentSettings, InventoryItem, OperationalAlert, OutboxEvent, PickTask
+from app.config import settings
+from app.cron import AlertSweep
+from app.models import (
+    SCHEMA,
+    FulfilmentSettings,
+    InventoryItem,
+    OperationalAlert,
+    OutboxEvent,
+    PickTask,
+)
+from platform_core.db import TENANT_GUC
 from tests.fulfilment_fixtures import Floor, accept_order, build_floor, create_tasks
 from tests.helpers import as_principal, principal_for
 
@@ -259,3 +271,59 @@ class TestAlertsHttp:
         with as_principal(allowed):
             response = await client.get("/api/v1/operations/insights/backlog")
         assert response.status_code == 200
+
+
+class TestNightlySweep:
+    """`AlertSweep.tick()` against the real outbox role — not `sweep_organization` called
+    directly, the way the rest of this file tests it. The two are not equivalent: discovery
+    (`_ALERT_ORGANIZATIONS_SQL`, run as `opsgrids_outbox`) is a different code path from the
+    per-organization work above it, and a column the outbox role was never granted fails there,
+    not here. That gap went undetected from this phase's own deploy until a real incident
+    (`operations.alerts.tick_failed`, `InsufficientPrivilegeError` on `inventory_items`, hundreds
+    of consecutive failures with no migration ever reporting an error) — the same shape
+    `test_reconcile.py::TestNightlySweep` already guards `ReconcileSweep` against, extended here
+    so the next sweep added to this file does not reopen it."""
+
+    async def test_the_sweep_discovers_every_organization_as_the_real_outbox_role(
+        self, client, session, admin_session, org_id, floor: Floor
+    ) -> None:
+        order = await accept_order(
+            session,
+            org_id,
+            floor.shop,
+            lines=[{"inventory_item_id": floor.shop.widget, "quantity": "2"}],
+        )
+        tasks = await create_tasks(client, org_id, order)
+        task_id = uuid.UUID(tasks[0]["id"])
+        async with admin_session.begin():
+            await admin_session.execute(
+                update(PickTask)
+                .where(PickTask.id == task_id)
+                .values(created_at=datetime.now(UTC) - timedelta(hours=2))
+            )
+
+        connect = {"server_settings": {"search_path": f"{SCHEMA},public"}}
+        # Discovery as the real outbox role: exactly `_ALERT_ORGANIZATIONS_SQL`'s own columns,
+        # the same proof `test_reconcile.py` holds `ReconcileSweep` to.
+        discovery = create_async_engine(settings().outbox_dsn, connect_args=connect)
+        work = create_async_engine(settings().app_dsn, connect_args=connect)
+        work_maker = async_sessionmaker(work, expire_on_commit=False)
+
+        @asynccontextmanager
+        async def scope(organization_id):  # type: ignore[no-untyped-def]
+            async with work_maker() as s, s.begin():
+                await s.execute(
+                    text("SELECT set_config(:g, :o, true)"),
+                    {"g": TENANT_GUC, "o": str(organization_id)},
+                )
+                yield s
+
+        try:
+            sweep = AlertSweep(discovery_factory=async_sessionmaker(discovery), work_scope=scope)
+            report = await sweep.tick()
+        finally:
+            await discovery.dispose()
+            await work.dispose()
+
+        assert report.failed == 0
+        assert report.opened == 1
