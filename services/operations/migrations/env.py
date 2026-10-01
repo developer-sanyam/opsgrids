@@ -90,8 +90,26 @@ APPEND_ONLY_TABLES = (
     "shipment_transitions",
     "channel_sync_logs",
 )
-#: What the ledger reconciler's discovery reads cross-tenant (`app/cron.py`).
-RECONCILE_DISCOVERY_TABLES = ("inventory_balances", "inventory_ledger")
+#: What each sweep's cross-tenant discovery reads — `app/cron.py`'s `ReconcileSweep` and
+#: `AlertSweep`, `app/channels/sweep.py`'s `ChannelSyncSweep`. Column-level, matching exactly
+#: what each sweep's own discovery SQL references: `AlertSweep`'s `_ALERT_ORGANIZATIONS_SQL`
+#: filters `inventory_items`/`shipments` on `deleted_at` but not `pick_tasks`; `ChannelSyncSweep`'s
+#: `_CONNECTED_CHANNELS_SQL` also selects `id` and filters on `status`. F11 and F12 each shipped
+#: a new discovery query without adding its tables here — PostgreSQL then refuses column access
+#: the outbox role was never granted, and the sweep fails every tick, forever, with no migration
+#: ever reporting an error (MAJOR, production incident 2026-10-01: both sweeps had been failing
+#: continuously since the deploy that introduced them — `channels.sync.tick_failed`/
+#: `operations.alerts.tick_failed`, hundreds of consecutive failures, `InsufficientPrivilegeError`
+#: on `channels` and `inventory_items`). Extend this dict, never widen a sweep's own SQL to avoid
+#: extending it.
+RECONCILE_DISCOVERY_TABLES: dict[str, tuple[str, ...]] = {
+    "inventory_balances": ("organization_id",),
+    "inventory_ledger": ("organization_id",),
+    "inventory_items": ("organization_id", "deleted_at"),
+    "pick_tasks": ("organization_id",),
+    "shipments": ("organization_id", "deleted_at"),
+    "channels": ("organization_id", "id", "status", "deleted_at"),
+}
 
 
 def _exists(connection: Connection, table: str) -> bool:
@@ -103,14 +121,17 @@ def _exists(connection: Connection, table: str) -> bool:
 
 
 def grant_reconcile_discovery(connection: Connection) -> None:
-    """Column-level `SELECT (organization_id)` for the outbox role on the ledger and balances.
+    """Column-level `SELECT` for the outbox role, exactly the columns each sweep's own discovery
+    query references — never a whole table.
 
-    The nightly reconciler (`app/cron.py`) has to find out *which organizations* hold stock
-    before it can bind a tenant, and as the NOBYPASSRLS app role that question returns nothing —
-    a reconciler that checks no one looks exactly like one that found no drift. The same split
-    approval's SLA sweep uses: the BYPASSRLS outbox role discovers, the app role does every read
-    that matters under the tenant policy. One column, not the table: the bypass buys the list of
-    organizations and nothing about their stock.
+    Every sweep that discovers cross-tenant (`app/cron.py`'s `ReconcileSweep`/`AlertSweep`,
+    `app/channels/sweep.py`'s `ChannelSyncSweep`) has to find out *which organizations* (or,
+    for channels, which connections) it has work for before it can bind a tenant, and as the
+    NOBYPASSRLS app role that question returns nothing — a sweep that checks no one looks
+    exactly like one that found nothing to do. The same split approval's SLA sweep uses: the
+    BYPASSRLS outbox role discovers, the app role does every read that matters under the tenant
+    policy. Column-level, not the table: the bypass buys each sweep's own discovery columns and
+    nothing about a tenant's actual data.
 
     `REVOKE` then `GRANT` on every run (upgrade or downgrade), guarded on the table existing, so
     the privilege goes away with the table rather than lingering — `approval`'s env.py explains
@@ -124,11 +145,12 @@ def grant_reconcile_discovery(connection: Connection) -> None:
         ).scalar()
     ):
         return
-    for table in RECONCILE_DISCOVERY_TABLES:
+    for table, columns in RECONCILE_DISCOVERY_TABLES.items():
         if _exists(connection, table):
             connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."{table}" FROM "{reader}"'))
+            column_list = ", ".join(columns)
             connection.execute(
-                text(f'GRANT SELECT (organization_id) ON "{SCHEMA}"."{table}" TO "{reader}"')
+                text(f'GRANT SELECT ({column_list}) ON "{SCHEMA}"."{table}" TO "{reader}"')
             )
     connection.commit()
 

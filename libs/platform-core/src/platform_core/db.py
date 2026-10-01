@@ -260,6 +260,37 @@ def bulkhead_scope(
     return scope
 
 
+def raw_bulkhead_scope(
+    engine: AsyncEngine,
+) -> Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]:
+    """A `WorkScope` that hands over a session with **no transaction open** — for a sweep whose
+    own per-connection work opens several short transactions around a piece this build's I/O-
+    outside-transactions doctrine (`docs/io-outside-transactions.md`) keeps out of any of them: a
+    network call to an external provider. `bulkhead_scope` pre-opens one transaction spanning the
+    whole unit of work, which is right for a sweep that is pure DB reads and writes
+    (`ReconcileSweep`, `AlertSweep`) and wrong for one that is not — a second `session.begin()`
+    inside the handler (`app.channels.services.load_client_for_channel` and its siblings, each
+    opening and closing its own short transaction around the call) raises `InvalidRequestError`
+    on an already-begun session (found in production, 2026-10-01: `ChannelSyncSweep` wired to
+    `bulkhead_scope`, every tick's discovery succeeding and every sync failing on this exact
+    error, downstream of an unrelated grant bug that had been masking it since this sweep's own
+    first deploy). `organization_id` is accepted only to match `WorkScope`'s signature; binding
+    the tenant is each downstream call's own job, immediately before it opens its own short
+    transaction — the same reason `bind_tenant` is not called here either.
+    """
+    sessionmaker = async_sessionmaker(
+        engine, expire_on_commit=False, autoflush=False, class_=AsyncSession
+    )
+
+    @asynccontextmanager
+    async def scope(organization_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
+        del organization_id  # part of WorkScope's signature; bound per-call downstream, not here
+        async with sessionmaker() as session:
+            yield session
+
+    return scope
+
+
 def get_engine() -> AsyncEngine:
     if _engine is None:
         raise RuntimeError("init_engine() has not been called — is this inside the app lifespan?")

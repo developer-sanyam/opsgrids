@@ -21,18 +21,20 @@ from decimal import Decimal
 import httpx
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app import consumers
 from app.channels import selectors as channel_selectors
 from app.channels import services as channel_services
 from app.channels.base import ChannelOrder, ChannelOrderLine
 from app.channels.mock_provider import MockMarketplaceClient
+from app.channels.sweep import ChannelSyncSweep
 from app.config import settings
 from app.dispatch import services as dispatch_services
-from app.models import Channel, ChannelSyncLog, FulfilmentSettings, Order, Warehouse
+from app.models import SCHEMA, Channel, ChannelSyncLog, FulfilmentSettings, Order, Warehouse
 from app.orders import selectors as order_selectors
 from platform_core.auth import Scope
-from platform_core.db import dispose_engine, init_engine
+from platform_core.db import dispose_engine, init_engine, raw_bulkhead_scope
 from tests.channel_fixtures import (
     ALL_CHANNEL_PERMS,
     CHANNEL_READ_PERM,
@@ -926,3 +928,44 @@ class TestFulfilmentTrackingSync:
             occurred_at=datetime.now(UTC),
         )
         assert pushed is False
+
+
+class TestNightlySweep:
+    """`ChannelSyncSweep.tick()` against the real outbox role — not `channel_services` called
+    directly, the way the rest of this file tests it. Discovery (`_CONNECTED_CHANNELS_SQL`, run
+    as `opsgrids_outbox`) is a different code path from the per-connection sync above it, and a
+    column the outbox role was never granted fails there, not here. That gap went undetected
+    from this phase's own deploy until a real incident (`channels.sync.tick_failed`,
+    `InsufficientPrivilegeError` on `channels`, hundreds of consecutive failures with no
+    migration ever reporting an error) — the same shape `test_reconcile.py::TestNightlySweep`
+    already guards `ReconcileSweep` against, extended here so the next sweep does not reopen it.
+    """
+
+    async def test_the_sweep_discovers_every_connected_channel_as_the_real_outbox_role(
+        self, session, org_id, shop: Shop
+    ) -> None:
+        ctx = _write_ctx(org_id)
+        await connect_mock_channel(session, ctx, shop=shop)
+
+        connect = {"server_settings": {"search_path": f"{SCHEMA},public"}}
+        # Discovery as the real outbox role: exactly `_CONNECTED_CHANNELS_SQL`'s own columns,
+        # the same proof `test_reconcile.py` holds `ReconcileSweep` to. `raw_bulkhead_scope`,
+        # not a hand-rolled one: the exact work-scope wiring `app/main.py` uses for this sweep —
+        # a pre-opened transaction here (`bulkhead_scope`, or `ReconcileSweep`'s own pattern)
+        # collides with `load_client_for_channel`'s own short transaction as a second
+        # `session.begin()`, which is exactly the bug this test exists to catch.
+        discovery = create_async_engine(settings().outbox_dsn, connect_args=connect)
+        work = create_async_engine(settings().app_dsn, connect_args=connect)
+
+        try:
+            sweep = ChannelSyncSweep(
+                discovery_factory=async_sessionmaker(discovery),
+                work_scope=raw_bulkhead_scope(work),
+            )
+            report = await sweep.tick()
+        finally:
+            await discovery.dispose()
+            await work.dispose()
+
+        assert report.failed == 0
+        assert report.connections == 1

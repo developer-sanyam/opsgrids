@@ -17,6 +17,7 @@ from platform_core.db import (
     get_outbox_engine,
     get_outbox_sessionmaker,
     init_outbox_engine,
+    raw_bulkhead_scope,
 )
 from platform_core.logging import get_logger
 from platform_core.supervise import (
@@ -135,7 +136,12 @@ async def _start_channel_sync_sweep(app: FastAPI) -> None:
     app.state.channel_sweep_engine = engine
     sweep = ChannelSyncSweep(
         discovery_factory=get_outbox_sessionmaker(),
-        work_scope=bulkhead_scope(engine),
+        # Raw, not `bulkhead_scope`: every downstream call this sweep makes
+        # (`load_client_for_channel`, `sync_orders_for_channel`, `push_inventory_for_channel`)
+        # opens its own short transaction around the piece that touches the database, closed
+        # before the call to the marketplace is made (`docs/io-outside-transactions.md`) — a
+        # pre-opened transaction here collides with that as a second `session.begin()`.
+        work_scope=raw_bulkhead_scope(engine),
         interval=cfg.channel_sync_interval_seconds,
     )
     app.state.channel_sweep_task = start_background_sweep(sweep.run(), name="channels.sync")
