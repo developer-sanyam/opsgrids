@@ -198,26 +198,30 @@ test-shard: ## Tests for one shard of services: make test-shard SHARD=1 SHARDS=3
 	# CI splits the service tests across jobs rather than across processes, because on a
 	# 2-vCPU runner a second process makes both slower (see .github/workflows/ci.yml). Each
 	# shard gets its own runner and its own database, so the parallelism is real capacity.
+	#
+	# Same partition as ever (tools/shard.sh still sees every service — see its comment on
+	# why that must not change); shard-filtered.sh only narrows what gets fanned out
+	# afterwards, to AFFECTED_SERVICES when CI's `changes` job set one. Unset, or run by
+	# hand, it is every service in the shard, exactly as before.
 	@test -n "$(SHARD)" || (echo "SHARD= is required" && exit 1)
 	@test -n "$(SHARDS)" || (echo "SHARDS= is required" && exit 1)
 	@tools/shard-verify.sh $(SHARDS)
-	@tools/shard.sh $(SHARD) $(SHARDS) \
-	  | tools/fan-out.sh --stdin $(JOBS) tests ok-empty uv run pytest tests -q -p no:cacheprovider
+	@tools/shard-filtered.sh $(SHARD) $(SHARDS) $(JOBS) tests ok-empty \
+	  uv run pytest tests -q -p no:cacheprovider
 
 .PHONY: migration-check-shard
 migration-check-shard: ## Model/migration drift for one shard: SHARD=1 SHARDS=3
 	@test -n "$(SHARD)" || (echo "SHARD= is required" && exit 1)
 	@test -n "$(SHARDS)" || (echo "SHARDS= is required" && exit 1)
-	@tools/shard.sh $(SHARD) $(SHARDS) \
-	  | tools/fan-out.sh --stdin $(JOBS) alembic.ini strict uv run alembic check
+	@tools/shard-filtered.sh $(SHARD) $(SHARDS) $(JOBS) alembic.ini strict uv run alembic check
 
 .PHONY: migration-shard
 migration-shard: ## Migration round-trip for one shard: make migration-shard SHARD=1 SHARDS=3
 	@test -n "$(SHARD)" || (echo "SHARD= is required" && exit 1)
 	@test -n "$(SHARDS)" || (echo "SHARDS= is required" && exit 1)
 	@tools/shard-verify.sh $(SHARDS)
-	@tools/shard.sh $(SHARD) $(SHARDS) \
-	  | tools/fan-out.sh --stdin $(JOBS) alembic.ini strict $(CURDIR)/tools/roundtrip.sh
+	@tools/shard-filtered.sh $(SHARD) $(SHARDS) $(JOBS) alembic.ini strict \
+	  $(CURDIR)/tools/roundtrip.sh
 
 .PHONY: test-services
 test-services: ## Each service in its own process

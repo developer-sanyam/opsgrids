@@ -38,7 +38,24 @@ jobs:
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      # Which services the sharded backend jobs (migrations, tests) should actually run,
+      # on top of the backend/frontend split above. `services_all=true` means "don't trust
+      # the list, run every service in every shard" — exactly today's behaviour — and is
+      # the answer whenever anything outside a single services/<name>/ directory changed:
+      # libs/platform-core (every service depends on it), libs/contracts, root config,
+      # tooling, the workflow itself, or a push that isn't a pull request. `services_list`
+      # only matters when services_all is false, and is consumed by
+      # tools/filter-affected.sh via the AFFECTED_ALL / AFFECTED_SERVICES env vars — unset
+      # (or services_all=true) it is a no-op passthrough, so a target run outside CI, or a
+      # CI run this job did not gate, always does the full, safe thing.
+      services_all: ${{ steps.filter.outputs.services_all }}
+      services_list: ${{ steps.filter.outputs.services_list }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            tools/affected-areas.sh
+          sparse-checkout-cone-mode: false
       - id: filter
         env:
           GH_TOKEN: ${{ github.token }}
@@ -46,38 +63,27 @@ jobs:
           set -euo pipefail
 
           # A push to main verifies everything, always. Skipping work on the branch every
-          # deployment is cut from is a false economy.
+          # deployment is cut from is a false economy. Classification only means anything
+          # for a pull request's own diff, so this is the one case tools/affected-areas.sh
+          # is not even asked — empty stdin gets the same "run everything" answer from it
+          # regardless, but saying so here needs no subprocess.
           if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "backend=true"  >> "$GITHUB_OUTPUT"
-            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "backend=true"
+              echo "frontend=true"
+              echo "services_all=true"
+              echo "services_list="
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          files=$(gh api --paginate \
+          # An empty file list means the API told us nothing useful; tools/affected-areas.sh
+          # treats no input the same way — run everything rather than conclude a pull
+          # request changed nothing.
+          gh api --paginate \
             "repos/${{ github.repository }}/pulls/${{ github.event.number }}/files" \
-            --jq '.[].filename')
-
-          backend=false
-          frontend=false
-          while read -r f; do
-            [ -n "$f" ] || continue
-            case "$f" in
-              frontend/*)            frontend=true ;;
-              .github/workflows/*)   backend=true; frontend=true ;;
-              *)                     backend=true ;;
-            esac
-          done <<< "$files"
-
-          # An empty file list means the API told us nothing useful; run everything rather
-          # than conclude a pull request changed nothing.
-          if [ -z "$files" ]; then
-            backend=true
-            frontend=true
-          fi
-
-          echo "backend=$backend"   >> "$GITHUB_OUTPUT"
-          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
-          echo "backend=$backend frontend=$frontend"
+            --jq '.[].filename' \
+            | tools/affected-areas.sh | tee -a "$GITHUB_OUTPUT"
 
   # The backend was one job of thirteen serial steps and 637s — the whole pipeline's
   # critical path. It is now three, because of a measurement: on a 2-vCPU runner, running
@@ -183,6 +189,12 @@ jobs:
       JOBS: 1
       SHARD: ${{ matrix.shard }}
       SHARDS: 3
+      # Narrows migration-shard / migration-check-shard to what this pull request could
+      # affect (tools/filter-affected.sh). services_all=true — any non-pull_request event,
+      # or a change outside a single services/<name>/ dir — makes this a no-op: every
+      # service in the shard runs, exactly as before the `changes` job computed this.
+      AFFECTED_ALL: ${{ needs.changes.outputs.services_all }}
+      AFFECTED_SERVICES: ${{ needs.changes.outputs.services_list }}
 
     services:
       postgres:
@@ -218,13 +230,18 @@ jobs:
             -f tools/dev-bootstrap/init-db.sql
 
       - name: Migrations round-trip
-        # upgrade head → downgrade base → upgrade head, for this shard's services. A
-        # downgrade() that does not revert is found here, not during a rollback. Leaves the
-        # shard's schemas at head, which is what the drift check below needs.
+        # upgrade head → downgrade base → upgrade head, for this shard's services — or the
+        # ones among them AFFECTED_SERVICES names, when the `changes` job set one (see the
+        # job-level env comment above and tools/shard-filtered.sh). A downgrade() that does
+        # not revert is found here, not during a rollback. Leaves the shard's schemas at
+        # head, which is what the drift check below needs — for whichever services this
+        # step actually ran; the two steps always agree, since both go through the same
+        # filter.
         run: make migration-shard
 
       - name: Models match migrations
-        # Fails if someone changed a model without generating a migration.
+        # Fails if someone changed a model without generating a migration. Same filter as
+        # the round-trip above, so it only checks schemas that step actually migrated.
         run: make migration-check-shard
 
   tests:
@@ -242,6 +259,11 @@ jobs:
       JOBS: 1
       SHARD: ${{ matrix.shard }}
       SHARDS: 3
+      # Narrows "Service tests" (make test-shard) to what this pull request could affect —
+      # see the identical note on the migrations job above. Does not touch "Apply
+      # migrations" below, which stays unfiltered on purpose (see that step).
+      AFFECTED_ALL: ${{ needs.changes.outputs.services_all }}
+      AFFECTED_SERVICES: ${{ needs.changes.outputs.services_list }}
 
     services:
       postgres:
@@ -304,6 +326,11 @@ jobs:
         run: make migrate
 
       - name: Service tests
+        # Every service in this shard, unless the `changes` job narrowed AFFECTED_SERVICES
+        # — see tools/filter-affected.sh and tools/shard-filtered.sh. Migrations just above
+        # are deliberately unfiltered; this step is not, because test-shard's fan-out is
+        # service-local by construction (two documented exceptions, folded into
+        # AFFECTED_SERVICES by the `changes` job, not into this step).
         run: make test-shard
 
       - name: Library tests
