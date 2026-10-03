@@ -499,6 +499,119 @@ class TestResolveOrProvisionIdentityInvite:
             {"token": "tok-2", "email": "invitee@acme.com", "full_name": "Invitee"},
         ) in provisioning.calls
 
+    async def test_resolve_or_provision_invite_falls_back_to_sign_in_when_already_a_member(
+        self,
+    ) -> None:
+        """The one case the `except` clause around `accept_invitation_federated` is actually
+        for (final-review fix-round, "Finding 4's fallback"): account-service's `add_member`
+        raises `ConflictProblem` ("That person is already a member of this organization")
+        when the invitee already holds an active membership in the *invited* organization —
+        a stale, not-yet-revoked invitation to someone who got added some other way in the
+        meantime. The invitation's own validity was never in question here (token real,
+        email matches, not expired/revoked) — only the "add" half is redundant — so this
+        signs the person into their existing account rather than failing the whole flow.
+        """
+        existing_user = DirectoryUser(
+            user_id=uuid.uuid4(),
+            email="already-member@acme.com",
+            full_name="Already A Member",
+            is_active=True,
+            memberships=[membership(uuid.uuid4(), uuid.uuid4(), "acme", "Acme Technologies")],
+        )
+        directory = FakeDirectory([existing_user])
+        provisioning = FakeProvisioningClient()
+        provisioning.already_member_tokens.add("tok-already-member")
+        identity = oidc.VerifiedIdentity(
+            subject="google-sub-member", email="already-member@acme.com"
+        )
+
+        user = await services._resolve_or_provision_identity(
+            directory=directory,
+            provisioning=provisioning,
+            intent="invite",
+            invitation_token="tok-already-member",
+            identity=identity,
+            full_name_hint="Already A Member",
+            organization_name=None,
+            slug=None,
+        )
+
+        assert user.user_id == existing_user.user_id
+        # The fallback was genuinely exercised (not short-circuited): `accept_invitation_federated`
+        # was called and raised, and *then* the existing account was used.
+        assert (
+            "accept_invitation_federated",
+            {
+                "token": "tok-already-member",
+                "email": "already-member@acme.com",
+                "full_name": "Already A Member",
+            },
+        ) in provisioning.calls
+
+    async def test_resolve_or_provision_invite_refuses_invalid_invite_with_existing_account(
+        self,
+    ) -> None:
+        """The regression test the final-review fix-round asked for: before this fix, the
+        `except` clause around `accept_invitation_federated` caught `(ConflictProblem,
+        NotFoundProblem)` together and fell back to `find_by_email` on either. That is too
+        broad — `NotFoundProblem` is account-service's *one* opaque message for every invalid-
+        invitation cause (unknown token, expired, revoked, wrong email —
+        `services.accept_invitation` there), never just "already accepted". When the verified
+        identity's email happens to already have a platform account (as it does here — a
+        realistic case, not a contrived one: anyone can already have signed up separately
+        before an admin invites the same address to a second organization), the broad catch
+        silently signed that person into their *existing*, unrelated account instead of
+        refusing — exactly the "clearly-wrong invitation should refuse, not silently log the
+        person into an unrelated account" gap spec §3 requires closed.
+
+        The invitation token here resolves to a real invitation with the *matching* email
+        (so this is not the mismatch case `test_resolve_or_provision_invite_rejects_email_mismatch`
+        above already covers) that is simply revoked/expired (`entry[3] = True`) — the
+        `NotFoundProblem` account-service raises for that is indistinguishable, by type, from
+        every other invalid-invitation cause, which is exactly why the fix narrows the
+        `except` to `ConflictProblem` only rather than trying to special-case "expired".
+        """
+        existing_user = DirectoryUser(
+            user_id=uuid.uuid4(),
+            email="already-has-account@acme.com",
+            full_name="Already Has An Account",
+            is_active=True,
+            memberships=[membership(uuid.uuid4(), uuid.uuid4(), "other-co", "Other Co")],
+        )
+        directory = FakeDirectory([existing_user])
+        provisioning = FakeProvisioningClient()
+        org_id, user_id = uuid.uuid4(), uuid.uuid4()
+        provisioning.invitations["tok-revoked"] = (
+            "already-has-account@acme.com",
+            org_id,
+            user_id,
+            True,  # revoked_or_expired
+        )
+        identity = oidc.VerifiedIdentity(
+            subject="google-sub-revoked", email="already-has-account@acme.com"
+        )
+
+        with pytest.raises(NotFoundProblem) as excinfo:
+            await services._resolve_or_provision_identity(
+                directory=directory,
+                provisioning=provisioning,
+                intent="invite",
+                invitation_token="tok-revoked",
+                identity=identity,
+                full_name_hint="Already Has An Account",
+                organization_name=None,
+                slug=None,
+            )
+
+        # Same opaque message as every other invalid-invitation case — proven directly against
+        # account-service's own wording rather than just "some 404 was raised".
+        assert excinfo.value.detail == "That invitation is not valid"
+        # The property that matters: the call must actually REFUSE, not resolve quietly to
+        # `existing_user` the way the pre-fix broad catch did. `pytest.raises` above already
+        # proves no `DirectoryUser` was returned at all — a regression that restores the broad
+        # `except (ConflictProblem, NotFoundProblem)` makes this `pytest.raises` block fail
+        # (the function returns `existing_user` instead of raising).
+
 
 class _RecordingDirectory(FakeDirectory):
     """Mirrors `test_sso.py`'s own `_RecordingDirectory` — the assertion that matters for a

@@ -123,6 +123,13 @@ class FakeProvisioningClient:
         self.existing_slugs: set[str] = set()
         #: token -> (email, organization_id, user_id, revoked_or_expired: bool)
         self.invitations: dict[str, tuple[str, uuid.UUID, uuid.UUID, bool]] = {}
+        #: Tokens that simulate account-service's `add_member` raising `ConflictProblem`
+        #: ("That person is already a member of this organization") — the one narrow case
+        #: `_resolve_or_provision_identity`'s invite branch treats as non-fatal (Finding 4 of
+        #: the final whole-branch review). Checked before `.invitations`, mirroring the real
+        #: call order (`accept_invitation` validates the token, *then* `add_member` raises
+        #: this): a token can be in both this set and `.invitations` at once.
+        self.already_member_tokens: set[str] = set()
 
     async def signup_federated(
         self, *, organization_name: str, slug: str, full_name: str, email: str
@@ -145,6 +152,8 @@ class FakeProvisioningClient:
                 {"token": token, "email": email, "full_name": full_name},
             )
         )
+        if token in self.already_member_tokens:
+            raise ConflictProblem("That person is already a member of this organization")
         entry = self.invitations.get(token)
         if entry is None or entry[3]:
             raise NotFoundProblem("That invitation is not valid")

@@ -4712,18 +4712,26 @@ async def _resolve_or_provision_identity(
     called, so a repeat accept of the same invitation from the same linked identity never
     gets here at all.
 
-    A `ConflictProblem` ("already a member") or `NotFoundProblem` ("invitation not valid",
-    account-service's one opaque message for unknown/expired/revoked/already-accepted/
-    email-mismatched — see `services.accept_invitation` there) from `accept_invitation_federated`
-    is non-fatal **when the asserted identity already resolves to a directory user**: a
-    legitimate retry (this exact invitation was already honoured for this person) or an
-    outright "already a member" conflict both mean the person is already who they say they
-    are, with nothing left for this invitation to do, so they are signed in on their existing
-    account rather than the whole flow failing. When no existing account matches either,
-    there is nothing to fall back to and the original refusal propagates unchanged — this is
-    what keeps the email-match guard load-bearing: an attacker holding a forged token or
-    asserting the wrong email, with no account of their own under that address, still gets
-    the same opaque failure as today.
+    Only `ConflictProblem` ("That person is already a member of this organization" —
+    account-service's `add_member`, raised when the invitation itself was genuine but the
+    invitee already holds an active membership in the invited organization) is caught here
+    and treated as non-fatal **when the asserted identity already resolves to a directory
+    user**: the invitation was valid, only the "add" half is redundant, so the person is
+    signed in on their existing account rather than the whole flow failing.
+
+    `NotFoundProblem` is deliberately **not** caught: it is account-service's one opaque
+    message for every *invalid*-invitation cause (unknown token, expired, revoked, wrong
+    email — see `services.accept_invitation` there), including "already accepted", with no
+    way to tell those apart from the exception type alone — that opacity is the whole point
+    of the email-match guard (an attacker holding a forged token or asserting the wrong email
+    must learn nothing about *why* it failed). Catching it here to special-case "already
+    accepted" would catch all the others too, and silently sign someone who merely happens to
+    already have an account under the asserted email into that unrelated account instead of
+    refusing — spec §3 requires a clearly-wrong invitation to refuse, not resolve quietly.
+    So `NotFoundProblem` always propagates unchanged, exactly like every other invalid-
+    invitation case; only a true `ConflictProblem` falls back to `find_by_email`, and even
+    then only when that lookup actually finds someone — otherwise the conflict itself
+    propagates (there is nothing to fall back to).
     """
     if intent == "invite":
         assert invitation_token is not None  # enforced in oauth_social_start
@@ -4731,7 +4739,7 @@ async def _resolve_or_provision_identity(
             provisioned = await provisioning.accept_invitation_federated(
                 token=invitation_token, email=identity.email, full_name=full_name_hint
             )
-        except (ConflictProblem, NotFoundProblem):
+        except ConflictProblem:
             existing = await directory.find_by_email(identity.email)
             if existing is None:
                 raise
