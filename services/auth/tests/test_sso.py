@@ -557,9 +557,7 @@ class TestStateAndPkce:
             await _callback(session, cfg, pair, directory, idp, store, state=redirect.state)
         assert raised.value.status_code == 401
 
-    async def test_state_store_consume_takes_explicit_parser(
-        self, store: oidc.StateStore
-    ) -> None:
+    async def test_state_store_consume_takes_explicit_parser(self, store: oidc.StateStore) -> None:
         """`consume` takes an optional parser — a pure widening for a second pending-request
         shape a later flow will use. Every other test in this file exercises the default
         (`AuthorizationRequest.from_json`, used implicitly through `sso_callback`); this is the
