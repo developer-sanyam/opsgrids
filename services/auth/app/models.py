@@ -434,7 +434,9 @@ class PlatformOAuthProvider(Base):
     __tablename__ = "platform_oauth_providers"
 
     provider: Mapped[str] = mapped_column(String(20), primary_key=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     client_id: Mapped[str | None] = mapped_column(String(255))
     client_secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
