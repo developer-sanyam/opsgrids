@@ -787,7 +787,7 @@ class TestSignupFederated:
                 "full_name": "Ada Federated",
                 "email": "ada@acme-federated.com",
             },
-            headers=internal(),
+            headers=internal_as("auth"),
         )
         assert response.status_code == 201, response.text
         body = response.json()
@@ -807,6 +807,23 @@ class TestSignupFederated:
         )
         assert response.status_code == 401
 
+    async def test_a_caller_other_than_auth_is_refused(self, client: AsyncClient) -> None:
+        """Finding 5 of the final whole-branch review: the spec's stated trust model is
+        "auth-service, already holding a verified identity" — a valid service token minted
+        for an unrelated service must not reach this route either, same posture
+        `require_console_caller` already holds for console's own narrower routes above."""
+        response = await client.post(
+            "/internal/v1/signup-federated",
+            json={
+                "organization_name": "Acme",
+                "slug": "acme-federated-wrong-caller",
+                "full_name": "Ada",
+                "email": "ada-wrong-caller@acme-federated.com",
+            },
+            headers=internal_as("console"),
+        )
+        assert response.status_code == 401
+
     async def test_a_taken_slug_is_a_409_same_as_the_public_route(
         self, client: AsyncClient, org: Organization
     ) -> None:
@@ -818,7 +835,7 @@ class TestSignupFederated:
                 "full_name": "Dup",
                 "email": "dup-slug@acme-federated.com",
             },
-            headers=internal(),
+            headers=internal_as("auth"),
         )
         assert response.status_code == 409
 
@@ -835,7 +852,7 @@ class TestSignupFederated:
                 "full_name": "Dup",
                 "email": "manager@example.com",
             },
-            headers=internal(),
+            headers=internal_as("auth"),
         )
         assert response.status_code == 409
 
@@ -872,7 +889,7 @@ class TestAcceptInvitationFederated:
         response = await client.post(
             "/internal/v1/invitations/accept-federated",
             json={"token": raw, "email": "invitee@example.com", "full_name": "Invitee"},
-            headers=internal(),
+            headers=internal_as("auth"),
         )
         assert response.status_code == 200, response.text
         body = response.json()
@@ -893,7 +910,7 @@ class TestAcceptInvitationFederated:
         response = await client.post(
             "/internal/v1/invitations/accept-federated",
             json={"token": raw, "email": "attacker@evil.com", "full_name": "Attacker"},
-            headers=internal(),
+            headers=internal_as("auth"),
         )
         assert response.status_code == 404
         assert response.json()["detail"] == "That invitation is not valid"
@@ -902,7 +919,7 @@ class TestAcceptInvitationFederated:
         response = await client.post(
             "/internal/v1/invitations/accept-federated",
             json={"token": "z" * 40, "email": "nobody@example.com", "full_name": "Nobody"},
-            headers=internal(),
+            headers=internal_as("auth"),
         )
         assert response.status_code == 404
         assert response.json()["detail"] == "That invitation is not valid"
@@ -918,6 +935,24 @@ class TestAcceptInvitationFederated:
         response = await client.post(
             "/internal/v1/invitations/accept-federated",
             json={"token": raw, "email": "no-token@example.com", "full_name": "X"},
+        )
+        assert response.status_code == 401
+
+    async def test_a_caller_other_than_auth_is_refused(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        """Finding 5 of the final whole-branch review: same narrower trust model as
+        `signup-federated` above — a valid service token minted for an unrelated service must
+        not reach this route either."""
+        raw = await _invite_raw(session, org, people["manager"], email="wrong-caller@example.com")
+        response = await client.post(
+            "/internal/v1/invitations/accept-federated",
+            json={"token": raw, "email": "wrong-caller@example.com", "full_name": "X"},
+            headers=internal_as("console"),
         )
         assert response.status_code == 401
 

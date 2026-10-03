@@ -406,6 +406,23 @@ def _trace_directory_read(request: Request, user: User, how: str) -> None:
 
 # --------------------------------------------------------------------- federated provisioning
 
+#: The narrower caller check for these two routes specifically: valid and addressed to
+#: account (`require_service_token`, applied to the whole router, already checked that) and
+#: issued by auth-service by name. The spec's stated trust model for federated provisioning is
+#: "auth-service, already holding a verified identity" — not "any of the platform's services
+#: holding an account-audience token", which is all the router-level dependency alone proves.
+#: Same shape as `require_console_caller` above, narrowed to a different caller.
+TRUSTED_FEDERATED_CALLER = "auth"
+
+
+def require_auth_caller(request: Request) -> None:
+    caller = getattr(request.state, "service_caller", None)
+    if caller != TRUSTED_FEDERATED_CALLER:
+        raise UnauthorizedProblem("Valid service token required")
+
+
+AuthCallerDep = Annotated[None, Depends(require_auth_caller)]
+
 
 @router.post(
     "/signup-federated",
@@ -413,7 +430,9 @@ def _trace_directory_read(request: Request, user: User, how: str) -> None:
     status_code=201,
     summary="Create an organisation for a verified OAuth identity (called by auth-service)",
 )
-async def signup_federated(payload: SignupFederatedIn, directory: SessionDep) -> SignupFederatedOut:
+async def signup_federated(
+    payload: SignupFederatedIn, directory: SessionDep, _auth: AuthCallerDep
+) -> SignupFederatedOut:
     """auth-service's entry point once Google/Microsoft has already proven the email — not a
     variant of the public `POST /account/signup` route reachable with no caller identity at all.
     Mixing "anyone with no account" and "auth-service, already holding a verified identity" on
@@ -455,7 +474,7 @@ async def signup_federated(payload: SignupFederatedIn, directory: SessionDep) ->
     summary="Accept an invitation for a verified OAuth identity (called by auth-service)",
 )
 async def accept_invitation_federated(
-    payload: InvitationAcceptFederatedIn, directory: SessionDep
+    payload: InvitationAcceptFederatedIn, directory: SessionDep, _auth: AuthCallerDep
 ) -> InvitationAcceptFederatedOut:
     """auth-service's entry point once Google/Microsoft has already proven `payload.email` —
     not a variant of the public `POST /invitations/accept` route, which is reachable with no
@@ -475,6 +494,4 @@ async def accept_invitation_federated(
         membership = await services.accept_invitation(
             session, payload.token, payload.full_name, expected_email=payload.email
         )
-    return InvitationAcceptFederatedOut(
-        organization_id=organization_id, user_id=membership.user_id
-    )
+    return InvitationAcceptFederatedOut(organization_id=organization_id, user_id=membership.user_id)
