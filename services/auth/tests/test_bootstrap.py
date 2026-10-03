@@ -129,10 +129,45 @@ class TestSeedOauthProviders:
         microsoft = await session.get(PlatformOAuthProvider, "microsoft")
         assert microsoft.enabled is False
 
+    async def test_microsoft_stays_disabled_even_with_both_credentials_present(
+        self, session, cfg, fake_idp
+    ) -> None:
+        """Finding 6 of the final whole-branch review: Microsoft's `/common` discovery issuer
+        is a literal, unresolved `{tenantid}` template that can never match
+        `verify_id_token`'s exact-issuer check — Microsoft sign-in is certain to fail for every
+        token. Microsoft must stay hard-disabled regardless of credentials, with no discovery
+        call made for it, until tenant-aware issuer validation exists. Google must be
+        unaffected by Microsoft's credentials being present."""
+        full_cfg = cfg.model_copy(
+            update={
+                "google_oauth_client_id": "client-123",
+                "google_oauth_client_secret": SecretStr("s3cr3t-value"),
+                "microsoft_oauth_client_id": "ms-client-456",
+                "microsoft_oauth_client_secret": SecretStr("ms-s3cr3t-value"),
+            }
+        )
+
+        await seed_oauth_providers(session, cfg=full_cfg)
+        await session.commit()
+
+        microsoft = await session.get(PlatformOAuthProvider, "microsoft")
+        assert microsoft is not None and microsoft.enabled is False
+        # Hard-disabled, not half-configured: no stray client_id/secret/endpoints stored for a
+        # provider this seed refuses to ever enable.
+        assert microsoft.client_id is None
+        assert microsoft.client_secret_enc is None
+        assert microsoft.issuer is None
+        assert fake_idp.discovered == [
+            "https://accounts.google.com/.well-known/openid-configuration"
+        ], "microsoft must never reach discovery, even with full credentials"
+
+        google = await session.get(PlatformOAuthProvider, "google")
+        assert google is not None and google.enabled is True
+
     async def test_the_stored_secret_is_sealed_never_plaintext(
         self, session, cfg, fake_idp
     ) -> None:
-        secret_value = "s3cr3t-value-should-never-appear-in-the-column"
+        secret_value = "s3cr3t-value-should-never-appear-in-the-column"  # pragma: allowlist secret
         full_cfg = cfg.model_copy(
             update={
                 "google_oauth_client_id": "client-123",
@@ -165,9 +200,9 @@ class TestSeedOauthProviders:
 
         count = (
             await session.execute(
-                select(func.count()).select_from(PlatformOAuthProvider).where(
-                    PlatformOAuthProvider.provider == "google"
-                )
+                select(func.count())
+                .select_from(PlatformOAuthProvider)
+                .where(PlatformOAuthProvider.provider == "google")
             )
         ).scalar_one()
         assert count == 1, "re-running must update the existing row, not insert a second one"
@@ -175,7 +210,7 @@ class TestSeedOauthProviders:
     async def test_a_credential_rotation_overwrites_the_previous_sealed_secret(
         self, session, cfg, fake_idp
     ) -> None:
-        """"run again whenever a client secret rotates" (the function's own docstring) must
+        """ "run again whenever a client secret rotates" (the function's own docstring) must
         actually take effect — a second run with a new secret must not leave the old one
         readable under either credential."""
         first_cfg = cfg.model_copy(
@@ -244,4 +279,3 @@ class TestTheBootstrapCommandLine:
 
         bootstrap.main()
         assert calls == ["seed_platform_oauth_providers"]
-

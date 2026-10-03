@@ -199,6 +199,18 @@ async def seed_oauth_providers(session: AsyncSession, *, cfg: Settings) -> None:
     Discovery is only attempted once both credentials are present — a provider with no
     secret gets no network call at all, so a bare `bin/seed-oauth-providers` on a fresh box
     with nothing configured yet never reaches out to Google or Microsoft.
+
+    **Microsoft is hard-disabled here, regardless of credentials.** Verified against the live
+    Microsoft discovery document: the `/common` endpoint's `issuer` is a literal, unresolved
+    `{tenantid}` template, which can never match `verify_id_token`'s exact-issuer check — every
+    Microsoft sign-in is certain to fail, not merely unlikely to work. Without this guard the
+    row would still be marked `enabled=True` and log success, so an operator who later adds
+    Microsoft credentials would see no indication anything is wrong until users started
+    hitting opaque failures. Do **not** "fix" this by relaxing `verify_id_token`'s
+    `email_verified` requirement anywhere: Microsoft's `email` claim is tenant-admin-controlled
+    and unverified, and relaxing that check combined with this feature's auto-link behaviour is
+    exactly the nOAuth account-takeover pattern. Google is unaffected and keeps working exactly
+    as today. Lift this once tenant-aware issuer validation exists for Microsoft.
     """
     idp = oidc.HttpIdpClient()
     try:
@@ -211,6 +223,15 @@ async def seed_oauth_providers(session: AsyncSession, *, cfg: Settings) -> None:
             if row is None:
                 row = PlatformOAuthProvider(provider=provider)
                 session.add(row)
+            if provider == "microsoft":
+                row.enabled = False
+                if client_id and client_secret:
+                    log.warning(
+                        "auth.bootstrap.oauth_provider_force_disabled",
+                        provider=provider,
+                        reason="tenant_aware_issuer_validation_not_implemented",
+                    )
+                continue
             if not client_id or not client_secret:
                 # Half a credential pair is not a usable one — leave it disabled rather
                 # than storing a `client_id` with nothing to exchange it against.
