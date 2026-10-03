@@ -59,15 +59,28 @@ class HttpProvisioningClient:
             headers["X-Correlation-ID"] = correlation
         return headers
 
+    @staticmethod
+    def _detail(response: httpx.Response, fallback: str) -> str:
+        """The `detail` of a problem+json refusal, when there is one to read — never an
+        unhandled `JSONDecodeError` from a non-JSON error body (a proxy error page, a
+        misrouted gateway hop, an empty body on timeout). Same try/except idiom as
+        `console.delegation._problem_detail`, adapted to fall back to a caller-supplied
+        message rather than the bare status code."""
+        try:
+            detail = response.json().get("detail")
+        except (ValueError, AttributeError):
+            detail = None
+        return detail if isinstance(detail, str) and detail.strip() else fallback
+
     async def _post(self, path: str, body: dict[str, str]) -> dict[str, str]:
         try:
             response = await self._client.post(path, headers=self._headers(), json=body)
         except httpx.HTTPError as exc:
             raise UpstreamUnavailableProblem("The directory is unavailable") from exc
         if response.status_code == 409:
-            raise ConflictProblem(response.json().get("detail", "That account already exists"))
+            raise ConflictProblem(self._detail(response, "That account already exists"))
         if response.status_code == 404:
-            raise NotFoundProblem(response.json().get("detail", "That invitation is not valid"))
+            raise NotFoundProblem(self._detail(response, "That invitation is not valid"))
         response.raise_for_status()
         return response.json()  # type: ignore[no-any-return]
 
