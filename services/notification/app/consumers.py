@@ -41,7 +41,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import a1_services, domain, selectors, services, w1_services, w1_setup
+from app import a1_services, domain, intent, selectors, services, w1_services, w1_setup, webhooks
 from app.config import settings
 from app.contacts import ContactResolver, make_contact_resolver
 from app.models import ProcessedEvent
@@ -269,6 +269,98 @@ async def fold_inbound_contact(
     log.info("inbound.contact.resolved", matched=resolution.contact_id is not None)
 
 
+async def classify_inbound_intent(
+    envelope: dict[str, Any], classify: intent.IntentClassifier | None
+) -> str:
+    """Read what one inbound message means and act on a confident marketing opt-out, once.
+
+    A third handler on `services.EVT_INBOUND_RECEIVED`, with its own idempotency id (derived from
+    the event id, like `fold_inbound_contact`'s) so the three folds never read each other's
+    `processed_events` row as theirs. Returns what happened, for the tests and the log:
+    `disabled`, `redelivered`, `skipped`, or `intent.ACTION_*`.
+
+    **Three transactions, on purpose.** The message is read in one, TypeSafe is asked with no
+    transaction open, and the verdict is written (with the idempotency row) in a third -- a slow
+    third party must never hold a database connection. The cost is a window in which a redelivery
+    could classify twice; the second writer finds `processed_events` already set and drops out.
+
+    **Skips, rather than classifies:** no classifier configured (the feature is off), a message
+    the keyword rules already handled (they are authoritative and already acted), a message with
+    no text (media), and one already classified. An unreachable TypeSafe raises, so `EventConsumer`
+    redelivers once and dead-letters on a second failure -- the same contract the contact lookup
+    relies on -- instead of acknowledging a message nothing was decided about.
+    """
+    if classify is None:
+        return "disabled"
+    event_id = uuid.UUID(str(envelope["event_id"]))
+    organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload = envelope.get("payload") or {}
+    if str(payload.get("organization_id", organization_id)) != str(organization_id):
+        log.error("inbound.intent.envelope_payload_org_mismatch")
+        return "skipped"
+    message_id = uuid.UUID(str(payload["inbound_message_id"]))
+    conversation_id = uuid.UUID(str(payload["conversation_id"]))
+    fold_id = uuid.uuid5(event_id, "intent_classify")
+    cfg = settings()
+
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, fold_id):
+            return "redelivered"
+        message = await selectors.get_inbound_message(
+            session, organization_id, conversation_id, message_id
+        )
+        text = (
+            pii.open_sealed(message.body_enc, settings=cfg)
+            if message is not None and message.body_enc is not None
+            else None
+        )
+        skip = (
+            message is None
+            or message.intent_classified_at is not None
+            or message.type != "text"
+            or not text
+            or not text.strip()
+            # The keyword rules already handled this one (fold_inbound_message acted on it).
+            or webhooks.is_stop_keyword(text)
+            or webhooks.is_start_keyword(text)
+        )
+        if skip:
+            mark_processed(session, ProcessedEvent, fold_id, "notification.inbound.intent_skipped")
+            return "skipped"
+        assert text is not None  # for the type checker: `skip` covers the empty case
+
+    try:
+        verdict = await classify(text)
+    except intent.IntentUnavailable:
+        log.warning("inbound.intent.unavailable")
+        raise
+
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, fold_id):
+            return "redelivered"
+        message = await selectors.get_inbound_message(
+            session, organization_id, conversation_id, message_id
+        )
+        conversation = (
+            await selectors.get_conversation(session, organization_id, message.conversation_id)
+            if message is not None
+            else None
+        )
+        if message is None or conversation is None:
+            mark_processed(session, ProcessedEvent, fold_id, "notification.inbound.intent_skipped")
+            return "skipped"
+        phone = pii.open_sealed(conversation.wa_address_enc, settings=cfg)
+        action = await services.apply_inbound_intent(
+            session,
+            organization_id=organization_id,
+            message=message,
+            phone=phone,
+            verdict=verdict,
+        )
+        mark_processed(session, ProcessedEvent, fold_id, "notification.inbound.intent_classified")
+    return action
+
+
 async def wake_automation_run(
     envelope: dict[str, Any], resolve_target: TargetResolver | None = None
 ) -> str:
@@ -333,6 +425,15 @@ def register(
         await fold_inbound_contact(envelope, resolve_contact)
 
     consumer.on(services.EVT_INBOUND_RECEIVED)(on_inbound_received)
+
+    # Off (a no-op handler) unless TYPESAFE_API_KEY is set. Registered as a second handler on the
+    # same key; `EventConsumer` runs every handler bound to a key.
+    classifier = intent.make_classifier(settings())
+
+    async def on_inbound_intent(envelope: dict[str, Any]) -> None:
+        await classify_inbound_intent(envelope, classifier)
+
+    consumer.on(services.EVT_INBOUND_RECEIVED)(on_inbound_intent)
 
     async def on_automation_wake(envelope: dict[str, Any]) -> None:
         await wake_automation_run(envelope, resolve_target)

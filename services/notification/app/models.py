@@ -38,6 +38,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -619,6 +620,14 @@ class InboundMessage(Base, TenantBase):
     profile_name_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     #: `"J•••"` — first character, then a fixed run of bullets, never the name's real length.
     profile_name_masked: Mapped[str | None] = mapped_column(String(8))
+    #: What `app/intent.py` judged the message to want (`intent.LABELS`), the action taken on it
+    #: (`suppress` | `review` | `none`) and P(marketing opt-out). All null until classified, and
+    #: forever null where the feature is off or the message is media or a keyword. A label and a
+    #: probability, never the text -- so none of it is PII.
+    intent: Mapped[str | None] = mapped_column(String(24))
+    intent_action: Mapped[str | None] = mapped_column(String(12))
+    intent_p_opt_out: Mapped[float | None] = mapped_column(Float)
+    intent_classified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         UniqueConstraint(

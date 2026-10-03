@@ -35,6 +35,7 @@ from app import (
     dns_check,
     domain,
     e1_tracking,
+    intent,
     memberships,
     selectors,
     w1_services,
@@ -2082,6 +2083,8 @@ async def _record_stop_request(
     organization_id: uuid.UUID,
     phone: str,
     reference: str | None = None,
+    source: str = consent.SOURCE_INBOUND_KEYWORD,
+    evidence: str | None = None,
 ) -> None:
     """STOP, UNSUBSCRIBE and the "Stop promotions" labels (`webhooks.STOP_KEYWORDS`), typed or
     tapped. Opts the number out of **marketing** on WhatsApp — in the consent ledger and in the
@@ -2104,10 +2107,48 @@ async def _record_stop_request(
         organization_id=organization_id,
         subject=consent.subject_for("whatsapp", phone),
         purposes=(consent.MARKETING,),
-        source=consent.SOURCE_INBOUND_KEYWORD,
-        evidence=_keyword_evidence("STOP", reference),
+        source=source,
+        evidence=evidence or _keyword_evidence("STOP", reference),
     )
-    log.info("notification.whatsapp.stop_received")
+    log.info("notification.whatsapp.stop_received", source=source)
+
+
+async def apply_inbound_intent(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    message: InboundMessageRow,
+    phone: str,
+    verdict: intent.Verdict,
+) -> str:
+    """Record `app/intent.py`'s verdict on the message, and act on it if it is a confident
+    marketing opt-out. Returns the action taken (`intent.ACTION_*`).
+
+    A suppression goes through the same `_record_stop_request` a typed STOP does -- the consent
+    ledger and the `Preference` every send path checks -- so it is exactly as binding and exactly
+    as reversible (a later START lifts it). Its ledger row says `inbound_intent`, so a reader can
+    tell it was inferred from free text rather than typed as a command, and the evidence names the
+    probability and the message, never its words."""
+    action = verdict.action
+    if action == intent.ACTION_SUPPRESS:
+        await _record_stop_request(
+            session,
+            organization_id=organization_id,
+            phone=phone,
+            reference=message.provider_message_id,
+            source=consent.SOURCE_INBOUND_INTENT,
+            evidence=(
+                f"Read as a marketing opt-out (p={verdict.p_opt_out:.2f}) "
+                f"in WhatsApp message {message.provider_message_id}."
+            )[:500],
+        )
+    message.intent = verdict.label
+    message.intent_action = action
+    message.intent_p_opt_out = verdict.p_opt_out
+    message.intent_classified_at = datetime.now(UTC)
+    await session.flush()
+    log.info("notification.inbound.intent", label=verdict.label, action=action)
+    return action
 
 
 #: The one `reason` START is entitled to reverse. An operator suppression (a complaint handled
