@@ -138,7 +138,9 @@ WEBHOOK_SERVICE_PREFIX: dict[str, str] = {
     DATA_DELETION_STATUS: "/api/v1/notifications",
     RAZORPAY_COLLECTIONS: "/api/v1/payment",
 }
-NOTIFICATION_WEBHOOKS = [p for p, prefix in WEBHOOK_SERVICE_PREFIX.items() if "notifications" in prefix]
+NOTIFICATION_WEBHOOKS = [
+    p for p, prefix in WEBHOOK_SERVICE_PREFIX.items() if "notifications" in prefix
+]
 #: Routed in the production table but deliberately NOT public in app-gateway: Razorpay's callback,
 #: which the owner decides separately. A new `/api/v1/webhooks/*` route must be added here or
 #: declared public — silently being neither is the defect this file exists to prevent.

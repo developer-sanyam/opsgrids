@@ -1775,8 +1775,6 @@ class ShipmentRefusalIn(BaseModel):
         return _reject_blank_or_control(value, field_name="reason")
 
 
-
-
 # ------------------------------------------------------------------ counting (ADR-0026;
 # `docs/fulfilment/plan.md` F8)
 
@@ -1890,6 +1888,7 @@ class CountLineReviewIn(BaseModel):
     decision: Literal["approve", "reject"]
     note: str = Field(default="", max_length=500)
 
+
 # ------------------------------------------------------------------ online payment (ADR-0024 A4;
 # Fulfilment F10). Mirrors `services/payment`'s collection shapes — operations relays them, it
 # holds no payment state of its own beyond the order's `paid_at` fact. No card, bank or UPI
@@ -1997,7 +1996,6 @@ class OrderRefundIn(BaseModel):
 
     amount_minor: int = Field(gt=0, le=MAX_ABS_MILLI)
     reason: str = Field(min_length=1, max_length=200)
-
 
 
 # ------------------------------------------------------------------ channels (Fulfilment plan F11)

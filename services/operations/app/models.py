@@ -2297,8 +2297,6 @@ class WalkEdge(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     )
 
 
-
-
 class CountSession(Base, TenantBase):
     """One scoped physical stock count (Fulfilment plan F8, ADR-0026) — a whole warehouse, one
     zone, or an explicit list of locations. `status` runs `app.domain.COUNT_SESSION_TRANSITIONS`'s
