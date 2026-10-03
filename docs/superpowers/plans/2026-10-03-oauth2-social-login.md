@@ -292,9 +292,7 @@ to:
 Add `from typing import Callable, TypeVar` (or add to the existing `from typing import Any, Protocol` line) and `T = TypeVar("T")` near the top of the file. Update the method body's return statement from:
 
 ```python
-            return AuthorizationRequest.from_json(
-                raw if isinstance(raw, str) else raw.decode("utf-8")
-            )
+return AuthorizationRequest.from_json(raw if isinstance(raw, str) else raw.decode("utf-8"))
 ```
 
 to:
@@ -854,7 +852,10 @@ async def test_resolve_or_provision_creates_new_workspace(fake_directory, fake_p
         slug="new-co",
     )
     assert user.email == "new@example.com"
-    assert ("signup_federated", {"email": "new@example.com", "slug": "new-co"}) in fake_provisioning.calls
+    assert (
+        "signup_federated",
+        {"email": "new@example.com", "slug": "new-co"},
+    ) in fake_provisioning.calls
 ```
 
 (`fake_directory`/`fake_provisioning` are simple fixtures wrapping `FakeProvisioningClient` and a minimal fake `Directory` — add them to `tests/conftest.py` if `test_sso.py`'s existing `fake_idp`/directory fixtures don't already cover this shape; otherwise reuse those.)
@@ -937,7 +938,9 @@ git commit -m "auth: add _resolve_or_provision_identity signup branch"
 - [ ] **Step 1: Write the adversarial test first**
 
 ```python
-async def test_resolve_or_provision_invite_rejects_email_mismatch(fake_directory, fake_provisioning):
+async def test_resolve_or_provision_invite_rejects_email_mismatch(
+    fake_directory, fake_provisioning
+):
     org_id, user_id = uuid.uuid4(), uuid.uuid4()
     fake_provisioning.invitations["tok-1"] = ("invitee@acme.com", org_id, user_id, False)
     identity = oidc.VerifiedIdentity(subject="google-sub-2", email="attacker@evil.com")
@@ -1008,8 +1011,12 @@ async def test_oauth_social_callback_signs_in_existing_user(
 ):
     store = oidc.StateStore(redis_client)
     pending = oidc.SocialAuthorizationRequest(
-        provider="google", intent="signup", invitation_token=None,
-        nonce="n1", code_verifier=oidc.new_verifier(), created_at=oidc.now_iso(),
+        provider="google",
+        intent="signup",
+        invitation_token=None,
+        nonce="n1",
+        code_verifier=oidc.new_verifier(),
+        created_at=oidc.now_iso(),
     )
     state = await store.issue(pending, ttl_seconds=600)
     await _seed_google_provider(db_session)
@@ -1111,7 +1118,9 @@ async def oauth_social_callback(
         full_name_hint=identity.email.split("@", 1)[0],
     )
     if not user.email.isascii() or user.email.strip().lower() != identity.email.strip().lower():
-        log.warning("oauth.callback_refused", reason="matched_user_email_mismatch", provider=provider)
+        log.warning(
+            "oauth.callback_refused", reason="matched_user_email_mismatch", provider=provider
+        )
         raise oidc.SsoExchangeProblem("That sign-in could not be completed. Please start again.")
 
     await _link_external_identity(
@@ -1144,7 +1153,10 @@ async def oauth_social_callback(
     membership = resolve_organization(user, org_hint=None)
     if membership is None:
         token = tk.mint_pre_auth(
-            pair, issuer=cfg.jwt_issuer, user_id=user.user_id, session_id=auth_session.id,
+            pair,
+            issuer=cfg.jwt_issuer,
+            user_id=user.user_id,
+            session_id=auth_session.id,
             reason="org_selection",
         )
         await session.commit()
@@ -1153,12 +1165,21 @@ async def oauth_social_callback(
         )
 
     issued = await issue_for(
-        session, pair=pair, cfg=cfg, auth_session=auth_session, membership=membership,
-        entitlements=entitlements, audience=audience,
+        session,
+        pair=pair,
+        cfg=cfg,
+        auth_session=auth_session,
+        membership=membership,
+        entitlements=entitlements,
+        audience=audience,
     )
     publish_event(
-        session, OutboxEvent, organization_id=membership.organization_id,
-        event_type=EVT_OAUTH_SIGNED_IN, aggregate_type="session", aggregate_id=auth_session.id,
+        session,
+        OutboxEvent,
+        organization_id=membership.organization_id,
+        event_type=EVT_OAUTH_SIGNED_IN,
+        aggregate_type="session",
+        aggregate_id=auth_session.id,
         payload={
             "user_id": str(user.user_id),
             "session_id": str(auth_session.id),
@@ -1185,8 +1206,11 @@ Expected: PASS (all tests in the file so far)
 ```python
 def test_oauth_session_is_not_federation_pinned():
     session = Session(
-        id=uuid.uuid4(), user_id=uuid.uuid4(), amr=["oauth"],
-        auth_time=datetime.now(UTC), idp="oauth:google",
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        amr=["oauth"],
+        auth_time=datetime.now(UTC),
+        idp="oauth:google",
     )
     assert services._federated_organization_pin(session) is None
 ```
@@ -1215,7 +1239,9 @@ git commit -m "auth: add oauth_social_callback"
 - [ ] **Step 1: Write the failing end-to-end route test**
 
 ```python
-async def test_oauth_social_callback_route_sets_refresh_cookie(client, db_session, fake_idp_google_app_override):
+async def test_oauth_social_callback_route_sets_refresh_cookie(
+    client, db_session, fake_idp_google_app_override
+):
     # Arrange: seed provider, drive /start to get a real `state`, then hit /callback.
     await _seed_google_provider(db_session)
     start = await client.get("/api/v1/auth/oauth/google/start", params={"intent": "signup"})
@@ -1396,8 +1422,10 @@ async def test_signup_federated_creates_org_and_returns_user_id(client, service_
     response = await client.post(
         "/internal/v1/signup-federated",
         json={
-            "organization_name": "Acme", "slug": "acme-federated",
-            "full_name": "Ada", "email": "ada@acme-federated.com",
+            "organization_name": "Acme",
+            "slug": "acme-federated",
+            "full_name": "Ada",
+            "email": "ada@acme-federated.com",
         },
         headers={"X-Internal-Token": service_token_for_auth},
     )
@@ -1409,7 +1437,12 @@ async def test_signup_federated_creates_org_and_returns_user_id(client, service_
 async def test_signup_federated_requires_service_token(client):
     response = await client.post(
         "/internal/v1/signup-federated",
-        json={"organization_name": "Acme", "slug": "acme-2", "full_name": "Ada", "email": "ada2@x.com"},
+        json={
+            "organization_name": "Acme",
+            "slug": "acme-2",
+            "full_name": "Ada",
+            "email": "ada2@x.com",
+        },
     )
     assert response.status_code == 401
 ```
@@ -1518,14 +1551,18 @@ async def test_accept_invitation_rejects_email_mismatch(db_session, pending_invi
     # pending_invitation fixture: an Invitation row for "invitee@acme.com"
     with pytest.raises(NotFoundProblem):
         await services.accept_invitation(
-            db_session, pending_invitation.raw_token, "Someone Else",
+            db_session,
+            pending_invitation.raw_token,
+            "Someone Else",
             expected_email="attacker@evil.com",
         )
 
 
 async def test_accept_invitation_allows_matching_email(db_session, pending_invitation):
     membership = await services.accept_invitation(
-        db_session, pending_invitation.raw_token, "Invitee Name",
+        db_session,
+        pending_invitation.raw_token,
+        "Invitee Name",
         expected_email="invitee@acme.com",
     )
     assert membership is not None
@@ -1533,7 +1570,9 @@ async def test_accept_invitation_allows_matching_email(db_session, pending_invit
 
 async def test_accept_invitation_still_works_with_no_expected_email(db_session, pending_invitation):
     """The existing public route never passes `expected_email` — must stay unaffected."""
-    membership = await services.accept_invitation(db_session, pending_invitation.raw_token, "Invitee Name")
+    membership = await services.accept_invitation(
+        db_session, pending_invitation.raw_token, "Invitee Name"
+    )
     assert membership is not None
 ```
 
@@ -1568,7 +1607,10 @@ async def accept_invitation(
     # always been keyed by `invitation.email` (`add_member` below). Without this check,
     # holding the link would let anyone accept it under their own OAuth identity. Same
     # opaque message as every other invalid-invitation case — see spec §6/§7.
-    if expected_email is not None and expected_email.strip().lower() != invitation.email.strip().lower():
+    if (
+        expected_email is not None
+        and expected_email.strip().lower() != invitation.email.strip().lower()
+    ):
         raise invalid
 
     membership = await add_member(
@@ -1595,10 +1637,16 @@ Expected: PASS — all three new tests, and every pre-existing test in the file 
 In `services/account/tests/test_internal.py`:
 
 ```python
-async def test_accept_invitation_federated_happy_path(client, db_session, pending_invitation, service_token_for_auth):
+async def test_accept_invitation_federated_happy_path(
+    client, db_session, pending_invitation, service_token_for_auth
+):
     response = await client.post(
         "/internal/v1/invitations/accept-federated",
-        json={"token": pending_invitation.raw_token, "email": "invitee@acme.com", "full_name": "Invitee"},
+        json={
+            "token": pending_invitation.raw_token,
+            "email": "invitee@acme.com",
+            "full_name": "Invitee",
+        },
         headers={"X-Internal-Token": service_token_for_auth},
     )
     assert response.status_code == 200
@@ -1606,10 +1654,16 @@ async def test_accept_invitation_federated_happy_path(client, db_session, pendin
     assert "organization_id" in body and "user_id" in body
 
 
-async def test_accept_invitation_federated_email_mismatch_is_404(client, db_session, pending_invitation, service_token_for_auth):
+async def test_accept_invitation_federated_email_mismatch_is_404(
+    client, db_session, pending_invitation, service_token_for_auth
+):
     response = await client.post(
         "/internal/v1/invitations/accept-federated",
-        json={"token": pending_invitation.raw_token, "email": "attacker@evil.com", "full_name": "X"},
+        json={
+            "token": pending_invitation.raw_token,
+            "email": "attacker@evil.com",
+            "full_name": "X",
+        },
         headers={"X-Internal-Token": service_token_for_auth},
     )
     assert response.status_code == 404
