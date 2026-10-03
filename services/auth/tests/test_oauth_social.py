@@ -138,13 +138,14 @@ def _pending_google_request(
     *,
     nonce: str,
     intent: str = "signup",
+    invitation_token: str | None = None,
     organization_name: str | None = None,
     slug: str | None = None,
 ) -> oidc.SocialAuthorizationRequest:
     return oidc.SocialAuthorizationRequest(
         provider="google",
         intent=intent,
-        invitation_token=None,
+        invitation_token=invitation_token,
         nonce=nonce,
         code_verifier=oidc.new_verifier(),
         created_at=oidc.now_iso(),
@@ -437,11 +438,16 @@ class TestResolveOrProvisionIdentityInvite:
         # real invitation token.
         assert (
             "accept_invitation_federated",
-            {"token": "tok-1", "email": "attacker@evil.com"},
+            {"token": "tok-1", "email": "attacker@evil.com", "full_name": "Attacker"},
         ) in provisioning.calls
 
-        # `directory` never had to answer anything — the refusal happens inside provisioning,
-        # before `_resolve_or_provision_identity` would ever reach `directory.get`.
+        # The refusal still propagates even though `_resolve_or_provision_identity` now tries
+        # a fallback lookup for exactly this kind of failure (Finding 4 of the final
+        # whole-branch review): the attacker has no existing platform account under
+        # `attacker@evil.com` either, so `find_by_email` comes back empty and there is
+        # nothing to sign them into instead — the email-match guard is not weakened by the
+        # fallback existing. `directory.users` stays empty throughout: this adversarial path
+        # never creates anything.
         assert directory.users == []
 
     async def test_resolve_or_provision_invite_happy_path(
@@ -452,11 +458,12 @@ class TestResolveOrProvisionIdentityInvite:
         org_id, user_id = uuid.uuid4(), uuid.uuid4()
         provisioning.invitations["tok-2"] = ("invitee@acme.com", org_id, user_id, False)
 
-        # Same fixture-design issue Task 6 hit and resolved (see that task's test above):
-        # `FakeDirectory.find_by_email` and `.get` share one backing list, so pre-seeding a user
-        # at `user_id` with this email would make `find_by_email` return it immediately and the
-        # invite branch — `accept_invitation_federated` — would never run. `directory` therefore
-        # starts empty, and `.get` alone is patched to resolve the row that would exist *after*
+        # The invite branch (Finding 4 of the final whole-branch review) now calls
+        # `accept_invitation_federated` unconditionally rather than short-circuiting on
+        # `find_by_email` first, so a pre-seeded user is no longer the hazard it was when this
+        # test was first written (Task 6's sibling test above still hits that issue for the
+        # signup branch, which does look up by email first). `directory` still starts empty
+        # here, and `.get` alone is patched to resolve the row that would exist *after*
         # `accept_invitation_federated` succeeds, strictly keyed on the provisioned `user_id` so
         # a wrong id threaded through the implementation would resolve to `None` (and surface as
         # `UpstreamUnavailableProblem`) rather than silently passing.
@@ -489,7 +496,7 @@ class TestResolveOrProvisionIdentityInvite:
         assert user.email == "invitee@acme.com"
         assert (
             "accept_invitation_federated",
-            {"token": "tok-2", "email": "invitee@acme.com"},
+            {"token": "tok-2", "email": "invitee@acme.com", "full_name": "Invitee"},
         ) in provisioning.calls
 
 
@@ -1186,6 +1193,279 @@ class TestOauthSocialCallback:
         assert outcome.pre_auth_token is not None
         assert outcome.organizations is not None
         assert {m.organization_id for m in outcome.organizations} == {ORG_A, ORG_B}
+
+
+class TestOauthSocialCallbackInvite:
+    """Finding 4 of the final whole-branch review, exercised through the full
+    `oauth_social_callback` flow — `TestResolveOrProvisionIdentityInvite` above already covers
+    `_resolve_or_provision_identity`'s invite branch (and its email-mismatch adversarial case)
+    in isolation; these three are the callback-level cases the review itself asked for: a
+    genuinely new invitee, an invitee who already holds a platform account elsewhere, and a
+    re-accept from a subject that is already linked.
+
+    The old code resolved by email first for *every* intent, including `invite`, so an
+    invitee who already had an account anywhere on the platform was returned as a plain
+    returning user and `accept_invitation_federated` was never called — the invitation stayed
+    pending forever with no error and no signal to the frontend. The middle test below is the
+    one that catches exactly that regression: reverting the `_resolve_or_provision_identity`
+    fix makes it fail (the resolved session lands only in the pre-existing organization, and
+    `provisioning.calls` stays empty) while still passing the first and third tests here,
+    which is why all three matter together.
+    """
+
+    async def test_a_new_invitee_signs_in_and_lands_in_the_invited_org(
+        self,
+        session: AsyncSession,
+        cfg: Settings,
+        pair: KeyPair,
+        store: oidc.StateStore,
+        entitlements: FakeEntitlements,
+        idp: FakeIdp,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        await _seed_google_provider(session, cfg)
+        invited_org_id, new_user_id = uuid.uuid4(), uuid.uuid4()
+        directory = FakeDirectory([])
+        provisioning = FakeProvisioningClient()
+        provisioning.invitations["tok-new-invitee"] = (
+            "newbie@acme.com",
+            invited_org_id,
+            new_user_id,
+            False,
+        )
+
+        # Same fixture-design idiom as `TestResolveOrProvisionIdentityInvite`'s happy path:
+        # `directory` starts empty, and `.get` alone is patched to resolve the row that would
+        # exist *after* `accept_invitation_federated` succeeds, keyed strictly on the
+        # provisioned `user_id`.
+        provisioned_user = DirectoryUser(
+            user_id=new_user_id,
+            email="newbie@acme.com",
+            full_name="newbie",
+            is_active=True,
+            memberships=[membership(invited_org_id, uuid.uuid4(), "acme", "Acme Technologies")],
+        )
+
+        async def get(looked_up_user_id: uuid.UUID) -> DirectoryUser | None:
+            return provisioned_user if looked_up_user_id == new_user_id else None
+
+        monkeypatch.setattr(directory, "get", get)
+
+        state = await store.issue(
+            _pending_google_request(
+                nonce="n-invite-new", intent="invite", invitation_token="tok-new-invitee"
+            ),
+            ttl_seconds=600,
+        )
+        idp.next_id_token = idp.issue_id_token(
+            nonce="n-invite-new",
+            email="newbie@acme.com",
+            issuer=GOOGLE_ISSUER,
+            audience=GOOGLE_CLIENT_ID,
+        )
+
+        outcome = await services.oauth_social_callback(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            provisioning=provisioning,
+            entitlements=entitlements,
+            idp=idp,
+            store=store,
+            provider="google",
+            code="irrelevant-fake-code",
+            state=state,
+        )
+
+        assert outcome.status == "complete"
+        assert outcome.issued is not None
+        assert outcome.issued.organization_id == invited_org_id
+        assert (
+            "accept_invitation_federated",
+            {"token": "tok-new-invitee", "email": "newbie@acme.com", "full_name": "newbie"},
+        ) in provisioning.calls
+
+    async def test_an_existing_user_accepting_an_invite_is_added_to_the_new_org(
+        self,
+        session: AsyncSession,
+        cfg: Settings,
+        pair: KeyPair,
+        store: oidc.StateStore,
+        entitlements: FakeEntitlements,
+        idp: FakeIdp,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The regression test for Finding 4 itself: an invitee who already has a platform
+        account (here, a membership in a different organization already) must still actually
+        be added to the invited organization — `account-service`'s `add_member` already
+        supports attaching an existing user to a second organization (the public
+        `/invitations/accept` route works this way too), so this is purely an auth-service
+        callback-sequencing fix. Before the fix, `_resolve_or_provision_identity` resolved
+        this person by email first for `intent == "invite"` too, returned them immediately,
+        and never called `accept_invitation_federated` at all — the invitation stayed pending
+        forever with no error raised."""
+        await _seed_google_provider(session, cfg)
+        existing_org_id, invited_org_id = uuid.uuid4(), uuid.uuid4()
+        existing_user_id = uuid.uuid4()
+        existing_user = DirectoryUser(
+            user_id=existing_user_id,
+            email="returning@acme.com",
+            full_name="Returning Person",
+            is_active=True,
+            memberships=[membership(existing_org_id, uuid.uuid4(), "other-co", "Other Co")],
+        )
+        directory = FakeDirectory([existing_user])
+        provisioning = FakeProvisioningClient()
+        provisioning.invitations["tok-existing-user"] = (
+            "returning@acme.com",
+            invited_org_id,
+            existing_user_id,
+            False,
+        )
+
+        # What `directory.get` would answer *after* `add_member` attaches the second
+        # membership — the same existing user, now with both organizations.
+        updated_user = DirectoryUser(
+            user_id=existing_user_id,
+            email="returning@acme.com",
+            full_name="Returning Person",
+            is_active=True,
+            memberships=[
+                membership(existing_org_id, uuid.uuid4(), "other-co", "Other Co"),
+                membership(invited_org_id, uuid.uuid4(), "acme", "Acme Technologies"),
+            ],
+        )
+
+        async def get(looked_up_user_id: uuid.UUID) -> DirectoryUser | None:
+            return updated_user if looked_up_user_id == existing_user_id else None
+
+        monkeypatch.setattr(directory, "get", get)
+
+        state = await store.issue(
+            _pending_google_request(
+                nonce="n-invite-existing", intent="invite", invitation_token="tok-existing-user"
+            ),
+            ttl_seconds=600,
+        )
+        idp.next_id_token = idp.issue_id_token(
+            nonce="n-invite-existing",
+            email="returning@acme.com",
+            issuer=GOOGLE_ISSUER,
+            audience=GOOGLE_CLIENT_ID,
+        )
+
+        outcome = await services.oauth_social_callback(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            provisioning=provisioning,
+            entitlements=entitlements,
+            idp=idp,
+            store=store,
+            provider="google",
+            code="irrelevant-fake-code",
+            state=state,
+        )
+
+        # Two active organizations now (the pre-existing one and the newly-invited one) means
+        # `resolve_organization` cannot pick one on its own — same ambiguity
+        # `test_requires_organization_selection_for_a_multi_org_user` pins for a plain
+        # returning user. The property this test exists for is not the status itself but that
+        # the invited organization is actually *in* the list.
+        assert outcome.status == "org_selection_required"
+        assert outcome.organizations is not None
+        assert {m.organization_id for m in outcome.organizations} == {
+            existing_org_id,
+            invited_org_id,
+        }
+        # The proof that the invite was actually honoured, not silently skipped as it was
+        # before the fix: `accept_invitation_federated` was genuinely called.
+        assert (
+            "accept_invitation_federated",
+            {
+                "token": "tok-existing-user",
+                "email": "returning@acme.com",
+                "full_name": "returning",
+            },
+        ) in provisioning.calls
+
+    async def test_an_already_linked_subject_reaccepting_the_same_invite_just_signs_in(
+        self,
+        session: AsyncSession,
+        cfg: Settings,
+        pair: KeyPair,
+        store: oidc.StateStore,
+        entitlements: FakeEntitlements,
+        idp: FakeIdp,
+    ) -> None:
+        """A user who already accepted this invitation once — their `(provider, subject)` is
+        already linked — clicking the same invite link again, or retrying after a network
+        blip, must not error. The subject-first lookup (`oauth_social_callback`, Important #3
+        of Task 8's own review) resolves them directly and skips
+        `_resolve_or_provision_identity`/`accept_invitation_federated` entirely — exactly the
+        case Finding 4's fix is told not to re-attempt, since `_link_external_identity`
+        already handles it idempotently. The invitation token used here is deliberately
+        **absent** from `provisioning.invitations`: if the subject-first lookup ever stopped
+        short-circuiting, `accept_invitation_federated` would raise `NotFoundProblem` for it,
+        and this test would fail instead of passing for the wrong reason.
+        """
+        existing_user = DirectoryUser(
+            user_id=uuid.uuid4(),
+            email="already-member@acme.com",
+            full_name="Already Member",
+            is_active=True,
+            memberships=[membership(ORG_A, uuid.uuid4(), "acme", "Acme Technologies")],
+        )
+        directory = _RecordingDirectory([existing_user])
+        session.add(
+            ExternalIdentity(
+                user_id=existing_user.user_id,
+                provider="google",
+                subject="google-sub-reaccept",
+                email_at_link="already-member@acme.com",
+            )
+        )
+        await session.flush()
+
+        await _seed_google_provider(session, cfg)
+        provisioning = FakeProvisioningClient()
+        state = await store.issue(
+            _pending_google_request(
+                nonce="n-invite-relink", intent="invite", invitation_token="already-honoured-token"
+            ),
+            ttl_seconds=600,
+        )
+        idp.next_id_token = idp.issue_id_token(
+            nonce="n-invite-relink",
+            email="already-member@acme.com",
+            subject="google-sub-reaccept",
+            issuer=GOOGLE_ISSUER,
+            audience=GOOGLE_CLIENT_ID,
+        )
+
+        outcome = await services.oauth_social_callback(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            provisioning=provisioning,
+            entitlements=entitlements,
+            idp=idp,
+            store=store,
+            provider="google",
+            code="irrelevant-fake-code",
+            state=state,
+        )
+
+        assert outcome.status == "complete"
+        assert outcome.issued is not None
+        assert outcome.issued.organization_id == ORG_A
+        # Neither side effect of the (never reached) invite branch happened: no email lookup,
+        # no provisioning call.
+        assert directory.lookups == []
+        assert provisioning.calls == []
 
 
 def test_oauth_session_is_not_federation_pinned() -> None:

@@ -13,7 +13,9 @@ bug, and the same `try`/`except (ValueError, AttributeError)` fix, as
 `console.delegation._problem_detail`.
 """
 
+import json
 import uuid
+from typing import Any
 
 import httpx
 import pytest
@@ -48,7 +50,9 @@ async def test_accept_invitation_federated_email_mismatch_is_not_found():
     org_id, user_id = uuid.uuid4(), uuid.uuid4()
     client.invitations["tok-1"] = ("invitee@acme.com", org_id, user_id, False)
     with pytest.raises(NotFoundProblem):
-        await client.accept_invitation_federated(token="tok-1", email="attacker@evil.com")
+        await client.accept_invitation_federated(
+            token="tok-1", email="attacker@evil.com", full_name="Attacker"
+        )
 
 
 class TestHttpProvisioningClientNonJsonErrorBodies:
@@ -81,7 +85,9 @@ class TestHttpProvisioningClientNonJsonErrorBodies:
             base_url="http://account", transport=httpx.MockTransport(handler)
         )
         with pytest.raises(NotFoundProblem) as excinfo:
-            await client.accept_invitation_federated(token="tok-1", email="ada@acme.com")
+            await client.accept_invitation_federated(
+                token="tok-1", email="ada@acme.com", full_name="Ada"
+            )
         await client.aclose()
         assert excinfo.value.detail == "That invitation is not valid"
 
@@ -101,3 +107,61 @@ class TestHttpProvisioningClientNonJsonErrorBodies:
             )
         await client.aclose()
         assert excinfo.value.detail == "The address 'acme' is already taken"
+
+
+class TestHttpProvisioningClientRequestBodies:
+    """The regression test that should have caught the original wire-contract mismatch: the
+    final whole-branch review found `accept_invitation_federated` posting `{token, email}`
+    while account-service's `InvitationAcceptFederatedIn` requires a third field, `full_name`
+    (no default) — every real invite-accept 422'd in production. Auth's own tests all went
+    through `FakeProvisioningClient` (no `full_name` in its signature at the time) and
+    account's tests posted `full_name` directly, so nobody ever pinned the exact body
+    `HttpProvisioningClient` itself sends over the wire. This asserts the exact JSON keys for
+    both provisioning endpoints, so a future signature change that drops a required field
+    fails here instead of in production."""
+
+    async def test_signup_federated_sends_exactly_these_keys(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(
+                201, json={"organization_id": str(uuid.uuid4()), "user_id": str(uuid.uuid4())}
+            )
+
+        client = HttpProvisioningClient("http://account", settings())
+        client._client = httpx.AsyncClient(
+            base_url="http://account", transport=httpx.MockTransport(handler)
+        )
+        await client.signup_federated(
+            organization_name="Acme", slug="acme", full_name="Ada", email="ada@acme.com"
+        )
+        await client.aclose()
+        assert captured == {
+            "organization_name": "Acme",
+            "slug": "acme",
+            "full_name": "Ada",
+            "email": "ada@acme.com",
+        }
+
+    async def test_accept_invitation_federated_sends_exactly_these_keys(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(
+                200, json={"organization_id": str(uuid.uuid4()), "user_id": str(uuid.uuid4())}
+            )
+
+        client = HttpProvisioningClient("http://account", settings())
+        client._client = httpx.AsyncClient(
+            base_url="http://account", transport=httpx.MockTransport(handler)
+        )
+        await client.accept_invitation_federated(
+            token="tok-1", email="ada@acme.com", full_name="Ada"
+        )
+        await client.aclose()
+        # `full_name` is the field whose absence here is exactly what broke every real
+        # invite-accept — see the class docstring. Its presence, with the exact key account's
+        # `InvitationAcceptFederatedIn` requires, is the point of this test.
+        assert captured == {"token": "tok-1", "email": "ada@acme.com", "full_name": "Ada"}

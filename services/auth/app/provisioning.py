@@ -35,7 +35,7 @@ class ProvisioningClient(Protocol):
     ) -> ProvisionedAccount: ...
 
     async def accept_invitation_federated(
-        self, *, token: str, email: str
+        self, *, token: str, email: str, full_name: str
     ) -> ProvisionedAccount: ...
 
 
@@ -100,9 +100,12 @@ class HttpProvisioningClient:
             organization_id=uuid.UUID(body["organization_id"]), user_id=uuid.UUID(body["user_id"])
         )
 
-    async def accept_invitation_federated(self, *, token: str, email: str) -> ProvisionedAccount:
+    async def accept_invitation_federated(
+        self, *, token: str, email: str, full_name: str
+    ) -> ProvisionedAccount:
         body = await self._post(
-            "/internal/v1/invitations/accept-federated", {"token": token, "email": email}
+            "/internal/v1/invitations/accept-federated",
+            {"token": token, "email": email, "full_name": full_name},
         )
         return ProvisionedAccount(
             organization_id=uuid.UUID(body["organization_id"]), user_id=uuid.UUID(body["user_id"])
@@ -133,8 +136,15 @@ class FakeProvisioningClient:
         self.existing_slugs.add(slug)
         return ProvisionedAccount(organization_id=self._next_org_id, user_id=self._next_user_id)
 
-    async def accept_invitation_federated(self, *, token: str, email: str) -> ProvisionedAccount:
-        self.calls.append(("accept_invitation_federated", {"token": token, "email": email}))
+    async def accept_invitation_federated(
+        self, *, token: str, email: str, full_name: str
+    ) -> ProvisionedAccount:
+        self.calls.append(
+            (
+                "accept_invitation_federated",
+                {"token": token, "email": email, "full_name": full_name},
+            )
+        )
         entry = self.invitations.get(token)
         if entry is None or entry[3]:
             raise NotFoundProblem("That invitation is not valid")

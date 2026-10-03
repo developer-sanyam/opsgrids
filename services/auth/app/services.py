@@ -4697,29 +4697,66 @@ async def _resolve_or_provision_identity(
 ) -> DirectoryUser:
     """Find the account a verified OAuth identity belongs to, or create/join one.
 
-    Always resolves by email first — the same shortcut enterprise SSO has no need of
-    (it already knows the organization from the domain) but a platform-wide flow does: an
-    email that already has an account never gets a second organization (ADR-0013 §3), it
-    falls through to the returning-user path instead. See spec §3.
+    `intent == "invite"` is handled first and separately from `"signup"`, and deliberately
+    does **not** start with the email-first lookup the signup branch below relies on: an
+    invitation names a specific organization, and an invitee who already holds a platform
+    account elsewhere (or under a different flow) must still actually be added to it
+    (`account-service`'s `add_member` already supports attaching an existing user to a
+    second organization — the public `/invitations/accept` route works this way too). Short-
+    circuiting on `find_by_email` here, the way `"signup"` does, would silently skip the
+    invite for exactly the existing-user case it most needs to run for — the invitation would
+    stay pending forever with no signal to the frontend. This is safe to do unconditionally
+    because the caller (`oauth_social_callback`) already checked `ExternalIdentity(provider,
+    subject)` first and only reaches this function when that lookup came back empty — a user
+    who is already linked by subject is resolved and signed in before this function is ever
+    called, so a repeat accept of the same invitation from the same linked identity never
+    gets here at all.
+
+    A `ConflictProblem` ("already a member") or `NotFoundProblem` ("invitation not valid",
+    account-service's one opaque message for unknown/expired/revoked/already-accepted/
+    email-mismatched — see `services.accept_invitation` there) from `accept_invitation_federated`
+    is non-fatal **when the asserted identity already resolves to a directory user**: a
+    legitimate retry (this exact invitation was already honoured for this person) or an
+    outright "already a member" conflict both mean the person is already who they say they
+    are, with nothing left for this invitation to do, so they are signed in on their existing
+    account rather than the whole flow failing. When no existing account matches either,
+    there is nothing to fall back to and the original refusal propagates unchanged — this is
+    what keeps the email-match guard load-bearing: an attacker holding a forged token or
+    asserting the wrong email, with no account of their own under that address, still gets
+    the same opaque failure as today.
     """
+    if intent == "invite":
+        assert invitation_token is not None  # enforced in oauth_social_start
+        try:
+            provisioned = await provisioning.accept_invitation_federated(
+                token=invitation_token, email=identity.email, full_name=full_name_hint
+            )
+        except (ConflictProblem, NotFoundProblem):
+            existing = await directory.find_by_email(identity.email)
+            if existing is None:
+                raise
+            return existing
+        created = await directory.get(provisioned.user_id)
+        if created is None:  # pragma: no cover - defensive; account-service just created this row
+            raise UpstreamUnavailableProblem("The directory is unavailable")
+        return created
+
+    # intent == "signup": always resolves by email first — the same shortcut enterprise SSO
+    # has no need of (it already knows the organization from the domain) but a platform-wide
+    # flow does: an email that already has an account never gets a second organization
+    # (ADR-0013 §3), it falls through to the returning-user path instead. See spec §3.
     existing = await directory.find_by_email(identity.email)
     if existing is not None:
         return existing
 
-    if intent == "signup":
-        if not organization_name or not slug:
-            raise ValidationProblem("organization_name and slug are required to create a workspace")
-        provisioned = await provisioning.signup_federated(
-            organization_name=organization_name,
-            slug=slug,
-            full_name=full_name_hint,
-            email=identity.email,
-        )
-    else:
-        assert invitation_token is not None  # enforced in oauth_social_start
-        provisioned = await provisioning.accept_invitation_federated(
-            token=invitation_token, email=identity.email
-        )
+    if not organization_name or not slug:
+        raise ValidationProblem("organization_name and slug are required to create a workspace")
+    provisioned = await provisioning.signup_federated(
+        organization_name=organization_name,
+        slug=slug,
+        full_name=full_name_hint,
+        email=identity.email,
+    )
 
     created = await directory.get(provisioned.user_id)
     if created is None:  # pragma: no cover - defensive; account-service just created this row
