@@ -530,3 +530,14 @@ class TestThePolicyClassificationHolds:
         await session.rollback()
         assert forced is True
         assert with_check is True
+
+    async def test_platform_oauth_providers_not_under_rls(self, session: AsyncSession) -> None:
+        """Platform-wide config, not a tenant table — see models.py docstring."""
+        result = await session.execute(
+            text(
+                "SELECT relrowsecurity FROM pg_class "
+                "WHERE relname = 'platform_oauth_providers' "
+                "AND relnamespace = 'auth'::regnamespace"
+            )
+        )
+        assert result.scalar_one() is False

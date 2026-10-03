@@ -404,6 +404,37 @@ class OrgIdpConfig(Base):
     )
 
 
+class PlatformOAuthProvider(Base):
+    """One platform-wide OAuth2 provider — Google or Microsoft.
+
+    Unlike `OrgIdpConfig`, this has no `organization_id` and is **not** under row-level
+    security: it is the platform's own registered OAuth app, the same credential for every
+    organization, not something an org admin configures. See
+    docs/superpowers/specs/2026-10-03-oauth2-social-login-design.md §2.1.
+
+    `client_secret_enc` uses the same `platform_core.pii.seal` envelope as
+    `OrgIdpConfig.client_secret_enc`. Seeded by `bin/seed-oauth-providers` from deployment
+    env vars, never accepted through any API.
+    """
+
+    __tablename__ = "platform_oauth_providers"
+
+    provider: Mapped[str] = mapped_column(String(20), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    client_id: Mapped[str | None] = mapped_column(String(255))
+    client_secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+
+    issuer: Mapped[str | None] = mapped_column(String(255))
+    authorization_endpoint: Mapped[str | None] = mapped_column(String(500))
+    token_endpoint: Mapped[str | None] = mapped_column(String(500))
+    jwks_uri: Mapped[str | None] = mapped_column(String(500))
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class SigningKey(Base):
     """A published signing key.
 
