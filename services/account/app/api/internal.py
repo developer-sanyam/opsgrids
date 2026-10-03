@@ -40,18 +40,26 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app import selectors
+from app import selectors, services
 from app.models import Membership, MembershipRole, Organization, OrgDomain, User
 from app.schemas import (
     OrganizationMemberCountOut,
     OrganizationMemberCountsOut,
     OrganizationsPageOut,
     OrganizationSummaryOut,
+    SignupFederatedIn,
+    SignupFederatedOut,
+    SignupIn,
 )
 from platform_core.auth import require_service_token
 from platform_core.cache import current_permission_version
-from platform_core.db import get_directory_session
-from platform_core.errors import ForbiddenProblem, NotFoundProblem, UnauthorizedProblem
+from platform_core.db import get_directory_session, session_scope
+from platform_core.errors import (
+    ConflictProblem,
+    ForbiddenProblem,
+    NotFoundProblem,
+    UnauthorizedProblem,
+)
 from platform_core.logging import get_logger
 
 log = get_logger("account.internal")
@@ -392,3 +400,48 @@ def _trace_directory_read(request: Request, user: User, how: str) -> None:
         organizations=len(user.memberships),
         calling_service=request.headers.get("X-Calling-Service", "unknown"),
     )
+
+
+# --------------------------------------------------------------------- federated provisioning
+
+
+@router.post(
+    "/signup-federated",
+    response_model=SignupFederatedOut,
+    status_code=201,
+    summary="Create an organisation for a verified OAuth identity (called by auth-service)",
+)
+async def signup_federated(payload: SignupFederatedIn, directory: SessionDep) -> SignupFederatedOut:
+    """auth-service's entry point once Google/Microsoft has already proven the email — not a
+    variant of the public `POST /account/signup` route reachable with no caller identity at all.
+    Mixing "anyone with no account" and "auth-service, already holding a verified identity" on
+    one route would mean defending two trust levels in a single schema, so this stays a separate,
+    `require_service_token`-gated path that calls the **same** `services.signup` unchanged
+    (design doc §4) — only the entry schema differs: no deferred password, because there is
+    nothing to defer verifying.
+
+    Same bypass-then-narrow duplicate checks as the public route, for the same reason: the
+    policied `organizations` table cannot show a slug clash under a tenant binding that does not
+    exist yet, and a unique-violation 500 is not the 409 either caller is promised.
+    """
+    if await selectors.slug_taken(directory, payload.slug):
+        raise ConflictProblem(f"The address {payload.slug!r} is already taken")
+    if await selectors.get_user_by_email(directory, payload.email) is not None:
+        raise ConflictProblem("That email already has an account. Sign in instead.")
+
+    organization_id = uuid.uuid4()
+    async with session_scope(organization_id) as session:
+        membership = await services.signup(
+            session,
+            organization_id=organization_id,
+            payload=SignupIn(
+                organization_name=payload.organization_name,
+                slug=payload.slug,
+                full_name=payload.full_name,
+                email=payload.email,
+            ),
+        )
+    # Unlike `SignupOut`, auth-service needs `user_id` right away — it writes the
+    # `ExternalIdentity` row that turns the *next* Google/Microsoft login into a lookup rather
+    # than a second sign-up attempt, and it has no other way to learn this id.
+    return SignupFederatedOut(organization_id=organization_id, user_id=membership.user_id)

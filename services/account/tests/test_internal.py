@@ -768,6 +768,82 @@ class TestOrganizationsBulkList:
         assert "/internal/v1/organizations" not in schema["paths"]
 
 
+class TestSignupFederated:
+    """auth-service's own entry point for a verified Google/Microsoft identity that has no
+    organisation yet (ADR per docs/superpowers/specs/2026-10-03-oauth2-social-login-design.md
+    §4). Calls the same `services.signup` the public `/account/signup` form uses — only the
+    caller differs, and that caller has already proven the email out of band, so there is no
+    password-reset step to defer to.
+    """
+
+    async def test_it_creates_an_organisation_and_returns_the_owner(
+        self, client: AsyncClient
+    ) -> None:
+        response = await client.post(
+            "/internal/v1/signup-federated",
+            json={
+                "organization_name": "Acme Federated",
+                "slug": "acme-federated",
+                "full_name": "Ada Federated",
+                "email": "ada@acme-federated.com",
+            },
+            headers=internal(),
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert "organization_id" in body
+        assert "user_id" in body
+
+    async def test_it_needs_a_service_token(self, client: AsyncClient) -> None:
+        """A user token must never reach this, same as every other internal route."""
+        response = await client.post(
+            "/internal/v1/signup-federated",
+            json={
+                "organization_name": "Acme",
+                "slug": "acme-federated-no-token",
+                "full_name": "Ada",
+                "email": "ada-no-token@acme-federated.com",
+            },
+        )
+        assert response.status_code == 401
+
+    async def test_a_taken_slug_is_a_409_same_as_the_public_route(
+        self, client: AsyncClient, org: Organization
+    ) -> None:
+        response = await client.post(
+            "/internal/v1/signup-federated",
+            json={
+                "organization_name": "Duplicate Slug",
+                "slug": org.slug,
+                "full_name": "Dup",
+                "email": "dup-slug@acme-federated.com",
+            },
+            headers=internal(),
+        )
+        assert response.status_code == 409
+
+    async def test_a_known_email_is_a_409_same_as_the_public_route(
+        self, client: AsyncClient, people: dict[str, Membership]
+    ) -> None:
+        """An existing account does not get a second organisation from this route either —
+        the public route's own duplicate-email behaviour, reused unchanged."""
+        response = await client.post(
+            "/internal/v1/signup-federated",
+            json={
+                "organization_name": "Duplicate Email",
+                "slug": "acme-federated-dup-email",
+                "full_name": "Dup",
+                "email": "manager@example.com",
+            },
+            headers=internal(),
+        )
+        assert response.status_code == 409
+
+    async def test_the_route_is_absent_from_the_public_schema(self, client: AsyncClient) -> None:
+        schema = (await client.get("/openapi.json")).json()
+        assert "/internal/v1/signup-federated" not in schema["paths"]
+
+
 def _role(code: str, permission: str, scope: str):
     return RoleIn(
         code=code,
