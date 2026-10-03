@@ -393,6 +393,22 @@ class InvitationAccept(BaseModel):
     full_name: str = Field(min_length=1, max_length=200)
 
 
+class InvitationAcceptFederatedIn(BaseModel):
+    """Same shape as `InvitationAccept`, plus the email auth-service already verified through
+    Google/Microsoft — `services.accept_invitation`'s `expected_email` guard checks it against
+    the invitation's own address before this ever reaches `add_member`
+    (docs/superpowers/specs/2026-10-03-oauth2-social-login-design.md §4/§6)."""
+
+    token: str = Field(min_length=1)
+    email: EmailStr
+    full_name: str = Field(min_length=1, max_length=200)
+
+
+class InvitationAcceptFederatedOut(BaseModel):
+    organization_id: uuid.UUID
+    user_id: uuid.UUID
+
+
 # --------------------------------------------------------------------- domains
 
 

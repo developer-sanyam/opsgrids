@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import services
 from app.config import settings
 from app.models import Membership, Organization, OrgDomain
-from app.schemas import GrantIn, MemberPatch, RoleIn
+from app.schemas import GrantIn, InvitationIn, MemberPatch, RoleIn
 from platform_core.auth import Scope, ScopeContext
 from platform_core.cache import permission_version_key
 from platform_core.internal_auth import mint_service_token
@@ -842,6 +842,88 @@ class TestSignupFederated:
     async def test_the_route_is_absent_from_the_public_schema(self, client: AsyncClient) -> None:
         schema = (await client.get("/openapi.json")).json()
         assert "/internal/v1/signup-federated" not in schema["paths"]
+
+
+async def _invite_raw(
+    session: AsyncSession, org: Organization, inviter: Membership, *, email: str
+) -> str:
+    """Create a pending invitation on a tenant session and return its raw token — the same
+    shape `tests/test_invitation_accept.py::_invite` uses, trimmed to what these tests need."""
+    async with session.begin():
+        _, raw = await services.invite(
+            session, admin_ctx(org, inviter), InvitationIn(email=email, role_codes=["MEMBER"])
+        )
+    return raw
+
+
+class TestAcceptInvitationFederated:
+    """The federated counterpart to the public `POST /invitations/accept` — the route that
+    makes `services.accept_invitation`'s `expected_email` guard load-bearing rather than
+    theoretical. See docs/superpowers/specs/2026-10-03-oauth2-social-login-design.md §4/§6."""
+
+    async def test_it_accepts_a_matching_verified_email(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        raw = await _invite_raw(session, org, people["manager"], email="invitee@example.com")
+        response = await client.post(
+            "/internal/v1/invitations/accept-federated",
+            json={"token": raw, "email": "invitee@example.com", "full_name": "Invitee"},
+            headers=internal(),
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["organization_id"] == str(org.id)
+        assert "user_id" in body
+
+    async def test_an_email_mismatch_is_the_same_opaque_404_as_every_other_invalid_invitation(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        """The property that stops token enumeration, now exercised over HTTP: a forged
+        attempt that has the right token but the wrong email must read exactly like one with
+        no real token at all, not like a distinct "close, but no" reply."""
+        raw = await _invite_raw(session, org, people["manager"], email="victim@example.com")
+        response = await client.post(
+            "/internal/v1/invitations/accept-federated",
+            json={"token": raw, "email": "attacker@evil.com", "full_name": "Attacker"},
+            headers=internal(),
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"] == "That invitation is not valid"
+
+    async def test_an_unknown_token_is_the_same_404(self, client: AsyncClient) -> None:
+        response = await client.post(
+            "/internal/v1/invitations/accept-federated",
+            json={"token": "z" * 40, "email": "nobody@example.com", "full_name": "Nobody"},
+            headers=internal(),
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"] == "That invitation is not valid"
+
+    async def test_it_needs_a_service_token(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        raw = await _invite_raw(session, org, people["manager"], email="no-token@example.com")
+        response = await client.post(
+            "/internal/v1/invitations/accept-federated",
+            json={"token": raw, "email": "no-token@example.com", "full_name": "X"},
+        )
+        assert response.status_code == 401
+
+    async def test_the_route_is_absent_from_the_public_schema(self, client: AsyncClient) -> None:
+        schema = (await client.get("/openapi.json")).json()
+        assert "/internal/v1/invitations/accept-federated" not in schema["paths"]
 
 
 def _role(code: str, permission: str, scope: str):

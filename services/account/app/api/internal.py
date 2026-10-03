@@ -43,6 +43,8 @@ from sqlalchemy.orm import selectinload
 from app import selectors, services
 from app.models import Membership, MembershipRole, Organization, OrgDomain, User
 from app.schemas import (
+    InvitationAcceptFederatedIn,
+    InvitationAcceptFederatedOut,
     OrganizationMemberCountOut,
     OrganizationMemberCountsOut,
     OrganizationsPageOut,
@@ -445,3 +447,34 @@ async def signup_federated(payload: SignupFederatedIn, directory: SessionDep) ->
     # `ExternalIdentity` row that turns the *next* Google/Microsoft login into a lookup rather
     # than a second sign-up attempt, and it has no other way to learn this id.
     return SignupFederatedOut(organization_id=organization_id, user_id=membership.user_id)
+
+
+@router.post(
+    "/invitations/accept-federated",
+    response_model=InvitationAcceptFederatedOut,
+    summary="Accept an invitation for a verified OAuth identity (called by auth-service)",
+)
+async def accept_invitation_federated(
+    payload: InvitationAcceptFederatedIn, directory: SessionDep
+) -> InvitationAcceptFederatedOut:
+    """auth-service's entry point once Google/Microsoft has already proven `payload.email` —
+    not a variant of the public `POST /invitations/accept` route, which is reachable with no
+    caller identity at all by design. Same bypass-then-narrow shape as that route (ADR-0002,
+    path 4): `resolve_invitation_organization` reads the invitation on the bypass session only
+    to learn its organization, then every write happens under a tenant-scoped transaction on
+    the application role.
+
+    The one difference from the public route is `expected_email`: this is the call that makes
+    `services.accept_invitation`'s email-match guard load-bearing rather than theoretical — a
+    forged or guessed token without a matching verified email fails with the *same* opaque
+    `NotFoundProblem` every other invalid-invitation case gets (unknown, expired, revoked), so a
+    caller holding a stolen link learns nothing about why it failed (design doc §6/§7).
+    """
+    organization_id = await services.resolve_invitation_organization(directory, payload.token)
+    async with session_scope(organization_id) as session:
+        membership = await services.accept_invitation(
+            session, payload.token, payload.full_name, expected_email=payload.email
+        )
+    return InvitationAcceptFederatedOut(
+        organization_id=organization_id, user_id=membership.user_id
+    )
