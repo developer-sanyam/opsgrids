@@ -12,20 +12,44 @@ below are written to be reused rather than duplicated.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import oidc, services
 from app.config import Settings, settings
 from app.directory import DirectoryUser
-from app.models import PlatformOAuthProvider
+from app.keys import KeyPair
+from app.models import ExternalIdentity, PlatformOAuthProvider, Session
 from app.provisioning import FakeProvisioningClient
+from platform_core import pii
 from platform_core.errors import NotFoundProblem, ValidationProblem
-from tests.conftest import FakeDirectory, FakeRedis, membership
+from tests.conftest import (
+    ORG_A,
+    ORG_B,
+    FakeDirectory,
+    FakeEntitlements,
+    FakeRedis,
+    membership,
+    user_in_two_orgs,
+)
+from tests.fake_idp import FakeIdp
 
 pytestmark = pytest.mark.integration
+
+#: `oauth_social_callback` never calls `idp.discover()` — the provider's endpoints come from
+#: the `PlatformOAuthProvider` row, already pinned at registration time
+#: (`bin/seed-oauth-providers`), not rediscovered on every sign-in — so these two values only
+#: ever have to match each other:
+#: the row seeded by `_seed_google_provider` below and the `issuer`/`audience` passed to
+#: `FakeIdp.issue_id_token` when a test mints its ID token. They do not need to match `FakeIdp`'s
+#: own `ISSUER`/`CLIENT_ID` module constants, which matter only to `fetch_jwks`/`exchange_code` —
+#: and those two ignore the URL/id arguments they are given entirely (see `tests/fake_idp.py`).
+GOOGLE_ISSUER = "https://accounts.google.com"
+GOOGLE_CLIENT_ID = "client-123"
 
 
 @pytest_asyncio.fixture
@@ -36,19 +60,55 @@ async def store(redis: FakeRedis) -> oidc.StateStore:
     return oidc.StateStore(redis)
 
 
-async def _seed_google_provider(session: AsyncSession) -> None:
+@pytest_asyncio.fixture
+async def idp() -> FakeIdp:
+    """The same fake `test_sso.py` uses for enterprise SSO (`tests/fake_idp.py`). Nothing
+    about it is SSO-specific — `issue_id_token`'s `issuer`/`audience` parameters, and the
+    generic `discover`/`fetch_jwks`/`exchange_code` `IdpClient` implementation, already serve
+    a platform OAuth provider's shape as well as an organization's own OIDC one. See
+    `_seed_google_provider` for the one thing a test does have to keep in sync: the
+    `PlatformOAuthProvider` row's `issuer`/`client_id` and the token's `issuer`/`audience`."""
+    return FakeIdp()
+
+
+async def _seed_google_provider(session: AsyncSession, cfg: Settings | None = None) -> None:
+    """Seed the platform's Google registration.
+
+    `cfg` is optional and only needed by callback tests: `oauth_social_callback` opens
+    `client_secret_enc` with `pii.open_sealed` before it ever exchanges a code, so a test that
+    reaches that far needs a *validly sealed* secret in the row, not the unset column the
+    existing `oauth_social_start` tests above were content to leave untouched (that flow never
+    opens the secret at all).
+    """
+    client_secret_enc = None
+    if cfg is not None:
+        client_secret_enc, _ = pii.seal("google-test-client-secret", kind="generic", settings=cfg)
     session.add(
         PlatformOAuthProvider(
             provider="google",
             enabled=True,
-            client_id="client-123",
-            issuer="https://accounts.google.com",
+            client_id=GOOGLE_CLIENT_ID,
+            client_secret_enc=client_secret_enc,
+            issuer=GOOGLE_ISSUER,
             authorization_endpoint="https://accounts.google.com/o/oauth2/v2/auth",
             token_endpoint="https://oauth2.googleapis.com/token",
             jwks_uri="https://www.googleapis.com/oauth2/v3/certs",
         )
     )
     await session.flush()
+
+
+def _pending_google_request(
+    *, nonce: str, intent: str = "signup"
+) -> oidc.SocialAuthorizationRequest:
+    return oidc.SocialAuthorizationRequest(
+        provider="google",
+        intent=intent,
+        invitation_token=None,
+        nonce=nonce,
+        code_verifier=oidc.new_verifier(),
+        created_at=oidc.now_iso(),
+    )
 
 
 class TestOauthSocialStart:
@@ -332,3 +392,187 @@ class TestResolveOrProvisionIdentityInvite:
             "accept_invitation_federated",
             {"token": "tok-2", "email": "invitee@acme.com"},
         ) in provisioning.calls
+
+
+class TestOauthSocialCallback:
+    """`oauth_social_callback` (Task 8) — the central, security-sensitive piece of this plan.
+
+    Modelled on `sso_callback`'s own verify/link/mint sequence, with one deliberate
+    architectural difference pinned by `test_session_is_not_federation_pinned` below: no
+    domain binding and no organization pin, because this flow proves a *person*, not an
+    organization's own verified domain.
+    """
+
+    async def test_signs_in_an_existing_user(
+        self,
+        session: AsyncSession,
+        cfg: Settings,
+        pair: KeyPair,
+        store: oidc.StateStore,
+        directory: FakeDirectory,
+        entitlements: FakeEntitlements,
+        idp: FakeIdp,
+    ) -> None:
+        """The simplest path: `directory` (the shared fixture) already knows
+        `sam@example.com` with one active membership, so `_resolve_or_provision_identity`
+        takes its returning-user short circuit and never touches `provisioning` at all."""
+        await _seed_google_provider(session, cfg)
+        state = await store.issue(_pending_google_request(nonce="n1"), ttl_seconds=600)
+        idp.next_id_token = idp.issue_id_token(
+            nonce="n1", email="sam@example.com", issuer=GOOGLE_ISSUER, audience=GOOGLE_CLIENT_ID
+        )
+        provisioning = FakeProvisioningClient()
+
+        outcome = await services.oauth_social_callback(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            provisioning=provisioning,
+            entitlements=entitlements,
+            idp=idp,
+            store=store,
+            provider="google",
+            code="irrelevant-fake-code",
+            state=state,
+        )
+
+        assert outcome.status == "complete"
+        assert outcome.issued is not None
+        assert outcome.issued.organization_id == ORG_A
+        # The returning-user short circuit really ran: nothing was provisioned.
+        assert provisioning.calls == []
+
+        # `idp` is `oauth:<provider>` on the minted session row itself — not just something
+        # `_federated_organization_pin` is trusted to interpret correctly in isolation (that is
+        # the separate regression test below). Read back from the database, not from a value
+        # this test constructed, so a typo'd literal in the implementation (`oidc:google`,
+        # `oauth-google`, the bare provider name) would be caught here.
+        row = await session.get(Session, outcome.issued.session_id)
+        assert row is not None
+        assert row.idp == "oauth:google"
+        assert row.amr == [services.OAUTH_AMR]
+        assert row.sso_domain is None
+
+        # `_link_external_identity` is reused as-is (not reimplemented): the provider recorded
+        # on the link is the bare provider name, exactly as `sso_callback` passes its own
+        # (differently-namespaced) `provider` string through to the same helper.
+        linked = (
+            await session.execute(
+                select(ExternalIdentity).where(ExternalIdentity.provider == "google")
+            )
+        ).scalar_one_or_none()
+        assert linked is not None
+        assert linked.provider == "google"
+        assert linked.email_at_link == "sam@example.com"
+
+    #: Same idiom as `test_sso.py::TestNonAsciiIdentityIsRefusedOnTheRawString` — built from
+    #: the code point, not a literal glyph, so no editor (and no linter's confusable-character
+    #: check) can flatten it to ASCII `K` and silently defeat the point of the test.
+    KELVIN = chr(0x212A)  # U+212A, KELVIN SIGN
+
+    async def test_refuses_a_non_ascii_asserted_identity(
+        self,
+        session: AsyncSession,
+        cfg: Settings,
+        pair: KeyPair,
+        store: oidc.StateStore,
+        entitlements: FakeEntitlements,
+        idp: FakeIdp,
+    ) -> None:
+        """Same ASCII hardening `sso_callback` applies, exercised here with a real token: the
+        same Kelvin sign that function's own comment documents (NFKC-normalises to plain `K`,
+        then folds to `k` under `lower()` and could match a real user's all-ASCII address) in
+        place of the ordinary `s` is exactly the class of mismatch the check exists to close.
+        `directory` starts empty — the refusal fires before `_resolve_or_provision_identity`
+        is ever reached, so nothing should need it."""
+        await _seed_google_provider(session, cfg)
+        state = await store.issue(_pending_google_request(nonce="n2"), ttl_seconds=600)
+        idp.next_id_token = idp.issue_id_token(
+            nonce="n2",
+            email=f"{self.KELVIN}am@example.com",
+            issuer=GOOGLE_ISSUER,
+            audience=GOOGLE_CLIENT_ID,
+        )
+
+        with pytest.raises(oidc.SsoExchangeProblem) as excinfo:
+            await services.oauth_social_callback(
+                session,
+                cfg=cfg,
+                pair=pair,
+                directory=FakeDirectory([]),
+                provisioning=FakeProvisioningClient(),
+                entitlements=entitlements,
+                idp=idp,
+                store=store,
+                provider="google",
+                code="irrelevant-fake-code",
+                state=state,
+            )
+
+        assert excinfo.value.detail == "That sign-in could not be completed. Please start again."
+
+        # Confirms the refusal really happened before any directory read — not merely that
+        # the right exception type came back for some other reason.
+        assert (await session.execute(select(ExternalIdentity))).scalar_one_or_none() is None
+
+    async def test_requires_organization_selection_for_a_multi_org_user(
+        self,
+        session: AsyncSession,
+        cfg: Settings,
+        pair: KeyPair,
+        store: oidc.StateStore,
+        entitlements: FakeEntitlements,
+        idp: FakeIdp,
+    ) -> None:
+        """`resolve_organization` returns `None` for anything but exactly one active
+        membership (`services.py`'s own doc on that function) — a multi-organization person
+        signing in through this flow for the first time is exactly that ambiguity, built
+        cheaply from the existing `user_in_two_orgs` fixture helper rather than a fresh one."""
+        await _seed_google_provider(session, cfg)
+        directory = FakeDirectory([user_in_two_orgs()])
+        state = await store.issue(_pending_google_request(nonce="n3"), ttl_seconds=600)
+        idp.next_id_token = idp.issue_id_token(
+            nonce="n3", email="sam@example.com", issuer=GOOGLE_ISSUER, audience=GOOGLE_CLIENT_ID
+        )
+
+        outcome = await services.oauth_social_callback(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            provisioning=FakeProvisioningClient(),
+            entitlements=entitlements,
+            idp=idp,
+            store=store,
+            provider="google",
+            code="irrelevant-fake-code",
+            state=state,
+        )
+
+        assert outcome.status == "org_selection_required"
+        assert outcome.issued is None
+        assert outcome.pre_auth_token is not None
+        assert outcome.organizations is not None
+        assert {m.organization_id for m in outcome.organizations} == {ORG_A, ORG_B}
+
+
+def test_oauth_session_is_not_federation_pinned() -> None:
+    """Pins the one deliberate architectural difference from enterprise SSO (spec §6):
+    `_federated_organization_pin` recognises only the `oidc:`/`saml:` prefixes
+    (`services.py`'s own docstring on that function), so a session minted by
+    `oauth_social_callback` — `idp="oauth:<provider>"` — must come back unpinned and free to
+    move between every organization the person belongs to, exactly like a password session.
+
+    No database, no fixtures: `_federated_organization_pin` is a pure function of the one
+    field it reads, so the regression is pinned directly against a `Session` built in memory
+    rather than through the whole callback flow.
+    """
+    auth_session = Session(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        amr=["oauth"],
+        auth_time=datetime.now(UTC),
+        idp="oauth:google",
+    )
+    assert services._federated_organization_pin(auth_session) is None

@@ -3877,6 +3877,176 @@ async def oauth_social_start(
     return OAuthRedirect(authorization_url=url, state=state, expires_in=cfg.sso_state_ttl_seconds)
 
 
+async def oauth_social_callback(
+    session: AsyncSession,
+    *,
+    cfg: Settings,
+    pair: KeyPair,
+    directory: Directory,
+    provisioning: ProvisioningClient,
+    entitlements: Entitlements,
+    idp: oidc.IdpClient,
+    store: oidc.StateStore,
+    provider: str,
+    code: str,
+    state: str,
+    request: Request | None = None,
+    audience: str = "app",
+) -> LoginOutcome:
+    """Finish self-serve Google/Microsoft sign-in: verify, resolve-or-provision, link, mint.
+
+    `sso_callback`'s own mechanics, reused rather than re-derived: consume the single-use
+    state, exchange the code with the PKCE verifier that never left this service, verify the
+    ID token against the provider's published key, and apply the same ASCII-hardening gate on
+    the asserted and the matched email (see that function's comment for the concrete
+    IDNA-vs-`CITEXT` mismatch this closes — it applies identically here, nothing about it is
+    specific to enterprise SSO).
+
+    **No domain binding and no organization pin — the one deliberate difference from
+    `sso_callback`.** Enterprise SSO resolves a provider from an organization's own verified
+    domain, so the identity it asserts is scoped to that one organization and the resulting
+    session is pinned to it (`_federated_organization_pin`, `idp="oidc:<organization_id>"`).
+    This flow starts from a fixed, platform-wide registration that exists before any
+    organization does — there is no domain to prove and no single organization to bind the
+    session to, because the same Google or Microsoft account may belong to several of them.
+    `idp` is therefore `oauth:<provider>`, a prefix `_federated_organization_pin` does not
+    recognise, so the session comes out unpinned and free to move between every organization
+    the person belongs to — exactly like a password session, and exactly the posture spec §6
+    calls for. There is consequently no domain re-resolution step either: with no domain
+    proved at the start of the flow, there is nothing here to re-check against.
+    """
+    pending = await store.consume(state, oidc.SocialAuthorizationRequest.from_json)
+    if pending.provider != provider:
+        raise oidc.SsoExchangeProblem("That sign-in could not be completed. Please start again.")
+
+    config = await _get_enabled_provider(session, provider)
+    try:
+        client_secret = pii.open_sealed(config.client_secret_enc or b"", settings=cfg)
+    except pii.PiiError as exc:
+        log.error("oauth.client_secret_unopenable", provider=provider)
+        raise UpstreamUnavailableProblem(
+            "Single sign-on is temporarily unavailable. Please try again."
+        ) from exc
+
+    tokens = await idp.exchange_code(
+        str(config.token_endpoint),
+        code=code,
+        redirect_uri=cfg.oauth_social_redirect_uri_template.format(provider=provider),
+        client_id=str(config.client_id),
+        client_secret=client_secret,
+        code_verifier=pending.code_verifier,
+    )
+    jwks = await idp.fetch_jwks(str(config.jwks_uri))
+    identity = oidc.verify_id_token(
+        tokens.id_token,
+        jwks=jwks,
+        issuer=str(config.issuer),
+        audience=str(config.client_id),
+        nonce=pending.nonce,
+        leeway_seconds=cfg.sso_clock_skew_seconds,
+    )
+
+    # Same ASCII hardening as `sso_callback` — the Kelvin-sign/IDNA-vs-CITEXT class of
+    # mismatch applies identically here (see that function's comment for the concrete case):
+    # two representations of the same string cannot disagree if only one encoding is ever
+    # allowed through, so a non-ASCII assertion is refused outright rather than normalised.
+    if not identity.email.isascii():
+        log.warning("oauth.callback_refused", reason="non_ascii_identity", provider=provider)
+        raise oidc.SsoExchangeProblem("That sign-in could not be completed. Please start again.")
+
+    user = await _resolve_or_provision_identity(
+        directory=directory,
+        provisioning=provisioning,
+        intent=pending.intent,
+        invitation_token=pending.invitation_token,
+        identity=identity,
+        full_name_hint=identity.email.split("@", 1)[0],
+    )
+    # Defence in depth against a resolved/provisioned user whose own stored address does not
+    # actually match what the provider asserted — the same posture `sso_callback` holds for
+    # `find_by_email`'s result, applied here to whichever path (returning user, fresh
+    # signup, invitation) `_resolve_or_provision_identity` took.
+    if not user.email.isascii() or user.email.strip().lower() != identity.email.strip().lower():
+        log.warning(
+            "oauth.callback_refused", reason="matched_user_email_mismatch", provider=provider
+        )
+        raise oidc.SsoExchangeProblem("That sign-in could not be completed. Please start again.")
+
+    await _link_external_identity(
+        session, provider=provider, subject=identity.subject, user=user, email=identity.email
+    )
+
+    active = user.active_memberships()
+    if not active:
+        raise ForbiddenProblem("This account is not a member of any organization")
+
+    auth_session = await start_session(
+        session,
+        user_id=user.user_id,
+        cfg=cfg,
+        amr=[OAUTH_AMR],
+        idp=f"oauth:{provider}",
+        request=request,
+    )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=active[0].organization_id,
+        actor_id=user.user_id,
+        action="auth.oauth_signed_in",
+        entity="session",
+        entity_id=auth_session.id,
+        request=request,
+    )
+
+    membership = resolve_organization(user, org_hint=None)
+    if membership is None:
+        token = tk.mint_pre_auth(
+            pair,
+            issuer=cfg.jwt_issuer,
+            user_id=user.user_id,
+            session_id=auth_session.id,
+            reason="org_selection",
+        )
+        await session.commit()
+        return LoginOutcome(
+            status="org_selection_required", pre_auth_token=token.token, organizations=active
+        )
+
+    issued = await issue_for(
+        session,
+        pair=pair,
+        cfg=cfg,
+        auth_session=auth_session,
+        membership=membership,
+        entitlements=entitlements,
+        audience=audience,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=membership.organization_id,
+        event_type=EVT_OAUTH_SIGNED_IN,
+        aggregate_type="session",
+        aggregate_id=auth_session.id,
+        payload={
+            "user_id": str(user.user_id),
+            "session_id": str(auth_session.id),
+            "organization_id": str(membership.organization_id),
+            "idp": f"oauth:{provider}",
+            "amr": [OAUTH_AMR],
+        },
+    )
+    await session.commit()
+    log.info(
+        "oauth_social.signed_in",
+        provider=provider,
+        user_id=str(user.user_id),
+        session_id=str(auth_session.id),
+    )
+    return LoginOutcome(status="complete", issued=issued)
+
+
 @dataclass(frozen=True, slots=True)
 class SsoRedirect:
     """Where to send the browser, and how long the request stays open."""
