@@ -517,6 +517,12 @@ class SocialAuthorizationRequest:
     the platform-wide Google/Microsoft flow rather than per-org enterprise SSO: no
     `organization_id`/`config_id`/`domain` (there is no organization yet), plus `intent` and
     `invitation_token` to carry the signup-vs-invite branch across the redirect.
+
+    `organization_name`/`slug` carry the new workspace's details for the `signup` branch, the
+    same way `invitation_token` carries the `invite` branch's token — collected by the
+    frontend *before* the redirect to Google/Microsoft so `oauth_social_callback` never has to
+    ask for them again. Both default to `None` (irrelevant for `intent == "invite"`, and
+    required — validated in `services.oauth_social_start` — for `intent == "signup"`).
     """
 
     provider: str
@@ -525,6 +531,8 @@ class SocialAuthorizationRequest:
     nonce: str
     code_verifier: str
     created_at: str
+    organization_name: str | None = None
+    slug: str | None = None
 
     def as_json(self) -> str:
         return json.dumps(
@@ -535,6 +543,8 @@ class SocialAuthorizationRequest:
                 "nonce": self.nonce,
                 "code_verifier": self.code_verifier,
                 "created_at": self.created_at,
+                "organization_name": self.organization_name,
+                "slug": self.slug,
             }
         )
 
@@ -548,6 +558,8 @@ class SocialAuthorizationRequest:
             nonce=str(data["nonce"]),
             code_verifier=str(data["code_verifier"]),
             created_at=str(data["created_at"]),
+            organization_name=data.get("organization_name"),
+            slug=data.get("slug"),
         )
 
 

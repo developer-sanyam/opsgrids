@@ -288,9 +288,23 @@ class PasswordResetToken(Base):
 class ExternalIdentity(Base):
     """A link to an identity provider's subject.
 
-    **Never linked on email alone.** Only when the provider asserts the address is verified
-    *and* the domain is a verified domain of that provider's organization — matching on an
-    unverified email is a documented account-takeover primitive.
+    **Never linked on email alone.** Two flows write this table, each with its own proof the
+    address is trustworthy:
+
+    * **Enterprise SSO** (`provider="oidc:<organization_id>"`, `services.sso_callback`) — the
+      provider must assert the address is verified *and* its domain must be a domain that
+      organization has itself proven ownership of; matching on an unverified email, or one
+      whose domain the organization never verified, is a documented account-takeover
+      primitive.
+    * **Platform-wide Google/Microsoft self-serve login** (`provider="google"`/`"microsoft"`,
+      `services.oauth_social_callback`) — there is no organization-owned domain to check
+      against (the registration is platform-wide, not per-organization), so the proof is the
+      ID token's own `email_verified` assertion plus the provider's own `sub`, which
+      `oauth_social_callback` resolves *before* falling back to an email lookup precisely so a
+      changed address at the provider cannot silently re-point this row at the wrong account.
+
+    Either way, the row itself is the same shape: `(provider, subject)` is unique, and the
+    binding survives an address change at the provider once made.
     """
 
     __tablename__ = "external_identities"

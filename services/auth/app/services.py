@@ -3837,19 +3837,27 @@ async def oauth_social_start(
     provider: str,
     intent: str,
     invitation_token: str | None = None,
+    organization_name: str | None = None,
+    slug: str | None = None,
 ) -> OAuthRedirect:
     """Begin a self-serve Google/Microsoft sign-in.
 
     `intent` carries which flow the callback must run: `signup` provisions a new account
-    (or, if later tasks find the asserted email already registered, links one), `invite`
-    redeems a specific invitation and therefore needs the token that names it. Validated
-    here, before anything is written to Redis, so a malformed request never gets as far as
-    occupying a state slot.
+    (or, if the asserted email already has one, links it instead — `oauth_social_callback`'s
+    own resolve-by-subject-then-email order), `invite` redeems a specific invitation and
+    therefore needs the token that names it. A `signup` additionally needs the new workspace's
+    `organization_name`/`slug` — collected here, before the redirect, the same way
+    `invitation_token` is, so `oauth_social_callback` never has to ask the frontend for them a
+    second time after the provider sends the browser back. All of it validated here, before
+    anything is written to Redis, so a malformed request never gets as far as occupying a
+    state slot.
     """
     if intent not in ("signup", "invite"):
         raise ValidationProblem("intent must be 'signup' or 'invite'")
     if intent == "invite" and not invitation_token:
         raise ValidationProblem("invitation_token is required for intent=invite")
+    if intent == "signup" and (not organization_name or not slug):
+        raise ValidationProblem("organization_name and slug are required for intent=signup")
 
     config = await _get_enabled_provider(session, provider)
 
@@ -3861,6 +3869,8 @@ async def oauth_social_start(
         nonce=secrets.token_urlsafe(24),
         code_verifier=verifier,
         created_at=oidc.now_iso(),
+        organization_name=organization_name,
+        slug=slug,
     )
     state = await store.issue(pending, ttl_seconds=cfg.sso_state_ttl_seconds)
 
@@ -3900,7 +3910,18 @@ async def oauth_social_callback(
     ID token against the provider's published key, and apply the same ASCII-hardening gate on
     the asserted and the matched email (see that function's comment for the concrete
     IDNA-vs-`CITEXT` mismatch this closes — it applies identically here, nothing about it is
-    specific to enterprise SSO).
+    specific to enterprise SSO). Like `login`, this also checks the resolved account is active,
+    requires its second factor if one is enrolled, and requires an active membership before it
+    ever mints anything — it is a session-minting path like any other and gets the same floor.
+
+    **Resolved by `(provider, subject)` first, email only as a fallback.** The provider's
+    `sub` is the strongest identifier available — stable even if the person's address at the
+    provider changes — so an already-linked `ExternalIdentity` is checked *before*
+    `_resolve_or_provision_identity` ever runs. Resolving by email first unconditionally would
+    let provisioning's side effects (a new organization, an accepted invitation) happen before
+    `_link_external_identity` discovers the subject is already bound to a *different* account,
+    leaving an orphaned, unreachable workspace behind — exactly the scenario a Google account's
+    email change while already linked elsewhere would trigger.
 
     **No domain binding and no organization pin — the one deliberate difference from
     `sso_callback`.** Enterprise SSO resolves a provider from an organization's own verified
@@ -3954,14 +3975,42 @@ async def oauth_social_callback(
         log.warning("oauth.callback_refused", reason="non_ascii_identity", provider=provider)
         raise oidc.SsoExchangeProblem("That sign-in could not be completed. Please start again.")
 
-    user = await _resolve_or_provision_identity(
-        directory=directory,
-        provisioning=provisioning,
-        intent=pending.intent,
-        invitation_token=pending.invitation_token,
-        identity=identity,
-        full_name_hint=identity.email.split("@", 1)[0],
-    )
+    # Resolve by the provider's own subject first — see the docstring above. Only when this
+    # account has never been linked here before does resolution fall through to
+    # `_resolve_or_provision_identity`'s email-first lookup (and, from there, provisioning).
+    existing_link = (
+        await session.execute(
+            select(ExternalIdentity).where(
+                ExternalIdentity.provider == provider, ExternalIdentity.subject == identity.subject
+            )
+        )
+    ).scalar_one_or_none()
+    if existing_link is not None:
+        user = await directory.get(existing_link.user_id)
+        if user is None:  # pragma: no cover - defensive; auth and the directory disagree
+            log.error("oauth.callback_linked_user_missing", provider=provider)
+            raise oidc.SsoExchangeProblem(
+                "That sign-in could not be completed. Please start again."
+            )
+    else:
+        user = await _resolve_or_provision_identity(
+            directory=directory,
+            provisioning=provisioning,
+            intent=pending.intent,
+            invitation_token=pending.invitation_token,
+            identity=identity,
+            full_name_hint=identity.email.split("@", 1)[0],
+            organization_name=pending.organization_name,
+            slug=pending.slug,
+        )
+
+    # Same posture as every other minting path (`_verify_credentials`, `sso_callback`,
+    # `switch_organization`, `rotate_refresh`): a deactivated account does not get a session
+    # just because this request named it, whichever branch above resolved it.
+    if not user.is_active:
+        log.warning("oauth.callback_refused", reason="inactive_user", provider=provider)
+        raise oidc.SsoExchangeProblem("That sign-in could not be completed. Please start again.")
+
     # Defence in depth against a resolved/provisioned user whose own stored address does not
     # actually match what the provider asserted — the same posture `sso_callback` holds for
     # `find_by_email`'s result, applied here to whichever path (returning user, fresh
@@ -3998,6 +4047,24 @@ async def oauth_social_callback(
         entity_id=auth_session.id,
         request=request,
     )
+
+    # Same second-factor gate `login` applies, in the same position (after the session row
+    # exists — its id is what the pre-auth token names — but before anything is minted for
+    # it): proving a Google or Microsoft identity is not the account's own second factor, and
+    # an MFA-enrolled account must not become reachable through a door that skips it. The
+    # existing `/auth/mfa/verify` route finishes this the same way it finishes a password
+    # sign-in's pre-auth token — no new route or token reason needed.
+    credential = await get_or_create_credential(session, user.user_id)
+    if await mfa_required(session, credential, user.user_id):
+        token = tk.mint_pre_auth(
+            pair,
+            issuer=cfg.jwt_issuer,
+            user_id=user.user_id,
+            session_id=auth_session.id,
+            reason="mfa",
+        )
+        await session.commit()
+        return LoginOutcome(status="mfa_required", pre_auth_token=token.token)
 
     membership = resolve_organization(user, org_hint=None)
     if membership is None:
