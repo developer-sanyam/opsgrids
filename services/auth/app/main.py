@@ -17,6 +17,7 @@ from app.entitlements import HttpEntitlements
 from app.keys import active_key
 from app.models import OutboxEvent
 from app.oidc import HttpIdpClient
+from app.provisioning import HttpProvisioningClient
 from platform_core.app import create_app
 
 cfg = settings()
@@ -29,6 +30,7 @@ async def _startup(application: FastAPI) -> None:
     application.state.directory = HttpDirectory(cfg.account_service_url, cfg)
     application.state.entitlements = HttpEntitlements(cfg.product_service_url, cfg)
     application.state.idp = HttpIdpClient(allow_insecure_http=cfg.egress_allow_insecure_http)
+    application.state.provisioning = HttpProvisioningClient(cfg.account_service_url, cfg)
 
 
 async def _shutdown(application: FastAPI) -> None:
@@ -41,6 +43,9 @@ async def _shutdown(application: FastAPI) -> None:
     idp = getattr(application.state, "idp", None)
     if isinstance(idp, HttpIdpClient):
         await idp.aclose()
+    provisioning = getattr(application.state, "provisioning", None)
+    if isinstance(provisioning, HttpProvisioningClient):
+        await provisioning.aclose()
 
 
 app = create_app(
