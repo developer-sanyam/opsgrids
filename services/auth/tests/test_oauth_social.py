@@ -22,8 +22,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import oidc, security, services
 from app.config import Settings, settings
+from app.deps import get_idp, get_provisioning
 from app.directory import DirectoryUser
 from app.keys import KeyPair
+from app.main import app
 from app.models import ExternalIdentity, PlatformOAuthProvider, Session
 from app.provisioning import FakeProvisioningClient
 from platform_core import pii
@@ -1221,3 +1223,118 @@ def test_oauth_session_is_not_federation_pinned() -> None:
     # `active_org_id` — a different random id on every run, deliberately, so this can never
     # pass by accident of matching `active_org_id` itself.
     services._assert_organization_unpinned_or_matches(auth_session, uuid.uuid4())
+
+
+class TestOauthSocialCallbackRoute:
+    """`GET /auth/oauth/{provider}/callback` (Task 9) over real HTTP — the platform-wide
+    sibling of `test_sso.py::TestOverHttp::test_start_and_callback_answer_like_the_login_endpoint`.
+    Same `dependency_overrides` idiom as that test (`get_idp`, plus `get_provisioning` here since
+    this flow, unlike enterprise SSO, can provision a new workspace): `client`'s own fixture
+    already overrides `get_session`/`get_key`/`get_directory` and sets `app.state.entitlements`,
+    so only the two dependencies this flow adds on top of SSO's need a per-test override.
+
+    `TestOauthSocialCallback` above already proves every security property of
+    `oauth_social_callback` itself (subject-first resolution, the ASCII gates, MFA, deactivation,
+    organization selection); these two only have to prove the route is actually wired to it and
+    to `_to_result` the same way `/auth/login` and `/auth/sso/callback` are — a real `/start` →
+    `/callback` round trip over HTTP, not a re-verification of what the service function already
+    covers.
+    """
+
+    async def test_a_returning_user_round_trip_sets_the_refresh_cookie(
+        self, client, session: AsyncSession, cfg: Settings, idp: FakeIdp
+    ) -> None:
+        """Important B's shape, driven over HTTP end to end: a bare `intent=signup`, no
+        organization details, for the returning `sam@example.com` the shared `directory`
+        fixture (wired into `client` by `conftest.py`) already knows. This is the shape a
+        returning user's frontend actually sends, and the one round 1 of Task 8's own fix
+        regressed (`TestOauthSocialStart
+        ::test_a_signup_intent_succeeds_at_start_without_organization_details`)."""
+        app.dependency_overrides[get_idp] = lambda: idp
+        app.dependency_overrides[get_provisioning] = lambda: FakeProvisioningClient()
+
+        await _seed_google_provider(session, cfg)
+        start = await client.get("/api/v1/auth/oauth/google/start", params={"intent": "signup"})
+        assert start.status_code == 200, start.text
+        body = start.json()
+        idp.next_id_token = idp.issue_id_token(
+            nonce=_nonce_from(body["authorization_url"]),
+            email="sam@example.com",
+            issuer=GOOGLE_ISSUER,
+            audience=GOOGLE_CLIENT_ID,
+        )
+
+        response = await client.get(
+            "/api/v1/auth/oauth/google/callback",
+            params={"code": "fake-code", "state": body["state"]},
+        )
+
+        assert response.status_code == 200, response.text
+        done = response.json()
+        assert done["organization_id"] == str(ORG_A)
+        # Same shape `/auth/login` and `/auth/sso/callback` answer with: the refresh token is a
+        # cookie, never a field.
+        assert cfg.refresh_cookie_name in response.cookies
+        assert "refresh_token" not in done
+
+    async def test_a_fresh_signup_round_trip_with_organization_details(
+        self,
+        client,
+        session: AsyncSession,
+        cfg: Settings,
+        idp: FakeIdp,
+        directory: FakeDirectory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The other shape: a genuinely new address, with the organization details a
+        fresh-signup frontend collects up front, routed through `provisioning` and back out
+        through the same `/start` → `/callback` pair. Thin on purpose —
+        `TestOauthSocialCallback::test_a_fresh_signup_with_organization_details_succeeds` already
+        proves the `organization_name`/`slug` pass-through at the service level; this only has to
+        prove the route itself carries those query parameters through for real, over HTTP.
+        """
+        provisioning = FakeProvisioningClient()
+        app.dependency_overrides[get_idp] = lambda: idp
+        app.dependency_overrides[get_provisioning] = lambda: provisioning
+
+        # Same fixture-design issue `TestResolveOrProvisionIdentity` hits and resolves above:
+        # `FakeDirectory.find_by_email` and `.get` share one backing list, so `directory.get` is
+        # patched to resolve the row that would exist *after* `signup_federated` succeeds.
+        provisioned_user = DirectoryUser(
+            user_id=provisioning._next_user_id,
+            email="new-via-route@example.com",
+            full_name="New Person",
+            is_active=True,
+            memberships=[membership(provisioning._next_org_id, uuid.uuid4(), "new-co", "New Co")],
+        )
+
+        async def get(user_id: uuid.UUID) -> DirectoryUser | None:
+            return provisioned_user if user_id == provisioned_user.user_id else None
+
+        monkeypatch.setattr(directory, "get", get)
+
+        await _seed_google_provider(session, cfg)
+        start = await client.get(
+            "/api/v1/auth/oauth/google/start",
+            params={"intent": "signup", "organization_name": "New Co", "slug": "new-co"},
+        )
+        assert start.status_code == 200, start.text
+        body = start.json()
+        idp.next_id_token = idp.issue_id_token(
+            nonce=_nonce_from(body["authorization_url"]),
+            email="new-via-route@example.com",
+            issuer=GOOGLE_ISSUER,
+            audience=GOOGLE_CLIENT_ID,
+        )
+
+        response = await client.get(
+            "/api/v1/auth/oauth/google/callback",
+            params={"code": "fake-code", "state": body["state"]},
+        )
+
+        assert response.status_code == 200, response.text
+        assert cfg.refresh_cookie_name in response.cookies
+        assert (
+            "signup_federated",
+            {"email": "new-via-route@example.com", "slug": "new-co"},
+        ) in provisioning.calls

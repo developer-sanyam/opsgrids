@@ -66,6 +66,13 @@ BARE_SESSION_ROUTES = {
         "fixed platform-wide registration (`PlatformOAuthProvider`), not something read from "
         "an organization's own schema, so there is no tenant for this request to resolve."
     ),
+    "/api/v1/auth/oauth/{provider}/callback": (
+        "The provider redirects a browser here with no token of ours, same as SSO's own "
+        "callback — but unlike SSO, there is still nothing to bind: the pending request names "
+        "a platform-wide provider, not an organization's own schema, and the session this "
+        "mints is deliberately unpinned (`_federated_organization_pin`), free to move between "
+        "every organization the resolved person belongs to rather than bound to one."
+    ),
     "/api/v1/auth/password/forgot": f"A reset request is anonymous and {PRE_ORGANIZATION}.",
     "/api/v1/auth/password/reset": f"A reset confirmation is anonymous and {PRE_ORGANIZATION}.",
     "/api/v1/auth/operator/login": (
