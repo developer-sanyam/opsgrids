@@ -33,7 +33,7 @@ from app.models import Invitation, Membership, Organization
 from app.schemas import InvitationAccept, InvitationIn
 from platform_core.auth import Scope
 from platform_core.db import dispose_engine, init_engine
-from platform_core.errors import ProblemError
+from platform_core.errors import NotFoundProblem, ProblemError
 from tests.helpers import ctx_for
 
 pytestmark = pytest.mark.integration
@@ -208,6 +208,71 @@ class TestEveryFailureIsTheSameOpaqueReply:
             "unknown, expired and revoked must be indistinguishable, or a guesser learns from "
             f"the reply that a token was real: {replies}"
         )
+
+
+class TestTheEmailMatchGuard:
+    """`expected_email` (keyword-only, defaults to `None`) is what the forthcoming
+    `accept-federated` internal route uses: a Google/Microsoft login proves an email, not a
+    token holder's identity beyond that, and provisioning has always been keyed by
+    `invitation.email` (`add_member` below). Without this check, holding an invitation link
+    would let anyone accept it under their own OAuth identity — see
+    docs/superpowers/specs/2026-10-03-oauth2-social-login-design.md §6.
+
+    Written here, against the service function directly, rather than against the route: the
+    guard is a property of `accept_invitation` itself, and the public route must keep passing
+    no `expected_email` at all and stay provably unaffected (the third test below).
+    """
+
+    async def test_a_mismatched_email_is_refused_with_the_same_opaque_message(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        """Same `NotFoundProblem` and the same sentence as an unknown, expired or revoked
+        token — a forged attempt that got the token right and the email wrong must read
+        exactly like one that got nothing right at all, or the reply itself tells an attacker
+        they are close."""
+        _, raw = await _invite(session, org, people["manager"])
+
+        async with session.begin():
+            with pytest.raises(NotFoundProblem) as caught:
+                await services.accept_invitation(
+                    session, raw, "Someone Else", expected_email="attacker@evil.com"
+                )
+        assert caught.value.status_code == 404
+        assert caught.value.detail == OPAQUE
+
+    async def test_a_matching_email_is_accepted_case_insensitively(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        """The invitation's own address folds to lower case for the comparison — an invitee
+        whose OAuth profile reports `Invitee@Example.com` must not be refused on casing
+        alone."""
+        _, raw = await _invite(session, org, people["manager"])
+
+        async with session.begin():
+            membership = await services.accept_invitation(
+                session, raw, "Invitee Name", expected_email="INVITEE@EXAMPLE.COM"
+            )
+        assert membership is not None
+
+    async def test_no_expected_email_still_works_unaffected(
+        self,
+        session: AsyncSession,
+        org: Organization,
+        people: dict[str, Membership],
+    ) -> None:
+        """The existing public route never passes `expected_email` — this is the regression
+        guard proving the new keyword-only parameter is purely additive."""
+        _, raw = await _invite(session, org, people["manager"])
+
+        async with session.begin():
+            membership = await services.accept_invitation(session, raw, "Invitee Name")
+        assert membership is not None
 
 
 class TestThePublicPathNeedsNoToken:

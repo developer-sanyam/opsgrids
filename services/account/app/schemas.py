@@ -206,6 +206,32 @@ class SignupOut(BaseModel):
     next_step: str = "Check your inbox for the link that sets your password."
 
 
+class SignupFederatedIn(BaseModel):
+    """Same shape as `SignupIn`, minus the implied deferred password: this is called by
+    auth-service after it has already verified the email via a Google/Microsoft ID token
+    (`verify_id_token`, which enforces `email_verified: true`), not by a stranger with
+    nothing yet — see docs/superpowers/specs/2026-10-03-oauth2-social-login-design.md §4.
+    There is no password here for the same reason `SignupIn` has none: one would be a
+    credential held by a service with no business holding it, on this route for an address
+    that is already proven rather than merely asserted.
+    """
+
+    organization_name: str = Field(min_length=1, max_length=200)
+    slug: Slug
+    full_name: str = Field(min_length=1, max_length=200)
+    email: EmailStr
+
+
+class SignupFederatedOut(BaseModel):
+    """`user_id` rides alongside `organization_id`, which `SignupOut` never needed to: the
+    public route mints no session, but auth-service needs the id immediately to write the
+    `ExternalIdentity` row that makes the next Google/Microsoft login a lookup instead of a
+    second sign-up (design doc §4)."""
+
+    organization_id: uuid.UUID
+    user_id: uuid.UUID
+
+
 class OrgUnitIn(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     code: Code
@@ -365,6 +391,22 @@ class InvitationCreated(InvitationOut):
 class InvitationAccept(BaseModel):
     token: str = Field(min_length=16, max_length=128)
     full_name: str = Field(min_length=1, max_length=200)
+
+
+class InvitationAcceptFederatedIn(BaseModel):
+    """Same shape as `InvitationAccept`, plus the email auth-service already verified through
+    Google/Microsoft — `services.accept_invitation`'s `expected_email` guard checks it against
+    the invitation's own address before this ever reaches `add_member`
+    (docs/superpowers/specs/2026-10-03-oauth2-social-login-design.md §4/§6)."""
+
+    token: str = Field(min_length=1)
+    email: EmailStr
+    full_name: str = Field(min_length=1, max_length=200)
+
+
+class InvitationAcceptFederatedOut(BaseModel):
+    organization_id: uuid.UUID
+    user_id: uuid.UUID
 
 
 # --------------------------------------------------------------------- domains
