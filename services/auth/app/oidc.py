@@ -508,6 +508,61 @@ class AuthorizationRequest:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class SocialAuthorizationRequest:
+    """What `services.oauth_social_start` must remember until `oauth_social_callback`.
+
+    A second pending-request shape alongside `AuthorizationRequest` — same server-side-only
+    reasoning (the PKCE verifier must never be readable by the browser holding it), but for
+    the platform-wide Google/Microsoft flow rather than per-org enterprise SSO: no
+    `organization_id`/`config_id`/`domain` (there is no organization yet), plus `intent` and
+    `invitation_token` to carry the signup-vs-invite branch across the redirect.
+    """
+
+    provider: str
+    intent: str
+    invitation_token: str | None
+    nonce: str
+    code_verifier: str
+    created_at: str
+
+    def as_json(self) -> str:
+        return json.dumps(
+            {
+                "provider": self.provider,
+                "intent": self.intent,
+                "invitation_token": self.invitation_token,
+                "nonce": self.nonce,
+                "code_verifier": self.code_verifier,
+                "created_at": self.created_at,
+            }
+        )
+
+    @classmethod
+    def from_json(cls, raw: str) -> SocialAuthorizationRequest:
+        data = json.loads(raw)
+        return cls(
+            provider=str(data["provider"]),
+            intent=str(data["intent"]),
+            invitation_token=data.get("invitation_token"),
+            nonce=str(data["nonce"]),
+            code_verifier=str(data["code_verifier"]),
+            created_at=str(data["created_at"]),
+        )
+
+
+class _PendingRequest(Protocol):
+    """What `StateStore.issue` needs from whatever it is asked to store.
+
+    Both `AuthorizationRequest` and `SocialAuthorizationRequest` satisfy this structurally —
+    `issue` itself never needs to know which "pending request" shape it was handed, only
+    that it can be turned back into JSON. Narrower than typing it `AuthorizationRequest`,
+    the same widening `consume`'s own `parse` parameter already went through (Task 3).
+    """
+
+    def as_json(self) -> str: ...
+
+
 class StateStore:
     """Pending authorization requests, in Redis, single-use.
 
@@ -520,7 +575,7 @@ class StateStore:
     def __init__(self, redis: Any) -> None:
         self._redis = redis
 
-    async def issue(self, request: AuthorizationRequest, *, ttl_seconds: int) -> str:
+    async def issue(self, request: _PendingRequest, *, ttl_seconds: int) -> str:
         """Store a pending request under a fresh opaque state and return it.
 
         `nx=True` so a state can never overwrite one already in flight. A collision on 256
@@ -585,6 +640,7 @@ __all__ = [
     "AuthorizationRequest",
     "HttpIdpClient",
     "IdpClient",
+    "SocialAuthorizationRequest",
     "SsoExchangeProblem",
     "SsoIdentityConflictProblem",
     "SsoNoAccessProblem",

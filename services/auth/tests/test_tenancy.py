@@ -60,6 +60,12 @@ BARE_SESSION_ROUTES = {
         "from the server-side state this service issued, and the transaction is bound to it "
         "before the configuration is read."
     ),
+    "/api/v1/auth/oauth/{provider}/start": (
+        "Starting self-serve Google/Microsoft sign-in has no principal — there is no token "
+        "yet — and unlike SSO's own start route, nothing to bind either: the provider is a "
+        "fixed platform-wide registration (`PlatformOAuthProvider`), not something read from "
+        "an organization's own schema, so there is no tenant for this request to resolve."
+    ),
     "/api/v1/auth/password/forgot": f"A reset request is anonymous and {PRE_ORGANIZATION}.",
     "/api/v1/auth/password/reset": f"A reset confirmation is anonymous and {PRE_ORGANIZATION}.",
     "/api/v1/auth/operator/login": (

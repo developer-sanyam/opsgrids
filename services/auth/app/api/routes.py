@@ -33,6 +33,7 @@ from app.schemas import (
     MfaRequired,
     MfaStepUpIn,
     MfaVerifyIn,
+    OAuthStartOut,
     OperatorEnrollmentCodeIn,
     OperatorEnrollmentCodeOut,
     OperatorLoginIn,
@@ -648,6 +649,36 @@ async def sso_start(
         expires_in=redirect.expires_in,
         organization_slug=redirect.organization_slug,
         provider_name=redirect.provider_name,
+    )
+
+
+@router.get(
+    "/auth/oauth/{provider}/start",
+    response_model=OAuthStartOut,
+    summary="Begin self-serve sign-in with Google or Microsoft",
+)
+async def oauth_social_start_route(
+    provider: str,
+    session: SessionDep,
+    store: SsoStateDep,
+    intent: Annotated[str, Query(pattern="^(signup|invite)$")],
+    invitation_token: Annotated[str | None, Query(max_length=255)] = None,
+) -> OAuthStartOut:
+    """The platform-wide sibling of `sso_start`: no domain to resolve, no organization to
+    bind — just a fixed registration (`PlatformOAuthProvider`) this service already trusts.
+    """
+    redirect = await services.oauth_social_start(
+        session,
+        cfg=settings(),
+        store=store,
+        provider=provider,
+        intent=intent,
+        invitation_token=invitation_token,
+    )
+    return OAuthStartOut(
+        authorization_url=redirect.authorization_url,
+        state=redirect.state,
+        expires_in=redirect.expires_in,
     )
 
 

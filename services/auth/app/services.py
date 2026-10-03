@@ -54,6 +54,7 @@ from app.models import (
     OrgIdpConfig,
     OutboxEvent,
     PasswordResetToken,
+    PlatformOAuthProvider,
     RefreshToken,
     Session,
     StaffAccount,
@@ -3776,6 +3777,105 @@ OIDC = "oidc"
 SSO_AMR = "sso"
 
 
+# --------------------------------------------------------------------- self-serve social login
+#
+# The platform-wide sibling of single sign-on above. Where SSO resolves a provider from a
+# DNS-verified domain and an organization's own configuration, this starts from a fixed
+# platform registration (`PlatformOAuthProvider`) that exists before any organization does —
+# there is no domain to verify and nothing to bind the transaction to. `oauth_social_start`
+# is deliberately the thin half: it only ever has to decide which provider to send the
+# browser to and remember the PKCE verifier until the callback. What happens with the
+# asserted identity — provisioning a new account, honouring an invitation, linking an
+# existing one — is `oauth_social_callback`'s job (a later task in this plan).
+
+#: The only providers this flow knows how to send anyone to. Checked before the database is
+#: even asked, so a provider name that was never going to be real — typo'd, scraped from
+#: another product's URL scheme — gets the same 404 as one the platform simply has not
+#: enabled yet, rather than a lookup on an unbounded string.
+OAUTH_PROVIDERS = ("google", "microsoft")
+
+#: What the `amr` claim says after a self-serve social sign-in. Its own value rather than
+#: reusing `SSO_AMR`: the two flows are asserted by different kinds of issuer (a platform-wide
+#: registration here, an organization's own configuration there), and a step-up gate that
+#: means to exclude one must not silently also exclude the other because they share a label.
+OAUTH_AMR = "oauth"
+
+EVT_OAUTH_SIGNED_IN = "core.session.oauth_signed_in"
+
+
+@dataclass(frozen=True, slots=True)
+class OAuthRedirect:
+    """Where to send the browser, and how long the request stays open.
+
+    `SsoRedirect`'s platform-wide sibling: no `organization_slug`/`provider_name` because
+    there is no organization to name yet at this point in the flow.
+    """
+
+    authorization_url: str
+    state: str
+    expires_in: int
+
+
+async def _get_enabled_provider(session: AsyncSession, provider: str) -> PlatformOAuthProvider:
+    """The platform's registration for `provider`, or a 404 that does not distinguish
+    "not a real provider", "never configured" and "turned off" — the same enumeration
+    posture `SsoNotConfiguredProblem` holds for single sign-on, and for the same reason."""
+    if provider not in OAUTH_PROVIDERS:
+        raise NotFoundProblem("That sign-in method is not available")
+    row = await session.get(PlatformOAuthProvider, provider)
+    if row is None or not row.enabled:
+        raise NotFoundProblem("That sign-in method is not available")
+    return row
+
+
+async def oauth_social_start(
+    session: AsyncSession,
+    *,
+    cfg: Settings,
+    store: oidc.StateStore,
+    provider: str,
+    intent: str,
+    invitation_token: str | None = None,
+) -> OAuthRedirect:
+    """Begin a self-serve Google/Microsoft sign-in.
+
+    `intent` carries which flow the callback must run: `signup` provisions a new account
+    (or, if later tasks find the asserted email already registered, links one), `invite`
+    redeems a specific invitation and therefore needs the token that names it. Validated
+    here, before anything is written to Redis, so a malformed request never gets as far as
+    occupying a state slot.
+    """
+    if intent not in ("signup", "invite"):
+        raise ValidationProblem("intent must be 'signup' or 'invite'")
+    if intent == "invite" and not invitation_token:
+        raise ValidationProblem("invitation_token is required for intent=invite")
+
+    config = await _get_enabled_provider(session, provider)
+
+    verifier = oidc.new_verifier()
+    pending = oidc.SocialAuthorizationRequest(
+        provider=provider,
+        intent=intent,
+        invitation_token=invitation_token,
+        nonce=secrets.token_urlsafe(24),
+        code_verifier=verifier,
+        created_at=oidc.now_iso(),
+    )
+    state = await store.issue(pending, ttl_seconds=cfg.sso_state_ttl_seconds)
+
+    url = oidc.authorization_url(
+        authorization_endpoint=str(config.authorization_endpoint),
+        client_id=str(config.client_id),
+        redirect_uri=cfg.oauth_social_redirect_uri_template.format(provider=provider),
+        scopes=list(oidc.DEFAULT_SCOPES),
+        state=state,
+        nonce=pending.nonce,
+        code_challenge=oidc.challenge_for(verifier),
+    )
+    log.info("oauth_social.started", provider=provider, intent=intent)
+    return OAuthRedirect(authorization_url=url, state=state, expires_in=cfg.sso_state_ttl_seconds)
+
+
 @dataclass(frozen=True, slots=True)
 class SsoRedirect:
     """Where to send the browser, and how long the request stays open."""
@@ -4020,7 +4120,7 @@ async def sso_callback(
     7. **Mint through `issue_for`**, the same call sign-in, org selection, org switching and
        refresh all use.
     """
-    pending = await store.consume(state)
+    pending: oidc.AuthorizationRequest = await store.consume(state)
     organization_id = uuid.UUID(pending.organization_id)
     await set_tenant(session, organization_id)
 
