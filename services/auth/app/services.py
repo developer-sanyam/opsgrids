@@ -60,6 +60,7 @@ from app.models import (
     StaffAccount,
     StaffEnrollmentCode,
 )
+from app.provisioning import ProvisioningClient
 from platform_core import pii
 from platform_core.audit import record_audit
 from platform_core.auth import Principal
@@ -4433,6 +4434,49 @@ async def _link_external_identity(
             user_id=user.user_id, provider=provider, subject=subject, email_at_link=email
         )
     )
+
+
+async def _resolve_or_provision_identity(
+    *,
+    directory: Directory,
+    provisioning: ProvisioningClient,
+    intent: str,
+    invitation_token: str | None,
+    identity: oidc.VerifiedIdentity,
+    full_name_hint: str,
+    organization_name: str | None = None,
+    slug: str | None = None,
+) -> DirectoryUser:
+    """Find the account a verified OAuth identity belongs to, or create/join one.
+
+    Always resolves by email first — the same shortcut enterprise SSO has no need of
+    (it already knows the organization from the domain) but a platform-wide flow does: an
+    email that already has an account never gets a second organization (ADR-0013 §3), it
+    falls through to the returning-user path instead. See spec §3.
+    """
+    existing = await directory.find_by_email(identity.email)
+    if existing is not None:
+        return existing
+
+    if intent == "signup":
+        if not organization_name or not slug:
+            raise ValidationProblem("organization_name and slug are required to create a workspace")
+        provisioned = await provisioning.signup_federated(
+            organization_name=organization_name,
+            slug=slug,
+            full_name=full_name_hint,
+            email=identity.email,
+        )
+    else:
+        assert invitation_token is not None  # enforced in oauth_social_start
+        provisioned = await provisioning.accept_invitation_federated(
+            token=invitation_token, email=identity.email
+        )
+
+    created = await directory.get(provisioned.user_id)
+    if created is None:  # pragma: no cover - defensive; account-service just created this row
+        raise UpstreamUnavailableProblem("The directory is unavailable")
+    return created
 
 
 # --------------------------------------------------------------------- SSO administration

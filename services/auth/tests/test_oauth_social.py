@@ -11,15 +11,19 @@ below are written to be reused rather than duplicated.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import oidc, services
 from app.config import Settings, settings
+from app.directory import DirectoryUser
 from app.models import PlatformOAuthProvider
+from app.provisioning import FakeProvisioningClient
 from platform_core.errors import NotFoundProblem, ValidationProblem
-from tests.conftest import FakeRedis
+from tests.conftest import FakeDirectory, FakeRedis, membership
 
 pytestmark = pytest.mark.integration
 
@@ -163,3 +167,63 @@ class TestOauthSocialStartRoute:
             "/api/v1/auth/oauth/google/start", params={"intent": "whatever"}
         )
         assert response.status_code == 422, response.text
+
+
+class TestResolveOrProvisionIdentity:
+    """`_resolve_or_provision_identity` (Task 6) — the `intent == "signup"` path, run when
+    `directory.find_by_email` comes back empty. The returning-user short circuit above it and
+    the `invite` branch below it get their own dedicated, adversarial coverage in Task 7; this
+    class only has to prove the happy path this task adds actually provisions a workspace.
+
+    No `session`/`client`/`store` fixtures here — `_resolve_or_provision_identity` is pure
+    orchestration over `Directory`/`ProvisioningClient`, nothing in it touches the database.
+    """
+
+    async def test_resolve_or_provision_creates_new_workspace(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        directory = FakeDirectory([])
+        provisioning = FakeProvisioningClient()
+
+        # `FakeDirectory` and `FakeProvisioningClient` are independent fakes (app/provisioning.py's
+        # own docstring says so) — nothing wires them together the way account-service's signup
+        # endpoint and its directory-read endpoint, two views onto the same row, are wired in
+        # reality. `_resolve_or_provision_identity` depends on telling two moments apart: no row
+        # yet when `find_by_email` is asked (hence `directory` starts empty, and must stay that
+        # way for "new@example.com" or the function would short-circuit on the returning-user
+        # path before ever calling `signup_federated`), and the row existing by the time it calls
+        # `directory.get(provisioned.user_id)` afterward. A plain upfront seed of `directory.users`
+        # cannot model both moments at once — `find_by_email` and `get` read the very same list —
+        # so `get` is pointed at the row `FakeProvisioningClient` is about to mint instead, the
+        # same way `tests/conftest.py`'s `membership(...)` builds the rest of the shape.
+        provisioned_user = DirectoryUser(
+            user_id=provisioning._next_user_id,
+            email="new@example.com",
+            full_name="New Person",
+            is_active=True,
+            memberships=[membership(provisioning._next_org_id, uuid.uuid4(), "new-co", "New Co")],
+        )
+
+        async def get(user_id: uuid.UUID) -> DirectoryUser | None:
+            return provisioned_user if user_id == provisioned_user.user_id else None
+
+        monkeypatch.setattr(directory, "get", get)
+
+        identity = oidc.VerifiedIdentity(subject="google-sub-1", email="new@example.com")
+        user = await services._resolve_or_provision_identity(
+            directory=directory,
+            provisioning=provisioning,
+            intent="signup",
+            invitation_token=None,
+            identity=identity,
+            full_name_hint="New Person",
+            organization_name="New Co",
+            slug="new-co",
+        )
+
+        assert user.email == "new@example.com"
+        assert user.user_id == provisioning._next_user_id
+        assert (
+            "signup_federated",
+            {"email": "new@example.com", "slug": "new-co"},
+        ) in provisioning.calls
