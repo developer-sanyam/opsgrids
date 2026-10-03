@@ -31,9 +31,10 @@ import base64
 import hashlib
 import json
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 from urllib.parse import urlencode
 
 import httpx
@@ -57,6 +58,8 @@ ID_TOKEN_ALGORITHMS = ("RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS
 DEFAULT_SCOPES = ("openid", "email", "profile")
 
 _STATE_PREFIX = "sso:state:"
+
+T = TypeVar("T")
 
 
 # --------------------------------------------------------------------- problems
@@ -540,13 +543,21 @@ class StateStore:
             )
         return state
 
-    async def consume(self, state: str) -> AuthorizationRequest:
+    async def consume(
+        self,
+        state: str,
+        parse: Callable[[str], T] = AuthorizationRequest.from_json,  # type: ignore[assignment]
+    ) -> T:
         """Read a pending request **and delete it, atomically**.
 
         `GETDEL` rather than get-then-delete: two round trips leave a window in which the
         same state is read twice, which is precisely the replay this exists to stop. A state
         that is missing — never issued, already used, or expired — is one answer, because
         telling the two apart tells an attacker whether their captured value was ever real.
+
+        `parse` defaults to `AuthorizationRequest.from_json`, so every existing caller is
+        unaffected — it exists so a second pending-request shape, stored under this same
+        single-use mechanism, can be read back as itself rather than coerced into this one.
         """
         try:
             raw = await self._redis.getdel(_STATE_PREFIX + state)
@@ -559,9 +570,7 @@ class StateStore:
             log.warning("sso.state_not_found")
             raise SsoExchangeProblem("That sign-in has expired. Please start again.")
         try:
-            return AuthorizationRequest.from_json(
-                raw if isinstance(raw, str) else raw.decode("utf-8")
-            )
+            return parse(raw if isinstance(raw, str) else raw.decode("utf-8"))
         except Exception as exc:  # pragma: no cover - defensive
             raise SsoExchangeProblem("That sign-in has expired. Please start again.") from exc
 
