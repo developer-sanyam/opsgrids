@@ -288,9 +288,23 @@ class PasswordResetToken(Base):
 class ExternalIdentity(Base):
     """A link to an identity provider's subject.
 
-    **Never linked on email alone.** Only when the provider asserts the address is verified
-    *and* the domain is a verified domain of that provider's organization — matching on an
-    unverified email is a documented account-takeover primitive.
+    **Never linked on email alone.** Two flows write this table, each with its own proof the
+    address is trustworthy:
+
+    * **Enterprise SSO** (`provider="oidc:<organization_id>"`, `services.sso_callback`) — the
+      provider must assert the address is verified *and* its domain must be a domain that
+      organization has itself proven ownership of; matching on an unverified email, or one
+      whose domain the organization never verified, is a documented account-takeover
+      primitive.
+    * **Platform-wide Google/Microsoft self-serve login** (`provider="google"`/`"microsoft"`,
+      `services.oauth_social_callback`) — there is no organization-owned domain to check
+      against (the registration is platform-wide, not per-organization), so the proof is the
+      ID token's own `email_verified` assertion plus the provider's own `sub`, which
+      `oauth_social_callback` resolves *before* falling back to an email lookup precisely so a
+      changed address at the provider cannot silently re-point this row at the wrong account.
+
+    Either way, the row itself is the same shape: `(provider, subject)` is unique, and the
+    binding survives an address change at the provider once made.
     """
 
     __tablename__ = "external_identities"
@@ -401,6 +415,39 @@ class OrgIdpConfig(Base):
         UniqueConstraint(
             "organization_id", "protocol", "issuer", name="uq_org_idp_configs_org_protocol_issuer"
         ),
+    )
+
+
+class PlatformOAuthProvider(Base):
+    """One platform-wide OAuth2 provider — Google or Microsoft.
+
+    Unlike `OrgIdpConfig`, this has no `organization_id` and is **not** under row-level
+    security: it is the platform's own registered OAuth app, the same credential for every
+    organization, not something an org admin configures. See
+    docs/superpowers/specs/2026-10-03-oauth2-social-login-design.md §2.1.
+
+    `client_secret_enc` uses the same `platform_core.pii.seal` envelope as
+    `OrgIdpConfig.client_secret_enc`. Seeded by `bin/seed-oauth-providers` from deployment
+    env vars, never accepted through any API.
+    """
+
+    __tablename__ = "platform_oauth_providers"
+
+    provider: Mapped[str] = mapped_column(String(20), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+
+    client_id: Mapped[str | None] = mapped_column(String(255))
+    client_secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+
+    issuer: Mapped[str | None] = mapped_column(String(255))
+    authorization_endpoint: Mapped[str | None] = mapped_column(String(500))
+    token_endpoint: Mapped[str | None] = mapped_column(String(500))
+    jwks_uri: Mapped[str | None] = mapped_column(String(500))
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
 

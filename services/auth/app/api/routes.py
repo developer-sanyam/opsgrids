@@ -19,7 +19,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import services
 from app.config import Settings, settings
-from app.deps import DirectoryDep, EntitlementsDep, IdpDep, KeyDep, SsoStateDep, require_admin_hop
+from app.deps import (
+    DirectoryDep,
+    EntitlementsDep,
+    IdpDep,
+    KeyDep,
+    ProvisioningDep,
+    SsoStateDep,
+    require_admin_hop,
+)
 from app.keys import jwks as build_jwks
 from app.models import SCHEMA, OrgIdpConfig, StaffAccount
 from app.schemas import (
@@ -33,6 +41,7 @@ from app.schemas import (
     MfaRequired,
     MfaStepUpIn,
     MfaVerifyIn,
+    OAuthStartOut,
     OperatorEnrollmentCodeIn,
     OperatorEnrollmentCodeOut,
     OperatorLoginIn,
@@ -649,6 +658,94 @@ async def sso_start(
         organization_slug=redirect.organization_slug,
         provider_name=redirect.provider_name,
     )
+
+
+@router.get(
+    "/auth/oauth/{provider}/start",
+    response_model=OAuthStartOut,
+    summary="Begin self-serve sign-in with Google or Microsoft",
+)
+async def oauth_social_start_route(
+    provider: str,
+    session: SessionDep,
+    store: SsoStateDep,
+    intent: Annotated[str, Query(pattern="^(signup|invite)$")],
+    invitation_token: Annotated[str | None, Query(max_length=255)] = None,
+    organization_name: Annotated[str | None, Query(max_length=200)] = None,
+    slug: Annotated[
+        str | None, Query(min_length=2, max_length=60, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    ] = None,
+) -> OAuthStartOut:
+    """The platform-wide sibling of `sso_start`: no domain to resolve, no organization to
+    bind — just a fixed registration (`PlatformOAuthProvider`) this service already trusts.
+
+    `organization_name`/`slug` are the new workspace's details, for a frontend that already
+    knows (or expects) this `intent=signup` redirect to be a genuinely new signup. They are
+    optional here on purpose — see `services.oauth_social_start`'s own docstring for why: the
+    same `intent=signup` redirect is also what a *returning* user lands on, and this route has
+    no way to tell the two apart until the callback's email lookup actually runs.
+    """
+    redirect = await services.oauth_social_start(
+        session,
+        cfg=settings(),
+        store=store,
+        provider=provider,
+        intent=intent,
+        invitation_token=invitation_token,
+        organization_name=organization_name,
+        slug=slug,
+    )
+    return OAuthStartOut(
+        authorization_url=redirect.authorization_url,
+        state=redirect.state,
+        expires_in=redirect.expires_in,
+    )
+
+
+@router.get(
+    "/auth/oauth/{provider}/callback",
+    response_model=LoginResult,
+    summary="Finish self-serve sign-in with Google or Microsoft",
+)
+async def oauth_social_callback_route(
+    provider: str,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    directory: DirectoryDep,
+    provisioning: ProvisioningDep,
+    entitlements: EntitlementsDep,
+    idp: IdpDep,
+    store: SsoStateDep,
+    pair: KeyDep,
+    code: Annotated[str, Query(min_length=1, max_length=2048)],
+    state: Annotated[str, Query(min_length=1, max_length=512)],
+) -> Any:
+    """Where Google or Microsoft sends the browser back for `oauth_social_start_route`.
+
+    Returns exactly what `POST /auth/login` returns — signed in, needs a second factor, or
+    needs to pick an organization — through the same `_to_result`, because a client should not
+    be able to tell how somebody signed in from the shape of what it got. Unlike
+    `sso_callback`, this can also provision a brand-new workspace (`provisioning`): the
+    platform-wide sibling of enterprise SSO has no organization to resolve a domain into, so a
+    genuinely new signup is provisioned here rather than merely authenticated.
+    """
+    cfg = settings()
+    outcome = await services.oauth_social_callback(
+        session,
+        cfg=cfg,
+        pair=pair,
+        directory=directory,
+        provisioning=provisioning,
+        entitlements=entitlements,
+        idp=idp,
+        store=store,
+        provider=provider,
+        code=code,
+        state=state,
+        request=request,
+    )
+    return _to_result(outcome, response, cfg)
 
 
 @router.get("/auth/sso/callback", response_model=TokenOut, summary="Finish single sign-on")

@@ -54,11 +54,13 @@ from app.models import (
     OrgIdpConfig,
     OutboxEvent,
     PasswordResetToken,
+    PlatformOAuthProvider,
     RefreshToken,
     Session,
     StaffAccount,
     StaffEnrollmentCode,
 )
+from app.provisioning import ProvisioningClient
 from platform_core import pii
 from platform_core.audit import record_audit
 from platform_core.auth import Principal
@@ -3776,6 +3778,353 @@ OIDC = "oidc"
 SSO_AMR = "sso"
 
 
+# --------------------------------------------------------------------- self-serve social login
+#
+# The platform-wide sibling of single sign-on above. Where SSO resolves a provider from a
+# DNS-verified domain and an organization's own configuration, this starts from a fixed
+# platform registration (`PlatformOAuthProvider`) that exists before any organization does —
+# there is no domain to verify and nothing to bind the transaction to. `oauth_social_start`
+# is deliberately the thin half: it only ever has to decide which provider to send the
+# browser to and remember the PKCE verifier until the callback. What happens with the
+# asserted identity — provisioning a new account, honouring an invitation, linking an
+# existing one — is `oauth_social_callback`'s job (a later task in this plan).
+
+#: The only providers this flow knows how to send anyone to. Checked before the database is
+#: even asked, so a provider name that was never going to be real — typo'd, scraped from
+#: another product's URL scheme — gets the same 404 as one the platform simply has not
+#: enabled yet, rather than a lookup on an unbounded string.
+OAUTH_PROVIDERS = ("google", "microsoft")
+
+#: What the `amr` claim says after a self-serve social sign-in. Its own value rather than
+#: reusing `SSO_AMR`: the two flows are asserted by different kinds of issuer (a platform-wide
+#: registration here, an organization's own configuration there), and a step-up gate that
+#: means to exclude one must not silently also exclude the other because they share a label.
+OAUTH_AMR = "oauth"
+
+EVT_OAUTH_SIGNED_IN = "core.session.oauth_signed_in"
+
+
+@dataclass(frozen=True, slots=True)
+class OAuthRedirect:
+    """Where to send the browser, and how long the request stays open.
+
+    `SsoRedirect`'s platform-wide sibling: no `organization_slug`/`provider_name` because
+    there is no organization to name yet at this point in the flow.
+    """
+
+    authorization_url: str
+    state: str
+    expires_in: int
+
+
+async def _get_enabled_provider(session: AsyncSession, provider: str) -> PlatformOAuthProvider:
+    """The platform's registration for `provider`, or a 404 that does not distinguish
+    "not a real provider", "never configured" and "turned off" — the same enumeration
+    posture `SsoNotConfiguredProblem` holds for single sign-on, and for the same reason."""
+    if provider not in OAUTH_PROVIDERS:
+        raise NotFoundProblem("That sign-in method is not available")
+    row = await session.get(PlatformOAuthProvider, provider)
+    if row is None or not row.enabled:
+        raise NotFoundProblem("That sign-in method is not available")
+    return row
+
+
+async def oauth_social_start(
+    session: AsyncSession,
+    *,
+    cfg: Settings,
+    store: oidc.StateStore,
+    provider: str,
+    intent: str,
+    invitation_token: str | None = None,
+    organization_name: str | None = None,
+    slug: str | None = None,
+) -> OAuthRedirect:
+    """Begin a self-serve Google/Microsoft sign-in.
+
+    `intent` carries which flow the callback must run: `signup` resolves by email first and
+    only provisions a new account if that comes back empty (`oauth_social_callback`'s own
+    resolve-by-subject-then-email order), `invite` redeems a specific invitation and therefore
+    needs the token that names it.
+
+    **`organization_name`/`slug` are accepted here but never required.** A `signup` redirect
+    is the *one* button both a returning user and a genuinely new one land on — there is no
+    way to tell which this is until the callback's email (and, before that, its
+    provider-subject) lookup actually runs, and that happens long after this function returns.
+    Requiring a workspace name/slug here would 422 a returning user before the flow ever
+    reaches the lookup that would have recognized them. They are threaded through to
+    `SocialAuthorizationRequest` purely as a convenience — a frontend that already collected
+    them (because *it* expects this to be a new signup) does not have to ask the person again
+    after the provider sends the browser back — and it is `_resolve_or_provision_identity`
+    (Task 6) that actually enforces they are present, but only once `find_by_email` has
+    genuinely come back empty. A frontend that gets this wrong (new signup, no details
+    collected) finds out one step later, at the callback, rather than here; that edge case is
+    not one a correctly-built frontend ever reaches, since it collects these before ever
+    redirecting to Google.
+
+    `intent` and (for `invite`) `invitation_token` are still validated here, before anything is
+    written to Redis, so a malformed request never gets as far as occupying a state slot.
+    """
+    if intent not in ("signup", "invite"):
+        raise ValidationProblem("intent must be 'signup' or 'invite'")
+    if intent == "invite" and not invitation_token:
+        raise ValidationProblem("invitation_token is required for intent=invite")
+
+    config = await _get_enabled_provider(session, provider)
+
+    verifier = oidc.new_verifier()
+    pending = oidc.SocialAuthorizationRequest(
+        provider=provider,
+        intent=intent,
+        invitation_token=invitation_token,
+        nonce=secrets.token_urlsafe(24),
+        code_verifier=verifier,
+        created_at=oidc.now_iso(),
+        organization_name=organization_name,
+        slug=slug,
+    )
+    state = await store.issue(pending, ttl_seconds=cfg.sso_state_ttl_seconds)
+
+    url = oidc.authorization_url(
+        authorization_endpoint=str(config.authorization_endpoint),
+        client_id=str(config.client_id),
+        redirect_uri=cfg.oauth_social_redirect_uri_template.format(provider=provider),
+        scopes=list(oidc.DEFAULT_SCOPES),
+        state=state,
+        nonce=pending.nonce,
+        code_challenge=oidc.challenge_for(verifier),
+    )
+    log.info("oauth_social.started", provider=provider, intent=intent)
+    return OAuthRedirect(authorization_url=url, state=state, expires_in=cfg.sso_state_ttl_seconds)
+
+
+async def oauth_social_callback(
+    session: AsyncSession,
+    *,
+    cfg: Settings,
+    pair: KeyPair,
+    directory: Directory,
+    provisioning: ProvisioningClient,
+    entitlements: Entitlements,
+    idp: oidc.IdpClient,
+    store: oidc.StateStore,
+    provider: str,
+    code: str,
+    state: str,
+    request: Request | None = None,
+    audience: str = "app",
+) -> LoginOutcome:
+    """Finish self-serve Google/Microsoft sign-in: verify, resolve-or-provision, link, mint.
+
+    `sso_callback`'s own mechanics, reused rather than re-derived: consume the single-use
+    state, exchange the code with the PKCE verifier that never left this service, verify the
+    ID token against the provider's published key, and apply the same ASCII-hardening gate on
+    the asserted and the matched email (see that function's comment for the concrete
+    IDNA-vs-`CITEXT` mismatch this closes — it applies identically here, nothing about it is
+    specific to enterprise SSO). Like `login`, this also checks the resolved account is active,
+    requires its second factor if one is enrolled, and requires an active membership before it
+    ever mints anything — it is a session-minting path like any other and gets the same floor.
+
+    **Resolved by `(provider, subject)` first, email only as a fallback.** The provider's
+    `sub` is the strongest identifier available — stable even if the person's address at the
+    provider changes — so an already-linked `ExternalIdentity` is checked *before*
+    `_resolve_or_provision_identity` ever runs. Resolving by email first unconditionally would
+    let provisioning's side effects (a new organization, an accepted invitation) happen before
+    `_link_external_identity` discovers the subject is already bound to a *different* account,
+    leaving an orphaned, unreachable workspace behind — exactly the scenario a Google account's
+    email change while already linked elsewhere would trigger.
+
+    **No domain binding and no organization pin — the one deliberate difference from
+    `sso_callback`.** Enterprise SSO resolves a provider from an organization's own verified
+    domain, so the identity it asserts is scoped to that one organization and the resulting
+    session is pinned to it (`_federated_organization_pin`, `idp="oidc:<organization_id>"`).
+    This flow starts from a fixed, platform-wide registration that exists before any
+    organization does — there is no domain to prove and no single organization to bind the
+    session to, because the same Google or Microsoft account may belong to several of them.
+    `idp` is therefore `oauth:<provider>`, a prefix `_federated_organization_pin` does not
+    recognise, so the session comes out unpinned and free to move between every organization
+    the person belongs to — exactly like a password session, and exactly the posture spec §6
+    calls for. There is consequently no domain re-resolution step either: with no domain
+    proved at the start of the flow, there is nothing here to re-check against.
+    """
+    pending = await store.consume(state, oidc.SocialAuthorizationRequest.from_json)
+    if pending.provider != provider:
+        raise oidc.SsoExchangeProblem("That sign-in could not be completed. Please start again.")
+
+    config = await _get_enabled_provider(session, provider)
+    try:
+        client_secret = pii.open_sealed(config.client_secret_enc or b"", settings=cfg)
+    except pii.PiiError as exc:
+        log.error("oauth.client_secret_unopenable", provider=provider)
+        raise UpstreamUnavailableProblem(
+            "Single sign-on is temporarily unavailable. Please try again."
+        ) from exc
+
+    tokens = await idp.exchange_code(
+        str(config.token_endpoint),
+        code=code,
+        redirect_uri=cfg.oauth_social_redirect_uri_template.format(provider=provider),
+        client_id=str(config.client_id),
+        client_secret=client_secret,
+        code_verifier=pending.code_verifier,
+    )
+    jwks = await idp.fetch_jwks(str(config.jwks_uri))
+    identity = oidc.verify_id_token(
+        tokens.id_token,
+        jwks=jwks,
+        issuer=str(config.issuer),
+        audience=str(config.client_id),
+        nonce=pending.nonce,
+        leeway_seconds=cfg.sso_clock_skew_seconds,
+    )
+
+    # Same ASCII hardening as `sso_callback` — the Kelvin-sign/IDNA-vs-CITEXT class of
+    # mismatch applies identically here (see that function's comment for the concrete case):
+    # two representations of the same string cannot disagree if only one encoding is ever
+    # allowed through, so a non-ASCII assertion is refused outright rather than normalised.
+    if not identity.email.isascii():
+        log.warning("oauth.callback_refused", reason="non_ascii_identity", provider=provider)
+        raise oidc.SsoExchangeProblem("That sign-in could not be completed. Please start again.")
+
+    # Resolve by the provider's own subject first — see the docstring above. Only when this
+    # account has never been linked here before does resolution fall through to
+    # `_resolve_or_provision_identity`'s email-first lookup (and, from there, provisioning).
+    existing_link = (
+        await session.execute(
+            select(ExternalIdentity).where(
+                ExternalIdentity.provider == provider, ExternalIdentity.subject == identity.subject
+            )
+        )
+    ).scalar_one_or_none()
+    if existing_link is not None:
+        user = await directory.get(existing_link.user_id)
+        if user is None:  # pragma: no cover - defensive; auth and the directory disagree
+            log.error("oauth.callback_linked_user_missing", provider=provider)
+            raise oidc.SsoExchangeProblem(
+                "That sign-in could not be completed. Please start again."
+            )
+    else:
+        user = await _resolve_or_provision_identity(
+            directory=directory,
+            provisioning=provisioning,
+            intent=pending.intent,
+            invitation_token=pending.invitation_token,
+            identity=identity,
+            full_name_hint=identity.email.split("@", 1)[0],
+            organization_name=pending.organization_name,
+            slug=pending.slug,
+        )
+
+    # Same posture as every other minting path (`_verify_credentials`, `sso_callback`,
+    # `switch_organization`, `rotate_refresh`): a deactivated account does not get a session
+    # just because this request named it, whichever branch above resolved it.
+    if not user.is_active:
+        log.warning("oauth.callback_refused", reason="inactive_user", provider=provider)
+        raise oidc.SsoExchangeProblem("That sign-in could not be completed. Please start again.")
+
+    # Defence in depth against a resolved/provisioned user whose own stored address does not
+    # actually match what the provider asserted — the same posture `sso_callback` holds for
+    # `find_by_email`'s result, applied here to whichever path (returning user, fresh
+    # signup, invitation) `_resolve_or_provision_identity` took.
+    if not user.email.isascii() or user.email.strip().lower() != identity.email.strip().lower():
+        log.warning(
+            "oauth.callback_refused", reason="matched_user_email_mismatch", provider=provider
+        )
+        raise oidc.SsoExchangeProblem("That sign-in could not be completed. Please start again.")
+
+    await _link_external_identity(
+        session, provider=provider, subject=identity.subject, user=user, email=identity.email
+    )
+
+    active = user.active_memberships()
+    if not active:
+        raise ForbiddenProblem("This account is not a member of any organization")
+
+    auth_session = await start_session(
+        session,
+        user_id=user.user_id,
+        cfg=cfg,
+        amr=[OAUTH_AMR],
+        idp=f"oauth:{provider}",
+        request=request,
+    )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=active[0].organization_id,
+        actor_id=user.user_id,
+        action="auth.oauth_signed_in",
+        entity="session",
+        entity_id=auth_session.id,
+        request=request,
+    )
+
+    # Same second-factor gate `login` applies, in the same position (after the session row
+    # exists — its id is what the pre-auth token names — but before anything is minted for
+    # it): proving a Google or Microsoft identity is not the account's own second factor, and
+    # an MFA-enrolled account must not become reachable through a door that skips it. The
+    # existing `/auth/mfa/verify` route finishes this the same way it finishes a password
+    # sign-in's pre-auth token — no new route or token reason needed.
+    credential = await get_or_create_credential(session, user.user_id)
+    if await mfa_required(session, credential, user.user_id):
+        token = tk.mint_pre_auth(
+            pair,
+            issuer=cfg.jwt_issuer,
+            user_id=user.user_id,
+            session_id=auth_session.id,
+            reason="mfa",
+        )
+        await session.commit()
+        return LoginOutcome(status="mfa_required", pre_auth_token=token.token)
+
+    membership = resolve_organization(user, org_hint=None)
+    if membership is None:
+        token = tk.mint_pre_auth(
+            pair,
+            issuer=cfg.jwt_issuer,
+            user_id=user.user_id,
+            session_id=auth_session.id,
+            reason="org_selection",
+        )
+        await session.commit()
+        return LoginOutcome(
+            status="org_selection_required", pre_auth_token=token.token, organizations=active
+        )
+
+    issued = await issue_for(
+        session,
+        pair=pair,
+        cfg=cfg,
+        auth_session=auth_session,
+        membership=membership,
+        entitlements=entitlements,
+        audience=audience,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=membership.organization_id,
+        event_type=EVT_OAUTH_SIGNED_IN,
+        aggregate_type="session",
+        aggregate_id=auth_session.id,
+        payload={
+            "user_id": str(user.user_id),
+            "session_id": str(auth_session.id),
+            "organization_id": str(membership.organization_id),
+            "idp": f"oauth:{provider}",
+            "amr": [OAUTH_AMR],
+        },
+    )
+    await session.commit()
+    log.info(
+        "oauth_social.signed_in",
+        provider=provider,
+        user_id=str(user.user_id),
+        session_id=str(auth_session.id),
+    )
+    return LoginOutcome(status="complete", issued=issued)
+
+
 @dataclass(frozen=True, slots=True)
 class SsoRedirect:
     """Where to send the browser, and how long the request stays open."""
@@ -4020,7 +4369,7 @@ async def sso_callback(
     7. **Mint through `issue_for`**, the same call sign-in, org selection, org switching and
        refresh all use.
     """
-    pending = await store.consume(state)
+    pending: oidc.AuthorizationRequest = await store.consume(state)
     organization_id = uuid.UUID(pending.organization_id)
     await set_tenant(session, organization_id)
 
@@ -4333,6 +4682,94 @@ async def _link_external_identity(
             user_id=user.user_id, provider=provider, subject=subject, email_at_link=email
         )
     )
+
+
+async def _resolve_or_provision_identity(
+    *,
+    directory: Directory,
+    provisioning: ProvisioningClient,
+    intent: str,
+    invitation_token: str | None,
+    identity: oidc.VerifiedIdentity,
+    full_name_hint: str,
+    organization_name: str | None = None,
+    slug: str | None = None,
+) -> DirectoryUser:
+    """Find the account a verified OAuth identity belongs to, or create/join one.
+
+    `intent == "invite"` is handled first and separately from `"signup"`, and deliberately
+    does **not** start with the email-first lookup the signup branch below relies on: an
+    invitation names a specific organization, and an invitee who already holds a platform
+    account elsewhere (or under a different flow) must still actually be added to it
+    (`account-service`'s `add_member` already supports attaching an existing user to a
+    second organization — the public `/invitations/accept` route works this way too). Short-
+    circuiting on `find_by_email` here, the way `"signup"` does, would silently skip the
+    invite for exactly the existing-user case it most needs to run for — the invitation would
+    stay pending forever with no signal to the frontend. This is safe to do unconditionally
+    because the caller (`oauth_social_callback`) already checked `ExternalIdentity(provider,
+    subject)` first and only reaches this function when that lookup came back empty — a user
+    who is already linked by subject is resolved and signed in before this function is ever
+    called, so a repeat accept of the same invitation from the same linked identity never
+    gets here at all.
+
+    Only `ConflictProblem` ("That person is already a member of this organization" —
+    account-service's `add_member`, raised when the invitation itself was genuine but the
+    invitee already holds an active membership in the invited organization) is caught here
+    and treated as non-fatal **when the asserted identity already resolves to a directory
+    user**: the invitation was valid, only the "add" half is redundant, so the person is
+    signed in on their existing account rather than the whole flow failing.
+
+    `NotFoundProblem` is deliberately **not** caught: it is account-service's one opaque
+    message for every *invalid*-invitation cause (unknown token, expired, revoked, wrong
+    email — see `services.accept_invitation` there), including "already accepted", with no
+    way to tell those apart from the exception type alone — that opacity is the whole point
+    of the email-match guard (an attacker holding a forged token or asserting the wrong email
+    must learn nothing about *why* it failed). Catching it here to special-case "already
+    accepted" would catch all the others too, and silently sign someone who merely happens to
+    already have an account under the asserted email into that unrelated account instead of
+    refusing — spec §3 requires a clearly-wrong invitation to refuse, not resolve quietly.
+    So `NotFoundProblem` always propagates unchanged, exactly like every other invalid-
+    invitation case; only a true `ConflictProblem` falls back to `find_by_email`, and even
+    then only when that lookup actually finds someone — otherwise the conflict itself
+    propagates (there is nothing to fall back to).
+    """
+    if intent == "invite":
+        assert invitation_token is not None  # enforced in oauth_social_start
+        try:
+            provisioned = await provisioning.accept_invitation_federated(
+                token=invitation_token, email=identity.email, full_name=full_name_hint
+            )
+        except ConflictProblem:
+            existing = await directory.find_by_email(identity.email)
+            if existing is None:
+                raise
+            return existing
+        created = await directory.get(provisioned.user_id)
+        if created is None:  # pragma: no cover - defensive; account-service just created this row
+            raise UpstreamUnavailableProblem("The directory is unavailable")
+        return created
+
+    # intent == "signup": always resolves by email first — the same shortcut enterprise SSO
+    # has no need of (it already knows the organization from the domain) but a platform-wide
+    # flow does: an email that already has an account never gets a second organization
+    # (ADR-0013 §3), it falls through to the returning-user path instead. See spec §3.
+    existing = await directory.find_by_email(identity.email)
+    if existing is not None:
+        return existing
+
+    if not organization_name or not slug:
+        raise ValidationProblem("organization_name and slug are required to create a workspace")
+    provisioned = await provisioning.signup_federated(
+        organization_name=organization_name,
+        slug=slug,
+        full_name=full_name_hint,
+        email=identity.email,
+    )
+
+    created = await directory.get(provisioned.user_id)
+    if created is None:  # pragma: no cover - defensive; account-service just created this row
+        raise UpstreamUnavailableProblem("The directory is unavailable")
+    return created
 
 
 # --------------------------------------------------------------------- SSO administration

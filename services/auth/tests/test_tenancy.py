@@ -60,6 +60,19 @@ BARE_SESSION_ROUTES = {
         "from the server-side state this service issued, and the transaction is bound to it "
         "before the configuration is read."
     ),
+    "/api/v1/auth/oauth/{provider}/start": (
+        "Starting self-serve Google/Microsoft sign-in has no principal — there is no token "
+        "yet — and unlike SSO's own start route, nothing to bind either: the provider is a "
+        "fixed platform-wide registration (`PlatformOAuthProvider`), not something read from "
+        "an organization's own schema, so there is no tenant for this request to resolve."
+    ),
+    "/api/v1/auth/oauth/{provider}/callback": (
+        "The provider redirects a browser here with no token of ours, same as SSO's own "
+        "callback — but unlike SSO, there is still nothing to bind: the pending request names "
+        "a platform-wide provider, not an organization's own schema, and the session this "
+        "mints is deliberately unpinned (`_federated_organization_pin`), free to move between "
+        "every organization the resolved person belongs to rather than bound to one."
+    ),
     "/api/v1/auth/password/forgot": f"A reset request is anonymous and {PRE_ORGANIZATION}.",
     "/api/v1/auth/password/reset": f"A reset confirmation is anonymous and {PRE_ORGANIZATION}.",
     "/api/v1/auth/operator/login": (
@@ -530,3 +543,14 @@ class TestThePolicyClassificationHolds:
         await session.rollback()
         assert forced is True
         assert with_check is True
+
+    async def test_platform_oauth_providers_not_under_rls(self, session: AsyncSession) -> None:
+        """Platform-wide config, not a tenant table — see models.py docstring."""
+        result = await session.execute(
+            text(
+                "SELECT relrowsecurity FROM pg_class "
+                "WHERE relname = 'platform_oauth_providers' "
+                "AND relnamespace = 'auth'::regnamespace"
+            )
+        )
+        assert result.scalar_one() is False

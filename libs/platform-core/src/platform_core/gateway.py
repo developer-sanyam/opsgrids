@@ -388,6 +388,16 @@ DEFAULT_PUBLIC_PATHS = frozenset(
         # are ordinary permission-guarded tenant endpoints.
         "/api/v1/auth/sso/start",
         "/api/v1/auth/sso/callback",
+        # Self-serve Google/Microsoft sign-in — the platform-wide sibling of the SSO pair
+        # above, public for the identical reason: `/start` is what *produces* the redirect a
+        # person with no token yet has to follow, and `/callback` is where the provider sends
+        # a bearer-less browser back with nothing of ours but the `state` this service issued.
+        # Exact paths, not a prefix: a prefix would silently make any future route nested
+        # under `/api/v1/auth/oauth/` public too, which is not what this list is for.
+        "/api/v1/auth/oauth/google/start",
+        "/api/v1/auth/oauth/google/callback",
+        "/api/v1/auth/oauth/microsoft/start",
+        "/api/v1/auth/oauth/microsoft/callback",
         "/api/v1/auth/password/forgot",
         "/api/v1/auth/password/reset",
         # Provider webhooks (Meta's WhatsApp) are deliberately **not** here: they are

@@ -370,6 +370,32 @@ class TestPublicPaths:
         routes that are public — so it is worth pinning that the prefix does not leak."""
         assert (await client.get("/api/v1/auth/sso/config")).status_code == 401
 
+    @pytest.mark.parametrize("provider", ["google", "microsoft"])
+    async def test_self_serve_social_sign_in_is_reachable_without_a_token(
+        self, client: AsyncClient, upstream: EchoUpstream, provider: str
+    ) -> None:
+        """Final whole-branch review, Critical #2: the self-serve `/oauth/{provider}/*` pair
+        is the platform-wide sibling of the enterprise SSO pair above, missed entirely because
+        no task in the OAuth2 plan touched `gateway.py` and every route-level test for the
+        feature hits auth-service's FastAPI app directly, never through this gateway. Public
+        for the identical reason `sso/start`/`sso/callback` are: `/start` is what *produces*
+        the redirect a person with no token yet has to follow, and `/callback` is where Google
+        or Microsoft sends a bearer-less browser back carrying nothing of ours but the `state`
+        auth-service issued — demanding a bearer token at either would make the flow
+        unfinishable, for every user, not just the invite path.
+        """
+        started = await client.get(
+            f"/api/v1/auth/oauth/{provider}/start", params={"intent": "signup"}
+        )
+        assert started.status_code == 200
+        assert upstream.last["path"] == f"/api/v1/auth/oauth/{provider}/start"
+
+        finished = await client.get(
+            f"/api/v1/auth/oauth/{provider}/callback", params={"code": "abc", "state": "xyz"}
+        )
+        assert finished.status_code == 200
+        assert upstream.last["path"] == f"/api/v1/auth/oauth/{provider}/callback"
+
 
 class TestOperatorSignInIsBlockedHere:
     """MAJOR 3 of the security review: operator sign-in has no principal to check (staff

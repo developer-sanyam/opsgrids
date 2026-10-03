@@ -1902,7 +1902,12 @@ async def resolve_invitation_organization(session: AsyncSession, raw_token: str)
 
 
 async def accept_invitation(
-    session: AsyncSession, raw_token: str, full_name: str, *, request: Request | None = None
+    session: AsyncSession,
+    raw_token: str,
+    full_name: str,
+    *,
+    expected_email: str | None = None,
+    request: Request | None = None,
 ) -> Membership:
     invitation = await selectors.get_invitation_by_hash(session, _hash_token(raw_token))
     # One message for every failure mode: a distinct "expired" reply tells an attacker
@@ -1911,6 +1916,25 @@ async def accept_invitation(
     if invitation is None or invitation.accepted_at or invitation.revoked_at:
         raise invalid
     if invitation.expires_at <= datetime.now(UTC):
+        raise invalid
+    # `expected_email` is how the federated accept route (auth-service, already holding a
+    # verified Google/Microsoft email) asks this function to enforce a second check the public
+    # route has no need for. A Google/Microsoft login proves an email, not a token holder's
+    # identity beyond that — the invitation's authorization is "holds this token," but
+    # provisioning has always been keyed by `invitation.email` (`add_member` below). Without
+    # this check, holding a stolen or guessed invitation link would let anyone accept it under
+    # their own OAuth identity. Folded to lower case on both sides for the same reason sign-in
+    # does: an invitee's provider profile and the address an admin typed may differ only in
+    # case. `None` (the default) skips the check entirely — the public route never passes it,
+    # and that is what keeps this parameter purely additive. Same opaque message as every other
+    # invalid-invitation case: a distinct reply here would tell an attacker their forged
+    # attempt was "close" (right token, wrong email) rather than wrong altogether — see
+    # docs/superpowers/specs/2026-10-03-oauth2-social-login-design.md §6/§7.
+    email_mismatch = (
+        expected_email is not None
+        and expected_email.strip().lower() != invitation.email.strip().lower()
+    )
+    if email_mismatch:
         raise invalid
 
     membership = await add_member(

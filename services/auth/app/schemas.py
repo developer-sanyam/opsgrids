@@ -206,6 +206,19 @@ class SsoStartOut(BaseModel):
     provider_name: str
 
 
+class OAuthStartOut(BaseModel):
+    """Where to send the browser for self-serve Google/Microsoft sign-in.
+
+    `SsoStartOut`'s platform-wide sibling: no `organization_slug`/`provider_name` because
+    there is no organization yet at this point in the flow — the whole reason this is a
+    separate shape rather than a reuse of `SsoStartOut` with those fields left blank.
+    """
+
+    authorization_url: str
+    state: str
+    expires_in: int
+
+
 class SsoConfigIn(BaseModel):
     """The administrative form. **The secret goes in and never comes back.**
 

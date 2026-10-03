@@ -40,18 +40,28 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app import selectors
+from app import selectors, services
 from app.models import Membership, MembershipRole, Organization, OrgDomain, User
 from app.schemas import (
+    InvitationAcceptFederatedIn,
+    InvitationAcceptFederatedOut,
     OrganizationMemberCountOut,
     OrganizationMemberCountsOut,
     OrganizationsPageOut,
     OrganizationSummaryOut,
+    SignupFederatedIn,
+    SignupFederatedOut,
+    SignupIn,
 )
 from platform_core.auth import require_service_token
 from platform_core.cache import current_permission_version
-from platform_core.db import get_directory_session
-from platform_core.errors import ForbiddenProblem, NotFoundProblem, UnauthorizedProblem
+from platform_core.db import get_directory_session, session_scope
+from platform_core.errors import (
+    ConflictProblem,
+    ForbiddenProblem,
+    NotFoundProblem,
+    UnauthorizedProblem,
+)
 from platform_core.logging import get_logger
 
 log = get_logger("account.internal")
@@ -392,3 +402,96 @@ def _trace_directory_read(request: Request, user: User, how: str) -> None:
         organizations=len(user.memberships),
         calling_service=request.headers.get("X-Calling-Service", "unknown"),
     )
+
+
+# --------------------------------------------------------------------- federated provisioning
+
+#: The narrower caller check for these two routes specifically: valid and addressed to
+#: account (`require_service_token`, applied to the whole router, already checked that) and
+#: issued by auth-service by name. The spec's stated trust model for federated provisioning is
+#: "auth-service, already holding a verified identity" — not "any of the platform's services
+#: holding an account-audience token", which is all the router-level dependency alone proves.
+#: Same shape as `require_console_caller` above, narrowed to a different caller.
+TRUSTED_FEDERATED_CALLER = "auth"
+
+
+def require_auth_caller(request: Request) -> None:
+    caller = getattr(request.state, "service_caller", None)
+    if caller != TRUSTED_FEDERATED_CALLER:
+        raise UnauthorizedProblem("Valid service token required")
+
+
+AuthCallerDep = Annotated[None, Depends(require_auth_caller)]
+
+
+@router.post(
+    "/signup-federated",
+    response_model=SignupFederatedOut,
+    status_code=201,
+    summary="Create an organisation for a verified OAuth identity (called by auth-service)",
+)
+async def signup_federated(
+    payload: SignupFederatedIn, directory: SessionDep, _auth: AuthCallerDep
+) -> SignupFederatedOut:
+    """auth-service's entry point once Google/Microsoft has already proven the email — not a
+    variant of the public `POST /account/signup` route reachable with no caller identity at all.
+    Mixing "anyone with no account" and "auth-service, already holding a verified identity" on
+    one route would mean defending two trust levels in a single schema, so this stays a separate,
+    `require_service_token`-gated path that calls the **same** `services.signup` unchanged
+    (design doc §4) — only the entry schema differs: no deferred password, because there is
+    nothing to defer verifying.
+
+    Same bypass-then-narrow duplicate checks as the public route, for the same reason: the
+    policied `organizations` table cannot show a slug clash under a tenant binding that does not
+    exist yet, and a unique-violation 500 is not the 409 either caller is promised.
+    """
+    if await selectors.slug_taken(directory, payload.slug):
+        raise ConflictProblem(f"The address {payload.slug!r} is already taken")
+    if await selectors.get_user_by_email(directory, payload.email) is not None:
+        raise ConflictProblem("That email already has an account. Sign in instead.")
+
+    organization_id = uuid.uuid4()
+    async with session_scope(organization_id) as session:
+        membership = await services.signup(
+            session,
+            organization_id=organization_id,
+            payload=SignupIn(
+                organization_name=payload.organization_name,
+                slug=payload.slug,
+                full_name=payload.full_name,
+                email=payload.email,
+            ),
+        )
+    # Unlike `SignupOut`, auth-service needs `user_id` right away — it writes the
+    # `ExternalIdentity` row that turns the *next* Google/Microsoft login into a lookup rather
+    # than a second sign-up attempt, and it has no other way to learn this id.
+    return SignupFederatedOut(organization_id=organization_id, user_id=membership.user_id)
+
+
+@router.post(
+    "/invitations/accept-federated",
+    response_model=InvitationAcceptFederatedOut,
+    summary="Accept an invitation for a verified OAuth identity (called by auth-service)",
+)
+async def accept_invitation_federated(
+    payload: InvitationAcceptFederatedIn, directory: SessionDep, _auth: AuthCallerDep
+) -> InvitationAcceptFederatedOut:
+    """auth-service's entry point once Google/Microsoft has already proven `payload.email` —
+    not a variant of the public `POST /invitations/accept` route, which is reachable with no
+    caller identity at all by design. Same bypass-then-narrow shape as that route (ADR-0002,
+    path 4): `resolve_invitation_organization` reads the invitation on the bypass session only
+    to learn its organization, then every write happens under a tenant-scoped transaction on
+    the application role.
+
+    The one difference from the public route is `expected_email`: this is the call that makes
+    `services.accept_invitation`'s email-match guard load-bearing rather than theoretical — a
+    forged or guessed token without a matching verified email fails with the *same* opaque
+    `NotFoundProblem` every other invalid-invitation case gets (unknown, expired, revoked), so a
+    caller holding a stolen link learns nothing about why it failed (design doc §6/§7).
+    """
+    organization_id = await services.resolve_invitation_organization(directory, payload.token)
+    async with session_scope(organization_id) as session:
+        membership = await services.accept_invitation(
+            session, payload.token, payload.full_name, expected_email=payload.email
+        )
+    return InvitationAcceptFederatedOut(organization_id=organization_id, user_id=membership.user_id)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from platform_core.config import ServiceSettings, settings_for
 
@@ -48,6 +48,21 @@ class Settings(ServiceSettings):
     #: provider and this service are both NTP-disciplined, and a generous window is a
     #: replay window.
     sso_clock_skew_seconds: int = 60
+
+    # --- platform OAuth (Google/Microsoft self-serve login) ------------------------
+    #: Deployment secrets, not admin-configured rows — same posture as Razorpay keys
+    #: (ADR-0013 §6). Unset means the provider is inert; `bin/seed-oauth-providers`
+    #: reads these into `platform_oauth_providers` at deploy time.
+    google_oauth_client_id: str | None = None
+    google_oauth_client_secret: SecretStr | None = None
+    microsoft_oauth_client_id: str | None = None
+    microsoft_oauth_client_secret: SecretStr | None = None
+    #: `{provider}` is substituted with `google`/`microsoft`. Registered with each
+    #: provider's console verbatim — see `sso_redirect_uri`'s docstring for why a
+    #: redirect target can only ever come from configuration.
+    oauth_social_redirect_uri_template: str = (
+        "http://localhost:8100/api/v1/auth/oauth/{provider}/callback"
+    )
 
     # --- sessions -----------------------------------------------------------------
     #: The absolute lifetime of a session (`Session.expires_at`, `start_session`) — not how

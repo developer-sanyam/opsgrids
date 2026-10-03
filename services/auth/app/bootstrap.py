@@ -27,17 +27,28 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 
+from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import security, services
+from app import oidc, security, services
 from app.config import Settings, settings
-from app.models import MfaFactor, StaffAccount
+from app.models import MfaFactor, PlatformOAuthProvider, StaffAccount
+from platform_core import pii
 from platform_core.db import dispose_engine, init_engine, session_scope
 from platform_core.logging import get_logger
 
 log = get_logger("auth.bootstrap")
+
+#: Each provider's discovery document — the one admin-free way to learn its current
+#: authorization/token/JWKS endpoints, so a provider rotating infrastructure behind its
+#: well-known document never needs a code change here, only a reseed.
+OAUTH_DISCOVERY_URLS = {
+    "google": "https://accounts.google.com/.well-known/openid-configuration",
+    "microsoft": "https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration",
+}
 
 #: The dev operator's handle and roles. `owner` is the widest operator role; the console
 #: will treat it as holding every operator capability.
@@ -173,7 +184,95 @@ async def issue_enrollment_codes_for_unenrolled_staff(cfg: Settings) -> list[tup
         await dispose_engine()
 
 
+async def seed_oauth_providers(session: AsyncSession, *, cfg: Settings) -> None:
+    """Seed `platform_oauth_providers` from deployment env vars.
+
+    Run after `alembic upgrade head`, once per environment, and again whenever a client
+    secret rotates. A provider with no `client_id`/`client_secret` configured is left
+    disabled — "inert without keys, by design", the same posture `payment/app/config.py`
+    already holds for Razorpay (ADR-0013 §6) — rather than half-registered with a stray
+    `client_id` and no way to complete a token exchange. Idempotent by `provider` (the
+    table's primary key): re-running updates the existing row instead of failing on a
+    duplicate insert, which is what makes "run again after a secret rotates" a safe
+    instruction rather than a manual UPDATE.
+
+    Discovery is only attempted once both credentials are present — a provider with no
+    secret gets no network call at all, so a bare `bin/seed-oauth-providers` on a fresh box
+    with nothing configured yet never reaches out to Google or Microsoft.
+
+    **Microsoft is hard-disabled here, regardless of credentials.** Verified against the live
+    Microsoft discovery document: the `/common` endpoint's `issuer` is a literal, unresolved
+    `{tenantid}` template, which can never match `verify_id_token`'s exact-issuer check — every
+    Microsoft sign-in is certain to fail, not merely unlikely to work. Without this guard the
+    row would still be marked `enabled=True` and log success, so an operator who later adds
+    Microsoft credentials would see no indication anything is wrong until users started
+    hitting opaque failures. Do **not** "fix" this by relaxing `verify_id_token`'s
+    `email_verified` requirement anywhere: Microsoft's `email` claim is tenant-admin-controlled
+    and unverified, and relaxing that check combined with this feature's auto-link behaviour is
+    exactly the nOAuth account-takeover pattern. Google is unaffected and keeps working exactly
+    as today. Lift this once tenant-aware issuer validation exists for Microsoft.
+    """
+    idp = oidc.HttpIdpClient()
+    try:
+        creds: dict[str, tuple[str | None, SecretStr | None]] = {
+            "google": (cfg.google_oauth_client_id, cfg.google_oauth_client_secret),
+            "microsoft": (cfg.microsoft_oauth_client_id, cfg.microsoft_oauth_client_secret),
+        }
+        for provider, (client_id, client_secret) in creds.items():
+            row = await session.get(PlatformOAuthProvider, provider)
+            if row is None:
+                row = PlatformOAuthProvider(provider=provider)
+                session.add(row)
+            if provider == "microsoft":
+                row.enabled = False
+                if client_id and client_secret:
+                    log.warning(
+                        "auth.bootstrap.oauth_provider_force_disabled",
+                        provider=provider,
+                        reason="tenant_aware_issuer_validation_not_implemented",
+                    )
+                continue
+            if not client_id or not client_secret:
+                # Half a credential pair is not a usable one — leave it disabled rather
+                # than storing a `client_id` with nothing to exchange it against.
+                row.enabled = False
+                continue
+            doc = await idp.discover(OAUTH_DISCOVERY_URLS[provider])
+            row.client_id = client_id
+            row.client_secret_enc, _mask = pii.seal(
+                client_secret.get_secret_value(), kind="generic", settings=cfg
+            )
+            row.issuer = doc["issuer"]
+            row.authorization_endpoint = doc["authorization_endpoint"]
+            row.token_endpoint = doc["token_endpoint"]
+            row.jwks_uri = doc["jwks_uri"]
+            row.enabled = True
+            log.info("auth.bootstrap.oauth_provider_seeded", provider=provider, enabled=True)
+    finally:
+        await idp.aclose()
+
+
+async def seed_platform_oauth_providers(cfg: Settings) -> None:
+    """Deploy-time entrypoint for `bin/seed-oauth-providers` — owns the engine lifecycle the
+    same way `seed_dev_owner` does, around the actual row-level work in
+    `seed_oauth_providers`."""
+    init_engine(cfg)
+    try:
+        async with session_scope() as session:
+            await seed_oauth_providers(session, cfg=cfg)
+    finally:
+        await dispose_engine()
+
+
 def main() -> None:
+    """`python -m app.bootstrap` seeds the dev operator owner (`bin/seed-staff`'s shape,
+    unchanged for anyone already relying on the no-argument form); `python -m app.bootstrap
+    seed-oauth-providers` (`bin/seed-oauth-providers`) runs the OAuth provider seed instead.
+    Anything else — no argument, or an argument that is not that one — falls through to the
+    original dev-operator behaviour, so this stays additive rather than a restructure."""
+    if len(sys.argv) > 1 and sys.argv[1] == "seed-oauth-providers":
+        asyncio.run(seed_platform_oauth_providers(settings()))
+        return
     asyncio.run(seed_dev_owner(settings()))
 
 

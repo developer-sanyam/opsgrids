@@ -31,9 +31,10 @@ import base64
 import hashlib
 import json
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 from urllib.parse import urlencode
 
 import httpx
@@ -57,6 +58,8 @@ ID_TOKEN_ALGORITHMS = ("RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS
 DEFAULT_SCOPES = ("openid", "email", "profile")
 
 _STATE_PREFIX = "sso:state:"
+
+T = TypeVar("T")
 
 
 # --------------------------------------------------------------------- problems
@@ -505,6 +508,77 @@ class AuthorizationRequest:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class SocialAuthorizationRequest:
+    """What `services.oauth_social_start` must remember until `oauth_social_callback`.
+
+    A second pending-request shape alongside `AuthorizationRequest` — same server-side-only
+    reasoning (the PKCE verifier must never be readable by the browser holding it), but for
+    the platform-wide Google/Microsoft flow rather than per-org enterprise SSO: no
+    `organization_id`/`config_id`/`domain` (there is no organization yet), plus `intent` and
+    `invitation_token` to carry the signup-vs-invite branch across the redirect.
+
+    `organization_name`/`slug` carry the new workspace's details for the `signup` branch, the
+    same way `invitation_token` carries the `invite` branch's token — collected by the
+    frontend *before* the redirect to Google/Microsoft so `oauth_social_callback` never has to
+    ask for them again, *if* the frontend already expects this to be a new signup. Both default
+    to `None` and are never required at `oauth_social_start` — irrelevant for `intent ==
+    "invite"`, and for `intent == "signup"` not yet knowable to be needed at all, since the same
+    redirect is also what a *returning* user lands on. `_resolve_or_provision_identity` (not
+    `oauth_social_start`) is what actually requires them, and only once the callback's
+    email-first lookup has genuinely come back empty.
+    """
+
+    provider: str
+    intent: str
+    invitation_token: str | None
+    nonce: str
+    code_verifier: str
+    created_at: str
+    organization_name: str | None = None
+    slug: str | None = None
+
+    def as_json(self) -> str:
+        return json.dumps(
+            {
+                "provider": self.provider,
+                "intent": self.intent,
+                "invitation_token": self.invitation_token,
+                "nonce": self.nonce,
+                "code_verifier": self.code_verifier,
+                "created_at": self.created_at,
+                "organization_name": self.organization_name,
+                "slug": self.slug,
+            }
+        )
+
+    @classmethod
+    def from_json(cls, raw: str) -> SocialAuthorizationRequest:
+        data = json.loads(raw)
+        return cls(
+            provider=str(data["provider"]),
+            intent=str(data["intent"]),
+            invitation_token=data.get("invitation_token"),
+            nonce=str(data["nonce"]),
+            code_verifier=str(data["code_verifier"]),
+            created_at=str(data["created_at"]),
+            organization_name=data.get("organization_name"),
+            slug=data.get("slug"),
+        )
+
+
+class _PendingRequest(Protocol):
+    """What `StateStore.issue` needs from whatever it is asked to store.
+
+    Both `AuthorizationRequest` and `SocialAuthorizationRequest` satisfy this structurally —
+    `issue` itself never needs to know which "pending request" shape it was handed, only
+    that it can be turned back into JSON. Narrower than typing it `AuthorizationRequest`,
+    the same widening `consume`'s own `parse` parameter already went through (Task 3).
+    """
+
+    def as_json(self) -> str: ...
+
+
 class StateStore:
     """Pending authorization requests, in Redis, single-use.
 
@@ -517,7 +591,7 @@ class StateStore:
     def __init__(self, redis: Any) -> None:
         self._redis = redis
 
-    async def issue(self, request: AuthorizationRequest, *, ttl_seconds: int) -> str:
+    async def issue(self, request: _PendingRequest, *, ttl_seconds: int) -> str:
         """Store a pending request under a fresh opaque state and return it.
 
         `nx=True` so a state can never overwrite one already in flight. A collision on 256
@@ -540,13 +614,21 @@ class StateStore:
             )
         return state
 
-    async def consume(self, state: str) -> AuthorizationRequest:
+    async def consume(
+        self,
+        state: str,
+        parse: Callable[[str], T] = AuthorizationRequest.from_json,  # type: ignore[assignment]
+    ) -> T:
         """Read a pending request **and delete it, atomically**.
 
         `GETDEL` rather than get-then-delete: two round trips leave a window in which the
         same state is read twice, which is precisely the replay this exists to stop. A state
         that is missing — never issued, already used, or expired — is one answer, because
         telling the two apart tells an attacker whether their captured value was ever real.
+
+        `parse` defaults to `AuthorizationRequest.from_json`, so every existing caller is
+        unaffected — it exists so a second pending-request shape, stored under this same
+        single-use mechanism, can be read back as itself rather than coerced into this one.
         """
         try:
             raw = await self._redis.getdel(_STATE_PREFIX + state)
@@ -559,9 +641,7 @@ class StateStore:
             log.warning("sso.state_not_found")
             raise SsoExchangeProblem("That sign-in has expired. Please start again.")
         try:
-            return AuthorizationRequest.from_json(
-                raw if isinstance(raw, str) else raw.decode("utf-8")
-            )
+            return parse(raw if isinstance(raw, str) else raw.decode("utf-8"))
         except Exception as exc:  # pragma: no cover - defensive
             raise SsoExchangeProblem("That sign-in has expired. Please start again.") from exc
 
@@ -576,6 +656,7 @@ __all__ = [
     "AuthorizationRequest",
     "HttpIdpClient",
     "IdpClient",
+    "SocialAuthorizationRequest",
     "SsoExchangeProblem",
     "SsoIdentityConflictProblem",
     "SsoNoAccessProblem",

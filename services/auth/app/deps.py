@@ -16,6 +16,7 @@ from app.directory import Directory
 from app.entitlements import Entitlements
 from app.keys import KeyPair
 from app.oidc import IdpClient, StateStore
+from app.provisioning import ProvisioningClient
 from platform_core.cache import get_redis, reserve_once
 from platform_core.errors import UnauthorizedProblem
 from platform_core.internal_auth import (
@@ -42,6 +43,11 @@ def get_entitlements(request: Request) -> Entitlements:
 def get_idp(request: Request) -> IdpClient:
     """The identity-provider client. Overridden in tests by a fake provider."""
     return request.app.state.idp  # type: ignore[no-any-return]
+
+
+def get_provisioning(request: Request) -> ProvisioningClient:
+    """auth-service's write path into account-service. See `app.provisioning`."""
+    return request.app.state.provisioning  # type: ignore[no-any-return]
 
 
 def get_sso_state(request: Request) -> StateStore:
@@ -95,3 +101,4 @@ DirectoryDep = Annotated[Directory, Depends(get_directory)]
 EntitlementsDep = Annotated[Entitlements, Depends(get_entitlements)]
 IdpDep = Annotated[IdpClient, Depends(get_idp)]
 SsoStateDep = Annotated[StateStore, Depends(get_sso_state)]
+ProvisioningDep = Annotated[ProvisioningClient, Depends(get_provisioning)]
