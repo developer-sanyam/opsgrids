@@ -664,15 +664,18 @@ async def oauth_social_start_route(
     intent: Annotated[str, Query(pattern="^(signup|invite)$")],
     invitation_token: Annotated[str | None, Query(max_length=255)] = None,
     organization_name: Annotated[str | None, Query(max_length=200)] = None,
-    slug: Annotated[str | None, Query(max_length=60, pattern=r"^[a-z0-9][a-z0-9-]*$")] = None,
+    slug: Annotated[
+        str | None, Query(min_length=2, max_length=60, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    ] = None,
 ) -> OAuthStartOut:
     """The platform-wide sibling of `sso_start`: no domain to resolve, no organization to
     bind — just a fixed registration (`PlatformOAuthProvider`) this service already trusts.
 
-    `organization_name`/`slug` are the new workspace's details for `intent=signup`, collected
-    by the frontend before this redirect the same way `invitation_token` already is for
-    `intent=invite` — `services.oauth_social_start` enforces that both are present for a
-    signup, so a malformed request never gets as far as occupying a state slot.
+    `organization_name`/`slug` are the new workspace's details, for a frontend that already
+    knows (or expects) this `intent=signup` redirect to be a genuinely new signup. They are
+    optional here on purpose — see `services.oauth_social_start`'s own docstring for why: the
+    same `intent=signup` redirect is also what a *returning* user lands on, and this route has
+    no way to tell the two apart until the callback's email lookup actually runs.
     """
     redirect = await services.oauth_social_start(
         session,

@@ -3842,22 +3842,33 @@ async def oauth_social_start(
 ) -> OAuthRedirect:
     """Begin a self-serve Google/Microsoft sign-in.
 
-    `intent` carries which flow the callback must run: `signup` provisions a new account
-    (or, if the asserted email already has one, links it instead — `oauth_social_callback`'s
-    own resolve-by-subject-then-email order), `invite` redeems a specific invitation and
-    therefore needs the token that names it. A `signup` additionally needs the new workspace's
-    `organization_name`/`slug` — collected here, before the redirect, the same way
-    `invitation_token` is, so `oauth_social_callback` never has to ask the frontend for them a
-    second time after the provider sends the browser back. All of it validated here, before
-    anything is written to Redis, so a malformed request never gets as far as occupying a
-    state slot.
+    `intent` carries which flow the callback must run: `signup` resolves by email first and
+    only provisions a new account if that comes back empty (`oauth_social_callback`'s own
+    resolve-by-subject-then-email order), `invite` redeems a specific invitation and therefore
+    needs the token that names it.
+
+    **`organization_name`/`slug` are accepted here but never required.** A `signup` redirect
+    is the *one* button both a returning user and a genuinely new one land on — there is no
+    way to tell which this is until the callback's email (and, before that, its
+    provider-subject) lookup actually runs, and that happens long after this function returns.
+    Requiring a workspace name/slug here would 422 a returning user before the flow ever
+    reaches the lookup that would have recognized them. They are threaded through to
+    `SocialAuthorizationRequest` purely as a convenience — a frontend that already collected
+    them (because *it* expects this to be a new signup) does not have to ask the person again
+    after the provider sends the browser back — and it is `_resolve_or_provision_identity`
+    (Task 6) that actually enforces they are present, but only once `find_by_email` has
+    genuinely come back empty. A frontend that gets this wrong (new signup, no details
+    collected) finds out one step later, at the callback, rather than here; that edge case is
+    not one a correctly-built frontend ever reaches, since it collects these before ever
+    redirecting to Google.
+
+    `intent` and (for `invite`) `invitation_token` are still validated here, before anything is
+    written to Redis, so a malformed request never gets as far as occupying a state slot.
     """
     if intent not in ("signup", "invite"):
         raise ValidationProblem("intent must be 'signup' or 'invite'")
     if intent == "invite" and not invitation_token:
         raise ValidationProblem("invitation_token is required for intent=invite")
-    if intent == "signup" and (not organization_name or not slug):
-        raise ValidationProblem("organization_name and slug are required for intent=signup")
 
     config = await _get_enabled_provider(session, provider)
 

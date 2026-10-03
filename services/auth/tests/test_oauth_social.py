@@ -13,17 +13,18 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import oidc, services
+from app import oidc, security, services
 from app.config import Settings, settings
 from app.directory import DirectoryUser
 from app.keys import KeyPair
-from app.models import Credential, ExternalIdentity, MfaFactor, PlatformOAuthProvider, Session
+from app.models import ExternalIdentity, PlatformOAuthProvider, Session
 from app.provisioning import FakeProvisioningClient
 from platform_core import pii
 from platform_core.errors import NotFoundProblem, ValidationProblem
@@ -41,6 +42,14 @@ from tests.conftest import (
 from tests.fake_idp import FakeIdp
 
 pytestmark = pytest.mark.integration
+
+
+def _nonce_from(authorization_url: str) -> str:
+    """The `nonce` query parameter `oauth_social_start` generated — needed only by tests that
+    drive `oauth_social_start` for real (most of this file hand-builds a `pending` request
+    directly, with a caller-chosen nonce, since the nonce itself is not what they test)."""
+    return parse_qs(urlparse(authorization_url).query)["nonce"][0]
+
 
 #: `oauth_social_callback` never calls `idp.discover()` — the provider's endpoints come from
 #: the `PlatformOAuthProvider` row, already pinned at registration time
@@ -100,6 +109,29 @@ async def _seed_google_provider(session: AsyncSession, cfg: Settings | None = No
     await session.flush()
 
 
+async def _seed_microsoft_provider(session: AsyncSession, cfg: Settings) -> None:
+    """A second, real platform provider row — used only by the provider/state-mismatch test
+    (round 2 test-quality fix), so that removing the `pending.provider != provider` guard would
+    actually let `oauth_social_callback` reach `idp.exchange_code` for `microsoft`, rather than
+    failing one step earlier for the unrelated reason that `microsoft` was never registered at
+    all. Always sealed (unlike `_seed_google_provider`'s unsealed default) since the one test
+    that uses this seeds `cfg` unconditionally."""
+    client_secret_enc, _ = pii.seal("microsoft-test-client-secret", kind="generic", settings=cfg)
+    session.add(
+        PlatformOAuthProvider(
+            provider="microsoft",
+            enabled=True,
+            client_id="ms-client-456",
+            client_secret_enc=client_secret_enc,
+            issuer="https://login.microsoftonline.com/common/v2.0",
+            authorization_endpoint="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+            token_endpoint="https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            jwks_uri="https://login.microsoftonline.com/common/discovery/v2.0/keys",
+        )
+    )
+    await session.flush()
+
+
 def _pending_google_request(
     *,
     nonce: str,
@@ -125,13 +157,7 @@ class TestOauthSocialStart:
     ) -> None:
         await _seed_google_provider(session)
         redirect = await services.oauth_social_start(
-            session,
-            cfg=cfg,
-            store=store,
-            provider="google",
-            intent="signup",
-            organization_name="New Co",
-            slug="new-co",
+            session, cfg=cfg, store=store, provider="google", intent="signup"
         )
         assert redirect.authorization_url.startswith(
             "https://accounts.google.com/o/oauth2/v2/auth?"
@@ -147,13 +173,7 @@ class TestOauthSocialStart:
         await session.flush()
         with pytest.raises(NotFoundProblem):
             await services.oauth_social_start(
-                session,
-                cfg=cfg,
-                store=store,
-                provider="microsoft",
-                intent="signup",
-                organization_name="New Co",
-                slug="new-co",
+                session, cfg=cfg, store=store, provider="microsoft", intent="signup"
             )
 
     async def test_refuses_a_provider_with_no_row_at_all(
@@ -161,13 +181,7 @@ class TestOauthSocialStart:
     ) -> None:
         with pytest.raises(NotFoundProblem):
             await services.oauth_social_start(
-                session,
-                cfg=cfg,
-                store=store,
-                provider="google",
-                intent="signup",
-                organization_name="New Co",
-                slug="new-co",
+                session, cfg=cfg, store=store, provider="google", intent="signup"
             )
 
     async def test_refuses_a_provider_outside_the_known_set(
@@ -177,13 +191,7 @@ class TestOauthSocialStart:
         must not even reach a lookup, the same posture `OAUTH_PROVIDERS` exists to enforce."""
         with pytest.raises(NotFoundProblem):
             await services.oauth_social_start(
-                session,
-                cfg=cfg,
-                store=store,
-                provider="facebook",
-                intent="signup",
-                organization_name="New Co",
-                slug="new-co",
+                session, cfg=cfg, store=store, provider="facebook", intent="signup"
             )
 
     async def test_refuses_an_invalid_intent(
@@ -204,17 +212,24 @@ class TestOauthSocialStart:
                 session, cfg=cfg, store=store, provider="google", intent="invite"
             )
 
-    async def test_a_signup_intent_requires_organization_details(
+    async def test_a_signup_intent_succeeds_at_start_without_organization_details(
         self, session: AsyncSession, cfg: Settings, store: oidc.StateStore
     ) -> None:
-        """Important #4: mirrors the invite-requires-a-token test above — a `signup` with no
-        workspace name/slug must be refused here, before a state slot is even occupied, not
-        422 for the first time only once the callback tries (and fails) to provision one."""
+        """Important B (round 2): the opposite of what round 1 asserted here. `/start` cannot
+        know yet whether the email behind this `intent=signup` redirect belongs to a returning
+        user (who needs no organization details at all — `_resolve_or_provision_identity`'s
+        email-first lookup finds them immediately) or a genuinely new one (who does, but only
+        once that same lookup has actually come back empty, which happens long after this
+        function returns). Requiring them here 422'd a returning user before the flow ever
+        reached the lookup that would have recognized them — the exact regression round 1
+        introduced. See `TestOauthSocialCallback`'s
+        `test_a_new_signup_without_organization_details_is_refused_at_the_callback` for where a
+        genuine new signup without details is actually (and correctly, just later) refused."""
         await _seed_google_provider(session)
-        with pytest.raises(ValidationProblem):
-            await services.oauth_social_start(
-                session, cfg=cfg, store=store, provider="google", intent="signup"
-            )
+        redirect = await services.oauth_social_start(
+            session, cfg=cfg, store=store, provider="google", intent="signup"
+        )
+        assert redirect.authorization_url
 
     async def test_an_invite_intent_with_a_token_succeeds(
         self, session: AsyncSession, cfg: Settings, store: oidc.StateStore
@@ -257,23 +272,49 @@ class TestOauthSocialStart:
 
 class TestOauthSocialStartRoute:
     async def test_route_returns_the_authorization_url(self, client, session: AsyncSession) -> None:
+        """No `organization_name`/`slug` in the request — Important B (round 2): the route
+        must accept a bare `intent=signup`, the same shape a returning user's frontend sends,
+        without 422ing before the callback ever gets a chance to recognize them."""
         await _seed_google_provider(session)
-        response = await client.get(
-            "/api/v1/auth/oauth/google/start",
-            params={"intent": "signup", "organization_name": "New Co", "slug": "new-co"},
-        )
+        response = await client.get("/api/v1/auth/oauth/google/start", params={"intent": "signup"})
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["authorization_url"].startswith("https://accounts.google.com/o/oauth2/v2/auth?")
         assert body["state"]
         assert body["expires_in"] == settings().sso_state_ttl_seconds
 
-    async def test_route_404s_for_an_unknown_provider(self, client, session: AsyncSession) -> None:
+    async def test_route_accepts_organization_details_for_a_fresh_signup(
+        self, client, session: AsyncSession
+    ) -> None:
+        """The other shape the same route serves: a frontend that already expects this to be a
+        new signup and collected the workspace details up front. Both this and the test above
+        must succeed — neither is the "right" shape, since the route cannot tell which is which."""
+        await _seed_google_provider(session)
         response = await client.get(
-            "/api/v1/auth/oauth/facebook/start",
+            "/api/v1/auth/oauth/google/start",
             params={"intent": "signup", "organization_name": "New Co", "slug": "new-co"},
         )
+        assert response.status_code == 200, response.text
+
+    async def test_route_404s_for_an_unknown_provider(self, client, session: AsyncSession) -> None:
+        response = await client.get(
+            "/api/v1/auth/oauth/facebook/start", params={"intent": "signup"}
+        )
         assert response.status_code == 404, response.text
+
+    async def test_route_rejects_a_slug_that_is_too_short(
+        self, client, session: AsyncSession
+    ) -> None:
+        """Bundled fix (round 2): a 1-character slug used to survive the whole Google round
+        trip and then fail as an unhandled 500 inside `provisioning.py`, after the user's state
+        had already been consumed. `min_length=2` matches account-service's own `Slug` type and
+        fails fast, at the edge, before any of that."""
+        await _seed_google_provider(session)
+        response = await client.get(
+            "/api/v1/auth/oauth/google/start",
+            params={"intent": "signup", "organization_name": "New Co", "slug": "a"},
+        )
+        assert response.status_code == 422, response.text
 
     async def test_route_rejects_an_invalid_intent_at_the_edge(
         self, client, session: AsyncSession
@@ -659,8 +700,18 @@ class TestOauthSocialCallback:
         """A state issued for `google` presented at the `microsoft` callback is refused before
         anything is attempted against the real identity provider — `idp.exchanges` stays empty,
         proving the check runs ahead of `exchange_code`, not merely that some later step
-        happened to fail too."""
+        happened to fail too.
+
+        **Round 2 test-quality fix:** a Microsoft row is seeded too, deliberately — without one,
+        this test has no teeth, since `exchange_code` is never reached anyway once `microsoft`
+        turns out not to be registered at all (`_get_enabled_provider` raises `NotFoundProblem`
+        first), so `idp.exchanges == []` would hold whether or not the `pending.provider !=
+        provider` check exists. With a real, enabled Microsoft row, removing that check would
+        let execution reach `exchange_code` for real — the assertion below only has something
+        to prove because of this seed.
+        """
         await _seed_google_provider(session, cfg)
+        await _seed_microsoft_provider(session, cfg)
         state = await store.issue(_pending_google_request(nonce="n2c"), ttl_seconds=600)
 
         with pytest.raises(oidc.SsoExchangeProblem):
@@ -740,18 +791,27 @@ class TestOauthSocialCallback:
     ) -> None:
         """Critical #2: an MFA-enrolled account must not become reachable through a door that
         skips its second factor. Same check `login()` runs, same outcome shape — a pre-auth
-        token for the existing `/auth/mfa/verify` route, not a new flow."""
-        session.add(Credential(user_id=USER, mfa_enforced=True))
-        session.add(
-            MfaFactor(
-                user_id=USER,
-                type="totp",
-                label="Authenticator app",
-                secret_enc=b"irrelevant-for-this-test",
-                confirmed_at=datetime.now(UTC),
-            )
+        token for the existing `/auth/mfa/verify` route, not a new flow.
+
+        **Round 2 test-quality fix:** round 1's version stopped at the `LoginOutcome` shape
+        (`status="mfa_required"`), which proves the branch was taken but not that the token it
+        hands back is the *real* thing. This version enrols a real TOTP factor the same way
+        `test_signin.py` does (`begin_mfa_enrolment`/`confirm_mfa_enrolment`,
+        `security._totp_at`) and redeems the pre-auth token through the actual `verify_mfa` —
+        the same function `/auth/mfa/verify` calls — confirming it completes the sign-in and
+        that the minted session's `amr` carries both factors.
+        """
+        factor, secret, _ = await services.begin_mfa_enrolment(
+            session, USER, account_email="sam@example.com", cfg=cfg
         )
-        await session.flush()
+        step = int(datetime.now(UTC).timestamp()) // 30
+        await services.confirm_mfa_enrolment(
+            session,
+            factor_id=factor.id,
+            user_id=USER,
+            code=security._totp_at(secret, step),
+            cfg=cfg,
+        )
 
         await _seed_google_provider(session, cfg)
         state = await store.issue(_pending_google_request(nonce="n2e"), ttl_seconds=600)
@@ -777,6 +837,23 @@ class TestOauthSocialCallback:
         assert outcome.pre_auth_token is not None
         assert outcome.issued is None
 
+        # Redeem it through the real machinery. A later step than confirmation consumed, the
+        # same replay-protection reasoning `test_signin.py`'s own equivalent assertion uses.
+        done = await services.verify_mfa(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            entitlements=entitlements,
+            pre_auth_token=outcome.pre_auth_token,
+            code=security._totp_at(secret, step + 1),
+        )
+        assert done.status == "complete"
+        assert done.issued is not None
+        row = await session.get(Session, done.issued.session_id)
+        assert row is not None
+        assert row.amr == ["oauth", "otp"]
+
     async def test_resolves_by_subject_before_email_to_avoid_orphaning_a_new_signup(
         self,
         session: AsyncSession,
@@ -792,7 +869,16 @@ class TestOauthSocialCallback:
         for the "new" address before the subject conflict would otherwise be discovered. The
         sign-in is still refused here (gate 2: the directory's stored address no longer matches
         what Google now asserts), but refused *before* anything was provisioned — that's the
-        property this test exists to pin, not the refusal itself."""
+        property this test exists to pin, not the refusal itself.
+
+        **Round 2 test-quality fix:** the pending request now carries real `organization_name`/
+        `slug` — round 1's version left them `None`, which (after Important B's fix dropped the
+        `/start`-time requirement) only proved that an *unrelated* `ValidationProblem` fires for
+        missing org details, never reaching the subject-conflict logic this test exists to
+        prove at all. With real org details present, a reverted subject-first fix would actually
+        call `provisioning.signup_federated(...)` for "new@example.com" — which is exactly what
+        `provisioning.calls == []` below is positioned to catch.
+        """
         existing_user = DirectoryUser(
             user_id=uuid.uuid4(),
             email="old@example.com",
@@ -812,7 +898,10 @@ class TestOauthSocialCallback:
         await session.flush()
 
         await _seed_google_provider(session, cfg)
-        state = await store.issue(_pending_google_request(nonce="n2f"), ttl_seconds=600)
+        state = await store.issue(
+            _pending_google_request(nonce="n2f", organization_name="New Co", slug="new-co"),
+            ttl_seconds=600,
+        )
         idp.next_id_token = idp.issue_id_token(
             nonce="n2f",
             email="new@example.com",
@@ -841,6 +930,153 @@ class TestOauthSocialCallback:
         # "new@example.com", even though email-first resolution would have found no existing
         # user at that address and tried to.
         assert provisioning.calls == []
+
+    async def test_subject_first_lookup_skips_the_email_lookup_entirely(
+        self,
+        session: AsyncSession,
+        cfg: Settings,
+        pair: KeyPair,
+        store: oidc.StateStore,
+        entitlements: FakeEntitlements,
+        idp: FakeIdp,
+    ) -> None:
+        """Round 2 test-quality gap: the orphan-avoidance test above proves a *consequence* of
+        subject-first resolution; this proves the mechanism itself actually fires for the
+        ordinary case — a returning, already-linked user — rather than merely happening not to
+        break anything if `directory.find_by_email` were called anyway. `_RecordingDirectory`
+        (used elsewhere in this file for the identical reason against `sso_callback`'s own
+        gate) proves the negative directly: the lookup is never made at all."""
+        existing_user = DirectoryUser(
+            user_id=uuid.uuid4(),
+            email="pat@example.com",
+            full_name="Pat",
+            is_active=True,
+            memberships=[membership(ORG_A, uuid.uuid4(), "acme", "Acme Technologies")],
+        )
+        directory = _RecordingDirectory([existing_user])
+        session.add(
+            ExternalIdentity(
+                user_id=existing_user.user_id,
+                provider="google",
+                subject="google-sub-returning-link",
+                email_at_link="pat@example.com",
+            )
+        )
+        await session.flush()
+
+        await _seed_google_provider(session, cfg)
+        state = await store.issue(_pending_google_request(nonce="n2h"), ttl_seconds=600)
+        idp.next_id_token = idp.issue_id_token(
+            nonce="n2h",
+            email="pat@example.com",
+            subject="google-sub-returning-link",
+            issuer=GOOGLE_ISSUER,
+            audience=GOOGLE_CLIENT_ID,
+        )
+
+        outcome = await services.oauth_social_callback(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            provisioning=FakeProvisioningClient(),
+            entitlements=entitlements,
+            idp=idp,
+            store=store,
+            provider="google",
+            code="irrelevant-fake-code",
+            state=state,
+        )
+
+        assert outcome.status == "complete"
+        assert directory.lookups == []
+
+    async def test_a_new_signup_without_organization_details_is_refused_at_the_callback(
+        self,
+        session: AsyncSession,
+        cfg: Settings,
+        pair: KeyPair,
+        store: oidc.StateStore,
+        entitlements: FakeEntitlements,
+        idp: FakeIdp,
+    ) -> None:
+        """Important B's counterpart: `oauth_social_start` no longer requires organization
+        details for `intent=signup` (a returning user needs none at all — see
+        `TestOauthSocialStart::test_a_signup_intent_succeeds_at_start_without_organization_details`),
+        so a genuine new signup that omitted them is instead refused here, inside
+        `_resolve_or_provision_identity` (Task 6's own validation, unchanged), once
+        `find_by_email` has actually come back empty. Later than before, but still a clear
+        refusal — and not a case a correctly-built frontend ever reaches, since it collects
+        these before ever redirecting to Google. Thin on purpose: Task 6/7 already cover
+        `_resolve_or_provision_identity`'s own validation at the function-unit level; this only
+        has to prove the callback actually reaches it."""
+        await _seed_google_provider(session, cfg)
+        state = await store.issue(_pending_google_request(nonce="n2i"), ttl_seconds=600)
+        idp.next_id_token = idp.issue_id_token(
+            nonce="n2i",
+            email="brand-new@example.com",
+            issuer=GOOGLE_ISSUER,
+            audience=GOOGLE_CLIENT_ID,
+        )
+
+        with pytest.raises(ValidationProblem):
+            await services.oauth_social_callback(
+                session,
+                cfg=cfg,
+                pair=pair,
+                directory=FakeDirectory([]),
+                provisioning=FakeProvisioningClient(),
+                entitlements=entitlements,
+                idp=idp,
+                store=store,
+                provider="google",
+                code="irrelevant-fake-code",
+                state=state,
+            )
+
+    async def test_a_returning_user_signs_in_through_signup_intent_with_no_organization_details(
+        self,
+        session: AsyncSession,
+        cfg: Settings,
+        pair: KeyPair,
+        store: oidc.StateStore,
+        directory: FakeDirectory,
+        entitlements: FakeEntitlements,
+        idp: FakeIdp,
+    ) -> None:
+        """Important B's own re-verification, end to end: `oauth_social_start` driven for
+        real (not hand-built, unlike this class's other pending requests) with a bare
+        `intent=signup` and no organization details, for the shared `directory` fixture's
+        returning `sam@example.com` — the whole point of one button that resolves by email,
+        proved all the way through to a minted session rather than merely asserted of
+        `oauth_social_start` in isolation."""
+        await _seed_google_provider(session, cfg)
+        redirect = await services.oauth_social_start(
+            session, cfg=cfg, store=store, provider="google", intent="signup"
+        )
+        idp.next_id_token = idp.issue_id_token(
+            nonce=_nonce_from(redirect.authorization_url),
+            email="sam@example.com",
+            issuer=GOOGLE_ISSUER,
+            audience=GOOGLE_CLIENT_ID,
+        )
+
+        outcome = await services.oauth_social_callback(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            provisioning=FakeProvisioningClient(),
+            entitlements=entitlements,
+            idp=idp,
+            store=store,
+            provider="google",
+            code="irrelevant-fake-code",
+            state=redirect.state,
+        )
+
+        assert outcome.status == "complete"
+        assert outcome.issued is not None
 
     async def test_a_fresh_signup_with_organization_details_succeeds(
         self,

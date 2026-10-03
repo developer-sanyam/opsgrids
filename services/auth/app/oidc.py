@@ -521,8 +521,12 @@ class SocialAuthorizationRequest:
     `organization_name`/`slug` carry the new workspace's details for the `signup` branch, the
     same way `invitation_token` carries the `invite` branch's token — collected by the
     frontend *before* the redirect to Google/Microsoft so `oauth_social_callback` never has to
-    ask for them again. Both default to `None` (irrelevant for `intent == "invite"`, and
-    required — validated in `services.oauth_social_start` — for `intent == "signup"`).
+    ask for them again, *if* the frontend already expects this to be a new signup. Both default
+    to `None` and are never required at `oauth_social_start` — irrelevant for `intent ==
+    "invite"`, and for `intent == "signup"` not yet knowable to be needed at all, since the same
+    redirect is also what a *returning* user lands on. `_resolve_or_provision_identity` (not
+    `oauth_social_start`) is what actually requires them, and only once the callback's
+    email-first lookup has genuinely come back empty.
     """
 
     provider: str
