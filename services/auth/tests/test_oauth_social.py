@@ -227,3 +227,108 @@ class TestResolveOrProvisionIdentity:
             "signup_federated",
             {"email": "new@example.com", "slug": "new-co"},
         ) in provisioning.calls
+
+
+class TestResolveOrProvisionIdentityInvite:
+    """`_resolve_or_provision_identity`'s `else` (invite) branch (Task 6) — the adversarial
+    email-match case and the happy path, the two cases the signup-focused class above
+    deliberately left out.
+
+    The mismatch test is the important one: `FakeProvisioningClient.accept_invitation_federated`
+    (Task 4) is where the email check actually lives, and it must refuse a mismatch the same
+    opaque way it refuses an unknown or revoked token — never a distinct message that would let
+    an attacker learn *which* part of their guess was wrong (CLAUDE.md's "authorization is
+    server-side" posture applied to an error message rather than a query).
+    """
+
+    async def test_resolve_or_provision_invite_rejects_email_mismatch(self) -> None:
+        directory = FakeDirectory([])
+        provisioning = FakeProvisioningClient()
+        org_id, user_id = uuid.uuid4(), uuid.uuid4()
+        provisioning.invitations["tok-1"] = ("invitee@acme.com", org_id, user_id, False)
+
+        async def resolve(*, token: str, email: str) -> None:
+            await services._resolve_or_provision_identity(
+                directory=directory,
+                provisioning=provisioning,
+                intent="invite",
+                invitation_token=token,
+                identity=oidc.VerifiedIdentity(subject="google-sub-x", email=email),
+                full_name_hint="Attacker",
+                organization_name=None,
+                slug=None,
+            )
+
+        with pytest.raises(NotFoundProblem) as mismatched:
+            await resolve(token="tok-1", email="attacker@evil.com")
+
+        # Same opaque refusal as an unknown token entirely — proving the message does not
+        # enumerate *why* ("wrong email" vs "no such invitation"), just as `test_sso.py`
+        # proves equivalent SSO failures share one message (`unknown.value.detail ==
+        # unverified.value.detail`).
+        with pytest.raises(NotFoundProblem) as unknown_token:
+            await resolve(token="does-not-exist", email="attacker@evil.com")
+
+        assert mismatched.value.detail == unknown_token.value.detail
+        assert mismatched.value.detail == "That invitation is not valid"
+        assert mismatched.value.status_code == 404
+
+        # The mismatch was actually exercised, not short-circuited by a missing token lookup:
+        # `accept_invitation_federated` was called with the attacker's (wrong) email against the
+        # real invitation token.
+        assert (
+            "accept_invitation_federated",
+            {"token": "tok-1", "email": "attacker@evil.com"},
+        ) in provisioning.calls
+
+        # `directory` never had to answer anything — the refusal happens inside provisioning,
+        # before `_resolve_or_provision_identity` would ever reach `directory.get`.
+        assert directory.users == []
+
+    async def test_resolve_or_provision_invite_happy_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        directory = FakeDirectory([])
+        provisioning = FakeProvisioningClient()
+        org_id, user_id = uuid.uuid4(), uuid.uuid4()
+        provisioning.invitations["tok-2"] = ("invitee@acme.com", org_id, user_id, False)
+
+        # Same fixture-design issue Task 6 hit and resolved (see that task's test above):
+        # `FakeDirectory.find_by_email` and `.get` share one backing list, so pre-seeding a user
+        # at `user_id` with this email would make `find_by_email` return it immediately and the
+        # invite branch — `accept_invitation_federated` — would never run. `directory` therefore
+        # starts empty, and `.get` alone is patched to resolve the row that would exist *after*
+        # `accept_invitation_federated` succeeds, strictly keyed on the provisioned `user_id` so
+        # a wrong id threaded through the implementation would resolve to `None` (and surface as
+        # `UpstreamUnavailableProblem`) rather than silently passing.
+        provisioned_user = DirectoryUser(
+            user_id=user_id,
+            email="invitee@acme.com",
+            full_name="Invitee",
+            is_active=True,
+            memberships=[membership(org_id, uuid.uuid4(), "acme", "Acme Technologies")],
+        )
+
+        async def get(looked_up_user_id: uuid.UUID) -> DirectoryUser | None:
+            return provisioned_user if looked_up_user_id == user_id else None
+
+        monkeypatch.setattr(directory, "get", get)
+
+        identity = oidc.VerifiedIdentity(subject="google-sub-3", email="invitee@acme.com")
+        user = await services._resolve_or_provision_identity(
+            directory=directory,
+            provisioning=provisioning,
+            intent="invite",
+            invitation_token="tok-2",
+            identity=identity,
+            full_name_hint="Invitee",
+            organization_name=None,
+            slug=None,
+        )
+
+        assert user.user_id == user_id
+        assert user.email == "invitee@acme.com"
+        assert (
+            "accept_invitation_federated",
+            {"token": "tok-2", "email": "invitee@acme.com"},
+        ) in provisioning.calls
