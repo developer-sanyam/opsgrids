@@ -162,3 +162,43 @@ def test_the_buyer_buys_but_approves_and_receives_nothing() -> None:
         assert forbidden not in buyer, forbidden
     # a role template of this product is built from this product's own catalogue
     assert all(code.startswith("operations.") for code in buyer)
+
+
+PHASE_3_PERMISSIONS = (
+    "operations.inventory.transfer.write",
+    "operations.inventory.transfer.approve",
+    "operations.inventory.transfer.dispatch",
+    "operations.inventory.transfer.receive",
+    "operations.inventory.control.configure",
+)
+PHASE_3_DANGEROUS = {
+    "operations.inventory.transfer.approve",
+    "operations.inventory.control.configure",
+}
+
+
+def test_the_phase_3_permissions_are_org_only_and_the_right_ones_are_dangerous() -> None:
+    declared = {spec.code(OPERATIONS.product): spec for spec in OPERATIONS.specs}
+    for code in PHASE_3_PERMISSIONS:
+        assert code in declared, code
+        assert declared[code].max_scope == "ORG", code
+        assert declared[code].is_dangerous is (code in PHASE_3_DANGEROUS), code
+
+
+def test_the_phase_3_permissions_reach_the_roles_that_should_hold_them() -> None:
+    assert set(PHASE_3_PERMISSIONS) <= set(_grants("OPERATIONS_ADMIN"))
+    # The manager runs the whole transfer flow but never sets the thresholds that decide whether a
+    # transfer or an adjustment needs approval at all — that stays with the admin.
+    manager = _grants("OPERATIONS_MANAGER")
+    assert {c for c in PHASE_3_PERMISSIONS if c in manager} == set(PHASE_3_PERMISSIONS) - {
+        "operations.inventory.control.configure"
+    }
+    # The storekeeper drafts, ships and receives; they never sign a transfer off (the separation
+    # that makes `approve` mean something), and never configure.
+    worker = _grants("OPERATIONS_WORKER")
+    assert {c for c in PHASE_3_PERMISSIONS if c in worker} == {
+        "operations.inventory.transfer.write",
+        "operations.inventory.transfer.dispatch",
+        "operations.inventory.transfer.receive",
+    }
+    assert not set(PHASE_3_PERMISSIONS) & set(_grants("OPERATIONS_USER"))

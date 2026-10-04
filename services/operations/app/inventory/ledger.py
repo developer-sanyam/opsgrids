@@ -944,9 +944,15 @@ async def reserve(
     reference_type: str | None = None,
     reference_id: uuid.UUID | None = None,
     idempotency_key: str | None = None,
+    expires_at: datetime | None = None,
+    note: str = "",
     request: Request | None = None,
 ) -> ReservationResult:
     """Promise available stock to a demand without moving it.
+
+    `expires_at` (Phase 3) makes the hold lapse: the expiry sweep releases what is still open on
+    an active reservation past it, through `release` below. It is a timezone-aware instant in the
+    future; `None` is a hold that stays until something closes it.
 
     Locks the AVAILABLE bucket, checks `quantity - reserved >= requested` under that lock, and
     raises the bucket's `reserved_milli` in the same statement's transaction — so two concurrent
@@ -955,6 +961,8 @@ async def reserve(
     """
     if not _is_int(quantity_milli) or quantity_milli <= 0:
         raise ValidationProblem("A reservation is a positive integer of milli-units")
+    if expires_at is not None and (expires_at.tzinfo is None or expires_at <= datetime.now(UTC)):
+        raise ValidationProblem("A reservation's expiry is a future, timezone-aware instant")
     org_id = ctx.organization_id
     item = (await _items(session, org_id, [item_id]))[item_id]
     where = (await _locations(session, org_id, [location_id]))[location_id]
@@ -1010,6 +1018,8 @@ async def reserve(
         reference_type=reference_type,
         reference_id=reference_id,
         idempotency_key=idempotency_key,
+        expires_at=expires_at,
+        note=note,
         created_by=str(ctx.principal.sub),
     )
     session.add(reservation)
@@ -1024,6 +1034,7 @@ async def reserve(
         "quantity_milli": quantity_milli,
         "reference_type": reference_type,
         "reference_id": str(reference_id) if reference_id else None,
+        "expires_at": expires_at.isoformat() if expires_at else None,
     }
     record_audit(
         session,

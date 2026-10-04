@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.adjustment.requested/v1",
+  "title": "operations.inventory.adjustment.requested",
+  "description": "An adjustment at or over the approval threshold is held PENDING_APPROVAL. The approval service opens a request of type `operations.inventory.adjustment` routed from `employee_id`'s manager chain.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "adjustment_id",
+    "number",
+    "approval_required",
+    "employee_id",
+    "inventory_item_id",
+    "evidence_document_id",
+    "summary",
+    "reason"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "adjustment_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string"
+    },
+    "approval_required": {
+      "const": true
+    },
+    "employee_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "inventory_item_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "evidence_document_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adjustment_number",
+        "sku",
+        "quantity_delta",
+        "uom",
+        "location",
+        "reason_code"
+      ],
+      "properties": {
+        "adjustment_number": {
+          "type": "string"
+        },
+        "sku": {
+          "type": "string"
+        },
+        "quantity_delta": {
+          "type": "string",
+          "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+        },
+        "uom": {
+          "type": "string"
+        },
+        "location": {
+          "type": "string"
+        },
+        "reason_code": {
+          "type": "string"
+        }
+      }
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

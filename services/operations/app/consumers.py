@@ -34,6 +34,14 @@ And two for online payment (ADR-0024 A4, `services/payment`'s tenant collections
   refund of the collection that paid the order reverses that fact; a refund that then fails
   restores it.
 
+Two for inventory Phase 3's approvals (ADR-0006; docs/inventory/movements.md): the approval
+service is a different service, so the product applies its answer in its own transaction —
+
+* **`approval_request_opened`** — bound to `core.approval.request.opened`; records which request is
+  deciding a transfer or adjustment and who it waits on.
+* **`approval_request_decided`** — bound to `core.approval.request.decided`; moves the transfer
+  REQUESTED -> APPROVED/REJECTED, or posts (or refuses) the held adjustment.
+
 One more, F11's own (channel fulfilment/tracking sync; Fulfilment plan F11):
 
 * **`dispatch_shipment_transitioned`** — bound to all four of `app.dispatch.services`'
@@ -65,6 +73,8 @@ from app.dispatch import selectors as dispatch_selectors
 from app.dispatch import services as dispatch_services
 from app.fulfilment import services as fulfilment_services
 from app.models import ProcessedEvent
+from app.movements import adjustments, transfers
+from app.movements import common as movement_common
 from app.orders import services as order_services
 from platform_core.db import (
     assert_app_role,
@@ -409,6 +419,131 @@ for _event_name, _shipment_status in (
         return _handler
 
     consumer.on(_event_name)(_bind_dispatch_handler())
+
+
+def _approval_target(envelope: dict[str, Any]) -> tuple[uuid.UUID, str, uuid.UUID] | None:
+    """`(organization, request_type, source_ref)` of an approval event that is ours — a request
+    type this service opened — or `None`. Every request type approval routes shares one event
+    type, so the binding cannot be narrower than the routing key and the filtering is here.
+
+    The organization is the **envelope's**, and a payload that disagrees with it is refused,
+    never trusted: the envelope's column is what the producer's row-level security enforced; the
+    payload is JSON nothing vouches for (the guard `finance_invoice_issued` documents too)."""
+    payload = envelope.get("payload") or {}
+    request_type = payload.get("request_type")
+    if request_type not in (
+        movement_common.REQUEST_TYPE_TRANSFER,
+        movement_common.REQUEST_TYPE_ADJUSTMENT,
+    ):
+        return None
+    envelope_org = envelope.get("organization_id")
+    payload_org = payload.get("organization_id")
+    if envelope_org is None or payload_org is None or str(envelope_org) != str(payload_org):
+        log.error(
+            "movements.approval.organization_mismatch",
+            event_id=envelope.get("event_id"),
+            envelope_organization_id=envelope_org,
+            payload_organization_id=payload_org,
+        )
+        return None
+    return uuid.UUID(str(envelope_org)), str(request_type), uuid.UUID(str(payload["source_ref"]))
+
+
+async def approval_request_opened(envelope: dict[str, Any]) -> None:
+    """`core.approval.request.opened` — the approval service has routed one of our requests:
+    remember its id and who it is waiting on, so the transfer or adjustment can say so."""
+    target = _approval_target(envelope)
+    if target is None:
+        return
+    organization_id, request_type, source_ref = target
+    event_id = uuid.UUID(envelope["event_id"])
+    payload = envelope["payload"]
+    approval_request_id = uuid.UUID(str(payload["request_id"]))
+    approver_name = payload.get("approver_name")
+
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("movements.approval_opened.duplicate", event_id=str(event_id))
+            return
+        if request_type == movement_common.REQUEST_TYPE_TRANSFER:
+            recorded = await transfers.record_approval_opened(
+                session,
+                organization_id,
+                source_ref,
+                approval_request_id=approval_request_id,
+                approver_name=approver_name,
+            )
+        else:
+            recorded = await adjustments.record_approval_opened(
+                session,
+                organization_id,
+                source_ref,
+                approval_request_id=approval_request_id,
+                approver_name=approver_name,
+            )
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+    log.info(
+        "movements.approval_opened.handled",
+        event_id=str(event_id),
+        request_type=request_type,
+        recorded=recorded,
+    )
+
+
+consumer.on(movement_common.EVT_APPROVAL_OPENED)(approval_request_opened)
+
+
+async def approval_request_decided(envelope: dict[str, Any]) -> None:
+    """`core.approval.request.decided` — apply the approval service's decision to the transfer or
+    adjustment it was asked about, in this service's own transaction and under its own state
+    machine (ADR-0006 §1: the product applies the outcome). A decision for something no longer
+    waiting (cancelled meanwhile, or a redelivery) changes nothing."""
+    target = _approval_target(envelope)
+    if target is None:
+        return
+    organization_id, request_type, source_ref = target
+    event_id = uuid.UUID(envelope["event_id"])
+    payload = envelope["payload"]
+    approval_request_id = uuid.UUID(str(payload["request_id"]))
+    outcome = str(payload["outcome"])
+    decided_by_name = payload.get("decided_by_name")
+    comment = payload.get("comment")
+
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("movements.approval_decided.duplicate", event_id=str(event_id))
+            return
+        if request_type == movement_common.REQUEST_TYPE_TRANSFER:
+            applied = await transfers.apply_approval_decision(
+                session,
+                organization_id,
+                source_ref,
+                outcome=outcome,
+                approval_request_id=approval_request_id,
+                decided_by_name=decided_by_name,
+                comment=comment,
+            )
+        else:
+            applied = await adjustments.apply_approval_decision(
+                session,
+                organization_id,
+                source_ref,
+                outcome=outcome,
+                approval_request_id=approval_request_id,
+                decided_by_name=decided_by_name,
+                comment=comment,
+            )
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+    log.info(
+        "movements.approval_decided.handled",
+        event_id=str(event_id),
+        request_type=request_type,
+        outcome=outcome,
+        applied=applied,
+    )
+
+
+consumer.on(movement_common.EVT_APPROVAL_DECIDED)(approval_request_decided)
 
 
 async def main() -> None:

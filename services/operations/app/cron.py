@@ -32,6 +32,7 @@ from app.channels.sweep import ChannelSyncSweep
 from app.config import settings
 from app.inventory.reconcile import reconcile_organization
 from app.models import SCHEMA
+from app.movements.sweep import ReservationExpirySweep
 from platform_core.db import (
     assert_app_role,
     assert_outbox_role,
@@ -251,12 +252,20 @@ async def main() -> None:
         work_scope=work_scope,
         interval=cfg.channel_sync_interval_seconds,
     )
+    reservation_expiry = ReservationExpirySweep(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=work_scope,
+        interval=cfg.reservation_expiry_interval_seconds,
+    )
     # `run_supervised`, not independent `.run()` calls: any one loop returning (it never should —
     # `GuardedSweep.run()` runs forever short of cancellation) or raising ends the process the
     # same way one going down silently must not be allowed to, `bin/cron`'s own container restart
-    # then bringing all three back rather than leaving one sweep quietly dead.
+    # then bringing all four back rather than leaving one sweep quietly dead.
     await run_supervised(
-        reconcile=reconcile.run(), alerts=alerts.run(), channel_sync=channel_sweep.run()
+        reconcile=reconcile.run(),
+        alerts=alerts.run(),
+        channel_sync=channel_sweep.run(),
+        reservation_expiry=reservation_expiry.run(),
     )
 
 

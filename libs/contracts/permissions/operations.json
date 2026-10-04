@@ -155,6 +155,15 @@
       "resource": "worker"
     },
     {
+      "action": "configure",
+      "default_scope": "ORG",
+      "description": "Set the quantity thresholds above which transfers and adjustments need approval",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "control"
+    },
+    {
       "action": "execute",
       "default_scope": "ORG",
       "description": "Submit a counted quantity on a line in an active count session",
@@ -306,6 +315,42 @@
       "max_scope": "ORG",
       "module": "inventory",
       "resource": "stock"
+    },
+    {
+      "action": "approve",
+      "default_scope": "ORG",
+      "description": "Approve or reject an inter-warehouse transfer directly",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "transfer"
+    },
+    {
+      "action": "dispatch",
+      "default_scope": "ORG",
+      "description": "Dispatch an approved transfer: stock leaves the source warehouse for in-transit",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "transfer"
+    },
+    {
+      "action": "receive",
+      "default_scope": "ORG",
+      "description": "Receive a transfer into the destination warehouse, and record any shortage",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "transfer"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Draft, edit, request and cancel inter-warehouse transfers",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "transfer"
     },
     {
       "action": "read",
@@ -636,6 +681,10 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.control.configure",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.count.execute",
           "scope": "ORG"
         },
@@ -701,6 +750,22 @@
         },
         {
           "code": "operations.inventory.stock.transfer",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.dispatch",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.receive",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.write",
           "scope": "ORG"
         },
         {
@@ -823,7 +888,7 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers lots and rolls, splits and merges rolls, moves stock between bins and statuses, and reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and posts goods receipts \u2014 partial, short and over-receipt within tolerance (Phase 2). Takes and refunds orders' online payments and reads the payment reconciliation. Does not create or rename warehouses, or connect or change the organization's payment-provider account \u2014 those stay with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
+      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers lots and rolls, splits and merges rolls, moves stock between bins and statuses, and reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and posts goods receipts \u2014 partial, short and over-receipt within tolerance (Phase 2). Drafts, approves, dispatches and receives inter-warehouse transfers (Phase 3); does not set the approval thresholds \u2014 that stays with the admin. Takes and refunds orders' online payments and reads the payment reconciliation. Does not create or rename warehouses, or connect or change the organization's payment-provider account \u2014 those stay with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
       "grants": [
         {
           "code": "operations.automation.alert.manage",
@@ -946,6 +1011,22 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.transfer.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.dispatch",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.receive",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.warehouse.read",
           "scope": "ORG"
         },
@@ -1053,7 +1134,7 @@
     {
       "code": "OPERATIONS_WORKER",
       "cross_product": false,
-      "description": "The picker/packer role the worker PWA authenticates as (plan F3). Sees the task board and the worker roster read-only, executes only the tasks offered or accepted to them (`task.execute` tops out at OWN \u2014 even this role cannot execute another worker's task), sets their own presence, and confirms packages. Counts lines in whichever count session is open for their warehouse (ADR-0026) \u2014 never opens, reviews or closes one; that stays with the dispatcher (`OPERATIONS_MANAGER`). Moves stock between bins, puts stock on hold (a status change *into* quality hold, quarantine, damaged, rejected or blocked) but cannot release it back to available \u2014 that needs stock adjustment \u2014 and reads stock by location, lot and roll; does not register, split or merge lots or rolls. Receives goods against approved purchase orders (Phase 2) \u2014 reads POs, posts a goods receipt \u2014 but raises or approves none. Does not offer, reassign or override a task either.",
+      "description": "The picker/packer role the worker PWA authenticates as (plan F3). Sees the task board and the worker roster read-only, executes only the tasks offered or accepted to them (`task.execute` tops out at OWN \u2014 even this role cannot execute another worker's task), sets their own presence, and confirms packages. Counts lines in whichever count session is open for their warehouse (ADR-0026) \u2014 never opens, reviews or closes one; that stays with the dispatcher (`OPERATIONS_MANAGER`). Moves stock between bins, puts stock on hold (a status change *into* quality hold, quarantine, damaged, rejected or blocked) but cannot release it back to available \u2014 that needs stock adjustment \u2014 and reads stock by location, lot and roll; does not register, split or merge lots or rolls. Receives goods against approved purchase orders (Phase 2) \u2014 reads POs, posts a goods receipt \u2014 but raises or approves none. Drafts, dispatches and receives inter-warehouse transfers but never approves one (Phase 3). Does not offer, reassign or override a task either.",
       "grants": [
         {
           "code": "operations.fulfilment.pack.execute",
@@ -1097,6 +1178,18 @@
         },
         {
           "code": "operations.inventory.stock.transfer",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.dispatch",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.receive",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.write",
           "scope": "ORG"
         },
         {

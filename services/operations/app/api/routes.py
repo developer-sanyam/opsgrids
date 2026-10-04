@@ -40,7 +40,7 @@ from app.fulfilment import services as fulfilment_services
 from app.inventory import ledger as inv_ledger
 from app.inventory import selectors as inv_selectors
 from app.inventory import services as inv_services
-from app.inventory.quantity import QuantityError, parse_qty
+from app.inventory.quantity import QTY_SCALE, QuantityError, parse_qty
 from app.models import (
     SCHEMA,
     Channel,
@@ -51,6 +51,8 @@ from app.models import (
     PurchaseOrderLine,
     WarehouseFloor,
 )
+from app.movements import common as movement_common
+from app.movements import domain as movement_domain
 from app.orders import selectors as order_selectors
 from app.orders import services as order_services
 from app.orders.payment_client import CollectionsClient, get_collections_client
@@ -1011,6 +1013,22 @@ async def adjust_stock(
     )
     if item is None:
         raise NotFoundProblem("That inventory item is not part of this organization")
+    # Phase 3: once an organization sets an adjustment-approval threshold, a change that size does
+    # not get to skip it through this older, simpler route — it goes through
+    # `POST /operations/inventory/adjustments`, which carries the reason, the evidence and the
+    # approval. With no threshold set (the default) nothing here changes.
+    threshold = await movement_common.get_settings(session, ctx.organization_id)
+    limit = threshold.adjustment_approval_threshold_milli if threshold else None
+    estimated = (
+        payload.quantity_delta * QTY_SCALE
+        if payload.quantity_delta is not None
+        else (payload.counted_on_hand or 0) * QTY_SCALE - item.on_hand_milli
+    )
+    if movement_domain.over_threshold(limit, [estimated]):
+        raise ConflictProblem(
+            "An adjustment this size needs approval: use POST /operations/inventory/adjustments "
+            "with a reason and the evidence document"
+        )
     updated = await inv_services.adjust_stock(
         session,
         ctx,

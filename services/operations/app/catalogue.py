@@ -363,6 +363,57 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Inter-warehouse transfers (ADR-0014 §6, inventory Phase 3; docs/inventory/movements.md).
+        # The four steps of one document are four permissions, so the person who asks for stock
+        # to move, the one who signs it off, the storekeeper who ships it and the one who receives
+        # it can be four different people. All ORG-only — a transfer is shared organization
+        # stock — and `approve` is dangerous: it is the direct sign-off (no approval-service
+        # threshold set, or one the transfer is under), after which the stock leaves a warehouse.
+        # It is never the requester's own: the service refuses a requester approving their own.
+        PermissionSpec(
+            "inventory",
+            "transfer",
+            "write",
+            "Draft, edit, request and cancel inter-warehouse transfers",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inventory",
+            "transfer",
+            "approve",
+            "Approve or reject an inter-warehouse transfer directly",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        PermissionSpec(
+            "inventory",
+            "transfer",
+            "dispatch",
+            "Dispatch an approved transfer: stock leaves the source warehouse for in-transit",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inventory",
+            "transfer",
+            "receive",
+            "Receive a transfer into the destination warehouse, and record any shortage",
+            "ORG",
+            "ORG",
+        ),
+        # The approval thresholds (docs/inventory/movements.md §Approvals). Dangerous: raising or
+        # clearing one decides which transfers and adjustments need a second pair of eyes at all.
+        PermissionSpec(
+            "inventory",
+            "control",
+            "configure",
+            "Set the quantity thresholds above which transfers and adjustments need approval",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
         # Cycle counting / stocktaking (ADR-0026, Fulfilment plan F8). A count session is a shared
         # operational object, the same reasoning `orders.order.*`/`dispatch.shipment.*` already
         # give for ORG-only, no-OWN-reading permissions: any worker with `count.execute` counts
@@ -738,7 +789,8 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "lots and rolls, splits and merges rolls, moves stock between bins and statuses, and "
             "reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and "
             "posts goods receipts — partial, short and over-receipt within tolerance (Phase 2). "
-            "Takes and "
+            "Drafts, approves, dispatches and receives inter-warehouse transfers (Phase 3); does "
+            "not set the approval thresholds — that stays with the admin. Takes and "
             "refunds orders' online payments and reads the payment reconciliation. Does not "
             "create or rename warehouses, or connect or change the organization's "
             "payment-provider account — those stay with the admin. Creates floors and edits a "
@@ -758,6 +810,10 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.inventory.stock.read", "ORG"),
             ("operations.inventory.stock.transfer", "ORG"),
             ("operations.inventory.stock.receive", "ORG"),
+            ("operations.inventory.transfer.write", "ORG"),
+            ("operations.inventory.transfer.approve", "ORG"),
+            ("operations.inventory.transfer.dispatch", "ORG"),
+            ("operations.inventory.transfer.receive", "ORG"),
             ("operations.inventory.lot.write", "ORG"),
             ("operations.inventory.roll.write", "ORG"),
             ("operations.procurement.requisition.read", "ORG"),
@@ -822,7 +878,8 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "available — that needs stock adjustment — and reads stock by location, lot and "
             "roll; does not register, split or merge lots or rolls. Receives goods against "
             "approved purchase orders (Phase 2) — reads POs, posts a goods receipt — but raises "
-            "or approves none. Does not offer, reassign or override a task either."
+            "or approves none. Drafts, dispatches and receives inter-warehouse transfers but "
+            "never approves one (Phase 3). Does not offer, reassign or override a task either."
         ),
         grants=OPERATIONS.pick(
             ("operations.fulfilment.task.read", "ORG"),
@@ -837,6 +894,9 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.procurement.receipt.read", "ORG"),
             ("operations.procurement.receipt.write", "ORG"),
             ("operations.inventory.stock.receive", "ORG"),
+            ("operations.inventory.transfer.write", "ORG"),
+            ("operations.inventory.transfer.dispatch", "ORG"),
+            ("operations.inventory.transfer.receive", "ORG"),
             ("operations.fulfilment.worker.read", "ORG"),
             ("operations.fulfilment.worker.write", "OWN"),
             ("operations.fulfilment.pack.read", "ORG"),

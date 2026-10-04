@@ -1,6 +1,364 @@
 {
   "components": {
     "schemas": {
+      "AdjustmentCancelIn": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "title": "AdjustmentCancelIn",
+        "type": "object"
+      },
+      "AdjustmentIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/adjustments` \u2014 a signed change to one bucket, with the reason it is\nbeing made. At or over the organization's threshold it is **held for approval** (and must\ncarry `evidence_document_id`); under it, it applies at once.",
+        "properties": {
+          "evidence_document_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Document Id"
+          },
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "location_id": {
+            "format": "uuid",
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "occurred_on": {
+            "format": "date",
+            "title": "Occurred On",
+            "type": "string"
+          },
+          "quantity_delta": {
+            "description": "Signed: negative takes stock out, positive adds.",
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity Delta",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "damaged",
+              "lost",
+              "found",
+              "consumed",
+              "returned",
+              "other"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "status": {
+            "default": "AVAILABLE",
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD",
+              "QUARANTINE",
+              "DAMAGED",
+              "REJECTED",
+              "WIP",
+              "BLOCKED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "location_id",
+          "quantity_delta",
+          "reason"
+        ],
+        "title": "AdjustmentIn",
+        "type": "object"
+      },
+      "AdjustmentOut": {
+        "properties": {
+          "applied_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied At"
+          },
+          "applied_move_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied Move Id"
+          },
+          "approval_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Request Id"
+          },
+          "approval_required": {
+            "title": "Approval Required",
+            "type": "boolean"
+          },
+          "approver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Name"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By Name"
+          },
+          "decision_comment": {
+            "title": "Decision Comment",
+            "type": "string"
+          },
+          "evidence_document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Document Id"
+          },
+          "failure_reason": {
+            "title": "Failure Reason",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "item_name": {
+            "title": "Item Name",
+            "type": "string"
+          },
+          "location_code": {
+            "title": "Location Code",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "occurred_on": {
+            "format": "date",
+            "title": "Occurred On",
+            "type": "string"
+          },
+          "quantity_delta": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity Delta",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "damaged",
+              "lost",
+              "found",
+              "consumed",
+              "returned",
+              "other"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "replayed": {
+            "default": false,
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "requested_by": {
+            "title": "Requested By",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PENDING_APPROVAL",
+              "APPLIED",
+              "REJECTED",
+              "CANCELLED",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "stock_status": {
+            "title": "Stock Status",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "inventory_item_id",
+          "sku",
+          "item_name",
+          "uom",
+          "location_id",
+          "location_code",
+          "stock_status",
+          "lot_id",
+          "roll_id",
+          "quantity_delta",
+          "reason",
+          "note",
+          "evidence_document_id",
+          "occurred_on",
+          "status",
+          "approval_required",
+          "approval_request_id",
+          "approver_name",
+          "decided_by_name",
+          "decided_at",
+          "decision_comment",
+          "requested_by",
+          "applied_move_id",
+          "applied_at",
+          "failure_reason",
+          "created_at"
+        ],
+        "title": "AdjustmentOut",
+        "type": "object"
+      },
       "AssignmentOfferOut": {
         "description": "Mirrors `assignment_offers` (ADR-0025 \u00a73's exact row shape).",
         "properties": {
@@ -839,6 +1197,109 @@
         "title": "CollectionRefundOut",
         "type": "object"
       },
+      "ControlSettingsIn": {
+        "additionalProperties": false,
+        "description": "`PUT /inventory/control-settings` \u2014 replaces both thresholds. `null` clears one (no\nthreshold: transfers need a direct sign-off, adjustments apply at once). Each is compared to\nevery line's quantity **in that item's own unit**.",
+        "properties": {
+          "adjustment_approval_threshold": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adjustment Approval Threshold"
+          },
+          "transfer_approval_threshold": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transfer Approval Threshold"
+          }
+        },
+        "title": "ControlSettingsIn",
+        "type": "object"
+      },
+      "ControlSettingsOut": {
+        "properties": {
+          "adjustment_approval_threshold": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adjustment Approval Threshold"
+          },
+          "transfer_approval_threshold": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transfer Approval Threshold"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          }
+        },
+        "required": [
+          "transfer_approval_threshold",
+          "adjustment_approval_threshold",
+          "updated_at",
+          "updated_by"
+        ],
+        "title": "ControlSettingsOut",
+        "type": "object"
+      },
       "CountLineAddIn": {
         "additionalProperties": false,
         "description": "`POST /counting/sessions/{id}/lines` \u2014 a worker reporting stock at a bucket the session's\nsnapshot did not expect anything at (`is_unlisted=True` on the created line). Refused if the\nbucket is already tracked by this session (use the count endpoint on that line instead) or is\noutside the session's own scope.",
@@ -1382,6 +1843,33 @@
         "title": "CreatePickTasksIn",
         "type": "object"
       },
+      "CursorPage_AdjustmentOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AdjustmentOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[AdjustmentOut]",
+        "type": "object"
+      },
       "CursorPage_GoodsReceiptSummaryOut_": {
         "properties": {
           "items": {
@@ -1490,6 +1978,33 @@
         "title": "CursorPage[LotOut]",
         "type": "object"
       },
+      "CursorPage_ReservationDetailOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReservationDetailOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[ReservationDetailOut]",
+        "type": "object"
+      },
       "CursorPage_RollEventOut_": {
         "properties": {
           "items": {
@@ -1569,6 +2084,33 @@
           "items"
         ],
         "title": "CursorPage[StockRowOut]",
+        "type": "object"
+      },
+      "CursorPage_TransferSummaryOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TransferSummaryOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[TransferSummaryOut]",
         "type": "object"
       },
       "DiscrepancyResolveIn": {
@@ -2113,6 +2655,63 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InTransitRowOut": {
+        "description": "One (item, destination warehouse) with stock on its way. `physical` is the item's on-hand\n**in that warehouse** and is reported separately: in-transit stock is owned but not yet\nthere, so it is never inside `physical`.",
+        "properties": {
+          "in_transit": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "In Transit",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "item_name": {
+            "title": "Item Name",
+            "type": "string"
+          },
+          "physical": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Physical",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "warehouse_code": {
+            "title": "Warehouse Code",
+            "type": "string"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "sku",
+          "item_name",
+          "uom",
+          "warehouse_id",
+          "warehouse_code",
+          "in_transit",
+          "physical"
+        ],
+        "title": "InTransitRowOut",
         "type": "object"
       },
       "InventoryDiscrepancyOut": {
@@ -9177,6 +9776,304 @@
         "title": "RequisitionSummaryOut",
         "type": "object"
       },
+      "ReservationDetailOut": {
+        "properties": {
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "consumed": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Consumed",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expired_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expired At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "item_name": {
+            "title": "Item Name",
+            "type": "string"
+          },
+          "location_code": {
+            "title": "Location Code",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "reference_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Id"
+          },
+          "reference_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Type"
+          },
+          "released": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Released",
+            "type": "string"
+          },
+          "remaining": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Remaining",
+            "type": "string"
+          },
+          "replayed": {
+            "default": false,
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "released",
+              "consumed",
+              "transferred"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "transferred": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Transferred",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "inventory_item_id",
+          "sku",
+          "item_name",
+          "uom",
+          "location_id",
+          "location_code",
+          "lot_id",
+          "roll_id",
+          "quantity",
+          "consumed",
+          "released",
+          "transferred",
+          "remaining",
+          "status",
+          "reference_type",
+          "reference_id",
+          "expires_at",
+          "expired_at",
+          "note",
+          "created_at",
+          "closed_at"
+        ],
+        "title": "ReservationDetailOut",
+        "type": "object"
+      },
+      "ReservationIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/reservations` \u2014 promise AVAILABLE stock in one bucket to a demand.",
+        "properties": {
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Timezone-aware, in the future. Omit for a hold that stays.",
+            "title": "Expires At"
+          },
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "location_id": {
+            "format": "uuid",
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "reference_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Id"
+          },
+          "reference_type": {
+            "default": "manual",
+            "enum": [
+              "order",
+              "production_order",
+              "manual"
+            ],
+            "title": "Reference Type",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "location_id",
+          "quantity"
+        ],
+        "title": "ReservationIn",
+        "type": "object"
+      },
       "ReservationReleaseIn": {
         "additionalProperties": false,
         "description": "`POST /inventory/reservations/{id}:release`. An empty body releases the whole open\nremainder; `quantity` releases only that much, leaving the rest active.",
@@ -11511,6 +12408,864 @@
         "title": "TraceNodeOut",
         "type": "object"
       },
+      "TransferCancelIn": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "TransferCancelIn",
+        "type": "object"
+      },
+      "TransferDecisionIn": {
+        "additionalProperties": false,
+        "description": "`:approve` / `:reject` (the direct route). A rejection must say why.",
+        "properties": {
+          "comment": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Comment",
+            "type": "string"
+          }
+        },
+        "title": "TransferDecisionIn",
+        "type": "object"
+      },
+      "TransferDispatchIn": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected On"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "title": "TransferDispatchIn",
+        "type": "object"
+      },
+      "TransferIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/transfers` \u2014 a DRAFT between two different warehouses.",
+        "properties": {
+          "expected_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected On"
+          },
+          "from_warehouse_id": {
+            "format": "uuid",
+            "title": "From Warehouse Id",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/TransferLineIn"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Lines",
+            "type": "array"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "to_warehouse_id": {
+            "format": "uuid",
+            "title": "To Warehouse Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_warehouse_id",
+          "to_warehouse_id",
+          "lines"
+        ],
+        "title": "TransferIn",
+        "type": "object"
+      },
+      "TransferLineIn": {
+        "additionalProperties": false,
+        "properties": {
+          "from_location_id": {
+            "format": "uuid",
+            "title": "From Location Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "from_location_id",
+          "quantity"
+        ],
+        "title": "TransferLineIn",
+        "type": "object"
+      },
+      "TransferLineOut": {
+        "properties": {
+          "dispatched": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Dispatched",
+            "type": "string"
+          },
+          "from_location_code": {
+            "title": "From Location Code",
+            "type": "string"
+          },
+          "from_location_id": {
+            "title": "From Location Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "in_transit": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "In Transit",
+            "type": "string"
+          },
+          "in_transit_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Transit Location Id"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "item_name": {
+            "title": "Item Name",
+            "type": "string"
+          },
+          "line_no": {
+            "title": "Line No",
+            "type": "integer"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "received": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Received",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "shortage": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Shortage",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "to_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Location Id"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "line_no",
+          "inventory_item_id",
+          "sku",
+          "item_name",
+          "uom",
+          "from_location_id",
+          "from_location_code",
+          "to_location_id",
+          "in_transit_location_id",
+          "lot_id",
+          "roll_id",
+          "quantity",
+          "dispatched",
+          "received",
+          "shortage",
+          "in_transit"
+        ],
+        "title": "TransferLineOut",
+        "type": "object"
+      },
+      "TransferOut": {
+        "properties": {
+          "approval_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Request Id"
+          },
+          "approval_route": {
+            "anyOf": [
+              {
+                "enum": [
+                  "AUTO",
+                  "DIRECT",
+                  "SERVICE"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Route"
+          },
+          "approved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "approved_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved By"
+          },
+          "approver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Name"
+          },
+          "awaiting_approval": {
+            "title": "Awaiting Approval",
+            "type": "boolean"
+          },
+          "cancel_reason": {
+            "title": "Cancel Reason",
+            "type": "string"
+          },
+          "cancelled_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancelled At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decision_comment": {
+            "title": "Decision Comment",
+            "type": "string"
+          },
+          "dispatched_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dispatched At"
+          },
+          "dispatched_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dispatched By"
+          },
+          "expected_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected On"
+          },
+          "from_warehouse": {
+            "$ref": "#/components/schemas/WarehouseRefOut"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "line_count": {
+            "title": "Line Count",
+            "type": "integer"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/TransferLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "replayed": {
+            "default": false,
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "requested_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested At"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested By"
+          },
+          "status": {
+            "enum": [
+              "DRAFT",
+              "REQUESTED",
+              "APPROVED",
+              "IN_TRANSIT",
+              "RECEIVED",
+              "CANCELLED",
+              "REJECTED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "to_warehouse": {
+            "$ref": "#/components/schemas/WarehouseRefOut"
+          },
+          "transitions": {
+            "items": {
+              "$ref": "#/components/schemas/TransferTransitionOut"
+            },
+            "title": "Transitions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "status",
+          "from_warehouse",
+          "to_warehouse",
+          "line_count",
+          "approval_route",
+          "expected_on",
+          "requested_at",
+          "dispatched_at",
+          "completed_at",
+          "created_at",
+          "note",
+          "approval_request_id",
+          "approver_name",
+          "requested_by",
+          "approved_by",
+          "approved_at",
+          "decision_comment",
+          "dispatched_by",
+          "cancelled_at",
+          "cancel_reason",
+          "awaiting_approval",
+          "lines"
+        ],
+        "title": "TransferOut",
+        "type": "object"
+      },
+      "TransferPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /inventory/transfers/{id}` \u2014 a DRAFT only. `lines`, when given, **replaces** them.",
+        "properties": {
+          "expected_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected On"
+          },
+          "lines": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/TransferLineIn"
+                },
+                "maxItems": 100,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lines"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "to_warehouse_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Warehouse Id"
+          }
+        },
+        "title": "TransferPatch",
+        "type": "object"
+      },
+      "TransferReceiveIn": {
+        "additionalProperties": false,
+        "description": "`:receive` \u2014 one or more lines, any number of times, until every line is settled.",
+        "properties": {
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/TransferReceiveLineIn"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Lines",
+            "type": "array"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "title": "TransferReceiveIn",
+        "type": "object"
+      },
+      "TransferReceiveLineIn": {
+        "additionalProperties": false,
+        "description": "What the destination accounts for on one line: `received_quantity` goes into stock at\n`to_location_id` (default: the destination warehouse's default bin); `shortage_quantity` is\ndeclared lost in transit and written off from the in-transit bucket. Together they cannot\nexceed what is still in transit on the line.",
+        "properties": {
+          "line_id": {
+            "format": "uuid",
+            "title": "Line Id",
+            "type": "string"
+          },
+          "received_quantity": {
+            "default": "0",
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Received Quantity",
+            "type": "string"
+          },
+          "shortage_quantity": {
+            "default": "0",
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Shortage Quantity",
+            "type": "string"
+          },
+          "to_location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Location Id"
+          }
+        },
+        "required": [
+          "line_id"
+        ],
+        "title": "TransferReceiveLineIn",
+        "type": "object"
+      },
+      "TransferSummaryOut": {
+        "description": "A row of the transfer list.",
+        "properties": {
+          "approval_route": {
+            "anyOf": [
+              {
+                "enum": [
+                  "AUTO",
+                  "DIRECT",
+                  "SERVICE"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Route"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dispatched_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dispatched At"
+          },
+          "expected_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected On"
+          },
+          "from_warehouse": {
+            "$ref": "#/components/schemas/WarehouseRefOut"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "line_count": {
+            "title": "Line Count",
+            "type": "integer"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "requested_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested At"
+          },
+          "status": {
+            "enum": [
+              "DRAFT",
+              "REQUESTED",
+              "APPROVED",
+              "IN_TRANSIT",
+              "RECEIVED",
+              "CANCELLED",
+              "REJECTED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "to_warehouse": {
+            "$ref": "#/components/schemas/WarehouseRefOut"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "status",
+          "from_warehouse",
+          "to_warehouse",
+          "line_count",
+          "approval_route",
+          "expected_on",
+          "requested_at",
+          "dispatched_at",
+          "completed_at",
+          "created_at"
+        ],
+        "title": "TransferSummaryOut",
+        "type": "object"
+      },
+      "TransferTransitionOut": {
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "from_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "DRAFT",
+                  "REQUESTED",
+                  "APPROVED",
+                  "IN_TRANSIT",
+                  "RECEIVED",
+                  "CANCELLED",
+                  "REJECTED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Status"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "to_status": {
+            "enum": [
+              "DRAFT",
+              "REQUESTED",
+              "APPROVED",
+              "IN_TRANSIT",
+              "RECEIVED",
+              "CANCELLED",
+              "REJECTED"
+            ],
+            "title": "To Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_status",
+          "to_status",
+          "actor",
+          "note",
+          "created_at"
+        ],
+        "title": "TransferTransitionOut",
+        "type": "object"
+      },
       "UomConversionIn": {
         "additionalProperties": false,
         "description": "`POST /inventory/{item_id}/uom-conversions`: 1 `uom` = `numerator / denominator` of the\nitem's own stock unit (\"1 box = 12 pcs\" is `{\"uom\": \"box\", \"numerator\": 12}`). Integers, never\na decimal, so the ratio is exact.",
@@ -12077,6 +13832,29 @@
           }
         },
         "title": "WarehousePatch",
+        "type": "object"
+      },
+      "WarehouseRefOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name"
+        ],
+        "title": "WarehouseRefOut",
         "type": "object"
       },
       "WorkerIn": {
@@ -16065,6 +17843,274 @@
         ]
       }
     },
+    "/api/v1/operations/inventory/adjustments": {
+      "get": {
+        "operationId": "list_adjustments_api_v1_operations_inventory_adjustments_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "PENDING_APPROVAL",
+                    "APPLIED",
+                    "REJECTED",
+                    "CANCELLED",
+                    "FAILED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "item_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Item Id"
+            }
+          },
+          {
+            "description": "Opaque cursor from the previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 300,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque cursor from the previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_AdjustmentOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Adjustments and their approval state, newest first (cursor-paginated)",
+        "tags": [
+          "inventory-movements"
+        ]
+      },
+      "post": {
+        "operationId": "create_adjustment_api_v1_operations_inventory_adjustments_post",
+        "parameters": [
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdjustmentIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdjustmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Adjust stock with a reason and evidence \u2014 held for approval above the threshold",
+        "tags": [
+          "inventory-movements"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/adjustments/{adjustment_id}": {
+      "get": {
+        "operationId": "read_adjustment_api_v1_operations_inventory_adjustments__adjustment_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "adjustment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Adjustment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdjustmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One adjustment",
+        "tags": [
+          "inventory-movements"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/adjustments/{adjustment_id}:cancel": {
+      "post": {
+        "operationId": "cancel_adjustment_api_v1_operations_inventory_adjustments__adjustment_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "adjustment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Adjustment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AdjustmentCancelIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdjustmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Withdraw an adjustment that is still waiting for approval",
+        "tags": [
+          "inventory-movements"
+        ]
+      }
+    },
     "/api/v1/operations/inventory/categories": {
       "get": {
         "operationId": "list_item_categories_api_v1_operations_inventory_categories_get",
@@ -16288,6 +18334,66 @@
         ]
       }
     },
+    "/api/v1/operations/inventory/control-settings": {
+      "get": {
+        "operationId": "get_control_settings_api_v1_operations_inventory_control_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The quantity thresholds above which transfers and adjustments need approval",
+        "tags": [
+          "inventory-movements"
+        ]
+      },
+      "put": {
+        "operationId": "put_control_settings_api_v1_operations_inventory_control_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ControlSettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set (or clear) the approval thresholds",
+        "tags": [
+          "inventory-movements"
+        ]
+      }
+    },
     "/api/v1/operations/inventory/discrepancies": {
       "get": {
         "operationId": "list_discrepancies_api_v1_operations_inventory_discrepancies_get",
@@ -16404,6 +18510,77 @@
         "summary": "Record what was done about a discrepancy (changes no stock)",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/in-transit": {
+      "get": {
+        "operationId": "in_transit_report_api_v1_operations_inventory_in_transit_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "warehouse_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warehouse Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "item_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/InTransitRowOut"
+                  },
+                  "title": "Response In Transit Report Api V1 Operations Inventory In Transit Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stock on its way, by item and destination \u2014 physical on-hand reported separately",
+        "tags": [
+          "inventory-movements"
         ]
       }
     },
@@ -17075,6 +19252,285 @@
         "summary": "Check this organization's stock ledger against its balances now",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/reservations": {
+      "get": {
+        "operationId": "list_reservations_api_v1_operations_inventory_reservations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "item_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Item Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "location_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Location Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "active",
+                    "released",
+                    "consumed",
+                    "transferred"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reference_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "order",
+                    "production_order",
+                    "manual"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reference Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reference_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reference Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expiring_before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expiring Before"
+            }
+          },
+          {
+            "description": "Opaque cursor from the previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 300,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque cursor from the previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_ReservationDetailOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reservations, newest first (cursor-paginated)",
+        "tags": [
+          "inventory-movements"
+        ]
+      },
+      "post": {
+        "operationId": "create_reservation_api_v1_operations_inventory_reservations_post",
+        "parameters": [
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReservationIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReservationDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reserve available stock for a sales order, a production order, or by hand",
+        "tags": [
+          "inventory-movements"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/reservations/{reservation_id}": {
+      "get": {
+        "operationId": "read_reservation_api_v1_operations_inventory_reservations__reservation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "reservation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Reservation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReservationDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One reservation",
+        "tags": [
+          "inventory-movements"
         ]
       }
     },
@@ -18088,6 +20544,682 @@
         "summary": "Move stock bin to bin inside one warehouse",
         "tags": [
           "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/transfers": {
+      "get": {
+        "operationId": "list_transfers_api_v1_operations_inventory_transfers_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "DRAFT",
+                    "REQUESTED",
+                    "APPROVED",
+                    "IN_TRANSIT",
+                    "RECEIVED",
+                    "CANCELLED",
+                    "REJECTED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from_warehouse_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From Warehouse Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_warehouse_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To Warehouse Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "item_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Item Id"
+            }
+          },
+          {
+            "description": "Transfer number prefix",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 30,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Transfer number prefix",
+              "title": "Q"
+            }
+          },
+          {
+            "description": "Opaque cursor from the previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 300,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque cursor from the previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_TransferSummaryOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Transfers, newest first (cursor-paginated)",
+        "tags": [
+          "inventory-movements"
+        ]
+      },
+      "post": {
+        "operationId": "create_transfer_api_v1_operations_inventory_transfers_post",
+        "parameters": [
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Draft an inter-warehouse transfer",
+        "tags": [
+          "inventory-movements"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/transfers/{transfer_id}": {
+      "get": {
+        "operationId": "read_transfer_api_v1_operations_inventory_transfers__transfer_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transfer_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Transfer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One transfer with its lines and history",
+        "tags": [
+          "inventory-movements"
+        ]
+      },
+      "patch": {
+        "operationId": "patch_transfer_api_v1_operations_inventory_transfers__transfer_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transfer_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Transfer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a draft transfer",
+        "tags": [
+          "inventory-movements"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/transfers/{transfer_id}:approve": {
+      "post": {
+        "operationId": "approve_transfer_api_v1_operations_inventory_transfers__transfer_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transfer_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Transfer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TransferDecisionIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve a requested transfer directly (not the requester's own)",
+        "tags": [
+          "inventory-movements"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/transfers/{transfer_id}:cancel": {
+      "post": {
+        "operationId": "cancel_transfer_api_v1_operations_inventory_transfers__transfer_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transfer_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Transfer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferCancelIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel a transfer that has not been dispatched",
+        "tags": [
+          "inventory-movements"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/transfers/{transfer_id}:dispatch": {
+      "post": {
+        "operationId": "dispatch_transfer_api_v1_operations_inventory_transfers__transfer_id__dispatch_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transfer_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Transfer Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TransferDispatchIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dispatch an approved transfer: stock leaves the source for in-transit",
+        "tags": [
+          "inventory-movements"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/transfers/{transfer_id}:receive": {
+      "post": {
+        "operationId": "receive_transfer_api_v1_operations_inventory_transfers__transfer_id__receive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transfer_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Transfer Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferReceiveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Receive stock into the destination warehouse; declare any shortage",
+        "tags": [
+          "inventory-movements"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/transfers/{transfer_id}:reject": {
+      "post": {
+        "operationId": "reject_transfer_api_v1_operations_inventory_transfers__transfer_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transfer_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Transfer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferDecisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject a requested transfer directly",
+        "tags": [
+          "inventory-movements"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/transfers/{transfer_id}:request": {
+      "post": {
+        "operationId": "request_transfer_api_v1_operations_inventory_transfers__transfer_id__request_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "transfer_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Transfer Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request approval of a draft transfer",
+        "tags": [
+          "inventory-movements"
         ]
       }
     },

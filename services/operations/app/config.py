@@ -44,6 +44,11 @@ class Settings(ServiceSettings):
     #: `app.channels.sweep.ChannelSyncSweep`). Short relative to the daily reconcile sweep — a
     #: real channel integration is polled on the order of minutes, not once a day.
     channel_sync_interval_seconds: float = 300
+    #: How often the reservation-expiry sweep (inventory Phase 3,
+    #: `app.movements.sweep.ReservationExpirySweep`) releases reservations past their
+    #: `expires_at` — the same cadence as the channel sweep: a lapsed hold is freed within
+    #: minutes, and a pass with nothing due is one indexed query.
+    reservation_expiry_interval_seconds: float = 300
     #: The self-hosted sandbox marketplace's base URL (`app.channels.mock_marketplace`) —
     #: platform configuration, not a value a tenant supplies (`app.channels.mock_provider`'s own
     #: module docstring: the same "fixed, operator-configured base" reasoning
