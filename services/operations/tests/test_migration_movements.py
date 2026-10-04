@@ -327,6 +327,11 @@ async def test_down_refuses_while_stock_is_in_transit_then_succeeds(admin) -> No
         ids = await seed(conn, org)
         await transfer(conn, org, ids, dispatched=40_000, received=15_000)
 
+    async with admin.begin() as conn:
+        # The head, which is this revision only until a later phase chains on top of it.
+        head = (
+            await conn.execute(text(f"SELECT version_num FROM {SCHEMA}.alembic_version"))
+        ).scalar_one()
     refused = alembic("downgrade", BEFORE)
     assert refused.returncode != 0
     assert "still hold stock in transit" in refused.stderr
@@ -334,7 +339,7 @@ async def test_down_refuses_while_stock_is_in_transit_then_succeeds(admin) -> No
         version = (
             await conn.execute(text(f"SELECT version_num FROM {SCHEMA}.alembic_version"))
         ).scalar_one()
-        assert version == REVISION  # nothing was half-applied
+        assert version == head  # nothing was half-applied
 
     # Once the line is settled (received + short = dispatched) the downgrade goes through.
     async with admin.begin() as conn:
