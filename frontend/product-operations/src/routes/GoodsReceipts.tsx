@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { listGoodsReceipts } from "@/api/client";
 import type { GoodsReceiptSummaryOut } from "@/api/types";
-import { useCursorList } from "@/data/useCursorList";
+import { useCursorList } from "@/tracking/useCursorList";
 import { formatDate } from "@/lib/format";
 import {
   Button,
@@ -34,12 +34,13 @@ export function GoodsReceiptsPage() {
   const debouncedSearch = useDebouncedValue(search);
 
   const list = useCursorList(
-    (cursor) =>
+    (cursor, signal) =>
       listGoodsReceipts({
         ...(purchaseOrderId !== undefined ? { purchase_order_id: purchaseOrderId } : {}),
         q: debouncedSearch,
-        cursor,
+        ...(cursor !== undefined ? { cursor } : {}),
         limit: PAGE,
+        signal,
       }),
     [purchaseOrderId, debouncedSearch],
   );
@@ -120,7 +121,7 @@ export function GoodsReceiptsPage() {
         {list.error !== null ? (
           <LoadError error={list.error} noun="goods receipts" onRetry={list.reload} />
         ) : null}
-        {list.status === "success" ? (
+        {list.status === "ready" ? (
           <>
             <DataTable
               columns={columns}
@@ -141,7 +142,7 @@ export function GoodsReceiptsPage() {
               }
             />
             <div className="flex flex-col items-center gap-3 px-3 py-4" aria-live="polite">
-              {list.loadMoreError ? (
+              {list.moreError ? (
                 <InlineAlert tone="danger" title="Couldn't load more receipts. The ones above are unchanged." />
               ) : null}
               <span className="text-sm text-muted tnum">
@@ -150,7 +151,7 @@ export function GoodsReceiptsPage() {
               </span>
               {list.hasMore ? (
                 <Button variant="outline" loading={list.loadingMore} onClick={() => void list.loadMore()}>
-                  {list.loadMoreError ? "Try again" : "Load more"}
+                  {list.moreError ? "Try again" : "Load more"}
                 </Button>
               ) : null}
             </div>

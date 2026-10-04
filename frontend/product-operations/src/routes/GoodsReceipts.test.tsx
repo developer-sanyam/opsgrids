@@ -8,7 +8,8 @@ import userEvent from "@testing-library/user-event";
 
 import { ApiError } from "@opsgrids/client";
 
-import type { CursorPage, GoodsReceiptSummaryOut } from "@/api/types";
+import type { CursorPage } from "@/api/trackingTypes";
+import type { GoodsReceiptSummaryOut } from "@/api/types";
 import { renderRoute } from "@/test-utils/renderRoute";
 import { GoodsReceiptsPage } from "./GoodsReceipts";
 

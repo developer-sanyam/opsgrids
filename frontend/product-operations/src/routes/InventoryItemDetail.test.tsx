@@ -25,6 +25,7 @@ vi.mock("@/api/client", () => ({
   listWarehouses: () => Promise.resolve({ items: [], total: 0, page: 1, size: 200, pages: 0 }),
   listLocations: () => Promise.resolve([]),
   searchInventory: () => Promise.resolve([]),
+  listUomConversions: () => Promise.resolve([]),
 }));
 vi.mock("@/api/tracking", () => ({
   listStock: (...args: unknown[]) => listStock(...args),

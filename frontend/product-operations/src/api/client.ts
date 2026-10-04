@@ -53,7 +53,6 @@ import type {
   CountSessionIn,
   CountSessionOut,
   CountSessionStatus,
-  CursorPage,
   DiscrepancyTrendPointOut,
   GoodsReceiptIn,
   GoodsReceiptOut,
@@ -158,6 +157,7 @@ import type {
   WorkerWorkloadOut,
   ZoneBottleneckOut,
 } from "./types";
+import type { CursorPage } from "./trackingTypes";
 
 /** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures.
  *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
@@ -2686,6 +2686,7 @@ export interface ListGoodsReceiptsParams {
   q?: string;
   cursor?: string | null;
   limit?: number;
+  signal?: AbortSignal;
 }
 
 /** `GET /operations/goods-receipts` — newest first, keyset-paginated: pass the last page's
@@ -2700,7 +2701,9 @@ export async function listGoodsReceipts(
     cursor: params.cursor ?? undefined,
     limit: params.limit ?? DEFAULT_PAGE_SIZE,
   });
-  return apiRequest<CursorPage<GoodsReceiptSummaryOut>>(`/operations/goods-receipts${query}`);
+  return apiRequest<CursorPage<GoodsReceiptSummaryOut>>(`/operations/goods-receipts${query}`, {
+    signal: params.signal,
+  });
 }
 
 export async function getGoodsReceipt(id: string): Promise<GoodsReceiptOut> {

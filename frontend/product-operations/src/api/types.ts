@@ -1400,12 +1400,6 @@ export interface ChannelHealthCheckOut {
 
 /* ------------------- receiving and purchase (inventory Phase 2) ------------------- */
 
-/** One page of a keyset-paginated list: `next_cursor` is `null` on the last page. */
-export interface CursorPage<T> {
-  items: T[];
-  next_cursor: string | null;
-}
-
 /** `1 box = 12 pcs` is `{uom: "box", numerator: 12, denominator: 1}`. */
 export interface UomConversionOut {
   id: string;
