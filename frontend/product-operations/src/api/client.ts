@@ -42,6 +42,33 @@ import {
   WAREHOUSES,
 } from "./fixtures";
 import type {
+  BomComponentIn,
+  BomComponentPatch,
+  BomDetailOut,
+  BomIn,
+  BomOut,
+  BomPatch,
+  BomSubstituteIn,
+  BomVersionDetailOut,
+  BomVersionIn,
+  BomVersionPatch,
+  CompleteIn,
+  ExplosionOut,
+  IssueIn,
+  MaterialSubstituteIn,
+  OutputIn,
+  ProductionActionOut,
+  ProductionCancelIn,
+  ProductionOrderDetailOut,
+  ProductionOrderIn,
+  ProductionOrderOut,
+  ProductionOrderPatch,
+  ProductionOrderStatus,
+  ReserveIn,
+  ReturnIn,
+  WastageIn,
+  WastageThresholdIn,
+  WastageThresholdOut,
   DispositionIn,
   InspectionIn,
   InspectionOut,
@@ -2910,4 +2937,320 @@ export async function disposeInspection(
     body: input,
     ...idem(idempotencyKey),
   });
+}
+
+/* ------------------------------- manufacturing ------------------------------ */
+
+/**
+ * Inventory Phase 5 (`services/operations/app/manufacturing/api.py`). Live only, like counting and
+ * channels: a recipe and a production order are server-owned state with no fixture twin.
+ * Quantities travel as decimal strings in both directions and are never parsed here. Every
+ * mutating call that the server makes replayable takes an `Idempotency-Key`; the caller owns the
+ * key so a retry of the same submission reuses it.
+ */
+
+export interface MutationOptions {
+  idempotencyKey?: string;
+}
+
+function keyed(options: MutationOptions): { headers?: Record<string, string> } {
+  return options.idempotencyKey ? { headers: { "Idempotency-Key": options.idempotencyKey } } : {};
+}
+
+const MFG = "/operations/manufacturing";
+
+export interface ListBomsParams {
+  q?: string;
+  item_id?: string;
+  is_active?: boolean;
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/manufacturing/boms` — `operations.manufacturing.bom.read`. */
+export async function listBoms(params: ListBomsParams = {}): Promise<Page<BomOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    q: params.q,
+    item_id: params.item_id,
+    is_active: params.is_active,
+  });
+  return apiRequest<Page<BomOut>>(`${MFG}/boms${query}`);
+}
+
+/** `GET /operations/manufacturing/boms/{id}` — the BOM and its versions. */
+export async function getBom(id: string): Promise<BomDetailOut> {
+  return apiRequest<BomDetailOut>(`${MFG}/boms/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/manufacturing/boms` — `operations.manufacturing.bom.write`. Creates the BOM
+ *  with its first draft version. */
+export async function createBom(input: BomIn, options: MutationOptions = {}): Promise<BomDetailOut> {
+  return apiRequest<BomDetailOut>(`${MFG}/boms`, { method: "POST", body: input, ...keyed(options) });
+}
+
+/** `PATCH /operations/manufacturing/boms/{id}` — rename, describe or (de)activate. */
+export async function updateBom(id: string, patch: BomPatch): Promise<BomDetailOut> {
+  return apiRequest<BomDetailOut>(`${MFG}/boms/${encodeURIComponent(id)}`, { method: "PATCH", body: patch });
+}
+
+function versionPath(bomId: string, versionId: string): string {
+  return `${MFG}/boms/${encodeURIComponent(bomId)}/versions/${encodeURIComponent(versionId)}`;
+}
+
+/** `POST /operations/manufacturing/boms/{id}/versions` — a new draft, optionally copied from an
+ *  earlier version. 409 while a draft already exists. */
+export async function createBomVersion(
+  bomId: string,
+  input: BomVersionIn,
+  options: MutationOptions = {},
+): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(`${MFG}/boms/${encodeURIComponent(bomId)}/versions`, {
+    method: "POST",
+    body: input,
+    ...keyed(options),
+  });
+}
+
+/** `GET /operations/manufacturing/boms/{id}/versions/{versionId}` — components and substitutes. */
+export async function getBomVersion(bomId: string, versionId: string): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(versionPath(bomId, versionId));
+}
+
+/** `PATCH .../versions/{versionId}` — a draft's batch size, dates and notes. */
+export async function updateBomVersion(
+  bomId: string,
+  versionId: string,
+  patch: BomVersionPatch,
+): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(versionPath(bomId, versionId), { method: "PATCH", body: patch });
+}
+
+/** `DELETE .../versions/{versionId}` — discards a draft. */
+export async function discardBomVersion(bomId: string, versionId: string): Promise<void> {
+  await apiRequest<undefined>(versionPath(bomId, versionId), { method: "DELETE" });
+}
+
+/** `POST .../versions/{versionId}/components` — 409 when the BOM would contain itself. */
+export async function addBomComponent(
+  bomId: string,
+  versionId: string,
+  input: BomComponentIn,
+): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(`${versionPath(bomId, versionId)}/components`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** `PATCH .../components/{componentId}`. */
+export async function updateBomComponent(
+  bomId: string,
+  versionId: string,
+  componentId: string,
+  patch: BomComponentPatch,
+): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(
+    `${versionPath(bomId, versionId)}/components/${encodeURIComponent(componentId)}`,
+    { method: "PATCH", body: patch },
+  );
+}
+
+/** `DELETE .../components/{componentId}`. */
+export async function removeBomComponent(bomId: string, versionId: string, componentId: string): Promise<void> {
+  await apiRequest<undefined>(`${versionPath(bomId, versionId)}/components/${encodeURIComponent(componentId)}`, {
+    method: "DELETE",
+  });
+}
+
+/** `POST .../components/{componentId}/substitutes` — 409 when the substitute would make the BOM
+ *  contain itself. */
+export async function addBomSubstitute(
+  bomId: string,
+  versionId: string,
+  componentId: string,
+  input: BomSubstituteIn,
+): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(
+    `${versionPath(bomId, versionId)}/components/${encodeURIComponent(componentId)}/substitutes`,
+    { method: "POST", body: input },
+  );
+}
+
+/** `DELETE .../components/{componentId}/substitutes/{substituteId}`. */
+export async function removeBomSubstitute(
+  bomId: string,
+  versionId: string,
+  componentId: string,
+  substituteId: string,
+): Promise<void> {
+  await apiRequest<undefined>(
+    `${versionPath(bomId, versionId)}/components/${encodeURIComponent(componentId)}/substitutes/${encodeURIComponent(substituteId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** `POST .../versions/{versionId}/publish` — `operations.manufacturing.bom.publish`. Immutable
+ *  from then on. */
+export async function publishBomVersion(
+  bomId: string,
+  versionId: string,
+  options: MutationOptions = {},
+): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(`${versionPath(bomId, versionId)}/publish`, {
+    method: "POST",
+    ...keyed(options),
+  });
+}
+
+/** `POST .../versions/{versionId}/retire` — `operations.manufacturing.bom.publish`. */
+export async function retireBomVersion(bomId: string, versionId: string): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(`${versionPath(bomId, versionId)}/retire`, { method: "POST" });
+}
+
+/** `GET .../versions/{versionId}/explosion?quantity=` — the multi-level requirement for a
+ *  quantity (decimal string) of the BOM's item. */
+export async function explodeBomVersion(
+  bomId: string,
+  versionId: string,
+  quantity: string,
+  params: { signal?: AbortSignal } = {},
+): Promise<ExplosionOut> {
+  return apiRequest<ExplosionOut>(`${versionPath(bomId, versionId)}/explosion${buildQuery({ quantity })}`, {
+    signal: params.signal,
+  });
+}
+
+export interface ListProductionOrdersParams {
+  status?: ProductionOrderStatus | "all";
+  item_id?: string;
+  q?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/manufacturing/orders` — `operations.manufacturing.production_order.read`. */
+export async function listProductionOrders(
+  params: ListProductionOrdersParams = {},
+): Promise<Page<ProductionOrderOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    status: params.status === "all" ? undefined : params.status,
+    item_id: params.item_id,
+    q: params.q,
+  });
+  return apiRequest<Page<ProductionOrderOut>>(`${MFG}/orders${query}`);
+}
+
+/** `POST /operations/manufacturing/orders` — `...production_order.write`. Pins the BOM version. */
+export async function createProductionOrder(
+  input: ProductionOrderIn,
+  options: MutationOptions = {},
+): Promise<ProductionOrderDetailOut> {
+  return apiRequest<ProductionOrderDetailOut>(`${MFG}/orders`, { method: "POST", body: input, ...keyed(options) });
+}
+
+function orderPath(orderId: string): string {
+  return `${MFG}/orders/${encodeURIComponent(orderId)}`;
+}
+
+/** `GET /operations/manufacturing/orders/{id}` — materials, picks, outputs, wastage, variance. */
+export async function getProductionOrder(id: string): Promise<ProductionOrderDetailOut> {
+  return apiRequest<ProductionOrderDetailOut>(orderPath(id));
+}
+
+/** `PATCH /operations/manufacturing/orders/{id}` — a draft order only. */
+export async function updateProductionOrder(
+  id: string,
+  patch: ProductionOrderPatch,
+): Promise<ProductionOrderDetailOut> {
+  return apiRequest<ProductionOrderDetailOut>(orderPath(id), { method: "PATCH", body: patch });
+}
+
+/** `POST .../orders/{id}/materials/{materialId}/substitute` — `...production_order.write`. */
+export async function setMaterialSubstitute(
+  orderId: string,
+  materialId: string,
+  input: MaterialSubstituteIn,
+): Promise<ProductionOrderDetailOut> {
+  return apiRequest<ProductionOrderDetailOut>(
+    `${orderPath(orderId)}/materials/${encodeURIComponent(materialId)}/substitute`,
+    { method: "POST", body: input },
+  );
+}
+
+function orderAction(
+  orderId: string,
+  action: string,
+  body: unknown,
+  options: MutationOptions,
+): Promise<ProductionActionOut> {
+  return apiRequest<ProductionActionOut>(`${orderPath(orderId)}/${action}`, {
+    method: "POST",
+    ...(body !== undefined ? { body } : {}),
+    ...keyed(options),
+  });
+}
+
+/** `POST .../orders/{id}/approve` — `...production_order.approve`. DRAFT -> APPROVED. */
+export function approveProductionOrder(orderId: string, options: MutationOptions = {}) {
+  return orderAction(orderId, "approve", undefined, options);
+}
+
+/** `POST .../orders/{id}/start` — `...production_order.issue`. APPROVED -> IN_PROGRESS. */
+export function startProductionOrder(orderId: string, options: MutationOptions = {}) {
+  return orderAction(orderId, "start", undefined, options);
+}
+
+/** `POST .../orders/{id}/cancel` — `...production_order.write`. Refused while material is in WIP. */
+export function cancelProductionOrder(orderId: string, input: ProductionCancelIn, options: MutationOptions = {}) {
+  return orderAction(orderId, "cancel", input, options);
+}
+
+/** `POST .../orders/{id}/reserve` — `...production_order.issue`. Shortages come back in the body. */
+export function reserveProductionMaterials(orderId: string, input: ReserveIn, options: MutationOptions = {}) {
+  return orderAction(orderId, "reserve", input, options);
+}
+
+/** `POST .../orders/{id}/issue` — `...production_order.issue`. AVAILABLE -> WIP. */
+export function issueProductionMaterials(orderId: string, input: IssueIn, options: MutationOptions = {}) {
+  return orderAction(orderId, "issue", input, options);
+}
+
+/** `POST .../orders/{id}/returns` — `...production_order.issue`. WIP -> AVAILABLE. */
+export function returnProductionMaterials(orderId: string, input: ReturnIn, options: MutationOptions = {}) {
+  return orderAction(orderId, "returns", input, options);
+}
+
+/** `POST .../orders/{id}/outputs` — `...production_order.complete`. Receives finished goods. */
+export function recordProductionOutput(orderId: string, input: OutputIn, options: MutationOptions = {}) {
+  return orderAction(orderId, "outputs", input, options);
+}
+
+/** `POST .../orders/{id}/wastage` — `...production_order.issue`. */
+export function recordProductionWastage(orderId: string, input: WastageIn, options: MutationOptions = {}) {
+  return orderAction(orderId, "wastage", input, options);
+}
+
+/** `POST .../orders/{id}/complete` — `...production_order.complete`. 409 when material is left in
+ *  WIP and no `leftover` choice was sent. */
+export function completeProductionOrder(orderId: string, input: CompleteIn, options: MutationOptions = {}) {
+  return orderAction(orderId, "complete", input, options);
+}
+
+/** `GET /operations/manufacturing/wastage-thresholds` — `...production_order.read`. */
+export async function listWastageThresholds(): Promise<WastageThresholdOut[]> {
+  return apiRequest<WastageThresholdOut[]>(`${MFG}/wastage-thresholds`);
+}
+
+/** `POST /operations/manufacturing/wastage-thresholds` — `...bom.write`. Upserts by item + type. */
+export async function setWastageThreshold(input: WastageThresholdIn): Promise<WastageThresholdOut> {
+  return apiRequest<WastageThresholdOut>(`${MFG}/wastage-thresholds`, { method: "POST", body: input });
+}
+
+/** `DELETE /operations/manufacturing/wastage-thresholds/{id}` — `...bom.write`. */
+export async function removeWastageThreshold(id: string): Promise<void> {
+  await apiRequest<undefined>(`${MFG}/wastage-thresholds/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

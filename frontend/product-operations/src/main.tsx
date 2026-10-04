@@ -139,6 +139,17 @@ const InspectionDetailPage = lazy(() =>
 );
 const AutomationPage = lazy(() => import("./routes/Automation").then((m) => ({ default: m.AutomationPage })));
 const ChannelsPage = lazy(() => import("./routes/Channels").then((m) => ({ default: m.ChannelsPage })));
+const BomsPage = lazy(() => import("./routes/Boms").then((m) => ({ default: m.BomsPage })));
+const BomDetailPage = lazy(() => import("./routes/BomDetail").then((m) => ({ default: m.BomDetailPage })));
+const BomVersionDetailPage = lazy(() =>
+  import("./routes/BomVersionDetail").then((m) => ({ default: m.BomVersionDetailPage })),
+);
+const ProductionOrdersPage = lazy(() =>
+  import("./routes/ProductionOrders").then((m) => ({ default: m.ProductionOrdersPage })),
+);
+const ProductionOrderDetailPage = lazy(() =>
+  import("./routes/ProductionOrderDetail").then((m) => ({ default: m.ProductionOrderDetailPage })),
+);
 
 const ScanPage = lazy(() => import("./routes/ScanPage").then((m) => ({ default: m.ScanPage })));
 const InventoryImportPage = lazy(() =>
@@ -241,6 +252,11 @@ const router = createBrowserRouter([
           lazyRoute("automation", <AutomationPage />),
           lazyRoute("settings/payments", <PaymentSettingsPage />),
           lazyRoute("channels", <ChannelsPage />),
+          lazyRoute("manufacturing/boms", <BomsPage />),
+          lazyRoute("manufacturing/boms/:bomId", <BomDetailPage />),
+          lazyRoute("manufacturing/boms/:bomId/versions/:versionId", <BomVersionDetailPage />),
+          lazyRoute("manufacturing/orders", <ProductionOrdersPage />),
+          lazyRoute("manufacturing/orders/:orderId", <ProductionOrderDetailPage />),
           { path: "*", element: <NotFoundPage /> },
         ],
       },

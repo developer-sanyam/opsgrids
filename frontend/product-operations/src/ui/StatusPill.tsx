@@ -5,6 +5,7 @@ import type {
   TransferStatus,
 } from "@/api/movementTypes";
 import type {
+  BomVersionStatus,
   ChannelStatus,
   ChannelSyncStatus,
   CollectionState,
@@ -15,6 +16,7 @@ import type {
   OrderStatus,
   PickTaskStatus,
   PoStatus,
+  ProductionOrderStatus,
   ReceiptOutcome,
   RequisitionStatus,
   ShipmentStatus,
@@ -558,4 +560,45 @@ export function InspectionStatusPill({ status }: { status: InspectionStatus }) {
   const word = INSPECTION_REGISTERED[status];
   if (word) return <StatusBadge status={word} label={INSPECTION_LABEL[status]} />;
   return <StatusBadge tone={INSPECTION_EXPLICIT_TONE[status] ?? "neutral"} label={INSPECTION_LABEL[status]} />;
+}
+
+/* ------------------------- manufacturing statuses -------------------------- */
+/** A BOM version: DRAFT (neutral), PUBLISHED (success), RETIRED (neutral) — all registered words. */
+
+const BOM_VERSION_WORD: Record<BomVersionStatus, StatusWord> = {
+  DRAFT: "draft",
+  PUBLISHED: "published",
+  RETIRED: "retired",
+};
+
+const BOM_VERSION_LABEL: Record<BomVersionStatus, string> = {
+  DRAFT: "Draft",
+  PUBLISHED: "Published",
+  RETIRED: "Retired",
+};
+
+export function BomVersionStatusPill({ status }: { status: BomVersionStatus }) {
+  return <StatusBadge status={BOM_VERSION_WORD[status]} label={BOM_VERSION_LABEL[status]} />;
+}
+
+/** A production order: DRAFT -> APPROVED -> IN_PROGRESS -> COMPLETED, or CANCELLED. */
+
+const PRODUCTION_ORDER_WORD: Record<ProductionOrderStatus, StatusWord> = {
+  DRAFT: "draft",
+  APPROVED: "approved",
+  IN_PROGRESS: "in_progress",
+  COMPLETED: "completed",
+  CANCELLED: "cancelled",
+};
+
+const PRODUCTION_ORDER_LABEL: Record<ProductionOrderStatus, string> = {
+  DRAFT: "Draft",
+  APPROVED: "Approved",
+  IN_PROGRESS: "In progress",
+  COMPLETED: "Completed",
+  CANCELLED: "Cancelled",
+};
+
+export function ProductionOrderStatusPill({ status }: { status: ProductionOrderStatus }) {
+  return <StatusBadge status={PRODUCTION_ORDER_WORD[status]} label={PRODUCTION_ORDER_LABEL[status]} />;
 }

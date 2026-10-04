@@ -1831,3 +1831,420 @@ export interface DispositionIn {
   note?: string;
   reference?: string;
 }
+
+/* ----------------------------- manufacturing ----------------------------- */
+/**
+ * Inventory Phase 5 — bills of materials, production orders, wastage. Mirrors
+ * `services/operations/app/manufacturing/schemas.py` (`libs/contracts/openapi/operations.json`).
+ * Every id is a string; every quantity is a decimal `Qty` string with at most three decimals and
+ * every percentage a decimal string with at most two — none of them is ever parsed into a float.
+ */
+
+/** A percentage as a decimal string: `"2.5"`. At most two decimals. */
+export type Pct = string;
+
+export type BomVersionStatus = "DRAFT" | "PUBLISHED" | "RETIRED";
+export type ProductionOrderStatus = "DRAFT" | "APPROVED" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED";
+export type WastageType = "CUTTING" | "DEFECT" | "SPILLAGE" | "DAMAGE" | "PROCESS_LOSS" | "LEFTOVER" | "OTHER";
+export type OutputStatus = "AVAILABLE" | "QUALITY_HOLD";
+
+export interface BomSubstituteIn {
+  substitute_item_id: string;
+  ratio?: Qty;
+  priority?: number;
+}
+
+export interface BomSubstituteOut {
+  id: string;
+  substitute_item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  ratio: Qty;
+  priority: number;
+}
+
+export interface BomComponentIn {
+  component_item_id: string;
+  quantity: Qty;
+  scrap_percent?: Pct;
+  effective_from?: string | null;
+  effective_to?: string | null;
+  notes?: string;
+}
+
+export interface BomComponentPatch {
+  quantity?: Qty;
+  scrap_percent?: Pct;
+  effective_from?: string | null;
+  effective_to?: string | null;
+  notes?: string;
+}
+
+export interface BomComponentOut {
+  id: string;
+  line_no: number;
+  component_item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  quantity: Qty;
+  scrap_percent: Pct;
+  effective_from: string | null;
+  effective_to: string | null;
+  notes: string;
+  /** True when this component has a BOM of its own — what makes the BOM multi-level. */
+  is_produced: boolean;
+  substitutes: BomSubstituteOut[];
+}
+
+export interface BomVersionIn {
+  output_quantity?: Qty;
+  effective_from?: string | null;
+  effective_to?: string | null;
+  notes?: string;
+  copy_from_version_id?: string | null;
+}
+
+export interface BomVersionPatch {
+  output_quantity?: Qty;
+  effective_from?: string | null;
+  effective_to?: string | null;
+  notes?: string;
+}
+
+export interface BomVersionOut {
+  id: string;
+  bom_id: string;
+  version_no: number;
+  status: BomVersionStatus;
+  output_quantity: Qty;
+  effective_from: string | null;
+  effective_to: string | null;
+  notes: string;
+  published_at: string | null;
+  published_by: string | null;
+  content_hash: string | null;
+  component_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BomVersionDetailOut extends BomVersionOut {
+  components: BomComponentOut[];
+}
+
+export interface BomIn {
+  code: string;
+  name: string;
+  item_id: string;
+  description?: string;
+  output_quantity?: Qty;
+}
+
+export interface BomPatch {
+  name?: string;
+  description?: string;
+  is_active?: boolean;
+}
+
+export interface BomOut {
+  id: string;
+  code: string;
+  name: string;
+  item_id: string;
+  sku: string;
+  item_name: string;
+  uom: string;
+  description: string;
+  is_active: boolean;
+  version_count: number;
+  latest_version_no: number | null;
+  /** The published version in force today (null while nothing is published). */
+  current_version_id: string | null;
+  current_version_no: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BomDetailOut extends BomOut {
+  versions: BomVersionOut[];
+}
+
+export interface ExplosionNodeOut {
+  item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  level: number;
+  quantity: Qty;
+  is_produced: boolean;
+  children: ExplosionNodeOut[];
+}
+
+export interface ExplosionTotalOut {
+  item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  quantity: Qty;
+}
+
+export interface ExplosionOut {
+  bom_id: string;
+  version_id: string;
+  quantity: Qty;
+  root: ExplosionNodeOut;
+  leaf_totals: ExplosionTotalOut[];
+}
+
+export interface ProductionOrderIn {
+  bom_id?: string | null;
+  item_id?: string | null;
+  bom_version_id?: string | null;
+  quantity: Qty;
+  output_location_id: string;
+  wip_location_id?: string | null;
+  planned_start?: string | null;
+  due_date?: string | null;
+  notes?: string;
+}
+
+export interface ProductionOrderPatch {
+  quantity?: Qty;
+  output_location_id?: string;
+  wip_location_id?: string | null;
+  planned_start?: string | null;
+  due_date?: string | null;
+  notes?: string;
+}
+
+export interface ProductionCancelIn {
+  reason?: string;
+}
+
+export interface MaterialSubstituteIn {
+  /** One of the BOM line's declared substitutes; omit to go back to the BOM's own item. */
+  substitute_item_id?: string | null;
+}
+
+export interface ReserveLineIn {
+  material_id: string;
+  location_id?: string | null;
+  lot_id?: string | null;
+  roll_id?: string | null;
+  quantity?: Qty | null;
+}
+
+export interface ReserveIn {
+  lines?: ReserveLineIn[] | null;
+}
+
+export interface IssueLineIn {
+  material_id?: string | null;
+  pick_id?: string | null;
+  location_id?: string | null;
+  lot_id?: string | null;
+  roll_id?: string | null;
+  quantity?: Qty | null;
+}
+
+export interface IssueIn {
+  lines?: IssueLineIn[] | null;
+  over_issue?: boolean;
+}
+
+export interface ReturnLineIn {
+  pick_id: string;
+  quantity?: Qty | null;
+  location_id?: string | null;
+}
+
+export interface ReturnIn {
+  lines: ReturnLineIn[];
+}
+
+export interface OutputIn {
+  quantity: Qty;
+  location_id?: string | null;
+  lot_id?: string | null;
+  roll_id?: string | null;
+  status?: OutputStatus;
+  note?: string;
+}
+
+export interface WastageIn {
+  material_id: string;
+  wastage_type: WastageType;
+  quantity: Qty;
+  pick_id?: string | null;
+  note?: string;
+}
+
+export interface CompleteIn {
+  /** Required when anything is left in WIP: put it back, or write it off as wastage. */
+  leftover?: "return" | "scrap" | null;
+  note?: string;
+}
+
+export interface ProductionMaterialOut {
+  id: string;
+  line_no: number;
+  component_item_id: string;
+  component_sku: string;
+  item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  is_substitute: boolean;
+  ratio: Qty;
+  scrap_percent: Pct;
+  required: Qty;
+  reserved: Qty;
+  issued: Qty;
+  consumed: Qty;
+  returned: Qty;
+  wasted: Qty;
+  wip: Qty;
+  /** What is still not covered by a reservation or an issue. */
+  open_need: Qty;
+}
+
+export interface ProductionPickOut {
+  id: string;
+  material_id: string;
+  item_id: string;
+  source_location_id: string;
+  wip_location_id: string;
+  lot_id: string | null;
+  roll_id: string | null;
+  reservation_id: string | null;
+  reserved: Qty;
+  issued: Qty;
+  consumed: Qty;
+  returned: Qty;
+  wasted: Qty;
+  wip: Qty;
+}
+
+export interface ProductionOutputOut {
+  id: string;
+  production_order_id: string;
+  item_id: string;
+  quantity: Qty;
+  location_id: string;
+  status: OutputStatus;
+  lot_id: string | null;
+  roll_id: string | null;
+  note: string;
+  created_at: string;
+}
+
+export interface ProductionWastageOut {
+  id: string;
+  production_order_id: string;
+  material_id: string;
+  pick_id: string;
+  event_id: string;
+  item_id: string;
+  wastage_type: WastageType;
+  quantity: Qty;
+  location_id: string;
+  lot_id: string | null;
+  roll_id: string | null;
+  note: string;
+  created_at: string;
+}
+
+export interface VarianceLineOut {
+  material_id: string;
+  item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  /** What the BOM (scrap allowance included) says the produced quantity should have taken. */
+  standard: Qty;
+  /** The same, without the scrap allowance. */
+  theoretical: Qty;
+  consumed: Qty;
+  wasted: Qty;
+  /** consumed + wasted. */
+  actual: Qty;
+  /** actual - standard; positive is over-use. */
+  variance: Qty;
+  /** variance as a percentage of standard, two decimals; null when standard is zero. */
+  variance_percent: string | null;
+}
+
+export interface VarianceOut {
+  planned_quantity: Qty;
+  produced_quantity: Qty;
+  lines: VarianceLineOut[];
+}
+
+export interface ProductionOrderOut {
+  id: string;
+  number: string;
+  status: ProductionOrderStatus;
+  bom_id: string;
+  bom_code: string;
+  bom_version_id: string;
+  bom_version_no: number;
+  item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  planned_quantity: Qty;
+  produced_quantity: Qty;
+  output_location_id: string;
+  wip_location_id: string | null;
+  planned_start: string | null;
+  due_date: string | null;
+  approved_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  cancelled_at: string | null;
+  cancel_reason: string;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProductionOrderDetailOut extends ProductionOrderOut {
+  materials: ProductionMaterialOut[];
+  picks: ProductionPickOut[];
+  outputs: ProductionOutputOut[];
+  wastage: ProductionWastageOut[];
+  variance: VarianceOut;
+}
+
+export interface ShortageOut {
+  material_id: string;
+  item_id: string;
+  sku: string;
+  required: Qty;
+  covered: Qty;
+  short: Qty;
+}
+
+/** The order after an action; `shortages` is filled by a reservation that could not cover
+ *  everything. `replayed` is true when an `Idempotency-Key` matched an earlier request. */
+export interface ProductionActionOut extends ProductionOrderDetailOut {
+  shortages: ShortageOut[];
+  replayed: boolean;
+}
+
+export interface WastageThresholdIn {
+  item_id?: string | null;
+  wastage_type?: WastageType | null;
+  max_percent: Pct;
+}
+
+export interface WastageThresholdOut {
+  id: string;
+  item_id: string | null;
+  sku: string | null;
+  wastage_type: WastageType | null;
+  max_percent: Pct;
+  created_at: string;
+}

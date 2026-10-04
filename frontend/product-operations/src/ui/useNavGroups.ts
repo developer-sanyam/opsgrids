@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 
-import { useCan } from "@opsgrids/client";
+import { useCan, usePermissionStatus } from "@opsgrids/client";
 import {
   AlertTriangleIcon,
   BoxIcon,
@@ -16,6 +16,7 @@ import {
   GaugeIcon,
   HomeIcon,
   LayersIcon,
+  NetworkIcon,
   PackageIcon,
   PlugIcon,
   ReceiptIcon,
@@ -69,6 +70,13 @@ const GROUPS: NavGroup[] = [
       { to: "/settings/payments", label: "Online Payments", icon: CreditCardIcon },
     ],
   },
+  {
+    title: "Manufacturing",
+    items: [
+      { to: "/manufacturing/boms", label: "Bills of materials", icon: NetworkIcon },
+      { to: "/manufacturing/orders", label: "Production orders", icon: BoxIcon },
+    ],
+  },
 ];
 
 // Stock movements (inventory Phase 3). Each is a screen behind a permission; an entry the person
@@ -90,18 +98,26 @@ const APPROVALS_ENTRY: NavEntry = {
  *
  * Under Inventory: Stock, Lots, Rolls and the Stock Ledger (Phase 1), then Transfers, Reservations
  * and Adjustments (Phase 3), all for a caller who can read stock, and Approval Thresholds for one
- * who can configure them. Hiding a link is presentation; every endpoint behind them refuses the
+ * who can configure them. A Manufacturing entry is hidden from a member **known** not to hold its
+ * read permission, and shown while that is not yet known, so the rail does not flash entries in
+ * and out as grants arrive. Hiding a link is presentation; every endpoint behind them refuses the
  * call on its own.
  */
 export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
   const canReadStock = useCan("operations.inventory.stock.read", "ORG");
   const canConfigure = useCan("operations.inventory.control.configure", "ORG");
+  const bomRead = usePermissionStatus("operations.manufacturing.bom.read", "ORG");
+  const orderRead = usePermissionStatus("operations.manufacturing.production_order.read", "ORG");
 
-  const groups = useMemo(
-    () =>
-      GROUPS.map((group) => ({
-        ...group,
-        items: group.items.flatMap((entry) =>
+  const groups = useMemo(() => {
+    const hidden = new Set([
+      ...(bomRead === "denied" ? ["/manufacturing/boms"] : []),
+      ...(orderRead === "denied" ? ["/manufacturing/orders"] : []),
+    ]);
+    return GROUPS.map((group) => ({
+      ...group,
+      items: group.items
+        .flatMap((entry) =>
           entry.to === "/inventory"
             ? [
                 entry,
@@ -109,9 +125,9 @@ export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
                 ...(canConfigure ? [APPROVALS_ENTRY] : []),
               ]
             : [entry],
-        ),
-      })),
-    [canReadStock, canConfigure],
-  );
+        )
+        .filter((item) => !hidden.has(item.to)),
+    })).filter((group) => group.items.length > 0);
+  }, [canReadStock, canConfigure, bomRead, orderRead]);
   return { groups, pinned: [] };
 }
