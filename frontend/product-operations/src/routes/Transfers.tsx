@@ -7,7 +7,7 @@ import { Can, problemMessage } from "@opsgrids/client";
 import { formatDate } from "@/lib/format";
 import { InTransitCard } from "@/movements/InTransitCard";
 import { LoadMoreFooter } from "@/movements/LoadMoreFooter";
-import { useCursorList } from "@/movements/useCursorList";
+import { useCursorList } from "@/tracking/useCursorList";
 import {
   ApprovalRouteChip,
   Button,
@@ -157,7 +157,7 @@ export function TransfersPage() {
       <Card className="p-2 sm:p-4">
         <DataTable
           columns={columns}
-          rows={list.rows}
+          rows={list.items}
           rowKey={(t) => t.id}
           caption="Transfers"
           mobileCard="auto"
@@ -182,7 +182,7 @@ export function TransfersPage() {
         />
         {list.status === "ready" ? (
           <LoadMoreFooter
-            loaded={list.rows.length}
+            loaded={list.items.length}
             hasMore={list.hasMore}
             loading={list.loadingMore}
             error={list.moreError}

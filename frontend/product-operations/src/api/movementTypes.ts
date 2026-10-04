@@ -7,11 +7,7 @@
 
 import type { Qty } from "./types";
 
-/** `?cursor=&limit=` pages: the server hands back the cursor for the next page, or `null`. */
-export interface CursorPage<T> {
-  items: T[];
-  next_cursor: string | null;
-}
+export type { CursorPage } from "./trackingTypes";
 
 /* ------------------------------ control settings ------------------------------ */
 

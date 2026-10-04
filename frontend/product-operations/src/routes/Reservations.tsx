@@ -9,7 +9,7 @@ import { ReleaseReservationDialog } from "@/forms/ReleaseReservationDialog";
 import { ReserveStockDialog } from "@/forms/ReserveStockDialog";
 import { LoadMoreFooter } from "@/movements/LoadMoreFooter";
 import { MovementItemPicker } from "@/movements/MovementItemPicker";
-import { useCursorList } from "@/movements/useCursorList";
+import { useCursorList } from "@/tracking/useCursorList";
 import {
   Button,
   Card,
@@ -206,7 +206,7 @@ export function ReservationsPage() {
       <Card className="p-2 sm:p-4">
         <DataTable
           columns={columns}
-          rows={list.rows}
+          rows={list.items}
           rowKey={(r) => r.id}
           caption="Reservations"
           mobileCard="auto"
@@ -235,7 +235,7 @@ export function ReservationsPage() {
         />
         {list.status === "ready" ? (
           <LoadMoreFooter
-            loaded={list.rows.length}
+            loaded={list.items.length}
             hasMore={list.hasMore}
             loading={list.loadingMore}
             error={list.moreError}

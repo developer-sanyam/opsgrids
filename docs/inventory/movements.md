@@ -82,6 +82,15 @@ could not post twice. A dispatch racing an issue on one bin cannot take it below
 of one line cannot both receive it. All proven on real connections in
 `tests/test_movements_concurrency.py`.
 
+**Rolls.** A transfer line that names a roll posts through `post_move`, so it follows Phase 1's lock
+order (item -> roll `FOR SHARE` -> balances; ADR-0014 §12): a dispatch racing a split of the same roll
+queues on the roll row and the loser is refused cleanly (409 / `INSUFFICIENT_STOCK`), never a deadlock
+(`tests/test_movements_roll_concurrency.py`). A dispatched roll (all or part of it) sits in the
+`IN_TRANSIT` bucket, and a roll split or merge needs the roll to live in **one bucket across every
+status** — in transit counts — so a roll with a portion on its way is refused a split
+(`roll_in_several_buckets`) until the rest has been received. Receipt moves the stock on the same roll
+into the destination bin; a roll may end up spread over two warehouses, which is allowed.
+
 ---
 
 ## Approvals
@@ -239,7 +248,7 @@ on a named row, an empty page on a list, and cannot change the owner's data.
 
 ## Migration `c5a82f6d3b19`
 
-Down revision `b7d41e92c05a`. One migration, reversible, nothing destructive:
+Down revision `c5e91a7d3b28` (Phase 2's receiving migration). One migration, reversible, nothing destructive:
 
 1. `inventory_control_settings` — thresholds and document-number counters.
 2. `stock_transfers`, `stock_transfer_lines`, `stock_transfer_transitions` (append-only).

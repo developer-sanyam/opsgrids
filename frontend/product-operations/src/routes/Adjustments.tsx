@@ -9,7 +9,7 @@ import { formatQty } from "@/lib/quantity";
 import { AdjustmentRequestDialog } from "@/forms/AdjustmentRequestDialog";
 import { ReasonDialog } from "@/forms/ReasonDialog";
 import { LoadMoreFooter } from "@/movements/LoadMoreFooter";
-import { useCursorList } from "@/movements/useCursorList";
+import { useCursorList } from "@/tracking/useCursorList";
 import {
   AdjustmentStatusPill,
   Button,
@@ -185,7 +185,7 @@ export function AdjustmentsPage() {
       <Card className="p-2 sm:p-4">
         <DataTable
           columns={columns}
-          rows={list.rows}
+          rows={list.items}
           rowKey={(a) => a.id}
           caption="Adjustments"
           mobileCard="auto"
@@ -210,7 +210,7 @@ export function AdjustmentsPage() {
         />
         {list.status === "ready" ? (
           <LoadMoreFooter
-            loaded={list.rows.length}
+            loaded={list.items.length}
             hasMore={list.hasMore}
             loading={list.loadingMore}
             error={list.moreError}
