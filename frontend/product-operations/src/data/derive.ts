@@ -37,6 +37,7 @@ export const CATEGORY_LABEL: Record<Category, string> = {
 export const PO_STATUS_LABEL: Record<PoStatus, string> = {
   draft: "Draft",
   approved: "Approved",
+  partially_received: "Partially received",
   received: "Received",
   closed: "Closed",
   cancelled: "Cancelled",

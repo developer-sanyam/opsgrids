@@ -8,6 +8,7 @@ import {
   ClipboardListIcon,
   CreditCardIcon,
   FactoryIcon,
+  FileTextIcon,
   FolderIcon,
   HomeIcon,
   LayersIcon,
@@ -22,8 +23,9 @@ import {
 import type { NavEntry, NavGroup } from "@opsgrids/ui";
 
 // Every entry here has a real screen behind it — a nav item whose screen has no backend does not
-// belong in the primary nav (frontend/CLAUDE.md: zero placeholder or dead code). "Receiving" was
-// folded into the purchase order detail page's own "Mark as received" action; Reports,
+// belong in the primary nav (frontend/CLAUDE.md: zero placeholder or dead code). Receiving a
+// delivery starts from the purchase order ("Receive goods") and its postings are listed under Goods
+// Receipts; Reports,
 // Integrations, Team and Settings have no backend yet and were removed rather than left as
 // ComingSoon placeholders.
 const STOCK_ENTRIES: NavEntry[] = [
@@ -44,7 +46,9 @@ const GROUPS: NavGroup[] = [
       { to: "/dispatch", label: "Dispatch", icon: TruckIcon },
       { to: "/automation", label: "Automation", icon: AlertTriangleIcon },
       { to: "/channels", label: "Channels", icon: PlugIcon },
+      { to: "/purchase-requisitions", label: "Requisitions", icon: FileTextIcon },
       { to: "/purchase-orders", label: "Purchase Orders", icon: ClipboardListIcon },
+      { to: "/goods-receipts", label: "Goods Receipts", icon: ReceiptIcon },
       { to: "/inventory", label: "Inventory", icon: LayersIcon },
       { to: "/inventory/categories", label: "Item Categories", icon: FolderIcon },
       { to: "/counting", label: "Cycle Counts", icon: CheckSquareIcon },

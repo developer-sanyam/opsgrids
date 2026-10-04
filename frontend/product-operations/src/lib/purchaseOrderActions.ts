@@ -13,6 +13,8 @@ export interface PurchaseOrderActions {
   edit: boolean;
   approve: boolean;
   receive: boolean;
+  /** The goods-receipt flow: partial, short and tolerance-checked, line by line. */
+  receiveGoods: boolean;
   cancel: boolean;
   close: boolean;
 }
@@ -21,7 +23,8 @@ export function purchaseOrderActions(status: PoStatus, canApprove: boolean): Pur
   return {
     edit: status === "draft",
     approve: status === "draft" && canApprove,
-    receive: status === "approved",
+    receive: status === "approved" || status === "partially_received",
+    receiveGoods: status === "approved" || status === "partially_received",
     cancel: status === "draft" || (status === "approved" && canApprove),
     close: status === "received",
   };

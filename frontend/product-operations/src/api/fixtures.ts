@@ -274,6 +274,8 @@ export const PURCHASE_ORDERS: PurchaseOrderOut[] = PO_SEEDS.map((seed, i) => {
       uom: l.uom,
       unit_price_minor: inr(l.price),
       received_qty: l.recv,
+      received_exact: String(l.recv),
+      short_closed: false,
     })),
   };
 });
@@ -343,6 +345,7 @@ export const INVENTORY: InventoryItemOut[] = INVENTORY_SEEDS.map((s, i) => ({
   track_expiry: false,
   track_quality: false,
   is_active: true,
+  receipt_tolerance_pct: "0",
   selling_price_minor: s.sellingPrice === undefined ? null : inr(s.sellingPrice),
   selling_price_currency: s.sellingPrice === undefined ? null : CURRENCY,
 }));

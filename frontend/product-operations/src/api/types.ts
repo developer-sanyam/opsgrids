@@ -79,7 +79,13 @@ export interface SupplierPatch {
 
 /* ---------------------------- purchase orders ---------------------------- */
 
-export type PoStatus = "draft" | "approved" | "received" | "closed" | "cancelled";
+export type PoStatus =
+  | "draft"
+  | "approved"
+  | "partially_received"
+  | "received"
+  | "closed"
+  | "cancelled";
 
 /** One line on a purchase order. `unit_price_minor` is per-unit minor units of the PO currency. */
 export interface PoLineItem {
@@ -90,6 +96,10 @@ export interface PoLineItem {
   uom: string;
   unit_price_minor: number;
   received_qty: number;
+  /** The exact cumulative receipt in the item's stock unit (`received_qty` is its whole-unit view). */
+  received_exact: Qty;
+  /** The buyer closed this line short: nothing more is expected against it. */
+  short_closed: boolean;
 }
 
 /** Mirrors `PurchaseOrderOut`. The total is derived from `line_items`, never stored. */
@@ -186,6 +196,8 @@ export interface InventoryItemOut {
   track_expiry: boolean;
   track_quality: boolean;
   is_active: boolean;
+  /** How far over the ordered quantity a receipt may go, in percent (`"2.5"`) — two decimals at most. */
+  receipt_tolerance_pct: string;
   /** What a customer order line is priced at (ADR-0024 §3, fulfilment plan F2) — distinct from
    *  `unit_value_minor` above, which is cost. Both `null` (no selling price set yet — an order
    *  line still needs its own explicit price then) or both set. */
@@ -213,6 +225,7 @@ export interface InventoryItemIn {
   track_expiry?: boolean;
   track_quality?: boolean;
   is_active?: boolean;
+  receipt_tolerance_pct?: string;
 }
 
 /** `PATCH /inventory/{id}`. `sku`, `currency` and — above all — `on_hand` are never accepted:
@@ -232,6 +245,7 @@ export interface InventoryItemPatch {
   track_expiry?: boolean;
   track_quality?: boolean;
   is_active?: boolean;
+  receipt_tolerance_pct?: string;
 }
 
 /* ---------------------------- item master (Phase 1) ----------------------- */
@@ -1382,4 +1396,283 @@ export interface ChannelRetryResultOut {
 
 export interface ChannelHealthCheckOut {
   healthy: boolean;
+}
+
+/* ------------------- receiving and purchase (inventory Phase 2) ------------------- */
+
+/** One page of a keyset-paginated list: `next_cursor` is `null` on the last page. */
+export interface CursorPage<T> {
+  items: T[];
+  next_cursor: string | null;
+}
+
+/** `1 box = 12 pcs` is `{uom: "box", numerator: 12, denominator: 1}`. */
+export interface UomConversionOut {
+  id: string;
+  inventory_item_id: string;
+  uom_id: string;
+  uom: string;
+  numerator: number;
+  denominator: number;
+  stock_uom: string;
+  created_at: string;
+}
+
+/** `POST /inventory/{item_id}/uom-conversions`. */
+export interface UomConversionIn {
+  uom: string;
+  numerator: number;
+  denominator?: number;
+}
+
+/** `PATCH /inventory/uom-conversions/{id}` — numerator and/or denominator. */
+export interface UomConversionPatch {
+  numerator?: number;
+  denominator?: number;
+}
+
+export type RequisitionStatus = "DRAFT" | "SUBMITTED" | "APPROVED" | "REJECTED" | "CONVERTED" | "CANCELLED";
+
+export interface RequisitionLineIn {
+  inventory_item_id: string;
+  /** In the item's own stock unit — a decimal string, greater than zero. */
+  quantity: Qty;
+  suggested_supplier_id?: string | null;
+  est_unit_price_minor?: number | null;
+  note?: string | null;
+}
+
+export interface RequisitionIn {
+  warehouse_id?: string | null;
+  needed_by?: string | null;
+  reason?: string | null;
+  requested_by: string;
+  lines: RequisitionLineIn[];
+}
+
+/** `PATCH /purchase-requisitions/{id}`, draft only. `lines`, when present, replaces them. */
+export interface RequisitionPatch {
+  warehouse_id?: string | null;
+  needed_by?: string | null;
+  reason?: string | null;
+  lines?: RequisitionLineIn[];
+}
+
+export interface RequisitionDecisionIn {
+  note?: string | null;
+}
+
+export interface RequisitionRejectIn {
+  reason: string;
+}
+
+export interface RequisitionPriceIn {
+  line_id: string;
+  unit_price_minor: number;
+}
+
+export interface RequisitionConvertIn {
+  supplier_id: string;
+  expected_date: string;
+  /** A warehouse *name* (a purchase order names its warehouse by name). */
+  warehouse?: string | null;
+  currency?: string | null;
+  notes?: string | null;
+  prices?: RequisitionPriceIn[];
+}
+
+export interface RequisitionLineOut {
+  id: string;
+  line_no: number;
+  inventory_item_id: string;
+  sku: string;
+  item_name: string;
+  uom: string;
+  quantity: Qty;
+  suggested_supplier_id: string | null;
+  est_unit_price_minor: number | null;
+  note: string | null;
+}
+
+export interface RequisitionOut {
+  id: string;
+  number: string;
+  status: RequisitionStatus;
+  requested_by: string;
+  requested_by_id: string | null;
+  warehouse_id: string | null;
+  warehouse_name: string | null;
+  needed_by: string | null;
+  reason: string | null;
+  decision_note: string | null;
+  submitted_at: string | null;
+  decided_at: string | null;
+  converted_po_id: string | null;
+  converted_po_number: string | null;
+  created_at: string;
+  updated_at: string;
+  lines: RequisitionLineOut[];
+}
+
+export interface RequisitionSummaryOut {
+  id: string;
+  number: string;
+  status: RequisitionStatus;
+  requested_by: string;
+  warehouse_name: string | null;
+  needed_by: string | null;
+  line_count: number;
+  converted_po_number: string | null;
+  created_at: string;
+}
+
+export type ReceiptOutcome = "PARTIAL" | "EXACT" | "SHORT" | "OVER";
+
+export interface ReceiptRollIn {
+  roll_no?: string | null;
+  /** In the item's stock unit (82.5 m). */
+  primary_qty: Qty;
+  /** A separately measured figure in another unit (14.8 kg) — never derived. */
+  secondary_qty?: string | null;
+  secondary_uom?: string | null;
+  width_mm?: number | null;
+  gsm?: number | null;
+  shade?: string | null;
+  grade?: string | null;
+}
+
+/** An existing lot (`lot_id`) or the fields of a new one — never both. */
+export interface ReceiptLotIn {
+  lot_id?: string | null;
+  lot_no?: string | null;
+  supplier_lot_no?: string | null;
+  manufactured_on?: string | null;
+  expires_on?: string | null;
+}
+
+export interface ReceiptLineIn {
+  purchase_order_line_id: string;
+  /** Non-negative decimal string, in `uom`; `"0"` only with `close_short`. */
+  quantity: string;
+  uom?: string | null;
+  location_id?: string | null;
+  hold?: boolean;
+  close_short?: boolean;
+  lot?: ReceiptLotIn | null;
+  rolls?: ReceiptRollIn[];
+}
+
+export interface GoodsReceiptIn {
+  purchase_order_id: string;
+  received_on?: string;
+  delivery_note?: string | null;
+  note?: string | null;
+  lines: ReceiptLineIn[];
+}
+
+export interface ReceiptRollOut {
+  id: string;
+  roll_no: string;
+  primary_qty: Qty;
+  secondary_qty: Qty | null;
+  secondary_uom: string | null;
+}
+
+export interface GoodsReceiptLineOut {
+  id: string;
+  line_no: number;
+  purchase_order_line_id: string;
+  sku: string;
+  description: string;
+  inventory_item_id: string | null;
+  stock_uom: string | null;
+  location_id: string | null;
+  location_label: string | null;
+  stock_status: StockStatus | null;
+  lot_id: string | null;
+  lot_no: string | null;
+  supplier_lot_no: string | null;
+  rolls: ReceiptRollOut[];
+  entered_qty: Qty;
+  entered_uom: string;
+  /** In the item's stock unit — what actually went onto the books. */
+  received_qty: Qty;
+  ordered_qty: Qty;
+  prior_received_qty: Qty;
+  cumulative_qty: Qty;
+  tolerance_pct: string;
+  close_short: boolean;
+  outcome: ReceiptOutcome;
+  unit_cost_minor: number | null;
+  unit_cost_currency: string | null;
+}
+
+export interface GoodsReceiptOut {
+  id: string;
+  number: string;
+  purchase_order_id: string;
+  po_number: string;
+  po_status: string;
+  supplier_id: string;
+  supplier_name: string;
+  received_on: string;
+  delivery_note: string | null;
+  note: string | null;
+  status: "POSTED";
+  /** True when this is the first result of a retried `Idempotency-Key`, not a new posting. */
+  replayed: boolean;
+  created_at: string;
+  created_by: string | null;
+  lines: GoodsReceiptLineOut[];
+}
+
+export interface GoodsReceiptSummaryOut {
+  id: string;
+  number: string;
+  purchase_order_id: string;
+  po_number: string;
+  supplier_name: string;
+  received_on: string;
+  delivery_note: string | null;
+  line_count: number;
+  created_at: string;
+}
+
+export interface ReceivingConversionOut {
+  uom: string;
+  numerator: number;
+  denominator: number;
+}
+
+export interface ReceivingLineOut {
+  purchase_order_line_id: string;
+  sku: string;
+  description: string;
+  inventory_item_id: string | null;
+  stock_uom: string | null;
+  ordered_qty: Qty;
+  received_qty: Qty;
+  remaining_qty: Qty;
+  /** The most that may still be received (ordered + tolerance - received), never negative. */
+  max_receivable_qty: Qty;
+  tolerance_pct: string;
+  short_closed: boolean;
+  track_lot: boolean;
+  track_roll: boolean;
+  track_expiry: boolean;
+  track_quality: boolean;
+  default_location_id: string | null;
+  default_location_label: string | null;
+  conversions: ReceivingConversionOut[];
+}
+
+export interface ReceivingContextOut {
+  purchase_order_id: string;
+  po_number: string;
+  po_status: string;
+  warehouse: string;
+  supplier_name: string;
+  /** Whether the PO is in a state a goods receipt can be posted against. */
+  can_receive: boolean;
+  lines: ReceivingLineOut[];
 }

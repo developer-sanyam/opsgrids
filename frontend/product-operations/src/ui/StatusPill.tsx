@@ -8,7 +8,10 @@ import type {
   OrderStatus,
   PickTaskStatus,
   PoStatus,
+  ReceiptOutcome,
+  RequisitionStatus,
   ShipmentStatus,
+  StockStatus,
   SupplierStatus,
 } from "@/api/types";
 import { AlertTriangleIcon, StatusBadge } from "@opsgrids/ui";
@@ -25,14 +28,97 @@ import type { StatusTone, StatusWord } from "@opsgrids/ui";
 const PO_LABEL: Record<PoStatus, string> = {
   draft: "Draft",
   approved: "Approved",
+  partially_received: "Partially received",
   received: "Received",
   closed: "Closed",
   cancelled: "Cancelled",
 };
 
-/** Purchase-order lifecycle. */
+/** Purchase-order lifecycle. "Partially received" is not a registered word: part of the order has
+ *  landed and the rest is still expected, which is the registry's `in_progress` (info). */
 export function PoStatusPill({ status }: { status: PoStatus }) {
+  if (status === "partially_received") {
+    return <StatusBadge status="in_progress" label={PO_LABEL[status]} />;
+  }
   return <StatusBadge status={status} label={PO_LABEL[status]} />;
+}
+
+/* ------------------------- purchase requisition status ------------------------ */
+/** Every requisition status is a registered word, so each carries the registry's tone. */
+
+const REQUISITION_LABEL: Record<RequisitionStatus, string> = {
+  DRAFT: "Draft",
+  SUBMITTED: "Submitted",
+  APPROVED: "Approved",
+  REJECTED: "Rejected",
+  CONVERTED: "Converted",
+  CANCELLED: "Cancelled",
+};
+
+const REQUISITION_WORD: Record<RequisitionStatus, StatusWord> = {
+  DRAFT: "draft",
+  SUBMITTED: "submitted",
+  APPROVED: "approved",
+  REJECTED: "rejected",
+  CONVERTED: "converted",
+  CANCELLED: "cancelled",
+};
+
+export function RequisitionStatusPill({ status }: { status: RequisitionStatus }) {
+  return <StatusBadge status={REQUISITION_WORD[status]} label={REQUISITION_LABEL[status]} />;
+}
+
+/* --------------------------- goods receipt outcome ---------------------------- */
+/** How a receipt line left its purchase order line. None is a registered word: an exact receipt
+ *  is a good outcome, partial is in motion, and short or over each want a second look. */
+
+const OUTCOME_LABEL: Record<ReceiptOutcome, string> = {
+  PARTIAL: "Partial",
+  EXACT: "Exact",
+  SHORT: "Short",
+  OVER: "Over",
+};
+
+const OUTCOME_TONE: Record<ReceiptOutcome, StatusTone> = {
+  PARTIAL: "info",
+  EXACT: "success",
+  SHORT: "warning",
+  OVER: "warning",
+};
+
+export function ReceiptOutcomePill({ outcome }: { outcome: ReceiptOutcome }) {
+  return <StatusBadge tone={OUTCOME_TONE[outcome]} label={OUTCOME_LABEL[outcome]} />;
+}
+
+/* ------------------------------- stock status -------------------------------- */
+
+const STOCK_STATUS_LABEL: Record<StockStatus, string> = {
+  AVAILABLE: "Available",
+  QUALITY_HOLD: "Quality hold",
+  QUARANTINE: "Quarantine",
+  DAMAGED: "Damaged",
+  REJECTED: "Rejected",
+  WIP: "Work in progress",
+  IN_TRANSIT: "In transit",
+  AT_JOB_WORKER: "At job worker",
+  BLOCKED: "Blocked",
+};
+
+const STOCK_STATUS_TONE: Record<StockStatus, StatusTone> = {
+  AVAILABLE: "success",
+  QUALITY_HOLD: "warning",
+  QUARANTINE: "warning",
+  DAMAGED: "danger",
+  REJECTED: "danger",
+  WIP: "info",
+  IN_TRANSIT: "info",
+  AT_JOB_WORKER: "info",
+  BLOCKED: "danger",
+};
+
+/** The condition a bucket of stock is in. Always the word, never colour alone. */
+export function StockStatusPill({ status }: { status: StockStatus }) {
+  return <StatusBadge tone={STOCK_STATUS_TONE[status]} label={STOCK_STATUS_LABEL[status]} />;
 }
 
 /* --------------------------- supplier status --------------------------- */

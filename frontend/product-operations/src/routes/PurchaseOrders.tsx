@@ -28,6 +28,7 @@ const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "draft", label: "Draft" },
   { value: "approved", label: "Approved" },
+  { value: "partially_received", label: "Partially received" },
   { value: "received", label: "Received" },
   { value: "closed", label: "Closed" },
   { value: "cancelled", label: "Cancelled" },

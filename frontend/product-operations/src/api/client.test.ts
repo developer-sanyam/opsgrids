@@ -8,8 +8,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   adjustStock,
   approvePurchaseOrder,
+  approveRequisition,
   cancelPurchaseOrder,
+  cancelRequisition,
   closePurchaseOrder,
+  convertRequisition,
+  createRequisition,
+  createUomConversion,
+  deleteUomConversion,
+  getGoodsReceipt,
+  getReceivingContext,
+  listGoodsReceipts,
+  listRequisitions,
+  listUomConversions,
+  postGoodsReceipt,
+  rejectRequisition,
+  submitRequisition,
+  updateRequisition,
+  updateUomConversion,
   createInventoryItem,
   createItemCategory,
   createItemVariant,
@@ -527,5 +543,130 @@ describe("deleteItemVariant", () => {
     const { url, init } = requested(fetchMock);
     expect(url).toBe("/api/v1/operations/inventory/inv-1/variants/var-1");
     expect(init.method).toBe("DELETE");
+  });
+});
+
+describe("requisitions", () => {
+  it("lists with status, q and paging, dropping the 'all' filter", async () => {
+    const fetchMock = stubFetch(PAGE_ENVELOPE);
+    await listRequisitions({ status: "SUBMITTED", q: "REQ-1", page: 2, size: 10 });
+    expect(requested(fetchMock).url).toBe("/api/v1/operations/purchase-requisitions?page=2&size=10&q=REQ-1&status=SUBMITTED");
+
+    const all = stubFetch(PAGE_ENVELOPE);
+    await listRequisitions({ status: "all" });
+    expect(requested(all).url).toBe("/api/v1/operations/purchase-requisitions?page=1&size=25");
+  });
+
+  it("POSTs a requisition with decimal-string quantities, never numbers", async () => {
+    const fetchMock = stubFetch({ id: "req-1" }, 201);
+    await createRequisition({
+      requested_by: "Asha",
+      lines: [{ inventory_item_id: "item-1", quantity: "82.5", est_unit_price_minor: 2450 }],
+    });
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/purchase-requisitions");
+    expect(init.method).toBe("POST");
+    const sent = JSON.parse(init.body as string) as { lines: { quantity: unknown }[] };
+    expect(sent.lines[0]?.quantity).toBe("82.5");
+  });
+
+  it("PATCHes a draft, replacing its lines", async () => {
+    const fetchMock = stubFetch({ id: "req-1" });
+    await updateRequisition("req-1", { reason: null, lines: [{ inventory_item_id: "i", quantity: "1" }] });
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/purchase-requisitions/req-1");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body as string)).toEqual({ reason: null, lines: [{ inventory_item_id: "i", quantity: "1" }] });
+  });
+
+  it.each([
+    ["submit", () => submitRequisition("req-1")],
+    ["approve", () => approveRequisition("req-1", { note: "ok" })],
+    ["reject", () => rejectRequisition("req-1", { reason: "too much" })],
+    ["cancel", () => cancelRequisition("req-1", {})],
+  ])("POSTs /%s on the requisition", async (action, call) => {
+    const fetchMock = stubFetch({ id: "req-1" });
+    await call();
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe(`/api/v1/operations/purchase-requisitions/req-1/${action}`);
+    expect(init.method).toBe("POST");
+  });
+
+  it("converts with the supplier, date and integer price overrides", async () => {
+    const fetchMock = stubFetch({ id: "po-1" });
+    const body = { supplier_id: "sup-1", expected_date: "2026-11-01", prices: [{ line_id: "l-1", unit_price_minor: 2450 }] };
+    await convertRequisition("req-1", body);
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/purchase-requisitions/req-1/convert");
+    expect(JSON.parse(init.body as string)).toEqual(body);
+  });
+});
+
+describe("goods receipts", () => {
+  it("reads the receiving context of a purchase order", async () => {
+    const fetchMock = stubFetch({ lines: [] });
+    await getReceivingContext("po-1");
+    expect(requested(fetchMock).url).toBe("/api/v1/operations/purchase-orders/po-1/receiving");
+  });
+
+  it("posts a receipt with the Idempotency-Key header and decimal-string quantities", async () => {
+    const fetchMock = stubFetch({ id: "grn-1" }, 201);
+    await postGoodsReceipt(
+      {
+        purchase_order_id: "po-1",
+        lines: [{ purchase_order_line_id: "l-1", quantity: "82.5", rolls: [{ primary_qty: "82.5", secondary_qty: "14.8", secondary_uom: "kg" }] }],
+      },
+      "key-123",
+    );
+    const { url, init } = requested(fetchMock);
+    expect(url).toBe("/api/v1/operations/goods-receipts");
+    expect(init.method).toBe("POST");
+    expect(new Headers(init.headers).get("Idempotency-Key")).toBe("key-123");
+    const sent = JSON.parse(init.body as string) as {
+      lines: { quantity: unknown; rolls: { primary_qty: unknown; secondary_qty: unknown }[] }[];
+    };
+    expect(sent.lines[0]?.quantity).toBe("82.5");
+    expect(sent.lines[0]?.rolls[0]).toMatchObject({ primary_qty: "82.5", secondary_qty: "14.8" });
+  });
+
+  it("lists with the purchase order filter and a cursor", async () => {
+    const fetchMock = stubFetch({ items: [], next_cursor: null });
+    await listGoodsReceipts({ purchase_order_id: "po-1", q: "DN", cursor: "abc", limit: 10 });
+    expect(requested(fetchMock).url).toBe("/api/v1/operations/goods-receipts?purchase_order_id=po-1&q=DN&cursor=abc&limit=10");
+  });
+
+  it("omits the cursor on the first page", async () => {
+    const fetchMock = stubFetch({ items: [], next_cursor: null });
+    await listGoodsReceipts({ cursor: null });
+    expect(requested(fetchMock).url).toBe("/api/v1/operations/goods-receipts?limit=25");
+  });
+
+  it("reads one receipt by id", async () => {
+    const fetchMock = stubFetch({ id: "grn-1" });
+    await getGoodsReceipt("grn-1");
+    expect(requested(fetchMock).url).toBe("/api/v1/operations/goods-receipts/grn-1");
+  });
+});
+
+describe("unit conversions", () => {
+  it("lists, creates, patches and deletes under the item and the conversion", async () => {
+    const list = stubFetch([]);
+    await listUomConversions("inv-1");
+    expect(requested(list).url).toBe("/api/v1/operations/inventory/inv-1/uom-conversions");
+
+    const create = stubFetch({ id: "c-1" }, 201);
+    await createUomConversion("inv-1", { uom: "box", numerator: 12 });
+    expect(requested(create).init.method).toBe("POST");
+    expect(JSON.parse(requested(create).init.body as string)).toEqual({ uom: "box", numerator: 12 });
+
+    const patch = stubFetch({ id: "c-1" });
+    await updateUomConversion("c-1", { numerator: 24 });
+    expect(requested(patch).url).toBe("/api/v1/operations/inventory/uom-conversions/c-1");
+    expect(requested(patch).init.method).toBe("PATCH");
+
+    const del = stubFetch(undefined, 204);
+    await deleteUomConversion("c-1");
+    expect(requested(del).url).toBe("/api/v1/operations/inventory/uom-conversions/c-1");
+    expect(requested(del).init.method).toBe("DELETE");
   });
 });

@@ -62,6 +62,7 @@ export type {
 } from "@opsgrids/ui";
 
 export { useNavGroups } from "./useNavGroups";
+export { LoadError } from "./LoadError";
 export { NeedsAttention } from "./NeedsAttention";
 export {
   AssignmentKindPill,
@@ -74,8 +75,11 @@ export {
   OrderStatusPill,
   PickTaskStatusPill,
   PoStatusPill,
+  ReceiptOutcomePill,
+  RequisitionStatusPill,
   ShipmentStatusPill,
   SupplierStatusPill,
   StockPill,
+  StockStatusPill,
 } from "./StatusPill";
 export type { StockLevel } from "./StatusPill";

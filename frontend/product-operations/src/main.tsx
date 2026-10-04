@@ -38,6 +38,22 @@ const PurchaseOrderDetailPage = lazy(() =>
 const PurchaseOrderFormPage = lazy(() =>
   import("./routes/PurchaseOrderForm").then((m) => ({ default: m.PurchaseOrderFormPage })),
 );
+const PurchaseRequisitionsPage = lazy(() =>
+  import("./routes/PurchaseRequisitions").then((m) => ({ default: m.PurchaseRequisitionsPage })),
+);
+const PurchaseRequisitionFormPage = lazy(() =>
+  import("./routes/PurchaseRequisitionForm").then((m) => ({ default: m.PurchaseRequisitionFormPage })),
+);
+const PurchaseRequisitionDetailPage = lazy(() =>
+  import("./routes/PurchaseRequisitionDetail").then((m) => ({ default: m.PurchaseRequisitionDetailPage })),
+);
+const ReceiveGoodsPage = lazy(() => import("./routes/ReceiveGoods").then((m) => ({ default: m.ReceiveGoodsPage })));
+const GoodsReceiptsPage = lazy(() =>
+  import("./routes/GoodsReceipts").then((m) => ({ default: m.GoodsReceiptsPage })),
+);
+const GoodsReceiptDetailPage = lazy(() =>
+  import("./routes/GoodsReceiptDetail").then((m) => ({ default: m.GoodsReceiptDetailPage })),
+);
 const InventoryPage = lazy(() =>
   import("./routes/Inventory").then((m) => ({ default: m.InventoryPage })),
 );
@@ -145,6 +161,13 @@ const router = createBrowserRouter([
           lazyRoute("purchase-orders/new", <PurchaseOrderFormPage />),
           lazyRoute("purchase-orders/:id", <PurchaseOrderDetailPage />),
           lazyRoute("purchase-orders/:id/edit", <PurchaseOrderFormPage />),
+          lazyRoute("purchase-orders/:id/receive", <ReceiveGoodsPage />),
+          lazyRoute("purchase-requisitions", <PurchaseRequisitionsPage />),
+          lazyRoute("purchase-requisitions/new", <PurchaseRequisitionFormPage />),
+          lazyRoute("purchase-requisitions/:id", <PurchaseRequisitionDetailPage />),
+          lazyRoute("purchase-requisitions/:id/edit", <PurchaseRequisitionFormPage />),
+          lazyRoute("goods-receipts", <GoodsReceiptsPage />),
+          lazyRoute("goods-receipts/:id", <GoodsReceiptDetailPage />),
           lazyRoute("inventory", <InventoryPage />),
           lazyRoute("inventory/categories", <ItemCategoriesPage />),
           // Static segments are registered before `inventory/:id`; they would otherwise be read as an item id.

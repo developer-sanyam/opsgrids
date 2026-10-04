@@ -53,7 +53,11 @@ import type {
   CountSessionIn,
   CountSessionOut,
   CountSessionStatus,
+  CursorPage,
   DiscrepancyTrendPointOut,
+  GoodsReceiptIn,
+  GoodsReceiptOut,
+  GoodsReceiptSummaryOut,
   InventoryItemIn,
   InventoryItemOut,
   InventoryItemPatch,
@@ -112,7 +116,16 @@ import type {
   QuoteIn,
   QuoteOut,
   ReceiveIn,
+  ReceivingContextOut,
   ReconciliationOut,
+  RequisitionConvertIn,
+  RequisitionDecisionIn,
+  RequisitionIn,
+  RequisitionOut,
+  RequisitionPatch,
+  RequisitionRejectIn,
+  RequisitionStatus,
+  RequisitionSummaryOut,
   RouteOut,
   ShipmentAdvanceIn,
   ShipmentIn,
@@ -129,6 +142,9 @@ import type {
   TaskBacklogOut,
   TaskCancelIn,
   ThroughputOut,
+  UomConversionIn,
+  UomConversionOut,
+  UomConversionPatch,
   UomOut,
   WorkerIn,
   WorkerOut,
@@ -471,6 +487,8 @@ export async function createPurchaseOrder(input: PurchaseOrderIn): Promise<Purch
         uom: l.uom ?? "",
         unit_price_minor: l.unit_price_minor ?? 0,
         received_qty: 0,
+        received_exact: "0",
+        short_closed: false,
       })),
     };
     PURCHASE_ORDERS.unshift(po);
@@ -516,6 +534,8 @@ export async function updatePurchaseOrder(
               uom: l.uom ?? "",
               unit_price_minor: l.unit_price_minor ?? 0,
               received_qty: 0,
+              received_exact: "0",
+              short_closed: false,
             })),
           }
         : {}),
@@ -586,7 +606,7 @@ export async function receivePurchaseOrder(id: string, input: ReceiveIn = {}): P
       ...po,
       status: "received",
       received_date: landed,
-      line_items: po.line_items.map((l) => ({ ...l, received_qty: l.quantity })),
+      line_items: po.line_items.map((l) => ({ ...l, received_qty: l.quantity, received_exact: String(l.quantity) })),
     };
     PURCHASE_ORDERS[index] = updated;
     const unmatched: string[] = [];
@@ -765,6 +785,7 @@ export async function createInventoryItem(input: InventoryItemIn): Promise<Inven
       track_expiry: input.track_expiry ?? false,
       track_quality: input.track_quality ?? false,
       is_active: input.is_active ?? true,
+      receipt_tolerance_pct: input.receipt_tolerance_pct ?? "0",
       // Fulfilment F2 (ADR-0024 §3): no create-item screen sets this yet — an item created here
       // starts with no selling price, the same as a freshly created live item would, and an order
       // line for it still needs its own explicit price.
@@ -833,6 +854,7 @@ export async function updateInventoryItem(
       ...(patch.track_roll !== undefined ? { track_roll: patch.track_roll } : {}),
       ...(patch.track_expiry !== undefined ? { track_expiry: patch.track_expiry } : {}),
       ...(patch.track_quality !== undefined ? { track_quality: patch.track_quality } : {}),
+      ...(patch.receipt_tolerance_pct !== undefined ? { receipt_tolerance_pct: patch.receipt_tolerance_pct } : {}),
       ...(patch.is_active !== undefined ? { is_active: patch.is_active } : {}),
     };
     INVENTORY[index] = updated;
@@ -2567,4 +2589,147 @@ export async function retryChannelSyncLog(
     `/operations/channels/${encodeURIComponent(channelId)}/sync-logs/${encodeURIComponent(logId)}/retry`,
     { method: "POST" },
   );
+}
+
+/* ------------------- receiving and purchase (inventory Phase 2) ------------------- */
+/*
+ * Live-only, like the payments calls above: these need server-side stock, tolerance and
+ * idempotency rules that a fixture would only fake. Every quantity travels as a decimal string
+ * (ADR-0014 §2) and money as integer minor units.
+ */
+
+export interface ListRequisitionsParams {
+  status?: RequisitionStatus | "all";
+  q?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/purchase-requisitions` — `operations.procurement.requisition.read`. */
+export async function listRequisitions(params: ListRequisitionsParams = {}): Promise<Page<RequisitionSummaryOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    q: params.q,
+    status: params.status === "all" ? undefined : params.status,
+  });
+  return apiRequest<Page<RequisitionSummaryOut>>(`/operations/purchase-requisitions${query}`);
+}
+
+export async function getRequisition(id: string): Promise<RequisitionOut> {
+  return apiRequest<RequisitionOut>(`/operations/purchase-requisitions/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/purchase-requisitions` — starts as a draft. */
+export async function createRequisition(input: RequisitionIn): Promise<RequisitionOut> {
+  return apiRequest<RequisitionOut>("/operations/purchase-requisitions", { method: "POST", body: input });
+}
+
+/** `PATCH /operations/purchase-requisitions/{id}` — draft only; `lines` replaces them. */
+export async function updateRequisition(id: string, patch: RequisitionPatch): Promise<RequisitionOut> {
+  return apiRequest<RequisitionOut>(`/operations/purchase-requisitions/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: patch,
+  });
+}
+
+function requisitionAction(id: string, action: string): string {
+  return `/operations/purchase-requisitions/${encodeURIComponent(id)}/${action}`;
+}
+
+export async function submitRequisition(id: string): Promise<RequisitionOut> {
+  return apiRequest<RequisitionOut>(requisitionAction(id, "submit"), { method: "POST" });
+}
+
+/** `operations.procurement.requisition.approve` (ORG). */
+export async function approveRequisition(id: string, input: RequisitionDecisionIn = {}): Promise<RequisitionOut> {
+  return apiRequest<RequisitionOut>(requisitionAction(id, "approve"), { method: "POST", body: input });
+}
+
+/** `operations.procurement.requisition.approve` (ORG). A reason is required. */
+export async function rejectRequisition(id: string, input: RequisitionRejectIn): Promise<RequisitionOut> {
+  return apiRequest<RequisitionOut>(requisitionAction(id, "reject"), { method: "POST", body: input });
+}
+
+export async function cancelRequisition(id: string, input: RequisitionDecisionIn = {}): Promise<RequisitionOut> {
+  return apiRequest<RequisitionOut>(requisitionAction(id, "cancel"), { method: "POST", body: input });
+}
+
+/** `POST .../convert` — needs `requisition.write` and `purchase_order.write`. Answers with the new
+ *  draft purchase order. */
+export async function convertRequisition(id: string, input: RequisitionConvertIn): Promise<PurchaseOrderOut> {
+  return apiRequest<PurchaseOrderOut>(requisitionAction(id, "convert"), { method: "POST", body: input });
+}
+
+/** `GET /operations/purchase-orders/{id}/receiving` — what can still be received, per line.
+ *  Advisory: the posting re-checks everything under the order's lock. */
+export async function getReceivingContext(poId: string): Promise<ReceivingContextOut> {
+  return apiRequest<ReceivingContextOut>(`/operations/purchase-orders/${encodeURIComponent(poId)}/receiving`);
+}
+
+/**
+ * `POST /operations/goods-receipts` — needs `receipt.write` and `stock.receive`. `idempotencyKey`
+ * is minted once per submission attempt and re-sent on a retry of the same attempt, so a retry
+ * after a lost answer replays the first posting (200, `replayed: true`) instead of receiving twice.
+ */
+export async function postGoodsReceipt(input: GoodsReceiptIn, idempotencyKey: string): Promise<GoodsReceiptOut> {
+  return apiRequest<GoodsReceiptOut>("/operations/goods-receipts", {
+    method: "POST",
+    body: input,
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+export interface ListGoodsReceiptsParams {
+  purchase_order_id?: string;
+  supplier_id?: string;
+  q?: string;
+  cursor?: string | null;
+  limit?: number;
+}
+
+/** `GET /operations/goods-receipts` — newest first, keyset-paginated: pass the last page's
+ *  `next_cursor` back as `cursor` to continue. */
+export async function listGoodsReceipts(
+  params: ListGoodsReceiptsParams = {},
+): Promise<CursorPage<GoodsReceiptSummaryOut>> {
+  const query = buildQuery({
+    purchase_order_id: params.purchase_order_id,
+    supplier_id: params.supplier_id,
+    q: params.q,
+    cursor: params.cursor ?? undefined,
+    limit: params.limit ?? DEFAULT_PAGE_SIZE,
+  });
+  return apiRequest<CursorPage<GoodsReceiptSummaryOut>>(`/operations/goods-receipts${query}`);
+}
+
+export async function getGoodsReceipt(id: string): Promise<GoodsReceiptOut> {
+  return apiRequest<GoodsReceiptOut>(`/operations/goods-receipts/${encodeURIComponent(id)}`);
+}
+
+/** `GET /operations/inventory/{item_id}/uom-conversions`. */
+export async function listUomConversions(itemId: string): Promise<UomConversionOut[]> {
+  return apiRequest<UomConversionOut[]>(`/operations/inventory/${encodeURIComponent(itemId)}/uom-conversions`);
+}
+
+/** `POST /operations/inventory/{item_id}/uom-conversions` — `operations.inventory.item.write`. */
+export async function createUomConversion(itemId: string, input: UomConversionIn): Promise<UomConversionOut> {
+  return apiRequest<UomConversionOut>(`/operations/inventory/${encodeURIComponent(itemId)}/uom-conversions`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+export async function updateUomConversion(id: string, patch: UomConversionPatch): Promise<UomConversionOut> {
+  return apiRequest<UomConversionOut>(`/operations/inventory/uom-conversions/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: patch,
+  });
+}
+
+/** 409 while an open purchase order still orders in that unit. */
+export async function deleteUomConversion(id: string): Promise<void> {
+  await apiRequest<undefined>(`/operations/inventory/uom-conversions/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
 }
