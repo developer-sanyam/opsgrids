@@ -43,20 +43,20 @@ afterEach(() => {
 describe("MrpRunDetailPage states", () => {
   it("shows a loading placeholder while the run is on its way", () => {
     stubApi([route("GET", /\/mrp\/runs\/run-1$/, () => new Promise<StubResponse>(() => undefined))]);
-    renderScreen(<MrpRunDetailPage />, [READ], { route: AT });
+    renderScreen(<MrpRunDetailPage />, [READ], AT);
     expect(screen.getByLabelText("Loading run")).toBeDefined();
   });
 
   it("shows the server's sentence and a retry when the run fails to load", async () => {
     stubApi([route("GET", /\/mrp\/runs\/run-1$/, problem(404, "That MRP run is not part of this organization"))]);
-    renderScreen(<MrpRunDetailPage />, [READ], { route: AT });
+    renderScreen(<MrpRunDetailPage />, [READ], AT);
     expect(await screen.findByText("That MRP run is not part of this organization")).toBeDefined();
     expect(screen.getByRole("button", { name: "Try again" })).toBeDefined();
   });
 
   it("says a failed run could not be computed, with its reason, and offers no table", async () => {
     stubApi([route("GET", /\/mrp\/runs\/run-1$/, { body: run({ status: "FAILED", error: "The bill of materials loops back on itself: A -> B -> A" }) })]);
-    renderScreen(<MrpRunDetailPage />, [READ], { route: AT });
+    renderScreen(<MrpRunDetailPage />, [READ], AT);
     expect(await screen.findByText("This run could not be computed")).toBeDefined();
     expect(screen.getByText(/loops back on itself/)).toBeDefined();
     expect(screen.queryByRole("button", { name: "Shortages" })).toBeNull();
@@ -72,7 +72,7 @@ describe("MrpRunDetailPage states", () => {
       SHORTAGES,
       route("GET", /\/shortages$/, { body: page([shortage()]) }),
     ]);
-    renderScreen(<MrpRunDetailPage pollMs={20} />, [READ], { route: AT });
+    renderScreen(<MrpRunDetailPage pollMs={20} />, [READ], AT);
     expect(await screen.findByText("Waiting for the worker")).toBeDefined();
     expect(await screen.findByRole("table", { name: "Shortages" })).toBeDefined();
     expect(screen.queryByText("Waiting for the worker")).toBeNull();
@@ -83,7 +83,7 @@ describe("MrpRunDetailPage states", () => {
 describe("shortage table", () => {
   it("shows what is short with the supply it was netted against, as exact strings", async () => {
     stubApi([RUN, SHORTAGES]);
-    renderScreen(<MrpRunDetailPage />, [READ], { route: AT });
+    renderScreen(<MrpRunDetailPage />, [READ], AT);
 
     const table = await screen.findByRole("table", { name: "Shortages" });
     const buy = within(within(table).getByText("BTN-14MM").closest("tr") as HTMLElement);
@@ -99,7 +99,7 @@ describe("shortage table", () => {
   it("sends the action, requisition state and search to the server", async () => {
     const api = stubApi([RUN, SHORTAGES]);
     const user = userEvent.setup();
-    renderScreen(<MrpRunDetailPage />, [READ], { route: AT });
+    renderScreen(<MrpRunDetailPage />, [READ], AT);
     await screen.findByRole("table", { name: "Shortages" });
 
     await user.click(screen.getByRole("button", { name: "Buy" }));
@@ -112,20 +112,20 @@ describe("shortage table", () => {
 
   it("says nothing is short when the table is empty", async () => {
     stubApi([RUN, route("GET", /\/shortages$/, { body: page([]) })]);
-    renderScreen(<MrpRunDetailPage />, [READ], { route: AT });
+    renderScreen(<MrpRunDetailPage />, [READ], AT);
     expect(await screen.findByText("Nothing is short")).toBeDefined();
   });
 
   it("shows the server's sentence when the table cannot load", async () => {
     stubApi([RUN, route("GET", /\/shortages$/, problem(500, "Shortages are unavailable."))]);
-    renderScreen(<MrpRunDetailPage />, [READ], { route: AT });
+    renderScreen(<MrpRunDetailPage />, [READ], AT);
     expect(await screen.findByText("Shortages are unavailable.")).toBeDefined();
   });
 
   it("opens the pegging for a row: which demand needs it, and through which parent", async () => {
     const api = stubApi([RUN, SHORTAGES, route("GET", /\/shortages\/sh-1$/, { body: shortageDetail() })]);
     const user = userEvent.setup();
-    renderScreen(<MrpRunDetailPage />, [READ], { route: AT });
+    renderScreen(<MrpRunDetailPage />, [READ], AT);
     await user.click(await screen.findByText("BTN-14MM"));
 
     const drawer = await screen.findByRole("dialog");
@@ -140,7 +140,7 @@ describe("demand view", () => {
   it("lists what the run planned from, including what an order had already reserved", async () => {
     const api = stubApi([RUN, SHORTAGES, route("GET", /\/runs\/run-1\/demands$/, { body: page([demand()]) })]);
     const user = userEvent.setup();
-    renderScreen(<MrpRunDetailPage />, [READ], { route: AT });
+    renderScreen(<MrpRunDetailPage />, [READ], AT);
     await screen.findByRole("table", { name: "Shortages" });
     await user.click(screen.getByRole("button", { name: "Demand" }));
 
@@ -164,14 +164,14 @@ describe("request requisition", () => {
 
   it("is hidden without the requisition grant", async () => {
     stubApi([RUN, PENDING]);
-    renderScreen(<MrpRunDetailPage />, [READ], { route: AT });
+    renderScreen(<MrpRunDetailPage />, [READ], AT);
     await screen.findByRole("table", { name: "Shortages" });
     expect(screen.queryByRole("button", { name: /^Request requisition/ })).toBeNull();
   });
 
   it("is disabled when nothing purchased is waiting", async () => {
     stubApi([RUN, route("GET", /\/shortages$/, { body: page([]) })]);
-    renderScreen(<MrpRunDetailPage />, [READ, REQUEST], { route: AT });
+    renderScreen(<MrpRunDetailPage />, [READ, REQUEST], AT);
     const button = await screen.findByRole("button", { name: "Request requisition" });
     expect(button.hasAttribute("disabled")).toBe(true);
   });
@@ -183,7 +183,7 @@ describe("request requisition", () => {
       route("POST", /\/runs\/run-1\/requisitions$/, { status: 201, body: requisition() }),
     ]);
     const user = userEvent.setup();
-    renderScreen(<MrpRunDetailPage />, [READ, REQUEST], { route: AT });
+    renderScreen(<MrpRunDetailPage />, [READ, REQUEST], AT);
 
     await user.click(await screen.findByRole("button", { name: "Request requisition (1)" }));
     const dialog = await screen.findByRole("dialog");
@@ -208,7 +208,7 @@ describe("request requisition", () => {
       route("POST", /\/requisitions$/, problem(409, "There is nothing left in this run to requisition")),
     ]);
     const user = userEvent.setup();
-    renderScreen(<MrpRunDetailPage />, [READ, REQUEST], { route: AT });
+    renderScreen(<MrpRunDetailPage />, [READ, REQUEST], AT);
     await user.click(await screen.findByRole("button", { name: "Request requisition (1)" }));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "Request requisition" }));
