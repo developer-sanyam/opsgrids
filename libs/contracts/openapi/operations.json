@@ -480,6 +480,986 @@
         "title": "AttentionItem",
         "type": "object"
       },
+      "BomComponentIn": {
+        "additionalProperties": false,
+        "properties": {
+          "component_item_id": {
+            "format": "uuid",
+            "title": "Component Item Id",
+            "type": "string"
+          },
+          "effective_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "notes": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Notes",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "scrap_percent": {
+            "default": "0",
+            "examples": [
+              "2.5"
+            ],
+            "pattern": "^\\d{1,3}(\\.\\d{1,2})?$",
+            "title": "Scrap Percent",
+            "type": "string"
+          }
+        },
+        "required": [
+          "component_item_id",
+          "quantity"
+        ],
+        "title": "BomComponentIn",
+        "type": "object"
+      },
+      "BomComponentOut": {
+        "properties": {
+          "component_item_id": {
+            "title": "Component Item Id",
+            "type": "string"
+          },
+          "effective_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_produced": {
+            "title": "Is Produced",
+            "type": "boolean"
+          },
+          "line_no": {
+            "title": "Line No",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "string"
+          },
+          "scrap_percent": {
+            "title": "Scrap Percent",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "substitutes": {
+            "items": {
+              "$ref": "#/components/schemas/BomSubstituteOut"
+            },
+            "title": "Substitutes",
+            "type": "array"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "line_no",
+          "component_item_id",
+          "sku",
+          "name",
+          "uom",
+          "quantity",
+          "scrap_percent",
+          "effective_from",
+          "effective_to",
+          "notes",
+          "is_produced",
+          "substitutes"
+        ],
+        "title": "BomComponentOut",
+        "type": "object"
+      },
+      "BomComponentPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "effective_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "scrap_percent": {
+            "anyOf": [
+              {
+                "examples": [
+                  "2.5"
+                ],
+                "pattern": "^\\d{1,3}(\\.\\d{1,2})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scrap Percent"
+          }
+        },
+        "title": "BomComponentPatch",
+        "type": "object"
+      },
+      "BomDetailOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version Id"
+          },
+          "current_version_no": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version No"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "item_name": {
+            "title": "Item Name",
+            "type": "string"
+          },
+          "latest_version_no": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Version No"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version_count": {
+            "title": "Version Count",
+            "type": "integer"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/BomVersionOut"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "item_id",
+          "sku",
+          "item_name",
+          "uom",
+          "description",
+          "is_active",
+          "version_count",
+          "latest_version_no",
+          "current_version_id",
+          "current_version_no",
+          "created_at",
+          "updated_at",
+          "versions"
+        ],
+        "title": "BomDetailOut",
+        "type": "object"
+      },
+      "BomIn": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.-]+$",
+            "title": "Code",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Description",
+            "type": "string"
+          },
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "output_quantity": {
+            "default": "1",
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Output Quantity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "item_id"
+        ],
+        "title": "BomIn",
+        "type": "object"
+      },
+      "BomOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version Id"
+          },
+          "current_version_no": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version No"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "item_name": {
+            "title": "Item Name",
+            "type": "string"
+          },
+          "latest_version_no": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Version No"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version_count": {
+            "title": "Version Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "item_id",
+          "sku",
+          "item_name",
+          "uom",
+          "description",
+          "is_active",
+          "version_count",
+          "latest_version_no",
+          "current_version_id",
+          "current_version_no",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "BomOut",
+        "type": "object"
+      },
+      "BomPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "BomPatch",
+        "type": "object"
+      },
+      "BomSubstituteIn": {
+        "additionalProperties": false,
+        "properties": {
+          "priority": {
+            "default": 1,
+            "maximum": 99.0,
+            "minimum": 1.0,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "ratio": {
+            "default": "1",
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Ratio",
+            "type": "string"
+          },
+          "substitute_item_id": {
+            "format": "uuid",
+            "title": "Substitute Item Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "substitute_item_id"
+        ],
+        "title": "BomSubstituteIn",
+        "type": "object"
+      },
+      "BomSubstituteOut": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "priority": {
+            "title": "Priority",
+            "type": "integer"
+          },
+          "ratio": {
+            "title": "Ratio",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "substitute_item_id": {
+            "title": "Substitute Item Id",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "substitute_item_id",
+          "sku",
+          "name",
+          "uom",
+          "ratio",
+          "priority"
+        ],
+        "title": "BomSubstituteOut",
+        "type": "object"
+      },
+      "BomVersionDetailOut": {
+        "properties": {
+          "bom_id": {
+            "title": "Bom Id",
+            "type": "string"
+          },
+          "component_count": {
+            "title": "Component Count",
+            "type": "integer"
+          },
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/BomComponentOut"
+            },
+            "title": "Components",
+            "type": "array"
+          },
+          "content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "effective_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "output_quantity": {
+            "title": "Output Quantity",
+            "type": "string"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "published_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published By"
+          },
+          "status": {
+            "enum": [
+              "DRAFT",
+              "PUBLISHED",
+              "RETIRED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version_no": {
+            "title": "Version No",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "bom_id",
+          "version_no",
+          "status",
+          "output_quantity",
+          "effective_from",
+          "effective_to",
+          "notes",
+          "published_at",
+          "published_by",
+          "content_hash",
+          "component_count",
+          "created_at",
+          "updated_at",
+          "components"
+        ],
+        "title": "BomVersionDetailOut",
+        "type": "object"
+      },
+      "BomVersionIn": {
+        "additionalProperties": false,
+        "properties": {
+          "copy_from_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Copy From Version Id"
+          },
+          "effective_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "notes": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Notes",
+            "type": "string"
+          },
+          "output_quantity": {
+            "default": "1",
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Output Quantity",
+            "type": "string"
+          }
+        },
+        "title": "BomVersionIn",
+        "type": "object"
+      },
+      "BomVersionOut": {
+        "properties": {
+          "bom_id": {
+            "title": "Bom Id",
+            "type": "string"
+          },
+          "component_count": {
+            "title": "Component Count",
+            "type": "integer"
+          },
+          "content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Hash"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "effective_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "output_quantity": {
+            "title": "Output Quantity",
+            "type": "string"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "published_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published By"
+          },
+          "status": {
+            "enum": [
+              "DRAFT",
+              "PUBLISHED",
+              "RETIRED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version_no": {
+            "title": "Version No",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "bom_id",
+          "version_no",
+          "status",
+          "output_quantity",
+          "effective_from",
+          "effective_to",
+          "notes",
+          "published_at",
+          "published_by",
+          "content_hash",
+          "component_count",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "BomVersionOut",
+        "type": "object"
+      },
+      "BomVersionPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "effective_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective From"
+          },
+          "effective_to": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective To"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "output_quantity": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Quantity"
+          }
+        },
+        "title": "BomVersionPatch",
+        "type": "object"
+      },
       "CancelIn": {
         "additionalProperties": false,
         "description": "`POST /purchase-orders/{id}/cancel`. The reason is recorded in the audit row's `after`,\nnever silently dropped \u2014 cancelling committed spend needs a \"why\" on the record.",
@@ -1195,6 +2175,34 @@
           "created_at"
         ],
         "title": "CollectionRefundOut",
+        "type": "object"
+      },
+      "CompleteIn": {
+        "additionalProperties": false,
+        "properties": {
+          "leftover": {
+            "anyOf": [
+              {
+                "enum": [
+                  "return",
+                  "scrap"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leftover"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "title": "CompleteIn",
         "type": "object"
       },
       "ControlSettingsIn": {
@@ -2200,6 +3208,126 @@
           }
         },
         "title": "ExceptionResolveIn",
+        "type": "object"
+      },
+      "ExplosionNodeOut": {
+        "properties": {
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/ExplosionNodeOut"
+            },
+            "title": "Children",
+            "type": "array"
+          },
+          "is_produced": {
+            "title": "Is Produced",
+            "type": "boolean"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "level": {
+            "title": "Level",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "sku",
+          "name",
+          "uom",
+          "level",
+          "quantity",
+          "is_produced",
+          "children"
+        ],
+        "title": "ExplosionNodeOut",
+        "type": "object"
+      },
+      "ExplosionOut": {
+        "description": "The multi-level requirement for `quantity` of the BOM's item: the tree, and the purchased\n(leaf) items it adds up to.",
+        "properties": {
+          "bom_id": {
+            "title": "Bom Id",
+            "type": "string"
+          },
+          "leaf_totals": {
+            "items": {
+              "$ref": "#/components/schemas/ExplosionTotalOut"
+            },
+            "title": "Leaf Totals",
+            "type": "array"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "string"
+          },
+          "root": {
+            "$ref": "#/components/schemas/ExplosionNodeOut"
+          },
+          "version_id": {
+            "title": "Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bom_id",
+          "version_id",
+          "quantity",
+          "root",
+          "leaf_totals"
+        ],
+        "title": "ExplosionOut",
+        "type": "object"
+      },
+      "ExplosionTotalOut": {
+        "properties": {
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "sku",
+          "name",
+          "uom",
+          "quantity"
+        ],
+        "title": "ExplosionTotalOut",
         "type": "object"
       },
       "ExportOut": {
@@ -4532,6 +5660,115 @@
         "title": "InventoryReservationOut",
         "type": "object"
       },
+      "IssueIn": {
+        "additionalProperties": false,
+        "properties": {
+          "lines": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/IssueLineIn"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lines"
+          },
+          "over_issue": {
+            "default": false,
+            "title": "Over Issue",
+            "type": "boolean"
+          }
+        },
+        "title": "IssueIn",
+        "type": "object"
+      },
+      "IssueLineIn": {
+        "additionalProperties": false,
+        "properties": {
+          "location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "material_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Id"
+          },
+          "pick_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pick Id"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          }
+        },
+        "title": "IssueLineIn",
+        "type": "object"
+      },
       "ItemAttributeIn": {
         "additionalProperties": false,
         "description": "`PUT /inventory/{id}/attributes/{key}`. **Typed values only**: `value_type` names which\nsingle `value_*` field is set \u2014 the others must be absent \u2014 so there is no untyped `value`\na caller could mass-assign into. `value_number` is an integer (GSM, mm): attributes are not\nstock, but the platform's no-float rule still applies to them (ADR-0014 \u00a72).",
@@ -6297,6 +7534,25 @@
         "title": "LotTraceOut",
         "type": "object"
       },
+      "MaterialSubstituteIn": {
+        "additionalProperties": false,
+        "properties": {
+          "substitute_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Substitute Item Id"
+          }
+        },
+        "title": "MaterialSubstituteIn",
+        "type": "object"
+      },
       "OfferIn": {
         "additionalProperties": false,
         "description": "`POST /fulfilment/tasks/{id}/offers` \u2014 a dispatcher offering a task to one worker. Also the\nmanual-override path when auto-assignment already made a live, not-yet-accepted offer: a\ncaller holding `operations.fulfilment.task.override` withdraws it and offers to whoever this\ncall names instead; a caller without it gets the same 409 F3 has always given a second offer\nattempt.",
@@ -7291,6 +8547,75 @@
         "title": "OrderVersionIn",
         "type": "object"
       },
+      "OutputIn": {
+        "additionalProperties": false,
+        "properties": {
+          "location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Note",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "status": {
+            "default": "AVAILABLE",
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "quantity"
+        ],
+        "title": "OutputIn",
+        "type": "object"
+      },
       "OverviewOut": {
         "description": "The Operations overview's server-side rollup. The SPA can derive all of this from the\nlist endpoints; this exposes the same arithmetic once, so a reporting view can share it.\n\n`open_pos` counts POs still in flight (draft or approved); `inventory_value_minor` is the\nvalue of stock on hand; `low_stock_count` is items at or below their reorder point;\n`out_of_stock_count` is items with nothing on hand; `on_time_pct` is the real, spend-weighted\non-time delivery rate computed from received purchase orders (`expected_date` vs\n`received_date`) \u2014 `None` when this organization has not received a PO yet, never a\nmanufactured percentage. The series and breakdowns feed the charts.",
         "properties": {
@@ -7733,6 +9058,42 @@
           "is_active"
         ],
         "title": "PackagingMaterialOut",
+        "type": "object"
+      },
+      "Page_BomOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BomOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[BomOut]",
         "type": "object"
       },
       "Page_ChannelOut_": {
@@ -8309,6 +9670,42 @@
           "pages"
         ],
         "title": "Page[PickTaskOut]",
+        "type": "object"
+      },
+      "Page_ProductionOrderOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProductionOrderOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[ProductionOrderOut]",
         "type": "object"
       },
       "Page_PurchaseOrderOut_": {
@@ -9088,6 +10485,1337 @@
           "received_qty"
         ],
         "title": "PoLineItem",
+        "type": "object"
+      },
+      "ProductionActionOut": {
+        "description": "The order after an action. `shortages` is filled by a reservation that could not cover\neverything (and then `operations.production.material_shortage` was staged).",
+        "properties": {
+          "approved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "bom_code": {
+            "title": "Bom Code",
+            "type": "string"
+          },
+          "bom_id": {
+            "title": "Bom Id",
+            "type": "string"
+          },
+          "bom_version_id": {
+            "title": "Bom Version Id",
+            "type": "string"
+          },
+          "bom_version_no": {
+            "title": "Bom Version No",
+            "type": "integer"
+          },
+          "cancel_reason": {
+            "title": "Cancel Reason",
+            "type": "string"
+          },
+          "cancelled_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancelled At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "materials": {
+            "items": {
+              "$ref": "#/components/schemas/ProductionMaterialOut"
+            },
+            "title": "Materials",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "output_location_id": {
+            "title": "Output Location Id",
+            "type": "string"
+          },
+          "outputs": {
+            "items": {
+              "$ref": "#/components/schemas/ProductionOutputOut"
+            },
+            "title": "Outputs",
+            "type": "array"
+          },
+          "picks": {
+            "items": {
+              "$ref": "#/components/schemas/ProductionPickOut"
+            },
+            "title": "Picks",
+            "type": "array"
+          },
+          "planned_quantity": {
+            "title": "Planned Quantity",
+            "type": "string"
+          },
+          "planned_start": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Start"
+          },
+          "produced_quantity": {
+            "title": "Produced Quantity",
+            "type": "string"
+          },
+          "replayed": {
+            "default": false,
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "shortages": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ShortageOut"
+            },
+            "title": "Shortages",
+            "type": "array"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "DRAFT",
+              "APPROVED",
+              "IN_PROGRESS",
+              "COMPLETED",
+              "CANCELLED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "variance": {
+            "$ref": "#/components/schemas/VarianceOut"
+          },
+          "wastage": {
+            "items": {
+              "$ref": "#/components/schemas/ProductionWastageOut"
+            },
+            "title": "Wastage",
+            "type": "array"
+          },
+          "wip_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wip Location Id"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "status",
+          "bom_id",
+          "bom_code",
+          "bom_version_id",
+          "bom_version_no",
+          "item_id",
+          "sku",
+          "name",
+          "uom",
+          "planned_quantity",
+          "produced_quantity",
+          "output_location_id",
+          "wip_location_id",
+          "planned_start",
+          "due_date",
+          "approved_at",
+          "started_at",
+          "completed_at",
+          "cancelled_at",
+          "cancel_reason",
+          "notes",
+          "created_at",
+          "updated_at",
+          "materials",
+          "picks",
+          "outputs",
+          "wastage",
+          "variance"
+        ],
+        "title": "ProductionActionOut",
+        "type": "object"
+      },
+      "ProductionCancelIn": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "title": "ProductionCancelIn",
+        "type": "object"
+      },
+      "ProductionGenealogyOut": {
+        "properties": {
+          "child_item_id": {
+            "title": "Child Item Id",
+            "type": "string"
+          },
+          "child_lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Child Lot Id"
+          },
+          "child_roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Child Roll Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "output_id": {
+            "title": "Output Id",
+            "type": "string"
+          },
+          "parent_item_id": {
+            "title": "Parent Item Id",
+            "type": "string"
+          },
+          "parent_lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Lot Id"
+          },
+          "parent_roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Roll Id"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "output_id",
+          "parent_item_id",
+          "parent_lot_id",
+          "parent_roll_id",
+          "child_item_id",
+          "child_lot_id",
+          "child_roll_id",
+          "quantity"
+        ],
+        "title": "ProductionGenealogyOut",
+        "type": "object"
+      },
+      "ProductionMaterialOut": {
+        "properties": {
+          "component_item_id": {
+            "title": "Component Item Id",
+            "type": "string"
+          },
+          "component_sku": {
+            "title": "Component Sku",
+            "type": "string"
+          },
+          "consumed": {
+            "title": "Consumed",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_substitute": {
+            "title": "Is Substitute",
+            "type": "boolean"
+          },
+          "issued": {
+            "title": "Issued",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "line_no": {
+            "title": "Line No",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "open_need": {
+            "title": "Open Need",
+            "type": "string"
+          },
+          "ratio": {
+            "title": "Ratio",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "string"
+          },
+          "reserved": {
+            "title": "Reserved",
+            "type": "string"
+          },
+          "returned": {
+            "title": "Returned",
+            "type": "string"
+          },
+          "scrap_percent": {
+            "title": "Scrap Percent",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "wasted": {
+            "title": "Wasted",
+            "type": "string"
+          },
+          "wip": {
+            "title": "Wip",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "line_no",
+          "component_item_id",
+          "component_sku",
+          "item_id",
+          "sku",
+          "name",
+          "uom",
+          "is_substitute",
+          "ratio",
+          "scrap_percent",
+          "required",
+          "reserved",
+          "issued",
+          "consumed",
+          "returned",
+          "wasted",
+          "wip",
+          "open_need"
+        ],
+        "title": "ProductionMaterialOut",
+        "type": "object"
+      },
+      "ProductionOrderDetailOut": {
+        "properties": {
+          "approved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "bom_code": {
+            "title": "Bom Code",
+            "type": "string"
+          },
+          "bom_id": {
+            "title": "Bom Id",
+            "type": "string"
+          },
+          "bom_version_id": {
+            "title": "Bom Version Id",
+            "type": "string"
+          },
+          "bom_version_no": {
+            "title": "Bom Version No",
+            "type": "integer"
+          },
+          "cancel_reason": {
+            "title": "Cancel Reason",
+            "type": "string"
+          },
+          "cancelled_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancelled At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "materials": {
+            "items": {
+              "$ref": "#/components/schemas/ProductionMaterialOut"
+            },
+            "title": "Materials",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "output_location_id": {
+            "title": "Output Location Id",
+            "type": "string"
+          },
+          "outputs": {
+            "items": {
+              "$ref": "#/components/schemas/ProductionOutputOut"
+            },
+            "title": "Outputs",
+            "type": "array"
+          },
+          "picks": {
+            "items": {
+              "$ref": "#/components/schemas/ProductionPickOut"
+            },
+            "title": "Picks",
+            "type": "array"
+          },
+          "planned_quantity": {
+            "title": "Planned Quantity",
+            "type": "string"
+          },
+          "planned_start": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Start"
+          },
+          "produced_quantity": {
+            "title": "Produced Quantity",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "DRAFT",
+              "APPROVED",
+              "IN_PROGRESS",
+              "COMPLETED",
+              "CANCELLED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "variance": {
+            "$ref": "#/components/schemas/VarianceOut"
+          },
+          "wastage": {
+            "items": {
+              "$ref": "#/components/schemas/ProductionWastageOut"
+            },
+            "title": "Wastage",
+            "type": "array"
+          },
+          "wip_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wip Location Id"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "status",
+          "bom_id",
+          "bom_code",
+          "bom_version_id",
+          "bom_version_no",
+          "item_id",
+          "sku",
+          "name",
+          "uom",
+          "planned_quantity",
+          "produced_quantity",
+          "output_location_id",
+          "wip_location_id",
+          "planned_start",
+          "due_date",
+          "approved_at",
+          "started_at",
+          "completed_at",
+          "cancelled_at",
+          "cancel_reason",
+          "notes",
+          "created_at",
+          "updated_at",
+          "materials",
+          "picks",
+          "outputs",
+          "wastage",
+          "variance"
+        ],
+        "title": "ProductionOrderDetailOut",
+        "type": "object"
+      },
+      "ProductionOrderIn": {
+        "additionalProperties": false,
+        "properties": {
+          "bom_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bom Id"
+          },
+          "bom_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bom Version Id"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
+          },
+          "notes": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Notes",
+            "type": "string"
+          },
+          "output_location_id": {
+            "format": "uuid",
+            "title": "Output Location Id",
+            "type": "string"
+          },
+          "planned_start": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Start"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "wip_location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wip Location Id"
+          }
+        },
+        "required": [
+          "quantity",
+          "output_location_id"
+        ],
+        "title": "ProductionOrderIn",
+        "type": "object"
+      },
+      "ProductionOrderOut": {
+        "properties": {
+          "approved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "bom_code": {
+            "title": "Bom Code",
+            "type": "string"
+          },
+          "bom_id": {
+            "title": "Bom Id",
+            "type": "string"
+          },
+          "bom_version_id": {
+            "title": "Bom Version Id",
+            "type": "string"
+          },
+          "bom_version_no": {
+            "title": "Bom Version No",
+            "type": "integer"
+          },
+          "cancel_reason": {
+            "title": "Cancel Reason",
+            "type": "string"
+          },
+          "cancelled_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancelled At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "output_location_id": {
+            "title": "Output Location Id",
+            "type": "string"
+          },
+          "planned_quantity": {
+            "title": "Planned Quantity",
+            "type": "string"
+          },
+          "planned_start": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Start"
+          },
+          "produced_quantity": {
+            "title": "Produced Quantity",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "DRAFT",
+              "APPROVED",
+              "IN_PROGRESS",
+              "COMPLETED",
+              "CANCELLED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "wip_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wip Location Id"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "status",
+          "bom_id",
+          "bom_code",
+          "bom_version_id",
+          "bom_version_no",
+          "item_id",
+          "sku",
+          "name",
+          "uom",
+          "planned_quantity",
+          "produced_quantity",
+          "output_location_id",
+          "wip_location_id",
+          "planned_start",
+          "due_date",
+          "approved_at",
+          "started_at",
+          "completed_at",
+          "cancelled_at",
+          "cancel_reason",
+          "notes",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ProductionOrderOut",
+        "type": "object"
+      },
+      "ProductionOrderPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "output_location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Location Id"
+          },
+          "planned_start": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Start"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "wip_location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wip Location Id"
+          }
+        },
+        "title": "ProductionOrderPatch",
+        "type": "object"
+      },
+      "ProductionOutputOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "production_order_id": {
+            "title": "Production Order Id",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "status": {
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "production_order_id",
+          "item_id",
+          "quantity",
+          "location_id",
+          "status",
+          "lot_id",
+          "roll_id",
+          "note",
+          "created_at"
+        ],
+        "title": "ProductionOutputOut",
+        "type": "object"
+      },
+      "ProductionPickOut": {
+        "properties": {
+          "consumed": {
+            "title": "Consumed",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "issued": {
+            "title": "Issued",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "material_id": {
+            "title": "Material Id",
+            "type": "string"
+          },
+          "reservation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Id"
+          },
+          "reserved": {
+            "title": "Reserved",
+            "type": "string"
+          },
+          "returned": {
+            "title": "Returned",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "source_location_id": {
+            "title": "Source Location Id",
+            "type": "string"
+          },
+          "wasted": {
+            "title": "Wasted",
+            "type": "string"
+          },
+          "wip": {
+            "title": "Wip",
+            "type": "string"
+          },
+          "wip_location_id": {
+            "title": "Wip Location Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "material_id",
+          "item_id",
+          "source_location_id",
+          "wip_location_id",
+          "lot_id",
+          "roll_id",
+          "reservation_id",
+          "reserved",
+          "issued",
+          "consumed",
+          "returned",
+          "wasted",
+          "wip"
+        ],
+        "title": "ProductionPickOut",
+        "type": "object"
+      },
+      "ProductionWastageOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "material_id": {
+            "title": "Material Id",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "pick_id": {
+            "title": "Pick Id",
+            "type": "string"
+          },
+          "production_order_id": {
+            "title": "Production Order Id",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "wastage_type": {
+            "enum": [
+              "CUTTING",
+              "DEFECT",
+              "SPILLAGE",
+              "DAMAGE",
+              "PROCESS_LOSS",
+              "LEFTOVER",
+              "OTHER"
+            ],
+            "title": "Wastage Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "production_order_id",
+          "material_id",
+          "pick_id",
+          "event_id",
+          "item_id",
+          "wastage_type",
+          "quantity",
+          "location_id",
+          "lot_id",
+          "roll_id",
+          "note",
+          "created_at"
+        ],
+        "title": "ProductionWastageOut",
         "type": "object"
       },
       "PurchaseOrderIn": {
@@ -11627,6 +14355,155 @@
         "title": "ReservationReleaseIn",
         "type": "object"
       },
+      "ReserveIn": {
+        "additionalProperties": false,
+        "properties": {
+          "lines": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ReserveLineIn"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lines"
+          }
+        },
+        "title": "ReserveIn",
+        "type": "object"
+      },
+      "ReserveLineIn": {
+        "additionalProperties": false,
+        "properties": {
+          "location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "material_id": {
+            "format": "uuid",
+            "title": "Material Id",
+            "type": "string"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          }
+        },
+        "required": [
+          "material_id"
+        ],
+        "title": "ReserveLineIn",
+        "type": "object"
+      },
+      "ReturnIn": {
+        "additionalProperties": false,
+        "properties": {
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnLineIn"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Lines",
+            "type": "array"
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "title": "ReturnIn",
+        "type": "object"
+      },
+      "ReturnLineIn": {
+        "additionalProperties": false,
+        "properties": {
+          "location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          },
+          "pick_id": {
+            "format": "uuid",
+            "title": "Pick Id",
+            "type": "string"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          }
+        },
+        "required": [
+          "pick_id"
+        ],
+        "title": "ReturnLineIn",
+        "type": "object"
+      },
       "RollEventOut": {
         "properties": {
           "detail": {
@@ -12836,6 +15713,44 @@
           "reason"
         ],
         "title": "ShipmentRefusalIn",
+        "type": "object"
+      },
+      "ShortageOut": {
+        "properties": {
+          "covered": {
+            "title": "Covered",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "material_id": {
+            "title": "Material Id",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "string"
+          },
+          "short": {
+            "title": "Short",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          }
+        },
+        "required": [
+          "material_id",
+          "item_id",
+          "sku",
+          "required",
+          "covered",
+          "short"
+        ],
+        "title": "ShortageOut",
         "type": "object"
       },
       "SpendPoint": {
@@ -15234,6 +18149,107 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "VarianceLineOut": {
+        "properties": {
+          "actual": {
+            "title": "Actual",
+            "type": "string"
+          },
+          "consumed": {
+            "title": "Consumed",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "material_id": {
+            "title": "Material Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "standard": {
+            "title": "Standard",
+            "type": "string"
+          },
+          "theoretical": {
+            "title": "Theoretical",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "variance": {
+            "title": "Variance",
+            "type": "string"
+          },
+          "variance_percent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variance Percent"
+          },
+          "wasted": {
+            "title": "Wasted",
+            "type": "string"
+          }
+        },
+        "required": [
+          "material_id",
+          "item_id",
+          "sku",
+          "name",
+          "uom",
+          "standard",
+          "theoretical",
+          "consumed",
+          "wasted",
+          "actual",
+          "variance",
+          "variance_percent"
+        ],
+        "title": "VarianceLineOut",
+        "type": "object"
+      },
+      "VarianceOut": {
+        "properties": {
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/VarianceLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "planned_quantity": {
+            "title": "Planned Quantity",
+            "type": "string"
+          },
+          "produced_quantity": {
+            "title": "Produced Quantity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "planned_quantity",
+          "produced_quantity",
+          "lines"
+        ],
+        "title": "VarianceOut",
+        "type": "object"
+      },
       "WalkEdgeIn": {
         "additionalProperties": false,
         "description": "One entry of a `LayoutGeometryIn.walk_edges` list, naming its endpoints by the `code`s\nnamed in the same payload's `walk_nodes`.",
@@ -15630,6 +18646,181 @@
           "name"
         ],
         "title": "WarehouseRefOut",
+        "type": "object"
+      },
+      "WastageIn": {
+        "additionalProperties": false,
+        "properties": {
+          "material_id": {
+            "format": "uuid",
+            "title": "Material Id",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Note",
+            "type": "string"
+          },
+          "pick_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pick Id"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "wastage_type": {
+            "enum": [
+              "CUTTING",
+              "DEFECT",
+              "SPILLAGE",
+              "DAMAGE",
+              "PROCESS_LOSS",
+              "LEFTOVER",
+              "OTHER"
+            ],
+            "title": "Wastage Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "material_id",
+          "wastage_type",
+          "quantity"
+        ],
+        "title": "WastageIn",
+        "type": "object"
+      },
+      "WastageThresholdIn": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
+          },
+          "max_percent": {
+            "examples": [
+              "2.5"
+            ],
+            "pattern": "^\\d{1,3}(\\.\\d{1,2})?$",
+            "title": "Max Percent",
+            "type": "string"
+          },
+          "wastage_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "CUTTING",
+                  "DEFECT",
+                  "SPILLAGE",
+                  "DAMAGE",
+                  "PROCESS_LOSS",
+                  "LEFTOVER",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wastage Type"
+          }
+        },
+        "required": [
+          "max_percent"
+        ],
+        "title": "WastageThresholdIn",
+        "type": "object"
+      },
+      "WastageThresholdOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
+          },
+          "max_percent": {
+            "title": "Max Percent",
+            "type": "string"
+          },
+          "sku": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sku"
+          },
+          "wastage_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "CUTTING",
+                  "DEFECT",
+                  "SPILLAGE",
+                  "DAMAGE",
+                  "PROCESS_LOSS",
+                  "LEFTOVER",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wastage Type"
+          }
+        },
+        "required": [
+          "id",
+          "item_id",
+          "sku",
+          "wastage_type",
+          "max_percent",
+          "created_at"
+        ],
+        "title": "WastageThresholdOut",
         "type": "object"
       },
       "WorkerIn": {
@@ -24513,6 +27704,2303 @@
         "summary": "Update a location",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/boms": {
+      "get": {
+        "operationId": "list_boms_api_v1_operations_manufacturing_boms_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "item_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Item Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "is_active",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Is Active"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_BomOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bills of materials",
+        "tags": [
+          "manufacturing"
+        ]
+      },
+      "post": {
+        "operationId": "create_bom_api_v1_operations_manufacturing_boms_post",
+        "parameters": [
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BomIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a BOM with its first draft version",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/boms/{bom_id}": {
+      "get": {
+        "operationId": "read_bom_api_v1_operations_manufacturing_boms__bom_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One BOM and its versions",
+        "tags": [
+          "manufacturing"
+        ]
+      },
+      "patch": {
+        "operationId": "update_bom_api_v1_operations_manufacturing_boms__bom_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BomPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename, describe, or (de)activate a BOM",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/boms/{bom_id}/versions": {
+      "get": {
+        "operationId": "list_versions_api_v1_operations_manufacturing_boms__bom_id__versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BomVersionOut"
+                  },
+                  "title": "Response List Versions Api V1 Operations Manufacturing Boms  Bom Id  Versions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A BOM's versions, newest first",
+        "tags": [
+          "manufacturing"
+        ]
+      },
+      "post": {
+        "operationId": "create_version_api_v1_operations_manufacturing_boms__bom_id__versions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BomVersionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomVersionDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start a new draft version, optionally copying an earlier one",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/boms/{bom_id}/versions/{version_id}": {
+      "delete": {
+        "operationId": "discard_version_api_v1_operations_manufacturing_boms__bom_id__versions__version_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Discard a draft version",
+        "tags": [
+          "manufacturing"
+        ]
+      },
+      "get": {
+        "operationId": "read_version_api_v1_operations_manufacturing_boms__bom_id__versions__version_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomVersionDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One version with its components and substitutes",
+        "tags": [
+          "manufacturing"
+        ]
+      },
+      "patch": {
+        "operationId": "update_version_api_v1_operations_manufacturing_boms__bom_id__versions__version_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BomVersionPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomVersionDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a draft version's batch size, dates and notes (a published one is immutable)",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/boms/{bom_id}/versions/{version_id}/components": {
+      "post": {
+        "operationId": "add_component_api_v1_operations_manufacturing_boms__bom_id__versions__version_id__components_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BomComponentIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomVersionDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add a component line to a draft version (refuses a BOM that would contain itself)",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/boms/{bom_id}/versions/{version_id}/components/{component_id}": {
+      "delete": {
+        "operationId": "remove_component_api_v1_operations_manufacturing_boms__bom_id__versions__version_id__components__component_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "component_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Component Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove a component line from a draft version",
+        "tags": [
+          "manufacturing"
+        ]
+      },
+      "patch": {
+        "operationId": "update_component_api_v1_operations_manufacturing_boms__bom_id__versions__version_id__components__component_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "component_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Component Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BomComponentPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomVersionDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a component line of a draft version",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/boms/{bom_id}/versions/{version_id}/components/{component_id}/substitutes": {
+      "post": {
+        "operationId": "add_substitute_api_v1_operations_manufacturing_boms__bom_id__versions__version_id__components__component_id__substitutes_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "component_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Component Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BomSubstituteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomVersionDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Declare a substitute for a component line of a draft version",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/boms/{bom_id}/versions/{version_id}/components/{component_id}/substitutes/{substitute_id}": {
+      "delete": {
+        "operationId": "remove_substitute_api_v1_operations_manufacturing_boms__bom_id__versions__version_id__components__component_id__substitutes__substitute_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "component_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Component Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "substitute_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Substitute Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove a substitute from a component line of a draft version",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/boms/{bom_id}/versions/{version_id}/explosion": {
+      "get": {
+        "operationId": "explode_version_api_v1_operations_manufacturing_boms__bom_id__versions__version_id__explosion_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "quantity",
+            "required": false,
+            "schema": {
+              "default": "1",
+              "pattern": "^\\d+(\\.\\d{1,3})?$",
+              "title": "Quantity",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExplosionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Multi-level requirement for a quantity of the BOM's item",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/boms/{bom_id}/versions/{version_id}/publish": {
+      "post": {
+        "operationId": "publish_version_api_v1_operations_manufacturing_boms__bom_id__versions__version_id__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomVersionDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish a draft version \u2014 it is immutable from then on",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/boms/{bom_id}/versions/{version_id}/retire": {
+      "post": {
+        "operationId": "retire_version_api_v1_operations_manufacturing_boms__bom_id__versions__version_id__retire_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bom_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bom Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BomVersionDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retire a published version so no new order is planned from it",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/orders": {
+      "get": {
+        "operationId": "list_orders_api_v1_operations_manufacturing_orders_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "item_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Item Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ProductionOrderOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Production orders",
+        "tags": [
+          "manufacturing"
+        ]
+      },
+      "post": {
+        "operationId": "create_order_api_v1_operations_manufacturing_orders_post",
+        "parameters": [
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductionOrderIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionOrderDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Plan a production order from a BOM (pins the BOM version in force)",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/orders/{order_id}": {
+      "get": {
+        "operationId": "read_order_api_v1_operations_manufacturing_orders__order_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionOrderDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One production order with materials, picks, outputs, wastage and variance",
+        "tags": [
+          "manufacturing"
+        ]
+      },
+      "patch": {
+        "operationId": "update_order_api_v1_operations_manufacturing_orders__order_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductionOrderPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionOrderDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a draft order",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/orders/{order_id}/approve": {
+      "post": {
+        "operationId": "approve_order_api_v1_operations_manufacturing_orders__order_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve a draft order (DRAFT -> APPROVED)",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/orders/{order_id}/cancel": {
+      "post": {
+        "operationId": "cancel_order_api_v1_operations_manufacturing_orders__order_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductionCancelIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel an order \u2014 releases its reservations; refused while material is in WIP",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/orders/{order_id}/complete": {
+      "post": {
+        "operationId": "complete_order_api_v1_operations_manufacturing_orders__order_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete an order (IN_PROGRESS -> COMPLETED)",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/orders/{order_id}/genealogy": {
+      "get": {
+        "operationId": "list_genealogy_api_v1_operations_manufacturing_orders__order_id__genealogy_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProductionGenealogyOut"
+                  },
+                  "title": "Response List Genealogy Api V1 Operations Manufacturing Orders  Order Id  Genealogy Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Which input lots and rolls went into which output",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/orders/{order_id}/issue": {
+      "post": {
+        "operationId": "issue_materials_api_v1_operations_manufacturing_orders__order_id__issue_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Issue material to WIP (AVAILABLE -> WIP), optionally picking lots and rolls",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/orders/{order_id}/materials/{material_id}/substitute": {
+      "post": {
+        "operationId": "substitute_material_api_v1_operations_manufacturing_orders__order_id__materials__material_id__substitute_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "material_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Material Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaterialSubstituteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionOrderDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Use a declared substitute for a material (or go back to the BOM's own item)",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/orders/{order_id}/outputs": {
+      "get": {
+        "operationId": "list_outputs_api_v1_operations_manufacturing_orders__order_id__outputs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProductionOutputOut"
+                  },
+                  "title": "Response List Outputs Api V1 Operations Manufacturing Orders  Order Id  Outputs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "An order's outputs",
+        "tags": [
+          "manufacturing"
+        ]
+      },
+      "post": {
+        "operationId": "record_output_api_v1_operations_manufacturing_orders__order_id__outputs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OutputIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record good output \u2014 consumes WIP at standard and receives finished goods",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/orders/{order_id}/reserve": {
+      "post": {
+        "operationId": "reserve_materials_api_v1_operations_manufacturing_orders__order_id__reserve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReserveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reserve the order's material from available stock; shortages raise an alert event",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/orders/{order_id}/returns": {
+      "post": {
+        "operationId": "return_materials_api_v1_operations_manufacturing_orders__order_id__returns_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReturnIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Return unused WIP material to stock (WIP -> AVAILABLE)",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/orders/{order_id}/start": {
+      "post": {
+        "operationId": "start_order_api_v1_operations_manufacturing_orders__order_id__start_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start production (APPROVED -> IN_PROGRESS); issuing material starts it too",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/orders/{order_id}/variance": {
+      "get": {
+        "operationId": "read_variance_api_v1_operations_manufacturing_orders__order_id__variance_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VarianceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Standard vs actual consumption for what has been produced",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/orders/{order_id}/wastage": {
+      "get": {
+        "operationId": "list_wastage_api_v1_operations_manufacturing_orders__order_id__wastage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProductionWastageOut"
+                  },
+                  "title": "Response List Wastage Api V1 Operations Manufacturing Orders  Order Id  Wastage Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "An order's wastage, by type",
+        "tags": [
+          "manufacturing"
+        ]
+      },
+      "post": {
+        "operationId": "record_wastage_api_v1_operations_manufacturing_orders__order_id__wastage_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WastageIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionActionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Write off material in WIP as wastage of a type; a threshold crossing raises an alert",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/wastage-thresholds": {
+      "get": {
+        "operationId": "list_thresholds_api_v1_operations_manufacturing_wastage_thresholds_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WastageThresholdOut"
+                  },
+                  "title": "Response List Thresholds Api V1 Operations Manufacturing Wastage Thresholds Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Configured wastage thresholds",
+        "tags": [
+          "manufacturing"
+        ]
+      },
+      "post": {
+        "operationId": "set_threshold_api_v1_operations_manufacturing_wastage_thresholds_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WastageThresholdIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WastageThresholdOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set the wastage threshold for a product and/or wastage type",
+        "tags": [
+          "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/wastage-thresholds/{threshold_id}": {
+      "delete": {
+        "operationId": "remove_threshold_api_v1_operations_manufacturing_wastage_thresholds__threshold_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "threshold_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Threshold Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove a wastage threshold",
+        "tags": [
+          "manufacturing"
         ]
       }
     },

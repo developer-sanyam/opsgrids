@@ -824,6 +824,75 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Manufacturing (inventory plan Phase 5, ADR-0014 §7). BOMs and production orders are
+        # shared operational documents like orders and shipments — there is no useful OWN reading
+        # — so every permission here is ORG-only. `bom.publish` is dangerous: it freezes a recipe
+        # that every later order is planned (and costed) from, and a published version can never
+        # be edited, only superseded. `production_order.approve` is dangerous for the other
+        # reason: it commits the plan, and with it the reservation and issue of real stock.
+        PermissionSpec(
+            "manufacturing", "bom", "read", "See BOMs, their versions and explosions", "ORG", "ORG"
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "bom",
+            "write",
+            "Create BOMs, edit draft versions and their components and substitutes, and set "
+            "wastage thresholds",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "bom",
+            "publish",
+            "Publish a draft BOM version (immutable from then on) or retire a published one",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "production_order",
+            "read",
+            "See production orders, their materials, WIP, outputs, wastage and variance",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "production_order",
+            "write",
+            "Plan and edit draft production orders, choose substitutes, and cancel an order",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "production_order",
+            "approve",
+            "Approve a production order, committing it to stock reservation and issue",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "production_order",
+            "issue",
+            "Start an order, reserve and issue its material to WIP, return unused material and "
+            "write off wastage",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "production_order",
+            "complete",
+            "Record good output into finished goods and complete an order",
+            "ORG",
+            "ORG",
+        ),
     ],
 )
 
@@ -933,6 +1002,38 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             # `warehouse.layout.publish` already draws for this role).
             ("operations.channels.channel.read", "ORG"),
             ("operations.channels.channel.sync", "ORG"),
+            # Manufacturing: plans, approves and runs production, and publishes BOM versions.
+            ("operations.manufacturing.bom.read", "ORG"),
+            ("operations.manufacturing.bom.write", "ORG"),
+            ("operations.manufacturing.bom.publish", "ORG"),
+            ("operations.manufacturing.production_order.read", "ORG"),
+            ("operations.manufacturing.production_order.write", "ORG"),
+            ("operations.manufacturing.production_order.approve", "ORG"),
+            ("operations.manufacturing.production_order.issue", "ORG"),
+            ("operations.manufacturing.production_order.complete", "ORG"),
+        ),
+    ),
+    RoleTemplate(
+        code="PRODUCTION_PLANNER",
+        name="Production planner",
+        product=PRODUCT,
+        description=(
+            "Plans production: maintains BOMs (drafts, components, substitutes) and wastage "
+            "thresholds, plans production orders, and runs them — reserves and issues material "
+            "to WIP, records output and wastage, returns what is unused and completes the order. "
+            "Reads items, warehouses and locations. Does not publish a BOM version or approve an "
+            "order — those two commit the business and stay with the manager and admin."
+        ),
+        grants=OPERATIONS.pick(
+            ("operations.inventory.item.read", "ORG"),
+            ("operations.inventory.warehouse.read", "ORG"),
+            ("operations.inventory.location.read", "ORG"),
+            ("operations.manufacturing.bom.read", "ORG"),
+            ("operations.manufacturing.bom.write", "ORG"),
+            ("operations.manufacturing.production_order.read", "ORG"),
+            ("operations.manufacturing.production_order.write", "ORG"),
+            ("operations.manufacturing.production_order.issue", "ORG"),
+            ("operations.manufacturing.production_order.complete", "ORG"),
         ),
     ),
     RoleTemplate(

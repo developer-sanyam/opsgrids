@@ -11,6 +11,7 @@ from app.config import settings
 from app.cron import AlertSweep, ReconcileSweep
 from app.inventory.api import router as inventory_router
 from app.inventory.bulk_api import router as bulk_router
+from app.manufacturing.api import router as manufacturing_router
 from app.movements.api import router as movements_router
 from app.movements.sweep import ReservationExpirySweep
 from app.quality.api import router as quality_router
@@ -275,6 +276,7 @@ app = create_app(
         movements_router,
         router,
         quality_router,
+        manufacturing_router,
     ],
     on_startup=_startup,
     on_shutdown=_shutdown,

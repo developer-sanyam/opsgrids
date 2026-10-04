@@ -389,6 +389,78 @@
       "resource": "warehouse"
     },
     {
+      "action": "publish",
+      "default_scope": "ORG",
+      "description": "Publish a draft BOM version (immutable from then on) or retire a published one",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "bom"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See BOMs, their versions and explosions",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "bom"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create BOMs, edit draft versions and their components and substitutes, and set wastage thresholds",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "bom"
+    },
+    {
+      "action": "approve",
+      "default_scope": "ORG",
+      "description": "Approve a production order, committing it to stock reservation and issue",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "production_order"
+    },
+    {
+      "action": "complete",
+      "default_scope": "ORG",
+      "description": "Record good output into finished goods and complete an order",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "production_order"
+    },
+    {
+      "action": "issue",
+      "default_scope": "ORG",
+      "description": "Start an order, reserve and issue its material to WIP, return unused material and write off wastage",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "production_order"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See production orders, their materials, WIP, outputs, wastage and variance",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "production_order"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Plan and edit draft production orders, choose substitutes, and cancel an order",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "production_order"
+    },
+    {
       "action": "accept",
       "default_scope": "ORG",
       "description": "Accept a placed order, reserving its stock",
@@ -839,6 +911,38 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.manufacturing.bom.publish",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.bom.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.bom.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.complete",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.issue",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.orders.order.accept",
           "scope": "ORG"
         },
@@ -1113,6 +1217,38 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.manufacturing.bom.publish",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.bom.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.bom.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.complete",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.issue",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.orders.order.accept",
           "scope": "ORG"
         },
@@ -1228,6 +1364,52 @@
       "is_admin": false,
       "is_default": false,
       "name": "Procurement manager"
+    },
+    {
+      "code": "PRODUCTION_PLANNER",
+      "cross_product": false,
+      "description": "Plans production: maintains BOMs (drafts, components, substitutes) and wastage thresholds, plans production orders, and runs them \u2014 reserves and issues material to WIP, records output and wastage, returns what is unused and completes the order. Reads items, warehouses and locations. Does not publish a BOM version or approve an order \u2014 those two commit the business and stay with the manager and admin.",
+      "grants": [
+        {
+          "code": "operations.inventory.item.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.location.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.bom.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.bom.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.complete",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.issue",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Production planner"
     },
     {
       "code": "QC_INSPECTOR",
