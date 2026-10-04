@@ -179,6 +179,9 @@ decides release via an inspection.
   trail's `after` summaries only as counts and failed names, not values.
 - A keyed retry of an *earlier* step after a *later* keyed step has overwritten the stored key
   answers 409, not a replay (one stored key per step family, not a log).
-- Migration chain: `a3c5e8f1b290` follows Phase 1's `c4a8e1f6d273`. If another phase's migrations
-  land first, re-parent by editing `down_revision` in the migration file only (the migration test
-  derives its "before" revision from it).
+- Migration chain: on the stacked branches `a3c5e8f1b290` follows Phase 9's `d9a4c6e1b3f7`
+  (the chain is `c4a8e1f6d273` -> `c5e91a7d3b28` (P2) -> `c5a82f6d3b19` (P3) -> `d9a4c6e1b3f7` (P9)
+  -> `a3c5e8f1b290`). To re-parent again, edit `down_revision` in the migration file only (the
+  line marked `RE-PARENT HERE`); the migration test derives its "before" revision from it. Rolling
+  back a code deploy leaves the four tables in place and unused; do not `alembic downgrade` past
+  `a3c5e8f1b290` once inspections exist (it drops them).

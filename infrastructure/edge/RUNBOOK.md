@@ -683,13 +683,16 @@ did not create), so no item is left holding stock that cannot be moved.
 **Inventory Phase 1 rollback.** A **code-only rollback leaves the schema in place** — the new
 tables, keys and indexes stay, and the previous API ignores them (it never writes a lot or roll id;
 `remote.sh migrate` skips the `operations` schema with the `SKIPPED` warning above). That is the
-supported rollback. **Never `alembic downgrade` past `b7d41e92c05a`** (`downgrade -2`,
-`downgrade 665e44e243d7`) once real lots or rolls exist: it drops `lots`, `rolls`, `roll_events` and
+supported rollback. **Never `alembic downgrade` past `b7d41e92c05a`** (`downgrade b7d41e92c05a`,
+`downgrade 665e44e243d7`, or any relative step — `-2`, `-3`, … — that lands before it; later
+phases chain on top of it, so a bare `downgrade -2` no longer means "just past Phase 1") once real lots or rolls exist: it drops `lots`, `rolls`, `roll_events` and
 `lot_genealogy` — every lot, roll, split, merge and trace. The migration enforces this: its
 `downgrade()` refuses, with a message, when any lot or roll other than its own `LEGACY-…`
 placeholders exists, unless `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1` is set in the environment of
 the `alembic` command — which you do only after a fresh backup and a decision to throw that data
-away. (`downgrade -1`, which only drops the second revision's indexes, is harmless.)
+away. (Downgrading only `c4a8e1f6d273`, the second revision, which just drops its indexes, is harmless; with
+later revisions applied, name it explicitly: `downgrade c4a8e1f6d273` undoes everything after it, and
+each of those later revisions must be safe to undo first.)
 
 **Reconcile the `operations` permissions after the API is deployed** (ADR-0007; same order as
 every permission rollout: manifests committed → service that enforces them deployed → reconcile
