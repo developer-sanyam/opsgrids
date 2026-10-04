@@ -283,15 +283,22 @@ request (422 when malformed) and carries no tenant or scope — it only moves th
 - **Tracking flags.** A lot can only be registered for an item with `track_lot`, a roll for one with
   `track_roll`; opening stock for a tracked item must name its lot/roll, and for an untracked item must not.
 
-### Migration `b7d41e92c05a`
+### Migrations `b7d41e92c05a` and `c4a8e1f6d273`
 
-Creates the four tables (ENABLE + FORCE RLS, `tenant_isolation`, tenant-leading indexes), adds the foreign
-keys and the keyset indexes the list endpoints page on. **Existing data:** if any ledger/balance/discrepancy row
-already names a lot or roll (the kernel allowed it, nothing in the product could set one), the upgrade creates a
-`LEGACY-…` placeholder lot/roll per distinct id (a roll's length = the stock ever received into it) instead of
-refusing; no quantity or ledger row changes. The downgrade drops the tables and constraints; the ids stay on the
-ledger as plain UUIDs. Verified by `tests/test_migration_lots_rolls.py` (real alembic, orphan ids, FK
-enforcement incl. cross-tenant, RLS, append-only privileges, down and up again).
+`b7d41e92c05a` creates the four tables (ENABLE + FORCE RLS, `tenant_isolation`, tenant-leading indexes),
+backfills, and adds the bucket foreign keys **`NOT VALID`** (last, under `lock_timeout = 5s`).
+`c4a8e1f6d273` validates the keys and builds the keyset indexes on the ledger/balances/moves with
+`CREATE INDEX CONCURRENTLY` (in `autocommit_block`), so neither blocks stock posts for longer than a lock
+acquisition; it is a separate revision so a failed build resumes on re-run rather than stranding a half-applied
+first revision. **Existing data:** if any ledger/balance/discrepancy/count-line row already names a lot or roll
+(the kernel allowed it, nothing in the product could set one), the upgrade creates a `LEGACY-…` placeholder
+lot/roll per distinct (organization, item, id) instead of refusing — an id shared by several items gets one
+placeholder each and each item's rows are re-pointed at its own, so no item is stranded; no quantity changes.
+**Downgrade** drops the tables and constraints (the ids stay on the ledger as plain UUIDs) but refuses when any
+non-placeholder lot or roll exists, unless `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1`; the supported rollback is
+code-only (RUNBOOK, "Inventory Phase 1 rollback"). Verified by `tests/test_migration_lots_rolls.py` (real alembic:
+orphan ids, shared ids, validated keys and valid indexes, resume after an interrupted build, lock timeout, FK
+enforcement incl. cross-tenant, RLS, append-only privileges, refusing downgrade, down and up again).
 
 ### Deferred
 

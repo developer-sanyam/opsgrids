@@ -12,8 +12,11 @@ the ledger keeps its ids as plain UUIDs — and up again. Always leaves the sche
 
 from __future__ import annotations
 
+import asyncio
+import os
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -30,8 +33,13 @@ pytestmark = pytest.mark.integration
 
 SERVICE_DIR = Path(__file__).resolve().parent.parent
 BEFORE = "665e44e243d7"  # alembic revision id  # pragma: allowlist secret
+#: Creates the tables; *its* downgrade is the destructive one.
+TABLES_REV = "b7d41e92c05a"  # pragma: allowlist secret
+ALLOW = {"OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE": "1"}
 NEW_TABLES = ("lots", "rolls", "roll_events", "lot_genealogy")
 TRUNCATE = (
+    "count_lines",
+    "count_sessions",
     "roll_events",
     "lot_genealogy",
     "inventory_discrepancies",
@@ -49,13 +57,14 @@ TRUNCATE = (
 )
 
 
-def alembic(*args: str) -> subprocess.CompletedProcess[str]:
+def alembic(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603  (fixed argv, sys.executable, no shell)
         [sys.executable, "-m", "alembic", *args],
         cwd=SERVICE_DIR,
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, **env} if env else None,
     )
 
 
@@ -392,3 +401,349 @@ async def test_an_empty_database_migrates_up_and_down(admin) -> None:
     assert alembic("upgrade", "head").returncode == 0
     assert alembic("downgrade", BEFORE).returncode == 0
     assert alembic("upgrade", "head").returncode == 0
+
+
+async def current_revision(conn) -> str:  # type: ignore[no-untyped-def]
+    row = await conn.execute(text(f"SELECT version_num FROM {SCHEMA}.alembic_version"))
+    return str(row.scalar_one())
+
+
+FK_NAME = "'^fk_inventory_(ledger|balances|discrepancies)_org_(lot|roll)$'"
+
+
+async def test_foreign_keys_are_validated_and_the_big_indexes_are_valid(admin) -> None:
+    """Revision 1 adds the keys NOT VALID; revision 2 validates them and builds the indexes
+    CONCURRENTLY — afterwards nothing may be left unvalidated or invalid."""
+    assert alembic("upgrade", "head").returncode == 0
+    async with admin.begin() as conn:
+        keys = (
+            await conn.execute(
+                text(
+                    "SELECT conname, convalidated FROM pg_constraint c "
+                    "JOIN pg_namespace n ON n.oid = c.connamespace "
+                    f"WHERE n.nspname = :s AND conname ~ {FK_NAME}"
+                ),
+                {"s": SCHEMA},
+            )
+        ).all()
+        assert len(keys) == 6 and all(valid for _, valid in keys), keys
+        indexes = (
+            await conn.execute(
+                text(
+                    "SELECT c.relname, i.indisvalid FROM pg_index i "
+                    "JOIN pg_class c ON c.oid = i.indexrelid "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = :s "
+                    "AND c.relname ~ '^ix_inventory_(ledger|balances|moves)_org_"
+                    "(created|location_created|lot_created|roll_created|location|lot|roll|occurred)$'"
+                ),
+                {"s": SCHEMA},
+            )
+        ).all()
+        assert len(indexes) == 8 and all(valid for _, valid in indexes), indexes
+
+
+async def test_the_first_revision_leaves_the_keys_not_valid_for_the_second_to_validate(
+    admin,
+) -> None:
+    assert alembic("upgrade", TABLES_REV).returncode == 0
+    async with admin.begin() as conn:
+        assert await current_revision(conn) == TABLES_REV
+        valid = (
+            await conn.execute(
+                text(
+                    "SELECT bool_or(convalidated) FROM pg_constraint c "
+                    "JOIN pg_namespace n ON n.oid = c.connamespace "
+                    f"WHERE n.nspname = :s AND conname ~ {FK_NAME}"
+                ),
+                {"s": SCHEMA},
+            )
+        ).scalar_one()
+        assert valid is False
+    assert alembic("upgrade", "head").returncode == 0
+
+
+async def test_an_interrupted_second_revision_resumes_and_rebuilds_an_invalid_index(
+    admin,
+) -> None:
+    # What an interrupted CREATE INDEX CONCURRENTLY leaves behind: an INVALID index of that name.
+    name = f"{SCHEMA}.ix_inventory_balances_org_lot"
+    async with admin.begin() as conn:
+        await seed_old_shape(conn, uuid.uuid4())  # four balances sharing one organization_id
+    assert alembic("upgrade", TABLES_REV).returncode == 0
+    async with admin.connect() as conn:
+        auto = await conn.execution_options(isolation_level="AUTOCOMMIT")
+        # A unique build over duplicate values fails half-way and leaves the index INVALID.
+        with pytest.raises(Exception, match="could not create unique index"):
+            await auto.execute(
+                text(
+                    f"CREATE UNIQUE INDEX CONCURRENTLY ix_inventory_balances_org_lot "
+                    f"ON {SCHEMA}.inventory_balances (organization_id)"
+                )
+            )
+    async with admin.begin() as conn:
+        broken = await conn.execute(
+            text(f"SELECT NOT indisvalid FROM pg_index WHERE indexrelid = '{name}'::regclass")
+        )
+        assert broken.scalar_one() is True
+    assert alembic("upgrade", "head").returncode == 0
+    async with admin.begin() as conn:
+        row = (
+            await conn.execute(
+                text(
+                    "SELECT i.indisvalid, pg_get_indexdef(i.indexrelid) FROM pg_index i "
+                    f"WHERE i.indexrelid = '{name}'::regclass"
+                )
+            )
+        ).one()
+        assert row[0] is True and "lot_id" in row[1]
+
+
+async def test_the_upgrade_gives_up_after_five_seconds_instead_of_queueing_behind_a_lock(
+    admin,
+) -> None:
+    async with admin.connect() as holder:
+        await holder.execute(text(f"LOCK TABLE {SCHEMA}.inventory_ledger IN ACCESS EXCLUSIVE MODE"))
+        started = time.monotonic()
+        blocked = await asyncio.to_thread(alembic, "upgrade", "head")
+        elapsed = time.monotonic() - started
+        assert blocked.returncode != 0
+        assert "lock timeout" in blocked.stderr.lower(), blocked.stderr[-1500:]
+        assert 3 < elapsed < 60, elapsed
+        await holder.rollback()
+    assert alembic("upgrade", "head").returncode == 0
+
+
+async def _one_item(conn, org: uuid.UUID) -> uuid.UUID:  # type: ignore[no-untyped-def]
+    row = await conn.execute(
+        text(f"SELECT id FROM {SCHEMA}.inventory_items WHERE organization_id = :o LIMIT 1"),
+        {"o": org},
+    )
+    return uuid.UUID(str(row.scalar_one()))
+
+
+async def test_downgrade_refuses_while_real_lots_exist_unless_explicitly_allowed(admin) -> None:
+    org = uuid.uuid4()
+    async with admin.begin() as conn:
+        await seed_old_shape(conn, org)
+    assert alembic("upgrade", "head").returncode == 0
+    # Only this migration's own placeholders so far: going down is allowed.
+    assert alembic("downgrade", BEFORE).returncode == 0
+    assert alembic("upgrade", "head").returncode == 0
+
+    async with admin.begin() as conn:
+        item = await _one_item(conn, org)
+        await conn.execute(
+            text(
+                f"""
+                INSERT INTO {SCHEMA}.lots (id, organization_id, inventory_item_id, lot_no,
+                                           quality_status, created_by)
+                VALUES (gen_random_uuid(), :o, :i, 'REAL-1', 'APPROVED', 'someone-real')
+                """
+            ),
+            {"o": org, "i": item},
+        )
+    refused = alembic("downgrade", BEFORE)
+    assert refused.returncode != 0
+    assert "Refusing to downgrade" in refused.stderr
+    assert "OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE" in refused.stderr
+    async with admin.begin() as conn:
+        assert await current_revision(conn) != BEFORE
+        kept = await conn.execute(
+            text(f"SELECT count(*) FROM {SCHEMA}.lots WHERE lot_no = 'REAL-1'")
+        )
+        assert kept.scalar_one() == 1
+    allowed = alembic("downgrade", BEFORE, env=ALLOW)
+    assert allowed.returncode == 0, allowed.stderr[-1500:]
+    async with admin.begin() as conn:
+        assert await current_revision(conn) == BEFORE
+        gone = await conn.execute(text("SELECT to_regclass(:t)"), {"t": f"{SCHEMA}.lots"})
+        assert gone.scalar() is None
+
+
+async def test_downgrade_refuses_for_a_real_roll_even_without_a_real_lot(admin) -> None:
+    org = uuid.uuid4()
+    async with admin.begin() as conn:
+        await seed_old_shape(conn, org)
+    assert alembic("upgrade", "head").returncode == 0
+    async with admin.begin() as conn:
+        item = await _one_item(conn, org)
+        await conn.execute(
+            text(
+                f"""
+                INSERT INTO {SCHEMA}.rolls (id, organization_id, inventory_item_id, roll_no, state,
+                                            primary_milli, created_by)
+                VALUES (gen_random_uuid(), :o, :i, 'REAL-ROLL', 'ACTIVE', 1000, 'someone-real')
+                """
+            ),
+            {"o": org, "i": item},
+        )
+    refused = alembic("downgrade", BEFORE)
+    assert refused.returncode != 0 and "Refusing to downgrade" in refused.stderr
+
+
+async def seed_second_item_sharing_ids(  # type: ignore[no-untyped-def]
+    conn, org: uuid.UUID, ids: dict[str, uuid.UUID]
+) -> uuid.UUID:
+    """A second item whose buckets, in the same organization, name the *same* lot and roll ids as
+    the first item's — plus open count lines naming them."""
+    item2, session_id, ledger_id, balance_id, line_id, move2 = (uuid.uuid4() for _ in range(6))
+    await conn.execute(
+        text(
+            f"""
+            INSERT INTO {SCHEMA}.inventory_items
+                (id, organization_id, sku, name, category, warehouse, home_location_id,
+                 reorder_point, uom, unit_value_minor, currency, stocked_at, hsn_code, track_lot,
+                 track_roll, track_expiry, track_quality, is_active, created_at, updated_at)
+            VALUES (:item2, :org, 'FAB-2', 'Fabric two', 'raw_materials', 'Migration Plant', :loc,
+                    0, 'm', 0, 'INR', '2026-09-01', '', false, false, false, false, true, now(),
+                    now())
+            """
+        ),
+        {"item2": item2, "org": org, "loc": ids["loc"]},
+    )
+    await conn.execute(
+        text(
+            f"""
+            INSERT INTO {SCHEMA}.inventory_moves (id, organization_id, kind, note, occurred_on,
+                                                  created_at)
+            VALUES (:move2, :org, 'opening', '', '2026-09-01', now())
+            """
+        ),
+        {"move2": move2, "org": org},
+    )
+    params = {
+        "org": org,
+        "move": move2,
+        "item": item2,
+        "loc": ids["loc"],
+        "lot_id": ids["lot"],
+        "roll_id": ids["roll"],
+        "milli": 7_000,
+        "ledger_id": ledger_id,
+        "balance_id": balance_id,
+    }
+    await conn.execute(
+        text(
+            f"""
+            INSERT INTO {SCHEMA}.inventory_ledger
+                (id, organization_id, move_id, inventory_item_id, location_id, status, lot_id,
+                 roll_id, quantity_milli, balance_after_milli, created_at)
+            VALUES (:ledger_id, :org, :move, :item, :loc, 'AVAILABLE', :lot_id, :roll_id,
+                    :milli, :milli, now())
+            """
+        ),
+        params,
+    )
+    await conn.execute(
+        text(
+            f"""
+            INSERT INTO {SCHEMA}.inventory_balances
+                (id, organization_id, inventory_item_id, location_id, status, lot_id, roll_id,
+                 quantity_milli, reserved_milli, updated_at)
+            VALUES (:balance_id, :org, :item, :loc, 'AVAILABLE', :lot_id, :roll_id, :milli, 0,
+                    now())
+            """
+        ),
+        params,
+    )
+    await conn.execute(
+        text(
+            f"""
+            INSERT INTO {SCHEMA}.count_sessions (id, organization_id, warehouse_id, scope_kind,
+                                                 status, label, created_at, updated_at)
+            VALUES (:sid, :org, :wh, 'WAREHOUSE', 'ACTIVE', 'legacy', now(), now())
+            """
+        ),
+        {"sid": session_id, "org": org, "wh": ids["wh"]},
+    )
+    for item_id, line in ((item2, line_id), (ids["item"], uuid.uuid4())):
+        await conn.execute(
+            text(
+                f"""
+                INSERT INTO {SCHEMA}.count_lines
+                    (id, organization_id, session_id, inventory_item_id, location_id, status,
+                     lot_id, roll_id, is_unlisted, expected_milli, review_status, review_note,
+                     created_at, updated_at)
+                VALUES (:line, :org, :sid, :item, :loc, 'QUALITY_HOLD', :lot_id, :roll_id, false,
+                        0, 'NONE', '', now(), now())
+                """
+            ),
+            {**params, "sid": session_id, "item": item_id, "line": line},
+        )
+    return item2
+
+
+async def _ledger_per_item(conn, org: uuid.UUID) -> dict[uuid.UUID, int]:  # type: ignore[no-untyped-def]
+    rows = await conn.execute(
+        text(
+            f"SELECT inventory_item_id, SUM(quantity_milli) FROM {SCHEMA}.inventory_ledger "
+            "WHERE organization_id = :o GROUP BY 1"
+        ),
+        {"o": org},
+    )
+    return {row[0]: int(row[1]) for row in rows.all()}
+
+
+async def test_ids_shared_by_two_items_get_a_placeholder_per_item_and_strand_nothing(admin) -> None:
+    org = uuid.uuid4()
+    async with admin.begin() as conn:
+        ids = await seed_old_shape(conn, org)
+        item2 = await seed_second_item_sharing_ids(conn, org, ids)
+        before = await counts(conn, org)
+        per_item_before = await _ledger_per_item(conn, org)
+
+    up = alembic("upgrade", "head")
+    assert up.returncode == 0, up.stderr[-2000:]
+
+    async with admin.begin() as conn:
+        assert await counts(conn, org) == before
+        assert await _ledger_per_item(conn, org) == per_item_before  # nothing moved between items
+
+        # One placeholder per (item, id), each attached to its own item.
+        lot_items = (
+            await conn.execute(
+                text(
+                    f"SELECT inventory_item_id FROM {SCHEMA}.lots WHERE organization_id = :o "
+                    "AND lot_no LIKE 'LEGACY-%'"
+                ),
+                {"o": org},
+            )
+        ).scalars()
+        assert sorted(map(str, lot_items)) == sorted(map(str, [ids["item"], item2]))
+        rolls = (
+            await conn.execute(
+                text(
+                    f"SELECT primary_milli FROM {SCHEMA}.rolls "
+                    "WHERE organization_id = :o ORDER BY primary_milli"
+                ),
+                {"o": org},
+            )
+        ).scalars()
+        # roll2 (item one: 40), the shared roll for item two (7), and for item one (82.5)
+        assert list(rolls) == [7_000, 40_000, 82_500]
+
+        # The point: no bucket names a lot or roll that belongs to a different item.
+        for table in ("inventory_ledger", "inventory_balances", "count_lines"):
+            mismatched = (
+                await conn.execute(
+                    text(
+                        f"""
+                        SELECT count(*) FROM {SCHEMA}.{table} t
+                          LEFT JOIN {SCHEMA}.lots l
+                                 ON l.organization_id = t.organization_id AND l.id = t.lot_id
+                          LEFT JOIN {SCHEMA}.rolls r
+                                 ON r.organization_id = t.organization_id AND r.id = t.roll_id
+                         WHERE t.organization_id = :o
+                           AND ((t.lot_id IS NOT NULL
+                                 AND (l.id IS NULL OR l.inventory_item_id <> t.inventory_item_id))
+                             OR (t.roll_id IS NOT NULL
+                                 AND (r.id IS NULL OR r.inventory_item_id <> t.inventory_item_id)))
+                        """
+                    ),
+                    {"o": org},
+                )
+            ).scalar_one()
+            assert mismatched == 0, table
+        async with AsyncSession(bind=conn) as session:
+            report = await reconcile_organization(session, org)
+        assert report.clean, report.findings

@@ -755,8 +755,10 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "worker's task), sets their own presence, and confirms packages. Counts lines in "
             "whichever count session is open for their warehouse (ADR-0026) — never opens, "
             "reviews or closes one; that stays with the dispatcher (`OPERATIONS_MANAGER`). Moves "
-            "stock between bins and statuses and reads stock by location, lot and roll; does "
-            "not register, split or merge lots or rolls. Does not offer, reassign or override a "
+            "stock between bins, puts stock on hold (a status change *into* quality hold, "
+            "quarantine, damaged, rejected or blocked) but cannot release it back to "
+            "available — that needs stock adjustment — and reads stock by location, lot and "
+            "roll; does not register, split or merge lots or rolls. Does not offer, reassign or override a "
             "task either."
         ),
         grants=OPERATIONS.pick(

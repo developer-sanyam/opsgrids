@@ -620,17 +620,76 @@ plan version's `trial_days` feature (14 when absent), never the customer's.
 
 ### Inventory Phase 1 (lots, rolls, stock operations): migration and the `operations` permission reconcile
 
-Migration `b7d41e92c05a` (operations) creates `lots`, `rolls`, `roll_events`, `lot_genealogy` and
-adds organization-scoped foreign keys from the ledger, balances and discrepancies to them. It is
-part of the ordinary `migrate` step; nothing else to run. Before it, take the nightly backup
-(`make edge-backup`). If any ledger/balance row already names a `lot_id`/`roll_id` (nothing in
-the product could set one before this release, so expect none), the migration creates a
-`LEGACY-…` placeholder lot/roll for it instead of refusing; it never changes a quantity. Check
-beforehand with:
+Two migrations (operations), both part of the ordinary `migrate` step; nothing else to run.
+`b7d41e92c05a` creates `lots`, `rolls`, `roll_events`, `lot_genealogy`, backfills placeholders, and
+adds organization-scoped foreign keys from the ledger, balances and discrepancies to them
+**`NOT VALID`**; `c4a8e1f6d273` then validates those keys and builds the eight read-path indexes on
+`inventory_ledger`/`inventory_balances`/`inventory_moves` with `CREATE INDEX CONCURRENTLY`.
+Before it, take the nightly backup (`make edge-backup`) **and write down the row counts**:
 
 ```sql
-SELECT count(*) FROM operations.inventory_ledger WHERE lot_id IS NOT NULL OR roll_id IS NOT NULL;
+SELECT (SELECT count(*) FROM operations.inventory_ledger)   AS ledger,
+       (SELECT count(*) FROM operations.inventory_balances) AS balances,
+       (SELECT count(*) FROM operations.inventory_moves)    AS moves;
 ```
+
+**What stalls, and for how long.** The first revision sets `lock_timeout = 5s` and takes its
+write-blocking lock on the ledger/balances/discrepancies only for the instant the `NOT VALID` keys
+are created (last, just before commit) — so an unlucky deploy that cannot get the lock in five
+seconds *fails* (re-run it once the long transaction is gone) rather than queueing every stock
+post behind it. The backfill reads the ledger once per table (a sequential scan: expect seconds
+per million rows, no write blocking). The second revision validates and indexes without blocking
+reads or writes, but it scans/sorts the whole ledger: expect minutes on a ledger of tens of
+millions of rows, and `migrate` simply takes that long. If it fails part-way (a long transaction
+holding off a `CONCURRENTLY` build, say) the first revision is already committed: fix the cause and
+re-run `make deploy` / `alembic upgrade head` — it resumes at the second revision, and an
+interrupted index build's `INVALID` leftover is dropped and rebuilt automatically.
+
+**Pre-check.** Nothing in the product could set a lot or roll id before this release, so expect
+all of these to be zero. If any is not, the migration creates a `LEGACY-…` placeholder lot/roll
+per distinct (organization, item, id) instead of refusing, and never changes a quantity:
+
+```sql
+SELECT 'ledger' AS t, count(*) FROM operations.inventory_ledger
+ WHERE lot_id IS NOT NULL OR roll_id IS NOT NULL
+UNION ALL SELECT 'balances', count(*) FROM operations.inventory_balances
+ WHERE lot_id IS NOT NULL OR roll_id IS NOT NULL
+UNION ALL SELECT 'discrepancies', count(*) FROM operations.inventory_discrepancies
+ WHERE lot_id IS NOT NULL OR roll_id IS NOT NULL
+UNION ALL SELECT 'count_lines', count(*) FROM operations.count_lines
+ WHERE lot_id IS NOT NULL OR roll_id IS NOT NULL;
+
+-- Lot or roll ids used with more than one item (a lot belongs to one item):
+SELECT 'lot' AS kind, lot_id AS id, count(DISTINCT inventory_item_id) AS items FROM (
+    SELECT lot_id, inventory_item_id FROM operations.inventory_ledger WHERE lot_id IS NOT NULL
+    UNION SELECT lot_id, inventory_item_id FROM operations.inventory_balances WHERE lot_id IS NOT NULL
+    UNION SELECT lot_id, inventory_item_id FROM operations.inventory_discrepancies WHERE lot_id IS NOT NULL
+    UNION SELECT lot_id, inventory_item_id FROM operations.count_lines WHERE lot_id IS NOT NULL
+) s GROUP BY lot_id HAVING count(DISTINCT inventory_item_id) > 1
+UNION ALL
+SELECT 'roll', roll_id, count(DISTINCT inventory_item_id) FROM (
+    SELECT roll_id, inventory_item_id FROM operations.inventory_ledger WHERE roll_id IS NOT NULL
+    UNION SELECT roll_id, inventory_item_id FROM operations.inventory_balances WHERE roll_id IS NOT NULL
+    UNION SELECT roll_id, inventory_item_id FROM operations.inventory_discrepancies WHERE roll_id IS NOT NULL
+    UNION SELECT roll_id, inventory_item_id FROM operations.count_lines WHERE roll_id IS NOT NULL
+) s GROUP BY roll_id HAVING count(DISTINCT inventory_item_id) > 1;
+```
+
+An id shared by several items is handled, not refused: the first claimant keeps the id, every other
+item gets its own placeholder with a new deterministic id, and that item's ledger, balance,
+discrepancy and count-line rows are re-pointed at it (the one place the migration rewrites a row it
+did not create), so no item is left holding stock that cannot be moved.
+
+**Inventory Phase 1 rollback.** A **code-only rollback leaves the schema in place** — the new
+tables, keys and indexes stay, and the previous API ignores them (it never writes a lot or roll id;
+`remote.sh migrate` skips the `operations` schema with the `SKIPPED` warning above). That is the
+supported rollback. **Never `alembic downgrade` past `b7d41e92c05a`** (`downgrade -2`,
+`downgrade 665e44e243d7`) once real lots or rolls exist: it drops `lots`, `rolls`, `roll_events` and
+`lot_genealogy` — every lot, roll, split, merge and trace. The migration enforces this: its
+`downgrade()` refuses, with a message, when any lot or roll other than its own `LEGACY-…`
+placeholders exists, unless `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1` is set in the environment of
+the `alembic` command — which you do only after a fresh backup and a decision to throw that data
+away. (`downgrade -1`, which only drops the second revision's indexes, is harmless.)
 
 **Reconcile the `operations` permissions after the API is deployed** (ADR-0007; same order as
 every permission rollout: manifests committed → service that enforces them deployed → reconcile
@@ -638,7 +697,10 @@ every permission rollout: manifests committed → service that enforces them dep
 `operations.inventory.roll.write`, `operations.inventory.stock.read`,
 `operations.inventory.stock.transfer`. `OPERATIONS_ADMIN` (`all()`) and `OPERATIONS_MANAGER`
 get all four; `OPERATIONS_WORKER` gets `stock.read` and `stock.transfer`; `OPERATIONS_USER` gets
-none of them. Roles an organization authored itself are never touched (ADR-0007 §4) — the
+none of them. Releasing stock *out of* a hold status (REJECTED, DAMAGED, QUARANTINE,
+QUALITY_HOLD, BLOCKED into AVAILABLE or WIP) additionally needs the existing
+`operations.inventory.stock.adjust`, which `OPERATIONS_MANAGER` and `OPERATIONS_ADMIN` carry and
+`OPERATIONS_WORKER` does not — a worker can put stock on hold but cannot release it. Roles an organization authored itself are never touched (ADR-0007 §4) — the
 reconcile prints `memberships_without` so an operator can see who still lacks them.
 
 ```bash
@@ -1211,8 +1273,12 @@ make edge-web-rollback HOST=deploy@<ip> CONFIRM=edge.opsgrids.com
 ```
 
 **A migration** is the one thing rollback does not undo for you. `make edge-rollback` runs
-`alembic upgrade head` at the *older* ref, which is a no-op — it does not downgrade. If the
-schema change is what broke things:
+`remote.sh migrate` at the *older* ref, and it does **not** downgrade. For a service whose
+database is already at a revision the older image does not contain, `migrate` used to stop on
+alembic's "Can't locate revision"; it now **skips that service with a loud `!!! <svc>: SKIPPED`
+warning on stderr** and carries on, leaving the schema exactly as the newer release made it (see
+`infrastructure/edge/lib/migration-revisions.sh`). Read those lines: they are the list of schemas
+now ahead of the code. If the schema change is what broke things:
 
 ```bash
 ssh deploy@<ip>
