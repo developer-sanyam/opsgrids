@@ -3901,6 +3901,283 @@ class InspectionResult(Base, TenantBase):
     )
 
 
+# ------------------------------------------------------------------ job work (Phase 6)
+
+JOB_WORK_STATUSES = (
+    "DRAFT",
+    "APPROVED",
+    "ISSUED",
+    "PARTIALLY_RECEIVED",
+    "RECEIVED",
+    "CLOSED",
+    "CANCELLED",
+)
+_JOB_WORK_STATUS_SQL = ", ".join(f"'{s}'" for s in JOB_WORK_STATUSES)
+#: Where an order is while stock sits at the vendor — the states the overdue sweep watches.
+JOB_WORK_OPEN_AT_VENDOR = ("ISSUED", "PARTIALLY_RECEIVED")
+EWAY_STATUSES = ("NOT_REQUIRED", "REQUESTED", "GENERATED", "FAILED")
+_EWAY_STATUS_SQL = ", ".join(f"'{s}'" for s in EWAY_STATUSES)
+
+
+class JobWorkOrder(Base, TenantBase):
+    """Material sent to an outside processor (a dyer, a stitcher, a finisher) and expected back
+    (Inventory plan Phase 6). The document half of the story: the **stock** half lives in the
+    ledger, moved only through `app.inventory.ledger.post_move` — material at the vendor sits in
+    the `AT_JOB_WORKER` bucket, which is reported separately from on-hand (ADR-0014 §3).
+
+    `supplier_id` is a plain indexed UUID, never a foreign key — the vendor is a `suppliers` row
+    in this schema today, but nothing here may assume that stays true (CLAUDE.md: no FK that
+    would stop a later split). The same goes for `source_warehouse_id` and `receive_location_id`.
+
+    `status` runs `app.jobwork.domain.JOB_WORK_TRANSITIONS`. Being **overdue** is not a status:
+    it is derived (`due_date` passed while the order is still at the vendor), because a status
+    nobody can move out of except by receiving would be a second source of truth.
+
+    `transition_keys` maps an `Idempotency-Key` to the status it produced, so a retried approve /
+    cancel / close replays instead of answering 409 for a request that already succeeded. It is
+    read and written only under the order's own row lock.
+    """
+
+    __tablename__ = "job_work_orders"
+
+    number: Mapped[str] = mapped_column(String(40), nullable=False)
+    supplier_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: What the vendor does — "Dyeing", "Stitching". Free text; a process master is a later phase.
+    process: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="DRAFT")
+    due_date: Mapped[date | None] = mapped_column(Date)
+    source_warehouse_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: Where good and rejected goods land on return, unless a receipt line says otherwise.
+    receive_location_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: Returned goods go to `QUALITY_HOLD` and a QC hand-off event is emitted (the quality module
+    #: is built elsewhere and consumes the event; nothing here depends on it).
+    qc_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    notes: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    approved_by: Mapped[str | None] = mapped_column(String(64))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Set by the overdue sweep the first time it announces this order — one notification per
+    #: order, not one per tick.
+    overdue_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    transition_keys: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"status IN ({_JOB_WORK_STATUS_SQL})", name="status_known"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        Index("uq_job_work_orders_org_number", "organization_id", "number", unique=True),
+        Index(
+            "uq_job_work_orders_org_idempotency_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index("ix_job_work_orders_org_status", "organization_id", "status"),
+        Index("ix_job_work_orders_org_supplier", "organization_id", "supplier_id"),
+        Index(
+            "ix_job_work_orders_org_due_open",
+            "organization_id",
+            "due_date",
+            postgresql_where=text("status IN ('ISSUED', 'PARTIALLY_RECEIVED')"),
+        ),
+    )
+
+
+class JobWorkMaterial(Base, TenantBase):
+    """One bucket's worth of material on a job-work order.
+
+    `quantity_milli` is what was planned (and, once issued, sent: `sent_milli` is set to it at
+    issue). `received_milli` / `rejected_milli` / `shortage_milli` only ever grow, each by a
+    receipt, and `received + rejected + shortage <= sent` is a CHECK — so the reconciliation
+    identity `sent = received + rejected + shortage + outstanding` cannot be violated by a bug in
+    any one write path. `item_id`, `lot_id`, `roll_id`, `location_id` are plain UUIDs (lots and
+    rolls arrive from another branch).
+    """
+
+    __tablename__ = "job_work_materials"
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.job_work_orders.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    item_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: The bucket the material is issued **from**, and the `AT_JOB_WORKER` bucket's location.
+    location_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: Snapshots, so the challan and the screens never depend on a later edit of the item.
+    sku: Mapped[str] = mapped_column(String(60), nullable=False, default="")
+    uom: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    unit_value_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sent_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    received_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    rejected_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    shortage_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint("quantity_milli > 0", name="quantity_positive"),
+        CheckConstraint(
+            "sent_milli >= 0 AND received_milli >= 0 AND rejected_milli >= 0 "
+            "AND shortage_milli >= 0",
+            name="figures_non_negative",
+        ),
+        CheckConstraint(
+            "received_milli + rejected_milli + shortage_milli <= sent_milli",
+            name="accounted_within_sent",
+        ),
+        CheckConstraint("sent_milli = 0 OR sent_milli = quantity_milli", name="sent_is_planned"),
+        Index(
+            "uq_job_work_materials_bucket",
+            "organization_id",
+            "order_id",
+            "item_id",
+            "location_id",
+            "lot_id",
+            "roll_id",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+        ),
+        Index("uq_job_work_materials_line", "organization_id", "order_id", "line_no", unique=True),
+        Index("ix_job_work_materials_org_item", "organization_id", "item_id"),
+    )
+
+
+class JobWorkReceipt(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One material's share of one receipt from the vendor — append-only (`job_work_receipts`
+    joins `APPEND_ONLY_TABLES`): a wrong receipt is never edited, the figures it moved are on the
+    ledger. A receipt document (`receipt_no`) is one row per material it covers.
+
+    `received_milli` came back good (into `good_status`), `rejected_milli` came back unusable
+    (into `REJECTED`), `shortage_milli` is declared lost at the vendor (written off the
+    `AT_JOB_WORKER` bucket through an adjustment). At least one is positive.
+    """
+
+    __tablename__ = "job_work_receipts"
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.job_work_orders.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    material_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.job_work_materials.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    receipt_no: Mapped[str] = mapped_column(String(40), nullable=False)
+    received_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    rejected_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    shortage_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    location_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: AVAILABLE, or QUALITY_HOLD when the order asked for a QC hand-off.
+    good_status: Mapped[str] = mapped_column(String(20), nullable=False, default="AVAILABLE")
+    qc_handoff: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    received_on: Mapped[date] = mapped_column(Date, nullable=False)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    return_move_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    shortage_move_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(
+            "received_milli >= 0 AND rejected_milli >= 0 AND shortage_milli >= 0",
+            name="figures_non_negative",
+        ),
+        CheckConstraint(
+            "received_milli + rejected_milli + shortage_milli > 0", name="moves_something"
+        ),
+        Index("ix_job_work_receipts_org_order", "organization_id", "order_id", "created_at"),
+        Index("ix_job_work_receipts_org_material", "organization_id", "material_id"),
+        Index(
+            "uq_job_work_receipts_org_key_material",
+            "organization_id",
+            "idempotency_key",
+            "material_id",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
+
+
+class Challan(Base, TenantBase):
+    """The delivery challan that goes with material to a job worker (CGST Rule 55).
+
+    **Immutable once issued** — a database trigger refuses any change to the number, the order,
+    the supplier, the goods snapshot or the value (`migrations/versions/d7b3e5a19f62_job_work.py`);
+    only the e-way-bill facts (`eway_*`, and the transport fields that feed it) move afterwards,
+    because they are filled in by a later step and, eventually, by finance. Numbers come from a
+    gapless per-organization, per-financial-year series (`app.jobwork.numbering`).
+
+    The e-way bill itself is **not** built here: `eway_status` records only that this module asked
+    finance to consider one (`operations.jobwork.challan.eway_requested`, fire-and-forget, the
+    same hook `operations.dispatch.shipment.eway_requested` set) and what finance later answers.
+    """
+
+    __tablename__ = "challans"
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.job_work_orders.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    challan_number: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: DELIVERY (to the vendor) — the only kind issued today; the column leaves room for a
+    #: return challan without a migration of meaning.
+    kind: Mapped[str] = mapped_column(String(12), nullable=False, default="DELIVERY")
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    supplier_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    supplier_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    process: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    #: The goods, frozen at issue: `[{sku, uom, quantity, unit_value_minor, value_minor, ...}]`.
+    lines: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    total_value_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
+    #: Transport facts — the caller's, not derivable; feed finance's e-way machinery.
+    vehicle_no: Mapped[str | None] = mapped_column(String(20))
+    transporter_id: Mapped[str | None] = mapped_column(String(30))
+    distance_km: Mapped[int | None] = mapped_column(Integer)
+    eway_status: Mapped[str] = mapped_column(String(14), nullable=False, default="NOT_REQUIRED")
+    eway_bill_no: Mapped[str | None] = mapped_column(String(20))
+    eway_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    move_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('DELIVERY')", name="kind_known"),
+        CheckConstraint(f"eway_status IN ({_EWAY_STATUS_SQL})", name="eway_status_known"),
+        CheckConstraint("total_value_minor >= 0", name="value_non_negative"),
+        CheckConstraint("distance_km IS NULL OR distance_km >= 0", name="distance_non_negative"),
+        Index("uq_challans_org_number", "organization_id", "challan_number", unique=True),
+        Index(
+            "uq_challans_org_idempotency_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index("ix_challans_org_order", "organization_id", "order_id"),
+    )
+
+
 class OutboxEvent(Base, OutboxMixin):
     """Domain events staged in the same transaction as the change they describe."""
 

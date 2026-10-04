@@ -100,6 +100,7 @@ APPEND_ONLY_TABLES = (
     "production_outputs",
     "production_wastage",
     "production_genealogy",
+    "job_work_receipts",
 )
 #: What each sweep's cross-tenant discovery reads — `app/cron.py`'s `ReconcileSweep` and
 #: `AlertSweep`, `app/channels/sweep.py`'s `ChannelSyncSweep`, `app/mrp/sweep.py`'s
@@ -125,6 +126,14 @@ RECONCILE_DISCOVERY_TABLES: dict[str, tuple[str, ...]] = {
     # past its `expires_at`.
     "inventory_reservations": ("organization_id", "status", "expires_at"),
     "mrp_runs": ("organization_id", "status"),
+    # `app/jobwork/sweep.py`'s `_OVERDUE_ORGANIZATIONS_SQL` — Phase 6; exactly the columns it names.
+    "job_work_orders": (
+        "organization_id",
+        "status",
+        "due_date",
+        "overdue_notified_at",
+        "deleted_at",
+    ),
 }
 
 
