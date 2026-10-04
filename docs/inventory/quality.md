@@ -16,7 +16,7 @@ call; nothing in `app/quality/` writes a ledger row or a balance.
 ## 2. Tables
 
 All four carry `organization_id`, `ENABLE`+`FORCE` row-level security and the standard
-`tenant_isolation` policy (migration `a3c5e8f1b290`, `down_revision = 665e44e243d7`, up and down).
+`tenant_isolation` policy (migration `a3c5e8f1b290`, up and down; its `down_revision` is the single place the migration is parented).
 
 | Table | Holds |
 |---|---|
@@ -26,8 +26,7 @@ All four carry `organization_id`, `ENABLE`+`FORCE` row-level security and the st
 | `inspection_results` | one row per measured parameter, **snapshotting** its name, bounds and criticality, plus the value and the server's `passed` |
 
 `item_id`, `location_id`, `lot_id`, `roll_id`, `template_id` and `supplier_id` are **plain indexed
-UUIDs, deliberately not foreign keys**: lots and rolls arrive in another phase's migration, and an
-inspection is a record about stock at a moment that must outlive — and never block — the rename or
+UUIDs, deliberately not foreign keys**: an inspection is a record about stock at a moment that must outlive — and never block — the rename or
 retirement of what it points at. Every read re-checks the organization on the referenced row. The
 only foreign keys are within the service (`template → params`, `inspection → results`).
 
@@ -148,13 +147,29 @@ validate every published payload against its committed schema.
    installs `QC_INSPECTOR` as a new system role. Customer-authored roles are untouched and reported.
 4. Only then publish the `product-operations` bundle.
 
-## 9. Deferred and risks
+## 9. Release through an inspection versus `stock.adjust`
 
-- **Lots and rolls.** `lot_id`/`roll_id` are accepted and carried (and key the hold bucket) but
-  nothing validates them against lot/roll tables — those arrive with Phase 1. When they do, add the
-  existence check in `create_inspection`; the columns and indexes are already there.
-- **Receipt into `QUALITY_HOLD` (Phase 2)** is not wired: `hold_stock: false` is the hook for it.
-  Auto-creating an inspection when an item "tracks quality" is Phase 2's GRN work.
+Moving stock out of `QUALITY_HOLD` / `REJECTED` / `QUARANTINE` into `AVAILABLE` through the Phase 1
+status-change endpoint needs `operations.inventory.stock.adjust`. **A release through an inspection
+deliberately does not:** `release`, `reject` and `disposition` call `ledger.post_move` directly, and
+what governs them is `operations.quality.inspection.approve` / `.reject` (both dangerous, both
+audited, both tied to a recorded inspection with readings). A holder of `approve` but not
+`stock.adjust` can release held stock only through the inspection that holds it, never by hand; the
+inverse also holds. This is the intended separation: the quality permission, not the stock one,
+decides release via an inspection.
+
+## 10. Deferred and risks
+
+- **Lots and rolls** are validated on create: `create_inspection` calls
+  `ledger.validate_tracking` (the check every posted move makes), so an unknown lot or roll, one
+  from another organization, or one belonging to a different item is a 404 / 422 and no inspection
+  row is written, with or without a hold.
+- **Receipt into `QUALITY_HOLD` (Phase 2)** is not wired. TODO(Phase 2 integration): when the goods
+  receipt lands (Phase 2 is on a separate stack), a received line of a quality-tracked item should
+  post into `QUALITY_HOLD` and open an `incoming` inspection with `hold_stock: false` (the hook),
+  `reference_type` / `reference_id` pointing at the receipt line and `supplier_id` set. Until then an
+  inspection over received stock is opened by hand. (The job-work receipt hand-off, which does not
+  depend on Phase 2, is wired by the Phase 6 branch.)
 - **Single disposition per inspection**, over the whole rejected quantity. Splitting a rejection
   between RTV and scrap is a new inspection of the rejected bucket.
 - **No supplier-return document / debit note.** `reference` is free text; finance integration of an
@@ -164,5 +179,6 @@ validate every published payload against its committed schema.
   trail's `after` summaries only as counts and failed names, not values.
 - A keyed retry of an *earlier* step after a *later* keyed step has overwritten the stored key
   answers 409, not a replay (one stored key per step family, not a log).
-- Migration heads: Phase 1 adds `b7d41e92c05a` from the same parent, so merging both needs an
-  `alembic merge` revision.
+- Migration chain: `a3c5e8f1b290` follows Phase 1's `c4a8e1f6d273`. If another phase's migrations
+  land first, re-parent by editing `down_revision` in the migration file only (the migration test
+  derives its "before" revision from it).
