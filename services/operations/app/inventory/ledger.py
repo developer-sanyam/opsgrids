@@ -330,7 +330,13 @@ async def _locations(
         # `FOR SHARE` on the location rows: a concurrent `delete_location` takes them `FOR UPDATE`
         # before it checks for history, so a post into a location and its deletion serialise —
         # the deletion sees this post's stock, or this post sees the location already gone.
-        .with_for_update(read=True, of=Location)
+        #
+        # `KEY SHARE` is enough for that (it conflicts with `FOR UPDATE`) and, unlike `SHARE`, does
+        # not conflict with a plain non-key `UPDATE` of the location row, so ordinary location
+        # edits stay out of every post's way. Ordered by id so two posts over the same locations
+        # lock them in one order.
+        .order_by(Location.id)
+        .with_for_update(read=True, key_share=True, of=Location)
     )
     found = {loc_id: f"{wh}/{code}" for loc_id, wh, code in rows}
     if missing := wanted - found.keys():
@@ -363,12 +369,18 @@ async def _validate_tracking(
         if missing := lot_ids - lots.keys():
             raise NotFoundProblem(f"Lot {sorted(map(str, missing))[0]} is not in this org")
     if roll_ids:
+        # `FOR SHARE`, in id order, before any balance lock: the lock order is roll -> balance
+        # everywhere (split/merge take their rolls `FOR UPDATE` first, too). Without this a
+        # transfer would hold a balance and then wait on a roll a concurrent split holds while
+        # that split waits on the balance — a deadlock. Now they queue on the roll, and the
+        # loser wakes up to a `SPLIT` roll with no stock.
         rolls = {
             roll_id: (item_id, lot_id, state)
             for roll_id, item_id, lot_id, state in await session.execute(
-                select(Roll.id, Roll.inventory_item_id, Roll.lot_id, Roll.state).where(
-                    Roll.organization_id == org_id, Roll.id.in_(roll_ids)
-                )
+                select(Roll.id, Roll.inventory_item_id, Roll.lot_id, Roll.state)
+                .where(Roll.organization_id == org_id, Roll.id.in_(roll_ids))
+                .order_by(Roll.id)
+                .with_for_update(read=True, of=Roll)
             )
         }
         if missing := roll_ids - rolls.keys():
@@ -580,7 +592,6 @@ async def post_move(
 
     items = await _items(session, org_id, (line.item_id for line in lines))
     where = await _locations(session, org_id, (line.location_id for line in lines))
-    await _validate_tracking(session, org_id, lines)
 
     request_hash = _request_hash(
         {
@@ -627,6 +638,11 @@ async def post_move(
     inserted = (await session.execute(header.returning(InventoryMove.id))).scalar_one_or_none()
     if inserted is None:
         return await _replay(session, org_id, idempotency_key or "", request_hash)
+    # Only a fresh post is validated against the roll/lot state *now* — and only after the
+    # idempotency lookup above, so a retry of a post that already happened replays it even when
+    # what it did (a split child later consumed) would make the same lines invalid today. The
+    # check is also where the roll locks are taken, ahead of the first balance lock below.
+    await _validate_tracking(session, org_id, lines)
     move = (
         await session.execute(select(InventoryMove).where(InventoryMove.id == move_id))
     ).scalar_one()

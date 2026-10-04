@@ -260,7 +260,9 @@ class OpeningLineIn(BaseModel):
     status: OnSiteStatus = "AVAILABLE"
     lot_id: UUID | None = None
     roll_id: UUID | None = None
-    unit_cost_minor: int | None = Field(default=None, ge=0)
+    #: Capped well under `BIGINT` so `quantity * cost` and the column both stay representable —
+    #: an out-of-range figure is a 422 here, not a database overflow (500) later.
+    unit_cost_minor: int | None = Field(default=None, ge=0, le=10**15)
     unit_cost_currency: str | None = Field(default=None, min_length=3, max_length=3)
 
     @model_validator(mode="after")

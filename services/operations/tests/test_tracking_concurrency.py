@@ -27,8 +27,11 @@ from app.inventory.ledger import MoveLine
 from app.inventory.tracking_schemas import (
     OpeningLineIn,
     OpeningStockIn,
+    RollIn,
+    RollMergeIn,
     RollSplitIn,
     SplitChildIn,
+    StockStatusChangeIn,
     StockTransferIn,
 )
 from app.models import SCHEMA, Roll
@@ -139,9 +142,13 @@ class TestSplitRaces:
         assert await roll_count(session, org_id) == 3
         await assert_reconciled(session, org_id)
 
+    @pytest.mark.parametrize("attempt", range(12))
     async def test_a_split_racing_a_transfer_of_the_same_roll_has_one_winner(
-        self, maker, session, org_id, world
+        self, maker, session, org_id, world, attempt
     ) -> None:
+        """Roll lock first, then balances, on both sides: the loser queues on the roll and is
+        refused cleanly — never a `DeadlockDetectedError`. Repeated, because a lock-order bug only
+        shows on some interleavings."""
         w = world
 
         async def transfer(s: AsyncSession) -> None:
@@ -161,14 +168,112 @@ class TestSplitRaces:
             )
 
         outcomes = await race(maker, org_id, [split(w, "50", "32.5"), transfer])
-        # Whichever commits first starves the other: a split needs the whole roll, and a
-        # transfer needs 10 of it.
         assert outcomes.count("ok") == 1, outcomes
+        loser = next(o for o in outcomes if o != "ok")
+        # A transfer that loses finds the roll consumed (a conflict, or no stock); a split that
+        # loses finds the roll spread over two bins (a conflict). Never a raw database error.
+        assert loser in {"ConflictProblem", "InsufficientStock"}, outcomes
         for bucket in (
             await bucket_qty(session, w, lot=w.lot, roll=w.roll),
             await bucket_qty(session, w, location=w.bin_b, lot=w.lot, roll=w.roll),
         ):
             assert bucket[0] >= 0
+        await assert_reconciled(session, org_id)
+
+    @pytest.mark.parametrize("attempt", range(5))
+    async def test_a_split_racing_a_status_change_of_the_same_roll_never_deadlocks(
+        self, maker, session, org_id, world, attempt
+    ) -> None:
+        w = world
+
+        async def hold(s: AsyncSession) -> None:
+            await stock_ops.change_stock_status(
+                s,
+                w.t.ctx,
+                StockStatusChangeIn(
+                    inventory_item_id=w.t.fabric,
+                    location_id=w.t.weaving,
+                    from_status="AVAILABLE",
+                    to_status="QUALITY_HOLD",
+                    quantity="5",
+                    lot_id=w.lot,
+                    roll_id=w.roll,
+                ),
+                idempotency_key=None,
+                occurred_on_explicit=False,
+            )
+
+        outcomes = await race(maker, org_id, [split(w, "50", "32.5"), hold])
+        assert outcomes.count("ok") == 1, outcomes
+        loser = next(o for o in outcomes if o != "ok")
+        assert loser in {"ConflictProblem", "InsufficientStock"}, outcomes
+        await assert_reconciled(session, org_id)
+
+    @pytest.mark.parametrize("attempt", range(5))
+    async def test_a_merge_racing_a_transfer_of_a_source_never_deadlocks(
+        self, maker, session, org_id, world, attempt
+    ) -> None:
+        w = world
+        async with session.begin():
+            second = await tracking.create_roll(
+                session,
+                w.t.ctx,
+                RollIn(
+                    inventory_item_id=w.t.fabric,
+                    lot_id=w.lot,
+                    roll_no="R-2",
+                    primary_qty="40",
+                    shade="NAVY",
+                ),
+            )
+            second_id = second.id
+            await stock_ops.post_opening_stock(
+                session,
+                w.t.ctx,
+                OpeningStockIn(
+                    lines=[
+                        OpeningLineIn(
+                            inventory_item_id=w.t.fabric,
+                            location_id=w.t.weaving,
+                            quantity="40",
+                            lot_id=w.lot,
+                            roll_id=second_id,
+                        )
+                    ]
+                ),
+                idempotency_key=None,
+                occurred_on_explicit=False,
+            )
+
+        async def merge(s: AsyncSession) -> None:
+            await tracking.merge_rolls(
+                s,
+                w.t.ctx,
+                RollMergeIn(roll_ids=[w.roll, second_id], location_id=w.t.weaving),
+                idempotency_key=None,
+                occurred_on_explicit=False,
+            )
+
+        async def transfer(s: AsyncSession) -> None:
+            await stock_ops.transfer_stock(
+                s,
+                w.t.ctx,
+                StockTransferIn(
+                    inventory_item_id=w.t.fabric,
+                    from_location_id=w.t.weaving,
+                    to_location_id=w.bin_b,
+                    quantity="10",
+                    lot_id=w.lot,
+                    roll_id=second_id,
+                ),
+                idempotency_key=None,
+                occurred_on_explicit=False,
+            )
+
+        outcomes = await race(maker, org_id, [merge, transfer])
+        assert outcomes.count("ok") == 1, outcomes
+        loser = next(o for o in outcomes if o != "ok")
+        assert loser in {"ConflictProblem", "InsufficientStock"}, outcomes
         await assert_reconciled(session, org_id)
 
 

@@ -283,6 +283,38 @@ async def bucket_balance(
     return int((await session.execute(stmt)).scalar_one_or_none() or 0)
 
 
+async def lock_roll_balances(
+    session: AsyncSession, org_id: uuid.UUID, roll_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, list[InventoryBalance]]:
+    """Every balance row of the given rolls (every location and status, zero rows included),
+    locked `FOR UPDATE` in the kernel's bucket order — call it *after* `lock_rolls`, so the lock
+    order stays roll -> balance. This is what makes "the roll lives in one bucket" a check that
+    cannot go stale: nobody can move stock into or out of any of these buckets until we commit."""
+    found: dict[uuid.UUID, list[InventoryBalance]] = {roll_id: [] for roll_id in roll_ids}
+    if not roll_ids:
+        return found
+    stmt = (
+        select(InventoryBalance)
+        .where(
+            InventoryBalance.organization_id == org_id,
+            InventoryBalance.roll_id.in_(set(roll_ids)),
+        )
+        .order_by(
+            InventoryBalance.inventory_item_id,
+            InventoryBalance.location_id,
+            InventoryBalance.status,
+            InventoryBalance.lot_id,
+            InventoryBalance.roll_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    for balance in (await session.execute(stmt)).scalars().all():
+        assert balance.roll_id is not None
+        found[balance.roll_id].append(balance)
+    return found
+
+
 def roll_out(row: Any) -> RollOut:
     roll, sku, uom, lot_no, on_hand = row[0], row[1], row[2], row[3], int(row[4])
     return RollOut(
@@ -603,6 +635,43 @@ async def trace_lots(
         )
         for r in rows
     ]
+
+
+#: Is `:target` reachable from `:start` following parent -> child edges? Uncapped, unlike the
+#: display trace: the write-time loop check must see the whole graph, or a chain longer than the
+#: display cap could be closed into a loop. `UNION` (not `UNION ALL`) de-duplicates nodes, so the
+#: walk visits each lot once and terminates even over data that already contains a cycle.
+_LOT_REACHES_SQL = text(
+    f"""
+    WITH RECURSIVE reach(node_id) AS (
+        SELECT g.child_lot_id
+          FROM {SCHEMA}.lot_genealogy g
+         WHERE g.organization_id = :org
+           AND g.parent_lot_id = :start
+           AND g.parent_lot_id <> g.child_lot_id
+        UNION
+        SELECT g.child_lot_id
+          FROM {SCHEMA}.lot_genealogy g
+          JOIN reach r ON g.parent_lot_id = r.node_id
+         WHERE g.organization_id = :org
+           AND g.parent_lot_id <> g.child_lot_id
+    )
+    SELECT EXISTS (SELECT 1 FROM reach WHERE node_id = :target)
+    """  # noqa: S608 — only the SCHEMA constant is interpolated; values are bound
+)
+
+
+async def lot_reaches(
+    session: AsyncSession, org_id: uuid.UUID, start: uuid.UUID, target: uuid.UUID
+) -> bool:
+    """Whether `target` is `start` or descends from it through `lot_genealogy`, with no depth cap
+    (write-time loop check — see `_LOT_REACHES_SQL`)."""
+    if start == target:
+        return True
+    result = await session.execute(
+        _LOT_REACHES_SQL, {"org": org_id, "start": start, "target": target}
+    )
+    return bool(result.scalar_one())
 
 
 async def trace_rolls(

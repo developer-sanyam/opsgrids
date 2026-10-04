@@ -233,6 +233,25 @@ Opening stock requires `inventory.stock.adjust` (it creates quantity); transfers
 `inventory.stock.transfer`; split and merge require `inventory.roll.write`. `uom_conversions` stays unwired until
 Phase 2.
 
+Three further rules, added after review of the slice:
+
+- **A status change has a direction.** `stock.transfer` may only move stock *into* a hold (AVAILABLE ->
+  QUALITY_HOLD / QUARANTINE / DAMAGED / REJECTED / BLOCKED, or between holds). Moving it *out of* REJECTED,
+  DAMAGED, QUARANTINE, QUALITY_HOLD or BLOCKED into AVAILABLE or WIP is a release, and also requires
+  `inventory.stock.adjust` at ORG scope (403 otherwise): it turns stock someone withheld back into sellable stock,
+  which is the same power as creating quantity. Without the gate a floor worker holding only `stock.transfer`
+  could launder rejected stock into AVAILABLE.
+- **A roll is split or merged only when it lives in one bucket.** The roll's total on-site stock across *all*
+  buckets must equal the quantity held in the bucket the request names (409, other buckets named, otherwise).
+  The split's child rolls and the merge's result roll live in a single bucket, so a roll with stock elsewhere
+  (another bin, a QUALITY_HOLD portion) would silently strand that remainder on a `SPLIT`/`MERGED` roll. The
+  check runs under `FOR UPDATE` on all of the roll's balance rows, taken after the roll lock, so a concurrent
+  transfer cannot change the picture between check and post.
+- **Lock order is item -> roll -> balance, everywhere.** `post_move` takes every roll its lines name `FOR SHARE`
+  in id order before its first balance lock; split and merge take theirs `FOR UPDATE`. A transfer racing a split
+  of the same roll therefore queues on the roll row and loses cleanly (409 / `INSUFFICIENT_STOCK`) instead of
+  deadlocking. A split/merge also verifies the lines it posted left the consumed roll at exactly zero.
+
 ## Consequences
 
 - `operations` becomes the largest service; the module split is required, not optional.

@@ -233,7 +233,7 @@ to the line's item, agree with each other, and a `SPLIT`/`MERGED` roll cannot re
 |---|---|---|
 | `POST /operations/inventory/stock/opening` | `inventory.stock.adjust` | `opening`, one line per location/status/lot/roll |
 | `POST /operations/inventory/stock/transfers` | `inventory.stock.transfer` | `relocation` (`bin_transfer`), same warehouse only |
-| `POST /operations/inventory/stock/status-changes` | `inventory.stock.transfer` | paired `relocation` (`status_change`); never to `IN_TRANSIT`/`AT_JOB_WORKER` |
+| `POST /operations/inventory/stock/status-changes` | `inventory.stock.transfer`; **plus `inventory.stock.adjust` to move stock out of a hold** (REJECTED, DAMAGED, QUARANTINE, QUALITY_HOLD, BLOCKED) into AVAILABLE or WIP — 403 otherwise | paired `relocation` (`status_change`); never to `IN_TRANSIT`/`AT_JOB_WORKER` |
 | `POST /operations/inventory/rolls/{id}:split` | `inventory.roll.write` | `relocation` (`roll_split`): parent out, n children in |
 | `POST /operations/inventory/rolls:merge` | `inventory.roll.write` | `relocation` (`roll_merge`): n sources out, one result in |
 | `POST/PATCH /operations/inventory/lots`, `POST .../lots/{id}/genealogy` | `inventory.lot.write` | no stock |
@@ -264,14 +264,22 @@ request (422 when malformed) and carries no tenant or scope — it only moves th
 - **Idempotency.** Keyed split/merge derive the ids of the rolls they create from `(organization, key)`, so a
   retry rebuilds identical ledger lines and the kernel replays it (200, `replayed: true`); the same key with a
   different request is 409. Replays stage no further audit rows or events.
-- **Concurrency.** Roll operations lock the roll rows first (id order), then the kernel locks balances; no path
-  takes them the other way round. `post_move` takes the location rows `FOR SHARE` so a post and a
-  `delete_location` serialise.
+- **One bucket.** A roll is split or merged only when it lives in one bucket: its total stock across *all*
+  buckets must equal what the named bucket holds, else 409 `roll_in_several_buckets` naming where the rest is.
+  Consolidate first (transfer / status change). The check runs under `FOR UPDATE` on all the roll's balance rows.
+- **Derived child numbers** (`<parent>-1…`) longer than 60 characters are a 422 `too_long`: name the children.
+- **Concurrency.** Lock order is roll -> balance, everywhere. Split/merge take roll rows `FOR UPDATE` (id order),
+  then the roll's balances; `post_move` takes every roll its lines name `FOR SHARE` (id order) before its first
+  balance lock, so a transfer racing a split queues on the roll and loses with 409/`INSUFFICIENT_STOCK`, never a
+  deadlock. `post_move` takes the location rows `FOR KEY SHARE` (id order) so a post and a `delete_location`
+  serialise. A keyed retry is looked up before the roll/lot state is validated, so it replays even after what
+  it created has since been split again.
 - **Traces.** Lot and roll traces are recursive CTEs over `lot_genealogy` and over `rolls.parent_roll_id` +
   `roll_events` `MERGE_RESULT` rows, filtered by organization at every step, depth-capped at 25. A split/merge
   inside one lot leaves a self-edge in `lot_genealogy` as evidence tied to the move; the trace skips
   self-edges. `BLEND`/`REWORK`/`DERIVED` links between two lots are what it follows, and creating one that would
-  close a loop is refused (under a per-organization advisory lock).
+  close a loop is refused (under a per-organization advisory lock) by an **uncapped** reachability check — the
+  25-hop cap is for display only.
 - **Tracking flags.** A lot can only be registered for an item with `track_lot`, a roll for one with
   `track_roll`; opening stock for a tracked item must name its lot/roll, and for an untracked item must not.
 

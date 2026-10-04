@@ -5,11 +5,20 @@ Lots and rolls are *records about stock*; the stock itself only ever moves throu
 *is*, so they do three things in one transaction: create/retire the roll rows, post the stock move
 that matches them, and write the `roll_events` / `lot_genealogy` rows that make them traceable.
 
-**Concurrency.** Every roll operation takes its roll rows `FOR UPDATE` first, in id order
-(`tracking_selectors.lock_rolls`), and only then reaches the kernel (which takes balance locks).
-Two splits of one roll therefore queue on the roll row; the second wakes up to a roll that is
-already `SPLIT` and is refused, or — if it carries the same `Idempotency-Key` — replays the first.
-No path takes a balance lock and then a roll lock, so the two orders cannot deadlock.
+**Concurrency.** The lock order is roll -> balance, with no exception. Split and merge take their
+roll rows `FOR UPDATE` in id order (`tracking_selectors.lock_rolls`), then all of those rolls'
+balance rows `FOR UPDATE`, then reach the kernel. The kernel's `post_move` takes every roll its
+lines name `FOR SHARE` (id order) *before its first balance lock*, so a plain transfer or status
+change of a roll queues on the roll row behind a split/merge instead of holding a balance while
+waiting for the roll — which is what would deadlock. Two splits of one roll queue on the roll
+row; the second wakes up to a roll that is already `SPLIT` and is refused, or — if it carries the
+same `Idempotency-Key` — replays the first. A transfer that loses to a split finds the roll
+empty and is refused as `InsufficientStock`/409, never as a database deadlock error.
+
+**One bucket.** A roll is split or merged only when it lives in one bucket: its stock across
+*all* buckets must equal what the named bucket holds (ADR-0014 §12), because the children / the
+result are created in that one bucket and anything left elsewhere would be stranded on a consumed
+roll. After posting, the consumed rolls' ledger lines must end at exactly zero.
 
 **Idempotency.** A keyed split/merge derives the ids of the rolls it creates from
 `(organization, key)` (`uuid5`), so a retried request builds byte-identical ledger lines and the
@@ -19,6 +28,7 @@ kernel's hash check recognises it. The same key with a different request is a 40
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from typing import Any
 
 from sqlalchemy import select, text
@@ -43,8 +53,10 @@ from app.inventory.tracking_schemas import (
     RollSplitIn,
 )
 from app.models import (
+    InventoryBalance,
     InventoryMove,
     LedgerEntry,
+    Location,
     Lot,
     LotGenealogy,
     Roll,
@@ -52,6 +64,9 @@ from app.models import (
 )
 from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
+
+#: `rolls.roll_no` is `VARCHAR(60)`.
+MAX_ROLL_NO_LEN = 60
 
 EVT_LOT_CREATED = "operations.inventory.lot.created"
 EVT_LOT_UPDATED = "operations.inventory.lot.updated"
@@ -74,6 +89,71 @@ def _derived_id(org_id: uuid.UUID, key: str | None, purpose: str) -> uuid.UUID:
     if key is None:
         return uuid.uuid4()
     return uuid.uuid5(uuid.NAMESPACE_URL, f"opsgrids:{org_id}:{key}:{purpose}")
+
+
+async def _require_one_bucket(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    roll: Roll,
+    balances: list[InventoryBalance],
+    *,
+    location_id: uuid.UUID,
+    status: str,
+    verb: str,
+) -> int:
+    """The quantity the roll's named bucket holds, after checking that is *all* it holds anywhere
+    (`balances` is the roll's full, already-locked balance list). 409 naming the other buckets
+    otherwise, so the operator knows what to consolidate first."""
+    held = sum(
+        b.quantity_milli for b in balances if b.location_id == location_id and b.status == status
+    )
+    elsewhere = [
+        b
+        for b in balances
+        if b.quantity_milli != 0 and not (b.location_id == location_id and b.status == status)
+    ]
+    if elsewhere:
+        code_rows = await session.execute(
+            select(Location.id, Location.code).where(
+                Location.organization_id == org_id,
+                Location.id.in_({b.location_id for b in elsewhere}),
+            )
+        )
+        codes: dict[uuid.UUID, str] = {loc_id: code for loc_id, code in code_rows}
+        where = ", ".join(
+            f"{format_qty(b.quantity_milli)} at {codes.get(b.location_id, b.location_id)} "
+            f"in {b.status}"
+            for b in elsewhere
+        )
+        raise ConflictProblem(
+            f"{roll.roll_no} also holds stock outside that bucket ({where}); a roll is {verb} "
+            "only when it lives in one bucket — move or status-change the rest into it first",
+            errors=[
+                {
+                    "field": "location_id",
+                    "code": "roll_in_several_buckets",
+                    "message": f"{roll.roll_no} is spread over several buckets",
+                }
+            ],
+        )
+    return held
+
+
+def _require_consumed(posted: PostedMove, roll_ids: Iterable[uuid.UUID]) -> None:
+    """Each consumed roll's outgoing line must leave it at exactly zero, else the whole operation
+    is refused (the request's transaction rolls back) rather than leave stock on a dead roll."""
+    wanted = set(roll_ids)
+    seen: set[uuid.UUID] = set()
+    for entry in posted.entries:
+        if entry.roll_id in wanted and entry.quantity_milli < 0:
+            seen.add(entry.roll_id)
+            if entry.balance_after_milli != 0:
+                raise ConflictProblem(
+                    "The roll still holds stock after the move; refusing to retire it — "
+                    "retry once other stock operations on it have finished"
+                )
+    if seen != wanted:
+        raise ConflictProblem("The move did not take every consumed roll's stock out")
 
 
 async def _move_for_key(
@@ -214,8 +294,8 @@ async def link_lots(
     child = await sel.get_lot(session, org_id, child_lot_id)
     if parent is None or child is None:
         raise NotFoundProblem("That lot is not part of this organization")
-    downstream = await sel.trace_lots(session, org_id, child_lot_id, forward=True)
-    if any(node.id == str(parent_lot_id) for node in downstream):
+    # Uncapped (the display trace stops at MAX_TRACE_DEPTH; this check must not).
+    if await sel.lot_reaches(session, org_id, child_lot_id, parent_lot_id):
         raise ConflictProblem(
             f"{parent.lot_no} already descends from {child.lot_no}; linking them would make a loop"
         )
@@ -523,14 +603,17 @@ async def split_roll(
 
     if not domain.can_transition_roll(parent.state, "SPLIT"):
         raise ConflictProblem(f"{parent.roll_no} is {parent.state}; only an active roll splits")
-    held = await sel.bucket_balance(
+    # Every balance row of the roll, locked after the roll itself (roll -> balance), so the
+    # one-bucket check below cannot be invalidated by a concurrent transfer.
+    parent_balances = (await sel.lock_roll_balances(session, org_id, [parent.id]))[parent.id]
+    held = await _require_one_bucket(
         session,
         org_id,
-        item_id=item.id,
+        parent,
+        parent_balances,
         location_id=payload.location_id,
         status=payload.status,
-        lot_id=parent.lot_id,
-        roll_id=parent.id,
+        verb="split",
     )
     if held == 0:
         raise ConflictProblem(
@@ -547,6 +630,20 @@ async def split_roll(
     roll_nos = [
         child.roll_no or f"{parent.roll_no}-{i + 1}" for i, child in enumerate(payload.children)
     ]
+    for i, roll_no in enumerate(roll_nos):
+        if len(roll_no) > MAX_ROLL_NO_LEN:
+            # Only a derived number can be this long (an explicit one is capped by the schema).
+            raise ValidationProblem(
+                f"The derived number {roll_no!r} is {len(roll_no)} characters; a roll number is "
+                f"at most {MAX_ROLL_NO_LEN}. Name the children explicitly.",
+                errors=[
+                    {
+                        "field": f"children[{i}].roll_no",
+                        "code": "too_long",
+                        "message": f"derived roll number exceeds {MAX_ROLL_NO_LEN} characters",
+                    }
+                ],
+            )
     if len(set(roll_nos)) != len(roll_nos):
         raise _duplicate("children", "Two children share a roll number")
     if taken := await sel.existing_roll_nos(session, org_id, roll_nos):
@@ -596,6 +693,7 @@ async def split_roll(
         occurred_on_explicit=occurred_on_explicit,
         request=request,
     )
+    _require_consumed(posted, [parent.id])
     move_id = posted.move.id
     session.add(
         RollEvent(
@@ -775,15 +873,17 @@ async def merge_rolls(
         ) from exc
 
     held: dict[uuid.UUID, int] = {}
+    # All of every source's balance rows, locked after the roll rows (roll -> balance).
+    source_balances = await sel.lock_roll_balances(session, org_id, source_ids)
     for roll in sources:
-        balance = await sel.bucket_balance(
+        balance = await _require_one_bucket(
             session,
             org_id,
-            item_id=item.id,
+            roll,
+            source_balances[roll.id],
             location_id=payload.location_id,
             status=payload.status,
-            lot_id=roll.lot_id,
-            roll_id=roll.id,
+            verb="merged",
         )
         if balance == 0:
             raise ConflictProblem(
@@ -854,6 +954,7 @@ async def merge_rolls(
         occurred_on_explicit=occurred_on_explicit,
         request=request,
     )
+    _require_consumed(posted, source_ids)
     move_id = posted.move.id
     for roll in sources:
         session.add(
