@@ -29,7 +29,10 @@ def template(code: str):  # type: ignore[no-untyped-def]
 
 
 def test_the_catalogue_holds_exactly_the_eight_manufacturing_permissions() -> None:
-    assert {c for c in OPERATIONS.codes() if ".manufacturing." in c} == set(MANUFACTURING)
+    # MRP (Phase 7) has its own three, asserted in `test_mrp_catalogue.py`.
+    assert {c for c in OPERATIONS.codes() if ".manufacturing." in c and ".mrp." not in c} == set(
+        MANUFACTURING
+    )
 
 
 def test_publishing_a_bom_and_approving_an_order_are_dangerous_and_nothing_else_is() -> None:
