@@ -16,6 +16,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import settings
+from app.manufacturing import models as _manufacturing_models  # noqa: F401  (registers tables)
 from app.models import SCHEMA, Base
 from platform_core.db import apply_schema_grants
 
@@ -95,6 +96,9 @@ APPEND_ONLY_TABLES = (
     "goods_receipt_lines",
     "stock_transfer_transitions",
     "inventory_import_runs",
+    "production_outputs",
+    "production_wastage",
+    "production_genealogy",
 )
 #: What each sweep's cross-tenant discovery reads — `app/cron.py`'s `ReconcileSweep` and
 #: `AlertSweep`, `app/channels/sweep.py`'s `ChannelSyncSweep`. Column-level, matching exactly
