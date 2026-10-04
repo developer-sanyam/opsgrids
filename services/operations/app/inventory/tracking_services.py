@@ -289,11 +289,16 @@ async def link_lots(
     payload: LotGenealogyIn,
     *,
     request: Request | None = None,
+    if_absent: bool = False,
 ) -> LotGenealogy:
     """Record that `parent`'s material went into `child` (a blend, a rework, a derived lot).
     Refused if it would make a lot its own ancestor — the trace is a walk over a DAG, and the
     cycle check and the insert run under one per-organization advisory lock so two concurrent
-    links cannot each pass the check and together close a loop."""
+    links cannot each pass the check and together close a loop.
+
+    `if_absent=True` is for callers that record the same link many times as a matter of course
+    (production output drawing on the same input lot again and again): an identical existing edge
+    is returned instead of being a 409, and no second audit row or event is staged for it."""
     org_id = ctx.organization_id
     child_lot_id = payload.child_lot_id
     if parent_lot_id == child_lot_id:
@@ -311,16 +316,22 @@ async def link_lots(
             f"{parent.lot_no} already descends from {child.lot_no}; linking them would make a loop"
         )
     existing = (
-        await session.execute(
-            select(LotGenealogy.id).where(
-                LotGenealogy.organization_id == org_id,
-                LotGenealogy.parent_lot_id == parent_lot_id,
-                LotGenealogy.child_lot_id == child_lot_id,
-                LotGenealogy.relation == payload.relation,
+        (
+            await session.execute(
+                select(LotGenealogy).where(
+                    LotGenealogy.organization_id == org_id,
+                    LotGenealogy.parent_lot_id == parent_lot_id,
+                    LotGenealogy.child_lot_id == child_lot_id,
+                    LotGenealogy.relation == payload.relation,
+                )
             )
         )
-    ).first()
+        .scalars()
+        .first()
+    )
     if existing is not None:
+        if if_absent:
+            return existing
         raise ConflictProblem("That link already exists")
     edge = LotGenealogy(
         organization_id=org_id,

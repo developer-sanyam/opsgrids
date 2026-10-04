@@ -29,7 +29,9 @@ from platform_core.db import TENANT_GUC
 pytestmark = pytest.mark.integration
 
 SERVICE_DIR = Path(__file__).resolve().parent.parent
-BEFORE = "665e44e243d7"  # alembic revision right before this one  # pragma: allowlist secret
+REVISION = "d3b9f2a7c614"  # pragma: allowlist secret
+# The revision this one sits on, derived so re-parenting never touches this file.
+BEFORE = f"{REVISION}-1"
 APP_ROLE = "opsgrids_operations"
 
 TABLES = (

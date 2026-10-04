@@ -11,11 +11,15 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.inventory import ledger
 from app.inventory import services as inv_services
+from app.inventory import tracking_services as tracking
 from app.inventory.ledger import MoveLine
+from app.inventory.tracking_schemas import LotIn, RollIn
+from app.models import InventoryItem
 from tests.helpers import as_principal, principal_for
 from tests.inventory_fixtures import TODAY, Textile, build_textile, q
 
@@ -78,6 +82,37 @@ async def build_mfg(session: AsyncSession, org_id: uuid.UUID) -> Mfg:
             uom="m",
         )
     return Mfg(t=t, shirt=shirt.id, panel=panel.id)
+
+
+async def make_lot(
+    session: AsyncSession, m: Mfg, item: uuid.UUID, lot_no: str, *, track_roll: bool = False
+) -> uuid.UUID:
+    """A real lot of `item` (switching on lot tracking, and roll tracking when asked): since
+    Phase 1 the ledger's lot and roll columns are foreign keys, so a made-up id cannot be
+    stocked."""
+    async with session.begin():
+        await session.execute(
+            update(InventoryItem)
+            .where(InventoryItem.organization_id == m.org_id, InventoryItem.id == item)
+            .values(track_lot=True, **({"track_roll": True} if track_roll else {}))
+        )
+        lot = await tracking.create_lot(
+            session, m.t.ctx, LotIn(inventory_item_id=item, lot_no=lot_no)
+        )
+    return lot.id
+
+
+async def make_roll(
+    session: AsyncSession, m: Mfg, item: uuid.UUID, lot: uuid.UUID, roll_no: str, primary: str
+) -> uuid.UUID:
+    """A real, registered (not yet stocked) roll of `item` in `lot` — see `make_lot`."""
+    async with session.begin():
+        roll = await tracking.create_roll(
+            session,
+            m.t.ctx,
+            RollIn(inventory_item_id=item, lot_id=lot, roll_no=roll_no, primary_qty=primary),
+        )
+    return roll.id
 
 
 async def stock(

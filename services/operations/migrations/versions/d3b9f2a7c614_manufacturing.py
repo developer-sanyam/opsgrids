@@ -18,7 +18,7 @@ in the service, filtered by organization. Every tenant table gets ENABLE + FORCE
 standard `tenant_isolation` policy.
 
 Revision ID: d3b9f2a7c614
-Revises: 665e44e243d7
+Revises: see `down_revision` below
 Create Date: 2026-10-05 09:00:00.000000
 """
 
@@ -30,7 +30,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "d3b9f2a7c614"  # pragma: allowlist secret
-down_revision: str | None = "665e44e243d7"  # pragma: allowlist secret
+down_revision: str | None = "a3c5e8f1b290"  # pragma: allowlist secret
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

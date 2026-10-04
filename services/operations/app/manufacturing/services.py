@@ -34,8 +34,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app.inventory import ledger
+from app.inventory import tracking_services as tracking
 from app.inventory.ledger import InsufficientStock, MoveLine
 from app.inventory.quantity import format_qty, is_discrete
+from app.inventory.tracking_schemas import LotGenealogyIn
 from app.manufacturing import common, domain, selectors
 from app.manufacturing.models import (
     Bom,
@@ -65,6 +67,28 @@ from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 
 _REF = "production_order"
+
+_NO_LOCATION = uuid.UUID(int=0)
+
+
+def _tracking_line(
+    item_id: uuid.UUID,
+    lot_id: uuid.UUID | None,
+    roll_id: uuid.UUID | None,
+    *,
+    location_id: uuid.UUID | None = None,
+) -> MoveLine:
+    """A line that carries only an item, a lot and a roll — for `ledger.validate_tracking`, which
+    reads nothing else from it. `quantity_milli` is negative so the "cannot receive stock" check
+    (positive lines only) does not apply: this is an existence, item-match and lock check."""
+    return MoveLine(
+        item_id=item_id,
+        location_id=location_id or _NO_LOCATION,
+        status="AVAILABLE",
+        quantity_milli=-1,
+        lot_id=lot_id,
+        roll_id=roll_id,
+    )
 
 
 class InsufficientWip(ConflictProblem):
@@ -867,6 +891,7 @@ async def reserve_materials(
         tuple[ProductionMaterial, uuid.UUID | None, uuid.UUID | None, uuid.UUID | None, int]
     ]
     requests = []
+    tracked: list[MoveLine] = []
     if payload.lines is None:
         requests = [(m, None, None, None, open_need(m)) for m in materials if open_need(m)]
     else:
@@ -887,7 +912,13 @@ async def reserve_materials(
                 )
             if line.location_id is not None:
                 await common.require_location(session, org_id, line.location_id)
+            if line.lot_id is not None or line.roll_id is not None:
+                tracked.append(_tracking_line(material.item_id, line.lot_id, line.roll_id))
             requests.append((material, line.location_id, line.lot_id, line.roll_id, wanted))
+    # A named lot or roll must exist in this organization and belong to the material's item: the
+    # kernel's `reserve` would otherwise answer a bogus id with "insufficient stock". One call for
+    # every line, so the rolls are share-locked in id order before any balance is locked below.
+    await ledger.validate_tracking(session, org_id, tracked)
 
     shortages: list[Shortage] = []
     n = 0
@@ -1297,6 +1328,46 @@ def _wip_picks(picks: list[ProductionPick], material_id: uuid.UUID) -> list[Prod
     return [p for p in picks if p.material_id == material_id and selectors.wip_of(p) > 0]
 
 
+async def _link_lot_genealogy(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    draws: list[tuple[ProductionMaterial, ProductionPick, int]],
+    output_lot_id: uuid.UUID | None,
+    *,
+    request: Request | None,
+) -> None:
+    """Lot-level edges (Phase 1's `lot_genealogy`) from every lot consumed into the output lot, so
+    a trace of the finished lot walks back to its input lots without knowing about production.
+
+    `production_genealogy` stays the production-side record (per output, with roll and quantity);
+    this is the lot graph. The relation is `BLEND` when several lots of the *same* item went into
+    the output, `DERIVED` otherwise (components of different items are inputs, not a blend). An
+    input that is the output's own lot adds no edge (a lot cannot be its own parent), an edge that
+    already exists is reused, and `link_lots` refuses one that would close a loop (409).
+    """
+    if output_lot_id is None:
+        return
+    parents: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for _material, pick, _q in draws:
+        if pick.lot_id is not None and pick.lot_id != output_lot_id:
+            parents.setdefault(pick.item_id, set()).add(pick.lot_id)
+    for item_parents in parents.values():
+        relation = "BLEND" if len(item_parents) > 1 else "DERIVED"
+        for parent_lot_id in sorted(item_parents):
+            await tracking.link_lots(
+                session,
+                ctx,
+                parent_lot_id,
+                LotGenealogyIn(
+                    child_lot_id=output_lot_id,
+                    relation=relation,
+                    note="production output",
+                ),
+                request=request,
+                if_absent=True,
+            )
+
+
 async def record_output(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -1364,6 +1435,26 @@ async def record_output(
             + "; ".join(f"{s['sku']} short by {s['short']}" for s in short),
             errors=short,
         )
+
+    # Every roll this request touches — the WIP rolls being consumed and the output roll — is
+    # validated and share-locked in id order *before* the first balance lock. The two moves below
+    # would otherwise lock the output roll after the consume move already holds balances, the
+    # reverse of the roll -> balance order a concurrent merge or split relies on.
+    await ledger.validate_tracking(
+        session,
+        org_id,
+        [
+            *(_tracking_line(p.item_id, p.lot_id, p.roll_id) for _m, p, _q in draws),
+            MoveLine(
+                item_id=order.item_id,
+                location_id=location_id,
+                quantity_milli=good,
+                status=payload.status,
+                lot_id=payload.lot_id,
+                roll_id=payload.roll_id,
+            ),
+        ],
+    )
 
     consume_move = None
     if draws:
@@ -1450,6 +1541,7 @@ async def record_output(
                 quantity_milli=q,
             )
         )
+    await _link_lot_genealogy(session, ctx, draws, payload.lot_id, request=request)
     order.produced_quantity_milli = total_good
     order.updated_at = datetime.now(UTC)
     await session.flush()
@@ -1714,6 +1806,11 @@ async def complete_order(
             )
             + ") — complete with leftover=return or leftover=scrap"
         )
+    # The return / scrap moves below are one move each (several for a scrap): lock and validate
+    # every leftover roll first, in id order, ahead of the first balance lock.
+    await ledger.validate_tracking(
+        session, org_id, [_tracking_line(p.item_id, p.lot_id, p.roll_id) for p in leftover]
+    )
     if leftover and payload.leftover == "return":
         await _post_returns(
             session,

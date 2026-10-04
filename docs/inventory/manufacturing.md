@@ -32,7 +32,7 @@ together).
 
 ## Tables
 
-All in the `operations` schema, one migration (`d3b9f2a7c614`, down-revision `665e44e243d7`),
+All in the `operations` schema, one migration (`d3b9f2a7c614`, down-revision `a3c5e8f1b290`, Phase 4's),
 `organization_id` + `ENABLE`/`FORCE` RLS + the `tenant_isolation` policy on every one.
 
 | Table | What it is |
@@ -49,8 +49,11 @@ All in the `operations` schema, one migration (`d3b9f2a7c614`, down-revision `66
 | `manufacturing_requests` | `Idempotency-Key` claims |
 
 `item_id`, `location_id`, `lot_id`, `roll_id` columns are **plain UUIDs with no foreign key**
-(`lots`/`rolls` tables come with Phase 1 and are not in this lineage; an item or location is
-checked in the service, filtered by organization, so a foreign id is a 404). The only foreign keys
+(an item or location is checked in the service, filtered by organization, so a foreign id is a
+404; a **lot or roll** a request names is checked against Phase 1's `lots`/`rolls` — existing in
+the caller's organization and belonging to the item, 404 / 422 — by `ledger.validate_tracking`, the
+check a posted move makes, run up front for `reserve`, `output` and `complete`, and by the move
+itself for `issue`, `return` and `wastage`). The only foreign keys
 are between manufacturing's own tables. A migration test asserts it.
 
 ## Versioned BOMs
@@ -120,7 +123,11 @@ returned, or scrapped at completion.
    (so lot attribution is deterministic) and receives the good quantity. Not enough WIP for the
    standard → 409 `insufficient-wip` naming each material and the shortfall, with nothing
    partially posted. Each consumed pick writes a **genealogy row** (parent item/lot/roll → output
-   item/lot/roll, quantity).
+   item/lot/roll, quantity) — the production-side record — and, when the output names a lot, the
+   **lot graph** is linked too: `lot_genealogy` edges input lot → output lot through Phase 1's
+   `link_lots`, relation `BLEND` when several lots of one item went in, `DERIVED` otherwise (an
+   input that is the output's own lot adds none; an existing edge is reused; an edge that would
+   close a loop is 409). The lot trace of a finished lot therefore walks back to its inputs.
 6. **Wastage** (`POST /orders/{id}/wastage`): a material, a type (`CUTTING, DEFECT, SPILLAGE,
    DAMAGE, PROCESS_LOSS, OTHER`; `LEFTOVER` is written by completion), a quantity, optionally a
    pick. Drawn from WIP, one wastage row per pick (so a loss is attributable to a lot).
@@ -168,6 +175,13 @@ kernel stages its own `inventory_move.posted` / `stock.posted` for each move.
 - Lock order: the **order row first**, then its materials and picks, then whatever the kernel
   locks (balances, then reservations). Two actions on one order queue; two different orders
   competing for the same stock meet only on the balance row.
+- **Rolls lock before balances.** A request that touches rolls takes them `FOR SHARE`, in id
+  order, before its first balance lock (the order Phase 1's split and merge rely on). `issue`,
+  `return` and `wastage` are one move each and get that from `post_move`; `output` (a consume move
+  then a receipt move) and `complete` (a return or several scraps) lock every roll up front with
+  `ledger.validate_tracking`, so a later move's roll is never waited for while an earlier move's
+  balance is held. Proven by `tests/test_manufacturing_tracking.py` (the output parks on a held
+  roll while the consumed WIP balance is still free).
 - Proven in `tests/test_manufacturing_concurrency.py` with real connections: two issues for the
   same stock → exactly one succeeds, never negative; 10 orders × 15 against 100 → exactly 6;
   4 orders reserving 160 against 100 → exactly 100 promised; two outputs against the same WIP →
@@ -208,8 +222,9 @@ key out of manufacturing, privileges, tenant isolation as the app role, down ove
 
 ## Deferred, and why
 
-- **Lots and rolls as objects.** Orders and genealogy carry plain `lot_id`/`roll_id` UUIDs; the UI
-  takes them as ids. Creating lots on output, and pickers, arrive with Phase 1's `lots`/`rolls`.
+- **Lot and roll pickers / creating a lot on output.** Orders and genealogy carry `lot_id`/`roll_id`
+  that are validated against Phase 1's tables, but the UI still takes them as ids and an output
+  cannot mint its own lot.
 - **QC.** Output can land in `QUALITY_HOLD`; inspections and release are Phase 4.
 - **Costing / cost roll-up, `valuation_posted`** — Phase 8. **MRP** (demand-driven order creation,
   net requirements) — Phase 7. Production orders are created by a person.

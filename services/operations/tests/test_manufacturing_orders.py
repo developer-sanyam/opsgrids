@@ -31,6 +31,7 @@ from tests.manufacturing_fixtures import (
     build_mfg,
     call,
     make_bom,
+    make_lot,
     make_order,
     material,
     ok,
@@ -286,7 +287,9 @@ class TestFlow:
         self, client, session, m: Mfg
     ) -> None:
         org = m.org_id
-        lot_a, lot_b, out_lot = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        lot_a = await make_lot(session, m, m.t.fabric, "LOT-A")
+        lot_b = await make_lot(session, m, m.t.fabric, "LOT-B")
+        out_lot = await make_lot(session, m, m.shirt, "SHIRT-LOT")
         await stock(session, m, m.t.fabric, "5", lot=lot_a)
         await stock(session, m, m.t.fabric, "20", lot=lot_b)
         await make_bom(client, m, m.shirt, "BOM-S", [(m.t.fabric, "2", "0")])
@@ -841,7 +844,9 @@ class TestMultiLevel:
         output becomes stock, the shirt order consumes that stock, and the genealogy rows chain
         fabric lot -> panel lot -> shirt lot."""
         org = m.org_id
-        fabric_lot, panel_lot, shirt_lot = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        fabric_lot = await make_lot(session, m, m.t.fabric, "FAB-LOT")
+        panel_lot = await make_lot(session, m, m.panel, "PANEL-LOT")
+        shirt_lot = await make_lot(session, m, m.shirt, "SHIRT-LOT")
         await stock(session, m, m.t.fabric, "50", lot=fabric_lot)
         await make_bom(client, m, m.panel, "BOM-PANEL", [(m.t.fabric, "1.2", "0")])
         await make_bom(client, m, m.shirt, "BOM-SHIRT", [(m.panel, "2", "0")])
