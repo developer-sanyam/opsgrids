@@ -344,7 +344,7 @@ async def _locations(
     return found
 
 
-async def _validate_tracking(
+async def validate_tracking(
     session: AsyncSession, org_id: uuid.UUID, lines: Sequence[MoveLine]
 ) -> None:
     """Every lot and roll a line names must exist in this organization, belong to the line's item,
@@ -642,7 +642,7 @@ async def post_move(
     # idempotency lookup above, so a retry of a post that already happened replays it even when
     # what it did (a split child later consumed) would make the same lines invalid today. The
     # check is also where the roll locks are taken, ahead of the first balance lock below.
-    await _validate_tracking(session, org_id, lines)
+    await validate_tracking(session, org_id, lines)
     move = (
         await session.execute(select(InventoryMove).where(InventoryMove.id == move_id))
     ).scalar_one()

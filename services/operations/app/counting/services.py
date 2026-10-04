@@ -490,6 +490,23 @@ async def add_unlisted_line(
         )
 
     counted_milli = _parse_counted(counted, item.uom)
+    # The lot and roll must exist in this organization and belong to this item — the same check a
+    # posted move gets (404 / 422), made now so a bad id is refused at line creation instead of
+    # surviving to the approval, where it would fail the whole review on a foreign key.
+    await ledger.validate_tracking(
+        session,
+        org_id,
+        [
+            MoveLine(
+                item_id=inventory_item_id,
+                location_id=location_id,
+                counted_milli=counted_milli,
+                status=status,
+                lot_id=lot_id,
+                roll_id=roll_id,
+            )
+        ],
+    )
     line = CountLine(
         organization_id=org_id,
         session_id=count_session.id,

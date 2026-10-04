@@ -12,10 +12,13 @@ from __future__ import annotations
 
 from itertools import pairwise
 
+import uuid
+
 import pytest
 from sqlalchemy import select
 
 from app.models import Roll
+from tests.counting_fixtures import add_line, open_session_ok
 from tests.test_lots_rolls_api import (
     LOTS,
     MERGE,
@@ -33,6 +36,7 @@ from tests.tracking_fixtures import (
     World,
     assert_reconciled,
     build_world,
+    make_foreign_world,
 )
 
 pytestmark = pytest.mark.integration
@@ -373,3 +377,84 @@ class TestGenealogyLoopCheckIsUncapped:
             {"child_lot_id": lots[-1], "relation": "DERIVED"},
         )
         assert sideways.status_code == 201, sideways.text
+
+
+class TestUnlistedCountLineTracking:
+    """A count line's lot and roll get the same existence and item-match check a posted move does,
+    at line creation (404 / 422) — not later, at approval."""
+
+    async def _session(self, client, org_id, w: World) -> str:
+        row = await open_session_ok(client, org_id, warehouse_id=w.warehouse_weave)
+        return str(row["id"])
+
+    async def test_an_unknown_lot_or_roll_is_a_404(self, client, org_id, world) -> None:
+        w = world
+        sid = await self._session(client, org_id, w)
+        for extra in ({"lot_id": uuid.uuid4()}, {"roll_id": uuid.uuid4()}):
+            response = await add_line(
+                client,
+                org_id,
+                sid,
+                inventory_item_id=w.t.fabric,
+                location_id=w.bin_b,
+                counted="4",
+                **extra,
+            )
+            assert response.status_code == 404, response.text
+
+    async def test_a_lot_or_roll_of_another_item_is_a_422(self, client, org_id, world) -> None:
+        w = world
+        sid = await self._session(client, org_id, w)
+        wrong_lot = await add_line(
+            client,
+            org_id,
+            sid,
+            inventory_item_id=w.t.dye,
+            location_id=w.bin_b,
+            counted="4",
+            lot_id=w.lot,
+        )
+        assert wrong_lot.status_code == 422, wrong_lot.text
+        wrong_roll = await add_line(
+            client,
+            org_id,
+            sid,
+            inventory_item_id=w.t.dye,
+            location_id=w.bin_b,
+            counted="4",
+            roll_id=w.roll,
+        )
+        assert wrong_roll.status_code == 422, wrong_roll.text
+
+    async def test_another_tenants_lot_is_a_404(self, client, admin_session, org_id, world) -> None:
+        w = world
+        foreign = await make_foreign_world(admin_session)
+        sid = await self._session(client, org_id, w)
+        response = await add_line(
+            client,
+            org_id,
+            sid,
+            inventory_item_id=w.t.fabric,
+            location_id=w.bin_b,
+            counted="4",
+            lot_id=foreign.lot,
+        )
+        assert response.status_code == 404, response.text
+
+    async def test_a_real_lot_and_roll_of_the_item_are_accepted(
+        self, client, org_id, world
+    ) -> None:
+        w = world
+        sid = await self._session(client, org_id, w)
+        response = await add_line(
+            client,
+            org_id,
+            sid,
+            inventory_item_id=w.t.fabric,
+            location_id=w.bin_b,
+            counted="4",
+            lot_id=w.lot,
+            roll_id=w.roll,
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["roll_id"] == str(w.roll)
