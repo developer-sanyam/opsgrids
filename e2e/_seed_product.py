@@ -55,7 +55,8 @@ from app.models import PLATFORM_ORG, SCHEMA  # noqa: E402
 #: The products this suite's journeys activate. `crm` for the CRM journey (two services, two
 #: admin roles); `hrms` for the Wave 0 exit journey (employee + attendance); `finance` for the
 #: bundle journey — the trio's third member, and product-service will not project a `soon` one.
-PRODUCTS = ("crm", "hrms", "finance")
+#: `operations` for the inventory journey (`test_inventory_journey.py`).
+PRODUCTS = ("crm", "hrms", "finance", "operations")
 
 
 async def main() -> None:

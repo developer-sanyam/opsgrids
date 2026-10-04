@@ -132,6 +132,11 @@ SERVICES = (
     "billing",
     "metering",
     "payment",
+    # `operations` joined for `test_inventory_journey.py`: lots, rolls, split and the ledger are
+    # one service's own tables, but the journey proves the whole path a browser takes to them —
+    # entitlement at the gateway, the OPERATIONS_ADMIN role the activation installs, then the
+    # kernel's row locks and idempotent replay behind real HTTP.
+    "operations",
     "app-gateway",
 )
 
@@ -153,6 +158,7 @@ UPSTREAM_PORTS = {
     8162: "metering",
     8164: "catalog",
     8171: "finance",
+    8172: "operations",
 }
 
 #: The background processes that carry an event from the service that staged it to the service
@@ -1000,6 +1006,40 @@ def approval_tenant(platform: Platform, tenants: dict[str, Any]) -> dict[str, An
         "org_id": org_id,
         "org_slug": slug,
         "owner": owner,
+        "run": run,
+        "password": PASSWORD,
+    }
+
+
+@pytest.fixture(scope="session")
+def inventory_tenant(platform: Platform, tenants: dict[str, Any]) -> dict[str, Any]:
+    """A fresh organization for the inventory journey, signed up over HTTP with nothing bought.
+
+    Its own tenant, like `approval_tenant`: the journey's first assertion is a 402 on every
+    inventory route before the owner activates the product, which alpha and beta could not be
+    asked to share. Depends on `tenants` for ordering only — `_seed_product.py`, called from
+    inside it, is what promotes `operations` out of `soon`.
+    """
+    run = uuid.uuid4().hex[:8]
+    slug = f"e2e-inventory-{run}"
+    email = f"e2e-inventory-owner-{run}@example.com"
+    with httpx.Client(base_url=platform.gateway, timeout=20.0) as http:
+        org_id = _signup(
+            http,
+            org_name="Indigo Looms",
+            slug=slug,
+            full_name="Indigo Looms Owner",
+            email=email,
+        )
+        _set_password_via_reset(http, email, PASSWORD)
+        token = _login(http, email, PASSWORD, org_id)
+        owner = _find_member(http, token, email)
+
+    return {
+        "org_id": org_id,
+        "org_slug": slug,
+        "owner": owner,
+        "email": email,
         "run": run,
         "password": PASSWORD,
     }
