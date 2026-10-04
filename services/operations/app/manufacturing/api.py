@@ -345,8 +345,11 @@ async def add_component(
     session: SessionDep,
     ctx: BomWrite,
     request: Request,
+    idempotency_key: IdempotencyKey = None,
 ) -> BomVersionDetailOut:
-    await bom_services.add_component(session, ctx, bom_id, version_id, payload, request=request)
+    await bom_services.add_component(
+        session, ctx, bom_id, version_id, payload, key=idempotency_key, request=request
+    )
     return await _version_detail(session, ctx.organization_id, bom_id, version_id)
 
 
@@ -406,9 +409,17 @@ async def add_substitute(
     session: SessionDep,
     ctx: BomWrite,
     request: Request,
+    idempotency_key: IdempotencyKey = None,
 ) -> BomVersionDetailOut:
     await bom_services.add_substitute(
-        session, ctx, bom_id, version_id, component_id, payload, request=request
+        session,
+        ctx,
+        bom_id,
+        version_id,
+        component_id,
+        payload,
+        key=idempotency_key,
+        request=request,
     )
     return await _version_detail(session, ctx.organization_id, bom_id, version_id)
 
@@ -466,8 +477,11 @@ async def retire_version(
     session: SessionDep,
     ctx: BomPublish,
     request: Request,
+    idempotency_key: IdempotencyKey = None,
 ) -> BomVersionDetailOut:
-    version = await bom_services.retire_version(session, ctx, bom_id, version_id, request=request)
+    version = await bom_services.retire_version(
+        session, ctx, bom_id, version_id, key=idempotency_key, request=request
+    )
     return await selectors.version_detail_out(session, ctx.organization_id, version)
 
 
@@ -593,9 +607,10 @@ async def substitute_material(
     session: SessionDep,
     ctx: OrderWrite,
     request: Request,
+    idempotency_key: IdempotencyKey = None,
 ) -> ProductionOrderDetailOut:
     order = await services.set_material_substitute(
-        session, ctx, order_id, material_id, payload, request=request
+        session, ctx, order_id, material_id, payload, key=idempotency_key, request=request
     )
     return await selectors.order_detail_out(session, ctx.organization_id, order)
 

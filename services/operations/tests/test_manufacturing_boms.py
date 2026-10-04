@@ -170,6 +170,29 @@ class TestLifecycle:
         assert first["id"] == again["id"]
         assert (await ok(client, m.org_id, "GET", "/boms"))["total"] == 1
 
+    async def test_a_retried_add_with_one_key_adds_one_line_and_one_substitute(
+        self, client, m: Mfg
+    ) -> None:
+        bom = await make_bom(client, m, m.shirt, "BOM-1", [], publish=False)
+        body = {"component_item_id": str(m.t.fabric), "quantity": "2"}
+        path = vpath(bom, "/components")
+        first = await ok(client, m.org_id, "POST", path, expect=201, json=body, key="c-1")
+        again = await ok(client, m.org_id, "POST", path, expect=201, json=body, key="c-1")
+        assert len(first["components"]) == len(again["components"]) == 1
+        component = first["components"][0]["id"]
+        sub = {"substitute_item_id": str(m.t.dye), "ratio": "1.5"}
+        sub_path = vpath(bom, f"/components/{component}/substitutes")
+        await ok(client, m.org_id, "POST", sub_path, expect=201, json=sub, key="s-1")
+        replay = await ok(client, m.org_id, "POST", sub_path, expect=201, json=sub, key="s-1")
+        assert len(replay["components"][0]["substitutes"]) == 1
+        # Once published, a replay of the earlier add still answers with the result, while a
+        # fresh add (new key) is the 409 it always was.
+        await ok(client, m.org_id, "POST", vpath(bom, "/publish"))
+        late = await ok(client, m.org_id, "POST", path, expect=201, json=body, key="c-1")
+        assert len(late["components"]) == 1
+        fresh = await call(client, m.org_id, "POST", path, json=body, key="c-2")
+        assert fresh.status_code == 409
+
 
 class TestImmutability:
     async def test_every_edit_of_a_published_version_is_a_409(self, client, m: Mfg) -> None:

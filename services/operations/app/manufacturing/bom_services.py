@@ -410,9 +410,21 @@ async def add_component(
     version_id: uuid.UUID,
     payload: BomComponentIn,
     *,
+    key: str | None = None,
     request: Request | None = None,
 ) -> BomComponent:
     org_id = ctx.organization_id
+    claim = await common.claim(
+        session,
+        ctx,
+        key,
+        scope=f"bom.component.add:{version_id}",
+        payload=payload.model_dump(mode="json"),
+    )
+    if claim.replay and claim.result_id is not None:
+        replayed = await selectors.get_component(session, org_id, claim.result_id)
+        if replayed is not None:
+            return replayed
     bom, version = await _draft(session, org_id, bom_id, version_id)
     item = await common.require_item(session, org_id, payload.component_item_id)
     quantity = common.qty(payload.quantity, item.uom)
@@ -457,6 +469,7 @@ async def add_component(
         },
         request=request,
     )
+    claim.done(component.id)
     return component
 
 
@@ -566,9 +579,21 @@ async def add_substitute(
     component_id: uuid.UUID,
     payload: BomSubstituteIn,
     *,
+    key: str | None = None,
     request: Request | None = None,
 ) -> BomSubstitute:
     org_id = ctx.organization_id
+    claim = await common.claim(
+        session,
+        ctx,
+        key,
+        scope=f"bom.substitute.add:{component_id}",
+        payload=payload.model_dump(mode="json"),
+    )
+    if claim.replay and claim.result_id is not None:
+        replayed = await selectors.get_substitute(session, org_id, claim.result_id, component_id)
+        if replayed is not None:
+            return replayed
     bom, version = await _draft(session, org_id, bom_id, version_id)
     component = await _component(session, org_id, version, component_id)
     item = await common.require_item(session, org_id, payload.substitute_item_id)
@@ -608,6 +633,7 @@ async def add_substitute(
         after={"component_id": str(component.id), "sku": item.sku, "ratio_milli": ratio},
         request=request,
     )
+    claim.done(substitute.id)
     return substitute
 
 
@@ -727,11 +753,17 @@ async def retire_version(
     bom_id: uuid.UUID,
     version_id: uuid.UUID,
     *,
+    key: str | None = None,
     request: Request | None = None,
 ) -> BomVersion:
     org_id = ctx.organization_id
+    claim = await common.claim(
+        session, ctx, key, scope=f"bom.version.retire:{version_id}", payload={}
+    )
     await get_bom_or_404(session, org_id, bom_id)
     version = await get_version_or_404(session, org_id, bom_id, version_id, for_update=True)
+    if claim.replay:
+        return version
     if not domain.can_transition_bom_version(version.status, "RETIRED"):
         raise ConflictProblem(
             f"Version {version.version_no} is {version.status}; "
@@ -750,4 +782,5 @@ async def retire_version(
         after={"version_no": version.version_no},
         request=request,
     )
+    claim.done(version.id)
     return version

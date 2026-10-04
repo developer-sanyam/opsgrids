@@ -450,13 +450,23 @@ async def set_material_substitute(
     material_id: uuid.UUID,
     payload: MaterialSubstituteIn,
     *,
+    key: str | None = None,
     request: Request | None = None,
 ) -> ProductionOrder:
     """Switch a material to one of its BOM line's declared substitutes (or back). Only while
     nothing of the material has been reserved or issued: after that, the stock already moved is
     in the old item's unit and the requirement would stop meaning one thing."""
     org_id = ctx.organization_id
+    claim = await common.claim(
+        session,
+        ctx,
+        key,
+        scope=f"production_material.substitute:{material_id}",
+        payload=payload.model_dump(mode="json"),
+    )
     order = await lock_order(session, org_id, order_id)
+    if claim.replay:
+        return order
     _require_status(order, "DRAFT", "APPROVED", doing="change a material")
     materials = await selectors.materials_of(session, org_id, order.id, for_update=True)
     material = _materials_by_id(materials).get(material_id)
@@ -505,6 +515,7 @@ async def set_material_substitute(
         after={"item_id": str(material.item_id), "ratio_milli": material.ratio_milli},
         request=request,
     )
+    claim.done(order.id)
     return order
 
 

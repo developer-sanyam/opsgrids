@@ -28267,6 +28267,26 @@
               "title": "Version Id",
               "type": "string"
             }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
@@ -28466,6 +28486,26 @@
               "format": "uuid",
               "title": "Component Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -28732,6 +28772,26 @@
               "format": "uuid",
               "title": "Version Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -29375,6 +29435,26 @@
               "format": "uuid",
               "title": "Material Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
             }
           }
         ],
