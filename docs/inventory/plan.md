@@ -157,10 +157,31 @@ reservations UI, stocktake (Phase 3), QC (4), BOM/production (5), costing (8), s
   covered by an E2E test against a real build.
 - Docs: `ledger.md` extended, API contracts regenerated, runbook updated.
 
-### Phase 2 — Receiving and purchase
-Purchase requisition → PO (existing) → GRN with partial/short/over-receipt tolerance, lot + roll
+### Phase 2 — Receiving and purchase — **DONE** (2026-10-05) · reference: [receiving.md](receiving.md)
+
+Purchase requisition -> PO (existing) -> GRN with partial/short/over-receipt tolerance, lot + roll
 creation on receipt, supplier lot, receipt into `QUALITY_HOLD` when the item tracks quality.
-Replaces the current single-shot `receive_purchase_order`.
+
+Built (migration `c5e91a7d3b28`, `services/operations/app/receiving/`, `frontend/product-operations`):
+- Purchase requisitions with a state machine (DRAFT -> SUBMITTED -> APPROVED -> CONVERTED, REJECTED /
+  CANCELLED), approval gated at ORG, conversion into a draft purchase order through the PO module's own writer.
+- Goods receipts: one `receipt` move per receipt through `post_move`; per-item tolerance (integer basis
+  points, floored limit); partial receipts add up across documents under the PO row lock; `close_short`;
+  per-line receipt location; supplier lot number; lots and rolls (primary + measured secondary quantity)
+  created on receipt; `QUALITY_HOLD` routing; `Idempotency-Key` replay; the PO moves along
+  `PO_TRANSITIONS` (`approved -> partially_received -> received`).
+- `uom_conversions` CRUD and exact-math application in receipts (box = 12 pcs), the deferred Phase 1 item.
+- The single-shot `receive_purchase_order` is now a thin wrapper over the goods-receipt path;
+  `receive_into_home` is removed.
+- Permissions `procurement.requisition.read|write|approve`, `procurement.receipt.read|write`,
+  `inventory.stock.receive`; role `BUYER`; grants for `OPERATIONS_MANAGER`, `OPERATIONS_WORKER`,
+  `OPERATIONS_USER`; events `operations.stock.received` and six `purchase_requisition.*`.
+- Frontend: `/purchase-requisitions` (list, new, detail, approve, reject, convert), receive-goods against a
+  PO, `/goods-receipts` (list, detail), unit conversions and tolerance on the item.
+
+Not done / deferred: PO line quantities are still whole units (so fractional requisitions cannot be
+converted and fabric cannot be ordered as 82.5 m); receiving without a PO; returns to vendor; releasing
+held stock (Phase 4); the E2E browser journey.
 
 ### Phase 3 — Movements and control
 Transfers (DRAFT→REQUESTED→APPROVED→IN_TRANSIT→RECEIVED/CANCELLED) with in-transit bucket;

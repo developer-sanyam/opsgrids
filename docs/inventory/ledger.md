@@ -302,10 +302,41 @@ enforcement incl. cross-tenant, RLS, append-only privileges, refusing downgrade,
 
 ### Deferred
 
-`uom_conversions` (per-item box = 12 pcs) already exists as a table but has **no API and is not applied in
-quantity handling**: wiring a container unit through opening, transfer and split touches the item master's UOM
-rules, and a half-applied conversion is worse than none. It lands with the receiving slice (Phase 2), where
-`box` quantities first appear on a document.
+`uom_conversions` (per-item box = 12 pcs) existed as a table with no API and was not applied in quantity
+handling; **Phase 2 delivered it** (below, and [receiving.md](receiving.md)).
+
+## Receiving (Phase 2, migration `c5e91a7d3b28`)
+
+The goods receipt is the ledger's first document-driven writer: **one `receipt` move per receipt**, built
+by `app/receiving/receipts.py` and posted through `post_move` like everything else
+(`reference_type='goods_receipt'`, `reference_id=<receipt id>`). It adds four tables — `purchase_requisitions`
+and `_lines`, `goods_receipts` and `_lines` (the receipt pair is append-only, `UPDATE`/`DELETE` revoked) — and
+three columns: `purchase_order_lines.received_milli` / `short_closed` and
+`inventory_items.receipt_tolerance_bp`. No new bucket dimension and no new move kind: a receipt is a
+`receipt` move whose lines carry the `lot_id`/`roll_id` the lot and roll tables Phase 1 created.
+
+Things the ledger now sees that it did not before:
+
+- **`QUALITY_HOLD` receipts.** An item that tracks quality (or a line with `hold`) is received straight into
+  the `QUALITY_HOLD` bucket — a receipt line with that status, never an `AVAILABLE` receipt followed by a
+  status change — so the stock is never available for a moment it should not have been. Physical on-hand
+  includes it; available excludes it.
+- **One roll per ledger line.** A roll-tracked delivery posts one line per roll (each its own bucket), and the
+  rolls add up to the delivery exactly.
+- **Two receipt lines in one bucket** are merged into one move line (quantities add; unit cost is the
+  quantity-weighted mean, half-to-even), because the kernel allows each bucket once per move.
+- **Cost** per line is the PO line's price in the PO's currency (never converted, ADR-0014 §8), converted to
+  a price per *stock* unit when the PO is priced in a container unit (`100.00` per box of 12 is `8.33` per
+  piece, rounded half-to-even once). A PO priced in a unit with no recorded relation to the stock unit passes
+  its price through unchanged, exactly as the single-shot receipt always did.
+- **Unit conversion** (`uom_conversions`): item-specific rational ratios (`numerator/denominator`, lowest
+  terms) and the fixed registry, applied in `app/receiving/domain.py::to_stock_milli` — exact `Fraction`
+  arithmetic, a result that is not a whole milli-unit (or not a whole unit for a discrete stock unit) is
+  refused, never rounded. Opening, transfer and split still take quantities in the stock unit only: a
+  container unit appears on a *document* (a receipt, a PO line), not on a bucket operation.
+
+The reconciler is unchanged and stays clean after every receipt path (`tests/test_goods_receipts_api.py`,
+`tests/test_receiving_concurrency.py`).
 
 ## Not in Phase 0
 

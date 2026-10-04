@@ -713,6 +713,57 @@ Until it runs, every new route answers 403 for every non-owner in every existing
 It is a fleet write — every organization's permission version bumps — so, as always, outside
 peak hours and never as part of `make deploy`.
 
+### Inventory Phase 2 (receiving and purchase): migration and the `operations` permission reconcile
+
+Migration `c5e91a7d3b28` (operations, after `b7d41e92c05a`) creates `purchase_requisitions`,
+`purchase_requisition_lines`, `goods_receipts`, `goods_receipt_lines`, and adds
+`purchase_order_lines.received_milli` / `short_closed` and `inventory_items.receipt_tolerance_bp`. It
+is part of the ordinary `migrate` step; nothing else to run. Take the nightly backup first
+(`make edge-backup`). **Existing data:** `received_milli` is backfilled as `received_qty * 1000` (one
+whole unit is 1000 milli-units); every item gets tolerance 0 (exactly the ordered quantity — nothing
+that could be received before is refused now); no purchase order changes status, no ledger row moves,
+and an in-flight `approved` PO with `received_qty` already set stays `approved`. The receipt tables are
+append-only: `migrations/env.py` re-revokes `UPDATE`/`DELETE` after every grant pass. Rollback is the
+migration's `downgrade` (drops the new tables and the three columns; `received_qty` is untouched).
+Check beforehand with:
+
+```sql
+SELECT status, count(*) FROM operations.purchase_orders WHERE deleted_at IS NULL GROUP BY status;
+SELECT count(*) FROM operations.purchase_order_lines WHERE received_qty < 0;   -- expect 0
+```
+
+**Reconcile the `operations` permissions after the API is deployed** (ADR-0007; same order as every
+permission rollout: manifests committed -> service that enforces them deployed -> reconcile -> only
+then the UI that assumes them). Six codes are new: `operations.procurement.requisition.read|write|approve`,
+`operations.procurement.receipt.read|write`, `operations.inventory.stock.receive`. `OPERATIONS_ADMIN`
+(`all()`) gets all six; `OPERATIONS_MANAGER` gets all six; `OPERATIONS_WORKER` gets `receipt.read`,
+`receipt.write`, `stock.receive` and `purchase_order.read` (goods-in); `OPERATIONS_USER` gets
+`requisition.read` and `requisition.write` at OWN. **`BUYER` is a new role code**: the reconcile
+creates it in every organization that has Operations active (it is not granted to anyone — an admin
+assigns it). Roles an organization authored itself are never touched (ADR-0007 §4); the reconcile
+prints `memberships_without`.
+
+```bash
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations          # dry run
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+```
+
+Until it runs, the new requisition and goods-receipt routes answer 403 for every non-owner in every
+existing organization (a brand-new organization is fine). **The single-shot
+`POST /operations/purchase-orders/{id}/receive` is unaffected** — it keeps requiring
+`purchase_order.write` only and now runs through the goods-receipt path, so existing clients keep
+working before and after the reconcile (a quality-tracked item it receives lands in `QUALITY_HOLD`).
+It is a fleet write — every organization's permission version bumps — so outside peak hours and never
+as part of `make deploy`.
+
+**Checking it after the deploy** (read-only): post one goods receipt in a test organization against an
+approved PO and confirm the reconciler is clean —
+
+```sql
+SELECT count(*) FROM operations.inventory_discrepancies WHERE resolved_at IS NULL;   -- expect 0
+SELECT number, purchase_order_id, received_on FROM operations.goods_receipts ORDER BY created_at DESC LIMIT 5;
+```
+
 ### The billing run: first deploy, watching it, and what to do when it complains
 
 The billing run (ADR-0005's 2026-09-23 addendum and its review fixes) is the loop that converts
