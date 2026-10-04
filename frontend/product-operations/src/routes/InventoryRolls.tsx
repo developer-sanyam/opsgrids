@@ -142,9 +142,14 @@ function RollsScreen() {
         filtered={filtered}
         selection={selection}
         bulkActions={
-          <Button size="sm" onClick={() => setMerging(true)} disabled={selectedRolls.length < 2}>
-            Merge rolls
-          </Button>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button size="sm" onClick={() => setMerging(true)} disabled={selectedRolls.length < 2}>
+              Merge rolls
+            </Button>
+            {selectedRolls.length < 2 ? (
+              <span className="text-sm text-muted">Tick at least two rolls to merge them.</span>
+            ) : null}
+          </div>
         }
         {...(canWrite ? { onCreate: () => setCreating(true) } : {})}
       />
