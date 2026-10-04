@@ -93,6 +93,7 @@ APPEND_ONLY_TABLES = (
     "lot_genealogy",
     "goods_receipts",
     "goods_receipt_lines",
+    "stock_transfer_transitions",
 )
 #: What each sweep's cross-tenant discovery reads — `app/cron.py`'s `ReconcileSweep` and
 #: `AlertSweep`, `app/channels/sweep.py`'s `ChannelSyncSweep`. Column-level, matching exactly
@@ -113,6 +114,9 @@ RECONCILE_DISCOVERY_TABLES: dict[str, tuple[str, ...]] = {
     "pick_tasks": ("organization_id",),
     "shipments": ("organization_id", "deleted_at"),
     "channels": ("organization_id", "id", "status", "deleted_at"),
+    # Phase 3: the reservation-expiry sweep asks which organizations hold an active reservation
+    # past its `expires_at`.
+    "inventory_reservations": ("organization_id", "status", "expires_at"),
 }
 
 
@@ -152,7 +156,22 @@ def grant_reconcile_discovery(connection: Connection) -> None:
     for table, columns in RECONCILE_DISCOVERY_TABLES.items():
         if _exists(connection, table):
             connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."{table}" FROM "{reader}"'))
-            column_list = ", ".join(columns)
+            # Only the columns this revision has: a downgrade past the migration that added one
+            # (`inventory_reservations.expires_at`) must not fail on granting a column that is gone.
+            present = {
+                row[0]
+                for row in connection.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema = :s AND table_name = :t"
+                    ),
+                    {"s": SCHEMA, "t": table},
+                )
+            }
+            wanted = [column for column in columns if column in present]
+            if not wanted:
+                continue
+            column_list = ", ".join(wanted)
             connection.execute(
                 text(f'GRANT SELECT ({column_list}) ON "{SCHEMA}"."{table}" TO "{reader}"')
             )

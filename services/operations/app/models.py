@@ -1279,6 +1279,14 @@ class InventoryReservation(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     created_by: Mapped[str | None] = mapped_column(String(64))
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     closed_by: Mapped[str | None] = mapped_column(String(64))
+    #: Phase 3: a hold that lapses. `NULL` is a reservation that stays until something closes it
+    #: (an order's own, which `orders` releases or consumes). The expiry sweep releases the open
+    #: remainder of an active reservation past this instant, through the kernel's own `release`.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Set by the sweep (and nothing else) on the reservation it released for lapsing, so a list
+    #: can tell "expired" from "released by a person" without a second table.
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="", server_default="")
 
     __table_args__ = (
         CheckConstraint("quantity_milli > 0", name="quantity_positive"),
@@ -1302,6 +1310,19 @@ class InventoryReservation(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
             "organization_id",
             "balance_id",
             postgresql_where=text("status = 'active'"),
+        ),
+        # The expiry sweep's one question: which active reservations are past due?
+        Index(
+            "ix_inventory_reservations_org_expires_active",
+            "organization_id",
+            "expires_at",
+            postgresql_where=text("status = 'active' AND expires_at IS NOT NULL"),
+        ),
+        Index(
+            "ix_inventory_reservations_org_created",
+            "organization_id",
+            text("created_at DESC"),
+            text("id DESC"),
         ),
     )
 
@@ -3253,6 +3274,348 @@ class GoodsReceiptLine(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
             "ix_goods_receipt_lines_org_receipt", "organization_id", "goods_receipt_id", "line_no"
         ),
         Index("ix_goods_receipt_lines_org_po_line", "organization_id", "purchase_order_line_id"),
+    )
+
+
+# ------------------------------------------------------------------ movements and control (Phase 3)
+
+TRANSFER_STATUSES = (
+    "DRAFT",
+    "REQUESTED",
+    "APPROVED",
+    "IN_TRANSIT",
+    "RECEIVED",
+    "CANCELLED",
+    "REJECTED",
+)
+_TRANSFER_STATUS_SQL = ", ".join(f"'{s}'" for s in TRANSFER_STATUSES)
+ADJUSTMENT_STATUSES = ("PENDING_APPROVAL", "APPLIED", "REJECTED", "CANCELLED", "FAILED")
+_ADJUSTMENT_STATUS_SQL = ", ".join(f"'{s}'" for s in ADJUSTMENT_STATUSES)
+
+
+class InventoryControlSettings(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One row per organization: the thresholds above which a transfer or an adjustment needs the
+    approval service (ADR-0006), and the document-number counters.
+
+    A threshold is milli-units of **each line's own item UOM** (an item is never summed with a
+    different unit's). `NULL` means "no threshold": a transfer then needs a direct sign-off by a
+    holder of `inventory.transfer.approve`, and an adjustment applies at once. The counters are
+    advanced with `INSERT .. ON CONFLICT DO UPDATE .. RETURNING`, so two creates never share a
+    number and the row is a short-lived lock, not a hot spot.
+    """
+
+    __tablename__ = "inventory_control_settings"
+
+    transfer_approval_threshold_milli: Mapped[int | None] = mapped_column(BigInteger)
+    adjustment_approval_threshold_milli: Mapped[int | None] = mapped_column(BigInteger)
+    next_transfer_no: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default=text("1")
+    )
+    next_adjustment_no: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default=text("1")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(
+            "transfer_approval_threshold_milli IS NULL OR transfer_approval_threshold_milli > 0",
+            name="transfer_threshold_positive",
+        ),
+        CheckConstraint(
+            "adjustment_approval_threshold_milli IS NULL "
+            "OR adjustment_approval_threshold_milli > 0",
+            name="adjustment_threshold_positive",
+        ),
+        CheckConstraint(
+            "next_transfer_no >= 1 AND next_adjustment_no >= 1", name="counters_positive"
+        ),
+        Index("uq_inventory_control_settings_org", "organization_id", unique=True),
+    )
+
+
+class StockTransfer(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """An inter-warehouse transfer document (ADR-0014 §6, Phase 3). Moves stock out of the source
+    warehouse into the `IN_TRANSIT` bucket at dispatch and into the destination at receipt — it
+    never writes a quantity itself; every movement is `ledger.post_move`.
+
+    `approval_route` is decided when the transfer is requested: `AUTO` (a threshold is set and
+    every line is under it — approved on the spot), `DIRECT` (no threshold — a holder of
+    `inventory.transfer.approve` other than the requester signs off), or `SERVICE` (at or over the
+    threshold — routed through the approval service over events, ADR-0006; the answer comes back
+    as `core.approval.request.decided`).
+    """
+
+    __tablename__ = "stock_transfers"
+
+    number: Mapped[str] = mapped_column(String(30), nullable=False)
+    from_warehouse_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.warehouses.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    to_warehouse_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.warehouses.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="DRAFT")
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    expected_on: Mapped[date | None] = mapped_column(Date)
+    approval_route: Mapped[str | None] = mapped_column(String(8))
+    approval_request_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    approver_name: Mapped[str | None] = mapped_column(String(200))
+    requested_by: Mapped[str | None] = mapped_column(String(64))
+    requested_by_employee_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_by: Mapped[str | None] = mapped_column(String(64))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_comment: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    dispatched_by: Mapped[str | None] = mapped_column(String(64))
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_by: Mapped[str | None] = mapped_column(String(64))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_reason: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    created_by: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"status IN ({_TRANSFER_STATUS_SQL})", name="status_known"),
+        CheckConstraint("from_warehouse_id <> to_warehouse_id", name="warehouses_differ"),
+        CheckConstraint(
+            "approval_route IS NULL OR approval_route IN ('AUTO', 'DIRECT', 'SERVICE')",
+            name="approval_route_known",
+        ),
+        Index("uq_stock_transfers_org_number", "organization_id", "number", unique=True),
+        Index(
+            "uq_stock_transfers_org_idempotency_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index(
+            "ix_stock_transfers_org_created",
+            "organization_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+        Index("ix_stock_transfers_org_status", "organization_id", "status"),
+        Index(
+            "ix_stock_transfers_org_approval_request",
+            "organization_id",
+            "approval_request_id",
+            postgresql_where=text("approval_request_id IS NOT NULL"),
+        ),
+    )
+
+
+class StockTransferLine(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One bucket of a transfer: `quantity_milli` is what was asked for; `dispatched_milli` what
+    left the source (all of it, at dispatch); `received_milli` + `shortage_milli` what the
+    destination has accounted for. `received + shortage <= dispatched <= quantity` is a CHECK."""
+
+    __tablename__ = "stock_transfer_lines"
+
+    transfer_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.stock_transfers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    from_location_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.locations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: Where the in-transit stock is held: the destination warehouse's default bin, fixed at
+    #: dispatch so a receipt takes it from exactly where it was put.
+    in_transit_location_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
+    )
+    to_location_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
+    )
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    dispatched_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    received_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    shortage_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint("quantity_milli > 0", name="quantity_positive"),
+        CheckConstraint(
+            "dispatched_milli >= 0 AND received_milli >= 0 AND shortage_milli >= 0 "
+            "AND dispatched_milli <= quantity_milli "
+            "AND received_milli + shortage_milli <= dispatched_milli",
+            name="quantities_within",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "lot_id"],
+            ["operations.lots.organization_id", "operations.lots.id"],
+            name="fk_stock_transfer_lines_org_lot",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "roll_id"],
+            ["operations.rolls.organization_id", "operations.rolls.id"],
+            name="fk_stock_transfer_lines_org_roll",
+            ondelete="RESTRICT",
+        ),
+        Index("uq_stock_transfer_lines_transfer_no", "transfer_id", "line_no", unique=True),
+        Index("ix_stock_transfer_lines_org_transfer", "organization_id", "transfer_id"),
+        Index("ix_stock_transfer_lines_org_item", "organization_id", "inventory_item_id"),
+    )
+
+
+class StockTransferTransition(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """Append-only trail of a transfer's state changes (the `order_transitions` shape):
+    `UPDATE`/`DELETE` revoked from the app role."""
+
+    __tablename__ = "stock_transfer_transitions"
+
+    transfer_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.stock_transfers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    from_status: Mapped[str | None] = mapped_column(String(12))
+    to_status: Mapped[str] = mapped_column(String(12), nullable=False)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"to_status IN ({_TRANSFER_STATUS_SQL})", name="to_status_known"),
+        Index(
+            "ix_stock_transfer_transitions_org_transfer",
+            "organization_id",
+            "transfer_id",
+            "created_at",
+        ),
+    )
+
+
+class AdjustmentRequest(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """A stock adjustment with its reason and evidence — **every** adjustment made through
+    `/operations/inventory/adjustments` is one of these, applied at once when under the
+    organization's threshold and held `PENDING_APPROVAL` (routed through the approval service,
+    ADR-0006) when at or over it. Applying posts one `adjustment` move through `ledger.post_move`
+    under a deterministic idempotency key, so a redelivered decision cannot post twice.
+
+    `evidence_document_id` is a plain UUID into the document service (ADR-0009) — no foreign key
+    crosses a schema boundary.
+    """
+
+    __tablename__ = "adjustment_requests"
+
+    number: Mapped[str] = mapped_column(String(30), nullable=False)
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.locations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    stock_status: Mapped[str] = mapped_column(String(20), nullable=False, default="AVAILABLE")
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    quantity_delta_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reason: Mapped[str] = mapped_column(String(20), nullable=False)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    evidence_document_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    occurred_on: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING_APPROVAL")
+    approval_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    approval_request_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    approver_name: Mapped[str | None] = mapped_column(String(200))
+    decided_by_name: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_comment: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    requested_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    requested_by_employee_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    applied_move_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.inventory_moves.id", ondelete="RESTRICT")
+    )
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_reason: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    cancelled_by: Mapped[str | None] = mapped_column(String(64))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"status IN ({_ADJUSTMENT_STATUS_SQL})", name="status_known"),
+        CheckConstraint(f"stock_status IN ({_STATUS_SQL})", name="stock_status_known"),
+        CheckConstraint("quantity_delta_milli <> 0", name="delta_non_zero"),
+        CheckConstraint(
+            "reason IN ('damaged', 'lost', 'found', 'consumed', 'returned', 'other')",
+            name="reason_known",
+        ),
+        CheckConstraint(
+            "NOT approval_required OR evidence_document_id IS NOT NULL",
+            name="approval_needs_evidence",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "lot_id"],
+            ["operations.lots.organization_id", "operations.lots.id"],
+            name="fk_adjustment_requests_org_lot",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "roll_id"],
+            ["operations.rolls.organization_id", "operations.rolls.id"],
+            name="fk_adjustment_requests_org_roll",
+            ondelete="RESTRICT",
+        ),
+        Index("uq_adjustment_requests_org_number", "organization_id", "number", unique=True),
+        Index(
+            "uq_adjustment_requests_org_idempotency_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index(
+            "ix_adjustment_requests_org_created",
+            "organization_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+        Index("ix_adjustment_requests_org_status", "organization_id", "status"),
+        Index(
+            "ix_adjustment_requests_org_approval_request",
+            "organization_id",
+            "approval_request_id",
+            postgresql_where=text("approval_request_id IS NOT NULL"),
+        ),
     )
 
 
