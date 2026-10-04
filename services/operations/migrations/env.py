@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.config import settings
 from app.manufacturing import models as _manufacturing_models  # noqa: F401  (registers tables)
 from app.models import SCHEMA, Base
+from app.mrp import models as _mrp_models  # noqa: F401  (registers tables)
 from platform_core.db import apply_schema_grants
 
 config = context.config
@@ -101,7 +102,8 @@ APPEND_ONLY_TABLES = (
     "production_genealogy",
 )
 #: What each sweep's cross-tenant discovery reads — `app/cron.py`'s `ReconcileSweep` and
-#: `AlertSweep`, `app/channels/sweep.py`'s `ChannelSyncSweep`. Column-level, matching exactly
+#: `AlertSweep`, `app/channels/sweep.py`'s `ChannelSyncSweep`, `app/mrp/sweep.py`'s
+#: `MrpRunSweep`. Column-level, matching exactly
 #: what each sweep's own discovery SQL references: `AlertSweep`'s `_ALERT_ORGANIZATIONS_SQL`
 #: filters `inventory_items`/`shipments` on `deleted_at` but not `pick_tasks`; `ChannelSyncSweep`'s
 #: `_CONNECTED_CHANNELS_SQL` also selects `id` and filters on `status`. F11 and F12 each shipped
@@ -122,6 +124,7 @@ RECONCILE_DISCOVERY_TABLES: dict[str, tuple[str, ...]] = {
     # Phase 3: the reservation-expiry sweep asks which organizations hold an active reservation
     # past its `expires_at`.
     "inventory_reservations": ("organization_id", "status", "expires_at"),
+    "mrp_runs": ("organization_id", "status"),
 }
 
 
