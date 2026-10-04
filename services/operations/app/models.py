@@ -3689,8 +3689,9 @@ class AdjustmentRequest(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
 # ------------------------------------------------------------------ quality (plan Phase 4)
 #
 # `item_id`, `location_id`, `lot_id`, `roll_id`, `template_id` and `supplier_id` on these tables are
-# **plain indexed UUIDs, never foreign keys** (docs/inventory/quality.md §2): lots and rolls are
-# introduced by another phase, and an inspection is a record about stock at a moment — it must
+# **plain indexed UUIDs, never foreign keys** (docs/inventory/quality.md §2): an inspection is a
+# record about stock at a moment (`create_inspection` validates the lot and roll against Phase 1's
+# tables when it is opened, but the row keeps no FK to them) — it must
 # survive an item being renamed, a location being retired or a template being replaced, and must
 # not be able to block any of those. Every read re-checks organization on the referenced row.
 

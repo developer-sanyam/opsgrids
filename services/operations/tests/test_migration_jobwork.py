@@ -24,7 +24,8 @@ pytestmark = pytest.mark.integration
 
 SERVICE_DIR = Path(__file__).resolve().parent.parent
 REVISION = "d7b3e5a19f62"  # pragma: allowlist secret
-BEFORE = "665e44e243d7"  # pragma: allowlist secret
+# The revision this one sits on, derived so re-parenting never touches this file.
+BEFORE = f"{REVISION}-1"
 TABLES = ("job_work_orders", "job_work_materials", "job_work_receipts", "challans")
 
 

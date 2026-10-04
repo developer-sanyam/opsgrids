@@ -169,7 +169,9 @@ decides release via an inspection.
   post into `QUALITY_HOLD` and open an `incoming` inspection with `hold_stock: false` (the hook),
   `reference_type` / `reference_id` pointing at the receipt line and `supplier_id` set. Until then an
   inspection over received stock is opened by hand. (The job-work receipt hand-off, which does not
-  depend on Phase 2, is wired by the Phase 6 branch.)
+  depend on Phase 2, is wired: `app/quality/handoff.py`, bound as
+  `app.consumers.job_work_qc_requested` — see [jobwork.md](jobwork.md#qc-hand-off). A purchasing
+  hand-off adds a second function beside it in `handoff.py` and one more binding.)
 - **Single disposition per inspection**, over the whole rejected quantity. Splitting a rejection
   between RTV and scrap is a new inspection of the rejected bucket.
 - **No supplier-return document / debit note.** `reference` is free text; finance integration of an

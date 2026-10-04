@@ -36,7 +36,7 @@ own order, and the person who counts goods back cannot declare the books square.
 holds all five; `OPERATIONS_ADMIN` gets them with the catalogue's `all()`; ordinary seats and the
 worker role hold none.
 
-## Tables (migration `d7b3e5a19f62`, down_revision `665e44e243d7`)
+## Tables (migration `d7b3e5a19f62`, `down_revision` is the MRP migration `e7a4c1d9b352`)
 
 | Table | What it is |
 |---|---|
@@ -47,8 +47,11 @@ worker role hold none.
 
 All four carry `organization_id`, ENABLE + FORCE RLS and the `tenant_isolation` policy.
 `supplier_id`, `item_id`, `lot_id`, `roll_id`, `location_id`, `source_warehouse_id` are **plain
-indexed UUIDs** — no foreign key to anything outside these tables (lots and rolls ship on another
-branch; ADR-0000 §10). The only FKs are between the four tables themselves.
+indexed UUIDs** — no foreign key to anything outside these tables (ADR-0000 §10). The only FKs
+are between the four tables themselves. A lot or roll a material names is checked against Phase 1's
+`lots` / `rolls` when the order is drafted (`ledger.validate_tracking`: it must exist in the
+caller's organization and belong to the item, else 404 / 422), and again by the kernel when stock
+moves.
 
 Reversible: the downgrade drops the trigger, the policies and the tables. Verified by
 `tests/test_migration_jobwork.py` (real alembic, up → down with rows → up → `alembic check`).
@@ -107,9 +110,29 @@ see this kind of drift: it compares the ledger with the balances, not with a doc
 ## QC hand-off
 
 When an order has `qc_required`, returned goods are parked in `QUALITY_HOLD` and
-**`operations.jobwork.receipt.qc_requested`** is emitted with the lines to inspect. The quality
-module is built on another branch; this module neither imports nor waits for it. Whoever consumes
-the event releases stock out of `QUALITY_HOLD` through the kernel.
+**`operations.jobwork.receipt.qc_requested`** is emitted with the lines to inspect. This module
+neither imports nor waits for quality. The quality package consumes the event
+(`app/quality/handoff.py`, bound in `app/consumers.py::job_work_qc_requested`, the same worker
+process as the other consumers) and opens one `incoming` inspection per line with good quantity:
+`hold_stock: false` (the goods are already in `QUALITY_HOLD`), `reference_type: job_work_order`, the
+vendor as supplier, lot and roll carried through. Releasing or rejecting happens through the
+inspection (`operations.quality.inspection.approve` / `.reject`), not `stock.adjust`.
+
+Idempotent: the event id is marked processed in the handler's transaction, and each inspection is
+created under the key `jw-qc:<order>:<receipt>:<material>`, so a republished event replays the
+first inspection. A line whose stock has already left `QUALITY_HOLD` (or whose item, lot or roll is
+gone) is skipped and logged inside its own savepoint, never raised — redelivery would only refuse
+again. A rejected-only line has nothing on hold and opens nothing. Tests:
+`tests/test_quality_handoff.py`.
+
+## Lock order with rolls
+
+Issue is one `post_move`, which share-locks every roll (id order) before its first balance lock.
+Receive posts a return move and then a shortage move; it validates and share-locks the rolls of
+**both** up front, so the shortage move's roll is never waited for while the return move holds
+balances (the reverse of the roll -> balance order a concurrent split or merge relies on). Proven
+by `tests/test_jobwork_tracking.py`: the receipt parks on a held roll while the other roll's
+vendor-bucket balance is still free.
 
 ## Overdue alert
 
@@ -136,7 +159,7 @@ everywhere else.
 | `operations.jobwork.overdue` | once per overdue order (notification) |
 | `operations.jobwork.closed` | reconciled and closed |
 | `operations.jobwork.challan.eway_requested` | finance asked to consider an e-way bill (no consumer yet) |
-| `operations.jobwork.receipt.qc_requested` | QC hand-off (no consumer yet) |
+| `operations.jobwork.receipt.qc_requested` | QC hand-off — consumed by `app.consumers.job_work_qc_requested` (quality) |
 
 All are staged through the outbox in the writing transaction and published after commit. Every
 payload the code builds is validated against its committed schema in the test suite.
@@ -213,14 +236,10 @@ The SPA must go after the API; the old SPA never calls the new routes.
 * **A finance consumer for `operations.jobwork.challan.eway_requested`.** Finance's generator is
   invoice-keyed; a challan-keyed path (and writing the bill number back to `challans.eway_*`) is a
   finance-side slice.
-* **A quality consumer for `operations.jobwork.receipt.qc_requested`** (the quality module is
-  another branch). Until then goods sit in `QUALITY_HOLD` and an operator releases them through the
-  ordinary stock-status move.
 * **Output different from input** (greige in, dyed out as a new item): a receipt returns the same
   item. The BOM/production phase models conversion.
 * **Job charges and costing** (rate per unit, vendor invoice matching): Phase 8.
-* **Editing materials on a draft** (cancel and re-draft today), **lots/rolls validation** (they are
-  plain UUIDs until the lots/rolls branch lands, which adds the FKs), **multiple issues per order**,
+* **Editing materials on a draft** (cancel and re-draft today), **multiple issues per order**,
   **reversing a wrong receipt** (a new corrective move, not an edit).
 * **Part-return challans** (a return challan kind is reserved in the schema, not issued).
 * Mobile receive screen in the worker app.

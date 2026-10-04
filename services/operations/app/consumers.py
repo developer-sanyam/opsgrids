@@ -76,6 +76,7 @@ from app.models import ProcessedEvent
 from app.movements import adjustments, transfers
 from app.movements import common as movement_common
 from app.orders import services as order_services
+from app.quality import handoff as quality_handoff
 from platform_core.db import (
     assert_app_role,
     get_sessionmaker,
@@ -544,6 +545,47 @@ async def approval_request_decided(envelope: dict[str, Any]) -> None:
 
 
 consumer.on(movement_common.EVT_APPROVAL_DECIDED)(approval_request_decided)
+
+
+async def job_work_qc_requested(envelope: dict[str, Any]) -> None:
+    """Bound to `operations.jobwork.receipt.qc_requested` (this service's own event, emitted by
+    `app.jobwork.services.receive_order` after it parked the returned goods in `QUALITY_HOLD`).
+    Opens an `incoming` inspection per line over the held stock (`app.quality.handoff`). The tenant
+    is the envelope's, never the payload's: a payload that names another organization is marked
+    processed and logged, not acted on."""
+    event_id = uuid.UUID(envelope["event_id"])
+    organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload = envelope["payload"]
+    mismatch = uuid.UUID(str(payload["organization_id"])) != organization_id
+
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("quality.jobwork_handoff.duplicate", event_id=str(event_id))
+            return
+        if mismatch:
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+            log.error(
+                "quality.jobwork_handoff.organization_mismatch",
+                event_id=str(event_id),
+                envelope_organization_id=str(organization_id),
+                payload_organization_id=str(payload["organization_id"]),
+            )
+            return
+        result = await quality_handoff.open_for_job_work_receipt(
+            session, quality_handoff.service_ctx(organization_id), payload
+        )
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+    log.info(
+        "quality.jobwork_handoff.handled",
+        event_id=str(event_id),
+        order_id=str(payload["order_id"]),
+        receipt_no=str(payload["receipt_no"]),
+        opened=len(result.opened),
+        skipped=[{"material_id": m, "reason": why} for m, why in result.skipped],
+    )
+
+
+consumer.on(quality_handoff.EVT_JOB_WORK_QC_REQUESTED)(job_work_qc_requested)
 
 
 async def main() -> None:

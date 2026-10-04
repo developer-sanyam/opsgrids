@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "opsgrids://contracts/operations.jobwork.receipt.qc_requested/v1",
   "title": "operations.jobwork.receipt.qc_requested",
-  "description": "The QC hand-off point for goods returned from a job worker (Inventory plan Phase 6). Emitted when a receipt on an order flagged `qc_required` brings goods back: the good quantity has been parked in QUALITY_HOLD (not AVAILABLE) at `location_id`, and any rejected quantity sits in REJECTED. A quality module consumes this to open an inspection and, on release, moves stock out of QUALITY_HOLD. The job-work module neither imports nor waits for that module.",
-  "$comment": "Ahead of its consumer: the quality module is built on another branch. `source` identifies the originating process so one consumer can serve GRN receipts and job-work returns alike.",
+  "description": "The QC hand-off point for goods returned from a job worker (Inventory plan Phase 6). Emitted when a receipt on an order flagged `qc_required` brings goods back: the good quantity has been parked in QUALITY_HOLD (not AVAILABLE) at `location_id`, and any rejected quantity sits in REJECTED. The quality package consumes this (app.quality.handoff) to open an incoming inspection per good line and, on release, moves stock out of QUALITY_HOLD. The job-work module neither imports nor waits for that module.",
+  "$comment": "Consumed by app.consumers.job_work_qc_requested. `source` identifies the originating process so one consumer can serve GRN receipts and job-work returns alike.",
   "type": "object",
   "additionalProperties": false,
   "required": [

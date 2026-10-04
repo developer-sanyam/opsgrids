@@ -291,6 +291,27 @@ async def create_order(
             (m, location_id, _parse_positive(m.quantity, item.uom, f"{item.sku} quantity"))
         )
 
+    # A named lot or roll must exist in this organization and belong to the line's item — the
+    # check a posted move makes, answered here as 404 / 422 at drafting time rather than as a
+    # refusal when the order is issued. One call for every line: the rolls are share-locked in id
+    # order. Negative quantities model the issue out of AVAILABLE (no "cannot receive" check).
+    await ledger.validate_tracking(
+        session,
+        org_id,
+        [
+            MoveLine(
+                item_id=m.item_id,
+                location_id=location_id,
+                quantity_milli=-milli,
+                status="AVAILABLE",
+                lot_id=m.lot_id,
+                roll_id=m.roll_id,
+            )
+            for m, location_id, milli in parsed
+            if m.lot_id is not None or m.roll_id is not None
+        ],
+    )
+
     number = await numbering.next_order_number(session, org_id)
     order = JobWorkOrder(
         organization_id=org_id,
@@ -978,6 +999,12 @@ async def receive_order(
                 status="AT_JOB_WORKER",
                 milli=-short,
             )
+
+    # Two moves follow (the return, then the declared shortage), each locking its own rolls. Lock
+    # and validate every roll of both up front, in id order, ahead of the first balance lock — a
+    # shortage-only line's roll would otherwise be locked after the return move already holds
+    # balances, the reverse of the roll -> balance order a concurrent split or merge relies on.
+    await ledger.validate_tracking(session, org_id, [*_lines(returns), *_lines(shortages)])
 
     when = received_on or date.today()
     return_move = None
