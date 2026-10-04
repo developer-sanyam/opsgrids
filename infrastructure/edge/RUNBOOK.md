@@ -618,6 +618,39 @@ Bundles are sold only through subscription's operator routes (`POST /internal/v1
 `…/{id}/change-plan`, service token); the customer route answers 403. A trial's length is the
 plan version's `trial_days` feature (14 when absent), never the customer's.
 
+### Inventory Phase 1 (lots, rolls, stock operations): migration and the `operations` permission reconcile
+
+Migration `b7d41e92c05a` (operations) creates `lots`, `rolls`, `roll_events`, `lot_genealogy` and
+adds organization-scoped foreign keys from the ledger, balances and discrepancies to them. It is
+part of the ordinary `migrate` step; nothing else to run. Before it, take the nightly backup
+(`make edge-backup`). If any ledger/balance row already names a `lot_id`/`roll_id` (nothing in
+the product could set one before this release, so expect none), the migration creates a
+`LEGACY-…` placeholder lot/roll for it instead of refusing; it never changes a quantity. Check
+beforehand with:
+
+```sql
+SELECT count(*) FROM operations.inventory_ledger WHERE lot_id IS NOT NULL OR roll_id IS NOT NULL;
+```
+
+**Reconcile the `operations` permissions after the API is deployed** (ADR-0007; same order as
+every permission rollout: manifests committed → service that enforces them deployed → reconcile
+→ only then the UI that assumes them). Four codes are new: `operations.inventory.lot.write`,
+`operations.inventory.roll.write`, `operations.inventory.stock.read`,
+`operations.inventory.stock.transfer`. `OPERATIONS_ADMIN` (`all()`) and `OPERATIONS_MANAGER`
+get all four; `OPERATIONS_WORKER` gets `stock.read` and `stock.transfer`; `OPERATIONS_USER` gets
+none of them. Roles an organization authored itself are never touched (ADR-0007 §4) — the
+reconcile prints `memberships_without` so an operator can see who still lacks them.
+
+```bash
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations          # dry run
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+```
+
+Until it runs, every new route answers 403 for every non-owner in every existing organization
+(a brand-new organization is fine); the existing item-level inventory screens are unaffected.
+It is a fleet write — every organization's permission version bumps — so, as always, outside
+peak hours and never as part of `make deploy`.
+
 ### The billing run: first deploy, watching it, and what to do when it complains
 
 The billing run (ADR-0005's 2026-09-23 addendum and its review fixes) is the loop that converts
