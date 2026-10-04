@@ -209,8 +209,90 @@ What Phase 1 adds is the way out, and the numbers to act on it:
 So the resolution a stocktake screen offers is concrete: read `errors[0].reservations`, call
 `:release` on the one(s) blocking the count (in full or in part), then retry the count.
 
+## Lots, rolls and stock operations (Phase 1 backend, migration `b7d41e92c05a`)
+
+The kernel has always carried `lot_id`/`roll_id` in the bucket key; Phase 1 gives them tables and
+HTTP. All of it lives in `app/inventory/` (`tracking_*`, `stock_ops`, `api`, `pagination`).
+
+| Table | What it is | Writable by the app role |
+|---|---|---|
+| `lots` | batch of one item: internal + supplier lot no., dates, quality status, source document, flat attributes | yes |
+| `rolls` | one physical roll: primary measured quantity (the item's UOM) + secondary (e.g. 82.5 m / 14.8 kg), width, GSM, shade, grade, `parent_roll_id`, state `ACTIVE`/`SPLIT`/`MERGED` | yes |
+| `roll_events` | a roll's history (created, opening, split, merged, moved, status changed, re-measured) | INSERT only |
+| `lot_genealogy` | parent -> child lot edges | INSERT only |
+
+`inventory_ledger`, `inventory_balances` and `inventory_discrepancies` now have **organization-scoped**
+foreign keys to `lots`/`rolls` (`(organization_id, lot_id)` -> `lots (organization_id, id)`), so a bucket
+cannot name another tenant's lot even if a query forgot the filter. `post_move` checks the same thing
+first and answers 404/422 instead of an `IntegrityError`: the lot and roll exist in this organization, belong
+to the line's item, agree with each other, and a `SPLIT`/`MERGED` roll cannot receive stock.
+
+### Operations (all through `post_move`, all take `Idempotency-Key`, all audit + emit an event)
+
+| Route | Permission | Move |
+|---|---|---|
+| `POST /operations/inventory/stock/opening` | `inventory.stock.adjust` | `opening`, one line per location/status/lot/roll |
+| `POST /operations/inventory/stock/transfers` | `inventory.stock.transfer` | `relocation` (`bin_transfer`), same warehouse only |
+| `POST /operations/inventory/stock/status-changes` | `inventory.stock.transfer` | paired `relocation` (`status_change`); never to `IN_TRANSIT`/`AT_JOB_WORKER` |
+| `POST /operations/inventory/rolls/{id}:split` | `inventory.roll.write` | `relocation` (`roll_split`): parent out, n children in |
+| `POST /operations/inventory/rolls:merge` | `inventory.roll.write` | `relocation` (`roll_merge`): n sources out, one result in |
+| `POST/PATCH /operations/inventory/lots`, `POST .../lots/{id}/genealogy` | `inventory.lot.write` | no stock |
+| `POST/PATCH /operations/inventory/rolls` | `inventory.roll.write` | no stock |
+| `DELETE /operations/locations/{id}` | `inventory.location.write` | refused while the location holds stock or has **any** ledger history, is a default bin, has children, or is an item's home bin |
+
+Reads (all `inventory.stock.read`, ORG, **cursor-paginated** — `?cursor=&limit=`, response
+`{items, next_cursor}`): `GET .../stock` (by item/warehouse/location/lot/roll/status),
+`GET .../ledger` (item, location, lot, roll, kind, status, `from_date`/`to_date` on the move's business
+date), `GET .../lots`, `.../lots/{id}`, `.../lots/{id}/genealogy`, `.../lots/{id}/trace`, `GET .../rolls`,
+`.../rolls/{id}`, `.../rolls/{id}/events`, `.../rolls/{id}/trace`. A cursor is opaque, validated on every
+request (422 when malformed) and carries no tenant or scope — it only moves the window.
+
+### Rules worth knowing
+
+- **Split.** The children's quantities (decimal strings) must add up to **exactly** what the roll's bucket
+  holds (422 with both numbers otherwise). The roll's measured secondary quantity is apportioned in
+  proportion to the children's primary quantities: every child but the last gets
+  `floor(secondary * child / total)` in milli-units, **the last takes the remainder**, so the children's weights
+  always sum to the parent's. 82.5 m / 14.8 kg into 50 + 32.5 gives 8.969 kg + 5.831 kg. An unweighed roll gives
+  unweighed children. Children inherit item, lot, width, GSM, shade and grade, and are numbered `<parent>-1…`
+  unless named. A roll splits once: the second of two racing splits finds it `SPLIT` and gets 409.
+- **Merge.** Same item, same lot, same shade, all `ACTIVE`, all holding stock in the named bucket, or 422/409.
+  Width, GSM and grade survive only where every source agrees; the result's weight is the sum of the sources'
+  weights only if every source was weighed in one unit.
+- **Reserved stock** cannot be transferred, status-changed, split or merged away: the kernel refuses with
+  `InsufficientStock` and `errors[0].reservations` (ADR-0014 §11) — release the reservation, then retry.
+- **Idempotency.** Keyed split/merge derive the ids of the rolls they create from `(organization, key)`, so a
+  retry rebuilds identical ledger lines and the kernel replays it (200, `replayed: true`); the same key with a
+  different request is 409. Replays stage no further audit rows or events.
+- **Concurrency.** Roll operations lock the roll rows first (id order), then the kernel locks balances; no path
+  takes them the other way round. `post_move` takes the location rows `FOR SHARE` so a post and a
+  `delete_location` serialise.
+- **Traces.** Lot and roll traces are recursive CTEs over `lot_genealogy` and over `rolls.parent_roll_id` +
+  `roll_events` `MERGE_RESULT` rows, filtered by organization at every step, depth-capped at 25. A split/merge
+  inside one lot leaves a self-edge in `lot_genealogy` as evidence tied to the move; the trace skips
+  self-edges. `BLEND`/`REWORK`/`DERIVED` links between two lots are what it follows, and creating one that would
+  close a loop is refused (under a per-organization advisory lock).
+- **Tracking flags.** A lot can only be registered for an item with `track_lot`, a roll for one with
+  `track_roll`; opening stock for a tracked item must name its lot/roll, and for an untracked item must not.
+
+### Migration `b7d41e92c05a`
+
+Creates the four tables (ENABLE + FORCE RLS, `tenant_isolation`, tenant-leading indexes), adds the foreign
+keys and the keyset indexes the list endpoints page on. **Existing data:** if any ledger/balance/discrepancy row
+already names a lot or roll (the kernel allowed it, nothing in the product could set one), the upgrade creates a
+`LEGACY-…` placeholder lot/roll per distinct id (a roll's length = the stock ever received into it) instead of
+refusing; no quantity or ledger row changes. The downgrade drops the tables and constraints; the ids stay on the
+ledger as plain UUIDs. Verified by `tests/test_migration_lots_rolls.py` (real alembic, orphan ids, FK
+enforcement incl. cross-tenant, RLS, append-only privileges, down and up again).
+
+### Deferred
+
+`uom_conversions` (per-item box = 12 pcs) already exists as a table but has **no API and is not applied in
+quantity handling**: wiring a container unit through opening, transfer and split touches the item master's UOM
+rules, and a half-applied conversion is worse than none. It lands with the receiving slice (Phase 2), where
+`box` quantities first appear on a document.
+
 ## Not in Phase 0
 
-HTTP APIs and screens for locations, lots, rolls and multi-location moves (the kernel supports
-them; nothing but reservation release exposes them yet), per-item `uom_conversions`, costing
-layers, and every later phase. See [plan.md](plan.md).
+Costing layers and every later phase (lots, rolls, multi-location moves and locations got their HTTP
+APIs in Phase 1 — see above). See [plan.md](plan.md).

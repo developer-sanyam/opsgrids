@@ -101,7 +101,9 @@ Exit criteria met: 50 parallel issues against 10 units → exactly 10; reconcile
 concurrency scenario and after migrating old-shape data; cross-tenant negative tests on every new
 route; the pre-existing operations suite green.
 
-### Phase 1 — Item master, lots, rolls, locations
+### Phase 1 — Item master, lots, rolls, locations — **backend DONE** (2026-10-04; frontend pending) · reference: [ledger.md](ledger.md)
+
+Backend status: I0-I2 (partial release, UOMs, item master) shipped earlier; I3-I6 (lots/rolls/genealogy tables and FKs, opening/transfer/status/split/merge through `post_move`, cursor-paginated stock/ledger/lot/roll reads and traces, location delete, the four permissions and their ADR-0007 rollout) are in migration `b7d41e92c05a`. Not done: the frontend, and `uom_conversions` wiring (deferred to Phase 2 — see ledger.md).
 
 **Scope**
 

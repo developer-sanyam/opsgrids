@@ -209,6 +209,30 @@ reservation(s) in the way, through the same kernel.**
   exist. Release is the only operation Phase 1 needs, because nothing yet creates a reservation
   over HTTP for a person to reject *from*.
 
+## 12. Phase 1 backend: what the lot / roll / stock-operation slice decided
+
+**Added 2026-10-04, with the Phase 1 backend ([ledger.md](../inventory/ledger.md) § Lots, rolls and stock
+operations).** Four choices a later phase will lean on:
+
+- **Splits, merges, transfers and status changes are `relocation` moves**, told apart by `reference_type`
+  (`roll_split`, `roll_merge`, `bin_transfer`, `status_change`) — not four new move kinds. Stock is conserved in each
+  (a negative line and positive ones in one move), which is what `relocation` already means; a new kind would
+  have meant every reconciler, filter and event consumer learning a vocabulary for no new semantics.
+- **The bucket's lot/roll foreign keys are composite and organization-scoped**
+  (`(organization_id, lot_id)` -> `lots (organization_id, id)`), not single-column. A single-column FK would let a
+  bucket name another tenant's lot; the composite one makes that a constraint violation even if a query forgot
+  the filter. Orphan ids already on a database are given `LEGACY-…` placeholder rows by the migration, never
+  refused and never dropped.
+- **A roll split apportions weight by flooring, remainder to the last child** (`domain.split_secondary`).
+  Rounding to nearest can push the earlier children past the whole and leave the last a negative weight;
+  flooring cannot, at the price of at most `n - 1` milli-units on the last child.
+- **Lists are keyset-paginated** (`app/inventory/pagination.py`: `(sort value, id)` cursor, no `COUNT(*)`), because
+  the ledger grows without bound; the platform's offset `paginate` stays for admin-sized lists.
+
+Opening stock requires `inventory.stock.adjust` (it creates quantity); transfers and status changes require
+`inventory.stock.transfer`; split and merge require `inventory.roll.write`. `uom_conversions` stays unwired until
+Phase 2.
+
 ## Consequences
 
 - `operations` becomes the largest service; the module split is required, not optional.
