@@ -361,6 +361,14 @@ The full reference is [movements.md](movements.md); what changes in the ledger's
 - **Reconciler:** unchanged, and clean after every Phase 3 test (`assert_reconciled`), including after the
   50-way reservation race, the double dispatch, and a partial receipt with a shortage.
 
+## Scan, import and export (Phase 9)
+
+Stock still enters only through `post_move`. The bulk import posts opening stock through
+`stock_ops.post_opening_stock` (one `opening` move per 100 lines, `reference_type=opening_stock`),
+inside an all-or-nothing transaction, and refuses a bucket that already holds stock. Migration
+`d9a4c6e1b3f7` adds `barcode` to `inventory_items`, `lots` and `rolls` and the append-only
+`inventory_import_runs`. See [scan-import.md](scan-import.md).
+
 ## Not in Phase 0
 
 Costing layers and every later phase (lots, rolls, multi-location moves and locations got their HTTP

@@ -832,6 +832,50 @@ SELECT t.number, l.dispatched_milli - l.received_milli - l.shortage_milli AS sti
 
 Reservations survive the round trip; only their expiry, expired-at and note are dropped.
 
+### Inventory Phase 9 (scan, labels, bulk import/export): migration and the `operations` permission reconcile
+
+Migration `d9a4c6e1b3f7` (operations, after Phase 3's `c5a82f6d3b19`) adds a nullable `barcode` column to
+`inventory_items`, `lots` and `rolls` (unique per organization where set) and the append-only
+`inventory_import_runs` table. It is part of the ordinary `migrate` step; nothing else to run. It
+changes no row and no quantity (every existing record keeps `barcode = NULL`, meaning "scan the
+SKU / lot number / roll number"). Take the nightly backup first (`make edge-backup`); to roll back,
+`alembic downgrade c5a82f6d3b19` drops the new columns and table (it loses typed barcodes and the
+import history, never stock).
+
+**Reconcile the `operations` permissions after the API is deployed** (ADR-0007: manifests committed
+-> service deployed -> reconcile -> only then the UI). Two codes are new:
+`operations.inventory.data.import` (**dangerous**) and `operations.inventory.data.export`.
+`OPERATIONS_ADMIN` (`all()`) gets both; `OPERATIONS_MANAGER` gets `data.export` only (import is
+dangerous and stays with the admin unless an organization grants it deliberately);
+`OPERATIONS_WORKER` and `OPERATIONS_USER` get neither. Customer-authored roles are never touched
+(ADR-0007 §4) - the reconcile prints `memberships_without`.
+
+```bash
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations          # dry run
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+```
+
+Until it runs, the import and export routes answer 403 for every non-owner in every existing
+organization (a brand-new organization is fine); the scan route needs only `stock.read`, which
+Phase 1 already rolled out. It is a fleet write, so outside peak hours and never as part of
+`make deploy`.
+
+**Watch after the first import.** One import is one request and one transaction (up to 5000 rows;
+opening stock posts one kernel move per 100 lines), so the largest file takes the longest: a
+5000-row `items` import runs a few thousand statements. Caddy and the gateway time out a request
+well beyond that on this box, but if an operator reports a timeout, split the file (an
+all-or-nothing import that timed out committed nothing; retrying with the same `Idempotency-Key`
+is safe). Imports into one organization serialize on an advisory lock, so a second concurrent
+import waits for the first. `SELECT entity, row_count, created_count, created_at FROM
+operations.inventory_import_runs ORDER BY created_at DESC` lists what was committed, and the audit
+log carries `inventory.import.committed` and `inventory.data.exported` rows.
+
+The import route has its own 8 MiB request-body cap in `routes.prod.json` (the gateway default is
+2 MiB); the route table is read at gateway start, so deploying the gateway with the new table is
+part of this release. A 413 on an import means the table in use predates it.
+
+The scan screen's camera needs https (a browser rule); the edge is https, so nothing to configure.
+
 ### The billing run: first deploy, watching it, and what to do when it complains
 
 The billing run (ADR-0005's 2026-09-23 addendum and its review fixes) is the loop that converts
