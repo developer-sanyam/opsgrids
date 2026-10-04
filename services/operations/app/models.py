@@ -56,6 +56,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
@@ -706,6 +707,288 @@ class ItemVariant(Base, TenantBase):
     )
 
 
+def _bucket_lot_roll_fks(table: str) -> tuple[ForeignKeyConstraint, ForeignKeyConstraint]:
+    """The organization-scoped foreign keys every table carrying a bucket key shares (ADR-0014 §5:
+    "their foreign keys arrive with the lots/rolls tables in Phase 1"). Composite on
+    `(organization_id, lot_id|roll_id)`, so the referenced row must be the same tenant's; a NULL
+    `lot_id`/`roll_id` (a bucket with no lot or roll) is not checked, as `MATCH SIMPLE` does."""
+    return (
+        ForeignKeyConstraint(
+            ["organization_id", "lot_id"],
+            ["operations.lots.organization_id", "operations.lots.id"],
+            name=f"fk_{table}_org_lot",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "roll_id"],
+            ["operations.rolls.organization_id", "operations.rolls.id"],
+            name=f"fk_{table}_org_roll",
+            ondelete="RESTRICT",
+        ),
+    )
+
+
+#: A lot's quality disposition (ADR-0014 Phase 1). Phase 4 (QC) owns the transitions into and out
+#: of these; Phase 1 only records and filters on them.
+LOT_QUALITY_STATUSES = ("PENDING", "APPROVED", "ON_HOLD", "REJECTED")
+_LOT_QUALITY_SQL = ", ".join(f"'{s}'" for s in LOT_QUALITY_STATUSES)
+#: A roll is whole until it is split or merged away; `app.domain.ROLL_TRANSITIONS` is the map.
+ROLL_STATES = ("ACTIVE", "SPLIT", "MERGED")
+_ROLL_STATE_SQL = ", ".join(f"'{s}'" for s in ROLL_STATES)
+#: What a `roll_events` row records. SPLIT/MERGED sit on the roll that was consumed;
+#: SPLIT_CHILD/MERGE_RESULT on the roll that came out, with `related_roll_id` pointing back.
+ROLL_EVENT_KINDS = (
+    "CREATED",
+    "OPENING",
+    "SPLIT",
+    "SPLIT_CHILD",
+    "MERGED",
+    "MERGE_RESULT",
+    "MOVED",
+    "STATUS_CHANGED",
+    "MEASURED",
+)
+_ROLL_EVENT_SQL = ", ".join(f"'{s}'" for s in ROLL_EVENT_KINDS)
+#: Why one lot is the parent of another. SPLIT/MERGE are the self-edges a roll split or merge
+#: leaves inside one lot (evidence tied to the move, never traversed); the rest link two lots.
+LOT_GENEALOGY_RELATIONS = ("SPLIT", "MERGE", "BLEND", "REWORK", "DERIVED")
+_LOT_RELATION_SQL = ", ".join(f"'{s}'" for s in LOT_GENEALOGY_RELATIONS)
+
+
+class Lot(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """A production or supply batch of one item (ADR-0014 §5, Phase 1 I3) — the unit quality and
+    traceability are tracked in. A bucket's `lot_id` (ledger, balances, discrepancies) is a real,
+    organization-scoped foreign key to this table: `(organization_id, id)` is its target, so a
+    bucket can never name another tenant's lot even if a query forgot the filter.
+
+    `lot_no` is the organization's own number and unique across it; `supplier_lot_no` is whatever
+    the supplier printed and is not unique (two suppliers may reuse a number). `attributes` is a
+    small flat bag of org-defined facts (text, integers, booleans — never floats; see
+    `app.schemas.LotIn`), not stock.
+    """
+
+    __tablename__ = "lots"
+
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    lot_no: Mapped[str] = mapped_column(String(60), nullable=False)
+    supplier_lot_no: Mapped[str | None] = mapped_column(String(60))
+    manufactured_on: Mapped[date | None] = mapped_column(Date)
+    received_on: Mapped[date | None] = mapped_column(Date)
+    expires_on: Mapped[date | None] = mapped_column(Date)
+    quality_status: Mapped[str] = mapped_column(String(12), nullable=False, default="PENDING")
+    #: The document this lot came from (`purchase_order`, `production_order`, …) — a plain UUID
+    #: pair, never a cross-entity FK.
+    source_type: Mapped[str | None] = mapped_column(String(30))
+    source_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    attributes: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+    updated_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(f"quality_status IN ({_LOT_QUALITY_SQL})", name="quality_status_known"),
+        CheckConstraint("(source_type IS NULL) = (source_id IS NULL)", name="source_matches_id"),
+        # The target of the organization-scoped foreign keys on the ledger, balances,
+        # discrepancies, rolls and lot_genealogy.
+        UniqueConstraint("organization_id", "id", name="uq_lots_org_id"),
+        Index("uq_lots_org_lot_no", "organization_id", "lot_no", unique=True),
+        Index("ix_lots_org_item", "organization_id", "inventory_item_id"),
+        Index("ix_lots_org_created", "organization_id", text("created_at DESC"), text("id DESC")),
+    )
+
+
+class Roll(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One physical roll (ADR-0014 §2 — a roll's length and weight are two *measured* quantities,
+    never derived from each other): `primary_milli` in the item's stock UOM (82.5 m is `82500`)
+    and `secondary_milli` in `secondary_uom` (14.8 kg is `14800`). The ledger, not this row, says
+    how much of the roll is actually in a bucket; these are what the roll measured as when it was
+    created or last re-measured, and what a split apportions.
+
+    `parent_roll_id` is set on a split's children. A merge's result has no single parent — its
+    sources are `roll_events` `MERGE_RESULT` rows — so the trace walks both
+    (`app.inventory.selectors.trace_rolls`).
+    """
+
+    __tablename__ = "rolls"
+
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    roll_no: Mapped[str] = mapped_column(String(60), nullable=False)
+    state: Mapped[str] = mapped_column(String(10), nullable=False, default="ACTIVE")
+    primary_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    secondary_milli: Mapped[int | None] = mapped_column(BigInteger)
+    secondary_uom: Mapped[str | None] = mapped_column(String(10))
+    width_mm: Mapped[int | None] = mapped_column(Integer)
+    gsm: Mapped[int | None] = mapped_column(Integer)
+    shade: Mapped[str | None] = mapped_column(String(40))
+    grade: Mapped[str | None] = mapped_column(String(20))
+    parent_roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+    updated_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(f"state IN ({_ROLL_STATE_SQL})", name="state_known"),
+        CheckConstraint("primary_milli >= 0", name="primary_non_negative"),
+        CheckConstraint(
+            "secondary_milli IS NULL OR secondary_milli >= 0", name="secondary_non_negative"
+        ),
+        CheckConstraint(
+            "(secondary_milli IS NULL) = (secondary_uom IS NULL)", name="secondary_uom_matches"
+        ),
+        CheckConstraint("width_mm IS NULL OR width_mm > 0", name="width_positive"),
+        CheckConstraint("gsm IS NULL OR gsm > 0", name="gsm_positive"),
+        CheckConstraint("parent_roll_id IS NULL OR parent_roll_id <> id", name="not_own_parent"),
+        ForeignKeyConstraint(
+            ["organization_id", "lot_id"],
+            ["operations.lots.organization_id", "operations.lots.id"],
+            name="fk_rolls_org_lot",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "parent_roll_id"],
+            ["operations.rolls.organization_id", "operations.rolls.id"],
+            name="fk_rolls_org_parent",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("organization_id", "id", name="uq_rolls_org_id"),
+        Index("uq_rolls_org_roll_no", "organization_id", "roll_no", unique=True),
+        Index("ix_rolls_org_item", "organization_id", "inventory_item_id"),
+        Index(
+            "ix_rolls_org_lot",
+            "organization_id",
+            "lot_id",
+            postgresql_where=text("lot_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_rolls_org_parent",
+            "organization_id",
+            "parent_roll_id",
+            postgresql_where=text("parent_roll_id IS NOT NULL"),
+        ),
+        Index("ix_rolls_org_created", "organization_id", text("created_at DESC"), text("id DESC")),
+    )
+
+
+class RollEvent(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One append-only fact in a roll's life — created, opened into stock, split, merged, moved,
+    re-statused. `related_roll_id` names the other roll in a split or merge, which is what makes
+    the roll trace a graph walk. `UPDATE`/`DELETE` are revoked from the app role."""
+
+    __tablename__ = "roll_events"
+
+    roll_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    related_roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    move_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_moves.id", ondelete="RESTRICT"),
+    )
+    quantity_milli: Mapped[int | None] = mapped_column(BigInteger)
+    secondary_milli: Mapped[int | None] = mapped_column(BigInteger)
+    detail: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(f"kind IN ({_ROLL_EVENT_SQL})", name="kind_known"),
+        ForeignKeyConstraint(
+            ["organization_id", "roll_id"],
+            ["operations.rolls.organization_id", "operations.rolls.id"],
+            name="fk_roll_events_org_roll",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "related_roll_id"],
+            ["operations.rolls.organization_id", "operations.rolls.id"],
+            name="fk_roll_events_org_related",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_roll_events_org_roll",
+            "organization_id",
+            "roll_id",
+            text("occurred_at DESC"),
+            text("id DESC"),
+        ),
+        Index(
+            "ix_roll_events_org_related",
+            "organization_id",
+            "related_roll_id",
+            postgresql_where=text("related_roll_id IS NOT NULL"),
+        ),
+    )
+
+
+class LotGenealogy(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """`parent_lot_id` -> `child_lot_id`: this lot's material went into that one (ADR-0014 §5).
+    Append-only. A roll split or merge inside one lot leaves a self-edge (`parent == child`)
+    tied to its move — evidence for the lot's history, skipped by the trace; `BLEND`/`REWORK`/
+    `DERIVED` edges link two different lots and are what the trace follows."""
+
+    __tablename__ = "lot_genealogy"
+
+    parent_lot_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    child_lot_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    relation: Mapped[str] = mapped_column(String(10), nullable=False)
+    move_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_moves.id", ondelete="RESTRICT"),
+    )
+    quantity_milli: Mapped[int | None] = mapped_column(BigInteger)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(f"relation IN ({_LOT_RELATION_SQL})", name="relation_known"),
+        CheckConstraint(
+            "parent_lot_id <> child_lot_id OR relation IN ('SPLIT', 'MERGE')",
+            name="self_edge_only_for_roll_ops",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "parent_lot_id"],
+            ["operations.lots.organization_id", "operations.lots.id"],
+            name="fk_lot_genealogy_org_parent",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "child_lot_id"],
+            ["operations.lots.organization_id", "operations.lots.id"],
+            name="fk_lot_genealogy_org_child",
+            ondelete="RESTRICT",
+        ),
+        Index("ix_lot_genealogy_org_parent", "organization_id", "parent_lot_id"),
+        Index("ix_lot_genealogy_org_child", "organization_id", "child_lot_id"),
+    )
+
+
 class InventoryMove(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     """The header of one stock posting — what happened and why. Its `inventory_ledger` rows say
     which buckets moved by how much. Append-only, like the ledger.
@@ -743,6 +1026,7 @@ class InventoryMove(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
             postgresql_where=text("idempotency_key IS NOT NULL"),
         ),
         Index("ix_inventory_moves_org_reference", "organization_id", "reference_id"),
+        Index("ix_inventory_moves_org_occurred", "organization_id", text("occurred_on DESC")),
     )
 
 
@@ -773,7 +1057,7 @@ class LedgerEntry(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
         nullable=False,
     )
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="AVAILABLE")
-    #: Lot / roll bucket keys. Plain UUIDs until `lots`/`rolls` exist (Phase 1 adds the FKs).
+    #: Lot / roll bucket keys — organization-scoped foreign keys to `lots`/`rolls` (Phase 1).
     lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     #: Signed change, milli-units of the item's UOM. Zero only on a count that found no change.
@@ -801,6 +1085,36 @@ class LedgerEntry(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
         CheckConstraint(
             "(unit_cost_minor IS NULL) = (unit_cost_currency IS NULL)",
             name="unit_cost_currency_matches_minor",
+        ),
+        *_bucket_lot_roll_fks("inventory_ledger"),
+        Index(
+            "ix_inventory_ledger_org_created",
+            "organization_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+        Index(
+            "ix_inventory_ledger_org_location_created",
+            "organization_id",
+            "location_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+        Index(
+            "ix_inventory_ledger_org_lot_created",
+            "organization_id",
+            "lot_id",
+            text("created_at DESC"),
+            text("id DESC"),
+            postgresql_where=text("lot_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_inventory_ledger_org_roll_created",
+            "organization_id",
+            "roll_id",
+            text("created_at DESC"),
+            text("id DESC"),
+            postgresql_where=text("roll_id IS NOT NULL"),
         ),
         Index(
             "ix_inventory_ledger_org_item_created",
@@ -855,6 +1169,20 @@ class InventoryBalance(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
             "reserved_milli >= 0 AND reserved_milli <= quantity_milli", name="reserved_within"
         ),
         CheckConstraint(f"status IN ({_STATUS_SQL})", name="status_known"),
+        *_bucket_lot_roll_fks("inventory_balances"),
+        Index("ix_inventory_balances_org_location", "organization_id", "location_id"),
+        Index(
+            "ix_inventory_balances_org_lot",
+            "organization_id",
+            "lot_id",
+            postgresql_where=text("lot_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_inventory_balances_org_roll",
+            "organization_id",
+            "roll_id",
+            postgresql_where=text("roll_id IS NOT NULL"),
+        ),
         # One row per bucket. NULLS NOT DISTINCT: a bucket with no lot is still one bucket.
         Index(
             "uq_inventory_balances_bucket",
@@ -1035,6 +1363,7 @@ class InventoryDiscrepancy(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
 
     __table_args__ = (
         CheckConstraint("kind IN ('balance', 'reserved')", name="kind_known"),
+        *_bucket_lot_roll_fks("inventory_discrepancies"),
         Index(
             "uq_inventory_discrepancies_open_bucket",
             "organization_id",
@@ -2295,8 +2624,6 @@ class WalkEdge(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
         Index("ix_walk_edges_org_from_node", "organization_id", "from_node_id"),
         Index("ix_walk_edges_org_to_node", "organization_id", "to_node_id"),
     )
-
-
 
 
 class CountSession(Base, TenantBase):

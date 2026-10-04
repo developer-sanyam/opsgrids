@@ -55,7 +55,9 @@ from app.models import (
     InventoryReservationRelease,
     LedgerEntry,
     Location,
+    Lot,
     OutboxEvent,
+    Roll,
     Warehouse,
 )
 from platform_core.audit import record_audit
@@ -325,11 +327,64 @@ async def _locations(
             Location.deleted_at.is_(None),
             Warehouse.deleted_at.is_(None),
         )
+        # `FOR SHARE` on the location rows: a concurrent `delete_location` takes them `FOR UPDATE`
+        # before it checks for history, so a post into a location and its deletion serialise —
+        # the deletion sees this post's stock, or this post sees the location already gone.
+        .with_for_update(read=True, of=Location)
     )
     found = {loc_id: f"{wh}/{code}" for loc_id, wh, code in rows}
     if missing := wanted - found.keys():
         raise NotFoundProblem(f"Location {sorted(map(str, missing))[0]} is not in this org")
     return found
+
+
+async def _validate_tracking(
+    session: AsyncSession, org_id: uuid.UUID, lines: Sequence[MoveLine]
+) -> None:
+    """Every lot and roll a line names must exist in this organization, belong to the line's item,
+    and agree with each other — and stock cannot be put *into* a roll that a split or merge has
+    already consumed.
+
+    The database's organization-scoped foreign keys are the backstop; this is the check that
+    answers with a 404 / 422 and a message instead of an `IntegrityError`. One query per table
+    for the whole move, not one per line.
+    """
+    lot_ids = {line.lot_id for line in lines if line.lot_id is not None}
+    roll_ids = {line.roll_id for line in lines if line.roll_id is not None}
+    lots: dict[uuid.UUID, uuid.UUID] = {}
+    rolls: dict[uuid.UUID, tuple[uuid.UUID, uuid.UUID | None, str]] = {}
+    if lot_ids:
+        lot_rows = await session.execute(
+            select(Lot.id, Lot.inventory_item_id).where(
+                Lot.organization_id == org_id, Lot.id.in_(lot_ids)
+            )
+        )
+        lots = dict(lot_rows.all())  # type: ignore[arg-type]
+        if missing := lot_ids - lots.keys():
+            raise NotFoundProblem(f"Lot {sorted(map(str, missing))[0]} is not in this org")
+    if roll_ids:
+        rolls = {
+            roll_id: (item_id, lot_id, state)
+            for roll_id, item_id, lot_id, state in await session.execute(
+                select(Roll.id, Roll.inventory_item_id, Roll.lot_id, Roll.state).where(
+                    Roll.organization_id == org_id, Roll.id.in_(roll_ids)
+                )
+            )
+        }
+        if missing := roll_ids - rolls.keys():
+            raise NotFoundProblem(f"Roll {sorted(map(str, missing))[0]} is not in this org")
+    for line in lines:
+        if line.lot_id is not None and lots[line.lot_id] != line.item_id:
+            raise ValidationProblem(f"Lot {line.lot_id} belongs to a different item")
+        if line.roll_id is None:
+            continue
+        roll_item, roll_lot, roll_state = rolls[line.roll_id]
+        if roll_item != line.item_id:
+            raise ValidationProblem(f"Roll {line.roll_id} belongs to a different item")
+        if roll_lot is not None and roll_lot != line.lot_id:
+            raise ValidationProblem(f"Roll {line.roll_id} belongs to a different lot")
+        if roll_state != "ACTIVE" and line.counted_milli is None and line.quantity_milli > 0:
+            raise ConflictProblem(f"Roll {line.roll_id} is {roll_state} and cannot receive stock")
 
 
 async def lock_bucket(
@@ -525,6 +580,7 @@ async def post_move(
 
     items = await _items(session, org_id, (line.item_id for line in lines))
     where = await _locations(session, org_id, (line.location_id for line in lines))
+    await _validate_tracking(session, org_id, lines)
 
     request_hash = _request_hash(
         {

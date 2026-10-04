@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.inventory import selectors as inv_selectors
 from app.inventory import services as inv_services
 from app.inventory.quantity import parse_qty
-from app.models import InventoryBalance, LedgerEntry
+from app.models import InventoryBalance, LedgerEntry, Lot, Roll
 from platform_core.auth import Scope, ScopeContext
 from tests.helpers import ctx_for
 
@@ -146,3 +146,57 @@ async def ledger_rows(session: AsyncSession, org_id: uuid.UUID, item_id: uuid.UU
                 )
             ).scalar_one()
         )
+
+
+async def make_lot(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    item_id: uuid.UUID,
+    lot_no: str | None = None,
+) -> uuid.UUID:
+    """A lot row, inserted directly (the HTTP/service paths are tested on their own), so a
+    bucket's foreign key has something to name."""
+    lot_id = uuid.uuid4()
+    async with session.begin():
+        session.add(
+            Lot(
+                id=lot_id,
+                organization_id=org_id,
+                inventory_item_id=item_id,
+                lot_no=lot_no or f"LOT-{lot_id.hex[:8]}",
+                quality_status="APPROVED",
+            )
+        )
+    return lot_id
+
+
+async def make_roll(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    item_id: uuid.UUID,
+    *,
+    roll_no: str | None = None,
+    lot_id: uuid.UUID | None = None,
+    primary: str = "82.5",
+    secondary: str | None = "14.8",
+    secondary_uom: str = "kg",
+    shade: str | None = None,
+) -> uuid.UUID:
+    """A roll row (82.5 m / 14.8 kg by default), inserted directly."""
+    roll_id = uuid.uuid4()
+    async with session.begin():
+        session.add(
+            Roll(
+                id=roll_id,
+                organization_id=org_id,
+                inventory_item_id=item_id,
+                lot_id=lot_id,
+                roll_no=roll_no or f"ROLL-{roll_id.hex[:8]}",
+                state="ACTIVE",
+                primary_milli=q(primary),
+                secondary_milli=q(secondary) if secondary is not None else None,
+                secondary_uom=secondary_uom if secondary is not None else None,
+                shade=shade,
+            )
+        )
+    return roll_id

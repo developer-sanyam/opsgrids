@@ -36,6 +36,7 @@ from tests.inventory_fixtures import (
     build_textile,
     ledger_rows,
     ledger_total,
+    make_roll,
     q,
 )
 
@@ -295,7 +296,8 @@ class TestBuckets:
         assert format_qty(item.on_hand_milli) == "60"
 
     async def test_two_rolls_of_one_fabric_are_separate_buckets(self, session, t) -> None:
-        roll_a, roll_b = uuid.uuid4(), uuid.uuid4()
+        roll_a = await make_roll(session, t.org_id, t.fabric)
+        roll_b = await make_roll(session, t.org_id, t.fabric)
         await post(
             session,
             t,
