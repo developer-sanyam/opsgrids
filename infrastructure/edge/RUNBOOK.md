@@ -1442,6 +1442,50 @@ needs a new container, a new `.env` key or a new role: `operations` already owns
    the revision up/down on a dev database; **the downgrade drops the manufacturing tables and
    their data** — on a box with real production orders, restore from the nightly backup instead.
 
+### Inventory Phase 7 (MRP): migration, worker, and the permission reconcile
+
+What ships: `operations` migration `e7a4c1d9b352` (4 new tables — `mrp_runs`, `mrp_demands`,
+`mrp_shortages`, `mrp_shortage_lines` — and a column-level `SELECT (organization_id, status)` on
+`mrp_runs` for the outbox role, applied by `migrations/env.py`), the Material planning screens in the
+Operations SPA, three new `operations.manufacturing.mrp.*` permissions (`read`, `run`,
+`requisition`), and the MRP worker sweep. Nothing here needs a new container, a new `.env` key or a
+new role: the sweep runs inside the `operations` API process under the existing
+`RUN_SWEEPS_IN_API=true` (and in `bin/cron` elsewhere), on its own bulkhead engine.
+Optional tuning, both with safe defaults: `MRP_SYNC_MAX_DEMANDS` (200 — runs over more open demand
+lines are queued instead of computed in the request) and `MRP_SWEEP_INTERVAL_SECONDS` (30).
+
+1. **Order.** Deploy as usual (migrate → `operations` API → publish the Operations SPA). The SPA
+   goes **after** the API; the old SPA keeps working against the new API because nothing it reads
+   changed. The migration only adds objects.
+2. **The discovery grant is part of the migration run, not a separate step.** `env.py` re-applies
+   `GRANT SELECT (organization_id, status) ON operations.mrp_runs TO opsgrids_outbox` after every
+   migration. If it is missing, the worker finds no queued runs and **queued runs sit `QUEUED`
+   forever with no error** (the sweep reports healthy and `operations.mrp.pass` never logs an
+   organization). Check after deploy by starting a run in the background (the "Run in the
+   background" switch, or `mode: "worker"` on the API) and watching it complete within ~30 s.
+3. **Reconcile the `operations` permissions before anyone uses the screens in an organization that
+   existed before this deploy** (ADR-0007). `OPERATIONS_ADMIN`/`OPERATIONS_MANAGER`/
+   `PRODUCTION_PLANNER` in every older organization keep exactly the grants they had: every MRP
+   endpoint is a 403 for them (the SPA hides the nav entry) while a new organization works.
+   **Dry run first, always**:
+
+   ```bash
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations
+   # read the diff — expect 3 new grants on each of OPERATIONS_ADMIN, OPERATIONS_MANAGER and
+   # PRODUCTION_PLANNER — then:
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+   ```
+
+   This is a fleet write (every organization's permission version bumps, which signs members out of
+   their cached token) and is never part of an ordinary `make deploy`. If Phase 5's reconcile has not
+   been run yet, one run covers both phases. Customer-authored roles are left alone.
+4. **Verify.** As an admin of a pre-existing organization: `/manufacturing/mrp` loads (empty state,
+   not a 403); start a run — a small organization completes it at once; `mode: "worker"` (the
+   "Run in the background" switch) shows Queued, then Completed within the sweep interval.
+   `make migration-roundtrip` proves the revision up/down on a dev database; **the downgrade drops
+   the MRP tables and their stored runs** — plans are reproducible from live data, so this loses
+   history, not state.
+
 ### Roll back a bad deploy
 
 **The application:**

@@ -226,8 +226,9 @@ key out of manufacturing, privileges, tenant isolation as the app role, down ove
   that are validated against Phase 1's tables, but the UI still takes them as ids and an output
   cannot mint its own lot.
 - **QC.** Output can land in `QUALITY_HOLD`; inspections and release are Phase 4.
-- **Costing / cost roll-up, `valuation_posted`** — Phase 8. **MRP** (demand-driven order creation,
-  net requirements) — Phase 7. Production orders are created by a person.
+- **Costing / cost roll-up, `valuation_posted`** — Phase 8. **MRP** net requirements and the
+  shortage table are built (Phase 7, [mrp.md](mrp.md)); demand-driven *creation* of orders is not —
+  production orders are still created by a person, from MRP's `MAKE` rows if they like.
 - **Routings, work centres, labour and machine time, co-/by-products, rework loops** — not built;
   a BOM has one output, and scrap is material loss.
 - **Approval-service routing** for `approve` (ADR-0006): approval is a plain permission-gated step.

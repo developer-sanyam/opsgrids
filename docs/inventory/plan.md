@@ -256,10 +256,34 @@ Job-work orders, issue to vendor (`AT_JOB_WORKER` bucket, delivery challan / e-w
 finance), partial receipts, QC, reconciliation (sent / received / rejected / shortage) that must
 balance before close; overdue alerts.
 
-### Phase 7 — MRP
+### Phase 7 — MRP — **DONE** (2026-10-05) · reference: [mrp.md](mrp.md)
 BOM explosion over demand (sales + production + manual), net of available, reserved, open PO and
 open production; shortage table; "create requisition from shortages". Runs as a worker job for
 large orgs, results stored per run.
+
+Built (`services/operations/app/mrp/`, migration `e7a4c1d9b352`):
+- 4 tables (`mrp_runs`, `mrp_demands`, `mrp_shortages`, `mrp_shortage_lines`), RLS on every one,
+  plain-UUID references (no cross-module foreign keys); results stored per run with a result hash.
+- Pure planner (`domain.plan`): multi-level explosion on the BOM in force at the plan date (scrap,
+  effective windows, substitutes only when chosen), netted level by level in low-level-code order
+  against `AVAILABLE` stock less reservations, approved-PO remainder and open production output;
+  exact integer milli-unit arithmetic through `manufacturing.domain.required_milli` (one rounding,
+  always up), cycle-safe, deterministic; pegging back to the root demand.
+- Small organizations compute inline (`201`); large ones (over `MRP_SYNC_MAX_DEMANDS` open lines,
+  or `mode: worker`) are queued (`202`) and executed by `MrpRunSweep` — outbox-role discovery,
+  app-role work under the tenant policy, `SKIP LOCKED`, per-run savepoints — in `bin/cron` and in
+  the API process on `RUN_SWEEPS_IN_API`.
+- "Request requisition": `operations.mrp.requisition_requested` plus plain-UUID linkage
+  (`requisition_request_id`, `requisition_id`) on each shortage; **no dependency on Phase 2's
+  purchase requisitions**, which consume the event when they land.
+- Permissions `manufacturing.mrp.read/run/requisition` (ORG-only, none dangerous) for
+  `OPERATIONS_MANAGER` and `PRODUCTION_PLANNER`; events `operations.mrp.run_completed` and
+  `operations.mrp.requisition_requested`; `Idempotency-Key` on both mutating endpoints; audit rows.
+- Screens `/manufacturing/mrp` (runs, new run) and `/manufacturing/mrp/:runId` (shortage table,
+  pegging, demand, request requisition).
+
+Not in Phase 7: lead-time offsetting and time-phased buckets, planned-order generation, safety
+stock / lot sizing, per-warehouse netting, real requisitions (Phase 2). See mrp.md.
 
 ### Phase 8 — Costing, dashboard, reports
 Weighted-average valuation, FIFO layers retained; manufacturing cost roll-up (material + labour +
