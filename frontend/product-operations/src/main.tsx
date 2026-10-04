@@ -44,6 +44,20 @@ const InventoryPage = lazy(() =>
 const InventoryItemDetailPage = lazy(() =>
   import("./routes/InventoryItemDetail").then((m) => ({ default: m.InventoryItemDetailPage })),
 );
+const InventoryLotsPage = lazy(() =>
+  import("./routes/InventoryLots").then((m) => ({ default: m.InventoryLotsPage })),
+);
+const LotDetailPage = lazy(() => import("./routes/LotDetail").then((m) => ({ default: m.LotDetailPage })));
+const InventoryRollsPage = lazy(() =>
+  import("./routes/InventoryRolls").then((m) => ({ default: m.InventoryRollsPage })),
+);
+const RollDetailPage = lazy(() => import("./routes/RollDetail").then((m) => ({ default: m.RollDetailPage })));
+const InventoryStockPage = lazy(() =>
+  import("./routes/InventoryStock").then((m) => ({ default: m.InventoryStockPage })),
+);
+const InventoryLedgerPage = lazy(() =>
+  import("./routes/InventoryLedger").then((m) => ({ default: m.InventoryLedgerPage })),
+);
 const ItemCategoriesPage = lazy(() =>
   import("./routes/ItemCategories").then((m) => ({ default: m.ItemCategoriesPage })),
 );
@@ -133,6 +147,13 @@ const router = createBrowserRouter([
           lazyRoute("purchase-orders/:id/edit", <PurchaseOrderFormPage />),
           lazyRoute("inventory", <InventoryPage />),
           lazyRoute("inventory/categories", <ItemCategoriesPage />),
+          // Static segments are registered before `inventory/:id`; they would otherwise be read as an item id.
+          lazyRoute("inventory/lots", <InventoryLotsPage />),
+          lazyRoute("inventory/lots/:id", <LotDetailPage />),
+          lazyRoute("inventory/rolls", <InventoryRollsPage />),
+          lazyRoute("inventory/rolls/:id", <RollDetailPage />),
+          lazyRoute("inventory/stock", <InventoryStockPage />),
+          lazyRoute("inventory/ledger", <InventoryLedgerPage />),
           lazyRoute("inventory/:id", <InventoryItemDetailPage />),
           lazyRoute("suppliers", <SuppliersPage />),
           lazyRoute("suppliers/:id", <SupplierDetailPage />),

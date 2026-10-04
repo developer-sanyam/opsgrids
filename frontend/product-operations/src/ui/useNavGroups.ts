@@ -1,6 +1,9 @@
+import { useCan } from "@opsgrids/client";
 import {
   AlertTriangleIcon,
+  BoxIcon,
   CheckSquareIcon,
+  ColumnsIcon,
   ClipboardCheckIcon,
   ClipboardListIcon,
   CreditCardIcon,
@@ -10,6 +13,8 @@ import {
   LayersIcon,
   PackageIcon,
   PlugIcon,
+  ReceiptIcon,
+  TagIcon,
   TruckIcon,
   UsersIcon,
   WarehouseIcon,
@@ -21,6 +26,13 @@ import type { NavEntry, NavGroup } from "@opsgrids/ui";
 // folded into the purchase order detail page's own "Mark as received" action; Reports,
 // Integrations, Team and Settings have no backend yet and were removed rather than left as
 // ComingSoon placeholders.
+const STOCK_ENTRIES: NavEntry[] = [
+  { to: "/inventory/stock", label: "Stock", icon: BoxIcon },
+  { to: "/inventory/lots", label: "Lots", icon: TagIcon },
+  { to: "/inventory/rolls", label: "Rolls", icon: ColumnsIcon },
+  { to: "/inventory/ledger", label: "Stock Ledger", icon: ReceiptIcon },
+];
+
 const GROUPS: NavGroup[] = [
   {
     title: "Main Menu",
@@ -44,7 +56,20 @@ const GROUPS: NavGroup[] = [
   },
 ];
 
-/** This product's navigation, for `AppShell`'s `nav` prop. */
+/**
+ * This product's navigation, for `AppShell`'s `nav` prop.
+ *
+ * Stock, Lots, Rolls and the Stock Ledger sit under Inventory and appear only for a caller who
+ * can read stock — hiding the link is presentation; every endpoint behind them refuses the call
+ * on its own.
+ */
 export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
-  return { groups: GROUPS, pinned: [] };
+  const canReadStock = useCan("operations.inventory.stock.read", "ORG");
+  if (!canReadStock) return { groups: GROUPS, pinned: [] };
+  const groups = GROUPS.map((group) => {
+    const at = group.items.findIndex((entry) => entry.to === "/inventory");
+    if (at === -1) return group;
+    return { ...group, items: [...group.items.slice(0, at + 1), ...STOCK_ENTRIES, ...group.items.slice(at + 1)] };
+  });
+  return { groups, pinned: [] };
 }
