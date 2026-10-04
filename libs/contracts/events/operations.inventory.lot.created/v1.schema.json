@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.lot.created/v1",
+  "title": "operations.inventory.lot.created",
+  "description": "A lot was registered for an item that tracks lots (inventory Phase 1).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "lot_id",
+    "lot_no",
+    "inventory_item_id"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "lot_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "lot_no": {
+      "type": "string"
+    },
+    "inventory_item_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

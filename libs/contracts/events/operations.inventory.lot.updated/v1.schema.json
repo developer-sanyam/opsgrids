@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.lot.updated/v1",
+  "title": "operations.inventory.lot.updated",
+  "description": "A lot's supplier number, dates, quality status or attributes changed; `changed` names the fields.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "lot_id",
+    "changed"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "lot_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "changed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

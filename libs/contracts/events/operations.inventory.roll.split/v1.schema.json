@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.roll.split/v1",
+  "title": "operations.inventory.roll.split",
+  "description": "One roll was split into n children in a single stock move whose quantities sum exactly to the parent's.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "parent_roll_id",
+    "child_roll_ids",
+    "move_id"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "parent_roll_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "child_roll_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "move_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

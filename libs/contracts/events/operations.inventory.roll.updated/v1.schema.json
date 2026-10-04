@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.roll.updated/v1",
+  "title": "operations.inventory.roll.updated",
+  "description": "A roll was re-measured or re-classified; `changed` names the fields that actually changed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "roll_id",
+    "changed"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "roll_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "changed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
