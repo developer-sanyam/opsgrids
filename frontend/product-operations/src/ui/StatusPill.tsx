@@ -12,6 +12,7 @@ import type {
   CountLineReviewStatus,
   CountSessionStatus,
   InspectionStatus,
+  MrpRunStatus,
   OfferState,
   OrderStatus,
   PickTaskStatus,
@@ -601,4 +602,15 @@ const PRODUCTION_ORDER_LABEL: Record<ProductionOrderStatus, string> = {
 
 export function ProductionOrderStatusPill({ status }: { status: ProductionOrderStatus }) {
   return <StatusBadge status={PRODUCTION_ORDER_WORD[status]} label={PRODUCTION_ORDER_LABEL[status]} />;
+}
+
+/* ------------------------------- MRP run status ------------------------------ */
+/**
+ * An MRP run: `QUEUED` (waiting for the worker) -> `COMPLETED` | `FAILED`. `completed` is a
+ * registered word; "queued" and "failed" are not, so each takes an explicit tone.
+ */
+export function MrpRunStatusPill({ status }: { status: MrpRunStatus }) {
+  if (status === "COMPLETED") return <StatusBadge status="completed" label="Completed" />;
+  if (status === "FAILED") return <StatusBadge tone="danger" label="Failed" />;
+  return <StatusBadge tone="info" label="Queued" />;
 }

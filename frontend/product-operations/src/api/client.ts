@@ -59,11 +59,23 @@ import type {
   OutputIn,
   ProductionActionOut,
   ProductionCancelIn,
+  MrpDemandOut,
+  MrpDemandSource,
+  MrpDemandSourcesOut,
+  MrpRunCreatedOut,
+  MrpRunIn,
+  MrpRunOut,
+  MrpRunStatus,
+  MrpShortageAction,
+  MrpShortageDetailOut,
+  MrpShortageOut,
   ProductionOrderDetailOut,
   ProductionOrderIn,
   ProductionOrderOut,
   ProductionOrderPatch,
   ProductionOrderStatus,
+  RequisitionRequestIn,
+  RequisitionRequestOut,
   ReserveIn,
   ReturnIn,
   WastageIn,
@@ -3253,4 +3265,118 @@ export async function setWastageThreshold(input: WastageThresholdIn): Promise<Wa
 /** `DELETE /operations/manufacturing/wastage-thresholds/{id}` — `...bom.write`. */
 export async function removeWastageThreshold(id: string): Promise<void> {
   await apiRequest<undefined>(`${MFG}/wastage-thresholds/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/* ----------------------------------- MRP ----------------------------------- */
+
+/**
+ * Inventory Phase 7 (`services/operations/app/mrp/api.py`). Live only, like manufacturing. Demand
+ * and shortage quantities are decimal strings and are never parsed here. A run that is too large
+ * to compute inside the request answers `202` with `status: "QUEUED"`; the screen polls
+ * `getMrpRun` until the worker has finished it.
+ */
+
+const MRP = `${MFG}/mrp`;
+
+function mrpRunPath(runId: string): string {
+  return `${MRP}/runs/${encodeURIComponent(runId)}`;
+}
+
+/** `GET /operations/manufacturing/mrp/demand-sources` — `operations.manufacturing.mrp.read`. */
+export async function getMrpDemandSources(): Promise<MrpDemandSourcesOut> {
+  return apiRequest<MrpDemandSourcesOut>(`${MRP}/demand-sources`);
+}
+
+export interface ListMrpRunsParams {
+  status?: MrpRunStatus | "all";
+  q?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET .../mrp/runs` — newest first. */
+export async function listMrpRuns(params: ListMrpRunsParams = {}): Promise<Page<MrpRunOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    status: params.status === "all" ? undefined : params.status,
+    q: params.q,
+  });
+  return apiRequest<Page<MrpRunOut>>(`${MRP}/runs${query}`);
+}
+
+/** `POST .../mrp/runs` — `operations.manufacturing.mrp.run`. Computed inline when small, queued
+ *  for the worker when large (`status` says which). The caller owns the idempotency key. */
+export async function createMrpRun(
+  input: MrpRunIn,
+  options: MutationOptions = {},
+): Promise<MrpRunCreatedOut> {
+  return apiRequest<MrpRunCreatedOut>(`${MRP}/runs`, { method: "POST", body: input, ...keyed(options) });
+}
+
+/** `GET .../mrp/runs/{id}`. */
+export async function getMrpRun(runId: string): Promise<MrpRunOut> {
+  return apiRequest<MrpRunOut>(mrpRunPath(runId));
+}
+
+export interface ListMrpDemandsParams {
+  source_type?: MrpDemandSource | "all";
+  page?: number;
+  size?: number;
+}
+
+/** `GET .../mrp/runs/{id}/demands` — what the run planned from. */
+export async function listMrpDemands(
+  runId: string,
+  params: ListMrpDemandsParams = {},
+): Promise<Page<MrpDemandOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    source_type: params.source_type === "all" ? undefined : params.source_type,
+  });
+  return apiRequest<Page<MrpDemandOut>>(`${mrpRunPath(runId)}/demands${query}`);
+}
+
+export interface ListMrpShortagesParams {
+  action?: MrpShortageAction | "all";
+  requested?: boolean;
+  q?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET .../mrp/runs/{id}/shortages` — the shortage table. */
+export async function listMrpShortages(
+  runId: string,
+  params: ListMrpShortagesParams = {},
+): Promise<Page<MrpShortageOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    action: params.action === "all" ? undefined : params.action,
+    requested: params.requested,
+    q: params.q,
+  });
+  return apiRequest<Page<MrpShortageOut>>(`${mrpRunPath(runId)}/shortages${query}`);
+}
+
+/** `GET .../mrp/runs/{id}/shortages/{shortageId}` — with its pegging. */
+export async function getMrpShortage(runId: string, shortageId: string): Promise<MrpShortageDetailOut> {
+  return apiRequest<MrpShortageDetailOut>(`${mrpRunPath(runId)}/shortages/${encodeURIComponent(shortageId)}`);
+}
+
+/** `POST .../mrp/runs/{id}/requisitions` — `operations.manufacturing.mrp.requisition`. Requests a
+ *  purchase requisition for purchased-item shortages (all un-requested ones when `shortage_ids`
+ *  is omitted). */
+export async function requestMrpRequisition(
+  runId: string,
+  input: RequisitionRequestIn,
+  options: MutationOptions = {},
+): Promise<RequisitionRequestOut> {
+  return apiRequest<RequisitionRequestOut>(`${mrpRunPath(runId)}/requisitions`, {
+    method: "POST",
+    body: input,
+    ...keyed(options),
+  });
 }

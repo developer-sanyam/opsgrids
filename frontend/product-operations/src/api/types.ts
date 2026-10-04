@@ -2248,3 +2248,135 @@ export interface WastageThresholdOut {
   max_percent: Pct;
   created_at: string;
 }
+
+/* ----------------------------------- MRP ---------------------------------- */
+/*
+ * Inventory Phase 7 (`services/operations/app/mrp/schemas.py`). Quantities are decimal strings,
+ * never numbers; ids are strings.
+ */
+
+export type MrpRunStatus = "QUEUED" | "COMPLETED" | "FAILED";
+export type MrpDemandSource = "SALES_ORDER" | "PRODUCTION_ORDER" | "MANUAL";
+export type MrpShortageAction = "BUY" | "MAKE";
+export type MrpRunMode = "auto" | "sync" | "worker";
+
+export interface MrpManualDemandIn {
+  item_id: string;
+  quantity: Qty;
+  due_date?: string | null;
+  note?: string;
+}
+
+export interface MrpRunIn {
+  sources: MrpDemandSource[];
+  manual_demands?: MrpManualDemandIn[];
+  substitutes?: { component_item_id: string; substitute_item_id: string }[];
+  plan_date?: string | null;
+  notes?: string;
+  mode?: MrpRunMode;
+}
+
+export interface MrpRunOut {
+  id: string;
+  number: string;
+  status: MrpRunStatus;
+  execution: "SYNC" | "WORKER";
+  plan_date: string;
+  sources: MrpDemandSource[];
+  notes: string;
+  demand_count: number;
+  shortage_count: number;
+  items_planned: number;
+  result_hash: string | null;
+  error: string;
+  requested_by: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+/** `replayed` is true when an `Idempotency-Key` matched an earlier request. */
+export interface MrpRunCreatedOut extends MrpRunOut {
+  replayed: boolean;
+}
+
+export interface MrpDemandOut {
+  id: string;
+  source_type: MrpDemandSource;
+  source_id: string | null;
+  source_ref: string;
+  item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  requested: Qty;
+  reserved: Qty;
+  quantity: Qty;
+  due_date: string | null;
+  note: string;
+}
+
+export interface MrpShortageOut {
+  id: string;
+  run_id: string;
+  item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  action: MrpShortageAction;
+  level: number;
+  gross: Qty;
+  on_hand: Qty;
+  reserved: Qty;
+  available: Qty;
+  open_po: Qty;
+  open_production: Qty;
+  supply: Qty;
+  shortage: Qty;
+  need_by: string | null;
+  requisition_request_id: string | null;
+  requisition_requested_at: string | null;
+  requisition_id: string | null;
+}
+
+export interface MrpShortageLineOut {
+  source_type: MrpDemandSource;
+  source_id: string | null;
+  source_ref: string;
+  parent_item_id: string | null;
+  parent_sku: string | null;
+  quantity: Qty;
+  due_date: string | null;
+}
+
+export interface MrpShortageDetailOut extends MrpShortageOut {
+  lines: MrpShortageLineOut[];
+}
+
+export interface RequisitionRequestIn {
+  shortage_ids?: string[];
+  note?: string;
+}
+
+export interface RequisitionRequestLineOut {
+  shortage_id: string;
+  item_id: string;
+  sku: string;
+  uom: string;
+  quantity: Qty;
+  need_by: string | null;
+}
+
+export interface RequisitionRequestOut {
+  request_id: string;
+  run_id: string;
+  run_number: string;
+  lines: RequisitionRequestLineOut[];
+  replayed: boolean;
+}
+
+export interface MrpDemandSourcesOut {
+  sales_order_lines: number;
+  production_order_materials: number;
+  sync_limit: number;
+  mode_if_auto: "sync" | "worker";
+}

@@ -150,6 +150,10 @@ const ProductionOrdersPage = lazy(() =>
 const ProductionOrderDetailPage = lazy(() =>
   import("./routes/ProductionOrderDetail").then((m) => ({ default: m.ProductionOrderDetailPage })),
 );
+const MrpRunsPage = lazy(() => import("./routes/MrpRuns").then((m) => ({ default: m.MrpRunsPage })));
+const MrpRunDetailPage = lazy(() =>
+  import("./routes/MrpRunDetail").then((m) => ({ default: m.MrpRunDetailPage })),
+);
 
 const ScanPage = lazy(() => import("./routes/ScanPage").then((m) => ({ default: m.ScanPage })));
 const InventoryImportPage = lazy(() =>
@@ -257,6 +261,8 @@ const router = createBrowserRouter([
           lazyRoute("manufacturing/boms/:bomId/versions/:versionId", <BomVersionDetailPage />),
           lazyRoute("manufacturing/orders", <ProductionOrdersPage />),
           lazyRoute("manufacturing/orders/:orderId", <ProductionOrderDetailPage />),
+          lazyRoute("manufacturing/mrp", <MrpRunsPage />),
+          lazyRoute("manufacturing/mrp/:runId", <MrpRunDetailPage />),
           { path: "*", element: <NotFoundPage /> },
         ],
       },

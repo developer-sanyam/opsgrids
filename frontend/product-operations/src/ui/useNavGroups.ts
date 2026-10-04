@@ -75,6 +75,7 @@ const GROUPS: NavGroup[] = [
     items: [
       { to: "/manufacturing/boms", label: "Bills of materials", icon: NetworkIcon },
       { to: "/manufacturing/orders", label: "Production orders", icon: BoxIcon },
+      { to: "/manufacturing/mrp", label: "Material planning", icon: ClipboardListIcon },
     ],
   },
 ];
@@ -109,10 +110,13 @@ export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
   const bomRead = usePermissionStatus("operations.manufacturing.bom.read", "ORG");
   const orderRead = usePermissionStatus("operations.manufacturing.production_order.read", "ORG");
 
+  const mrpRead = usePermissionStatus("operations.manufacturing.mrp.read", "ORG");
+
   const groups = useMemo(() => {
     const hidden = new Set([
       ...(bomRead === "denied" ? ["/manufacturing/boms"] : []),
       ...(orderRead === "denied" ? ["/manufacturing/orders"] : []),
+      ...(mrpRead === "denied" ? ["/manufacturing/mrp"] : []),
     ]);
     return GROUPS.map((group) => ({
       ...group,
@@ -128,6 +132,6 @@ export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
         )
         .filter((item) => !hidden.has(item.to)),
     })).filter((group) => group.items.length > 0);
-  }, [canReadStock, canConfigure, bomRead, orderRead]);
+  }, [canReadStock, canConfigure, bomRead, orderRead, mrpRead]);
   return { groups, pinned: [] };
 }

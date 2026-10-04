@@ -79,6 +79,7 @@ export {
   CountLineReviewStatusPill,
   CountSessionStatusPill,
   InspectionStatusPill,
+  MrpRunStatusPill,
   OrderStatusPill,
   PickTaskStatusPill,
   PoStatusPill,
