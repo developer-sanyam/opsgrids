@@ -13,6 +13,7 @@ import { OverviewPage } from "./routes/Overview";
 import { LoginPage } from "./routes/Login";
 import { NotFoundPage } from "./routes/NotFound";
 import { StockReadGate } from "./movements/StockReadGate";
+import { registerRoute } from "./lib/routeRegistry";
 import { RouteFallback } from "./routes/RouteFallback";
 import { LogoMark } from "./ui/LogoMark";
 
@@ -134,7 +135,18 @@ const ApprovalSettingsPage = lazy(() =>
 const AutomationPage = lazy(() => import("./routes/Automation").then((m) => ({ default: m.AutomationPage })));
 const ChannelsPage = lazy(() => import("./routes/Channels").then((m) => ({ default: m.ChannelsPage })));
 
+const ScanPage = lazy(() => import("./routes/ScanPage").then((m) => ({ default: m.ScanPage })));
+const InventoryImportPage = lazy(() =>
+  import("./routes/InventoryImport").then((m) => ({ default: m.InventoryImportPage })),
+);
+const InventoryLabelsPage = lazy(() =>
+  import("./routes/InventoryLabels").then((m) => ({ default: m.InventoryLabelsPage })),
+);
+
 function lazyRoute(path: string, element: ReactNode) {
+  // The mobile scan flows link into other phases' screens only when this build mounts them, and
+  // they ask this registry, so the route table stays the one source of truth.
+  registerRoute(path);
   return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
 }
 
@@ -200,6 +212,8 @@ const router = createBrowserRouter([
           stockRoute("inventory/reservations", <ReservationsPage />),
           stockRoute("inventory/adjustments", <AdjustmentsPage />),
           stockRoute("inventory/settings/approvals", <ApprovalSettingsPage />),
+          lazyRoute("inventory/scan", <ScanPage />),
+          lazyRoute("inventory/import", <InventoryImportPage />),
           lazyRoute("inventory/:id", <InventoryItemDetailPage />),
           lazyRoute("suppliers", <SuppliersPage />),
           lazyRoute("suppliers/:id", <SupplierDetailPage />),
@@ -221,6 +235,17 @@ const router = createBrowserRouter([
           lazyRoute("channels", <ChannelsPage />),
           { path: "*", element: <NotFoundPage /> },
         ],
+      },
+      // Printed inventory labels (inventory Phase 9): outside `AppShell` for the same reason.
+      {
+        path: "/inventory/labels/:type",
+        element: (
+          <RequireAuth>
+            <Suspense fallback={<RouteFallback />}>
+              <InventoryLabelsPage />
+            </Suspense>
+          </RequireAuth>
+        ),
       },
       // Its own route, outside `AppShell`: a printed label sheet has no use for a sidebar and top
       // bar, and this sidesteps fighting them with print stylesheets. Still behind `RequireAuth` —
