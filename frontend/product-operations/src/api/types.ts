@@ -2380,3 +2380,201 @@ export interface MrpDemandSourcesOut {
   sync_limit: number;
   mode_if_auto: "sync" | "worker";
 }
+
+/* --------------------------------- job work (Inventory plan Phase 6) --------------------------------- */
+/**
+ * Mirrors `services/operations/app/jobwork/schemas.py`. Every quantity is a decimal **string**
+ * (`Qty`), never a number — a float cannot hold `0.001` of a metre exactly, and a reconciliation
+ * that is off by a milli-unit is a reconciliation that does not balance. Money is integer minor
+ * units with an ISO currency.
+ */
+
+export type JobWorkStatus =
+  | "DRAFT"
+  | "APPROVED"
+  | "ISSUED"
+  | "PARTIALLY_RECEIVED"
+  | "RECEIVED"
+  | "CLOSED"
+  | "CANCELLED";
+export type EwayStatus = "NOT_REQUIRED" | "REQUESTED" | "GENERATED" | "FAILED";
+export type JobWorkGoodStatus = "AVAILABLE" | "QUALITY_HOLD";
+
+export interface JobWorkOrderOut {
+  id: string;
+  number: string;
+  supplier_id: string;
+  supplier_name: string;
+  process: string;
+  status: JobWorkStatus;
+  due_date: string | null;
+  is_overdue: boolean;
+  days_overdue: number;
+  qc_required: boolean;
+  notes: string;
+  version: number;
+  source_warehouse_id: string | null;
+  receive_location_id: string | null;
+  material_count: number;
+  total_sent: Qty;
+  total_outstanding: Qty;
+  issued_at: string | null;
+  closed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JobWorkMaterialOut {
+  id: string;
+  line_no: number;
+  item_id: string;
+  sku: string;
+  uom: string;
+  lot_id: string | null;
+  roll_id: string | null;
+  location_id: string;
+  quantity: Qty;
+  sent: Qty;
+  received: Qty;
+  rejected: Qty;
+  shortage: Qty;
+  outstanding: Qty;
+  unit_value_minor: number;
+  currency: string;
+}
+
+export interface JobWorkReceiptOut {
+  id: string;
+  receipt_no: string;
+  material_id: string;
+  sku: string;
+  received: Qty;
+  rejected: Qty;
+  shortage: Qty;
+  location_id: string;
+  good_status: JobWorkGoodStatus;
+  qc_handoff: boolean;
+  received_on: string;
+  note: string;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface ChallanLineOut {
+  sku: string;
+  uom: string;
+  quantity: Qty;
+  unit_value_minor: number;
+  value_minor: number;
+  lot_id: string | null;
+  roll_id: string | null;
+}
+
+export interface ChallanOut {
+  id: string;
+  order_id: string;
+  order_number: string;
+  challan_number: string;
+  kind: "DELIVERY";
+  issued_at: string;
+  supplier_id: string;
+  supplier_name: string;
+  process: string;
+  lines: ChallanLineOut[];
+  total_value_minor: number;
+  currency: string;
+  vehicle_no: string | null;
+  transporter_id: string | null;
+  distance_km: number | null;
+  eway_status: EwayStatus;
+  eway_bill_no: string | null;
+  eway_requested_at: string | null;
+}
+
+export interface JobWorkReconciliationLineOut {
+  material_id: string;
+  sku: string;
+  uom: string;
+  sent: Qty;
+  received: Qty;
+  rejected: Qty;
+  shortage: Qty;
+  outstanding: Qty;
+}
+
+export interface JobWorkReconciliationDriftOut {
+  item_id: string;
+  sku: string;
+  documents: Qty;
+  ledger: Qty;
+}
+
+export interface JobWorkReconciliationOut {
+  order_id: string;
+  order_status: JobWorkStatus;
+  issued: boolean;
+  lines: JobWorkReconciliationLineOut[];
+  total_sent: Qty;
+  total_received: Qty;
+  total_rejected: Qty;
+  total_shortage: Qty;
+  total_outstanding: Qty;
+  documents_settled: boolean;
+  ledger_consistent: boolean;
+  drift: JobWorkReconciliationDriftOut[];
+  /** Settled **and** consistent — the one condition `:close` requires. */
+  balanced: boolean;
+}
+
+export interface JobWorkOrderDetailOut extends JobWorkOrderOut {
+  materials: JobWorkMaterialOut[];
+  receipts: JobWorkReceiptOut[];
+  challans: ChallanOut[];
+  reconciliation: JobWorkReconciliationOut;
+}
+
+export interface JobWorkMaterialIn {
+  item_id: string;
+  quantity: Qty;
+  location_id?: string;
+  lot_id?: string;
+  roll_id?: string;
+}
+
+export interface JobWorkOrderIn {
+  supplier_id: string;
+  process?: string;
+  due_date?: string | null;
+  source_warehouse_id?: string;
+  receive_location_id?: string;
+  qc_required?: boolean;
+  notes?: string;
+  materials: JobWorkMaterialIn[];
+}
+
+export interface JobWorkIssueIn {
+  vehicle_no?: string;
+  transporter_id?: string;
+  distance_km?: number;
+  note?: string;
+}
+
+export interface JobWorkReceiptLineIn {
+  material_id: string;
+  received: Qty;
+  rejected: Qty;
+  shortage: Qty;
+  location_id?: string;
+}
+
+export interface JobWorkReceiveIn {
+  lines: JobWorkReceiptLineIn[];
+  received_on?: string;
+  note?: string;
+}
+
+export interface ChallanEwayIn {
+  distance_km: number;
+  vehicle_no?: string;
+  transporter_id?: string;
+}

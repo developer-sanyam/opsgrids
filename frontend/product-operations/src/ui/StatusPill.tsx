@@ -11,6 +11,8 @@ import type {
   CollectionState,
   CountLineReviewStatus,
   CountSessionStatus,
+  EwayStatus,
+  JobWorkStatus,
   InspectionStatus,
   MrpRunStatus,
   OfferState,
@@ -613,4 +615,81 @@ export function MrpRunStatusPill({ status }: { status: MrpRunStatus }) {
   if (status === "COMPLETED") return <StatusBadge status="completed" label="Completed" />;
   if (status === "FAILED") return <StatusBadge tone="danger" label="Failed" />;
   return <StatusBadge tone="info" label="Queued" />;
+}
+
+/* ---------------------------------- job work status ---------------------------------- */
+/**
+ * `app.jobwork.domain.JOB_WORK_TRANSITIONS`. Registered words carry the registry's tone: `draft`,
+ * `approved`, `received`, `closed`, `cancelled`. `ISSUED` (material is out: in motion, outcome not
+ * yet known — `info`) and `PARTIALLY_RECEIVED` (some back, some still out — `warning`) are not
+ * registered words and take explicit tones. **Overdue is not a status** — it is a flag on the
+ * order, shown by `OverduePill` beside this one.
+ */
+
+const JOBWORK_LABEL: Record<JobWorkStatus, string> = {
+  DRAFT: "Draft",
+  APPROVED: "Approved",
+  ISSUED: "At vendor",
+  PARTIALLY_RECEIVED: "Partly received",
+  RECEIVED: "Received",
+  CLOSED: "Closed",
+  CANCELLED: "Cancelled",
+};
+
+const JOBWORK_REGISTERED: Partial<Record<JobWorkStatus, StatusWord>> = {
+  DRAFT: "draft",
+  APPROVED: "approved",
+  RECEIVED: "received",
+  CLOSED: "closed",
+  CANCELLED: "cancelled",
+};
+
+const JOBWORK_EXPLICIT_TONE: Partial<Record<JobWorkStatus, StatusTone>> = {
+  ISSUED: "info",
+  PARTIALLY_RECEIVED: "warning",
+};
+
+export function JobWorkStatusPill({ status }: { status: JobWorkStatus }) {
+  const word = JOBWORK_REGISTERED[status];
+  if (word) return <StatusBadge status={word} label={JOBWORK_LABEL[status]} />;
+  return <StatusBadge tone={JOBWORK_EXPLICIT_TONE[status] ?? "neutral"} label={JOBWORK_LABEL[status]} />;
+}
+
+/** Past its due date with material still at the vendor. The words carry the meaning, never colour alone. */
+export function OverduePill({ days }: { days: number }) {
+  return <StatusBadge tone="danger" label={days === 1 ? "1 day overdue" : `${days} days overdue`} />;
+}
+
+/* ------------------------------------ e-way bill status ------------------------------------ */
+/** What this module asked finance for, and what finance later answered — not a status operations
+ *  decides. `NOT_REQUIRED` is shown quietly. */
+
+const EWAY_LABEL: Record<EwayStatus, string> = {
+  NOT_REQUIRED: "E-way bill not required",
+  REQUESTED: "E-way bill requested",
+  GENERATED: "E-way bill generated",
+  FAILED: "E-way bill failed",
+};
+
+const EWAY_TONE: Record<EwayStatus, StatusTone> = {
+  NOT_REQUIRED: "neutral",
+  REQUESTED: "info",
+  GENERATED: "success",
+  FAILED: "danger",
+};
+
+export function EwayStatusPill({ status }: { status: EwayStatus }) {
+  return <StatusBadge tone={EWAY_TONE[status]} label={EWAY_LABEL[status]} />;
+}
+
+/* ------------------------------ reconciliation verdict ------------------------------ */
+/** Whether a job-work order's documents settle and agree with the ledger — a verdict, so it is
+ *  a pill with words: "Balanced" (success), "Not balanced" (danger), "Not issued yet" (neutral). */
+export function ReconciliationPill({ issued, balanced }: { issued: boolean; balanced: boolean }) {
+  if (!issued) return <StatusBadge tone="neutral" label="Not issued yet" />;
+  return balanced ? (
+    <StatusBadge tone="success" label="Balanced" />
+  ) : (
+    <StatusBadge tone="danger" label="Not balanced" />
+  );
 }

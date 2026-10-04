@@ -2038,7 +2038,7 @@ per sweep, labelled `sweep="<log-event prefix>"`:
 
 | Gauge | Meaning | Labels |
 |---|---|---|
-| `sweep_alive` | 1 while the sweep's task is running, 0 once it has exited — or if it was never started because its precondition failed | `inventory.reconcile`, `storefront.domain.sweep`, `document.sweep` |
+| `sweep_alive` | 1 while the sweep's task is running, 0 once it has exited — or if it was never started because its precondition failed | `inventory.reconcile`, `storefront.domain.sweep`, `document.sweep`, `operations.jobwork.overdue` |
 | `sweep_consecutive_failures` | failed ticks in a row (document also counts a tick where every purge attempt failed) | same |
 | `sweep_last_success_timestamp_seconds` | Unix time of the last good tick; `0` = none since the process started | same |
 
@@ -2053,6 +2053,55 @@ misconfigured outbox role must cost a nightly report, never the customer-facing 
 Each in-API sweep runs on its own one-connection database engine (a bulkhead), so it can neither
 take one of the API's 3 + 2 request-pool connections nor be starved by them — measured cost: one
 extra Postgres connection per API, opened lazily.
+
+### Job work (Inventory Phase 6): the permission reconcile and the overdue sweep
+
+`operations` gained five permissions (`operations.jobwork.order.read|write|issue|receive|approve`)
+and a fourth in-API sweep, the job-work overdue sweep. Migration `d7b3e5a19f62` adds four tables
+(`job_work_orders`, `job_work_materials`, `job_work_receipts`, `challans`) — `remote.sh migrate`
+runs it with no manual step, and it is reversible.
+
+**Reconcile the `operations` permissions before any manager in an organization that already
+existed can use job work** (ADR-0007). `OPERATIONS_MANAGER` carries the five in its template, but
+`install_registration` skips role codes that already exist, so existing organizations' managers
+keep the grants they had and every job-work route answers 403 — while a brand-new organization works
+perfectly. Dry run first, always:
+
+```bash
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations
+# read the diff: only OPERATIONS_MANAGER and OPERATIONS_ADMIN should gain jobwork.order.*, nothing else
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+```
+
+This is a fleet write (every organization's permission version bumps, which signs members out of
+their cached token) and is never part of an ordinary `make deploy`. Customer-authored roles are left
+alone by design — an organization that wants its own "Store keeper" role to receive job-work
+material grants `jobwork.order.receive` to it in the roles screen.
+
+**The overdue sweep** runs inside the `operations` API when `RUN_SWEEPS_IN_API=true` (as on this
+box), every `JOBWORK_OVERDUE_INTERVAL_SECONDS` (default 3600), under its own bulkhead connection.
+Verify it started, and that it can read what it needs:
+
+```bash
+C="docker compose -f compose.prod.yml --env-file .env"
+$C logs --tail 300 operations | grep -E 'operations.jobwork.overdue'
+#   a healthy hour:  operations.jobwork.overdue.pass  organizations=<n> announced=<n> failed=0
+#   a missing line:  RUN_SWEEPS_IN_API is not true, or `operations.jobwork.overdue.not_started`
+#                    (outbox-role precondition failed — the API itself still started)
+```
+
+Its `/metrics` gauges carry `sweep="operations.jobwork.overdue"`, alongside the others in the table
+above. **`operations.jobwork.overdue.pass … failed=<n>` with `n > 0`, repeating, and
+`InsufficientPrivilegeError` beside it, is the F11/F12 failure** (a sweep reading a column the
+`opsgrids_outbox` role was never granted): the grant lives in `migrations/env.py`'s
+`RECONCILE_DISCOVERY_TABLES["job_work_orders"]` and is re-applied by every `migrate`, so re-run
+`migrate` rather than granting by hand.
+
+Two events leave `operations` with no consumer yet — `operations.jobwork.challan.eway_requested`
+(finance's e-way generator is invoice-keyed) and `operations.jobwork.receipt.qc_requested` (the
+quality module is another branch). Both sit harmlessly in the outbox relay's normal path; nothing
+fails, and nothing happens, until a consumer exists. Challans therefore show `REQUESTED` and stay
+there; the e-way bill itself is still raised on the GST portal by hand.
 
 ### Rolling out this release on the box
 

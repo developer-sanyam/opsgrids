@@ -139,6 +139,15 @@ const InspectionDetailPage = lazy(() =>
 );
 const AutomationPage = lazy(() => import("./routes/Automation").then((m) => ({ default: m.AutomationPage })));
 const ChannelsPage = lazy(() => import("./routes/Channels").then((m) => ({ default: m.ChannelsPage })));
+const JobWorkOrdersPage = lazy(() =>
+  import("./routes/JobWorkOrders").then((m) => ({ default: m.JobWorkOrdersPage })),
+);
+const JobWorkOrderDetailPage = lazy(() =>
+  import("./routes/JobWorkOrderDetail").then((m) => ({ default: m.JobWorkOrderDetailPage })),
+);
+const JobWorkChallanPrintPage = lazy(() =>
+  import("./routes/JobWorkChallanPrint").then((m) => ({ default: m.JobWorkChallanPrintPage })),
+);
 const BomsPage = lazy(() => import("./routes/Boms").then((m) => ({ default: m.BomsPage })));
 const BomDetailPage = lazy(() => import("./routes/BomDetail").then((m) => ({ default: m.BomDetailPage })));
 const BomVersionDetailPage = lazy(() =>
@@ -256,6 +265,8 @@ const router = createBrowserRouter([
           lazyRoute("automation", <AutomationPage />),
           lazyRoute("settings/payments", <PaymentSettingsPage />),
           lazyRoute("channels", <ChannelsPage />),
+          lazyRoute("jobwork/orders", <JobWorkOrdersPage />),
+          lazyRoute("jobwork/orders/:id", <JobWorkOrderDetailPage />),
           lazyRoute("manufacturing/boms", <BomsPage />),
           lazyRoute("manufacturing/boms/:bomId", <BomDetailPage />),
           lazyRoute("manufacturing/boms/:bomId/versions/:versionId", <BomVersionDetailPage />),
@@ -273,6 +284,18 @@ const router = createBrowserRouter([
           <RequireAuth>
             <Suspense fallback={<RouteFallback />}>
               <InventoryLabelsPage />
+            </Suspense>
+          </RequireAuth>
+        ),
+      },
+      // A printed delivery challan likewise has no use for a sidebar. Still behind `RequireAuth`:
+      // it reads the same permissioned challan the order screen does.
+      {
+        path: "/jobwork/challans/:id/print",
+        element: (
+          <RequireAuth>
+            <Suspense fallback={<RouteFallback />}>
+              <JobWorkChallanPrintPage />
             </Suspense>
           </RequireAuth>
         ),

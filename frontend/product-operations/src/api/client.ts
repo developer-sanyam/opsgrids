@@ -96,6 +96,8 @@ import type {
   AssignmentOfferOut,
   CancelIn,
   Category,
+  ChallanEwayIn,
+  ChallanOut,
   CountLineOut,
   CountLineReviewIn,
   CountLineReviewStatus,
@@ -125,6 +127,13 @@ import type {
   ChannelSyncType,
   ItemAttributeIn,
   ItemAttributeOut,
+  JobWorkIssueIn,
+  JobWorkOrderDetailOut,
+  JobWorkOrderIn,
+  JobWorkOrderOut,
+  JobWorkReceiveIn,
+  JobWorkReconciliationOut,
+  JobWorkStatus,
   ItemCategoryIn,
   ItemCategoryOut,
   ItemCategoryPatch,
@@ -3378,5 +3387,145 @@ export async function requestMrpRequisition(
     method: "POST",
     body: input,
     ...keyed(options),
+  });
+}
+
+/* ------------------------------ job work (Inventory plan Phase 6) ------------------------------ */
+/**
+ * Live only — no fixture-mode branch, the same shape counting/dispatch/channels set: every figure
+ * on these screens is a real read of the ledger-backed backend, and this module ships no
+ * synthetic job-work data to stand in for it.
+ *
+ * Every write that moves stock or numbers a document carries an `Idempotency-Key`. The caller
+ * mints it once per distinct submission (`lib/jobwork.ts` `newIdempotencyKey`) and **reuses it on
+ * a retry**: a double-click or a re-sent request after a dropped response is then a replay on the
+ * server, never a second issue or a second receipt.
+ */
+
+export interface ListJobWorkOrdersParams {
+  status?: JobWorkStatus | "all";
+  supplier_id?: string;
+  overdue?: boolean;
+  search?: string;
+  page?: number;
+  size?: number;
+}
+
+const JOBWORK = "/operations/jobwork";
+
+/** `GET /operations/jobwork/orders` — `operations.jobwork.order.read:ORG`. */
+export async function listJobWorkOrders(
+  params: ListJobWorkOrdersParams = {},
+): Promise<Page<JobWorkOrderOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    status: params.status === "all" ? undefined : params.status,
+    supplier_id: params.supplier_id,
+    overdue: params.overdue ? true : undefined,
+    search: params.search,
+  });
+  return apiRequest<Page<JobWorkOrderOut>>(`${JOBWORK}/orders${query}`);
+}
+
+/** `GET /operations/jobwork/orders/{id}` — the order with its materials, receipts, challans and
+ *  reconciliation. */
+export async function getJobWorkOrder(id: string): Promise<JobWorkOrderDetailOut> {
+  return apiRequest<JobWorkOrderDetailOut>(`${JOBWORK}/orders/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/jobwork/orders` — `operations.jobwork.order.write:ORG`. */
+export async function createJobWorkOrder(
+  input: JobWorkOrderIn,
+  idempotencyKey: string,
+): Promise<JobWorkOrderDetailOut> {
+  return apiRequest<JobWorkOrderDetailOut>(`${JOBWORK}/orders`, {
+    method: "POST",
+    body: input,
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+/** `POST …:approve` — `operations.jobwork.order.approve:ORG`. */
+export async function approveJobWorkOrder(
+  id: string,
+  idempotencyKey: string,
+): Promise<JobWorkOrderDetailOut> {
+  return apiRequest<JobWorkOrderDetailOut>(`${JOBWORK}/orders/${encodeURIComponent(id)}:approve`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+/** `POST …:cancel` — `operations.jobwork.order.write:ORG`; only before issue. */
+export async function cancelJobWorkOrder(
+  id: string,
+  reason: string,
+  idempotencyKey: string,
+): Promise<JobWorkOrderDetailOut> {
+  return apiRequest<JobWorkOrderDetailOut>(`${JOBWORK}/orders/${encodeURIComponent(id)}:cancel`, {
+    method: "POST",
+    body: { reason },
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+/** `POST …:issue` — `operations.jobwork.order.issue:ORG`. Moves the stock to the vendor's bucket
+ *  and cuts the delivery challan; 409 `insufficient-stock` names what is short. */
+export async function issueJobWorkOrder(
+  id: string,
+  input: JobWorkIssueIn,
+  idempotencyKey: string,
+): Promise<JobWorkOrderDetailOut> {
+  return apiRequest<JobWorkOrderDetailOut>(`${JOBWORK}/orders/${encodeURIComponent(id)}:issue`, {
+    method: "POST",
+    body: input,
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+/** `POST …:receive` — `operations.jobwork.order.receive:ORG`. Partial receipts are normal; 409
+ *  when a line asks for more than is still at the vendor. */
+export async function receiveJobWorkOrder(
+  id: string,
+  input: JobWorkReceiveIn,
+  idempotencyKey: string,
+): Promise<JobWorkOrderDetailOut> {
+  return apiRequest<JobWorkOrderDetailOut>(`${JOBWORK}/orders/${encodeURIComponent(id)}:receive`, {
+    method: "POST",
+    body: input,
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+/** `GET …/reconciliation` — sent / received / rejected / shortage and whether the documents and
+ *  the ledger agree. */
+export async function getJobWorkReconciliation(id: string): Promise<JobWorkReconciliationOut> {
+  return apiRequest<JobWorkReconciliationOut>(`${JOBWORK}/orders/${encodeURIComponent(id)}/reconciliation`);
+}
+
+/** `POST …:close` — `operations.jobwork.order.approve:ORG`. 409 unless the reconciliation
+ *  balances; the problem's `errors[0]` carries the figures. */
+export async function closeJobWorkOrder(
+  id: string,
+  idempotencyKey: string,
+): Promise<JobWorkOrderDetailOut> {
+  return apiRequest<JobWorkOrderDetailOut>(`${JOBWORK}/orders/${encodeURIComponent(id)}:close`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+/** `GET /operations/jobwork/challans/{id}` — the frozen delivery challan (the print view). */
+export async function getChallan(id: string): Promise<ChallanOut> {
+  return apiRequest<ChallanOut>(`${JOBWORK}/challans/${encodeURIComponent(id)}`);
+}
+
+/** `POST …/challans/{id}:request-eway` — `operations.jobwork.order.issue:ORG`. Supplies the
+ *  transport facts and asks finance to consider an e-way bill. */
+export async function requestChallanEway(id: string, input: ChallanEwayIn): Promise<ChallanOut> {
+  return apiRequest<ChallanOut>(`${JOBWORK}/challans/${encodeURIComponent(id)}:request-eway`, {
+    method: "POST",
+    body: input,
   });
 }

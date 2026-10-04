@@ -62,6 +62,8 @@ const GROUPS: NavGroup[] = [
       { to: "/inventory/scan", label: "Scan", icon: TagIcon },
       { to: "/inventory/import", label: "Import & Export", icon: DownloadIcon },
       { to: "/counting", label: "Cycle Counts", icon: CheckSquareIcon },
+      // Material sent to an outside processor and expected back (Inventory plan Phase 6).
+      { to: "/jobwork/orders", label: "Job Work", icon: ReceiptIcon },
       { to: "/quality/inspections", label: "Inspections", icon: ShieldCheckIcon },
       { to: "/quality/templates", label: "QC Templates", icon: ClipboardListIcon },
       { to: "/suppliers", label: "Suppliers", icon: FactoryIcon },

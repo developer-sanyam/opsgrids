@@ -240,9 +240,10 @@ Built (`services/operations/app/manufacturing/`, migration `d3b9f2a7c614`):
   with reserve / issue / output / wastage / return / complete).
 
 Differences from the plan text, and why:
-- **Genealogy lives in `production_genealogy`**, plain UUIDs, not `lot_genealogy`: the `lots` and
-  `rolls` tables belong to Phase 1, which is not in this lineage. When Phase 1 lands, the ids here
-  are already the right shape for a foreign key to be added.
+- **Genealogy lives in `production_genealogy`** (the production-side record, per output, with roll
+  and quantity) **and**, now that Phase 1's `lot_genealogy` exists, lot-level `BLEND` / `DERIVED`
+  edges are written for the output lot too (see manufacturing.md); the ids here stay plain UUIDs
+  with no foreign key, checked in the service.
 - **One live BOM per item**, with versions underneath — alternates are versions or substitutes, not
   parallel BOMs, so a component's BOM is unambiguous.
 - **Production orders are single-level**; multi-level is a produced component with its own BOM and
@@ -251,10 +252,31 @@ Differences from the plan text, and why:
 Not in Phase 5: costing and cost roll-up (8), MRP (7), routings/work centres/labour, co-products,
 QC release of output (4), mobile scan issue/output (9). See manufacturing.md.
 
-### Phase 6 — Job work
+### Phase 6 — Job work — **BUILT** (2026-10-05) · reference: [jobwork.md](jobwork.md)
 Job-work orders, issue to vendor (`AT_JOB_WORKER` bucket, delivery challan / e-way bill via
 finance), partial receipts, QC, reconciliation (sent / received / rejected / shortage) that must
 balance before close; overdue alerts.
+
+Built: `app/jobwork/` (domain, numbering, selectors, services, API, overdue sweep), migration
+`d7b3e5a19f62` (`job_work_orders`, `job_work_materials`, append-only `job_work_receipts`, and
+`challans` frozen by a trigger once issued — no FK to items, lots, rolls, locations or suppliers),
+gapless financial-year challan numbering (`DC/26-27/0001`), partial receipts with exact
+milli-unit arithmetic, a reconciliation (`sent = received + rejected + shortage + outstanding`,
+documents **and** ledger) that `:close` refuses to pass unless it balances, `AT_JOB_WORKER` moves
+only through `post_move`, `Idempotency-Key` on every stock-moving or numbering write, six events with JSON contracts,
+five permissions (`jobwork.order.read/write/issue/receive/approve`) with the ADR-0007 reconcile
+documented in the runbook, and the Operations screens `/jobwork/orders`, the order detail and the
+challan print view.
+
+Differences from the bullet above, and why:
+- **The e-way bill is requested, not built.** Finance generates from an invoice; a challan is not
+  one. The hook is `operations.jobwork.challan.eway_requested` (the same shape as dispatch's), and
+  a finance consumer is a follow-up.
+- **QC is a hand-off, not a dependency.** Returned goods go to `QUALITY_HOLD` and
+  `operations.jobwork.receipt.qc_requested` is emitted; the quality package consumes it and opens an
+  incoming inspection (see jobwork.md).
+- **Same item in, same item out.** Conversion to a different output item belongs to Phase 5's BOM
+  and production orders; job charges and costing to Phase 8.
 
 ### Phase 7 — MRP — **DONE** (2026-10-05) · reference: [mrp.md](mrp.md)
 BOM explosion over demand (sales + production + manual), net of available, reserved, open PO and
