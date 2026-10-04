@@ -10,6 +10,7 @@ import type {
   CollectionState,
   CountLineReviewStatus,
   CountSessionStatus,
+  InspectionStatus,
   OfferState,
   OrderStatus,
   PickTaskStatus,
@@ -523,4 +524,38 @@ const RESERVATION_TONE: Record<ReservationStatus, StatusTone> = {
 export function ReservationStatusPill({ status, expired }: { status: ReservationStatus; expired: boolean }) {
   if (expired) return <StatusBadge status="expired" label="Expired" />;
   return <StatusBadge tone={RESERVATION_TONE[status]} label={RESERVATION_LABEL[status]} />;
+}
+
+/* ------------------------------ inspection status ------------------------------ */
+/**
+ * `app.quality.domain.INSPECTION_TRANSITIONS`' vocabulary. `PENDING`, `HOLD` (`on_hold`) and
+ * `FAILED` are registered words with the right tone; `PASSED`, `REWORK` and `PARTIAL_PASS` are not
+ * and each takes an explicit one. Always labelled — never colour alone.
+ */
+
+const INSPECTION_LABEL: Record<InspectionStatus, string> = {
+  PENDING: "Pending",
+  PASSED: "Passed",
+  FAILED: "Failed",
+  HOLD: "On hold",
+  REWORK: "Rework",
+  PARTIAL_PASS: "Partial pass",
+};
+
+const INSPECTION_REGISTERED: Partial<Record<InspectionStatus, StatusWord>> = {
+  PENDING: "pending",
+  FAILED: "failed",
+  HOLD: "on_hold",
+};
+
+const INSPECTION_EXPLICIT_TONE: Partial<Record<InspectionStatus, StatusTone>> = {
+  PASSED: "success",
+  REWORK: "warning",
+  PARTIAL_PASS: "info",
+};
+
+export function InspectionStatusPill({ status }: { status: InspectionStatus }) {
+  const word = INSPECTION_REGISTERED[status];
+  if (word) return <StatusBadge status={word} label={INSPECTION_LABEL[status]} />;
+  return <StatusBadge tone={INSPECTION_EXPLICIT_TONE[status] ?? "neutral"} label={INSPECTION_LABEL[status]} />;
 }

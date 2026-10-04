@@ -22,6 +22,7 @@ import {
   ScaleIcon,
   SendIcon,
   TagIcon,
+  ShieldCheckIcon,
   TruckIcon,
   UsersIcon,
   WarehouseIcon,
@@ -60,6 +61,8 @@ const GROUPS: NavGroup[] = [
       { to: "/inventory/scan", label: "Scan", icon: TagIcon },
       { to: "/inventory/import", label: "Import & Export", icon: DownloadIcon },
       { to: "/counting", label: "Cycle Counts", icon: CheckSquareIcon },
+      { to: "/quality/inspections", label: "Inspections", icon: ShieldCheckIcon },
+      { to: "/quality/templates", label: "QC Templates", icon: ClipboardListIcon },
       { to: "/suppliers", label: "Suppliers", icon: FactoryIcon },
       { to: "/warehouses", label: "Warehouses", icon: WarehouseIcon },
       // The organization's own Razorpay account and payment reconciliation (ADR-0024 A4).

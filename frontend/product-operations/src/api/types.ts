@@ -1670,3 +1670,164 @@ export interface ReceivingContextOut {
   can_receive: boolean;
   lines: ReceivingLineOut[];
 }
+
+/* ------------------------------------ quality (inventory plan Phase 4) ------------------------------------ */
+/*
+ * Mirrors `app/quality/schemas.py`. Every quantity, bound and reading is a decimal **string** with
+ * at most three decimals (`Qty`) — never a JS number; the server converts to milli-units at the
+ * edge and this file never does arithmetic on one.
+ */
+
+export type QcKind = "incoming" | "in-process" | "finished";
+export type QcParamKind = "numeric" | "pass_fail";
+export type InspectionStatus = "PENDING" | "PASSED" | "FAILED" | "HOLD" | "REWORK" | "PARTIAL_PASS";
+export type RejectBucket = "REJECTED" | "QUARANTINE";
+export type DispositionAction = "RETURN_TO_VENDOR" | "SCRAP";
+export type Disposition = "NONE" | DispositionAction;
+
+export interface QcParamIn {
+  name: string;
+  kind: QcParamKind;
+  unit?: string;
+  min?: Qty | null;
+  max?: Qty | null;
+  is_critical?: boolean;
+}
+
+export interface QcParamOut {
+  id: string;
+  name: string;
+  kind: QcParamKind;
+  unit: string;
+  min: Qty | null;
+  max: Qty | null;
+  is_critical: boolean;
+  position: number;
+}
+
+export interface QcTemplateIn {
+  code: string;
+  name: string;
+  kind: QcKind;
+  item_id?: string | null;
+  description?: string;
+  is_active?: boolean;
+  params: QcParamIn[];
+}
+
+/** `PATCH` — a supplied `params` replaces the whole list; omit it to leave parameters alone. */
+export interface QcTemplatePatch {
+  name?: string;
+  description?: string;
+  is_active?: boolean;
+  params?: QcParamIn[];
+}
+
+export interface QcTemplateOut {
+  id: string;
+  code: string;
+  name: string;
+  kind: QcKind;
+  item_id: string | null;
+  description: string;
+  is_active: boolean;
+  params: QcParamOut[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InspectionIn {
+  kind: QcKind;
+  item_id: string;
+  location_id: string;
+  quantity: Qty;
+  lot_id?: string | null;
+  roll_id?: string | null;
+  template_id?: string | null;
+  supplier_id?: string | null;
+  reference_type?: string;
+  reference_id?: string | null;
+  /** Default true: moves the quantity AVAILABLE -> QUALITY_HOLD as part of opening. */
+  hold_stock?: boolean;
+  notes?: string;
+}
+
+export interface InspectionResultIn {
+  param_name: string;
+  value?: Qty | null;
+  passed?: boolean | null;
+  note?: string;
+}
+
+export interface InspectionResultOut {
+  id: string;
+  param_name: string;
+  param_kind: QcParamKind;
+  unit: string;
+  min: Qty | null;
+  max: Qty | null;
+  is_critical: boolean;
+  value: Qty | null;
+  passed: boolean;
+  note: string;
+  recorded_by: string | null;
+}
+
+export interface InspectionOut {
+  id: string;
+  kind: QcKind;
+  status: InspectionStatus;
+  template_id: string | null;
+  item_id: string;
+  item_sku: string;
+  item_name: string;
+  uom: string;
+  location_id: string;
+  location_code: string;
+  lot_id: string | null;
+  roll_id: string | null;
+  supplier_id: string | null;
+  reference_type: string;
+  reference_id: string | null;
+  quantity: Qty;
+  accepted: Qty | null;
+  rejected: Qty | null;
+  rejected_bucket: RejectBucket | null;
+  notes: string;
+  decision_note: string;
+  decided_by: string | null;
+  decided_at: string | null;
+  disposition: Disposition;
+  disposition_note: string;
+  disposition_reference: string;
+  disposed_at: string | null;
+  hold_move_id: string | null;
+  decision_move_id: string | null;
+  disposition_move_id: string | null;
+  /** What the readings alone recommend — never applied automatically. */
+  suggested_outcome: InspectionStatus;
+  /** False while a critical parameter has failed. */
+  can_release: boolean;
+  results: InspectionResultOut[];
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReleaseIn {
+  /** Omit to release everything (`PASSED`); less is a `PARTIAL_PASS`. */
+  accepted?: Qty | null;
+  rejected_bucket?: RejectBucket;
+  note?: string;
+}
+
+export interface RejectIn {
+  reason: string;
+  bucket?: RejectBucket;
+}
+
+export interface DispositionIn {
+  action: DispositionAction;
+  note?: string;
+  reference?: string;
+}

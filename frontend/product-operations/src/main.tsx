@@ -132,6 +132,11 @@ const AdjustmentsPage = lazy(() => import("./routes/Adjustments").then((m) => ({
 const ApprovalSettingsPage = lazy(() =>
   import("./routes/ApprovalSettings").then((m) => ({ default: m.ApprovalSettingsPage })),
 );
+const QcTemplatesPage = lazy(() => import("./routes/QcTemplates").then((m) => ({ default: m.QcTemplatesPage })));
+const InspectionsPage = lazy(() => import("./routes/Inspections").then((m) => ({ default: m.InspectionsPage })));
+const InspectionDetailPage = lazy(() =>
+  import("./routes/InspectionDetail").then((m) => ({ default: m.InspectionDetailPage })),
+);
 const AutomationPage = lazy(() => import("./routes/Automation").then((m) => ({ default: m.AutomationPage })));
 const ChannelsPage = lazy(() => import("./routes/Channels").then((m) => ({ default: m.ChannelsPage })));
 
@@ -230,6 +235,9 @@ const router = createBrowserRouter([
           lazyRoute("dispatch", <DispatchShipmentsPage />),
           lazyRoute("counting", <CountSessionsPage />),
           lazyRoute("counting/:id", <CountSessionDetailPage />),
+          lazyRoute("quality/templates", <QcTemplatesPage />),
+          lazyRoute("quality/inspections", <InspectionsPage />),
+          lazyRoute("quality/inspections/:id", <InspectionDetailPage />),
           lazyRoute("automation", <AutomationPage />),
           lazyRoute("settings/payments", <PaymentSettingsPage />),
           lazyRoute("channels", <ChannelsPage />),

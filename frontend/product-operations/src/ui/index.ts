@@ -77,6 +77,7 @@ export {
   CollectionStatusPill,
   CountLineReviewStatusPill,
   CountSessionStatusPill,
+  InspectionStatusPill,
   OrderStatusPill,
   PickTaskStatusPill,
   PoStatusPill,

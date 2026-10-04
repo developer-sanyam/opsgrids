@@ -42,6 +42,17 @@ import {
   WAREHOUSES,
 } from "./fixtures";
 import type {
+  DispositionIn,
+  InspectionIn,
+  InspectionOut,
+  InspectionResultIn,
+  InspectionStatus,
+  QcKind,
+  QcTemplateIn,
+  QcTemplateOut,
+  QcTemplatePatch,
+  RejectIn,
+  ReleaseIn,
   AlertKind,
   AssignmentOfferOut,
   CancelIn,
@@ -2734,5 +2745,169 @@ export async function updateUomConversion(id: string, patch: UomConversionPatch)
 export async function deleteUomConversion(id: string): Promise<void> {
   await apiRequest<undefined>(`/operations/inventory/uom-conversions/${encodeURIComponent(id)}`, {
     method: "DELETE",
+  });
+}
+
+/* ------------------------------------ quality (inventory plan Phase 4) ------------------------------------ */
+/**
+ * QC templates, inspections, and the release / reject / disposition decisions over held stock.
+ * Live only — no fixture-mode branch, the same "live by default" shape counting above set: a
+ * fabricated inspection would mean fabricated stock movements.
+ *
+ * Every mutating call takes the `idempotencyKey` the screen minted for the action (see
+ * `useIdempotencyKey`): a retry after a lost answer is the same request, replayed by the server
+ * rather than acted on twice.
+ */
+
+const idem = (key: string | undefined): { headers: Record<string, string> } | Record<string, never> =>
+  key ? { headers: { "Idempotency-Key": key } } : {};
+
+export interface ListQcTemplatesParams {
+  kind?: QcKind | "all";
+  active?: boolean;
+  item_id?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/quality/templates` — `operations.quality.inspection.read:ORG`. */
+export async function listQcTemplates(params: ListQcTemplatesParams = {}): Promise<Page<QcTemplateOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    kind: params.kind === "all" ? undefined : params.kind,
+    active: params.active,
+    item_id: params.item_id,
+  });
+  return apiRequest<Page<QcTemplateOut>>(`/operations/quality/templates${query}`);
+}
+
+/** `GET /operations/quality/templates/{id}` — the parameters an inspection is judged against. */
+export async function getQcTemplate(id: string): Promise<QcTemplateOut> {
+  return apiRequest<QcTemplateOut>(`/operations/quality/templates/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/quality/templates` — `operations.quality.inspection.approve:ORG`. */
+export async function createQcTemplate(input: QcTemplateIn, idempotencyKey?: string): Promise<QcTemplateOut> {
+  return apiRequest<QcTemplateOut>("/operations/quality/templates", {
+    method: "POST",
+    body: input,
+    ...idem(idempotencyKey),
+  });
+}
+
+/** `PATCH /operations/quality/templates/{id}` — a supplied `params` replaces the whole list. */
+export async function updateQcTemplate(id: string, input: QcTemplatePatch): Promise<QcTemplateOut> {
+  return apiRequest<QcTemplateOut>(`/operations/quality/templates/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: input,
+  });
+}
+
+/** `DELETE /operations/quality/templates/{id}` — inspections already judged keep their results. */
+export async function deleteQcTemplate(id: string): Promise<void> {
+  await apiRequest<void>(`/operations/quality/templates/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export interface ListInspectionsParams {
+  status?: InspectionStatus | "all";
+  kind?: QcKind | "all";
+  item_id?: string;
+  lot_id?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/quality/inspections` — `operations.quality.inspection.read:ORG`. */
+export async function listInspections(params: ListInspectionsParams = {}): Promise<Page<InspectionOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    status: params.status === "all" ? undefined : params.status,
+    kind: params.kind === "all" ? undefined : params.kind,
+    item_id: params.item_id,
+    lot_id: params.lot_id,
+  });
+  return apiRequest<Page<InspectionOut>>(`/operations/quality/inspections${query}`);
+}
+
+export async function getInspection(id: string): Promise<InspectionOut> {
+  return apiRequest<InspectionOut>(`/operations/quality/inspections/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/quality/inspections` — `operations.quality.inspection.inspect:ORG`. Moves the
+ *  quantity AVAILABLE -> QUALITY_HOLD unless `hold_stock` is false; 409 if that much is not free. */
+export async function createInspection(input: InspectionIn, idempotencyKey?: string): Promise<InspectionOut> {
+  return apiRequest<InspectionOut>("/operations/quality/inspections", {
+    method: "POST",
+    body: input,
+    ...idem(idempotencyKey),
+  });
+}
+
+/** `PUT .../results` — replace-by-parameter-name; the server judges pass/fail. */
+export async function recordInspectionResults(
+  id: string,
+  results: InspectionResultIn[],
+): Promise<InspectionOut> {
+  return apiRequest<InspectionOut>(`/operations/quality/inspections/${encodeURIComponent(id)}/results`, {
+    method: "PUT",
+    body: { results },
+  });
+}
+
+export type InspectionStep = "hold" | "rework" | "reinspect";
+
+/** `POST .../hold | rework | reinspect` — `operations.quality.inspection.inspect:ORG`. */
+export async function stepInspection(
+  id: string,
+  step: InspectionStep,
+  note: string,
+  idempotencyKey?: string,
+): Promise<InspectionOut> {
+  return apiRequest<InspectionOut>(`/operations/quality/inspections/${encodeURIComponent(id)}/${step}`, {
+    method: "POST",
+    body: { note },
+    ...idem(idempotencyKey),
+  });
+}
+
+/** `POST .../release` — `operations.quality.inspection.approve:ORG`. Posts through the stock
+ *  kernel: QUALITY_HOLD -> AVAILABLE (and the remainder to a rejected bucket on a partial pass). */
+export async function releaseInspection(
+  id: string,
+  input: ReleaseIn,
+  idempotencyKey?: string,
+): Promise<InspectionOut> {
+  return apiRequest<InspectionOut>(`/operations/quality/inspections/${encodeURIComponent(id)}/release`, {
+    method: "POST",
+    body: input,
+    ...idem(idempotencyKey),
+  });
+}
+
+/** `POST .../reject` — `operations.quality.inspection.reject:ORG`. QUALITY_HOLD -> REJECTED/QUARANTINE. */
+export async function rejectInspection(
+  id: string,
+  input: RejectIn,
+  idempotencyKey?: string,
+): Promise<InspectionOut> {
+  return apiRequest<InspectionOut>(`/operations/quality/inspections/${encodeURIComponent(id)}/reject`, {
+    method: "POST",
+    body: input,
+    ...idem(idempotencyKey),
+  });
+}
+
+/** `POST .../disposition` — `operations.quality.inspection.reject:ORG`. Return to vendor or scrap. */
+export async function disposeInspection(
+  id: string,
+  input: DispositionIn,
+  idempotencyKey?: string,
+): Promise<InspectionOut> {
+  return apiRequest<InspectionOut>(`/operations/quality/inspections/${encodeURIComponent(id)}/disposition`, {
+    method: "POST",
+    body: input,
+    ...idem(idempotencyKey),
   });
 }
