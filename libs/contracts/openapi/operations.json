@@ -1382,6 +1382,33 @@
         "title": "CreatePickTasksIn",
         "type": "object"
       },
+      "CursorPage_GoodsReceiptSummaryOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/GoodsReceiptSummaryOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[GoodsReceiptSummaryOut]",
+        "type": "object"
+      },
       "CursorPage_LedgerRowOut_": {
         "properties": {
           "items": {
@@ -1602,6 +1629,479 @@
         "title": "ExceptionResolveIn",
         "type": "object"
       },
+      "GoodsReceiptIn": {
+        "additionalProperties": false,
+        "description": "`POST /goods-receipts`. One delivery against one purchase order, any number of its lines\n(a PO line may appear more than once, each with its own lot). Send an `Idempotency-Key`: a\nretry replays the first result.",
+        "properties": {
+          "delivery_note": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Note"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/ReceiptLineIn"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Lines",
+            "type": "array"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "purchase_order_id": {
+            "format": "uuid",
+            "title": "Purchase Order Id",
+            "type": "string"
+          },
+          "received_on": {
+            "format": "date",
+            "title": "Received On",
+            "type": "string"
+          }
+        },
+        "required": [
+          "purchase_order_id",
+          "lines"
+        ],
+        "title": "GoodsReceiptIn",
+        "type": "object"
+      },
+      "GoodsReceiptLineOut": {
+        "properties": {
+          "close_short": {
+            "title": "Close Short",
+            "type": "boolean"
+          },
+          "cumulative_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Cumulative Qty",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "entered_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Entered Qty",
+            "type": "string"
+          },
+          "entered_uom": {
+            "title": "Entered Uom",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inventory Item Id"
+          },
+          "line_no": {
+            "title": "Line No",
+            "type": "integer"
+          },
+          "location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          },
+          "location_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Label"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "lot_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot No"
+          },
+          "ordered_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Ordered Qty",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "PARTIAL",
+              "EXACT",
+              "SHORT",
+              "OVER"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "prior_received_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Prior Received Qty",
+            "type": "string"
+          },
+          "purchase_order_line_id": {
+            "title": "Purchase Order Line Id",
+            "type": "string"
+          },
+          "received_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Received Qty",
+            "type": "string"
+          },
+          "rolls": {
+            "items": {
+              "$ref": "#/components/schemas/ReceiptRollOut"
+            },
+            "title": "Rolls",
+            "type": "array"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "stock_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "AVAILABLE",
+                  "QUALITY_HOLD",
+                  "QUARANTINE",
+                  "DAMAGED",
+                  "REJECTED",
+                  "WIP",
+                  "IN_TRANSIT",
+                  "AT_JOB_WORKER",
+                  "BLOCKED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Status"
+          },
+          "stock_uom": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Uom"
+          },
+          "supplier_lot_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supplier Lot No"
+          },
+          "tolerance_pct": {
+            "examples": [
+              "2.5"
+            ],
+            "pattern": "^\\d{1,3}(\\.\\d{1,2})?$",
+            "title": "Tolerance Pct",
+            "type": "string"
+          },
+          "unit_cost_currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Cost Currency"
+          },
+          "unit_cost_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Cost Minor"
+          }
+        },
+        "required": [
+          "id",
+          "line_no",
+          "purchase_order_line_id",
+          "sku",
+          "description",
+          "inventory_item_id",
+          "stock_uom",
+          "location_id",
+          "location_label",
+          "stock_status",
+          "lot_id",
+          "lot_no",
+          "supplier_lot_no",
+          "entered_qty",
+          "entered_uom",
+          "received_qty",
+          "ordered_qty",
+          "prior_received_qty",
+          "cumulative_qty",
+          "tolerance_pct",
+          "close_short",
+          "outcome",
+          "unit_cost_minor",
+          "unit_cost_currency"
+        ],
+        "title": "GoodsReceiptLineOut",
+        "type": "object"
+      },
+      "GoodsReceiptOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "delivery_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Note"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/GoodsReceiptLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "po_number": {
+            "title": "Po Number",
+            "type": "string"
+          },
+          "po_status": {
+            "title": "Po Status",
+            "type": "string"
+          },
+          "purchase_order_id": {
+            "title": "Purchase Order Id",
+            "type": "string"
+          },
+          "received_on": {
+            "format": "date",
+            "title": "Received On",
+            "type": "string"
+          },
+          "replayed": {
+            "default": false,
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "status": {
+            "const": "POSTED",
+            "title": "Status",
+            "type": "string"
+          },
+          "supplier_id": {
+            "title": "Supplier Id",
+            "type": "string"
+          },
+          "supplier_name": {
+            "title": "Supplier Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "purchase_order_id",
+          "po_number",
+          "po_status",
+          "supplier_id",
+          "supplier_name",
+          "received_on",
+          "delivery_note",
+          "note",
+          "status",
+          "created_at",
+          "created_by"
+        ],
+        "title": "GoodsReceiptOut",
+        "type": "object"
+      },
+      "GoodsReceiptSummaryOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "delivery_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Note"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "line_count": {
+            "title": "Line Count",
+            "type": "integer"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "po_number": {
+            "title": "Po Number",
+            "type": "string"
+          },
+          "purchase_order_id": {
+            "title": "Purchase Order Id",
+            "type": "string"
+          },
+          "received_on": {
+            "format": "date",
+            "title": "Received On",
+            "type": "string"
+          },
+          "supplier_name": {
+            "title": "Supplier Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "purchase_order_id",
+          "po_number",
+          "supplier_name",
+          "received_on",
+          "delivery_note",
+          "line_count",
+          "created_at"
+        ],
+        "title": "GoodsReceiptSummaryOut",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1795,6 +2295,15 @@
             "title": "Opening On Hand",
             "type": "integer"
           },
+          "receipt_tolerance_pct": {
+            "default": "0",
+            "examples": [
+              "2.5"
+            ],
+            "pattern": "^\\d{1,3}(\\.\\d{1,2})?$",
+            "title": "Receipt Tolerance Pct",
+            "type": "string"
+          },
           "reorder_point": {
             "default": 0,
             "minimum": 0.0,
@@ -1957,6 +2466,15 @@
             ],
             "pattern": "^-?\\d+(\\.\\d{1,3})?$",
             "title": "On Hand Qty",
+            "type": "string"
+          },
+          "receipt_tolerance_pct": {
+            "default": "0",
+            "examples": [
+              "2.5"
+            ],
+            "pattern": "^\\d{1,3}(\\.\\d{1,2})?$",
+            "title": "Receipt Tolerance Pct",
             "type": "string"
           },
           "reorder_point": {
@@ -2140,6 +2658,21 @@
               }
             ],
             "title": "Name"
+          },
+          "receipt_tolerance_pct": {
+            "anyOf": [
+              {
+                "examples": [
+                  "2.5"
+                ],
+                "pattern": "^\\d{1,3}(\\.\\d{1,2})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Receipt Tolerance Pct"
           },
           "reorder_point": {
             "anyOf": [
@@ -6114,6 +6647,42 @@
         "title": "Page[PurchaseOrderOut]",
         "type": "object"
       },
+      "Page_RequisitionSummaryOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RequisitionSummaryOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[RequisitionSummaryOut]",
+        "type": "object"
+      },
       "Page_ShipmentOut_": {
         "properties": {
           "items": {
@@ -6742,9 +7311,23 @@
             "title": "Quantity",
             "type": "integer"
           },
+          "received_exact": {
+            "default": "0",
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Received Exact",
+            "type": "string"
+          },
           "received_qty": {
             "title": "Received Qty",
             "type": "integer"
+          },
+          "short_closed": {
+            "default": false,
+            "title": "Short Closed",
+            "type": "boolean"
           },
           "sku": {
             "title": "Sku",
@@ -6916,6 +7499,7 @@
             "enum": [
               "draft",
               "approved",
+              "partially_received",
               "received",
               "closed",
               "cancelled"
@@ -7115,6 +7699,7 @@
             "enum": [
               "draft",
               "approved",
+              "partially_received",
               "received",
               "closed",
               "cancelled"
@@ -7349,6 +7934,322 @@
         "title": "QuoteOut",
         "type": "object"
       },
+      "ReceiptLineIn": {
+        "additionalProperties": false,
+        "properties": {
+          "close_short": {
+            "default": false,
+            "title": "Close Short",
+            "type": "boolean"
+          },
+          "hold": {
+            "default": false,
+            "title": "Hold",
+            "type": "boolean"
+          },
+          "location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          },
+          "lot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReceiptLotIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "purchase_order_line_id": {
+            "format": "uuid",
+            "title": "Purchase Order Line Id",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "rolls": {
+            "items": {
+              "$ref": "#/components/schemas/ReceiptRollIn"
+            },
+            "maxItems": 500,
+            "title": "Rolls",
+            "type": "array"
+          },
+          "uom": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uom"
+          }
+        },
+        "required": [
+          "purchase_order_line_id",
+          "quantity"
+        ],
+        "title": "ReceiptLineIn",
+        "type": "object"
+      },
+      "ReceiptLotIn": {
+        "additionalProperties": false,
+        "description": "The lot a line's stock goes into: an existing one (`lot_id`, e.g. a second delivery of the\nsame supplier lot), or the fields of a new one. Omitted entirely on a lot-tracked item, a new\nlot with a generated number is created.",
+        "properties": {
+          "expires_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires On"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "lot_no": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._/-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot No"
+          },
+          "manufactured_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manufactured On"
+          },
+          "supplier_lot_no": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supplier Lot No"
+          }
+        },
+        "title": "ReceiptLotIn",
+        "type": "object"
+      },
+      "ReceiptRollIn": {
+        "additionalProperties": false,
+        "description": "One physical roll in a delivery. `primary_qty` is in the item's stock unit (82.5 m);\n`secondary_qty` is a separately **measured** figure in another unit (14.8 kg), never derived.",
+        "properties": {
+          "grade": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grade"
+          },
+          "gsm": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gsm"
+          },
+          "primary_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Primary Qty",
+            "type": "string"
+          },
+          "roll_no": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._/-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll No"
+          },
+          "secondary_qty": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Qty"
+          },
+          "secondary_uom": {
+            "anyOf": [
+              {
+                "maxLength": 10,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Uom"
+          },
+          "shade": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shade"
+          },
+          "width_mm": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width Mm"
+          }
+        },
+        "required": [
+          "primary_qty"
+        ],
+        "title": "ReceiptRollIn",
+        "type": "object"
+      },
+      "ReceiptRollOut": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "primary_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Primary Qty",
+            "type": "string"
+          },
+          "roll_no": {
+            "title": "Roll No",
+            "type": "string"
+          },
+          "secondary_qty": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Qty"
+          },
+          "secondary_uom": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Uom"
+          }
+        },
+        "required": [
+          "id",
+          "roll_no",
+          "primary_qty",
+          "secondary_qty",
+          "secondary_uom"
+        ],
+        "title": "ReceiptRollOut",
+        "type": "object"
+      },
       "ReceiveIn": {
         "additionalProperties": false,
         "description": "`POST /purchase-orders/{id}/receive`. The body is optional \u2014 an empty POST receives as of\ntoday \u2014 so this schema exists only to validate `received_date` when one is sent.",
@@ -7367,6 +8268,224 @@
           }
         },
         "title": "ReceiveIn",
+        "type": "object"
+      },
+      "ReceivingContextOut": {
+        "properties": {
+          "can_receive": {
+            "title": "Can Receive",
+            "type": "boolean"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/ReceivingLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "po_number": {
+            "title": "Po Number",
+            "type": "string"
+          },
+          "po_status": {
+            "title": "Po Status",
+            "type": "string"
+          },
+          "purchase_order_id": {
+            "title": "Purchase Order Id",
+            "type": "string"
+          },
+          "supplier_name": {
+            "title": "Supplier Name",
+            "type": "string"
+          },
+          "warehouse": {
+            "title": "Warehouse",
+            "type": "string"
+          }
+        },
+        "required": [
+          "purchase_order_id",
+          "po_number",
+          "po_status",
+          "warehouse",
+          "supplier_name",
+          "can_receive",
+          "lines"
+        ],
+        "title": "ReceivingContextOut",
+        "type": "object"
+      },
+      "ReceivingConversionOut": {
+        "properties": {
+          "denominator": {
+            "title": "Denominator",
+            "type": "integer"
+          },
+          "numerator": {
+            "title": "Numerator",
+            "type": "integer"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uom",
+          "numerator",
+          "denominator"
+        ],
+        "title": "ReceivingConversionOut",
+        "type": "object"
+      },
+      "ReceivingLineOut": {
+        "description": "What a receiving screen needs to know about one PO line, computed under no lock \u2014 advisory;\nthe posting re-checks everything under the PO's row lock.",
+        "properties": {
+          "conversions": {
+            "items": {
+              "$ref": "#/components/schemas/ReceivingConversionOut"
+            },
+            "title": "Conversions",
+            "type": "array"
+          },
+          "default_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Location Id"
+          },
+          "default_location_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Location Label"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inventory Item Id"
+          },
+          "max_receivable_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Max Receivable Qty",
+            "type": "string"
+          },
+          "ordered_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Ordered Qty",
+            "type": "string"
+          },
+          "purchase_order_line_id": {
+            "title": "Purchase Order Line Id",
+            "type": "string"
+          },
+          "received_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Received Qty",
+            "type": "string"
+          },
+          "remaining_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Remaining Qty",
+            "type": "string"
+          },
+          "short_closed": {
+            "title": "Short Closed",
+            "type": "boolean"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "stock_uom": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Uom"
+          },
+          "tolerance_pct": {
+            "examples": [
+              "2.5"
+            ],
+            "pattern": "^\\d{1,3}(\\.\\d{1,2})?$",
+            "title": "Tolerance Pct",
+            "type": "string"
+          },
+          "track_expiry": {
+            "title": "Track Expiry",
+            "type": "boolean"
+          },
+          "track_lot": {
+            "title": "Track Lot",
+            "type": "boolean"
+          },
+          "track_quality": {
+            "title": "Track Quality",
+            "type": "boolean"
+          },
+          "track_roll": {
+            "title": "Track Roll",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "purchase_order_line_id",
+          "sku",
+          "description",
+          "inventory_item_id",
+          "stock_uom",
+          "ordered_qty",
+          "received_qty",
+          "remaining_qty",
+          "max_receivable_qty",
+          "tolerance_pct",
+          "short_closed",
+          "track_lot",
+          "track_roll",
+          "track_expiry",
+          "track_quality",
+          "default_location_id",
+          "default_location_label"
+        ],
+        "title": "ReceivingLineOut",
         "type": "object"
       },
       "ReconcileOut": {
@@ -7404,6 +8523,658 @@
           "discrepancies"
         ],
         "title": "ReconcileOut",
+        "type": "object"
+      },
+      "RequisitionConvertIn": {
+        "additionalProperties": false,
+        "description": "`POST /purchase-requisitions/{id}/convert`. Turns an APPROVED requisition into **one draft\npurchase order** with this supplier. A PO line's quantity is a whole number of units today, so\na requisition line with a fraction cannot be converted until the PO line is edited by hand.",
+        "properties": {
+          "currency": {
+            "anyOf": [
+              {
+                "maxLength": 3,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "expected_date": {
+            "format": "date",
+            "title": "Expected Date",
+            "type": "string"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "prices": {
+            "items": {
+              "$ref": "#/components/schemas/RequisitionPriceIn"
+            },
+            "maxItems": 200,
+            "title": "Prices",
+            "type": "array"
+          },
+          "supplier_id": {
+            "format": "uuid",
+            "title": "Supplier Id",
+            "type": "string"
+          },
+          "warehouse": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warehouse"
+          }
+        },
+        "required": [
+          "supplier_id",
+          "expected_date"
+        ],
+        "title": "RequisitionConvertIn",
+        "type": "object"
+      },
+      "RequisitionDecisionIn": {
+        "additionalProperties": false,
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "title": "RequisitionDecisionIn",
+        "type": "object"
+      },
+      "RequisitionIn": {
+        "additionalProperties": false,
+        "description": "`POST /purchase-requisitions`. Starts `DRAFT`; the number, status and requester id are\nserver-owned.",
+        "properties": {
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/RequisitionLineIn"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Lines",
+            "type": "array"
+          },
+          "needed_by": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needed By"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "requested_by": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Requested By",
+            "type": "string"
+          },
+          "warehouse_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warehouse Id"
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "title": "RequisitionIn",
+        "type": "object"
+      },
+      "RequisitionLineIn": {
+        "additionalProperties": false,
+        "properties": {
+          "est_unit_price_minor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Est Unit Price Minor"
+          },
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "suggested_supplier_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Supplier Id"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "quantity"
+        ],
+        "title": "RequisitionLineIn",
+        "type": "object"
+      },
+      "RequisitionLineOut": {
+        "properties": {
+          "est_unit_price_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Est Unit Price Minor"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "item_name": {
+            "title": "Item Name",
+            "type": "string"
+          },
+          "line_no": {
+            "title": "Line No",
+            "type": "integer"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "suggested_supplier_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Supplier Id"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "line_no",
+          "inventory_item_id",
+          "sku",
+          "item_name",
+          "uom",
+          "quantity",
+          "suggested_supplier_id",
+          "est_unit_price_minor",
+          "note"
+        ],
+        "title": "RequisitionLineOut",
+        "type": "object"
+      },
+      "RequisitionOut": {
+        "properties": {
+          "converted_po_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Converted Po Id"
+          },
+          "converted_po_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Converted Po Number"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decision_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Note"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/RequisitionLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "needed_by": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needed By"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "requested_by": {
+            "title": "Requested By",
+            "type": "string"
+          },
+          "requested_by_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested By Id"
+          },
+          "status": {
+            "enum": [
+              "DRAFT",
+              "SUBMITTED",
+              "APPROVED",
+              "REJECTED",
+              "CONVERTED",
+              "CANCELLED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "warehouse_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warehouse Id"
+          },
+          "warehouse_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warehouse Name"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "status",
+          "requested_by",
+          "requested_by_id",
+          "warehouse_id",
+          "warehouse_name",
+          "needed_by",
+          "reason",
+          "decision_note",
+          "submitted_at",
+          "decided_at",
+          "converted_po_id",
+          "converted_po_number",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "RequisitionOut",
+        "type": "object"
+      },
+      "RequisitionPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /purchase-requisitions/{id}`, DRAFT only. `lines`, when present, replaces them.",
+        "properties": {
+          "lines": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/RequisitionLineIn"
+                },
+                "maxItems": 200,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lines"
+          },
+          "needed_by": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needed By"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "warehouse_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warehouse Id"
+          }
+        },
+        "title": "RequisitionPatch",
+        "type": "object"
+      },
+      "RequisitionPriceIn": {
+        "additionalProperties": false,
+        "properties": {
+          "line_id": {
+            "format": "uuid",
+            "title": "Line Id",
+            "type": "string"
+          },
+          "unit_price_minor": {
+            "minimum": 0.0,
+            "title": "Unit Price Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "line_id",
+          "unit_price_minor"
+        ],
+        "title": "RequisitionPriceIn",
+        "type": "object"
+      },
+      "RequisitionRejectIn": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "RequisitionRejectIn",
+        "type": "object"
+      },
+      "RequisitionSummaryOut": {
+        "description": "A list row: no lines, a line count instead.",
+        "properties": {
+          "converted_po_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Converted Po Number"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "line_count": {
+            "title": "Line Count",
+            "type": "integer"
+          },
+          "needed_by": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needed By"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "requested_by": {
+            "title": "Requested By",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "DRAFT",
+              "SUBMITTED",
+              "APPROVED",
+              "REJECTED",
+              "CONVERTED",
+              "CANCELLED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "warehouse_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warehouse Name"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "status",
+          "requested_by",
+          "warehouse_name",
+          "needed_by",
+          "line_count",
+          "converted_po_number",
+          "created_at"
+        ],
+        "title": "RequisitionSummaryOut",
         "type": "object"
       },
       "ReservationReleaseIn": {
@@ -8457,6 +10228,7 @@
             "enum": [
               "draft",
               "approved",
+              "partially_received",
               "received",
               "closed",
               "cancelled"
@@ -8879,7 +10651,10 @@
           "reference_type": {
             "anyOf": [
               {
-                "const": "purchase_order",
+                "enum": [
+                  "purchase_order",
+                  "goods_receipt"
+                ],
                 "type": "string"
               },
               {
@@ -9734,6 +11509,120 @@
           "move_id"
         ],
         "title": "TraceNodeOut",
+        "type": "object"
+      },
+      "UomConversionIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/{item_id}/uom-conversions`: 1 `uom` = `numerator / denominator` of the\nitem's own stock unit (\"1 box = 12 pcs\" is `{\"uom\": \"box\", \"numerator\": 12}`). Integers, never\na decimal, so the ratio is exact.",
+        "properties": {
+          "denominator": {
+            "default": 1,
+            "maximum": 1000000000.0,
+            "minimum": 1.0,
+            "title": "Denominator",
+            "type": "integer"
+          },
+          "numerator": {
+            "maximum": 1000000000.0,
+            "minimum": 1.0,
+            "title": "Numerator",
+            "type": "integer"
+          },
+          "uom": {
+            "maxLength": 20,
+            "minLength": 1,
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uom",
+          "numerator"
+        ],
+        "title": "UomConversionIn",
+        "type": "object"
+      },
+      "UomConversionOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "denominator": {
+            "title": "Denominator",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "numerator": {
+            "title": "Numerator",
+            "type": "integer"
+          },
+          "stock_uom": {
+            "title": "Stock Uom",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "uom_id": {
+            "title": "Uom Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "inventory_item_id",
+          "uom_id",
+          "uom",
+          "numerator",
+          "denominator",
+          "stock_uom",
+          "created_at"
+        ],
+        "title": "UomConversionOut",
+        "type": "object"
+      },
+      "UomConversionPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /inventory/uom-conversions/{id}`. A receipt already posted keeps the quantity it was\nconverted to (it stores both the entered and the converted figure); only later receipts see\nthe new ratio.",
+        "properties": {
+          "denominator": {
+            "anyOf": [
+              {
+                "maximum": 1000000000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denominator"
+          },
+          "numerator": {
+            "anyOf": [
+              {
+                "maximum": 1000000000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numerator"
+          }
+        },
+        "title": "UomConversionPatch",
         "type": "object"
       },
       "UomOut": {
@@ -13523,6 +15412,227 @@
         ]
       }
     },
+    "/api/v1/operations/goods-receipts": {
+      "get": {
+        "operationId": "list_goods_receipts_api_v1_operations_goods_receipts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "purchase_order_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Purchase Order Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "supplier_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Supplier Id"
+            }
+          },
+          {
+            "description": "Number or delivery note",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Number or delivery note",
+              "title": "Q"
+            }
+          },
+          {
+            "description": "Opaque cursor from the previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 300,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque cursor from the previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_GoodsReceiptSummaryOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Goods receipts, newest first (cursor-paginated)",
+        "tags": [
+          "receiving"
+        ]
+      },
+      "post": {
+        "operationId": "post_goods_receipt_api_v1_operations_goods_receipts_post",
+        "parameters": [
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoodsReceiptIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoodsReceiptOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post a delivery against a purchase order (partial, short or over within tolerance)",
+        "tags": [
+          "receiving"
+        ]
+      }
+    },
+    "/api/v1/operations/goods-receipts/{receipt_id}": {
+      "get": {
+        "operationId": "read_goods_receipt_api_v1_operations_goods_receipts__receipt_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "receipt_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Receipt Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoodsReceiptOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One goods receipt, with its lines, lots and rolls",
+        "tags": [
+          "receiving"
+        ]
+      }
+    },
     "/api/v1/operations/info": {
       "get": {
         "operationId": "info_api_v1_operations_info_get",
@@ -15981,6 +18091,93 @@
         ]
       }
     },
+    "/api/v1/operations/inventory/uom-conversions/{conversion_id}": {
+      "delete": {
+        "operationId": "delete_uom_conversion_api_v1_operations_inventory_uom_conversions__conversion_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversion_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversion Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove a conversion (refused while an open purchase order orders in that unit)",
+        "tags": [
+          "receiving"
+        ]
+      },
+      "patch": {
+        "operationId": "update_uom_conversion_api_v1_operations_inventory_uom_conversions__conversion_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversion_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversion Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UomConversionPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UomConversionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change a conversion's ratio",
+        "tags": [
+          "receiving"
+        ]
+      }
+    },
     "/api/v1/operations/inventory/uoms": {
       "get": {
         "operationId": "list_uoms_api_v1_operations_inventory_uoms_get",
@@ -16522,6 +18719,104 @@
         "summary": "An item's stock movement history, newest first",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/{item_id}/uom-conversions": {
+      "get": {
+        "operationId": "list_uom_conversions_api_v1_operations_inventory__item_id__uom_conversions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/UomConversionOut"
+                  },
+                  "title": "Response List Uom Conversions Api V1 Operations Inventory  Item Id  Uom Conversions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "An item's own unit conversions (1 box = 12 pcs)",
+        "tags": [
+          "receiving"
+        ]
+      },
+      "post": {
+        "operationId": "create_uom_conversion_api_v1_operations_inventory__item_id__uom_conversions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UomConversionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UomConversionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record that one box (or carton, bundle, ...) of this item is n of its own unit",
+        "tags": [
+          "receiving"
         ]
       }
     },
@@ -18426,6 +20721,536 @@
         "summary": "Receive an approved purchase order (marks it received, fills received quantities and posts stock)",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/purchase-orders/{po_id}/receiving": {
+      "get": {
+        "operationId": "read_receiving_context_api_v1_operations_purchase_orders__po_id__receiving_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "po_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Po Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReceivingContextOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What can still be received against a purchase order, per line",
+        "tags": [
+          "receiving"
+        ]
+      }
+    },
+    "/api/v1/operations/purchase-requisitions": {
+      "get": {
+        "operationId": "list_requisitions_api_v1_operations_purchase_requisitions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "DRAFT",
+                    "SUBMITTED",
+                    "APPROVED",
+                    "REJECTED",
+                    "CONVERTED",
+                    "CANCELLED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "description": "Number or requester",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Number or requester",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_RequisitionSummaryOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Purchase requisitions, newest first",
+        "tags": [
+          "receiving"
+        ]
+      },
+      "post": {
+        "operationId": "create_requisition_api_v1_operations_purchase_requisitions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequisitionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequisitionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Raise a purchase requisition (starts as a draft)",
+        "tags": [
+          "receiving"
+        ]
+      }
+    },
+    "/api/v1/operations/purchase-requisitions/{requisition_id}": {
+      "get": {
+        "operationId": "read_requisition_api_v1_operations_purchase_requisitions__requisition_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "requisition_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Requisition Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequisitionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One requisition, with its lines",
+        "tags": [
+          "receiving"
+        ]
+      },
+      "patch": {
+        "operationId": "update_requisition_api_v1_operations_purchase_requisitions__requisition_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "requisition_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Requisition Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequisitionPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequisitionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a draft requisition (and, optionally, replace its lines)",
+        "tags": [
+          "receiving"
+        ]
+      }
+    },
+    "/api/v1/operations/purchase-requisitions/{requisition_id}/approve": {
+      "post": {
+        "operationId": "approve_requisition_api_v1_operations_purchase_requisitions__requisition_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "requisition_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Requisition Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequisitionDecisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequisitionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve a submitted requisition",
+        "tags": [
+          "receiving"
+        ]
+      }
+    },
+    "/api/v1/operations/purchase-requisitions/{requisition_id}/cancel": {
+      "post": {
+        "operationId": "cancel_requisition_api_v1_operations_purchase_requisitions__requisition_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "requisition_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Requisition Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequisitionDecisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequisitionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel a requisition that has not been converted",
+        "tags": [
+          "receiving"
+        ]
+      }
+    },
+    "/api/v1/operations/purchase-requisitions/{requisition_id}/convert": {
+      "post": {
+        "description": "Needs `requisition.write` **and** `purchase_order.write`: this is a buyer turning an\napproval into a commitment-to-be, and it creates a purchase order.",
+        "operationId": "convert_requisition_api_v1_operations_purchase_requisitions__requisition_id__convert_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "requisition_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Requisition Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequisitionConvertIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseOrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Convert an approved requisition into a draft purchase order",
+        "tags": [
+          "receiving"
+        ]
+      }
+    },
+    "/api/v1/operations/purchase-requisitions/{requisition_id}/reject": {
+      "post": {
+        "operationId": "reject_requisition_api_v1_operations_purchase_requisitions__requisition_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "requisition_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Requisition Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequisitionRejectIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequisitionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject a submitted requisition (a reason is required)",
+        "tags": [
+          "receiving"
+        ]
+      }
+    },
+    "/api/v1/operations/purchase-requisitions/{requisition_id}/submit": {
+      "post": {
+        "operationId": "submit_requisition_api_v1_operations_purchase_requisitions__requisition_id__submit_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "requisition_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Requisition Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequisitionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit a draft requisition for approval",
+        "tags": [
+          "receiving"
         ]
       }
     },

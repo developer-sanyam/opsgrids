@@ -272,6 +272,15 @@
       "resource": "stock"
     },
     {
+      "action": "receive",
+      "default_scope": "ORG",
+      "description": "Bring purchased stock onto the books through a goods receipt",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "stock"
+    },
+    {
       "action": "reconcile",
       "default_scope": "ORG",
       "description": "Check the stock ledger against balances and resolve discrepancies",
@@ -441,6 +450,51 @@
       "max_scope": "ORG",
       "module": "procurement",
       "resource": "purchase_order"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See goods receipts and what can still be received against a purchase order",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "receipt"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Post a goods receipt against a purchase order: partial, short or over-receipt within the item's tolerance (also needs inventory.stock.receive)",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "receipt"
+    },
+    {
+      "action": "approve",
+      "default_scope": "ORG",
+      "description": "Approve or reject a submitted purchase requisition",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "requisition"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See purchase requisitions",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "requisition"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Raise, edit, submit and cancel purchase requisitions; convert an approved one into a purchase order (which also needs purchase_order.write)",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "requisition"
     },
     {
       "action": "read",
@@ -634,6 +688,10 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.stock.receive",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.stock.reconcile",
           "scope": "ORG"
         },
@@ -710,6 +768,26 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.procurement.receipt.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.receipt.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.procurement.supplier.read",
           "scope": "ORG"
         },
@@ -745,7 +823,7 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers lots and rolls, splits and merges rolls, moves stock between bins and statuses, and reads stock and the ledger (ADR-0014 Phase 1). Takes and refunds orders' online payments and reads the payment reconciliation. Does not create or rename warehouses, or connect or change the organization's payment-provider account \u2014 those stay with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
+      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers lots and rolls, splits and merges rolls, moves stock between bins and statuses, and reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and posts goods receipts \u2014 partial, short and over-receipt within tolerance (Phase 2). Takes and refunds orders' online payments and reads the payment reconciliation. Does not create or rename warehouses, or connect or change the organization's payment-provider account \u2014 those stay with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
       "grants": [
         {
           "code": "operations.automation.alert.manage",
@@ -856,6 +934,10 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.stock.receive",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.stock.reserve",
           "scope": "ORG"
         },
@@ -920,6 +1002,26 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.procurement.receipt.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.receipt.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.procurement.supplier.read",
           "scope": "ORG"
         },
@@ -951,7 +1053,7 @@
     {
       "code": "OPERATIONS_WORKER",
       "cross_product": false,
-      "description": "The picker/packer role the worker PWA authenticates as (plan F3). Sees the task board and the worker roster read-only, executes only the tasks offered or accepted to them (`task.execute` tops out at OWN \u2014 even this role cannot execute another worker's task), sets their own presence, and confirms packages. Counts lines in whichever count session is open for their warehouse (ADR-0026) \u2014 never opens, reviews or closes one; that stays with the dispatcher (`OPERATIONS_MANAGER`). Moves stock between bins, puts stock on hold (a status change *into* quality hold, quarantine, damaged, rejected or blocked) but cannot release it back to available \u2014 that needs stock adjustment \u2014 and reads stock by location, lot and roll; does not register, split or merge lots or rolls. Does not offer, reassign or override a task either.",
+      "description": "The picker/packer role the worker PWA authenticates as (plan F3). Sees the task board and the worker roster read-only, executes only the tasks offered or accepted to them (`task.execute` tops out at OWN \u2014 even this role cannot execute another worker's task), sets their own presence, and confirms packages. Counts lines in whichever count session is open for their warehouse (ADR-0026) \u2014 never opens, reviews or closes one; that stays with the dispatcher (`OPERATIONS_MANAGER`). Moves stock between bins, puts stock on hold (a status change *into* quality hold, quarantine, damaged, rejected or blocked) but cannot release it back to available \u2014 that needs stock adjustment \u2014 and reads stock by location, lot and roll; does not register, split or merge lots or rolls. Receives goods against approved purchase orders (Phase 2) \u2014 reads POs, posts a goods receipt \u2014 but raises or approves none. Does not offer, reassign or override a task either.",
       "grants": [
         {
           "code": "operations.fulfilment.pack.execute",
@@ -990,7 +1092,23 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.stock.receive",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.stock.transfer",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.receipt.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.receipt.write",
           "scope": "ORG"
         }
       ],
@@ -999,9 +1117,63 @@
       "name": "Warehouse worker"
     },
     {
+      "code": "BUYER",
+      "cross_product": false,
+      "description": "Buys: raises and edits purchase orders org-wide, keeps the supplier directory, and works the requisition queue \u2014 raises requisitions and turns approved ones into draft purchase orders (inventory Phase 2). Sees goods receipts and stock to chase deliveries. Approves nothing \u2014 neither a purchase order nor a requisition, so the person who commits spend is never the person who asked for it \u2014 and does not post goods receipts or move stock; that is the warehouse's job.",
+      "grants": [
+        {
+          "code": "operations.inventory.item.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.location.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.stock.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.receipt.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.supplier.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.supplier.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Buyer"
+    },
+    {
       "code": "OPERATIONS_USER",
       "cross_product": false,
-      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, reads the shared suppliers, inventory, warehouses and locations, and runs the counter: creates and places customer orders, holds and releases them, and takes an order's payment online. Does not accept (commit stock to) or cancel an order, or refund a payment \u2014 those stay with the manager, the same split `purchase_order.approve` draws from `purchase_order.write`. Sees floors and published layouts (pick routing, the 3D viewer's data) read-only.",
+      "description": "Every person with an Operations seat. Raises and sees their own purchase orders and purchase requisitions, reads the shared suppliers, inventory, warehouses and locations, and runs the counter: creates and places customer orders, holds and releases them, and takes an order's payment online. Does not accept (commit stock to) or cancel an order, or refund a payment \u2014 those stay with the manager, the same split `purchase_order.approve` draws from `purchase_order.write`. Sees floors and published layouts (pick routing, the 3D viewer's data) read-only.",
       "grants": [
         {
           "code": "operations.inventory.item.read",
@@ -1037,6 +1209,14 @@
         },
         {
           "code": "operations.procurement.purchase_order.write",
+          "scope": "OWN"
+        },
+        {
+          "code": "operations.procurement.requisition.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "operations.procurement.requisition.write",
           "scope": "OWN"
         },
         {
