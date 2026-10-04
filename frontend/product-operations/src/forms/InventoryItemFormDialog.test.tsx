@@ -15,6 +15,7 @@ const listItemCategories = vi.fn();
 const listUoms = vi.fn();
 const createInventoryItem = vi.fn();
 const updateInventoryItem = vi.fn();
+const setItemAttribute = vi.fn();
 
 vi.mock("@/api/client", () => ({
   FULL_PAGE: 200,
@@ -23,6 +24,7 @@ vi.mock("@/api/client", () => ({
   listUoms: (...args: unknown[]) => listUoms(...args),
   createInventoryItem: (...args: unknown[]) => createInventoryItem(...args),
   updateInventoryItem: (...args: unknown[]) => updateInventoryItem(...args),
+  setItemAttribute: (...args: unknown[]) => setItemAttribute(...args),
 }));
 
 const CREATED: InventoryItemOut = {
@@ -66,6 +68,7 @@ describe("InventoryItemFormDialog", () => {
     listUoms.mockResolvedValue({ items: [], total: 0, page: 1, size: 200 });
     createInventoryItem.mockReset();
     updateInventoryItem.mockReset();
+    setItemAttribute.mockReset();
   });
 
   it("holds Continue on item details until the required fields are set", async () => {
@@ -127,5 +130,95 @@ describe("InventoryItemFormDialog", () => {
     expect(body.sku).toBe("RM-100");
     expect(body.warehouse).toBe("Bengaluru DC");
     expect(body.unit_value_minor).toBe(150000);
+  });
+
+  async function reachItemMaster(user: ReturnType<typeof userEvent.setup>) {
+    await user.type(screen.getByLabelText("SKU"), "FAB-100");
+    await user.type(screen.getByLabelText("Name"), "Cotton poplin");
+    await user.selectOptions(screen.getByLabelText("Category"), "raw_materials");
+    await waitFor(() => expect(listWarehouses).toHaveBeenCalled());
+    await user.selectOptions(await screen.findByLabelText("Warehouse"), "Bengaluru DC");
+    await user.type(screen.getByLabelText("Unit of measure"), "m");
+    await user.type(screen.getByLabelText("Unit value"), "250");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("heading", { name: "Textile attributes" });
+  }
+
+  it("offers the textile preset, and saves each filled field as a typed attribute after the item exists", async () => {
+    const user = userEvent.setup();
+    createInventoryItem.mockResolvedValue(CREATED);
+    setItemAttribute.mockResolvedValue({});
+    const { onSaved } = renderDialog();
+    await reachItemMaster(user);
+
+    for (const label of [
+      /GSM/,
+      /Width \(mm\)/,
+      /Shade/,
+      /Composition/,
+      /Count/,
+      /Construction/,
+      /Finish/,
+      /Grade/,
+      /Season/,
+      /Collection/,
+    ]) {
+      expect(screen.getByLabelText(label)).toBeDefined();
+    }
+
+    await user.type(screen.getByLabelText(/GSM/), "120");
+    await user.type(screen.getByLabelText(/Width \(mm\)/), "1500");
+    await user.type(screen.getByLabelText(/Shade/), "Indigo");
+    await user.click(screen.getByRole("button", { name: "Create item" }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(CREATED));
+    expect(setItemAttribute).toHaveBeenCalledTimes(3);
+    expect(setItemAttribute).toHaveBeenCalledWith("item-1", "gsm", { value_type: "number", value_number: 120 });
+    expect(setItemAttribute).toHaveBeenCalledWith("item-1", "width_mm", { value_type: "number", value_number: 1500 });
+    expect(setItemAttribute).toHaveBeenCalledWith("item-1", "shade", { value_type: "text", value_text: "Indigo" });
+    // Created first: the attributes are keyed on the new item's id.
+    expect(createInventoryItem.mock.invocationCallOrder[0] ?? 0).toBeLessThan(
+      setItemAttribute.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it("sets no attributes when the preset is left blank", async () => {
+    const user = userEvent.setup();
+    createInventoryItem.mockResolvedValue(CREATED);
+    const { onSaved } = renderDialog();
+    await reachItemMaster(user);
+    await user.click(screen.getByRole("button", { name: "Create item" }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(setItemAttribute).not.toHaveBeenCalled();
+  });
+
+  it("refuses a GSM that is not a whole number before creating anything", async () => {
+    const user = userEvent.setup();
+    const { onSaved } = renderDialog();
+    await reachItemMaster(user);
+    await user.type(screen.getByLabelText(/GSM/), "12.5");
+    await user.click(screen.getByRole("button", { name: "Create item" }));
+
+    expect(await screen.findByText("GSM is a whole number, like 150.")).toBeDefined();
+    expect(createInventoryItem).not.toHaveBeenCalled();
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it("still finishes when an attribute fails: the item exists, so nothing is created twice", async () => {
+    const user = userEvent.setup();
+    createInventoryItem.mockResolvedValue(CREATED);
+    setItemAttribute.mockImplementation((_id: string, key: string) =>
+      key === "shade" ? Promise.reject(new Error("offline")) : Promise.resolve({}),
+    );
+    const { onSaved } = renderDialog();
+    await reachItemMaster(user);
+    await user.type(screen.getByLabelText(/GSM/), "120");
+    await user.type(screen.getByLabelText(/Shade/), "Indigo");
+    await user.click(screen.getByRole("button", { name: "Create item" }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(CREATED));
+    expect(createInventoryItem).toHaveBeenCalledTimes(1);
+    expect(setItemAttribute).toHaveBeenCalledTimes(2);
   });
 });

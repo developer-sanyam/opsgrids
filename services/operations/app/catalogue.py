@@ -263,6 +263,52 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Lots, rolls and stock operations (ADR-0014, inventory Phase 1 I3-I6). All ORG-only, for
+        # the same reason `stock.reserve` is: these are shared records and shared stock, so there
+        # is no meaningful "the lots I created" reading, and the routes floor every one at ORG.
+        #
+        # `lot.write` / `roll.write` register and edit the records (and, for a roll, split and
+        # merge it — the operations that change what a roll *is*). `stock.read` is the read side
+        # for stock by bucket, the org-wide ledger, lots, rolls and their traces; it is distinct
+        # from `item.read`, which stays the item master's. `stock.transfer` moves stock without
+        # changing how much there is: bin to bin inside a warehouse, and into a hold status
+        # (AVAILABLE -> QUALITY_HOLD); taking stock back OUT of a hold needs `stock.adjust` too
+        # (ADR-0014 §12). Opening stock uses `stock.adjust` — it creates quantity —
+        # and an `INSUFFICIENT_STOCK` refusal on any of them is the kernel's, not a permission's.
+        PermissionSpec(
+            "inventory",
+            "lot",
+            "write",
+            "Register and edit lots, and link them in the genealogy",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inventory",
+            "roll",
+            "write",
+            "Register and re-measure rolls, and split or merge them",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inventory",
+            "stock",
+            "read",
+            "See stock by location, lot and roll, the stock ledger, and lot/roll traces",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inventory",
+            "stock",
+            "transfer",
+            "Move stock between bins in a warehouse, and into a hold status (quality hold, "
+            "quarantine, damaged, rejected, blocked); releasing stock out of a hold also needs "
+            "stock.adjust",
+            "ORG",
+            "ORG",
+        ),
         # Cycle counting / stocktaking (ADR-0026, Fulfilment plan F8). A count session is a shared
         # operational object, the same reasoning `orders.order.*`/`dispatch.shipment.*` already
         # give for ORG-only, no-OWN-reading permissions: any worker with `count.execute` counts
@@ -634,7 +680,9 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "hands over customer orders — the stock-commitment, stock-release and billing-gate "
             "steps — on top of the ordinary counter work every Operations user does, and hands "
             "orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and "
-            "closes cycle counts and approves the discrepancies they raise (ADR-0026). Takes and "
+            "closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers "
+            "lots and rolls, splits and merges rolls, moves stock between bins and statuses, and "
+            "reads stock and the ledger (ADR-0014 Phase 1). Takes and "
             "refunds orders' online payments and reads the payment reconciliation. Does not "
             "create or rename warehouses, or connect or change the organization's "
             "payment-provider account — those stay with the admin. Creates floors and edits a "
@@ -651,6 +699,10 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.inventory.item.write", "ORG"),
             ("operations.inventory.stock.adjust", "ORG"),
             ("operations.inventory.stock.reserve", "ORG"),
+            ("operations.inventory.stock.read", "ORG"),
+            ("operations.inventory.stock.transfer", "ORG"),
+            ("operations.inventory.lot.write", "ORG"),
+            ("operations.inventory.roll.write", "ORG"),
             ("operations.inventory.count.read", "ORG"),
             ("operations.inventory.count.manage", "ORG"),
             ("operations.inventory.count.execute", "ORG"),
@@ -702,14 +754,20 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "to them (`task.execute` tops out at OWN — even this role cannot execute another "
             "worker's task), sets their own presence, and confirms packages. Counts lines in "
             "whichever count session is open for their warehouse (ADR-0026) — never opens, "
-            "reviews or closes one; that stays with the dispatcher (`OPERATIONS_MANAGER`). Does "
-            "not offer, reassign or override a task either."
+            "reviews or closes one; that stays with the dispatcher (`OPERATIONS_MANAGER`). Moves "
+            "stock between bins, puts stock on hold (a status change *into* quality hold, "
+            "quarantine, damaged, rejected or blocked) but cannot release it back to "
+            "available — that needs stock adjustment — and reads stock by location, lot and "
+            "roll; does not register, split or merge lots or rolls. Does not offer, reassign "
+            "or override a task either."
         ),
         grants=OPERATIONS.pick(
             ("operations.fulfilment.task.read", "ORG"),
             ("operations.fulfilment.task.execute", "OWN"),
             ("operations.inventory.count.read", "ORG"),
             ("operations.inventory.count.execute", "ORG"),
+            ("operations.inventory.stock.read", "ORG"),
+            ("operations.inventory.stock.transfer", "ORG"),
             ("operations.fulfilment.worker.read", "ORG"),
             ("operations.fulfilment.worker.write", "OWN"),
             ("operations.fulfilment.pack.read", "ORG"),

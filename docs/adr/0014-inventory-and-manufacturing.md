@@ -209,6 +209,49 @@ reservation(s) in the way, through the same kernel.**
   exist. Release is the only operation Phase 1 needs, because nothing yet creates a reservation
   over HTTP for a person to reject *from*.
 
+## 12. Phase 1 backend: what the lot / roll / stock-operation slice decided
+
+**Added 2026-10-04, with the Phase 1 backend ([ledger.md](../inventory/ledger.md) § Lots, rolls and stock
+operations).** Four choices a later phase will lean on:
+
+- **Splits, merges, transfers and status changes are `relocation` moves**, told apart by `reference_type`
+  (`roll_split`, `roll_merge`, `bin_transfer`, `status_change`) — not four new move kinds. Stock is conserved in each
+  (a negative line and positive ones in one move), which is what `relocation` already means; a new kind would
+  have meant every reconciler, filter and event consumer learning a vocabulary for no new semantics.
+- **The bucket's lot/roll foreign keys are composite and organization-scoped**
+  (`(organization_id, lot_id)` -> `lots (organization_id, id)`), not single-column. A single-column FK would let a
+  bucket name another tenant's lot; the composite one makes that a constraint violation even if a query forgot
+  the filter. Orphan ids already on a database are given `LEGACY-…` placeholder rows by the migration, never
+  refused and never dropped.
+- **A roll split apportions weight by flooring, remainder to the last child** (`domain.split_secondary`).
+  Rounding to nearest can push the earlier children past the whole and leave the last a negative weight;
+  flooring cannot, at the price of at most `n - 1` milli-units on the last child.
+- **Lists are keyset-paginated** (`app/inventory/pagination.py`: `(sort value, id)` cursor, no `COUNT(*)`), because
+  the ledger grows without bound; the platform's offset `paginate` stays for admin-sized lists.
+
+Opening stock requires `inventory.stock.adjust` (it creates quantity); transfers and status changes require
+`inventory.stock.transfer`; split and merge require `inventory.roll.write`. `uom_conversions` stays unwired until
+Phase 2.
+
+Three further rules, added after review of the slice:
+
+- **A status change has a direction.** `stock.transfer` may only move stock *into* a hold (AVAILABLE ->
+  QUALITY_HOLD / QUARANTINE / DAMAGED / REJECTED / BLOCKED, or between holds). Moving it *out of* REJECTED,
+  DAMAGED, QUARANTINE, QUALITY_HOLD or BLOCKED into AVAILABLE or WIP is a release, and also requires
+  `inventory.stock.adjust` at ORG scope (403 otherwise): it turns stock someone withheld back into sellable stock,
+  which is the same power as creating quantity. Without the gate a floor worker holding only `stock.transfer`
+  could launder rejected stock into AVAILABLE.
+- **A roll is split or merged only when it lives in one bucket.** The roll's total on-site stock across *all*
+  buckets must equal the quantity held in the bucket the request names (409, other buckets named, otherwise).
+  The split's child rolls and the merge's result roll live in a single bucket, so a roll with stock elsewhere
+  (another bin, a QUALITY_HOLD portion) would silently strand that remainder on a `SPLIT`/`MERGED` roll. The
+  check runs under `FOR UPDATE` on all of the roll's balance rows, taken after the roll lock, so a concurrent
+  transfer cannot change the picture between check and post.
+- **Lock order is item -> roll -> balance, everywhere.** `post_move` takes every roll its lines name `FOR SHARE`
+  in id order before its first balance lock; split and merge take theirs `FOR UPDATE`. A transfer racing a split
+  of the same roll therefore queues on the roll row and loses cleanly (409 / `INSUFFICIENT_STOCK`) instead of
+  deadlocking. A split/merge also verifies the lines it posted left the consumed roll at exactly zero.
+
 ## Consequences
 
 - `operations` becomes the largest service; the module split is required, not optional.

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.stock.transferred/v1",
+  "title": "operations.inventory.stock.transferred",
+  "description": "Stock moved bin to bin inside one warehouse (a `relocation` move, reference_type `bin_transfer`).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "move_id",
+    "inventory_item_id",
+    "from_location_id",
+    "to_location_id",
+    "status",
+    "lot_id",
+    "roll_id",
+    "quantity"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "move_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "inventory_item_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "from_location_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "to_location_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "status": {
+      "type": "string"
+    },
+    "lot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "roll_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "quantity": {
+      "type": "string",
+      "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+    }
+  }
+}

@@ -64,6 +64,7 @@ EVT_WAREHOUSE_UPDATED = "operations.inventory.warehouse.updated"
 EVT_WAREHOUSE_DELETED = "operations.inventory.warehouse.deleted"
 EVT_LOCATION_CREATED = "operations.inventory.location.created"
 EVT_LOCATION_UPDATED = "operations.inventory.location.updated"
+EVT_LOCATION_DELETED = "operations.inventory.location.deleted"
 #: Kind and the capacity columns (ADR-0024 §5's "capacity columns" — max weight, max volume,
 #: storage type). Changing any of these on a location that already has ledger history needs
 #: `layout.publish`, not plain `location.write`.
@@ -584,6 +585,110 @@ async def update_location(
         actor=_actor(ctx),
     )
     return location
+
+
+async def delete_location(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    location_id: uuid.UUID,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Soft-delete a location. Refused (409) while it is its warehouse's default bin, still has
+    child locations, is an item's home bin, or holds — or has *ever* held — stock: a location
+    with ledger history is part of the record of where stock was, and deleting it would leave
+    history naming a place that no longer exists. Such a location can be renamed or left unused.
+
+    The location row is taken `FOR UPDATE` before the history check, and `post_move` takes the
+    rows it posts into `FOR SHARE`, so a deletion and a concurrent first post into the same
+    location serialise: the deletion sees the stock, or the post finds the location gone.
+    """
+    org_id = ctx.organization_id
+    location = (
+        await session.execute(
+            select(Location)
+            .where(
+                Location.organization_id == org_id,
+                Location.id == location_id,
+                Location.deleted_at.is_(None),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if location is None:
+        raise NotFoundProblem("That location is not part of this organization")
+    if location.is_default:
+        raise ConflictProblem(
+            f"{location.code} is its warehouse's default bin, which holds stock for items that "
+            "have no other place; it cannot be deleted"
+        )
+    children = (
+        await session.execute(
+            select(func.count())
+            .select_from(Location)
+            .where(
+                Location.organization_id == org_id,
+                Location.parent_id == location.id,
+                Location.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    if children:
+        raise ConflictProblem(
+            f"{location.code} still has {children} location(s) inside it; delete or move them first"
+        )
+    homed = (
+        await session.execute(
+            select(func.count())
+            .select_from(InventoryItem)
+            .where(
+                InventoryItem.organization_id == org_id,
+                InventoryItem.home_location_id == location.id,
+                InventoryItem.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    if homed:
+        raise ConflictProblem(
+            f"{location.code} is the home bin of {homed} inventory item(s); give them another "
+            "warehouse first"
+        )
+    if await inv_selectors.location_has_ledger_history(session, org_id, location.id):
+        raise ConflictProblem(
+            f"{location.code} holds or has held stock, so its history is kept; "
+            "a location with ledger history cannot be deleted"
+        )
+
+    location.deleted_at = datetime.now(UTC)
+    location.updated_by = str(ctx.principal.sub)
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=org_id,
+        actor_id=ctx.principal.sub,
+        action="location.deleted",
+        entity="location",
+        entity_id=location.id,
+        before={"code": location.code, "warehouse_id": str(location.warehouse_id)},
+        after={"deleted_at": location.deleted_at},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=org_id,
+        event_type=EVT_LOCATION_DELETED,
+        aggregate_type="location",
+        aggregate_id=location.id,
+        payload={
+            "organization_id": str(org_id),
+            "location_id": str(location.id),
+            "warehouse_id": str(location.warehouse_id),
+        },
+        actor=_actor(ctx),
+    )
 
 
 # ------------------------------------------------------------------ item categories

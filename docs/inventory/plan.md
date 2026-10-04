@@ -101,7 +101,11 @@ Exit criteria met: 50 parallel issues against 10 units → exactly 10; reconcile
 concurrency scenario and after migrating old-shape data; cross-tenant negative tests on every new
 route; the pre-existing operations suite green.
 
-### Phase 1 — Item master, lots, rolls, locations
+### Phase 1 — Item master, lots, rolls, locations — **backend DONE** (2026-10-04) · **frontend built** (2026-10-05) · reference: [ledger.md](ledger.md)
+
+Frontend status (`frontend/product-operations`): `/inventory/stock`, `/inventory/ledger`, `/inventory/lots` (+ `:id` with genealogy and trace), `/inventory/rolls` (+ `:id` with parent/children and history), the Locations / Lots / Rolls / Ledger tabs on the item screen, the dialogs for opening stock, transfer, status change, roll split and merge, lot and roll creation, location delete, and the textile attribute preset on the item form. Quantities are decimal strings validated against the item's unit; every stock-moving write sends an `Idempotency-Key`; every list is cursor-paged. Not built: the `/inventory/warehouses` location-tree rewrite (the existing `/warehouses/:id/locations` tree gained delete), lot genealogy linking (`BLEND`/`REWORK`), editing a lot or roll after creation, multi-line opening stock.
+
+Backend status: I0-I2 (partial release, UOMs, item master) shipped earlier; I3-I6 (lots/rolls/genealogy tables and FKs, opening/transfer/status/split/merge through `post_move`, cursor-paginated stock/ledger/lot/roll reads and traces, location delete, the four permissions and their ADR-0007 rollout) are in migration `b7d41e92c05a`. Not done: `uom_conversions` wiring (deferred to Phase 2 — see ledger.md).
 
 **Scope**
 

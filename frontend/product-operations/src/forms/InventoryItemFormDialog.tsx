@@ -1,7 +1,9 @@
 import { useRef, useState } from "react";
 
-import { createInventoryItem, updateInventoryItem } from "@/api/client";
+import { createInventoryItem, setItemAttribute, updateInventoryItem } from "@/api/client";
 import type { Category, InventoryItemIn, InventoryItemOut, InventoryItemPatch } from "@/api/types";
+import { buildTextileAttributes, TEXTILE_PRESET } from "@/data/textilePreset";
+import type { PresetAttribute } from "@/data/textilePreset";
 import { useItemCategoryOptions } from "@/data/useItemCategoryOptions";
 import { useUomOptions } from "@/data/useUomOptions";
 import { useWarehouseOptions } from "@/data/useWarehouseOptions";
@@ -18,6 +20,7 @@ import {
   TextField,
 } from "@/ui";
 import type { StepItem } from "@/ui";
+import { useToast } from "@opsgrids/ui";
 
 const TRACKING_OPTIONS = [
   { value: "track_lot", label: "Lot tracking" },
@@ -42,6 +45,13 @@ const STEPS: StepItem[] = [
   { id: "master", title: "Item master", description: "Optional classification and tracking" },
 ];
 
+/** What one save sends: the item body, and — on create — the textile attributes to set once the
+ *  item exists (they are keyed on its id). */
+interface SaveInput {
+  body: InventoryItemIn | InventoryItemPatch;
+  attributes: PresetAttribute[];
+}
+
 interface InventoryItemFormDialogProps {
   /** `null` creates. */
   item: InventoryItemOut | null;
@@ -61,6 +71,7 @@ interface InventoryItemFormDialogProps {
  * screen at a time; the way back to the first step is the step rail itself.
  */
 export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryItemFormDialogProps) {
+  const toast = useToast();
   const warehouses = useWarehouseOptions();
   const itemCategories = useItemCategoryOptions();
   const secondaryUoms = useUomOptions();
@@ -81,6 +92,8 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
     TRACKING_OPTIONS.filter((o) => item?.[o.value]).map((o) => o.value),
   );
   const [isActive, setIsActive] = useState(item?.is_active ?? true);
+  const [textile, setTextile] = useState<Record<string, string>>({});
+  const [textileErrors, setTextileErrors] = useState<Record<string, string>>({});
 
   const [skuError, setSkuError] = useState<string | undefined>(undefined);
   const [nameError, setNameError] = useState<string | undefined>(undefined);
@@ -93,11 +106,27 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
   const firstFieldRef = useRef<HTMLInputElement>(null);
 
   const save = useMutation(
-    (input: InventoryItemIn | InventoryItemPatch) =>
-      item
-        ? updateInventoryItem(item.id, input as InventoryItemPatch)
-        : createInventoryItem(input as InventoryItemIn),
-    { onSuccess: (saved) => onSaved(saved) },
+    async ({ body, attributes }: SaveInput) => {
+      if (item) return { saved: await updateInventoryItem(item.id, body as InventoryItemPatch), failed: [] };
+      const created = await createInventoryItem(body as InventoryItemIn);
+      // The item exists now; an attribute that fails must not undo it or invite a duplicate create,
+      // so each is attempted on its own and the ones that fail are reported.
+      const results = await Promise.allSettled(
+        attributes.map((a) => setItemAttribute(created.id, a.key, a.input)),
+      );
+      const failed = attributes.filter((_, i) => results[i]?.status === "rejected").map((a) => a.key);
+      return { saved: created, failed };
+    },
+    {
+      onSuccess: ({ saved, failed }) => {
+        if (failed.length > 0) {
+          toast.warning(`${saved.name} was created, but ${failed.join(", ")} couldn't be saved.`, {
+            description: "Add them from the item's Attributes section.",
+          });
+        }
+        onSaved(saved);
+      },
+    },
   );
 
   const dirty =
@@ -113,7 +142,8 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
     secondaryUomId !== (item?.secondary_uom_id ?? "") ||
     hsnCode !== (item?.hsn_code ?? "") ||
     tracking.join(",") !== TRACKING_OPTIONS.filter((o) => item?.[o.value]).map((o) => o.value).join(",") ||
-    isActive !== (item?.is_active ?? true);
+    isActive !== (item?.is_active ?? true) ||
+    Object.values(textile).some((v) => v !== "");
 
   const detailsInvalid = Boolean(
     skuError ??
@@ -206,6 +236,13 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
     // narrowing, so the payload below can carry a `Category` rather than `Category | ""`.
     if (category === "") return;
 
+    const preset = item ? { attributes: [], errors: {} } : buildTextileAttributes(textile);
+    setTextileErrors(preset.errors);
+    if (Object.keys(preset.errors).length > 0) {
+      setStep(1);
+      return;
+    }
+
     const trimmedName = name.trim();
     const trimmedUom = uom.trim();
     const reorder = parseInt0(reorderPoint);
@@ -231,7 +268,7 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
         ...trackingFlags,
         is_active: isActive,
       };
-      void save.mutate(patch);
+      void save.mutate({ body: patch, attributes: [] });
       return;
     }
 
@@ -252,7 +289,7 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
       ...trackingFlags,
       is_active: isActive,
     };
-    void save.mutate(input);
+    void save.mutate({ body: input, attributes: preset.attributes });
   }
 
   function handleSubmit() {
@@ -420,6 +457,27 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
           </div>
         </FormSection>
       )}
+
+      {step === 1 && !item ? (
+        <FormSection
+          title="Textile attributes"
+          description="Optional. Each field you fill in is saved as a typed attribute on the item — you can add or change them later."
+          headingLevel={3}
+        >
+          {TEXTILE_PRESET.map((field) => (
+            <TextField
+              key={field.key}
+              label={field.label}
+              value={textile[field.key] ?? ""}
+              onChange={(e) => setTextile((current) => ({ ...current, [field.key]: e.target.value }))}
+              optional
+              inputMode={field.kind === "number" ? "numeric" : "text"}
+              {...(field.helper !== undefined ? { helper: field.helper } : {})}
+              {...(textileErrors[field.key] !== undefined ? { error: textileErrors[field.key] } : {})}
+            />
+          ))}
+        </FormSection>
+      ) : null}
     </FormDialog>
   );
 }

@@ -58,3 +58,37 @@ def test_a_foreign_product_grant_is_refused_at_validation() -> None:
 def test_the_registration_validates_at_construction() -> None:
     assert OPERATIONS_REGISTRATION.product == "operations"
     assert OPERATIONS_REGISTRATION.catalogue is OPERATIONS
+
+
+PHASE_1_PERMISSIONS = (
+    "operations.inventory.lot.write",
+    "operations.inventory.roll.write",
+    "operations.inventory.stock.read",
+    "operations.inventory.stock.transfer",
+)
+
+
+def _grants(role_code: str) -> dict[str, str]:
+    template = next(t for t in OPERATIONS_ROLE_TEMPLATES if t.code == role_code)
+    return {g.code: g.scope for g in template.grants}
+
+
+def test_the_phase_1_inventory_permissions_are_declared_org_only_and_not_dangerous() -> None:
+    declared = {spec.code(OPERATIONS.product): spec for spec in OPERATIONS.specs}
+    for code in PHASE_1_PERMISSIONS:
+        assert code in declared, code
+        assert declared[code].max_scope == "ORG" and not declared[code].is_dangerous, code
+
+
+def test_the_phase_1_permissions_reach_the_roles_that_should_hold_them() -> None:
+    assert set(PHASE_1_PERMISSIONS) <= set(_grants("OPERATIONS_ADMIN"))
+    manager = _grants("OPERATIONS_MANAGER")
+    assert all(manager.get(code) == "ORG" for code in PHASE_1_PERMISSIONS)
+    worker = _grants("OPERATIONS_WORKER")
+    assert {c for c in PHASE_1_PERMISSIONS if c in worker} == {
+        "operations.inventory.stock.read",
+        "operations.inventory.stock.transfer",
+    }
+    # A worker moves and reads stock; registering, splitting and merging rolls stays with the
+    # manager. The plain seat sees none of the new surface.
+    assert not set(PHASE_1_PERMISSIONS) & set(_grants("OPERATIONS_USER"))
