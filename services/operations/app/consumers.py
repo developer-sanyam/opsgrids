@@ -588,6 +588,47 @@ async def job_work_qc_requested(envelope: dict[str, Any]) -> None:
 consumer.on(quality_handoff.EVT_JOB_WORK_QC_REQUESTED)(job_work_qc_requested)
 
 
+async def goods_receipt_qc_requested(envelope: dict[str, Any]) -> None:
+    """Bound to `operations.stock.received` (this service's own event, emitted by
+    `app.receiving.receipts` for every posted goods receipt). A line of a quality-tracked item was
+    received into `QUALITY_HOLD`; open an `incoming` inspection over each held bucket
+    (`app.quality.handoff.open_for_goods_receipt`). Receipts with nothing held are a no-op. The
+    tenant is the envelope's, never the payload's: a payload that names another organization is
+    marked processed and logged, not acted on."""
+    event_id = uuid.UUID(envelope["event_id"])
+    organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload = envelope["payload"]
+    mismatch = uuid.UUID(str(payload["organization_id"])) != organization_id
+
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("quality.receipt_handoff.duplicate", event_id=str(event_id))
+            return
+        if mismatch:
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+            log.error(
+                "quality.receipt_handoff.organization_mismatch",
+                event_id=str(event_id),
+                envelope_organization_id=str(organization_id),
+                payload_organization_id=str(payload["organization_id"]),
+            )
+            return
+        result = await quality_handoff.open_for_goods_receipt(
+            session, quality_handoff.service_ctx(organization_id), payload
+        )
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+    log.info(
+        "quality.receipt_handoff.handled",
+        event_id=str(event_id),
+        goods_receipt_id=str(payload["goods_receipt_id"]),
+        opened=len(result.opened),
+        skipped=[{"bucket": b, "reason": why} for b, why in result.skipped],
+    )
+
+
+consumer.on(quality_handoff.EVT_STOCK_RECEIVED)(goods_receipt_qc_requested)
+
+
 async def main() -> None:
     cfg = settings()
     engine = init_engine(cfg)

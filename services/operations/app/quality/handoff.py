@@ -1,12 +1,17 @@
 """The quality side of a QC hand-off: goods have been parked in `QUALITY_HOLD` by another process
 and an inspection must be opened over them (inventory plan Phases 4 and 6).
 
-Today there is one producer: a job-work receipt on an order flagged `qc_required` emits
-`operations.jobwork.receipt.qc_requested` (`app.jobwork.services`) after posting the good quantity
-into `QUALITY_HOLD`. The job-work package never imports this one and never waits for it; the event
-is the whole contract, and `app.consumers` binds it to `open_for_job_work_receipt`. A goods-receipt
-hand-off from purchasing is the same shape and is added here when Phase 2 lands (see
-`docs/inventory/quality.md`).
+Two producers:
+
+* a job-work receipt on an order flagged `qc_required` emits
+  `operations.jobwork.receipt.qc_requested` (`app.jobwork.services`) after posting the good quantity
+  into `QUALITY_HOLD`; `app.consumers` binds it to `open_for_job_work_receipt`;
+* a goods receipt (`app.receiving.receipts`) emits `operations.stock.received`; a line of an item
+  that tracks quality was received into `QUALITY_HOLD`, and `app.consumers` binds the event to
+  `open_for_goods_receipt`, which opens one inspection per held bucket the receipt's ledger move
+  created (a lot, and each roll of it).
+
+Neither producing package imports this one or waits for it; the event is the whole contract.
 
 **Idempotent twice over.** The consumer marks the event id processed in the same transaction; and
 each inspection is created under a deterministic `Idempotency-Key`
@@ -21,14 +26,17 @@ inspection. The consumer logs what was skipped; redelivering would only refuse a
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Inspection
+from app.inventory.quantity import format_qty
+from app.models import Inspection, InventoryItem, LedgerEntry
 from app.quality import services
 from app.quality.schemas import InspectionIn
 from platform_core.auth import Principal, Scope, ScopeContext
@@ -43,6 +51,11 @@ REFERENCE_TYPE = "job_work_order"
 #: `app.jobwork.services.EVT_QC_REQUESTED`, copied rather than imported: the two packages stay
 #: independent and the event name is the contract (a test pins the two together).
 EVT_JOB_WORK_QC_REQUESTED = "operations.jobwork.receipt.qc_requested"
+
+GOODS_RECEIPT_REFERENCE_TYPE = "goods_receipt"
+
+#: `app.receiving.receipts.EVT_STOCK_RECEIVED`, copied for the same reason (a test pins the two).
+EVT_STOCK_RECEIVED = "operations.stock.received"
 
 
 def service_ctx(organization_id: uuid.UUID) -> ScopeContext:
@@ -100,6 +113,92 @@ async def open_for_job_work_receipt(
                 )
         except (ConflictProblem, NotFoundProblem, ValidationProblem) as exc:
             result.skipped.append((material_id, exc.detail))
+            continue
+        result.opened.append(inspection)
+    return result
+
+
+async def open_for_goods_receipt(
+    session: AsyncSession, ctx: ScopeContext, payload: dict[str, Any]
+) -> HandoffResult:
+    """One `incoming` inspection per `QUALITY_HOLD` bucket a goods receipt put on the books, for
+    the lines whose item tracks quality (`hold_stock=False`: the stock is already on hold).
+
+    The buckets come from the receipt's own ledger move (`payload["move_id"]`, read under this
+    organization), not from the event's roll list: a roll's measured quantity is not in the event,
+    and a roll-tracked line is one bucket per roll. A line the receipt put on hold only because the
+    receiver asked (`hold` on a non-quality item) has no inspection to open and is skipped, as is a
+    service line or a receipt that posted no stock (`move_id` null)."""
+    result = HandoffResult()
+    if payload.get("move_id") is None:
+        return result
+    org_id = ctx.organization_id
+    receipt_id = uuid.UUID(str(payload["goods_receipt_id"]))
+    supplier_id = uuid.UUID(str(payload["supplier_id"]))
+    move_id = uuid.UUID(str(payload["move_id"]))
+
+    held_items = {
+        uuid.UUID(str(line["inventory_item_id"]))
+        for line in payload["lines"]
+        if line.get("inventory_item_id") and line.get("status") == "QUALITY_HOLD"
+    }
+    if not held_items:
+        return result
+    tracked = set(
+        (
+            await session.execute(
+                select(InventoryItem.id).where(
+                    InventoryItem.organization_id == org_id,
+                    InventoryItem.id.in_(held_items),
+                    InventoryItem.track_quality.is_(True),
+                )
+            )
+        ).scalars()
+    )
+    entries = (
+        (
+            await session.execute(
+                select(LedgerEntry)
+                .where(
+                    LedgerEntry.organization_id == org_id,
+                    LedgerEntry.move_id == move_id,
+                    LedgerEntry.status == "QUALITY_HOLD",
+                    LedgerEntry.quantity_milli > 0,
+                    LedgerEntry.inventory_item_id.in_(tracked),
+                )
+                .order_by(LedgerEntry.created_at, LedgerEntry.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for entry in entries:
+        bucket = ":".join(
+            str(part or "-")
+            for part in (entry.inventory_item_id, entry.location_id, entry.lot_id, entry.roll_id)
+        )
+        label = f"{entry.inventory_item_id}/{entry.lot_id or '-'}/{entry.roll_id or '-'}"
+        body = InspectionIn(
+            kind="incoming",
+            item_id=entry.inventory_item_id,
+            location_id=entry.location_id,
+            quantity=format_qty(entry.quantity_milli),
+            lot_id=entry.lot_id,
+            roll_id=entry.roll_id,
+            supplier_id=supplier_id,
+            reference_type=GOODS_RECEIPT_REFERENCE_TYPE,
+            reference_id=receipt_id,
+            hold_stock=False,
+            notes=f"Received on goods receipt {payload['number']}"[:500],
+        )
+        key = "gr-qc:" + hashlib.sha256(f"{receipt_id}:{bucket}".encode()).hexdigest()
+        try:
+            async with session.begin_nested():
+                inspection = await services.create_inspection(
+                    session, ctx, body, idempotency_key=key
+                )
+        except (ConflictProblem, NotFoundProblem, ValidationProblem) as exc:
+            result.skipped.append((label, exc.detail))
             continue
         result.opened.append(inspection)
     return result

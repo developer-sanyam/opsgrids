@@ -164,14 +164,18 @@ decides release via an inspection.
   `ledger.validate_tracking` (the check every posted move makes), so an unknown lot or roll, one
   from another organization, or one belonging to a different item is a 404 / 422 and no inspection
   row is written, with or without a hold.
-- **Receipt into `QUALITY_HOLD` (Phase 2)** is not wired. TODO(Phase 2 integration): when the goods
-  receipt lands (Phase 2 is on a separate stack), a received line of a quality-tracked item should
-  post into `QUALITY_HOLD` and open an `incoming` inspection with `hold_stock: false` (the hook),
-  `reference_type` / `reference_id` pointing at the receipt line and `supplier_id` set. Until then an
-  inspection over received stock is opened by hand. (The job-work receipt hand-off, which does not
-  depend on Phase 2, is wired: `app/quality/handoff.py`, bound as
-  `app.consumers.job_work_qc_requested` — see [jobwork.md](jobwork.md#qc-hand-off). A purchasing
-  hand-off adds a second function beside it in `handoff.py` and one more binding.)
+- **Receipt into `QUALITY_HOLD` (Phase 2) is wired.** A goods receipt of an item with
+  `track_quality` posts into `QUALITY_HOLD` (Phase 2) and emits `operations.stock.received`;
+  `app.consumers.goods_receipt_qc_requested` calls `handoff.open_for_goods_receipt`, which reads the
+  receipt's own ledger move (under the envelope's organization) and opens one `incoming`
+  inspection per held bucket — the lot, and one per roll of a roll-tracked item — with
+  `hold_stock: false`, `reference_type = goods_receipt`, `reference_id` = the receipt and
+  `supplier_id` set. Idempotent twice over: the processed-event table, and a deterministic
+  `Idempotency-Key` per (receipt, bucket). A bucket that is no longer free (someone inspected or
+  moved it first) is skipped and logged, never retried into a loop. A line received on hold only
+  because the receiver asked (`hold` on an item that does not track quality) opens nothing.
+  Covered by `tests/test_quality_receipt_handoff.py`. The job-work receipt hand-off is the same
+  shape (`app.consumers.job_work_qc_requested`, see [jobwork.md](jobwork.md#qc-hand-off)).
 - **Single disposition per inspection**, over the whole rejected quantity. Splitting a rejection
   between RTV and scrap is a new inspection of the rejected bucket.
 - **No supplier-return document / debit note.** `reference` is free text; finance integration of an
