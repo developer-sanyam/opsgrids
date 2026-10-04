@@ -772,6 +772,66 @@ SELECT count(*) FROM operations.inventory_discrepancies WHERE resolved_at IS NUL
 SELECT number, purchase_order_id, received_on FROM operations.goods_receipts ORDER BY created_at DESC LIMIT 5;
 ```
 
+### Inventory Phase 3 (transfers, reservations, adjustments): migration, the approval service, and the permission reconcile
+
+Reference: `docs/inventory/movements.md`. Four things ship together; deploy them in this order.
+
+**1. Migration `c5a82f6d3b19` (operations, after Phase 2's `c5e91a7d3b28`).** Part of the ordinary `migrate` step. It creates
+`inventory_control_settings`, `stock_transfers`, `stock_transfer_lines`, `stock_transfer_transitions`
+and `adjustment_requests`, and adds `expires_at` / `expired_at` / `note` (nullable or defaulted) to
+`inventory_reservations`. It changes no existing row. Take the nightly backup first (`make
+edge-backup`). **Its downgrade refuses** while any transfer holds stock in transit — receive, or write
+off, those transfers first (see *Rollback*).
+
+**2. Deploy `approval` before `operations`' first threshold is set.** `approval` gains two request
+types (`operations.inventory.transfer`, `operations.inventory.adjustment`) and the consumers that open,
+close and withdraw them. Its queue is bound to the new `operations.inventory.*` routing keys only once
+its worker starts with that code; a topic exchange drops a message for a key nothing is bound to, so a
+request raised before that is silently never routed. Nothing is routed to `approval` until an
+administrator sets a threshold (`PUT /operations/inventory/control-settings`), so deploying `approval`
+in the same release, ahead of `operations`, is enough. Then deploy `operations`. (On the edge both run
+their consumers inside the API container, `RUN_CONSUMERS_IN_API`; the reservation-expiry sweep runs
+there too, under `RUN_SWEEPS_IN_API`, as `operations.reservations.expiry` on `/metrics`.)
+
+**3. Reconcile the `operations` permissions after the API is deployed** (ADR-0007; the same order as
+every permission rollout: manifests committed → the service that enforces them deployed → reconcile →
+only then the UI that assumes them). Five codes are new: `operations.inventory.transfer.write`,
+`.transfer.approve` (dangerous), `.transfer.dispatch`, `.transfer.receive` and
+`operations.inventory.control.configure` (dangerous). `OPERATIONS_ADMIN` (`all()`) gets all five;
+`OPERATIONS_MANAGER` gets the four transfer codes; `OPERATIONS_WORKER` gets `transfer.write`,
+`.dispatch` and `.receive` but not `.approve`; `OPERATIONS_USER` gets none. Customer-authored roles are
+never touched (ADR-0007 §4); the reconcile prints `memberships_without`. The reconcile applies
+whatever the manifest adds, so if Phase 2's codes have not been reconciled yet this one run covers them too.
+
+```bash
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations          # dry run
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+```
+
+Until it runs, every new route answers 403 for every non-owner in every existing organization (a
+brand-new organization is fine). Fleet write, so outside peak hours and never as part of `make deploy`.
+
+**4. The Operations SPA last** (Transfers, Reservations, Adjustments screens assume all of the above).
+
+**Verify** after deploy: `GET /api/v1/operations/inventory/transfers` is 200 for a manager and 403 for a
+plain user; `/metrics` shows `sweep_alive` for `operations.reservations.expiry`; the reconciler pass at
+the next night shows zero drift. To exercise the approval round trip, set a small adjustment threshold
+on a test organization, raise an adjustment over it (it returns 202 `PENDING_APPROVAL`), decide it in
+the approval inbox, and confirm it becomes `APPLIED` and the stock moved once.
+
+**Rollback.** The application rolls back by redeploying the previous image: the new tables simply go
+unused, and nothing the old code writes violates them. To drop the schema (`alembic downgrade
+c5e91a7d3b28`), first make sure no transfer is mid-flight, or the downgrade refuses with the count:
+
+```sql
+SELECT t.number, l.dispatched_milli - l.received_milli - l.shortage_milli AS still_in_transit_milli
+  FROM operations.stock_transfer_lines l
+  JOIN operations.stock_transfers t ON t.id = l.transfer_id
+ WHERE l.dispatched_milli > l.received_milli + l.shortage_milli;
+```
+
+Reservations survive the round trip; only their expiry, expired-at and note are dropped.
+
 ### The billing run: first deploy, watching it, and what to do when it complains
 
 The billing run (ADR-0005's 2026-09-23 addendum and its review fixes) is the loop that converts

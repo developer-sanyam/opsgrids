@@ -185,10 +185,24 @@ Not done / deferred: PO line quantities are still whole units (so fractional req
 converted and fabric cannot be ordered as 82.5 m); receiving without a PO; returns to vendor; releasing
 held stock (Phase 4); the E2E browser journey.
 
-### Phase 3 — Movements and control
-Transfers (DRAFT→REQUESTED→APPROVED→IN_TRANSIT→RECEIVED/CANCELLED) with in-transit bucket;
-reservations (sales/production/manual) with expiry; adjustments via the approval service;
+### Phase 3 — Movements and control — **DONE** (2026-10-05) · reference: [movements.md](movements.md)
+Transfers (DRAFT→REQUESTED→APPROVED→IN_TRANSIT→RECEIVED/CANCELLED, plus REJECTED) with the in-transit
+bucket, partial receipt and shortage write-off; reservations (order/production order/manual) with a list
+API and expiry sweep; adjustments with reason + evidence, held for the approval service above a threshold;
 stocktake (snapshot, blind count, variance, approval, auto-adjustment).
+
+Status: migration `c5a82f6d3b19`; backend and the Operations SPA screens (Transfers, Reservations,
+Adjustments, approval thresholds) shipped; five permissions and their ADR-0007 rollout (RUNBOOK); fourteen
+event contracts; approval service gains the two request types. **Stocktake was not rebuilt:** counting
+(snapshot, blind count, variance, manager approval, posting through the kernel) is `app/counting`
+(ADR-0026) and unchanged; what remains of the plan's line is routing a *large* count variance through the
+approval service and auto-adjusting under a threshold — deferred, see movements.md.
+
+Exit criteria met: 50 parallel reservations against 10 units reserve exactly 10; two concurrent dispatches
+of one transfer have one winner; a dispatch racing an issue never goes negative; in-transit and physical
+reported separately and reconciling; partial receipt and shortage; reservation expiry through the real
+sweep; reconciler clean after every concurrency scenario; negative-authz and cross-tenant tests on every
+route; migration up/down verified; the event payloads validated against their committed contracts.
 
 ### Phase 4 — Quality
 QC templates (incoming / in-process / finished), inspections with PENDING/PASSED/FAILED/HOLD/
@@ -240,6 +254,8 @@ data (multi-warehouse textile org).
 | `inventory.item.read/write`, `inventory.warehouse.read/write` (existing) | |
 | `inventory.location.write`, `inventory.lot.write`, `inventory.roll.write` | |
 | `inventory.stock.read`, `inventory.stock.transfer`, `inventory.stock.receive`, `inventory.stock.issue`, `inventory.stock.reserve` | |
+| `inventory.transfer.write`, `inventory.transfer.dispatch`, `inventory.transfer.receive` (Phase 3) | |
+| `inventory.transfer.approve`, `inventory.control.configure` (Phase 3) | ✔ |
 | `inventory.stock.adjust`, `inventory.stocktake.approve`, `inventory.stock.negative_override` | ✔ |
 | `inventory.data.import`, `inventory.data.export` | import ✔ |
 | `manufacturing.bom.read/write/publish`, `manufacturing.production_order.read/write/approve/issue/complete` | |
@@ -252,6 +268,9 @@ PLANNER, QC_INSPECTOR, BUYER — each with a negative-authz test per list endpoi
 
 ## 5. Events
 
+(Names as built live under `operations.inventory.*` — `…transfer.requested|approved|rejected|cancelled|
+dispatched|received|applied`, `…adjustment.requested|applied|cancelled`, `…reservation.expired`,
+`…stock.reserved|released|adjusted|transferred|posted` — see [movements.md](movements.md).)
 `operations.stock.received|issued|transferred|adjusted|reserved|released`,
 `operations.stocktake.completed`, `operations.stock.low|stockout`, `operations.quality.hold|released|rejected`,
 `operations.production.started|completed|material_shortage`, `operations.jobwork.issued|received|overdue`,

@@ -31,7 +31,7 @@ page is the reference.
 | `inventory_moves` | one header per posting: kind, reason, reference, idempotency key | INSERT only |
 | `inventory_ledger` | one row per bucket delta (formerly `stock_movements`, same row ids) | INSERT only |
 | `inventory_balances` | current quantity + reserved per bucket, projection of the ledger | yes (kernel only) |
-| `inventory_reservations` | promised stock; open remainder cached on the balance | yes (kernel only) |
+| `inventory_reservations` | promised stock; open remainder cached on the balance; optional expiry (Phase 3) | yes (kernel only) |
 | `inventory_discrepancies` | drift the reconciler found | yes |
 
 Bucket = `(item, location, status, lot, roll)`. `lot`/`roll` are nullable UUIDs until Phase 1
@@ -338,7 +338,31 @@ Things the ledger now sees that it did not before:
 The reconciler is unchanged and stays clean after every receipt path (`tests/test_goods_receipts_api.py`,
 `tests/test_receiving_concurrency.py`).
 
+## Movements and control (Phase 3, migration `c5a82f6d3b19`)
+
+The full reference is [movements.md](movements.md); what changes in the ledger's own terms:
+
+- **The `IN_TRANSIT` bucket is now written.** An inter-warehouse transfer's dispatch is one `relocation`
+  move (`reference_type = stock_transfer`) out of the source bin's `AVAILABLE` bucket into `IN_TRANSIT` at
+  the destination warehouse's default bin, lot and roll intact. Its receipt is a `relocation` out of
+  `IN_TRANSIT` into the chosen bin (`stock_transfer_receipt`), and a shortage is an `adjustment` (reason
+  `lost`, `stock_transfer_shortage`) out of `IN_TRANSIT`, so the in-transit figure drains to exactly zero.
+  `IN_TRANSIT` stays outside on-hand: `GET /operations/inventory/in-transit` reports it beside the
+  warehouse's physical figure, never inside it. No new move kind (ADR-0014 §12's rule, extended).
+- **Reservations have an HTTP create, a list and an expiry.** `inventory_reservations` gains
+  `expires_at` / `expired_at` / `note`; `ledger.reserve` takes `expires_at` and `note`; a sweep releases a
+  lapsed reservation through `ledger.release` (key `expire:<id>`). The kernel's guarantees — the bucket lock,
+  `reserved <= quantity`, the count-below-reserved refusal — are untouched.
+- **An adjustment can wait.** `adjustment_requests` holds every adjustment made with a reason and
+  evidence; at or over the organization's threshold the move is posted only when the approval service says
+  yes (`adjustment-request:<id>` is its idempotency key), otherwise at once.
+- **Idempotency keys the new paths use:** `transfer:<id>:dispatch`, `transfer:<id>:receive:<client key>`,
+  `transfer:<id>:shortage:<client key>`, `adjustment-request:<id>`, `expire:<id>`.
+- **Reconciler:** unchanged, and clean after every Phase 3 test (`assert_reconciled`), including after the
+  50-way reservation race, the double dispatch, and a partial receipt with a shortage.
+
 ## Not in Phase 0
 
 Costing layers and every later phase (lots, rolls, multi-location moves and locations got their HTTP
-APIs in Phase 1 — see above). See [plan.md](plan.md).
+APIs in Phase 1 — see above; transfers, reservation APIs and approval-gated adjustments in Phase 3 — see
+above). See [plan.md](plan.md).

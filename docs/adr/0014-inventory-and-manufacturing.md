@@ -285,6 +285,36 @@ the single-shot receive endpoint keeps its answers — it is a wrapper, not a se
 because it posts stock, demands the same two warehouse keys as a goods receipt (`receipt.write` and
 `stock.receive`, ORG) on top of `purchase_order.write`.
 
+## 14. Phase 3: what the movements and control slice decided
+
+**Added 2026-10-05, with Phase 3 ([movements.md](../inventory/movements.md)).** Five choices a later phase
+will lean on:
+
+- **A transfer is a document over two kernel moves; stock in transit lives at the destination.** Dispatch is
+  one `relocation` into the `IN_TRANSIT` bucket at the *destination* warehouse's default bin, receipt a
+  `relocation` out of it, a shortage an `adjustment` out of it — no new move kind (§12's rule, again), no
+  new table of in-flight quantities. Put at the destination, "what is on its way to me" is a query on that
+  warehouse's own locations, and `IN_TRANSIT` stays outside on-hand as §3 says. The cost is that a
+  warehouse needs a default bin to receive a dispatch; every warehouse gets one at creation.
+- **Approval is routed by quantity, per line, in the item's own unit.** A threshold per organization
+  (`inventory_control_settings`) decides: none set → a direct sign-off by a *different* person holding
+  `inventory.transfer.approve` (transfers) or no approval (adjustments, preserving every existing client);
+  set and under it → automatic; at or over → the approval service (ADR-0006), by events in both directions,
+  the product applying the answer in its own transaction under its own state machine. A value threshold
+  needs costing (Phase 8) and is deferred; summing quantities across units was rejected as meaningless.
+- **Approved adjustments post as the system, under a deterministic key, inside a savepoint.** The decision
+  can arrive twice, late, or after the stock has gone; the key makes a double delivery post once, the
+  state check makes a late one a no-op, and the savepoint turns "the stock can no longer take it" into a
+  recorded `FAILED` (with the kernel's reason, and `failed` on the return leg) instead of a poisoned
+  consumer transaction.
+- **Expiry is a release, not a second way to close a reservation.** The sweep calls `ledger.release`
+  (key `expire:<id>`) like a person would, then stamps `expired_at`; nothing else writes
+  `reserved_milli`. It discovers organizations on the outbox role with a column-level grant on exactly
+  `(organization_id, status, expires_at)`.
+- **Stocktake was not rebuilt.** `app/counting` (ADR-0026) is the stocktake; its manager review remains its
+  own permission-gated approval. Routing a large variance through the approval service and auto-adjusting
+  under a threshold is the extension left, and nothing was built that would compete with it.
+
 ## Consequences
 
 - `operations` becomes the largest service; the module split is required, not optional.
