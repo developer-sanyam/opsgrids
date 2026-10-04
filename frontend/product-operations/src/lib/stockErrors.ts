@@ -74,6 +74,23 @@ const COPY: Record<string, string> = {
     "Bin-to-bin transfers stay inside one warehouse. Choose a location in the same warehouse.",
 };
 
+const CONSOLIDATE_GUIDANCE =
+  "Consolidate the roll into one bucket by transfer or status change first, then try again.";
+const TOO_LONG_CHILD_ROLL_NO = /^children(?:\[\d+\]|\.\d+)\.roll_no$/;
+
+/** The sentence for one entry where it needs the whole problem, not just the entry. */
+function entrySentence(error: ApiError, entry: { field: string; code: string; message: string }): string | undefined {
+  if (entry.code === "roll_in_several_buckets") {
+    // The entry's own message is terse; the problem's detail says where the rest of the stock sits.
+    const where = (error.problem?.detail ?? entry.message).trim().replace(/[.\s]+$/, "");
+    return `${where}. ${CONSOLIDATE_GUIDANCE}`;
+  }
+  if (entry.code === "too_long" && TOO_LONG_CHILD_ROLL_NO.test(entry.field)) {
+    return "The automatic roll number for this child is too long. Enter explicit roll numbers for the children.";
+  }
+  return undefined;
+}
+
 /**
  * `{field: sentence}` for every field-level entry on the error, first entry per field winning.
  *
@@ -86,7 +103,7 @@ export function operationFieldErrors(error: unknown): Record<string, string> {
   if (!(error instanceof ApiError)) return {};
   const map: Record<string, string> = {};
   for (const entry of fieldErrors(error.problem)) {
-    const sentence = COPY[`${entry.field}/${entry.code}`] ?? entry.message;
+    const sentence = entrySentence(error, entry) ?? COPY[`${entry.field}/${entry.code}`] ?? entry.message;
     if (!(entry.field in map)) map[entry.field] = sentence;
     const bare = entry.field.replace(/^lines\.\d+\./, "");
     if (bare !== entry.field && !(bare in map)) map[bare] = sentence;

@@ -14,7 +14,7 @@ import { DateAndNoteFields } from "@/tracking/DateAndNoteFields";
 import { ShortfallAlert } from "@/tracking/ShortfallAlert";
 import { StatusDialog } from "@/tracking/StatusDialog";
 import { useStockOperation } from "@/tracking/useStockOperation";
-import { Button, EmptyState, ErrorState, FormDialog, Select, Skeleton, TextField } from "@/ui";
+import { Button, EmptyState, ErrorState, FormDialog, InlineAlert, Select, Skeleton, TextField } from "@/ui";
 import { PlusIcon } from "@opsgrids/ui";
 
 const MAX_CHILDREN = 50;
@@ -106,7 +106,13 @@ function RollSplitForm({ roll, buckets, onClose, onSaved }: RollSplitFormProps) 
   const op = useStockOperation(
     (input: RollSplitIn, key: string) => splitRoll(roll.id, input, key),
     onSaved,
-    ["children", "occurred_on", "note"],
+    [
+      "children",
+      "location_id",
+      "occurred_on",
+      "note",
+      ...Array.from({ length: MAX_CHILDREN }, (_, i) => `children[${i}].roll_no`),
+    ],
   );
 
   const bucket = buckets.find((b) => b.id === bucketId) ?? buckets[0];
@@ -174,6 +180,9 @@ function RollSplitForm({ roll, buckets, onClose, onSaved }: RollSplitFormProps) 
       dirty={dirty}
       {...op.dialogError}
     >
+      {op.fieldErrors["location_id"] ? (
+        <InlineAlert tone="danger" title={op.fieldErrors["location_id"]} />
+      ) : null}
       {buckets.length > 1 ? (
         <Select
           label="Take stock from"
@@ -216,6 +225,7 @@ function RollSplitForm({ roll, buckets, onClose, onSaved }: RollSplitFormProps) 
                 onChange={(e) => update(row.key, { rollNo: e.target.value })}
                 optional
                 placeholder={`${roll.roll_no}-${index + 1}`}
+                error={op.fieldErrors[`children[${index}].roll_no`]}
               />
               {rows.length > MIN_CHILDREN ? (
                 <Button

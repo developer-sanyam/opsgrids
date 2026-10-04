@@ -102,7 +102,7 @@ function RollMergeForm({ rolls, buckets, onClose, onSaved }: RollMergeFormProps)
   const [dateError, setDateError] = useState<string | undefined>(undefined);
   const firstFieldRef = useRef<HTMLInputElement>(null);
 
-  const op = useStockOperation(mergeRolls, onSaved, ["roll_ids", "roll_no", "occurred_on", "note"]);
+  const op = useStockOperation(mergeRolls, onSaved, ["roll_ids", "location_id", "roll_no", "occurred_on", "note"]);
   const bucket = buckets.find((b) => b.key === bucketKey) ?? buckets[0];
   const first = rolls[0];
   const uom = first?.uom ?? "";
@@ -160,6 +160,9 @@ function RollMergeForm({ rolls, buckets, onClose, onSaved }: RollMergeFormProps)
           ))}
         </ul>
       </div>
+      {op.fieldErrors["location_id"] ? (
+        <InlineAlert tone="danger" title={op.fieldErrors["location_id"]} />
+      ) : null}
       {op.fieldErrors["roll_ids"] ? (
         <InlineAlert tone="danger" title={op.fieldErrors["roll_ids"]} />
       ) : null}

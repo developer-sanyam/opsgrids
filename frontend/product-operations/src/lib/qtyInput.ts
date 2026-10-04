@@ -99,3 +99,21 @@ export function checkWholeNumber(raw: string, label: string, max = 100_000): Who
   if (value < 1 || value > max) return { ok: false, message: `${label} is between 1 and ${max}.` };
   return { ok: true, value };
 }
+
+/** The most minor units a unit cost may hold, mirroring the server's bound. */
+export const MAX_UNIT_COST_MINOR = 10 ** 15;
+
+export type UnitCostCheck = { ok: true; value: number } | { ok: false; message: string };
+
+/** Check a typed unit cost in minor units: a whole number from 0 to 10**15. Never throws. */
+export function checkUnitCostMinor(raw: string): UnitCostCheck {
+  const text = raw.trim();
+  if (!/^\d+$/.test(text)) {
+    return { ok: false, message: "Enter the unit cost as a whole number of minor units, like 12550." };
+  }
+  const value = Number(text);
+  if (!Number.isSafeInteger(value) || value > MAX_UNIT_COST_MINOR) {
+    return { ok: false, message: "The unit cost can be at most 1,000,000,000,000,000 minor units." };
+  }
+  return { ok: true, value };
+}

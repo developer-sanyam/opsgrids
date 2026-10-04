@@ -4,6 +4,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
+import { ApiError, PermissionProvider } from "@opsgrids/client";
 import userEvent from "@testing-library/user-event";
 
 import type { OnSiteRow } from "@/lib/rollBuckets";
@@ -109,5 +110,59 @@ describe("StockStatusChangeDialog", () => {
     await user.click(screen.getByRole("button", { name: "Change status" }));
 
     expect(await screen.findByText("must be > 0")).toBeDefined();
+  });
+
+  describe("releasing stock out of a hold", () => {
+    const HELD = stockRow({ status: "QUARANTINE" }) as OnSiteRow;
+
+    function renderWithGrants(row: OnSiteRow, grants: string[]) {
+      const user = userEvent.setup();
+      render(
+        <PermissionProvider grants={grants} entitlements={[]}>
+          <StockStatusChangeDialog row={row} onClose={vi.fn()} onSaved={vi.fn()} />
+        </PermissionProvider>,
+      );
+      return { user };
+    }
+
+    function optionLabels(): (string | null)[] {
+      return within(screen.getByLabelText("New status")).getAllByRole("option").map((o) => o.textContent);
+    }
+
+    it("offers Available and Work in progress to a caller with stock.adjust", () => {
+      renderWithGrants(HELD, ["operations.inventory.stock.adjust:ORG"]);
+      expect(optionLabels()).toContain("Available");
+      expect(optionLabels()).toContain("Work in progress");
+    });
+
+    it("withholds the release targets from a caller without it, and says why", () => {
+      renderWithGrants(HELD, ["operations.inventory.stock.transfer:ORG"]);
+      expect(optionLabels()).not.toContain("Available");
+      expect(optionLabels()).not.toContain("Work in progress");
+      expect(optionLabels()).toContain("Damaged");
+      expect(screen.getByText(/needs the operations\.inventory\.stock\.adjust permission/)).toBeDefined();
+    });
+
+    it("keeps Available offered for stock that is not in a hold, with transfer alone", () => {
+      renderWithGrants(
+        stockRow({ status: "WIP" }) as OnSiteRow,
+        ["operations.inventory.stock.transfer:ORG"],
+      );
+      expect(optionLabels()).toContain("Available");
+      expect(screen.queryByText(/needs the operations\.inventory\.stock\.adjust permission/)).toBeNull();
+    });
+
+    it("words a 403 from the server so it names the permission, and keeps the entry", async () => {
+      changeStockStatus.mockRejectedValue(
+        new ApiError(403, "Forbidden", { type: "about:blank", title: "Forbidden", status: 403, detail: "Forbidden" }),
+      );
+      const { user } = renderWithGrants(HELD, ["operations.inventory.stock.adjust:ORG"]);
+      await user.selectOptions(screen.getByLabelText("New status"), "AVAILABLE");
+      await user.type(screen.getByLabelText("Quantity"), "5");
+      await user.click(screen.getByRole("button", { name: "Change status" }));
+
+      expect(await screen.findByText(/needs operations\.inventory\.stock\.adjust/)).toBeDefined();
+      expect((screen.getByLabelText("Quantity") as HTMLInputElement).value).toBe("5");
+    });
   });
 });

@@ -4,7 +4,7 @@ import { postOpeningStock } from "@/api/tracking";
 import type { OnSiteStatus, OpeningLineIn, StockMoveOut } from "@/api/trackingTypes";
 import type { InventoryItemOut } from "@/api/types";
 import { useWarehouseIdOptions } from "@/data/useWarehouseOptions";
-import { checkQuantity } from "@/lib/qtyInput";
+import { checkQuantity, checkUnitCostMinor } from "@/lib/qtyInput";
 import { occurredOnError } from "@/lib/dateCheck";
 import { today } from "@/lib/now";
 import { STOCK_STATUS_OPTIONS } from "@/lib/trackingLabels";
@@ -40,6 +40,8 @@ export function OpeningStockDialog({ item: initialItem, onClose, onSaved }: Open
   const [quantity, setQuantity] = useState("");
   const [occurredOn, setOccurredOn] = useState(today());
   const [note, setNote] = useState("");
+  const [unitCost, setUnitCost] = useState("");
+  const [costCurrency, setCostCurrency] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const firstFieldRef = useRef<HTMLSelectElement>(null);
 
@@ -54,6 +56,8 @@ export function OpeningStockDialog({ item: initialItem, onClose, onSaved }: Open
     ...(item?.track_roll ? ["roll_id"] : []),
     "quantity",
     "status",
+    "unit_cost_minor",
+    "unit_cost_currency",
     "occurred_on",
     "note",
   ]);
@@ -75,6 +79,8 @@ export function OpeningStockDialog({ item: initialItem, onClose, onSaved }: Open
     rollId !== "" ||
     quantity !== "" ||
     note !== "" ||
+    unitCost !== "" ||
+    costCurrency !== "" ||
     status !== "AVAILABLE" ||
     occurredOn !== today();
 
@@ -87,6 +93,16 @@ export function OpeningStockDialog({ item: initialItem, onClose, onSaved }: Open
     if (item?.track_roll && rollId === "") found["roll_id"] = "Choose the roll this stock belongs to.";
     const checked = checkQuantity(quantity, { uom: item?.uom ?? "" });
     if (!checked.ok) found["quantity"] = checked.message;
+    let cost: number | undefined;
+    const currency = costCurrency.trim().toUpperCase();
+    if (unitCost.trim() !== "") {
+      const costCheck = checkUnitCostMinor(unitCost);
+      if (costCheck.ok) cost = costCheck.value;
+      else found["unit_cost_minor"] = costCheck.message;
+      if (!/^[A-Z]{3}$/.test(currency)) found["unit_cost_currency"] = "Enter the 3-letter currency code, like INR.";
+    } else if (currency !== "") {
+      found["unit_cost_minor"] = "Enter the unit cost this currency applies to.";
+    }
     const dateProblem = occurredOnError(occurredOn);
     if (dateProblem) found["occurred_on"] = dateProblem;
     setErrors(found);
@@ -99,6 +115,7 @@ export function OpeningStockDialog({ item: initialItem, onClose, onSaved }: Open
       status,
       ...(item.track_lot ? { lot_id: lotId } : {}),
       ...(item.track_roll ? { roll_id: rollId } : {}),
+      ...(cost !== undefined ? { unit_cost_minor: cost, unit_cost_currency: currency } : {}),
     };
     op.submit({
       lines: [line],
@@ -218,6 +235,25 @@ export function OpeningStockDialog({ item: initialItem, onClose, onSaved }: Open
           onChange={(e) => setStatus(e.target.value as OnSiteStatus)}
           options={STOCK_STATUS_OPTIONS}
           error={err("status")}
+        />
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <TextField
+          label="Unit cost (minor units)"
+          inputMode="numeric"
+          value={unitCost}
+          onChange={(e) => setUnitCost(e.target.value)}
+          optional
+          helper="Whole minor units, like paise or cents. At most 1,000,000,000,000,000."
+          error={err("unit_cost_minor")}
+        />
+        <TextField
+          label="Cost currency"
+          value={costCurrency}
+          onChange={(e) => setCostCurrency(e.target.value)}
+          optional
+          placeholder="INR"
+          error={err("unit_cost_currency")}
         />
       </div>
       <DateAndNoteFields

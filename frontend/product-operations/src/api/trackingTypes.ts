@@ -116,6 +116,9 @@ export interface OpeningLineIn {
   status?: OnSiteStatus;
   lot_id?: string;
   roll_id?: string;
+  /** Integer minor units, 0 to 10**15; sent together with `unit_cost_currency` or not at all. */
+  unit_cost_minor?: number;
+  unit_cost_currency?: string;
 }
 
 export interface OpeningStockIn {

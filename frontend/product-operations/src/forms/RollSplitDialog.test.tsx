@@ -196,4 +196,34 @@ describe("RollSplitDialog — the exact-sum rule", () => {
     expect(await screen.findByText("Reserved stock is in the way")).toBeDefined();
     expect(screen.getByText(/Order 99887766 — 60 m/)).toBeDefined();
   });
+
+  it("shows where the rest of the stock sits, with guidance to consolidate, on a roll in several buckets", async () => {
+    const { user } = await renderDialog();
+    const detail = "R-001 also holds stock outside that bucket (10 m at B-02 in QUARANTINE)";
+    splitRoll.mockRejectedValue(
+      problem(409, detail, [{ field: "location_id", code: "roll_in_several_buckets", message: "R-001 is spread over several buckets" }], "conflict"),
+    );
+    await user.type(screen.getByLabelText("Child 1 quantity (m)"), "50");
+    await user.type(screen.getByLabelText("Child 2 quantity (m)"), "32.5");
+    await user.click(screen.getByRole("button", { name: "Split roll" }));
+
+    expect(await screen.findByText(/10 m at B-02 in QUARANTINE\)\. Consolidate the roll into one bucket by transfer/)).toBeDefined();
+    expect((screen.getByLabelText("Child 1 quantity (m)") as HTMLInputElement).value).toBe("50");
+  });
+
+  it("tells the user to enter explicit roll numbers when a derived one is too long, on that child", async () => {
+    const { user } = await renderDialog();
+    splitRoll.mockRejectedValue(
+      problem(422, "The derived number is too long. Name the children explicitly.", [
+        { field: "children[1].roll_no", code: "too_long", message: "derived roll number exceeds 60 characters" },
+      ]),
+    );
+    await user.type(screen.getByLabelText("Child 1 quantity (m)"), "50");
+    await user.type(screen.getByLabelText("Child 2 quantity (m)"), "32.5");
+    await user.click(screen.getByRole("button", { name: "Split roll" }));
+
+    const message = await screen.findByText(/Enter explicit roll numbers for the children/);
+    expect(message).toBeDefined();
+    expect(screen.getByLabelText(/Child 2 roll number/).getAttribute("aria-invalid")).toBe("true");
+  });
 });

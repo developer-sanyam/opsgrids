@@ -112,4 +112,17 @@ describe("RollMergeDialog", () => {
 
     expect(await screen.findByText("Reserved stock is in the way")).toBeDefined();
   });
+
+  it("shows where the rest of the stock sits, with guidance to consolidate, on a roll in several buckets", async () => {
+    const detail = "R-A also holds stock outside that bucket (10 m at B-02 in QUARANTINE)";
+    mergeRolls.mockRejectedValue(
+      problem(409, detail, [{ field: "location_id", code: "roll_in_several_buckets", message: "R-A is spread over several buckets" }], "conflict"),
+    );
+    const { user } = await renderDialog();
+    await user.type(screen.getByLabelText(/New roll number/), "R-M");
+    await user.click(screen.getByRole("button", { name: "Merge rolls" }));
+
+    expect(await screen.findByText(/10 m at B-02 in QUARANTINE\)\. Consolidate the roll into one bucket by transfer/)).toBeDefined();
+    expect((screen.getByLabelText(/New roll number/) as HTMLInputElement).value).toBe("R-M");
+  });
 });

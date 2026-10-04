@@ -13,6 +13,8 @@ export interface StockOperation<Input> {
   fieldErrors: Record<string, string>;
   /** The 409 `insufficient-stock` detail, with the reservations in the way, or `null`. */
   shortfall: StockShortfall | null;
+  /** The raw failure, for a dialog that words one status (a 403) itself. */
+  error: Error | null;
   /** Spread onto `FormDialog`: the failure that belongs to no control the dialog shows. */
   dialogError: FormDialogErrorProps;
 }
@@ -46,6 +48,7 @@ export function useStockOperation<Input, Result>(
     pending: mutation.pending,
     fieldErrors,
     shortfall: stockShortfall(mutation.error),
+    error: mutation.error,
     dialogError: formDialogError(mutation.error, hasUnattached ? {} : fieldErrors),
   };
 }

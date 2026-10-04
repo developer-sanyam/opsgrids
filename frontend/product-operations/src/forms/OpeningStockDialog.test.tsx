@@ -171,4 +171,41 @@ describe("OpeningStockDialog", () => {
     // An untracked item has no lot control; the refusal is not lost, it surfaces as the dialog error.
     expect(await screen.findByText("FAB-100 is not tracked by lot")).toBeDefined();
   });
+
+  it("refuses a unit cost above 10**15 minor units, and sends nothing", async () => {
+    const { user } = await renderDialog();
+    await user.selectOptions(screen.getByLabelText("Location"), "loc-1");
+    await user.type(screen.getByLabelText(/Quantity/), "5");
+    await user.type(screen.getByLabelText(/Unit cost/), "1000000000000001");
+    await user.type(screen.getByLabelText(/Cost currency/), "INR");
+    await user.click(screen.getByRole("button", { name: "Post opening stock" }));
+
+    expect(await screen.findByText(/at most 1,000,000,000,000,000 minor units/)).toBeDefined();
+    expect(postOpeningStock).not.toHaveBeenCalled();
+  });
+
+  it("accepts a unit cost of exactly 10**15 and sends it as an integer with its currency", async () => {
+    postOpeningStock.mockResolvedValue(move({ kind: "opening" }));
+    const { user } = await renderDialog();
+    await user.selectOptions(screen.getByLabelText("Location"), "loc-1");
+    await user.type(screen.getByLabelText(/Quantity/), "5");
+    await user.type(screen.getByLabelText(/Unit cost/), "1000000000000000");
+    await user.type(screen.getByLabelText(/Cost currency/), "inr");
+    await user.click(screen.getByRole("button", { name: "Post opening stock" }));
+
+    await waitFor(() => expect(postOpeningStock).toHaveBeenCalledTimes(1));
+    const [body] = postOpeningStock.mock.calls[0] as [{ lines: Record<string, unknown>[] }];
+    expect(body.lines[0]).toMatchObject({ unit_cost_minor: 10 ** 15, unit_cost_currency: "INR" });
+  });
+
+  it("asks for the currency when a unit cost is given without one", async () => {
+    const { user } = await renderDialog();
+    await user.selectOptions(screen.getByLabelText("Location"), "loc-1");
+    await user.type(screen.getByLabelText(/Quantity/), "5");
+    await user.type(screen.getByLabelText(/Unit cost/), "1250");
+    await user.click(screen.getByRole("button", { name: "Post opening stock" }));
+
+    expect(await screen.findByText("Enter the 3-letter currency code, like INR.")).toBeDefined();
+    expect(postOpeningStock).not.toHaveBeenCalled();
+  });
 });
