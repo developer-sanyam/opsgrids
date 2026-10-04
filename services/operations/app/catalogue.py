@@ -922,6 +922,57 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Job work (Inventory plan Phase 6) — material sent to an outside processor and expected
+        # back. A job-work order is a shared operational document with no per-person owner, so
+        # every permission is ORG-only (the same reasoning `dispatch.shipment.*` gives). Five
+        # steps, each its own permission, because they are different acts by different people:
+        # drafting, sending stock out of the building, taking it back, and the sign-off.
+        PermissionSpec(
+            "jobwork",
+            "order",
+            "read",
+            "See job-work orders, their materials, receipts, challans and reconciliation",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "jobwork",
+            "order",
+            "write",
+            "Draft, edit and cancel (before issue) job-work orders",
+            "ORG",
+            "ORG",
+        ),
+        # Moves stock out of AVAILABLE into the vendor's bucket and cuts a numbered, immutable
+        # delivery challan — and may ask finance for an e-way bill.
+        PermissionSpec(
+            "jobwork",
+            "order",
+            "issue",
+            "Send an approved order's materials to the vendor: move the stock, cut the delivery "
+            "challan and request an e-way bill",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "jobwork",
+            "order",
+            "receive",
+            "Take material back from the vendor — good, rejected or declared short",
+            "ORG",
+            "ORG",
+        ),
+        # The sign-off pair: approving commits the business to sending stock out, closing settles
+        # the order. Kept apart from `write` so the person who drafts cannot also approve, and
+        # from `receive` so the person who counts goods back cannot also declare the books square.
+        PermissionSpec(
+            "jobwork",
+            "order",
+            "approve",
+            "Approve a draft job-work order, and close one once its reconciliation balances",
+            "ORG",
+            "ORG",
+        ),
     ],
 )
 
@@ -954,9 +1005,10 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "posts goods receipts — partial, short and over-receipt within tolerance (Phase 2). "
             "Drafts, approves, dispatches and receives inter-warehouse transfers (Phase 3); does "
             "not set the approval thresholds — that stays with the admin. Runs quality: inspects, "
-            "releases and rejects held stock, and defines QC templates (Phase 4). Exports the "
-            "inventory lists (ADR-0027) — bulk import is dangerous and stays with the admin. "
-            "Takes and "
+            "releases and rejects held stock, and defines QC templates (Phase 4). Runs job "
+            "work end to end: drafts, approves, issues material to a vendor, receives it back and "
+            "closes the order once it reconciles. Exports the inventory lists (ADR-0027) — bulk "
+            "import is dangerous and stays with the admin. Takes and "
             "refunds orders' online payments and reads the payment reconciliation. Does not "
             "create or rename warehouses, or connect or change the organization's "
             "payment-provider account — those stay with the admin. Creates floors and edits a "
@@ -1043,6 +1095,13 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.manufacturing.mrp.read", "ORG"),
             ("operations.manufacturing.mrp.run", "ORG"),
             ("operations.manufacturing.mrp.requisition", "ORG"),
+            # Runs job work end to end (Phase 6): drafts, approves, issues to the vendor,
+            # receives back and closes.
+            ("operations.jobwork.order.read", "ORG"),
+            ("operations.jobwork.order.write", "ORG"),
+            ("operations.jobwork.order.issue", "ORG"),
+            ("operations.jobwork.order.receive", "ORG"),
+            ("operations.jobwork.order.approve", "ORG"),
         ),
     ),
     RoleTemplate(

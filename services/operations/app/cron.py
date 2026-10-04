@@ -1,4 +1,4 @@
-"""Two sweeps, run as their own process (`bin/cron`): the nightly stock reconciliation (ADR-0014
+"""Sweeps, run as their own process (`bin/cron`): the nightly stock reconciliation (ADR-0014
 §3) and the operational alert sweep (fulfilment plan §4; F12).
 
 The same discovery/work split as `approval`'s SLA sweep (ADR-0002): **discovery** runs on the
@@ -31,6 +31,7 @@ from app.alerts.services import sweep_organization
 from app.channels.sweep import ChannelSyncSweep
 from app.config import settings
 from app.inventory.reconcile import reconcile_organization
+from app.jobwork.sweep import JobWorkOverdueSweep
 from app.models import SCHEMA
 from app.movements.sweep import ReservationExpirySweep
 from app.mrp.sweep import MrpRunSweep
@@ -263,6 +264,11 @@ async def main() -> None:
         work_scope=work_scope,
         interval=cfg.mrp_sweep_interval_seconds,
     )
+    jobwork_sweep = JobWorkOverdueSweep(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=work_scope,
+        interval=cfg.jobwork_overdue_interval_seconds,
+    )
     # `run_supervised`, not independent `.run()` calls: any one loop returning (it never should —
     # `GuardedSweep.run()` runs forever short of cancellation) or raising ends the process the
     # same way one going down silently must not be allowed to, `bin/cron`'s own container restart
@@ -273,6 +279,7 @@ async def main() -> None:
         channel_sync=channel_sweep.run(),
         reservation_expiry=reservation_expiry.run(),
         mrp=mrp_sweep.run(),
+        jobwork_overdue=jobwork_sweep.run(),
     )
 
 

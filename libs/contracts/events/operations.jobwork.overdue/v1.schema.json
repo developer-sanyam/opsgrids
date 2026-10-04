@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.jobwork.overdue/v1",
+  "title": "operations.jobwork.overdue",
+  "description": "A job-work order is past its due date with material still at the vendor (Inventory plan Phase 6). Raised by the overdue sweep, **once per order** (`overdue_notified_at`), and meant for notification: it carries everything a message needs without a lookup. Emitted by a system actor, not a person.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "order_id",
+    "order_number",
+    "supplier_id",
+    "supplier_name",
+    "due_date",
+    "days_overdue",
+    "outstanding",
+    "status"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "order_id": { "type": "string", "format": "uuid" },
+    "order_number": { "type": "string", "minLength": 1 },
+    "supplier_id": { "type": "string", "format": "uuid" },
+    "supplier_name": { "type": "string" },
+    "process": { "type": "string" },
+    "due_date": { "type": "string", "format": "date" },
+    "days_overdue": { "type": "integer", "minimum": 1 },
+    "outstanding": {
+      "type": "string",
+      "pattern": "^\\d+(\\.\\d{1,3})?$",
+      "description": "Total still at the vendor across every material."
+    },
+    "status": { "enum": ["ISSUED", "PARTIALLY_RECEIVED"] }
+  }
+}

@@ -389,6 +389,51 @@
       "resource": "warehouse"
     },
     {
+      "action": "approve",
+      "default_scope": "ORG",
+      "description": "Approve a draft job-work order, and close one once its reconciliation balances",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "jobwork",
+      "resource": "order"
+    },
+    {
+      "action": "issue",
+      "default_scope": "ORG",
+      "description": "Send an approved order's materials to the vendor: move the stock, cut the delivery challan and request an e-way bill",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "jobwork",
+      "resource": "order"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See job-work orders, their materials, receipts, challans and reconciliation",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "jobwork",
+      "resource": "order"
+    },
+    {
+      "action": "receive",
+      "default_scope": "ORG",
+      "description": "Take material back from the vendor \u2014 good, rejected or declared short",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "jobwork",
+      "resource": "order"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Draft, edit and cancel (before issue) job-work orders",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "jobwork",
+      "resource": "order"
+    },
+    {
       "action": "publish",
       "default_scope": "ORG",
       "description": "Publish a draft BOM version (immutable from then on) or retire a published one",
@@ -938,6 +983,26 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.jobwork.order.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.issue",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.receive",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.manufacturing.bom.publish",
           "scope": "ORG"
         },
@@ -1109,7 +1174,7 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers lots and rolls, splits and merges rolls, moves stock between bins and statuses, and reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and posts goods receipts \u2014 partial, short and over-receipt within tolerance (Phase 2). Drafts, approves, dispatches and receives inter-warehouse transfers (Phase 3); does not set the approval thresholds \u2014 that stays with the admin. Runs quality: inspects, releases and rejects held stock, and defines QC templates (Phase 4). Exports the inventory lists (ADR-0027) \u2014 bulk import is dangerous and stays with the admin. Takes and refunds orders' online payments and reads the payment reconciliation. Does not create or rename warehouses, or connect or change the organization's payment-provider account \u2014 those stay with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
+      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers lots and rolls, splits and merges rolls, moves stock between bins and statuses, and reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and posts goods receipts \u2014 partial, short and over-receipt within tolerance (Phase 2). Drafts, approves, dispatches and receives inter-warehouse transfers (Phase 3); does not set the approval thresholds \u2014 that stays with the admin. Runs quality: inspects, releases and rejects held stock, and defines QC templates (Phase 4). Runs job work end to end: drafts, approves, issues material to a vendor, receives it back and closes the order once it reconciles. Exports the inventory lists (ADR-0027) \u2014 bulk import is dangerous and stays with the admin. Takes and refunds orders' online payments and reads the payment reconciliation. Does not create or rename warehouses, or connect or change the organization's payment-provider account \u2014 those stay with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
       "grants": [
         {
           "code": "operations.automation.alert.manage",
@@ -1253,6 +1318,26 @@
         },
         {
           "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.issue",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.receive",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.write",
           "scope": "ORG"
         },
         {

@@ -19,6 +19,10 @@ class Settings(ServiceSettings):
     #: delayed shipment (fulfilment plan §4; F12) — far more often than the nightly reconciliation,
     #: since these are conditions an operator should hear about within minutes.
     alert_interval_seconds: float = 900
+    #: How often the job-work overdue sweep (Inventory plan Phase 6, `app.jobwork.sweep`) looks for
+    #: orders past their due date with material still at the vendor. Each order is announced once
+    #: (`overdue_notified_at`), so this only bounds how late the announcement can be.
+    jobwork_overdue_interval_seconds: float = 3600
     #: Runs the reconcile sweep as a supervised background task inside the API process itself
     #: instead of `operations-cron`'s own container (the memory-headroom slice's fix round 2:
     #: a background process costs about as much as an API one — see memory-budget.json's own

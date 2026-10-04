@@ -1514,6 +1514,251 @@
         "title": "CategorySpend",
         "type": "object"
       },
+      "ChallanEwayIn": {
+        "additionalProperties": false,
+        "description": "`POST /challans/{id}:request-eway` \u2014 supply the transport facts and (re-)ask finance to\nconsider an e-way bill.",
+        "properties": {
+          "distance_km": {
+            "maximum": 5000.0,
+            "minimum": 1.0,
+            "title": "Distance Km",
+            "type": "integer"
+          },
+          "transporter_id": {
+            "anyOf": [
+              {
+                "maxLength": 30,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transporter Id"
+          },
+          "vehicle_no": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vehicle No"
+          }
+        },
+        "required": [
+          "distance_km"
+        ],
+        "title": "ChallanEwayIn",
+        "type": "object"
+      },
+      "ChallanLineOut": {
+        "properties": {
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "unit_value_minor": {
+            "title": "Unit Value Minor",
+            "type": "integer"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "value_minor": {
+            "title": "Value Minor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sku",
+          "uom",
+          "quantity",
+          "unit_value_minor",
+          "value_minor"
+        ],
+        "title": "ChallanLineOut",
+        "type": "object"
+      },
+      "ChallanOut": {
+        "properties": {
+          "challan_number": {
+            "title": "Challan Number",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "distance_km": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Km"
+          },
+          "eway_bill_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eway Bill No"
+          },
+          "eway_requested_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eway Requested At"
+          },
+          "eway_status": {
+            "enum": [
+              "NOT_REQUIRED",
+              "REQUESTED",
+              "GENERATED",
+              "FAILED"
+            ],
+            "title": "Eway Status",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "kind": {
+            "const": "DELIVERY",
+            "title": "Kind",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/ChallanLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "order_id": {
+            "title": "Order Id",
+            "type": "string"
+          },
+          "order_number": {
+            "title": "Order Number",
+            "type": "string"
+          },
+          "process": {
+            "title": "Process",
+            "type": "string"
+          },
+          "supplier_id": {
+            "title": "Supplier Id",
+            "type": "string"
+          },
+          "supplier_name": {
+            "title": "Supplier Name",
+            "type": "string"
+          },
+          "total_value_minor": {
+            "title": "Total Value Minor",
+            "type": "integer"
+          },
+          "transporter_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transporter Id"
+          },
+          "vehicle_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vehicle No"
+          }
+        },
+        "required": [
+          "id",
+          "order_id",
+          "order_number",
+          "challan_number",
+          "kind",
+          "issued_at",
+          "supplier_id",
+          "supplier_name",
+          "process",
+          "lines",
+          "total_value_minor",
+          "currency",
+          "vehicle_no",
+          "transporter_id",
+          "distance_km",
+          "eway_status",
+          "eway_bill_no",
+          "eway_requested_at"
+        ],
+        "title": "ChallanOut",
+        "type": "object"
+      },
       "ChannelConfigPatch": {
         "additionalProperties": false,
         "description": "`PATCH /operations/channels/{id}` \u2014 configuration only; the credential is rotated\nseparately (`ChannelReconnectIn`) so a plain rename can never accidentally touch it.",
@@ -6146,6 +6391,979 @@
         "title": "ItemVariantPatch",
         "type": "object"
       },
+      "JobWorkIssueIn": {
+        "additionalProperties": false,
+        "description": "`:issue` \u2014 the transport facts the delivery challan and a later e-way bill need.",
+        "properties": {
+          "distance_km": {
+            "anyOf": [
+              {
+                "maximum": 5000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distance Km"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "transporter_id": {
+            "anyOf": [
+              {
+                "maxLength": 30,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transporter Id"
+          },
+          "vehicle_no": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vehicle No"
+          }
+        },
+        "title": "JobWorkIssueIn",
+        "type": "object"
+      },
+      "JobWorkMaterialIn": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          }
+        },
+        "required": [
+          "item_id",
+          "quantity"
+        ],
+        "title": "JobWorkMaterialIn",
+        "type": "object"
+      },
+      "JobWorkMaterialOut": {
+        "properties": {
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "line_no": {
+            "title": "Line No",
+            "type": "integer"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "outstanding": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Outstanding",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "received": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Received",
+            "type": "string"
+          },
+          "rejected": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Rejected",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "sent": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Sent",
+            "type": "string"
+          },
+          "shortage": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Shortage",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "unit_value_minor": {
+            "title": "Unit Value Minor",
+            "type": "integer"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "line_no",
+          "item_id",
+          "sku",
+          "uom",
+          "lot_id",
+          "roll_id",
+          "location_id",
+          "quantity",
+          "sent",
+          "received",
+          "rejected",
+          "shortage",
+          "outstanding",
+          "unit_value_minor",
+          "currency"
+        ],
+        "title": "JobWorkMaterialOut",
+        "type": "object"
+      },
+      "JobWorkOrderDetailOut": {
+        "properties": {
+          "challans": {
+            "items": {
+              "$ref": "#/components/schemas/ChallanOut"
+            },
+            "title": "Challans",
+            "type": "array"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "days_overdue": {
+            "title": "Days Overdue",
+            "type": "integer"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_overdue": {
+            "title": "Is Overdue",
+            "type": "boolean"
+          },
+          "issued_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issued At"
+          },
+          "material_count": {
+            "title": "Material Count",
+            "type": "integer"
+          },
+          "materials": {
+            "items": {
+              "$ref": "#/components/schemas/JobWorkMaterialOut"
+            },
+            "title": "Materials",
+            "type": "array"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "process": {
+            "title": "Process",
+            "type": "string"
+          },
+          "qc_required": {
+            "title": "Qc Required",
+            "type": "boolean"
+          },
+          "receipts": {
+            "items": {
+              "$ref": "#/components/schemas/JobWorkReceiptOut"
+            },
+            "title": "Receipts",
+            "type": "array"
+          },
+          "receive_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Receive Location Id"
+          },
+          "reconciliation": {
+            "$ref": "#/components/schemas/ReconciliationOut"
+          },
+          "source_warehouse_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Warehouse Id"
+          },
+          "status": {
+            "enum": [
+              "DRAFT",
+              "APPROVED",
+              "ISSUED",
+              "PARTIALLY_RECEIVED",
+              "RECEIVED",
+              "CLOSED",
+              "CANCELLED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "supplier_id": {
+            "title": "Supplier Id",
+            "type": "string"
+          },
+          "supplier_name": {
+            "title": "Supplier Name",
+            "type": "string"
+          },
+          "total_outstanding": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Total Outstanding",
+            "type": "string"
+          },
+          "total_sent": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Total Sent",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "supplier_id",
+          "supplier_name",
+          "process",
+          "status",
+          "due_date",
+          "is_overdue",
+          "days_overdue",
+          "qc_required",
+          "notes",
+          "version",
+          "source_warehouse_id",
+          "receive_location_id",
+          "material_count",
+          "total_sent",
+          "total_outstanding",
+          "issued_at",
+          "closed_at",
+          "created_at",
+          "updated_at",
+          "materials",
+          "receipts",
+          "challans",
+          "reconciliation"
+        ],
+        "title": "JobWorkOrderDetailOut",
+        "type": "object"
+      },
+      "JobWorkOrderIn": {
+        "additionalProperties": false,
+        "description": "`POST /operations/jobwork/orders` \u2014 a draft order. Nothing moves until it is approved and\nissued.",
+        "properties": {
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "materials": {
+            "items": {
+              "$ref": "#/components/schemas/JobWorkMaterialIn"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Materials",
+            "type": "array"
+          },
+          "notes": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Notes",
+            "type": "string"
+          },
+          "process": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Process",
+            "type": "string"
+          },
+          "qc_required": {
+            "default": false,
+            "title": "Qc Required",
+            "type": "boolean"
+          },
+          "receive_location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Receive Location Id"
+          },
+          "source_warehouse_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Warehouse Id"
+          },
+          "supplier_id": {
+            "format": "uuid",
+            "title": "Supplier Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "supplier_id",
+          "materials"
+        ],
+        "title": "JobWorkOrderIn",
+        "type": "object"
+      },
+      "JobWorkOrderOut": {
+        "properties": {
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "days_overdue": {
+            "title": "Days Overdue",
+            "type": "integer"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_overdue": {
+            "title": "Is Overdue",
+            "type": "boolean"
+          },
+          "issued_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issued At"
+          },
+          "material_count": {
+            "title": "Material Count",
+            "type": "integer"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "process": {
+            "title": "Process",
+            "type": "string"
+          },
+          "qc_required": {
+            "title": "Qc Required",
+            "type": "boolean"
+          },
+          "receive_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Receive Location Id"
+          },
+          "source_warehouse_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Warehouse Id"
+          },
+          "status": {
+            "enum": [
+              "DRAFT",
+              "APPROVED",
+              "ISSUED",
+              "PARTIALLY_RECEIVED",
+              "RECEIVED",
+              "CLOSED",
+              "CANCELLED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "supplier_id": {
+            "title": "Supplier Id",
+            "type": "string"
+          },
+          "supplier_name": {
+            "title": "Supplier Name",
+            "type": "string"
+          },
+          "total_outstanding": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Total Outstanding",
+            "type": "string"
+          },
+          "total_sent": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Total Sent",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "supplier_id",
+          "supplier_name",
+          "process",
+          "status",
+          "due_date",
+          "is_overdue",
+          "days_overdue",
+          "qc_required",
+          "notes",
+          "version",
+          "source_warehouse_id",
+          "receive_location_id",
+          "material_count",
+          "total_sent",
+          "total_outstanding",
+          "issued_at",
+          "closed_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "JobWorkOrderOut",
+        "type": "object"
+      },
+      "JobWorkOrderPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH` \u2014 header fields of a `DRAFT` order. `expected_version` is the optimistic-concurrency\ncheck; a stale one is a 409.",
+        "properties": {
+          "clear_due_date": {
+            "default": false,
+            "title": "Clear Due Date",
+            "type": "boolean"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "expected_version": {
+            "minimum": 1.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "process": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Process"
+          },
+          "qc_required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qc Required"
+          },
+          "receive_location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Receive Location Id"
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "title": "JobWorkOrderPatch",
+        "type": "object"
+      },
+      "JobWorkReceiptLineIn": {
+        "additionalProperties": false,
+        "description": "One material's share of a receipt: how much came back good, how much came back unusable,\nand how much the vendor reports lost. At least one must be positive.",
+        "properties": {
+          "location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          },
+          "material_id": {
+            "format": "uuid",
+            "title": "Material Id",
+            "type": "string"
+          },
+          "received": {
+            "default": "0",
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Received",
+            "type": "string"
+          },
+          "rejected": {
+            "default": "0",
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Rejected",
+            "type": "string"
+          },
+          "shortage": {
+            "default": "0",
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Shortage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "material_id"
+        ],
+        "title": "JobWorkReceiptLineIn",
+        "type": "object"
+      },
+      "JobWorkReceiptOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "good_status": {
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD"
+            ],
+            "title": "Good Status",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "material_id": {
+            "title": "Material Id",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "qc_handoff": {
+            "title": "Qc Handoff",
+            "type": "boolean"
+          },
+          "receipt_no": {
+            "title": "Receipt No",
+            "type": "string"
+          },
+          "received": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Received",
+            "type": "string"
+          },
+          "received_on": {
+            "format": "date",
+            "title": "Received On",
+            "type": "string"
+          },
+          "rejected": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Rejected",
+            "type": "string"
+          },
+          "shortage": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Shortage",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "receipt_no",
+          "material_id",
+          "sku",
+          "received",
+          "rejected",
+          "shortage",
+          "location_id",
+          "good_status",
+          "qc_handoff",
+          "received_on",
+          "note",
+          "created_by",
+          "created_at"
+        ],
+        "title": "JobWorkReceiptOut",
+        "type": "object"
+      },
+      "JobWorkReceiveIn": {
+        "additionalProperties": false,
+        "properties": {
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/JobWorkReceiptLineIn"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Lines",
+            "type": "array"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "received_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received On"
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "title": "JobWorkReceiveIn",
+        "type": "object"
+      },
+      "JobWorkTransitionIn": {
+        "additionalProperties": false,
+        "description": "Body of `:approve`, `:cancel` and `:close` \u2014 all optional.",
+        "properties": {
+          "reason": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "title": "JobWorkTransitionIn",
+        "type": "object"
+      },
       "LayoutGeometryIn": {
         "additionalProperties": false,
         "description": "`PUT /layout-versions/{id}/geometry` \u2014 the whole \"save draft\" payload a 2D canvas editor\nposts. A **full replace**: every placement, walk node and walk edge this draft has is\ndropped and rebuilt from exactly what is given here, which is what lets a canvas save its\nentire current state in one call without diffing against what the server already had. Refused\n(409) on anything but a `draft` version (`app.warehouse.services.save_draft_geometry`) \u2014 a\npublished version is never edited in place.",
@@ -10264,6 +11482,42 @@
         "title": "Page[ItemCategoryOut]",
         "type": "object"
       },
+      "Page_JobWorkOrderOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/JobWorkOrderOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[JobWorkOrderOut]",
+        "type": "object"
+      },
       "Page_LayoutVersionOut_": {
         "properties": {
           "items": {
@@ -14269,6 +15523,219 @@
           "discrepancies"
         ],
         "title": "ReconcileOut",
+        "type": "object"
+      },
+      "ReconciliationDriftOut": {
+        "properties": {
+          "documents": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Documents",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "ledger": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Ledger",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "sku",
+          "documents",
+          "ledger"
+        ],
+        "title": "ReconciliationDriftOut",
+        "type": "object"
+      },
+      "ReconciliationLineOut": {
+        "properties": {
+          "material_id": {
+            "title": "Material Id",
+            "type": "string"
+          },
+          "outstanding": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Outstanding",
+            "type": "string"
+          },
+          "received": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Received",
+            "type": "string"
+          },
+          "rejected": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Rejected",
+            "type": "string"
+          },
+          "sent": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Sent",
+            "type": "string"
+          },
+          "shortage": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Shortage",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "material_id",
+          "sku",
+          "uom",
+          "sent",
+          "received",
+          "rejected",
+          "shortage",
+          "outstanding"
+        ],
+        "title": "ReconciliationLineOut",
+        "type": "object"
+      },
+      "ReconciliationOut": {
+        "description": "What was sent, what came back good, what came back rejected, what the vendor reports short,\nand what is still out \u2014 and whether the documents and the ledger agree.",
+        "properties": {
+          "balanced": {
+            "title": "Balanced",
+            "type": "boolean"
+          },
+          "documents_settled": {
+            "title": "Documents Settled",
+            "type": "boolean"
+          },
+          "drift": {
+            "items": {
+              "$ref": "#/components/schemas/ReconciliationDriftOut"
+            },
+            "title": "Drift",
+            "type": "array"
+          },
+          "issued": {
+            "title": "Issued",
+            "type": "boolean"
+          },
+          "ledger_consistent": {
+            "title": "Ledger Consistent",
+            "type": "boolean"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/ReconciliationLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "order_id": {
+            "title": "Order Id",
+            "type": "string"
+          },
+          "order_status": {
+            "enum": [
+              "DRAFT",
+              "APPROVED",
+              "ISSUED",
+              "PARTIALLY_RECEIVED",
+              "RECEIVED",
+              "CLOSED",
+              "CANCELLED"
+            ],
+            "title": "Order Status",
+            "type": "string"
+          },
+          "total_outstanding": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Total Outstanding",
+            "type": "string"
+          },
+          "total_received": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Total Received",
+            "type": "string"
+          },
+          "total_rejected": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Total Rejected",
+            "type": "string"
+          },
+          "total_sent": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Total Sent",
+            "type": "string"
+          },
+          "total_shortage": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^\\d+(\\.\\d{1,3})?$",
+            "title": "Total Shortage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "order_id",
+          "order_status",
+          "issued",
+          "lines",
+          "total_sent",
+          "total_received",
+          "total_rejected",
+          "total_shortage",
+          "total_outstanding",
+          "documents_settled",
+          "ledger_consistent",
+          "drift",
+          "balanced"
+        ],
+        "title": "ReconciliationOut",
         "type": "object"
       },
       "RejectIn": {
@@ -28443,6 +29910,790 @@
         "summary": "Update a variant",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/jobwork/challans/{challan_id}": {
+      "get": {
+        "operationId": "read_challan_api_v1_operations_jobwork_challans__challan_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "challan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Challan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChallanOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One delivery challan (the print view reads this)",
+        "tags": [
+          "operations-jobwork"
+        ]
+      }
+    },
+    "/api/v1/operations/jobwork/challans/{challan_id}:request-eway": {
+      "post": {
+        "operationId": "request_challan_eway_api_v1_operations_jobwork_challans__challan_id__request_eway_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "challan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Challan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChallanEwayIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChallanOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Give the transport facts and ask finance to consider an e-way bill for a challan",
+        "tags": [
+          "operations-jobwork"
+        ]
+      }
+    },
+    "/api/v1/operations/jobwork/orders": {
+      "get": {
+        "operationId": "list_orders_api_v1_operations_jobwork_orders_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "supplier_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Supplier Id"
+            }
+          },
+          {
+            "description": "Only orders overdue at the vendor",
+            "in": "query",
+            "name": "overdue",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Only orders overdue at the vendor",
+              "title": "Overdue",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 60,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_JobWorkOrderOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Job-work orders",
+        "tags": [
+          "operations-jobwork"
+        ]
+      },
+      "post": {
+        "operationId": "create_order_api_v1_operations_jobwork_orders_post",
+        "parameters": [
+          {
+            "description": "Required. Retrying with the same key replays the first result instead of acting twice; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required. Retrying with the same key replays the first result instead of acting twice; reusing it for a different request is a 409.",
+              "maxLength": 128,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobWorkOrderIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobWorkOrderDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Draft a job-work order \u2014 nothing moves until it is approved and issued",
+        "tags": [
+          "operations-jobwork"
+        ]
+      }
+    },
+    "/api/v1/operations/jobwork/orders/{order_id}": {
+      "get": {
+        "operationId": "read_order_api_v1_operations_jobwork_orders__order_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobWorkOrderDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One job-work order with its materials, receipts, challans and reconciliation",
+        "tags": [
+          "operations-jobwork"
+        ]
+      },
+      "patch": {
+        "operationId": "update_order_api_v1_operations_jobwork_orders__order_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobWorkOrderPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobWorkOrderDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit a draft order's header",
+        "tags": [
+          "operations-jobwork"
+        ]
+      }
+    },
+    "/api/v1/operations/jobwork/orders/{order_id}/reconciliation": {
+      "get": {
+        "operationId": "read_reconciliation_api_v1_operations_jobwork_orders__order_id__reconciliation_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconciliationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sent / received / rejected / shortage, and whether documents and ledger agree",
+        "tags": [
+          "operations-jobwork"
+        ]
+      }
+    },
+    "/api/v1/operations/jobwork/orders/{order_id}:approve": {
+      "post": {
+        "operationId": "approve_order_api_v1_operations_jobwork_orders__order_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/JobWorkTransitionIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobWorkOrderDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve a draft order (DRAFT -> APPROVED)",
+        "tags": [
+          "operations-jobwork"
+        ]
+      }
+    },
+    "/api/v1/operations/jobwork/orders/{order_id}:cancel": {
+      "post": {
+        "operationId": "cancel_order_api_v1_operations_jobwork_orders__order_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/JobWorkTransitionIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobWorkOrderDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel an order that has not been issued yet",
+        "tags": [
+          "operations-jobwork"
+        ]
+      }
+    },
+    "/api/v1/operations/jobwork/orders/{order_id}:close": {
+      "post": {
+        "operationId": "close_order_api_v1_operations_jobwork_orders__order_id__close_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/JobWorkTransitionIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobWorkOrderDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Close an order \u2014 refused unless the reconciliation balances",
+        "tags": [
+          "operations-jobwork"
+        ]
+      }
+    },
+    "/api/v1/operations/jobwork/orders/{order_id}:issue": {
+      "post": {
+        "operationId": "issue_order_api_v1_operations_jobwork_orders__order_id__issue_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required. Retrying with the same key replays the first result instead of acting twice; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required. Retrying with the same key replays the first result instead of acting twice; reusing it for a different request is a 409.",
+              "maxLength": 128,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/JobWorkIssueIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobWorkOrderDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send the materials to the vendor \u2014 moves stock to AT_JOB_WORKER and cuts the challan",
+        "tags": [
+          "operations-jobwork"
+        ]
+      }
+    },
+    "/api/v1/operations/jobwork/orders/{order_id}:receive": {
+      "post": {
+        "operationId": "receive_order_api_v1_operations_jobwork_orders__order_id__receive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required. Retrying with the same key replays the first result instead of acting twice; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required. Retrying with the same key replays the first result instead of acting twice; reusing it for a different request is a 409.",
+              "maxLength": 128,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobWorkReceiveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobWorkOrderDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Take material back from the vendor, in whole or in part",
+        "tags": [
+          "operations-jobwork"
         ]
       }
     },

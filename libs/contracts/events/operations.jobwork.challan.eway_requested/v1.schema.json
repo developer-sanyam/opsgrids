@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.jobwork.challan.eway_requested/v1",
+  "title": "operations.jobwork.challan.eway_requested",
+  "description": "Operations asks finance to consider raising an e-way bill for one job-work delivery challan (Inventory plan Phase 6). Fire-and-forget, the same hook operations.dispatch.shipment.eway_requested set for carrier handovers: operations never calls finance's e-way machinery directly and never re-implements e-way validation. Emitted at issue when the consignment value is over operations' coarse threshold mirror (INR 50,000), and again whenever someone supplies transport facts for a challan (`:request-eway`). Money is integer minor units of `currency`.",
+  "$comment": "Ahead of its consumer. services/finance generates e-way bills from an *invoice* (GenerateEwayIn.invoice_id); a delivery challan is not one, so a challan-keyed generation path in finance is a documented follow-up. This schema is the contract that path should be built against, not a description of a consumer that exists today.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "challan_id",
+    "challan_number",
+    "order_id",
+    "order_number",
+    "supplier_id",
+    "consignment_value_minor",
+    "currency",
+    "supply_reason",
+    "dispatched_at"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "challan_id": { "type": "string", "format": "uuid" },
+    "challan_number": { "type": "string", "minLength": 1, "maxLength": 16 },
+    "order_id": { "type": "string", "format": "uuid" },
+    "order_number": { "type": "string", "minLength": 1 },
+    "supplier_id": { "type": "string", "format": "uuid" },
+    "consignment_value_minor": { "type": "integer", "minimum": 0 },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "supply_reason": {
+      "const": "job_work",
+      "description": "The e-way 'supply type' reason: goods sent for job work (CGST Rule 55)."
+    },
+    "distance_km": { "type": ["integer", "null"], "minimum": 0 },
+    "vehicle_no": { "type": ["string", "null"] },
+    "transporter_id": { "type": ["string", "null"] },
+    "dispatched_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the challan was issued — the movement an e-way bill, once raised, licenses."
+    }
+  }
+}
