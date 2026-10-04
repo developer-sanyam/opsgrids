@@ -271,8 +271,9 @@ OPERATIONS = PermissionCatalogue(
         # merge it — the operations that change what a roll *is*). `stock.read` is the read side
         # for stock by bucket, the org-wide ledger, lots, rolls and their traces; it is distinct
         # from `item.read`, which stays the item master's. `stock.transfer` moves stock without
-        # changing how much there is: bin to bin inside a warehouse, and between statuses
-        # (AVAILABLE -> QUALITY_HOLD). Opening stock uses `stock.adjust` — it creates quantity —
+        # changing how much there is: bin to bin inside a warehouse, and into a hold status
+        # (AVAILABLE -> QUALITY_HOLD); taking stock back OUT of a hold needs `stock.adjust` too
+        # (ADR-0014 §12). Opening stock uses `stock.adjust` — it creates quantity —
         # and an `INSUFFICIENT_STOCK` refusal on any of them is the kernel's, not a permission's.
         PermissionSpec(
             "inventory",
@@ -302,7 +303,9 @@ OPERATIONS = PermissionCatalogue(
             "inventory",
             "stock",
             "transfer",
-            "Move stock between bins in a warehouse, and between stock statuses",
+            "Move stock between bins in a warehouse, and into a hold status (quality hold, "
+            "quarantine, damaged, rejected, blocked); releasing stock out of a hold also needs "
+            "stock.adjust",
             "ORG",
             "ORG",
         ),

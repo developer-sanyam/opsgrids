@@ -394,8 +394,42 @@ class TestStatusChange:
     async def test_the_hold_can_be_released_again(self, client, session, org_id, world) -> None:
         await post(client, org_id, STOCK_TRANSFER, STATUS, self.body(world, "20"))
         back = self.body(world, "20", from_status="QUALITY_HOLD", to_status="AVAILABLE")
-        assert (await post(client, org_id, STOCK_TRANSFER, STATUS, back)).status_code == 201
+        with as_principal(principal_for(org_id, [STOCK_TRANSFER, STOCK_ADJUST])):
+            released = await client.post(API + STATUS, json=back)
+        assert released.status_code == 201
         assert (await bucket_qty(session, world, lot=world.lot, roll=world.roll))[0] == q("82.5")
+        await assert_reconciled(session, org_id)
+
+    @pytest.mark.parametrize(
+        "hold", ["REJECTED", "DAMAGED", "QUARANTINE", "QUALITY_HOLD", "BLOCKED"]
+    )
+    @pytest.mark.parametrize("usable", ["AVAILABLE", "WIP"])
+    async def test_a_worker_cannot_release_stock_out_of_a_hold(
+        self, client, session, org_id, world, hold, usable
+    ) -> None:
+        """`stock.transfer` alone moves stock INTO a hold; out of one it also needs `stock.adjust`
+        (ADR-0014 §12) — or a worker could launder rejected stock back into sellable stock."""
+        into = self.body(world, "20", to_status=hold)
+        assert (await post(client, org_id, STOCK_TRANSFER, STATUS, into)).status_code == 201
+        out = self.body(world, "20", from_status=hold, to_status=usable)
+        refused = await post(client, org_id, STOCK_TRANSFER, STATUS, out)
+        assert refused.status_code == 403
+        assert "stock.adjust" in refused.text
+        held = await bucket_qty(session, world, status=hold, lot=world.lot, roll=world.roll)
+        assert held[0] == q("20")
+        with as_principal(principal_for(org_id, [STOCK_TRANSFER, STOCK_ADJUST])):
+            allowed = await client.post(API + STATUS, json=out)
+        assert allowed.status_code == 201
+        after = await bucket_qty(session, world, status=hold, lot=world.lot, roll=world.roll)
+        assert after[0] == 0
+        await assert_reconciled(session, org_id)
+
+    async def test_moving_between_holds_needs_only_the_transfer_permission(
+        self, client, session, org_id, world
+    ) -> None:
+        await post(client, org_id, STOCK_TRANSFER, STATUS, self.body(world, "20"))
+        across = self.body(world, "20", from_status="QUALITY_HOLD", to_status="REJECTED")
+        assert (await post(client, org_id, STOCK_TRANSFER, STATUS, across)).status_code == 201
         await assert_reconciled(session, org_id)
 
     async def test_stock_out_of_a_reserved_bucket_is_refused_with_the_reservation(

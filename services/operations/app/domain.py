@@ -1051,6 +1051,20 @@ def can_transition_roll(current: str, new: str) -> bool:
     return new in ROLL_TRANSITIONS.get(current, frozenset())
 
 
+#: Statuses stock is parked in because it must not be sold or used. Moving stock *out* of one of
+#: them into a usable status (`AVAILABLE`, `WIP`) is a release: it creates sellable stock from
+#: stock somebody decided to withhold, so it needs more than the right to move stock (ADR-0014 §12).
+HOLD_STATUSES: frozenset[str] = frozenset(
+    {"QUALITY_HOLD", "QUARANTINE", "DAMAGED", "REJECTED", "BLOCKED"}
+)
+USABLE_STATUSES: frozenset[str] = frozenset({"AVAILABLE", "WIP"})
+
+
+def is_hold_release(from_status: str, to_status: str) -> bool:
+    """Whether a status change takes stock out of a hold and into a usable status."""
+    return from_status in HOLD_STATUSES and to_status in USABLE_STATUSES
+
+
 #: A lot's attribute bag is flat and exact: text, whole numbers, booleans. No floats (the house
 #: rule for anything later summed or compared), no nesting (a bag, not a document).
 MAX_LOT_ATTRIBUTES = 30

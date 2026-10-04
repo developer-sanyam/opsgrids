@@ -292,7 +292,7 @@
     {
       "action": "transfer",
       "default_scope": "ORG",
-      "description": "Move stock between bins in a warehouse, and between stock statuses",
+      "description": "Move stock between bins in a warehouse, and into a hold status (quality hold, quarantine, damaged, rejected, blocked); releasing stock out of a hold also needs stock.adjust",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "inventory",

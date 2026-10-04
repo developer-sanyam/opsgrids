@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
+from app import domain
 from app.inventory import ledger
 from app.inventory import selectors as inv_selectors
 from app.inventory.ledger import MoveLine, PostedMove
@@ -38,13 +39,15 @@ from app.inventory.tracking_schemas import (
 )
 from app.models import AuditLog, InventoryItem, OutboxEvent, RollEvent
 from platform_core.audit import record_audit
-from platform_core.auth import ScopeContext
-from platform_core.errors import NotFoundProblem, ValidationProblem
+from platform_core.auth import Scope, ScopeContext
+from platform_core.errors import ForbiddenProblem, NotFoundProblem, ValidationProblem
 from platform_core.events import publish_event
 
 EVT_OPENING_POSTED = "operations.inventory.stock.opening_posted"
 EVT_STOCK_TRANSFERRED = "operations.inventory.stock.transferred"
 EVT_STOCK_STATUS_CHANGED = "operations.inventory.stock.status_changed"
+#: Needed in addition to `stock.transfer` to take stock out of a hold status.
+RELEASE_PERMISSION = "operations.inventory.stock.adjust"
 
 
 def actor(ctx: ScopeContext) -> dict[str, Any]:
@@ -384,7 +387,19 @@ async def change_stock_status(
     """Move stock between statuses where it sits (AVAILABLE -> QUALITY_HOLD, a hold released, a
     roll written off as DAMAGED): a paired move, so the physical total never changes and history
     keeps the state change (ADR-0014 §4). Taking reserved stock out of AVAILABLE is refused like
-    any other outbound line."""
+    any other outbound line.
+
+    **Direction gate (ADR-0014 §12).** `stock.transfer` may only move stock *into* a hold. Taking
+    it *out* of one (REJECTED, DAMAGED, QUARANTINE, QUALITY_HOLD, BLOCKED) into AVAILABLE or WIP
+    also needs `stock.adjust` at ORG scope — otherwise a floor worker could launder rejected
+    stock back into sellable stock. Checked before anything is read or locked."""
+    if domain.is_hold_release(payload.from_status, payload.to_status):
+        adjust = ctx.principal.scope_for(RELEASE_PERMISSION)
+        if adjust is None or adjust.rank < Scope.ORG.rank:
+            raise ForbiddenProblem(
+                f"Releasing stock from {payload.from_status} to {payload.to_status} needs "
+                f"{RELEASE_PERMISSION} as well as the right to transfer stock"
+            )
     items = await load_items(session, ctx.organization_id, [payload.inventory_item_id])
     item = items[payload.inventory_item_id]
     milli = parse_positive(payload.quantity, item.uom, "quantity")
