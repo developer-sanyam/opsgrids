@@ -39,17 +39,25 @@ CATEGORY_LABELS: dict[str, str] = {
     "services": "Services",
 }
 
-PO_STATUS_ORDER: tuple[str, ...] = ("draft", "approved", "received", "closed", "cancelled")
+PO_STATUS_ORDER: tuple[str, ...] = (
+    "draft",
+    "approved",
+    "partially_received",
+    "received",
+    "closed",
+    "cancelled",
+)
 PO_STATUS_LABELS: dict[str, str] = {
     "draft": "Draft",
     "approved": "Approved",
+    "partially_received": "Partially received",
     "received": "Received",
     "closed": "Closed",
     "cancelled": "Cancelled",
 }
 
 #: PO statuses that count as "still in flight".
-OPEN_STATUSES: frozenset[str] = frozenset({"draft", "approved"})
+OPEN_STATUSES: frozenset[str] = frozenset({"draft", "approved", "partially_received"})
 
 #: The lifecycle: draft -> approved -> received -> closed, with a `cancelled` terminal state
 #: reachable from draft or approved (an approved PO that will never arrive must not stay "open"
@@ -60,7 +68,8 @@ OPEN_STATUSES: frozenset[str] = frozenset({"draft", "approved"})
 #: and spend would commit with no second person ever having signed off.
 PO_TRANSITIONS: dict[str, frozenset[str]] = {
     "draft": frozenset({"approved", "cancelled"}),
-    "approved": frozenset({"received", "cancelled"}),
+    "approved": frozenset({"partially_received", "received", "cancelled"}),
+    "partially_received": frozenset({"received"}),
     "received": frozenset({"closed"}),
     "closed": frozenset(),
     "cancelled": frozenset(),

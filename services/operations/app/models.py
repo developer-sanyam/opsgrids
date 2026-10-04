@@ -247,8 +247,18 @@ class PurchaseOrderLine(Base, TenantBase):
     #: Line total = quantity * unit_price_minor. Stored so the lines foot to the PO total.
     amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     received_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: The exact cumulative quantity received against this line, in milli-units of the line's
+    #: **stock** UOM (the item's own unit — a receipt entered in boxes is converted first, see
+    #: `app.receiving.domain.to_stock_milli`). `received_qty` above is the whole-unit
+    #: compatibility view (`received_milli // 1000`); this is the figure partial, short and
+    #: over-receipt are decided on, always under the PO row's lock (inventory Phase 2).
+    received_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    #: The buyer closed the line short: nothing more is expected, and it no longer holds the PO
+    #: open. A closed line takes no further receipt.
+    short_closed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     __table_args__ = (
+        CheckConstraint("received_milli >= 0", name="received_milli_non_negative"),
         Index(
             "ix_purchase_order_lines_org_po",
             "organization_id",
@@ -530,6 +540,13 @@ class InventoryItem(Base, TenantBase):
     #: deleted item cannot. Plain reference data today — nothing yet refuses a write because an
     #: item is inactive; that belongs to whichever later phase adds the transaction it should gate.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    #: How far above the ordered quantity a purchase-order line of this item may be received, in
+    #: basis points of the ordered quantity (500 = 5 %). 0 (the default) means exactly the
+    #: ordered quantity, never more. Integer basis points, not a float percentage, so the limit
+    #: is exact integer arithmetic (`app.receiving.domain.tolerance_limit_milli`).
+    receipt_tolerance_bp: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
 
     if TYPE_CHECKING:
         #: Physical stock in milli-units — every bucket except the off-site ones — and the open
@@ -563,6 +580,9 @@ class InventoryItem(Base, TenantBase):
         CheckConstraint(
             "selling_price_minor IS NULL OR selling_price_minor >= 0",
             name="selling_price_non_negative",
+        ),
+        CheckConstraint(
+            "receipt_tolerance_bp BETWEEN 0 AND 10000", name="receipt_tolerance_bp_range"
         ),
     )
 
@@ -3022,6 +3042,217 @@ class ChannelSyncLog(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
             "ix_channel_sync_logs_org_channel_at", "organization_id", "channel_id", "attempted_at"
         ),
         Index("ix_channel_sync_logs_org_channel_status", "organization_id", "channel_id", "status"),
+    )
+
+
+# ------------------------------------------------------------------ receiving (inventory Phase 2)
+
+#: The requisition state machine's vocabulary; `app.receiving.domain.REQUISITION_TRANSITIONS` is
+#: the map. DRAFT -> SUBMITTED -> APPROVED -> CONVERTED is the happy path.
+REQUISITION_STATUSES = ("DRAFT", "SUBMITTED", "APPROVED", "REJECTED", "CONVERTED", "CANCELLED")
+_REQ_STATUS_SQL = ", ".join(f"'{s}'" for s in REQUISITION_STATUSES)
+#: How one goods-receipt line stood against its purchase-order line when it was posted.
+RECEIPT_OUTCOMES = ("PARTIAL", "EXACT", "SHORT", "OVER")
+_RECEIPT_OUTCOME_SQL = ", ".join(f"'{s}'" for s in RECEIPT_OUTCOMES)
+
+
+class PurchaseRequisition(Base, TenantBase):
+    """An internal request to buy (inventory Phase 2): lines of items and quantities, approved by
+    someone with `requisition.approve`, then converted into a draft purchase order.
+    `requested_by_id` is the directory id used for OWN scope (never a foreign key).
+    `converted_po_id` is a real in-schema foreign key — set once, on conversion."""
+
+    __tablename__ = "purchase_requisitions"
+
+    number: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="DRAFT")
+    requested_by_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    requested_by: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    warehouse_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.warehouses.id", ondelete="RESTRICT")
+    )
+    needed_by: Mapped[date | None] = mapped_column(Date)
+    reason: Mapped[str | None] = mapped_column(Text)
+    #: The approver's / rejecter's / canceller's note.
+    decision_note: Mapped[str | None] = mapped_column(Text)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_by: Mapped[str | None] = mapped_column(String(64))
+    converted_po_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.purchase_orders.id", ondelete="RESTRICT")
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"status IN ({_REQ_STATUS_SQL})", name="status_known"),
+        CheckConstraint(
+            "(status = 'CONVERTED') = (converted_po_id IS NOT NULL)", name="converted_matches_po"
+        ),
+        UniqueConstraint("organization_id", "number", name="uq_purchase_requisitions_org_number"),
+        Index("ix_purchase_requisitions_org_status", "organization_id", "status"),
+        Index("ix_purchase_requisitions_org_requester", "organization_id", "requested_by_id"),
+        Index(
+            "ix_purchase_requisitions_org_created",
+            "organization_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+    )
+
+
+class PurchaseRequisitionLine(Base, TenantBase):
+    """One requested item. `quantity_milli` is in the item's own stock UOM."""
+
+    __tablename__ = "purchase_requisition_lines"
+
+    requisition_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.purchase_requisitions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    suggested_supplier_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.suppliers.id", ondelete="RESTRICT")
+    )
+    #: Per stock unit, integer minor units — an estimate the buyer may overwrite on conversion.
+    est_unit_price_minor: Mapped[int | None] = mapped_column(BigInteger)
+    note: Mapped[str | None] = mapped_column(String(300))
+
+    __table_args__ = (
+        CheckConstraint("quantity_milli > 0", name="quantity_positive"),
+        CheckConstraint(
+            "est_unit_price_minor IS NULL OR est_unit_price_minor >= 0", name="price_non_negative"
+        ),
+        Index(
+            "ix_purchase_requisition_lines_org_req", "organization_id", "requisition_id", "line_no"
+        ),
+    )
+
+
+class GoodsReceipt(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One posted delivery against a purchase order (inventory Phase 2): immutable once written
+    (`UPDATE`/`DELETE` revoked) — a mistake is corrected by a later document, never an edit. The
+    stock it put on the books is the `inventory_moves` row with `reference_type='goods_receipt'`
+    and `reference_id=<this id>`. `idempotency_key` + `request_hash` make a retried POST a replay
+    (`uq_goods_receipts_org_key`)."""
+
+    __tablename__ = "goods_receipts"
+
+    number: Mapped[str] = mapped_column(String(40), nullable=False)
+    purchase_order_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.purchase_orders.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    supplier_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.suppliers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    received_on: Mapped[date] = mapped_column(Date, nullable=False)
+    #: The supplier's delivery challan / invoice number.
+    delivery_note: Mapped[str | None] = mapped_column(String(80))
+    note: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="POSTED")
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint("status IN ('POSTED')", name="status_known"),
+        CheckConstraint(
+            "(idempotency_key IS NULL) = (request_hash IS NULL)", name="key_matches_hash"
+        ),
+        UniqueConstraint("organization_id", "number", name="uq_goods_receipts_org_number"),
+        Index(
+            "uq_goods_receipts_org_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index("ix_goods_receipts_org_po", "organization_id", "purchase_order_id"),
+        Index("ix_goods_receipts_org_supplier", "organization_id", "supplier_id"),
+        Index(
+            "ix_goods_receipts_org_created",
+            "organization_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+    )
+
+
+class GoodsReceiptLine(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One line of a receipt: what was entered (`entered_milli` of `entered_uom`), what it was in
+    the item's stock UOM (`received_milli`), and the figures the tolerance decision was made on —
+    ordered, previously received, cumulative after, the item's tolerance then — snapshotted, so
+    the audit of an over- or short-receipt never depends on what the item or PO says later.
+    `inventory_item_id`/`location_id` are NULL for a PO line whose SKU is no stocked item (a
+    service line): accounted, but no stock posted. `roll_ids` lists the rolls this line created."""
+
+    __tablename__ = "goods_receipt_lines"
+
+    goods_receipt_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.goods_receipts.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    purchase_order_line_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.purchase_order_lines.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    inventory_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.inventory_items.id", ondelete="RESTRICT")
+    )
+    location_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
+    )
+    stock_status: Mapped[str | None] = mapped_column(String(20))
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    supplier_lot_no: Mapped[str | None] = mapped_column(String(60))
+    roll_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    entered_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    entered_uom: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    received_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ordered_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    prior_received_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    cumulative_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tolerance_bp: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    close_short: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    outcome: Mapped[str] = mapped_column(String(8), nullable=False)
+    unit_cost_minor: Mapped[int | None] = mapped_column(BigInteger)
+    unit_cost_currency: Mapped[str | None] = mapped_column(String(3))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"outcome IN ({_RECEIPT_OUTCOME_SQL})", name="outcome_known"),
+        CheckConstraint("received_milli >= 0", name="received_non_negative"),
+        CheckConstraint("entered_milli >= 0", name="entered_non_negative"),
+        CheckConstraint("tolerance_bp BETWEEN 0 AND 10000", name="tolerance_range"),
+        ForeignKeyConstraint(
+            ["organization_id", "lot_id"],
+            ["operations.lots.organization_id", "operations.lots.id"],
+            name="fk_goods_receipt_lines_org_lot",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_goods_receipt_lines_org_receipt", "organization_id", "goods_receipt_id", "line_no"
+        ),
+        Index("ix_goods_receipt_lines_org_po_line", "organization_id", "purchase_order_line_id"),
     )
 
 
