@@ -10,9 +10,8 @@ class names the finding it pins; every test here failed before its fix.
 
 from __future__ import annotations
 
-from itertools import pairwise
-
 import uuid
+from itertools import pairwise
 
 import pytest
 from sqlalchemy import select

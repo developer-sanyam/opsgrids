@@ -758,8 +758,8 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "stock between bins, puts stock on hold (a status change *into* quality hold, "
             "quarantine, damaged, rejected or blocked) but cannot release it back to "
             "available — that needs stock adjustment — and reads stock by location, lot and "
-            "roll; does not register, split or merge lots or rolls. Does not offer, reassign or override a "
-            "task either."
+            "roll; does not register, split or merge lots or rolls. Does not offer, reassign "
+            "or override a task either."
         ),
         grants=OPERATIONS.pick(
             ("operations.fulfilment.task.read", "ORG"),

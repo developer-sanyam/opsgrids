@@ -119,7 +119,7 @@ async def _require_one_bucket(
                 Location.id.in_({b.location_id for b in elsewhere}),
             )
         )
-        codes: dict[uuid.UUID, str] = {loc_id: code for loc_id, code in code_rows}
+        codes: dict[uuid.UUID, str] = dict(code_rows.tuples().all())
         where = ", ".join(
             f"{format_qty(b.quantity_milli)} at {codes.get(b.location_id, b.location_id)} "
             f"in {b.status}"
