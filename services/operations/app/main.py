@@ -14,6 +14,8 @@ from app.inventory.bulk_api import router as bulk_router
 from app.manufacturing.api import router as manufacturing_router
 from app.movements.api import router as movements_router
 from app.movements.sweep import ReservationExpirySweep
+from app.mrp.api import router as mrp_router
+from app.mrp.sweep import MrpRunSweep
 from app.quality.api import router as quality_router
 from app.receiving.api import router as receiving_router
 from platform_core.app import create_app
@@ -200,6 +202,40 @@ async def _stop_reservation_expiry_sweep(app: FastAPI) -> None:
         await engine.dispose()
 
 
+async def _start_mrp_sweep(app: FastAPI) -> None:
+    """The MRP worker (inventory plan Phase 7): executes the runs a large organization queued.
+    Folded into this process on the same `Settings.run_sweeps_in_api` flag and in the same shape
+    as `_start_channel_sync_sweep` — its own bulkhead engine, a failed outbox-role precondition
+    skips only this sweep, visible on `/metrics` as `operations.mrp`."""
+    app.state.mrp_sweep_task = None
+    app.state.mrp_sweep_engine = None
+    cfg = settings()
+    if not cfg.run_sweeps_in_api:
+        return
+    try:
+        init_outbox_engine(cfg)
+        await assert_outbox_role(get_outbox_engine(), environment=cfg.environment)
+    except Exception:
+        log.exception("operations.mrp.not_started", reason="outbox role precondition failed")
+        register_sweep_health("operations.mrp").record_failure()
+        return
+    engine = create_bulkhead_engine(cfg, name="mrp-sweep")
+    app.state.mrp_sweep_engine = engine
+    sweep = MrpRunSweep(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=bulkhead_scope(engine),
+        interval=cfg.mrp_sweep_interval_seconds,
+    )
+    app.state.mrp_sweep_task = start_background_sweep(sweep.run(), name="operations.mrp")
+
+
+async def _stop_mrp_sweep(app: FastAPI) -> None:
+    await stop_background_sweep(getattr(app.state, "mrp_sweep_task", None))
+    engine = getattr(app.state, "mrp_sweep_engine", None)
+    if engine is not None:
+        await engine.dispose()
+
+
 async def _start_background_worker(app: FastAPI) -> None:
     """Starts this service's two event consumers (`app/consumers.py` — the fulfilment offer-
     expiry sweep and the order-cancellation cascade, ADR-0025 §3/§1), exactly what `bin/worker`
@@ -252,6 +288,7 @@ async def _startup(app: FastAPI) -> None:
     await _start_alert_sweep(app)
     await _start_channel_sync_sweep(app)
     await _start_reservation_expiry_sweep(app)
+    await _start_mrp_sweep(app)
     await _start_background_worker(app)
 
 
@@ -259,6 +296,7 @@ async def _shutdown(app: FastAPI) -> None:
     await _stop_background_worker(app)
     await _stop_reservation_expiry_sweep(app)
     await _stop_alert_sweep(app)
+    await _stop_mrp_sweep(app)
     await _stop_channel_sync_sweep(app)
     await _stop_reconcile_sweep(app)
 
@@ -277,6 +315,7 @@ app = create_app(
         router,
         quality_router,
         manufacturing_router,
+        mrp_router,
     ],
     on_startup=_startup,
     on_shutdown=_shutdown,

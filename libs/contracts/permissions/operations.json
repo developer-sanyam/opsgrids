@@ -416,6 +416,33 @@
       "resource": "bom"
     },
     {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See MRP runs, the demand they planned from and their shortage tables",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "mrp"
+    },
+    {
+      "action": "requisition",
+      "default_scope": "ORG",
+      "description": "Request purchase requisitions for the purchased-item shortages of an MRP run",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "mrp"
+    },
+    {
+      "action": "run",
+      "default_scope": "ORG",
+      "description": "Start an MRP run over open orders, open production and manual demand",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "mrp"
+    },
+    {
       "action": "approve",
       "default_scope": "ORG",
       "description": "Approve a production order, committing it to stock reservation and issue",
@@ -923,6 +950,18 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.manufacturing.mrp.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.requisition",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.run",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.manufacturing.production_order.approve",
           "scope": "ORG"
         },
@@ -1229,6 +1268,18 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.manufacturing.mrp.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.requisition",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.run",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.manufacturing.production_order.approve",
           "scope": "ORG"
         },
@@ -1368,7 +1419,7 @@
     {
       "code": "PRODUCTION_PLANNER",
       "cross_product": false,
-      "description": "Plans production: maintains BOMs (drafts, components, substitutes) and wastage thresholds, plans production orders, and runs them \u2014 reserves and issues material to WIP, records output and wastage, returns what is unused and completes the order. Reads items, warehouses and locations. Does not publish a BOM version or approve an order \u2014 those two commit the business and stay with the manager and admin.",
+      "description": "Plans production: maintains BOMs (drafts, components, substitutes) and wastage thresholds, plans production orders, and runs them \u2014 reserves and issues material to WIP, records output and wastage, returns what is unused and completes the order. Runs MRP and requests purchase requisitions for its shortages. Reads items, warehouses and locations. Does not publish a BOM version or approve an order \u2014 those two commit the business and stay with the manager and admin.",
       "grants": [
         {
           "code": "operations.inventory.item.read",
@@ -1388,6 +1439,18 @@
         },
         {
           "code": "operations.manufacturing.bom.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.requisition",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.run",
           "scope": "ORG"
         },
         {

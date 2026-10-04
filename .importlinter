@@ -108,6 +108,33 @@ forbidden_modules =
     app.counting
     app.channels
 
+[importlinter:contract:mrp-layers]
+name = operations MRP package: the same anatomy inside the package
+type = layers
+layers =
+    (app.mrp.sweep) | (app.mrp.api)
+    (app.mrp.services)
+    (app.mrp.selectors)
+    (app.mrp.schemas)
+    (app.mrp.domain)
+    (app.mrp.models)
+
+# MRP reads orders, balances, POs and production orders through their *tables* (`app.models`,
+# `app.manufacturing.models`) and plans with manufacturing's pure arithmetic; it writes only its
+# own tables and never moves stock, so it needs neither the stock kernel nor any workflow module.
+[importlinter:contract:mrp-boundary]
+name = MRP must not import the ledger, fulfilment, dispatch, orders, counting or channels
+type = forbidden
+source_modules =
+    app.mrp
+forbidden_modules =
+    app.inventory.ledger
+    app.fulfilment
+    app.dispatch
+    app.orders
+    app.counting
+    app.channels
+
 [importlinter:contract:service-layers]
 name = the service anatomy, enforced: nothing imports upward, no cycles
 type = layers

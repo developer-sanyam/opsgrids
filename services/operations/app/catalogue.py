@@ -893,6 +893,35 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # MRP (inventory plan Phase 7). A plan is a shared operational document, so ORG-only like
+        # the rest of manufacturing. None is dangerous: a run only reads stock and writes its own
+        # tables, and a requisition *request* commits nobody to buy anything (the buyer still
+        # approves the requisition it becomes) — but requesting is its own permission because it
+        # is a purchasing act a planner may be asked not to do.
+        PermissionSpec(
+            "manufacturing",
+            "mrp",
+            "read",
+            "See MRP runs, the demand they planned from and their shortage tables",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "mrp",
+            "run",
+            "Start an MRP run over open orders, open production and manual demand",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "mrp",
+            "requisition",
+            "Request purchase requisitions for the purchased-item shortages of an MRP run",
+            "ORG",
+            "ORG",
+        ),
     ],
 )
 
@@ -1011,6 +1040,9 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.manufacturing.production_order.approve", "ORG"),
             ("operations.manufacturing.production_order.issue", "ORG"),
             ("operations.manufacturing.production_order.complete", "ORG"),
+            ("operations.manufacturing.mrp.read", "ORG"),
+            ("operations.manufacturing.mrp.run", "ORG"),
+            ("operations.manufacturing.mrp.requisition", "ORG"),
         ),
     ),
     RoleTemplate(
@@ -1021,6 +1053,7 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "Plans production: maintains BOMs (drafts, components, substitutes) and wastage "
             "thresholds, plans production orders, and runs them — reserves and issues material "
             "to WIP, records output and wastage, returns what is unused and completes the order. "
+            "Runs MRP and requests purchase requisitions for its shortages. "
             "Reads items, warehouses and locations. Does not publish a BOM version or approve an "
             "order — those two commit the business and stay with the manager and admin."
         ),
@@ -1034,6 +1067,9 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.manufacturing.production_order.write", "ORG"),
             ("operations.manufacturing.production_order.issue", "ORG"),
             ("operations.manufacturing.production_order.complete", "ORG"),
+            ("operations.manufacturing.mrp.read", "ORG"),
+            ("operations.manufacturing.mrp.run", "ORG"),
+            ("operations.manufacturing.mrp.requisition", "ORG"),
         ),
     ),
     RoleTemplate(

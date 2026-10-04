@@ -30,6 +30,11 @@ class Settings(ServiceSettings):
     #: comment — but pointless). The edge runs exactly one `operations` API replica, so this
     #: flag being on there is never a double-run either.
     run_sweeps_in_api: bool = False
+    #: An MRP run over more open demand lines than this is queued for the worker sweep
+    #: (`app.mrp.sweep`) instead of running inside the request (inventory plan Phase 7).
+    mrp_sync_max_demands: int = 200
+    #: How often the MRP worker sweep looks for queued runs.
+    mrp_sweep_interval_seconds: float = 30
     #: Runs this service's event consumers (`app/consumers.py` — the fulfilment offer-expiry
     #: sweep and the order-cancellation cascade, ADR-0025 §3/§1) as a supervised background task
     #: inside the API process, the same worker-folding shape eleven other services already use

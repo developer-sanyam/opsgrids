@@ -3121,6 +3121,39 @@
         "title": "CursorPage[TransferSummaryOut]",
         "type": "object"
       },
+      "DemandSourcesOut": {
+        "description": "What the next run would plan from, so the screen can say so before it is started.",
+        "properties": {
+          "mode_if_auto": {
+            "enum": [
+              "sync",
+              "worker"
+            ],
+            "title": "Mode If Auto",
+            "type": "string"
+          },
+          "production_order_materials": {
+            "title": "Production Order Materials",
+            "type": "integer"
+          },
+          "sales_order_lines": {
+            "title": "Sales Order Lines",
+            "type": "integer"
+          },
+          "sync_limit": {
+            "title": "Sync Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sales_order_lines",
+          "production_order_materials",
+          "sync_limit",
+          "mode_if_auto"
+        ],
+        "title": "DemandSourcesOut",
+        "type": "object"
+      },
       "DiscrepancyResolveIn": {
         "additionalProperties": false,
         "description": "`POST /inventory/discrepancies/{id}/resolve` \u2014 what was done about it, in words.",
@@ -7534,6 +7567,48 @@
         "title": "LotTraceOut",
         "type": "object"
       },
+      "ManualDemandIn": {
+        "additionalProperties": false,
+        "properties": {
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Note",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "quantity"
+        ],
+        "title": "ManualDemandIn",
+        "type": "object"
+      },
       "MaterialSubstituteIn": {
         "additionalProperties": false,
         "properties": {
@@ -7551,6 +7626,775 @@
           }
         },
         "title": "MaterialSubstituteIn",
+        "type": "object"
+      },
+      "MrpDemandOut": {
+        "properties": {
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "string"
+          },
+          "requested": {
+            "title": "Requested",
+            "type": "string"
+          },
+          "reserved": {
+            "title": "Reserved",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "source_ref": {
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "source_type": {
+            "enum": [
+              "SALES_ORDER",
+              "PRODUCTION_ORDER",
+              "MANUAL"
+            ],
+            "title": "Source Type",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source_type",
+          "source_id",
+          "source_ref",
+          "item_id",
+          "sku",
+          "name",
+          "uom",
+          "requested",
+          "reserved",
+          "quantity",
+          "due_date",
+          "note"
+        ],
+        "title": "MrpDemandOut",
+        "type": "object"
+      },
+      "MrpRunCreatedOut": {
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "demand_count": {
+            "title": "Demand Count",
+            "type": "integer"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "execution": {
+            "enum": [
+              "SYNC",
+              "WORKER"
+            ],
+            "title": "Execution",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "items_planned": {
+            "title": "Items Planned",
+            "type": "integer"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "plan_date": {
+            "format": "date",
+            "title": "Plan Date",
+            "type": "string"
+          },
+          "replayed": {
+            "default": false,
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested By"
+          },
+          "result_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Hash"
+          },
+          "shortage_count": {
+            "title": "Shortage Count",
+            "type": "integer"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "QUEUED",
+              "COMPLETED",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "status",
+          "execution",
+          "plan_date",
+          "sources",
+          "notes",
+          "demand_count",
+          "shortage_count",
+          "items_planned",
+          "result_hash",
+          "error",
+          "requested_by",
+          "created_at",
+          "completed_at"
+        ],
+        "title": "MrpRunCreatedOut",
+        "type": "object"
+      },
+      "MrpRunIn": {
+        "additionalProperties": false,
+        "properties": {
+          "manual_demands": {
+            "items": {
+              "$ref": "#/components/schemas/ManualDemandIn"
+            },
+            "maxItems": 500,
+            "title": "Manual Demands",
+            "type": "array"
+          },
+          "mode": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "sync",
+              "worker"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "notes": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Notes",
+            "type": "string"
+          },
+          "plan_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Date"
+          },
+          "sources": {
+            "items": {
+              "enum": [
+                "SALES_ORDER",
+                "PRODUCTION_ORDER",
+                "MANUAL"
+              ],
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Sources",
+            "type": "array"
+          },
+          "substitutes": {
+            "items": {
+              "$ref": "#/components/schemas/SubstituteChoiceIn"
+            },
+            "maxItems": 200,
+            "title": "Substitutes",
+            "type": "array"
+          }
+        },
+        "title": "MrpRunIn",
+        "type": "object"
+      },
+      "MrpRunOut": {
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "demand_count": {
+            "title": "Demand Count",
+            "type": "integer"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "execution": {
+            "enum": [
+              "SYNC",
+              "WORKER"
+            ],
+            "title": "Execution",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "items_planned": {
+            "title": "Items Planned",
+            "type": "integer"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "plan_date": {
+            "format": "date",
+            "title": "Plan Date",
+            "type": "string"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested By"
+          },
+          "result_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Hash"
+          },
+          "shortage_count": {
+            "title": "Shortage Count",
+            "type": "integer"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "QUEUED",
+              "COMPLETED",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "status",
+          "execution",
+          "plan_date",
+          "sources",
+          "notes",
+          "demand_count",
+          "shortage_count",
+          "items_planned",
+          "result_hash",
+          "error",
+          "requested_by",
+          "created_at",
+          "completed_at"
+        ],
+        "title": "MrpRunOut",
+        "type": "object"
+      },
+      "MrpShortageDetailOut": {
+        "properties": {
+          "action": {
+            "enum": [
+              "BUY",
+              "MAKE"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "available": {
+            "title": "Available",
+            "type": "string"
+          },
+          "gross": {
+            "title": "Gross",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "level": {
+            "title": "Level",
+            "type": "integer"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/MrpShortageLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "need_by": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Need By"
+          },
+          "on_hand": {
+            "title": "On Hand",
+            "type": "string"
+          },
+          "open_po": {
+            "title": "Open Po",
+            "type": "string"
+          },
+          "open_production": {
+            "title": "Open Production",
+            "type": "string"
+          },
+          "requisition_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requisition Id"
+          },
+          "requisition_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requisition Request Id"
+          },
+          "requisition_requested_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requisition Requested At"
+          },
+          "reserved": {
+            "title": "Reserved",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "shortage": {
+            "title": "Shortage",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "supply": {
+            "title": "Supply",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "item_id",
+          "sku",
+          "name",
+          "uom",
+          "action",
+          "level",
+          "gross",
+          "on_hand",
+          "reserved",
+          "available",
+          "open_po",
+          "open_production",
+          "supply",
+          "shortage",
+          "need_by",
+          "requisition_request_id",
+          "requisition_requested_at",
+          "requisition_id",
+          "lines"
+        ],
+        "title": "MrpShortageDetailOut",
+        "type": "object"
+      },
+      "MrpShortageLineOut": {
+        "properties": {
+          "due_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "parent_item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Item Id"
+          },
+          "parent_sku": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Sku"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "string"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "source_ref": {
+            "title": "Source Ref",
+            "type": "string"
+          },
+          "source_type": {
+            "enum": [
+              "SALES_ORDER",
+              "PRODUCTION_ORDER",
+              "MANUAL"
+            ],
+            "title": "Source Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_type",
+          "source_id",
+          "source_ref",
+          "parent_item_id",
+          "parent_sku",
+          "quantity",
+          "due_date"
+        ],
+        "title": "MrpShortageLineOut",
+        "type": "object"
+      },
+      "MrpShortageOut": {
+        "properties": {
+          "action": {
+            "enum": [
+              "BUY",
+              "MAKE"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "available": {
+            "title": "Available",
+            "type": "string"
+          },
+          "gross": {
+            "title": "Gross",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "level": {
+            "title": "Level",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "need_by": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Need By"
+          },
+          "on_hand": {
+            "title": "On Hand",
+            "type": "string"
+          },
+          "open_po": {
+            "title": "Open Po",
+            "type": "string"
+          },
+          "open_production": {
+            "title": "Open Production",
+            "type": "string"
+          },
+          "requisition_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requisition Id"
+          },
+          "requisition_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requisition Request Id"
+          },
+          "requisition_requested_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requisition Requested At"
+          },
+          "reserved": {
+            "title": "Reserved",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "shortage": {
+            "title": "Shortage",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "supply": {
+            "title": "Supply",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "item_id",
+          "sku",
+          "name",
+          "uom",
+          "action",
+          "level",
+          "gross",
+          "on_hand",
+          "reserved",
+          "available",
+          "open_po",
+          "open_production",
+          "supply",
+          "shortage",
+          "need_by",
+          "requisition_request_id",
+          "requisition_requested_at",
+          "requisition_id"
+        ],
+        "title": "MrpShortageOut",
         "type": "object"
       },
       "OfferIn": {
@@ -9490,6 +10334,114 @@
           "pages"
         ],
         "title": "Page[LocationOut]",
+        "type": "object"
+      },
+      "Page_MrpDemandOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MrpDemandOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[MrpDemandOut]",
+        "type": "object"
+      },
+      "Page_MrpRunOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MrpRunOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[MrpRunOut]",
+        "type": "object"
+      },
+      "Page_MrpShortageOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MrpShortageOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "size",
+          "pages"
+        ],
+        "title": "Page[MrpShortageOut]",
         "type": "object"
       },
       "Page_OperationalAlertOut_": {
@@ -13949,6 +14901,118 @@
         "title": "RequisitionRejectIn",
         "type": "object"
       },
+      "RequisitionRequestIn": {
+        "additionalProperties": false,
+        "properties": {
+          "note": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Note",
+            "type": "string"
+          },
+          "shortage_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 500,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shortage Ids"
+          }
+        },
+        "title": "RequisitionRequestIn",
+        "type": "object"
+      },
+      "RequisitionRequestLineOut": {
+        "properties": {
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "need_by": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Need By"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "string"
+          },
+          "shortage_id": {
+            "title": "Shortage Id",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "shortage_id",
+          "item_id",
+          "sku",
+          "uom",
+          "quantity",
+          "need_by"
+        ],
+        "title": "RequisitionRequestLineOut",
+        "type": "object"
+      },
+      "RequisitionRequestOut": {
+        "properties": {
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/RequisitionRequestLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "replayed": {
+            "default": false,
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "run_number": {
+            "title": "Run Number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "run_id",
+          "run_number",
+          "lines"
+        ],
+        "title": "RequisitionRequestOut",
+        "type": "object"
+      },
       "RequisitionSummaryOut": {
         "description": "A list row: no lines, a line count instead.",
         "properties": {
@@ -16609,6 +17673,28 @@
           "quantity"
         ],
         "title": "StockTransferIn",
+        "type": "object"
+      },
+      "SubstituteChoiceIn": {
+        "additionalProperties": false,
+        "description": "Plan with `substitute_item_id` wherever a BOM line names `component_item_id` and declares\nthat substitute. Substitutes are ignored unless chosen here.",
+        "properties": {
+          "component_item_id": {
+            "format": "uuid",
+            "title": "Component Item Id",
+            "type": "string"
+          },
+          "substitute_item_id": {
+            "format": "uuid",
+            "title": "Substitute Item Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "component_item_id",
+          "substitute_item_id"
+        ],
+        "title": "SubstituteChoiceIn",
         "type": "object"
       },
       "SupplierIn": {
@@ -28820,6 +29906,553 @@
         "summary": "Retire a published version so no new order is planned from it",
         "tags": [
           "manufacturing"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/mrp/demand-sources": {
+      "get": {
+        "operationId": "demand_sources_api_v1_operations_manufacturing_mrp_demand_sources_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemandSourcesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "What a new run would plan from, and whether it would run now or in the worker",
+        "tags": [
+          "mrp"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/mrp/runs": {
+      "get": {
+        "operationId": "list_runs_api_v1_operations_manufacturing_mrp_runs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_MrpRunOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "MRP runs, newest first",
+        "tags": [
+          "mrp"
+        ]
+      },
+      "post": {
+        "operationId": "create_run_api_v1_operations_manufacturing_mrp_runs_post",
+        "parameters": [
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MrpRunIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MrpRunCreatedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MrpRunCreatedOut"
+                }
+              }
+            },
+            "description": "Queued for the worker"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start an MRP run (inline when small, queued for the worker when large)",
+        "tags": [
+          "mrp"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/mrp/runs/{run_id}": {
+      "get": {
+        "operationId": "read_run_api_v1_operations_manufacturing_mrp_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MrpRunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One MRP run",
+        "tags": [
+          "mrp"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/mrp/runs/{run_id}/demands": {
+      "get": {
+        "operationId": "list_demands_api_v1_operations_manufacturing_mrp_runs__run_id__demands_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_MrpDemandOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The demand a run planned from",
+        "tags": [
+          "mrp"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/mrp/runs/{run_id}/requisitions": {
+      "post": {
+        "operationId": "request_requisition_api_v1_operations_manufacturing_mrp_runs__run_id__requisitions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of doing the work again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequisitionRequestIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequisitionRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request a purchase requisition for a run's purchased-item shortages",
+        "tags": [
+          "mrp"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/mrp/runs/{run_id}/shortages": {
+      "get": {
+        "operationId": "list_shortages_api_v1_operations_manufacturing_mrp_runs__run_id__shortages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action"
+            }
+          },
+          {
+            "in": "query",
+            "name": "requested",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Requested"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 60,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_MrpShortageOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The shortage table of a run",
+        "tags": [
+          "mrp"
+        ]
+      }
+    },
+    "/api/v1/operations/manufacturing/mrp/runs/{run_id}/shortages/{shortage_id}": {
+      "get": {
+        "operationId": "read_shortage_api_v1_operations_manufacturing_mrp_runs__run_id__shortages__shortage_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "shortage_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Shortage Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MrpShortageDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One shortage with its pegging (which demand needs it, and through which parent)",
+        "tags": [
+          "mrp"
         ]
       }
     },

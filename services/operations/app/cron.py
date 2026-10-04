@@ -33,6 +33,7 @@ from app.config import settings
 from app.inventory.reconcile import reconcile_organization
 from app.models import SCHEMA
 from app.movements.sweep import ReservationExpirySweep
+from app.mrp.sweep import MrpRunSweep
 from platform_core.db import (
     assert_app_role,
     assert_outbox_role,
@@ -257,6 +258,11 @@ async def main() -> None:
         work_scope=work_scope,
         interval=cfg.reservation_expiry_interval_seconds,
     )
+    mrp_sweep = MrpRunSweep(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=work_scope,
+        interval=cfg.mrp_sweep_interval_seconds,
+    )
     # `run_supervised`, not independent `.run()` calls: any one loop returning (it never should —
     # `GuardedSweep.run()` runs forever short of cancellation) or raising ends the process the
     # same way one going down silently must not be allowed to, `bin/cron`'s own container restart
@@ -266,6 +272,7 @@ async def main() -> None:
         alerts=alerts.run(),
         channel_sync=channel_sweep.run(),
         reservation_expiry=reservation_expiry.run(),
+        mrp=mrp_sweep.run(),
     )
 
 
