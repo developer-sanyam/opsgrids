@@ -202,3 +202,28 @@ def test_the_phase_3_permissions_reach_the_roles_that_should_hold_them() -> None
         "operations.inventory.transfer.receive",
     }
     assert not set(PHASE_3_PERMISSIONS) & set(_grants("OPERATIONS_USER"))
+
+
+PHASE_9_PERMISSIONS = (
+    "operations.inventory.data.import",
+    "operations.inventory.data.export",
+)
+
+
+def test_the_phase_9_data_permissions_are_org_only_and_only_import_is_dangerous() -> None:
+    declared = {spec.code(OPERATIONS.product): spec for spec in OPERATIONS.specs}
+    for code in PHASE_9_PERMISSIONS:
+        assert code in declared, code
+        assert declared[code].max_scope == "ORG", code
+    assert declared["operations.inventory.data.import"].is_dangerous
+    assert not declared["operations.inventory.data.export"].is_dangerous
+
+
+def test_bulk_import_stays_with_the_admin_and_export_reaches_the_manager() -> None:
+    assert set(PHASE_9_PERMISSIONS) <= set(_grants("OPERATIONS_ADMIN"))
+    manager = _grants("OPERATIONS_MANAGER")
+    assert manager.get("operations.inventory.data.export") == "ORG"
+    # Dangerous: one request creates thousands of records, so only the admin holds it by default.
+    assert "operations.inventory.data.import" not in manager
+    for role in ("OPERATIONS_WORKER", "OPERATIONS_USER"):
+        assert not set(PHASE_9_PERMISSIONS) & set(_grants(role)), role

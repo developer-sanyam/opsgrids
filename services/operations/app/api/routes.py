@@ -764,6 +764,7 @@ async def create_inventory_item(
         receipt_tolerance_pct=payload.receipt_tolerance_pct,
         selling_price_minor=payload.selling_price_minor,
         selling_price_currency=payload.selling_price_currency,
+        barcode=payload.barcode,
         request=request,
     )
     return inv_selectors.inventory_out(item)

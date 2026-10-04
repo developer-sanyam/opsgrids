@@ -10,6 +10,7 @@ from app.channels.sweep import ChannelSyncSweep
 from app.config import settings
 from app.cron import AlertSweep, ReconcileSweep
 from app.inventory.api import router as inventory_router
+from app.inventory.bulk_api import router as bulk_router
 from app.movements.api import router as movements_router
 from app.movements.sweep import ReservationExpirySweep
 from app.receiving.api import router as receiving_router
@@ -266,7 +267,7 @@ app = create_app(
     description="Operations service — part of the OpsGrids platform.",
     # The inventory router first: its static `/operations/inventory/stock` etc. must be matched
     # before the catch-all `/operations/inventory/{item_id}` routes in `router`.
-    routers=[inventory_router, receiving_router, movements_router, router],
+    routers=[bulk_router, inventory_router, receiving_router, movements_router, router],
     on_startup=_startup,
     on_shutdown=_shutdown,
 )

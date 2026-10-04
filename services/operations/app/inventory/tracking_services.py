@@ -186,6 +186,10 @@ async def create_lot(
             errors=[{"field": "inventory_item_id", "code": "not_tracked", "message": "no lots"}],
         )
     lot_no = payload.lot_no or f"LOT-{uuid.uuid4().hex[:8].upper()}"
+    if payload.barcode is not None and await sel.barcode_taken(
+        session, Lot, org_id, payload.barcode
+    ):
+        raise _duplicate("barcode", f"Barcode {payload.barcode!r} is already in use")
     lot_id = uuid.uuid4()
     inserted = (
         await session.execute(
@@ -196,6 +200,7 @@ async def create_lot(
                 inventory_item_id=item.id,
                 lot_no=lot_no,
                 supplier_lot_no=payload.supplier_lot_no,
+                barcode=payload.barcode,
                 manufactured_on=payload.manufactured_on,
                 received_on=payload.received_on,
                 expires_on=payload.expires_on,
@@ -250,6 +255,12 @@ async def update_lot(
     expires = changes.get("expires_on", lot.expires_on)
     if manufactured and expires and expires < manufactured:
         raise ValidationProblem("expires_on is before manufactured_on")
+    if changes.get("barcode") is None:
+        changes.pop("barcode", None)
+    elif changes["barcode"] != lot.barcode and await sel.barcode_taken(
+        session, Lot, ctx.organization_id, changes["barcode"], exclude=lot.id
+    ):
+        raise _duplicate("barcode", f"Barcode {changes['barcode']!r} is already in use")
     before = {field: getattr(lot, field) for field in changes}
     for field, value in changes.items():
         setattr(lot, field, value)
@@ -388,6 +399,10 @@ async def create_roll(
     primary = parse_positive(payload.primary_qty, item.uom, "primary_qty")
     secondary, secondary_uom = _parse_secondary(payload.secondary_qty, payload.secondary_uom)
     roll_no = payload.roll_no or f"ROLL-{uuid.uuid4().hex[:8].upper()}"
+    if payload.barcode is not None and await sel.barcode_taken(
+        session, Roll, org_id, payload.barcode
+    ):
+        raise _duplicate("barcode", f"Barcode {payload.barcode!r} is already in use")
     roll_id = uuid.uuid4()
     inserted = (
         await session.execute(
@@ -406,6 +421,7 @@ async def create_roll(
                 gsm=payload.gsm,
                 shade=payload.shade,
                 grade=payload.grade,
+                barcode=payload.barcode,
                 created_by=str(ctx.principal.sub),
             )
             .on_conflict_do_nothing(index_elements=["organization_id", "roll_no"])
@@ -481,7 +497,13 @@ async def update_roll(
     if "secondary_qty" in changes:
         milli, code = _parse_secondary(changes.pop("secondary_qty"), changes.pop("secondary_uom"))
         roll.secondary_milli, roll.secondary_uom = milli, code
-    for field in ("width_mm", "gsm", "shade", "grade"):
+    if changes.get("barcode") is None:
+        changes.pop("barcode", None)
+    elif changes["barcode"] != roll.barcode and await sel.barcode_taken(
+        session, Roll, org_id, changes["barcode"], exclude=roll.id
+    ):
+        raise _duplicate("barcode", f"Barcode {changes['barcode']!r} is already in use")
+    for field in ("width_mm", "gsm", "shade", "grade", "barcode"):
         if field in changes:
             setattr(roll, field, changes[field])
     roll.updated_by = str(ctx.principal.sub)

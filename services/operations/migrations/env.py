@@ -94,6 +94,7 @@ APPEND_ONLY_TABLES = (
     "goods_receipts",
     "goods_receipt_lines",
     "stock_transfer_transitions",
+    "inventory_import_runs",
 )
 #: What each sweep's cross-tenant discovery reads — `app/cron.py`'s `ReconcileSweep` and
 #: `AlertSweep`, `app/channels/sweep.py`'s `ChannelSyncSweep`. Column-level, matching exactly

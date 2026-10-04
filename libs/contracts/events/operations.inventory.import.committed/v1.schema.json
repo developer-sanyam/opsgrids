@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.import.committed/v1",
+  "title": "operations.inventory.import.committed",
+  "description": "A bulk inventory import (items, locations, lots, rolls or opening stock) committed in full. Per-record events (item created, stock opening posted, ...) are emitted by the same transaction; this is the summary. A preview or a refused import emits nothing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "run_id",
+    "entity",
+    "created",
+    "skipped"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "run_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "entity": {
+      "type": "string",
+      "enum": [
+        "items",
+        "locations",
+        "lots",
+        "rolls",
+        "opening_stock"
+      ]
+    },
+    "created": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "skipped": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

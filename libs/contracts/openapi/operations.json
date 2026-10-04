@@ -2171,6 +2171,51 @@
         "title": "ExceptionResolveIn",
         "type": "object"
       },
+      "ExportOut": {
+        "properties": {
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "entity": {
+            "enum": [
+              "items",
+              "locations",
+              "lots",
+              "rolls",
+              "stock",
+              "ledger"
+            ],
+            "title": "Entity",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "entity",
+          "columns",
+          "rows",
+          "truncated"
+        ],
+        "title": "ExportOut",
+        "type": "object"
+      },
       "GoodsReceiptIn": {
         "additionalProperties": false,
         "description": "`POST /goods-receipts`. One delivery against one purchase order, any number of its lines\n(a PO line may appear more than once, each with its own lot). Send an `Idempotency-Key`: a\nretry replays the first result.",
@@ -2657,6 +2702,281 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "ImportColumnOut": {
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "example": {
+            "title": "Example",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "required",
+          "description",
+          "example"
+        ],
+        "title": "ImportColumnOut",
+        "type": "object"
+      },
+      "ImportIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/data/import/{entity}`. `rows` are the file's data rows, header-keyed,\nevery value a string (an empty cell is `\"\"` or `null`).",
+        "properties": {
+          "mode": {
+            "default": "preview",
+            "enum": [
+              "preview",
+              "commit"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "on_duplicate": {
+            "default": "fail",
+            "enum": [
+              "fail",
+              "skip"
+            ],
+            "title": "On Duplicate",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "maxItems": 5000,
+            "minItems": 1,
+            "title": "Rows",
+            "type": "array"
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Name"
+          }
+        },
+        "required": [
+          "rows"
+        ],
+        "title": "ImportIn",
+        "type": "object"
+      },
+      "ImportResultOut": {
+        "properties": {
+          "committed": {
+            "title": "Committed",
+            "type": "boolean"
+          },
+          "created": {
+            "title": "Created",
+            "type": "integer"
+          },
+          "entity": {
+            "enum": [
+              "items",
+              "locations",
+              "lots",
+              "rolls",
+              "opening_stock"
+            ],
+            "title": "Entity",
+            "type": "string"
+          },
+          "error_count": {
+            "title": "Error Count",
+            "type": "integer"
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/ImportRowError"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "mode": {
+            "enum": [
+              "preview",
+              "commit"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "replayed": {
+            "default": false,
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ImportRowResult"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "skipped": {
+            "title": "Skipped",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entity",
+          "mode",
+          "committed",
+          "total",
+          "created",
+          "skipped",
+          "error_count",
+          "errors",
+          "rows"
+        ],
+        "title": "ImportResultOut",
+        "type": "object"
+      },
+      "ImportRowError": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "row": {
+            "title": "Row",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "row",
+          "code",
+          "message"
+        ],
+        "title": "ImportRowError",
+        "type": "object"
+      },
+      "ImportRowResult": {
+        "properties": {
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "row": {
+            "title": "Row",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "skipped",
+              "error"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "row",
+          "status"
+        ],
+        "title": "ImportRowResult",
+        "type": "object"
+      },
+      "ImportTemplateOut": {
+        "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/ImportColumnOut"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "entity": {
+            "enum": [
+              "items",
+              "locations",
+              "lots",
+              "rolls",
+              "opening_stock"
+            ],
+            "title": "Entity",
+            "type": "string"
+          },
+          "max_rows": {
+            "title": "Max Rows",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entity",
+          "max_rows",
+          "columns"
+        ],
+        "title": "ImportTemplateOut",
+        "type": "object"
+      },
       "InTransitRowOut": {
         "description": "One (item, destination warehouse) with stock on its way. `physical` is the item's on-hand\n**in that warehouse** and is reported separately: in-transit stock is owned but not yet\nthere, so it is never inside `physical`.",
         "properties": {
@@ -2840,6 +3160,20 @@
         "additionalProperties": false,
         "description": "`POST /inventory`. `on_hand` is never accepted \u2014 `opening_on_hand` becomes the item's\nfirst `opening` movement instead, so `on_hand` is always the sum of its movements from the\nmoment the row exists.",
         "properties": {
+          "barcode": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[!-~]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barcode"
+          },
           "category": {
             "enum": [
               "raw_materials",
@@ -3011,6 +3345,17 @@
             "pattern": "^-?\\d+(\\.\\d{1,3})?$",
             "title": "Available Qty",
             "type": "string"
+          },
+          "barcode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barcode"
           },
           "category": {
             "enum": [
@@ -3192,6 +3537,20 @@
         "additionalProperties": false,
         "description": "`PATCH /inventory/{id}`. `sku`, `currency` and \u2014 above all \u2014 `on_hand` are deliberately\nabsent: `sku` is the string a PO line joins on, `currency` is the unit the stock value\naccumulated in, and `on_hand` may only ever move through a movement (`/adjustments`).\nSending any of the three is a 422 by `extra=\"forbid\"`, not a silently ignored field.",
         "properties": {
+          "barcode": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[!-~]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barcode"
+          },
           "category": {
             "anyOf": [
               {
@@ -4848,6 +5207,20 @@
             "title": "Attributes",
             "type": "object"
           },
+          "barcode": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[!-~]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barcode"
+          },
           "expires_on": {
             "anyOf": [
               {
@@ -4965,6 +5338,17 @@
             "additionalProperties": true,
             "title": "Attributes",
             "type": "object"
+          },
+          "barcode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barcode"
           },
           "created_at": {
             "format": "date-time",
@@ -5132,6 +5516,20 @@
               }
             ],
             "title": "Attributes"
+          },
+          "barcode": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[!-~]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barcode"
           },
           "expires_on": {
             "anyOf": [
@@ -10187,6 +10585,20 @@
         "additionalProperties": false,
         "description": "`POST /inventory/rolls` \u2014 register a roll. It holds no stock until an opening (or a later\nreceipt) posts into its bucket. `primary_qty` is in the item's own UOM (82.5 m); the measured\nsecondary quantity is a separate fact with its own unit (14.8 kg), never derived.",
         "properties": {
+          "barcode": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[!-~]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barcode"
+          },
           "grade": {
             "anyOf": [
               {
@@ -10406,6 +10818,17 @@
       },
       "RollOut": {
         "properties": {
+          "barcode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barcode"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -10593,6 +11016,20 @@
         "additionalProperties": false,
         "description": "`PATCH /inventory/rolls/{id}` \u2014 re-measure or re-classify. The primary quantity is not\neditable: how much is physically there is the ledger's to say (use a count).",
         "properties": {
+          "barcode": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[!-~]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barcode"
+          },
           "grade": {
             "anyOf": [
               {
@@ -10832,6 +11269,166 @@
         "title": "RouteOut",
         "type": "object"
       },
+      "ScanEntityOut": {
+        "description": "What a scan resolved to \u2014 deliberately slim. It is enough to show the person what they are\nholding and to start an action; it carries no cost, price or supplier data (a storekeeper\nwith `stock.read` may scan, they may not read the item master).",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inventory Item Id"
+          },
+          "location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Id"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "lot_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot No"
+          },
+          "on_hand_qty": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Hand Qty"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "sku": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sku"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "subtitle": {
+            "default": "",
+            "title": "Subtitle",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "track_lot": {
+            "default": false,
+            "title": "Track Lot",
+            "type": "boolean"
+          },
+          "track_roll": {
+            "default": false,
+            "title": "Track Roll",
+            "type": "boolean"
+          },
+          "type": {
+            "enum": [
+              "item",
+              "lot",
+              "roll",
+              "location"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "uom": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uom"
+          },
+          "warehouse_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warehouse Id"
+          }
+        },
+        "required": [
+          "type",
+          "id",
+          "code",
+          "title"
+        ],
+        "title": "ScanEntityOut",
+        "type": "object"
+      },
       "ScanIn": {
         "additionalProperties": false,
         "description": "`POST /fulfilment/tasks/{id}/scan` \u2014 one row in the append-only `scan_events` (plan F3).\nThe task's own first scan additionally moves it `ACCEPTED -> IN_PROGRESS` (ADR-0025 \u00a72).",
@@ -10871,6 +11468,52 @@
           "barcode"
         ],
         "title": "ScanIn",
+        "type": "object"
+      },
+      "ScanOut": {
+        "properties": {
+          "allowed_actions": {
+            "items": {
+              "enum": [
+                "view",
+                "transfer",
+                "status_change",
+                "count",
+                "receive",
+                "pick",
+                "issue",
+                "inspect"
+              ],
+              "type": "string"
+            },
+            "title": "Allowed Actions",
+            "type": "array"
+          },
+          "entity": {
+            "$ref": "#/components/schemas/ScanEntityOut"
+          },
+          "payload": {
+            "title": "Payload",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "item",
+              "lot",
+              "roll",
+              "location"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "payload",
+          "type",
+          "entity",
+          "allowed_actions"
+        ],
+        "title": "ScanOut",
         "type": "object"
       },
       "ServiceInfo": {
@@ -18394,6 +19037,199 @@
         ]
       }
     },
+    "/api/v1/operations/inventory/data/export/{entity}": {
+      "get": {
+        "operationId": "export_data_api_v1_operations_inventory_data_export__entity__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity",
+            "required": true,
+            "schema": {
+              "enum": [
+                "items",
+                "locations",
+                "lots",
+                "rolls",
+                "stock",
+                "ledger"
+              ],
+              "title": "Entity",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "json",
+              "enum": [
+                "json",
+                "csv"
+              ],
+              "title": "Format",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportOut"
+                }
+              },
+              "text/csv": {}
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export an inventory list as JSON (or CSV with ?format=csv)",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/data/import/{entity}": {
+      "post": {
+        "operationId": "import_data_api_v1_operations_inventory_data_import__entity__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity",
+            "required": true,
+            "schema": {
+              "enum": [
+                "items",
+                "locations",
+                "lots",
+                "rolls",
+                "opening_stock"
+              ],
+              "title": "Entity",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResultOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview or commit a bulk import \u2014 all rows or none",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/data/import/{entity}/template": {
+      "get": {
+        "operationId": "import_template_api_v1_operations_inventory_data_import__entity__template_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity",
+            "required": true,
+            "schema": {
+              "enum": [
+                "items",
+                "locations",
+                "lots",
+                "rolls",
+                "opening_stock"
+              ],
+              "title": "Entity",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportTemplateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The columns an import of this entity takes",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
     "/api/v1/operations/inventory/discrepancies": {
       "get": {
         "operationId": "list_discrepancies_api_v1_operations_inventory_discrepancies_get",
@@ -20167,6 +21003,50 @@
           }
         },
         "summary": "Merge rolls of one item, lot and shade into one new roll",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/scan/{payload}": {
+      "get": {
+        "operationId": "resolve_scan_api_v1_operations_inventory_scan__payload__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "payload",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Payload",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve a scanned label to its item, lot, roll or location",
         "tags": [
           "inventory"
         ]

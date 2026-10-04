@@ -114,6 +114,24 @@ async def get_inventory_by_sku(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def item_barcode_taken(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    barcode: str,
+    *,
+    exclude: uuid.UUID | None = None,
+) -> bool:
+    """Whether a live item of this organization already carries `barcode`."""
+    stmt = select(InventoryItem.id).where(
+        InventoryItem.organization_id == org_id,
+        InventoryItem.barcode == barcode,
+        InventoryItem.deleted_at.is_(None),
+    )
+    if exclude is not None:
+        stmt = stmt.where(InventoryItem.id != exclude)
+    return (await session.execute(stmt.limit(1))).first() is not None
+
+
 async def get_inventory_item(
     session: AsyncSession, org_id: uuid.UUID, item_id: uuid.UUID, *, for_update: bool = False
 ) -> InventoryItem | None:
@@ -756,6 +774,7 @@ def inventory_out(item: InventoryItem) -> InventoryItemOut:
         receipt_tolerance_pct=receiving_domain.format_tolerance_pct(item.receipt_tolerance_bp),
         selling_price_minor=item.selling_price_minor,
         selling_price_currency=item.selling_price_currency,
+        barcode=item.barcode,
     )
 
 

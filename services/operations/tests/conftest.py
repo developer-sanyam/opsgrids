@@ -76,6 +76,7 @@ TENANT_TABLES = (
     "purchase_requisitions",
     "purchase_order_lines",
     "purchase_orders",
+    "inventory_import_runs",
     "roll_events",
     "lot_genealogy",
     "inventory_discrepancies",
@@ -135,6 +136,12 @@ async def session(org_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
 
         @event.listens_for(s.sync_session, "after_begin")
         def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+            # A SAVEPOINT also fires `after_begin`. The GUC is already set for the enclosing
+            # transaction (by this hook, or by `get_tenant_session` for the principal of the
+            # request), and re-stamping the fixture's org here would silently turn a request made
+            # as another tenant, inside a savepoint, into one made as this one.
+            if getattr(_transaction, "nested", False):
+                return
             connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
 
         yield s

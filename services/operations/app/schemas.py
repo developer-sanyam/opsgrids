@@ -412,6 +412,9 @@ class InventoryItemOut(BaseModel):
     #: above, which is cost. Both null or both set.
     selling_price_minor: int | None
     selling_price_currency: str | None
+    #: The printed / manufacturer code that resolves to this item when scanned (Phase 9); `null`
+    #: means the label carries the SKU.
+    barcode: str | None = None
 
 
 class InventoryItemIn(BaseModel):
@@ -449,6 +452,8 @@ class InventoryItemIn(BaseModel):
     #: an explicit per-line price.
     selling_price_minor: int | None = Field(default=None, ge=0)
     selling_price_currency: str | None = Field(default=None, min_length=3, max_length=3)
+    #: Unique across the organization's live items; printable ASCII, no spaces.
+    barcode: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[!-~]+$")
 
     @model_validator(mode="after")
     def _selling_price_paired(self) -> Self:
@@ -486,6 +491,8 @@ class InventoryItemPatch(BaseModel):
     #: the fields `_no_explicit_nulls` guards below), or both omitted.
     selling_price_minor: int | None = Field(default=None, ge=0)
     selling_price_currency: str | None = Field(default=None, min_length=3, max_length=3)
+    #: `null` is ignored (cannot clear); send a new code to change it.
+    barcode: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[!-~]+$")
 
     @model_validator(mode="after")
     def _no_explicit_nulls(self) -> Self:

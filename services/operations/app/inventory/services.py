@@ -1009,6 +1009,7 @@ async def create_inventory_item(
     receipt_tolerance_pct: str = "0",
     selling_price_minor: int | None = None,
     selling_price_currency: str | None = None,
+    barcode: str | None = None,
     request: Request | None = None,
 ) -> InventoryItem:
     """Create an inventory item at its warehouse's default bin. `unit_value_minor` is per-unit
@@ -1031,6 +1032,10 @@ async def create_inventory_item(
         raise ConflictProblem(f"An inventory item with SKU {sku!r} already exists")
     if await inv_selectors.get_item_variant_by_sku(session, ctx.organization_id, sku):
         raise ConflictProblem(f"A variant with SKU {sku!r} already exists")
+    if barcode is not None and await inv_selectors.item_barcode_taken(
+        session, ctx.organization_id, barcode
+    ):
+        raise _duplicate("barcode", f"Barcode {barcode!r} is already in use")
     home = await _home_for(session, ctx.organization_id, warehouse) if warehouse else None
     resolved_uom = (
         await resolve_or_create_uom(session, ctx.organization_id, uom, str(ctx.principal.sub))
@@ -1066,6 +1071,7 @@ async def create_inventory_item(
         track_quality=track_quality,
         is_active=is_active,
         receipt_tolerance_bp=_tolerance_bp(receipt_tolerance_pct),
+        barcode=barcode,
         selling_price_minor=selling_price_minor,
         selling_price_currency=(
             selling_price_currency.upper() if selling_price_currency else selling_price_currency
@@ -1177,6 +1183,12 @@ async def update_inventory_item(
         )
     if changes.get("selling_price_currency"):
         changes["selling_price_currency"] = changes["selling_price_currency"].upper()
+    if changes.get("barcode") is None:
+        changes.pop("barcode", None)
+    elif changes["barcode"] != item.barcode and await inv_selectors.item_barcode_taken(
+        session, ctx.organization_id, changes["barcode"], exclude=item.id
+    ):
+        raise _duplicate("barcode", f"Barcode {changes['barcode']!r} is already in use")
 
     before = {field: getattr(item, field) for field in changes}
     old_home = item.home_location_id

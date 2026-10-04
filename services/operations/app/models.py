@@ -547,6 +547,10 @@ class InventoryItem(Base, TenantBase):
     receipt_tolerance_bp: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
+    #: The code printed on this item's label, or the manufacturer's EAN/UPC when it is the thing
+    #: that gets scanned (inventory Phase 9, ADR-0027). Unique per organization among live items;
+    #: `NULL` means "scan the SKU" — the label falls back to `og:item:<sku>`.
+    barcode: Mapped[str | None] = mapped_column(String(64))
 
     if TYPE_CHECKING:
         #: Physical stock in milli-units — every bucket except the off-site ones — and the open
@@ -568,6 +572,13 @@ class InventoryItem(Base, TenantBase):
             "sku",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "uq_inventory_items_org_barcode",
+            "organization_id",
+            "barcode",
+            unique=True,
+            postgresql_where=text("barcode IS NOT NULL AND deleted_at IS NULL"),
         ),
         Index("ix_inventory_items_org_warehouse", "organization_id", "warehouse"),
         Index("ix_inventory_items_org_category", "organization_id", "category"),
@@ -796,6 +807,8 @@ class Lot(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     )
     lot_no: Mapped[str] = mapped_column(String(60), nullable=False)
     supplier_lot_no: Mapped[str | None] = mapped_column(String(60))
+    #: A code someone else printed (a supplier's lot label); `NULL` means "scan the lot number".
+    barcode: Mapped[str | None] = mapped_column(String(64))
     manufactured_on: Mapped[date | None] = mapped_column(Date)
     received_on: Mapped[date | None] = mapped_column(Date)
     expires_on: Mapped[date | None] = mapped_column(Date)
@@ -823,6 +836,13 @@ class Lot(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
         # discrepancies, rolls and lot_genealogy.
         UniqueConstraint("organization_id", "id", name="uq_lots_org_id"),
         Index("uq_lots_org_lot_no", "organization_id", "lot_no", unique=True),
+        Index(
+            "uq_lots_org_barcode",
+            "organization_id",
+            "barcode",
+            unique=True,
+            postgresql_where=text("barcode IS NOT NULL"),
+        ),
         Index("ix_lots_org_item", "organization_id", "inventory_item_id"),
         Index("ix_lots_org_created", "organization_id", text("created_at DESC"), text("id DESC")),
     )
@@ -849,6 +869,8 @@ class Roll(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     )
     lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     roll_no: Mapped[str] = mapped_column(String(60), nullable=False)
+    #: A code someone else printed (a mill's roll label); `NULL` means "scan the roll number".
+    barcode: Mapped[str | None] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(String(10), nullable=False, default="ACTIVE")
     primary_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
     secondary_milli: Mapped[int | None] = mapped_column(BigInteger)
@@ -893,6 +915,13 @@ class Roll(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
         ),
         UniqueConstraint("organization_id", "id", name="uq_rolls_org_id"),
         Index("uq_rolls_org_roll_no", "organization_id", "roll_no", unique=True),
+        Index(
+            "uq_rolls_org_barcode",
+            "organization_id",
+            "barcode",
+            unique=True,
+            postgresql_where=text("barcode IS NOT NULL"),
+        ),
         Index("ix_rolls_org_item", "organization_id", "inventory_item_id"),
         Index(
             "ix_rolls_org_lot",
@@ -1047,6 +1076,44 @@ class InventoryMove(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
         ),
         Index("ix_inventory_moves_org_reference", "organization_id", "reference_id"),
         Index("ix_inventory_moves_org_occurred", "organization_id", text("occurred_on DESC")),
+    )
+
+
+class InventoryImportRun(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One committed bulk import (inventory Phase 9, ADR-0027) — append-only, written in the same
+    transaction as the rows it created. A preview or a refused import writes nothing here.
+
+    `idempotency_key` + `request_hash` make a retried commit a replay (the stored `summary` is
+    returned) and a reused key with a different file a 409, the same contract `inventory_moves`
+    gives a stock posting.
+    """
+
+    __tablename__ = "inventory_import_runs"
+
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: items | locations | lots | rolls | opening_stock
+    entity: Mapped[str] = mapped_column(String(20), nullable=False)
+    on_duplicate: Mapped[str] = mapped_column(String(10), nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    skipped_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: The response the first commit returned, replayed verbatim.
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        Index(
+            "uq_inventory_import_runs_org_key", "organization_id", "idempotency_key", unique=True
+        ),
+        Index(
+            "ix_inventory_import_runs_org_created",
+            "organization_id",
+            text("created_at DESC"),
+        ),
     )
 
 

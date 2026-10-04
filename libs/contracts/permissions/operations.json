@@ -200,6 +200,24 @@
       "resource": "count"
     },
     {
+      "action": "export",
+      "default_scope": "ORG",
+      "description": "Export inventory lists (items, locations, lots, rolls, stock, ledger) to a file",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "data"
+    },
+    {
+      "action": "import",
+      "default_scope": "ORG",
+      "description": "Bulk-import items, locations, lots, rolls and opening stock from a file",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "data"
+    },
+    {
       "action": "read",
       "default_scope": "ORG",
       "description": "See inventory on hand",
@@ -701,6 +719,14 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.data.export",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.data.import",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.item.read",
           "scope": "ORG"
         },
@@ -888,7 +914,7 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers lots and rolls, splits and merges rolls, moves stock between bins and statuses, and reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and posts goods receipts \u2014 partial, short and over-receipt within tolerance (Phase 2). Drafts, approves, dispatches and receives inter-warehouse transfers (Phase 3); does not set the approval thresholds \u2014 that stays with the admin. Takes and refunds orders' online payments and reads the payment reconciliation. Does not create or rename warehouses, or connect or change the organization's payment-provider account \u2014 those stay with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
+      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers lots and rolls, splits and merges rolls, moves stock between bins and statuses, and reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and posts goods receipts \u2014 partial, short and over-receipt within tolerance (Phase 2). Drafts, approves, dispatches and receives inter-warehouse transfers (Phase 3); does not set the approval thresholds \u2014 that stays with the admin. Exports the inventory lists (ADR-0027) \u2014 bulk import is dangerous and stays with the admin. Takes and refunds orders' online payments and reads the payment reconciliation. Does not create or rename warehouses, or connect or change the organization's payment-provider account \u2014 those stay with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
       "grants": [
         {
           "code": "operations.automation.alert.manage",
@@ -964,6 +990,10 @@
         },
         {
           "code": "operations.inventory.count.review",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.data.export",
           "scope": "ORG"
         },
         {

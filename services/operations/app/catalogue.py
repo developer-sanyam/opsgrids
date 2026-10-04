@@ -414,6 +414,30 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             is_dangerous=True,
         ),
+        # Bulk import and export (ADR-0027, inventory Phase 9). Both ORG-only: a file moves
+        # shared records, so there is no "the rows I imported" reading. `data.import` is
+        # dangerous — one request creates up to thousands of items, locations, lots, rolls or
+        # opening-stock postings — and never grants more than the entity's own write permission
+        # (the route additionally requires `item.write` / `location.write` / `lot.write` /
+        # `roll.write` / `stock.adjust` for the entity being imported). `data.export` likewise
+        # additionally requires the list's own read permission, and writes an audit row.
+        PermissionSpec(
+            "inventory",
+            "data",
+            "import",
+            "Bulk-import items, locations, lots, rolls and opening stock from a file",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        PermissionSpec(
+            "inventory",
+            "data",
+            "export",
+            "Export inventory lists (items, locations, lots, rolls, stock, ledger) to a file",
+            "ORG",
+            "ORG",
+        ),
         # Cycle counting / stocktaking (ADR-0026, Fulfilment plan F8). A count session is a shared
         # operational object, the same reasoning `orders.order.*`/`dispatch.shipment.*` already
         # give for ORG-only, no-OWN-reading permissions: any worker with `count.execute` counts
@@ -790,7 +814,8 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and "
             "posts goods receipts — partial, short and over-receipt within tolerance (Phase 2). "
             "Drafts, approves, dispatches and receives inter-warehouse transfers (Phase 3); does "
-            "not set the approval thresholds — that stays with the admin. Takes and "
+            "not set the approval thresholds — that stays with the admin. Exports the inventory "
+            "lists (ADR-0027) — bulk import is dangerous and stays with the admin. Takes and "
             "refunds orders' online payments and reads the payment reconciliation. Does not "
             "create or rename warehouses, or connect or change the organization's "
             "payment-provider account — those stay with the admin. Creates floors and edits a "
@@ -821,6 +846,7 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.procurement.requisition.approve", "ORG"),
             ("operations.procurement.receipt.read", "ORG"),
             ("operations.procurement.receipt.write", "ORG"),
+            ("operations.inventory.data.export", "ORG"),
             ("operations.inventory.count.read", "ORG"),
             ("operations.inventory.count.manage", "ORG"),
             ("operations.inventory.count.execute", "ORG"),

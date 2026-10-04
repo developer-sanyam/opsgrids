@@ -137,6 +137,7 @@ def lot_out(row: tuple[Lot, str, str, int] | Any) -> LotOut:
         source_type=lot.source_type,
         source_id=str(lot.source_id) if lot.source_id else None,
         attributes=dict(lot.attributes or {}),
+        barcode=lot.barcode,
         on_hand_qty=format_qty(on_hand),
         created_at=lot.created_at,
         updated_at=lot.updated_at,
@@ -336,6 +337,7 @@ def roll_out(row: Any) -> RollOut:
         shade=roll.shade,
         grade=roll.grade,
         parent_roll_id=str(roll.parent_roll_id) if roll.parent_roll_id else None,
+        barcode=roll.barcode,
         on_hand_qty=format_qty(on_hand),
         created_at=roll.created_at,
         updated_at=roll.updated_at,
@@ -697,3 +699,18 @@ async def trace_rolls(
         )
         for r in rows
     ]
+
+
+async def barcode_taken(
+    session: AsyncSession,
+    model: type[Lot] | type[Roll],
+    org_id: uuid.UUID,
+    barcode: str,
+    *,
+    exclude: uuid.UUID | None = None,
+) -> bool:
+    """Whether a lot (or roll) of this organization already carries `barcode`."""
+    stmt = select(model.id).where(model.organization_id == org_id, model.barcode == barcode)
+    if exclude is not None:
+        stmt = stmt.where(model.id != exclude)
+    return (await session.execute(stmt.limit(1))).first() is not None
