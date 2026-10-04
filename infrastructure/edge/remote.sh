@@ -42,6 +42,8 @@ source lib/memory-budget.sh
 source lib/numeric-id.sh
 # shellcheck source=lib/mfa-reseal.sh
 source lib/mfa-reseal.sh
+# shellcheck source=lib/migration-revisions.sh
+source lib/migration-revisions.sh
 
 COMPOSE=(docker compose -f compose.prod.yml --env-file .env)
 
@@ -270,6 +272,24 @@ migrate() {
 			esac
 		fi
 		echo "--- $svc"
+		# A rollback to an older image: the database may already be at a revision this image's
+		# `migrations/versions/` does not contain (a newer release applied it). `alembic upgrade
+		# head` would fail there and, under `set -e`, abort the rollback — so such a service is
+		# skipped, loudly. Its schema is left exactly as the newer release made it.
+		case "$migrated" in
+		*" $svc "*)
+			local db_revs unknown
+			db_revs=$("${COMPOSE[@]}" exec -T postgres psql -U opsgrids -d opsgrids -Atc \
+				"select version_num from \"$svc\".alembic_version" 2>/dev/null | tr '\n' ' ') || db_revs=""
+			# shellcheck disable=SC2086  # deliberately word-split: one revision per word
+			unknown=$(unknown_revisions "../../services/$svc/migrations/versions" $db_revs | tr '\n' ' ')
+			if [ -n "${unknown// /}" ]; then
+				# shellcheck disable=SC2086
+				migration_rollback_warning "$svc" $unknown >&2
+				continue
+			fi
+			;;
+		esac
 		# Each image carries its own alembic.ini and migrations/, and env.py connects as the
 		# admin role. No foreign key crosses a schema, so the order between services does not
 		# matter; they are run one at a time because this box has four vCPU and is serving.
