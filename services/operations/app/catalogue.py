@@ -309,6 +309,60 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Receiving (ADR-0014, inventory Phase 2). A purchase requisition is the request to buy:
+        # its raiser sees and edits their own (OWN reading), a manager sees all (ORG).
+        # Approving is a commitment step distinct from raising one and floors at ORG, so a
+        # requester can never approve their own request — the same split `purchase_order.approve`
+        # draws. Converting an approved requisition into a PO needs `requisition.write` *and*
+        # `purchase_order.write`. A goods receipt is an org-wide warehouse record (no OWN reading):
+        # `receipt.read` sees them, and posting one needs `receipt.write` (the document) *and*
+        # `inventory.stock.receive` (putting stock on the books) — two keys on purpose, so who may
+        # *describe* a delivery and who may *credit stock* can differ in a custom role.
+        PermissionSpec(
+            "procurement", "requisition", "read", "See purchase requisitions", "OWN", "ORG"
+        ),
+        PermissionSpec(
+            "procurement",
+            "requisition",
+            "write",
+            "Raise, edit, submit and cancel purchase requisitions; convert an approved one into "
+            "a purchase order (which also needs purchase_order.write)",
+            "OWN",
+            "ORG",
+        ),
+        PermissionSpec(
+            "procurement",
+            "requisition",
+            "approve",
+            "Approve or reject a submitted purchase requisition",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "procurement",
+            "receipt",
+            "read",
+            "See goods receipts and what can still be received against a purchase order",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "procurement",
+            "receipt",
+            "write",
+            "Post a goods receipt against a purchase order: partial, short or over-receipt "
+            "within the item's tolerance (also needs inventory.stock.receive)",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inventory",
+            "stock",
+            "receive",
+            "Bring purchased stock onto the books through a goods receipt",
+            "ORG",
+            "ORG",
+        ),
         # Cycle counting / stocktaking (ADR-0026, Fulfilment plan F8). A count session is a shared
         # operational object, the same reasoning `orders.order.*`/`dispatch.shipment.*` already
         # give for ORG-only, no-OWN-reading permissions: any worker with `count.execute` counts
@@ -682,7 +736,9 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and "
             "closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers "
             "lots and rolls, splits and merges rolls, moves stock between bins and statuses, and "
-            "reads stock and the ledger (ADR-0014 Phase 1). Takes and "
+            "reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and "
+            "posts goods receipts — partial, short and over-receipt within tolerance (Phase 2). "
+            "Takes and "
             "refunds orders' online payments and reads the payment reconciliation. Does not "
             "create or rename warehouses, or connect or change the organization's "
             "payment-provider account — those stay with the admin. Creates floors and edits a "
@@ -701,8 +757,14 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.inventory.stock.reserve", "ORG"),
             ("operations.inventory.stock.read", "ORG"),
             ("operations.inventory.stock.transfer", "ORG"),
+            ("operations.inventory.stock.receive", "ORG"),
             ("operations.inventory.lot.write", "ORG"),
             ("operations.inventory.roll.write", "ORG"),
+            ("operations.procurement.requisition.read", "ORG"),
+            ("operations.procurement.requisition.write", "ORG"),
+            ("operations.procurement.requisition.approve", "ORG"),
+            ("operations.procurement.receipt.read", "ORG"),
+            ("operations.procurement.receipt.write", "ORG"),
             ("operations.inventory.count.read", "ORG"),
             ("operations.inventory.count.manage", "ORG"),
             ("operations.inventory.count.execute", "ORG"),
@@ -758,8 +820,9 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "stock between bins, puts stock on hold (a status change *into* quality hold, "
             "quarantine, damaged, rejected or blocked) but cannot release it back to "
             "available — that needs stock adjustment — and reads stock by location, lot and "
-            "roll; does not register, split or merge lots or rolls. Does not offer, reassign "
-            "or override a task either."
+            "roll; does not register, split or merge lots or rolls. Receives goods against "
+            "approved purchase orders (Phase 2) — reads POs, posts a goods receipt — but raises "
+            "or approves none. Does not offer, reassign or override a task either."
         ),
         grants=OPERATIONS.pick(
             ("operations.fulfilment.task.read", "ORG"),
@@ -768,6 +831,12 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.inventory.count.execute", "ORG"),
             ("operations.inventory.stock.read", "ORG"),
             ("operations.inventory.stock.transfer", "ORG"),
+            # Goods-in is warehouse work: the worker can see the purchase orders to receive
+            # against, and post a receipt — not raise, approve or edit a PO or a requisition.
+            ("operations.procurement.purchase_order.read", "ORG"),
+            ("operations.procurement.receipt.read", "ORG"),
+            ("operations.procurement.receipt.write", "ORG"),
+            ("operations.inventory.stock.receive", "ORG"),
             ("operations.fulfilment.worker.read", "ORG"),
             ("operations.fulfilment.worker.write", "OWN"),
             ("operations.fulfilment.pack.read", "ORG"),
@@ -775,11 +844,38 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
         ),
     ),
     RoleTemplate(
+        code="BUYER",
+        name="Buyer",
+        product=PRODUCT,
+        description=(
+            "Buys: raises and edits purchase orders org-wide, keeps the supplier directory, and "
+            "works the requisition queue — raises requisitions and turns approved ones into draft "
+            "purchase orders (inventory Phase 2). Sees goods receipts and stock to chase "
+            "deliveries. Approves nothing — neither a purchase order nor a requisition, so the "
+            "person who commits spend is never the person who asked for it — and does not post "
+            "goods receipts or move stock; that is the warehouse's job."
+        ),
+        grants=OPERATIONS.pick(
+            ("operations.procurement.purchase_order.read", "ORG"),
+            ("operations.procurement.purchase_order.write", "ORG"),
+            ("operations.procurement.supplier.read", "ORG"),
+            ("operations.procurement.supplier.write", "ORG"),
+            ("operations.procurement.requisition.read", "ORG"),
+            ("operations.procurement.requisition.write", "ORG"),
+            ("operations.procurement.receipt.read", "ORG"),
+            ("operations.inventory.item.read", "ORG"),
+            ("operations.inventory.stock.read", "ORG"),
+            ("operations.inventory.warehouse.read", "ORG"),
+            ("operations.inventory.location.read", "ORG"),
+        ),
+    ),
+    RoleTemplate(
         code="OPERATIONS_USER",
         name="Operations user",
         product=PRODUCT,
         description=(
-            "Every person with an Operations seat. Raises and sees their own purchase orders, "
+            "Every person with an Operations seat. Raises and sees their own purchase orders and "
+            "purchase requisitions, "
             "reads the shared suppliers, inventory, warehouses and locations, and runs the "
             "counter: creates and places customer orders, holds and releases them, and takes an "
             "order's payment online. Does not accept (commit stock to) or cancel an order, or "
@@ -791,6 +887,8 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
         grants=OPERATIONS.pick(
             ("operations.procurement.purchase_order.read", "OWN"),
             ("operations.procurement.purchase_order.write", "OWN"),
+            ("operations.procurement.requisition.read", "OWN"),
+            ("operations.procurement.requisition.write", "OWN"),
             ("operations.procurement.supplier.read", "ORG"),
             ("operations.inventory.item.read", "ORG"),
             ("operations.inventory.warehouse.read", "ORG"),

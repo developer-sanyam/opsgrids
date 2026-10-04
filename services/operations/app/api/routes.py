@@ -751,6 +751,7 @@ async def create_inventory_item(
         track_expiry=payload.track_expiry,
         track_quality=payload.track_quality,
         is_active=payload.is_active,
+        receipt_tolerance_pct=payload.receipt_tolerance_pct,
         selling_price_minor=payload.selling_price_minor,
         selling_price_currency=payload.selling_price_currency,
         request=request,

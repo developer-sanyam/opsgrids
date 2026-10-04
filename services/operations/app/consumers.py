@@ -248,8 +248,6 @@ async def finance_invoice_issued(envelope: dict[str, Any]) -> None:
 consumer.on(order_services.EVT_FINANCE_INVOICE_ISSUED)(finance_invoice_issued)
 
 
-
-
 async def _collection_envelope(
     envelope: dict[str, Any], *, log_prefix: str
 ) -> tuple[uuid.UUID, uuid.UUID, dict[str, Any]] | None:
@@ -343,7 +341,6 @@ async def payment_collection_refunded(envelope: dict[str, Any]) -> None:
 
 
 consumer.on(order_services.EVT_PAYMENT_COLLECTION_REFUNDED)(payment_collection_refunded)
-
 
 
 async def dispatch_shipment_transitioned(envelope: dict[str, Any], *, channel_status: str) -> None:

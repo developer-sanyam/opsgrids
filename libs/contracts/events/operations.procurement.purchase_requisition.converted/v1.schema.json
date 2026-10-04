@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.procurement.purchase_requisition.converted/v1",
+  "title": "operations.procurement.purchase_requisition.converted",
+  "description": "An approved requisition was converted into a draft purchase order.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "requisition_id",
+    "number",
+    "status",
+    "purchase_order_id",
+    "po_number"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "requisition_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "DRAFT",
+        "SUBMITTED",
+        "APPROVED",
+        "REJECTED",
+        "CONVERTED",
+        "CANCELLED"
+      ]
+    },
+    "purchase_order_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "po_number": {
+      "type": "string"
+    }
+  }
+}

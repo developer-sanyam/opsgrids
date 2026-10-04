@@ -67,7 +67,7 @@ def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
 
 Category = Literal["raw_materials", "packaging", "components", "mro", "logistics", "services"]
 SupplierStatus = Literal["active", "on_hold", "pending"]
-PoStatus = Literal["draft", "approved", "received", "closed", "cancelled"]
+PoStatus = Literal["draft", "approved", "partially_received", "received", "closed", "cancelled"]
 AttentionKind = Literal["low_stock", "out_of_stock", "late_delivery"]
 AttentionTone = Literal["danger", "late"]
 StockMovementKind = Literal["opening", "receipt", "adjustment", "count", "relocation", "issue"]
@@ -85,6 +85,9 @@ StockStatus = Literal[
 #: An exact quantity on the wire: a decimal string with at most three decimals (ADR-0014 §2).
 #: Never a JSON number — a float cannot carry 0.1 exactly, and stock must be exact.
 Qty = Annotated[str, Field(pattern=r"^-?\d+(\.\d{1,3})?$", examples=["82.5"])]
+#: A percentage with at most two decimals ("5", "2.5") — an item's receipt tolerance. Stored as
+#: integer basis points (`InventoryItem.receipt_tolerance_bp`); never a float.
+TolerancePct = Annotated[str, Field(pattern=r"^\d{1,3}(\.\d{1,2})?$", examples=["2.5"])]
 #: India's Harmonized System Nomenclature code — 4, 6 or 8 digits (the granularity a GST filer
 #: chooses), or empty (not every item carries one). Never partial-length digit strings.
 _HSN_PATTERN = r"^(\d{4}(\d{2}(\d{2})?)?)?$"
@@ -197,6 +200,11 @@ class PoLineItem(BaseModel):
     uom: str
     unit_price_minor: int
     received_qty: int
+    #: The exact cumulative receipt in the item's stock UOM (`received_qty` is its whole-unit
+    #: view) — a decimal string, so a roll's 82.5 m is not rounded to 82.
+    received_exact: Qty = "0"
+    #: The buyer closed this line short: nothing more is expected against it.
+    short_closed: bool = False
 
 
 class PurchaseOrderOut(BaseModel):
@@ -397,6 +405,9 @@ class InventoryItemOut(BaseModel):
     track_expiry: bool
     track_quality: bool
     is_active: bool
+    #: How far over the ordered quantity a purchase-order receipt of this item may go (inventory
+    #: Phase 2), as a percentage string; "0" means exactly the ordered quantity.
+    receipt_tolerance_pct: TolerancePct = "0"
     #: What a customer order line is priced at (ADR-0024 §3) — distinct from `unit_value_minor`
     #: above, which is cost. Both null or both set.
     selling_price_minor: int | None
@@ -431,6 +442,8 @@ class InventoryItemIn(BaseModel):
     track_expiry: bool = False
     track_quality: bool = False
     is_active: bool = True
+    #: How far over the ordered quantity a receipt may go, in percent (at most two decimals).
+    receipt_tolerance_pct: TolerancePct = "0"
     #: What a customer order line is priced at (ADR-0024 §3), per one whole stock UOM. Both
     #: given, or neither — an item created with neither can still go on an order, but only with
     #: an explicit per-line price.
@@ -468,6 +481,7 @@ class InventoryItemPatch(BaseModel):
     track_expiry: bool | None = None
     track_quality: bool | None = None
     is_active: bool | None = None
+    receipt_tolerance_pct: TolerancePct | None = None
     #: Both given, both explicitly `null` (clears the price — a real, meaningful state, unlike
     #: the fields `_no_explicit_nulls` guards below), or both omitted.
     selling_price_minor: int | None = Field(default=None, ge=0)
@@ -493,6 +507,7 @@ class InventoryItemPatch(BaseModel):
                 "track_expiry",
                 "track_quality",
                 "is_active",
+                "receipt_tolerance_pct",
             ),
         )
         return self
@@ -648,7 +663,7 @@ class StockMovementOut(BaseModel):
     balance_after: Qty
     location_id: str
     status: StockStatus
-    reference_type: Literal["purchase_order"] | None
+    reference_type: Literal["purchase_order", "goods_receipt"] | None
     reference_id: str | None
     note: str
     occurred_on: date
@@ -1775,8 +1790,6 @@ class ShipmentRefusalIn(BaseModel):
         return _reject_blank_or_control(value, field_name="reason")
 
 
-
-
 # ------------------------------------------------------------------ counting (ADR-0026;
 # `docs/fulfilment/plan.md` F8)
 
@@ -1890,6 +1903,7 @@ class CountLineReviewIn(BaseModel):
     decision: Literal["approve", "reject"]
     note: str = Field(default="", max_length=500)
 
+
 # ------------------------------------------------------------------ online payment (ADR-0024 A4;
 # Fulfilment F10). Mirrors `services/payment`'s collection shapes — operations relays them, it
 # holds no payment state of its own beyond the order's `paid_at` fact. No card, bank or UPI
@@ -1997,7 +2011,6 @@ class OrderRefundIn(BaseModel):
 
     amount_minor: int = Field(gt=0, le=MAX_ABS_MILLI)
     reason: str = Field(min_length=1, max_length=200)
-
 
 
 # ------------------------------------------------------------------ channels (Fulfilment plan F11)

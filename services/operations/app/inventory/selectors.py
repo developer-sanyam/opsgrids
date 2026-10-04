@@ -31,6 +31,7 @@ from app.models import (
     Uom,
     Warehouse,
 )
+from app.receiving import domain as receiving_domain
 from app.schemas import (
     InventoryDiscrepancyOut,
     InventoryItemOut,
@@ -101,8 +102,8 @@ def inventory_stmt(
 async def get_inventory_by_sku(
     session: AsyncSession, org_id: uuid.UUID, sku: str, *, for_update: bool = False
 ) -> InventoryItem | None:
-    """Fetch by SKU — used by the demo seed for idempotency, and by `receive_purchase_order`
-    (locked) to match a PO line against a stocked item."""
+    """Fetch by SKU — used by the demo seed for idempotency, and by the goods-receipt
+    path (`app.receiving.receipts`, locked) to match a PO line against a stocked item."""
     stmt = select(InventoryItem).where(
         InventoryItem.sku == sku,
         InventoryItem.organization_id == org_id,
@@ -593,7 +594,7 @@ async def count_open_purchase_orders_for_warehouse(
             PurchaseOrder.organization_id == org_id,
             PurchaseOrder.warehouse == warehouse_name,
             PurchaseOrder.deleted_at.is_(None),
-            PurchaseOrder.status.in_(("draft", "approved")),
+            PurchaseOrder.status.in_(("draft", "approved", "partially_received")),
         )
     )
     return (await session.execute(stmt)).scalar_one()
@@ -752,6 +753,7 @@ def inventory_out(item: InventoryItem) -> InventoryItemOut:
         track_expiry=item.track_expiry,
         track_quality=item.track_quality,
         is_active=item.is_active,
+        receipt_tolerance_pct=receiving_domain.format_tolerance_pct(item.receipt_tolerance_bp),
         selling_price_minor=item.selling_price_minor,
         selling_price_currency=item.selling_price_currency,
     )
