@@ -12,6 +12,7 @@ import { RequireAuth } from "./auth/RequireAuth";
 import { OverviewPage } from "./routes/Overview";
 import { LoginPage } from "./routes/Login";
 import { NotFoundPage } from "./routes/NotFound";
+import { StockReadGate } from "./movements/StockReadGate";
 import { RouteFallback } from "./routes/RouteFallback";
 import { LogoMark } from "./ui/LogoMark";
 
@@ -120,11 +121,26 @@ const CountSessionsPage = lazy(() =>
 const CountSessionDetailPage = lazy(() =>
   import("./routes/CountSessionDetail").then((m) => ({ default: m.CountSessionDetailPage })),
 );
+const TransfersPage = lazy(() => import("./routes/Transfers").then((m) => ({ default: m.TransfersPage })));
+const TransferFormPage = lazy(() => import("./routes/TransferForm").then((m) => ({ default: m.TransferFormPage })));
+const TransferDetailPage = lazy(() =>
+  import("./routes/TransferDetail").then((m) => ({ default: m.TransferDetailPage })),
+);
+const ReservationsPage = lazy(() => import("./routes/Reservations").then((m) => ({ default: m.ReservationsPage })));
+const AdjustmentsPage = lazy(() => import("./routes/Adjustments").then((m) => ({ default: m.AdjustmentsPage })));
+const ApprovalSettingsPage = lazy(() =>
+  import("./routes/ApprovalSettings").then((m) => ({ default: m.ApprovalSettingsPage })),
+);
 const AutomationPage = lazy(() => import("./routes/Automation").then((m) => ({ default: m.AutomationPage })));
 const ChannelsPage = lazy(() => import("./routes/Channels").then((m) => ({ default: m.ChannelsPage })));
 
 function lazyRoute(path: string, element: ReactNode) {
   return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
+}
+
+/** A movements screen: lazy, and behind the stock-read permission every read on it needs. */
+function stockRoute(path: string, element: ReactNode) {
+  return lazyRoute(path, <StockReadGate>{element}</StockReadGate>);
 }
 
 const router = createBrowserRouter([
@@ -177,6 +193,13 @@ const router = createBrowserRouter([
           lazyRoute("inventory/rolls/:id", <RollDetailPage />),
           lazyRoute("inventory/stock", <InventoryStockPage />),
           lazyRoute("inventory/ledger", <InventoryLedgerPage />),
+          stockRoute("inventory/transfers", <TransfersPage />),
+          stockRoute("inventory/transfers/new", <TransferFormPage />),
+          stockRoute("inventory/transfers/:id", <TransferDetailPage />),
+          stockRoute("inventory/transfers/:id/edit", <TransferFormPage />),
+          stockRoute("inventory/reservations", <ReservationsPage />),
+          stockRoute("inventory/adjustments", <AdjustmentsPage />),
+          stockRoute("inventory/settings/approvals", <ApprovalSettingsPage />),
           lazyRoute("inventory/:id", <InventoryItemDetailPage />),
           lazyRoute("suppliers", <SuppliersPage />),
           lazyRoute("suppliers/:id", <SupplierDetailPage />),

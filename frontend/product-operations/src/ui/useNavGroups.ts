@@ -1,3 +1,5 @@
+import { useMemo } from "react";
+
 import { useCan } from "@opsgrids/client";
 import {
   AlertTriangleIcon,
@@ -10,11 +12,14 @@ import {
   FactoryIcon,
   FileTextIcon,
   FolderIcon,
+  GaugeIcon,
   HomeIcon,
   LayersIcon,
   PackageIcon,
   PlugIcon,
   ReceiptIcon,
+  ScaleIcon,
+  SendIcon,
   TagIcon,
   TruckIcon,
   UsersIcon,
@@ -60,20 +65,47 @@ const GROUPS: NavGroup[] = [
   },
 ];
 
+// Stock movements (inventory Phase 3). Each is a screen behind a permission; an entry the person
+// cannot use is left out rather than shown and refused. Hiding it is presentation — the screens
+// and the endpoints behind them check on their own.
+const MOVEMENT_ENTRIES: NavEntry[] = [
+  { to: "/inventory/transfers", label: "Transfers", icon: SendIcon },
+  { to: "/inventory/reservations", label: "Reservations", icon: TagIcon },
+  { to: "/inventory/adjustments", label: "Adjustments", icon: ScaleIcon },
+];
+const APPROVALS_ENTRY: NavEntry = {
+  to: "/inventory/settings/approvals",
+  label: "Approval Thresholds",
+  icon: GaugeIcon,
+};
+
 /**
  * This product's navigation, for `AppShell`'s `nav` prop.
  *
- * Stock, Lots, Rolls and the Stock Ledger sit under Inventory and appear only for a caller who
- * can read stock — hiding the link is presentation; every endpoint behind them refuses the call
- * on its own.
+ * Under Inventory: Stock, Lots, Rolls and the Stock Ledger (Phase 1), then Transfers, Reservations
+ * and Adjustments (Phase 3), all for a caller who can read stock, and Approval Thresholds for one
+ * who can configure them. Hiding a link is presentation; every endpoint behind them refuses the
+ * call on its own.
  */
 export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
   const canReadStock = useCan("operations.inventory.stock.read", "ORG");
-  if (!canReadStock) return { groups: GROUPS, pinned: [] };
-  const groups = GROUPS.map((group) => {
-    const at = group.items.findIndex((entry) => entry.to === "/inventory");
-    if (at === -1) return group;
-    return { ...group, items: [...group.items.slice(0, at + 1), ...STOCK_ENTRIES, ...group.items.slice(at + 1)] };
-  });
+  const canConfigure = useCan("operations.inventory.control.configure", "ORG");
+
+  const groups = useMemo(
+    () =>
+      GROUPS.map((group) => ({
+        ...group,
+        items: group.items.flatMap((entry) =>
+          entry.to === "/inventory"
+            ? [
+                entry,
+                ...(canReadStock ? [...STOCK_ENTRIES, ...MOVEMENT_ENTRIES] : []),
+                ...(canConfigure ? [APPROVALS_ENTRY] : []),
+              ]
+            : [entry],
+        ),
+      })),
+    [canReadStock, canConfigure],
+  );
   return { groups, pinned: [] };
 }

@@ -1,4 +1,10 @@
 import type {
+  AdjustmentStatus,
+  ApprovalRoute,
+  ReservationStatus,
+  TransferStatus,
+} from "@/api/movementTypes";
+import type {
   ChannelStatus,
   ChannelSyncStatus,
   CollectionState,
@@ -428,4 +434,93 @@ export function CountLineReviewStatusPill({ status }: { status: CountLineReviewS
   const word = COUNT_LINE_REGISTERED[status];
   if (word) return <StatusBadge status={word} label={COUNT_LINE_LABEL[status]} />;
   return <StatusBadge tone="neutral" label={COUNT_LINE_LABEL[status]} />;
+}
+
+/* ---------------------------- transfer status (Phase 3) ---------------------------- */
+/**
+ * The transfer state machine (`TRANSFER_TRANSITIONS`). Registered words keep the registry's tone:
+ * `draft`, `approved`, `received`, `cancelled`, `rejected`. `REQUESTED` and `IN_TRANSIT` are not
+ * registered words and take explicit tones — waiting on a person (warning), and in motion (info).
+ */
+
+const TRANSFER_LABEL: Record<TransferStatus, string> = {
+  DRAFT: "Draft",
+  REQUESTED: "Requested",
+  APPROVED: "Approved",
+  IN_TRANSIT: "In transit",
+  RECEIVED: "Received",
+  CANCELLED: "Cancelled",
+  REJECTED: "Rejected",
+};
+
+const TRANSFER_REGISTERED: Partial<Record<TransferStatus, StatusWord>> = {
+  DRAFT: "draft",
+  APPROVED: "approved",
+  RECEIVED: "received",
+  CANCELLED: "cancelled",
+  REJECTED: "rejected",
+};
+
+export function TransferStatusPill({ status }: { status: TransferStatus }) {
+  const word = TRANSFER_REGISTERED[status];
+  if (word) return <StatusBadge status={word} label={TRANSFER_LABEL[status]} />;
+  return <StatusBadge tone={status === "REQUESTED" ? "warning" : "info"} label={TRANSFER_LABEL[status]} />;
+}
+
+/** How a requested transfer is signed off, in words — never the enum, never colour alone. */
+const APPROVAL_ROUTE_LABEL: Record<ApprovalRoute, string> = {
+  AUTO: "Approved automatically",
+  DIRECT: "Direct approval",
+  SERVICE: "Approval service",
+};
+
+export function ApprovalRouteChip({ route }: { route: ApprovalRoute | null }) {
+  if (route === null) return <span className="text-faint">Not requested yet</span>;
+  return <StatusBadge tone="neutral" label={APPROVAL_ROUTE_LABEL[route]} />;
+}
+
+/* --------------------------- adjustment status (Phase 3) --------------------------- */
+
+const ADJUSTMENT_LABEL: Record<AdjustmentStatus, string> = {
+  PENDING_APPROVAL: "Waiting for approval",
+  APPLIED: "Applied",
+  REJECTED: "Rejected",
+  CANCELLED: "Cancelled",
+  FAILED: "Failed",
+};
+
+const ADJUSTMENT_REGISTERED: Partial<Record<AdjustmentStatus, StatusWord>> = {
+  PENDING_APPROVAL: "awaiting_approval",
+  REJECTED: "rejected",
+  CANCELLED: "cancelled",
+  FAILED: "failed",
+};
+
+export function AdjustmentStatusPill({ status }: { status: AdjustmentStatus }) {
+  const word = ADJUSTMENT_REGISTERED[status];
+  if (word) return <StatusBadge status={word} label={ADJUSTMENT_LABEL[status]} />;
+  return <StatusBadge tone="success" label={ADJUSTMENT_LABEL[status]} />;
+}
+
+/* -------------------------- reservation status (Phase 3) --------------------------- */
+
+const RESERVATION_LABEL: Record<ReservationStatus, string> = {
+  active: "Active",
+  released: "Released",
+  consumed: "Used",
+  transferred: "Moved",
+};
+
+const RESERVATION_TONE: Record<ReservationStatus, StatusTone> = {
+  active: "info",
+  released: "neutral",
+  consumed: "success",
+  transferred: "neutral",
+};
+
+/** A reservation that lapsed is shown as "Expired" — the word the expiry sweep earned it — rather
+ *  than the "Released" its status says, which would hide why the stock came back. */
+export function ReservationStatusPill({ status, expired }: { status: ReservationStatus; expired: boolean }) {
+  if (expired) return <StatusBadge status="expired" label="Expired" />;
+  return <StatusBadge tone={RESERVATION_TONE[status]} label={RESERVATION_LABEL[status]} />;
 }
