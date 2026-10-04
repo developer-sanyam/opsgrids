@@ -20,7 +20,7 @@ cross-schema foreign keys; the `lot_id` on a receipt line is the same organizati
 composite foreign key the ledger uses.
 
 Revision ID: c5e91a7d3b28
-Revises: b7d41e92c05a
+Revises: c4a8e1f6d273
 Create Date: 2026-10-05 01:02:22.675974
 """
 
@@ -33,7 +33,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "c5e91a7d3b28"  # pragma: allowlist secret
-down_revision: str | None = "b7d41e92c05a"  # pragma: allowlist secret
+down_revision: str | None = "c4a8e1f6d273"  # pragma: allowlist secret
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

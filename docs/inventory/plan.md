@@ -105,7 +105,7 @@ route; the pre-existing operations suite green.
 
 Frontend status (`frontend/product-operations`): `/inventory/stock`, `/inventory/ledger`, `/inventory/lots` (+ `:id` with genealogy and trace), `/inventory/rolls` (+ `:id` with parent/children and history), the Locations / Lots / Rolls / Ledger tabs on the item screen, the dialogs for opening stock, transfer, status change, roll split and merge, lot and roll creation, location delete, and the textile attribute preset on the item form. Quantities are decimal strings validated against the item's unit; every stock-moving write sends an `Idempotency-Key`; every list is cursor-paged. Not built: the `/inventory/warehouses` location-tree rewrite (the existing `/warehouses/:id/locations` tree gained delete), lot genealogy linking (`BLEND`/`REWORK`), editing a lot or roll after creation, multi-line opening stock.
 
-Backend status: I0-I2 (partial release, UOMs, item master) shipped earlier; I3-I6 (lots/rolls/genealogy tables and FKs, opening/transfer/status/split/merge through `post_move`, cursor-paginated stock/ledger/lot/roll reads and traces, location delete, the four permissions and their ADR-0007 rollout) are in migration `b7d41e92c05a`. Not done: `uom_conversions` wiring (deferred to Phase 2 — see ledger.md).
+Backend status: I0-I2 (partial release, UOMs, item master) shipped earlier; I3-I6 (lots/rolls/genealogy tables and FKs, opening/transfer/status/split/merge through `post_move`, cursor-paginated stock/ledger/lot/roll reads and traces, location delete, the four permissions and their ADR-0007 rollout) are in migrations `b7d41e92c05a` (tables, `NOT VALID` keys) and `c4a8e1f6d273` (key validation and concurrent read-path indexes). Not done: `uom_conversions` wiring (deferred to Phase 2 — see ledger.md).
 
 **Scope**
 
@@ -162,7 +162,7 @@ reservations UI, stocktake (Phase 3), QC (4), BOM/production (5), costing (8), s
 Purchase requisition -> PO (existing) -> GRN with partial/short/over-receipt tolerance, lot + roll
 creation on receipt, supplier lot, receipt into `QUALITY_HOLD` when the item tracks quality.
 
-Built (migration `c5e91a7d3b28`, `services/operations/app/receiving/`, `frontend/product-operations`):
+Built (migration `c5e91a7d3b28`, after `c4a8e1f6d273`, `services/operations/app/receiving/`, `frontend/product-operations`):
 - Purchase requisitions with a state machine (DRAFT -> SUBMITTED -> APPROVED -> CONVERTED, REJECTED /
   CANCELLED), approval gated at ORG, conversion into a draft purchase order through the PO module's own writer.
 - Goods receipts: one `receipt` move per receipt through `post_move`; per-item tolerance (integer basis
@@ -172,7 +172,9 @@ Built (migration `c5e91a7d3b28`, `services/operations/app/receiving/`, `frontend
   `PO_TRANSITIONS` (`approved -> partially_received -> received`).
 - `uom_conversions` CRUD and exact-math application in receipts (box = 12 pcs), the deferred Phase 1 item.
 - The single-shot `receive_purchase_order` is now a thin wrapper over the goods-receipt path;
-  `receive_into_home` is removed.
+  `receive_into_home` is removed. `POST /purchase-orders/{id}/receive` now also requires
+  `procurement.receipt.write` and `inventory.stock.receive` at ORG (it posts stock), closing the gap
+  where `purchase_order.write` alone could receive.
 - Permissions `procurement.requisition.read|write|approve`, `procurement.receipt.read|write`,
   `inventory.stock.receive`; role `BUYER`; grants for `OPERATIONS_MANAGER`, `OPERATIONS_WORKER`,
   `OPERATIONS_USER`; events `operations.stock.received` and six `purchase_requisition.*`.

@@ -46,6 +46,13 @@ from tests.receiving_fixtures import (
 
 pytestmark = pytest.mark.integration
 
+#: What the legacy single-shot receive route needs: the PO write plus the two warehouse keys.
+LEGACY_RECEIVE = [
+    "operations.procurement.purchase_order.write:ORG",
+    "operations.procurement.receipt.write:ORG",
+    "operations.inventory.stock.receive:ORG",
+]
+
 CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "libs" / "contracts"
 GRN = "/operations/goods-receipts"
 
@@ -1087,9 +1094,7 @@ class TestLegacyEndpointIsAWrapper:
     ) -> None:
         po_id, lines = await make_po(session, w, [buttons_line(100)])
         await post(client, org_id, body(po_id, line(lines["BTN-14MM"], "40")))
-        with as_principal(
-            principal_for(org_id, ["operations.procurement.purchase_order.write:ORG"])
-        ):
+        with as_principal(principal_for(org_id, LEGACY_RECEIVE)):
             received = await client.post(f"{API}/operations/purchase-orders/{po_id}/receive")
         assert received.status_code == 200, received.text
         assert received.json()["status"] == "received"
@@ -1105,9 +1110,7 @@ class TestLegacyEndpointIsAWrapper:
         po_id, _ = await make_po(
             session, w, [{"sku": "COT-180-NAVY", "quantity": 40, "uom": "m", "unit_price_minor": 1}]
         )
-        with as_principal(
-            principal_for(org_id, ["operations.procurement.purchase_order.write:ORG"])
-        ):
+        with as_principal(principal_for(org_id, LEGACY_RECEIVE)):
             received = await client.post(f"{API}/operations/purchase-orders/{po_id}/receive")
         assert received.status_code == 200, received.text
         assert await count(session, Lot, org_id) == 1
@@ -1120,9 +1123,7 @@ class TestLegacyEndpointIsAWrapper:
         po_id, _ = await make_po(
             session, w, [{"sku": "DYE-RED-01", "quantity": 5, "uom": "kg", "unit_price_minor": 1}]
         )
-        with as_principal(
-            principal_for(org_id, ["operations.procurement.purchase_order.write:ORG"])
-        ):
+        with as_principal(principal_for(org_id, LEGACY_RECEIVE)):
             received = await client.post(f"{API}/operations/purchase-orders/{po_id}/receive")
         assert received.status_code == 200
         assert await bucket(session, org_id, w.dye, w.t.weaving, status="QUALITY_HOLD") == 5_000

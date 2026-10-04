@@ -29,7 +29,7 @@ from app.models import SCHEMA
 pytestmark = pytest.mark.integration
 
 SERVICE_DIR = Path(__file__).resolve().parent.parent
-BEFORE = "b7d41e92c05a"  # alembic revision id  # pragma: allowlist secret
+BEFORE = "c4a8e1f6d273"  # alembic revision id  # pragma: allowlist secret
 NEW_TABLES = (
     "purchase_requisitions",
     "purchase_requisition_lines",

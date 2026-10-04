@@ -27,6 +27,11 @@ pytestmark = pytest.mark.integration
 PO_READ = "operations.procurement.purchase_order.read:ORG"
 PO_WRITE = "operations.procurement.purchase_order.write:ORG"
 PO_APPROVE = "operations.procurement.purchase_order.approve:ORG"
+#: Receiving posts stock, so `POST /purchase-orders/{id}/receive` also needs the warehouse keys.
+RECEIVE_KEYS = [
+    "operations.procurement.receipt.write:ORG",
+    "operations.inventory.stock.receive:ORG",
+]
 
 TOMORROW = (date.today() + timedelta(days=7)).isoformat()
 
@@ -69,7 +74,9 @@ class TestCreatePurchaseOrder:
     ) -> None:
         subject = uuid.uuid4()
         principal = principal_for(
-            org_id, ["operations.procurement.purchase_order.write:OWN"], subject_ref=subject
+            org_id,
+            ["operations.procurement.purchase_order.write:OWN", *RECEIVE_KEYS],
+            subject_ref=subject,
         )
         with as_principal(principal):
             created = await client.post(
@@ -340,7 +347,9 @@ class TestPoLifecycle:
         `domain.PO_TRANSITIONS` any more."""
         subject = uuid.uuid4()
         raiser = principal_for(
-            org_id, ["operations.procurement.purchase_order.write:OWN"], subject_ref=subject
+            org_id,
+            ["operations.procurement.purchase_order.write:OWN", *RECEIVE_KEYS],
+            subject_ref=subject,
         )
         with as_principal(raiser):
             created = await client.post(
@@ -373,7 +382,9 @@ class TestPoLifecycle:
         blanket "the raiser can never touch it again"."""
         subject = uuid.uuid4()
         raiser = principal_for(
-            org_id, ["operations.procurement.purchase_order.write:OWN"], subject_ref=subject
+            org_id,
+            ["operations.procurement.purchase_order.write:OWN", *RECEIVE_KEYS],
+            subject_ref=subject,
         )
         with as_principal(raiser):
             created = await client.post(
@@ -412,7 +423,9 @@ class TestPoLifecycle:
             before = await client.get(f"/api/v1/operations/suppliers/{data['meridian'].id}")
         before_spend = before.json()["spend_minor"]
 
-        approver = principal_for(org_id, [PO_APPROVE, PO_WRITE], subject_ref=data["subject_a"])
+        approver = principal_for(
+            org_id, [PO_APPROVE, PO_WRITE, *RECEIVE_KEYS], subject_ref=data["subject_a"]
+        )
         with as_principal(approver):
             approved = await client.post(
                 f"/api/v1/operations/purchase-orders/{draft['id']}/approve"
@@ -470,7 +483,9 @@ class TestPoLifecycle:
         `write:OWN` is enough."""
         subject = uuid.uuid4()
         raiser = principal_for(
-            org_id, ["operations.procurement.purchase_order.write:OWN"], subject_ref=subject
+            org_id,
+            ["operations.procurement.purchase_order.write:OWN", *RECEIVE_KEYS],
+            subject_ref=subject,
         )
         with as_principal(raiser):
             created = await client.post(
@@ -494,7 +509,9 @@ class TestPoLifecycle:
 
     async def test_approve_receive_close_walks_cleanly(self, client, org_id, data) -> None:
         draft = await self._create_draft(client, org_id, data)
-        approver = principal_for(org_id, [PO_APPROVE, PO_WRITE], subject_ref=data["subject_a"])
+        approver = principal_for(
+            org_id, [PO_APPROVE, PO_WRITE, *RECEIVE_KEYS], subject_ref=data["subject_a"]
+        )
 
         with as_principal(approver):
             approved = await client.post(
@@ -517,7 +534,9 @@ class TestPoLifecycle:
 
     async def test_cancel_an_approved_po_reverses_open_pos(self, client, org_id, data) -> None:
         draft = await self._create_draft(client, org_id, data)
-        approver = principal_for(org_id, [PO_APPROVE, PO_WRITE], subject_ref=data["subject_a"])
+        approver = principal_for(
+            org_id, [PO_APPROVE, PO_WRITE, *RECEIVE_KEYS], subject_ref=data["subject_a"]
+        )
         supplier_read = principal_for(
             org_id, ["operations.procurement.supplier.read:ORG"], subject_ref=data["subject_a"]
         )
@@ -545,7 +564,7 @@ class TestPoLifecycle:
         assert after["spend_minor"] == before["spend_minor"]
 
     async def test_receiving_twice_is_conflict(self, client, org_id, data) -> None:
-        principal = principal_for(org_id, [PO_WRITE], subject_ref=data["subject_a"])
+        principal = principal_for(org_id, [PO_WRITE, *RECEIVE_KEYS], subject_ref=data["subject_a"])
         with as_principal(principal):
             first = await client.post(
                 f"/api/v1/operations/purchase-orders/{data['po_a'].id}/receive"
@@ -560,7 +579,9 @@ class TestPoLifecycle:
         # Create a draft whose line SKU matches an existing inventory item, approve then receive.
         item_sku = data["low_stock_item"].sku
         before_on_hand = data["low_stock_item"].on_hand
-        principal = principal_for(org_id, [PO_WRITE, PO_APPROVE], subject_ref=data["subject_a"])
+        principal = principal_for(
+            org_id, [PO_WRITE, PO_APPROVE, *RECEIVE_KEYS], subject_ref=data["subject_a"]
+        )
         with as_principal(principal):
             created = await client.post(
                 "/api/v1/operations/purchase-orders",
@@ -602,7 +623,9 @@ class TestPoLifecycle:
         stock value is tracked in INR is an ordinary case, not an error."""
         item = data["low_stock_item"]
         assert item.currency == "INR"
-        principal = principal_for(org_id, [PO_WRITE, PO_APPROVE], subject_ref=data["subject_a"])
+        principal = principal_for(
+            org_id, [PO_WRITE, PO_APPROVE, *RECEIVE_KEYS], subject_ref=data["subject_a"]
+        )
         with as_principal(principal):
             created = await client.post(
                 "/api/v1/operations/purchase-orders",

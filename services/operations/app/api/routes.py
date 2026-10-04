@@ -616,7 +616,15 @@ async def approve_purchase_order(
     response_model=PurchaseOrderReceiptOut,
     summary="Receive an approved purchase order (marks it received, fills received quantities "
     "and posts stock)",
-    dependencies=[Entitled],
+    # Posting stock needs the same two keys as `POST /goods-receipts` (the document and putting
+    # stock on the books), on top of `purchase_order.write`: this route is a thin wrapper over the
+    # receipt path, and `purchase_order.write` alone (`OPERATIONS_USER`, `BUYER`) is a buying
+    # permission, not a warehouse one.
+    dependencies=[
+        Entitled,
+        Depends(require("operations.procurement.receipt.write", minimum=Scope.ORG)),
+        Depends(require("operations.inventory.stock.receive", minimum=Scope.ORG)),
+    ],
 )
 async def receive_purchase_order(
     po_id: uuid.UUID,

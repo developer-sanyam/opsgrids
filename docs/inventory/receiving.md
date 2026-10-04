@@ -144,13 +144,17 @@ entered and what it converted to, so changing a ratio later does not rewrite his
 
 ## The single-shot receive is a wrapper
 
-`POST /operations/purchase-orders/{id}/receive` still exists with the same permission (`purchase_order.
-write`), the same answers (a draft is refused with the same message, `unmatched_skus` lists service
+`POST /operations/purchase-orders/{id}/receive` still exists with the same answers (a draft is refused with the same message, `unmatched_skus` lists service
 lines) and the same legacy `purchase_order.received` event. Underneath it is one goods receipt of
 **every line's outstanding quantity** (`receipts.receive_whole_purchase_order`); a lot-/roll-tracked
 item gets a generated lot and one roll of the whole quantity, and a quality-tracked item is received
-into `QUALITY_HOLD`. `receive_into_home` is gone. It does not require the new receiving permissions —
-see risks in the Phase 2 report; the permission model is unchanged for existing clients.
+into `QUALITY_HOLD`. `receive_into_home` is gone.
+
+**Permission.** Because it posts stock it needs `purchase_order.write` (scoped as before) **and**
+`receipt.write` **and** `stock.receive` at ORG — the same two warehouse keys as `POST /goods-receipts`.
+Earlier in the phase it needed `purchase_order.write` alone, which let a buyer (or a default-seat user
+at OWN) put stock on the books without any warehouse permission; that gap is closed. `OPERATIONS_ADMIN` and
+`OPERATIONS_MANAGER` hold all three; `OPERATIONS_USER` and `BUYER` do not and receive nothing.
 
 ## Permissions (operations catalogue)
 
@@ -186,6 +190,7 @@ still fires for the move; lot and roll creation emit `lot.created` / `roll.creat
 | `POST .../{id}/convert` | `requisition.write` + `purchase_order.write` |
 | `GET /operations/purchase-orders/{id}/receiving` | `receipt.read` |
 | `POST /operations/goods-receipts` | `receipt.write` + `stock.receive`, `Idempotency-Key` |
+| `POST /operations/purchase-orders/{id}/receive` | `purchase_order.write` + `receipt.write` (ORG) + `stock.receive` (ORG) |
 | `GET /operations/goods-receipts`, `GET .../{id}` | `receipt.read` (cursor-paginated list) |
 | `GET/POST /operations/inventory/{item_id}/uom-conversions`, `PATCH/DELETE /operations/inventory/uom-conversions/{id}` | `inventory.item.read` / `.write` |
 

@@ -160,10 +160,57 @@ class TestEndpointAuthorization:
             )
         assert response.status_code == 403
 
+    @pytest.mark.parametrize(
+        "perms",
+        [
+            ["operations.procurement.purchase_order.write:ORG"],
+            [
+                "operations.procurement.purchase_order.write:ORG",
+                "operations.procurement.receipt.write:ORG",
+            ],
+            [
+                "operations.procurement.purchase_order.write:ORG",
+                "operations.inventory.stock.receive:ORG",
+            ],
+            [
+                "operations.procurement.receipt.write:ORG",
+                "operations.inventory.stock.receive:ORG",
+            ],
+            [
+                "operations.procurement.purchase_order.write:ORG",
+                "operations.procurement.receipt.write:OWN",
+                "operations.inventory.stock.receive:ORG",
+            ],
+        ],
+        ids=[
+            "po-write-only",
+            "no-stock-receive",
+            "no-receipt-write",
+            "no-po-write",
+            "receipt-write-own-only",
+        ],
+    )
+    async def test_receiving_a_po_needs_the_warehouse_keys_not_only_po_write(
+        self, client, org_id, data, perms
+    ) -> None:
+        """`POST /purchase-orders/{id}/receive` posts stock, so `purchase_order.write` alone (a
+        buying permission) is not enough: it also needs `receipt.write` and `stock.receive` at ORG,
+        the same two keys as `POST /goods-receipts`."""
+        principal = principal_for(org_id, perms, subject_ref=data["subject_a"])
+        with as_principal(principal):
+            response = await client.post(
+                f"/api/v1/operations/purchase-orders/{data['po_a'].id}/receive"
+            )
+        assert response.status_code == 403
+
     async def test_a_writer_may_receive_a_purchase_order(self, client, org_id, data) -> None:
         principal = principal_for(
             org_id,
-            ["operations.procurement.purchase_order.write:ORG"],
+            [
+                "operations.procurement.purchase_order.write:ORG",
+                "operations.procurement.receipt.write:ORG",
+                "operations.inventory.stock.receive:ORG",
+            ],
             subject_ref=data["subject_a"],
         )
         with as_principal(principal):

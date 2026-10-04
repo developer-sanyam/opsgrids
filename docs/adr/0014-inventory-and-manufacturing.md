@@ -281,8 +281,9 @@ lean on:
   row (one source for one fact), and a ratio cannot be deleted or changed under an open order that uses it.
 
 Also: **a quality-tracked item is received straight into `QUALITY_HOLD`** (never `AVAILABLE` then moved), and
-the single-shot receive endpoint keeps its permission (`purchase_order.write`) and answers — it is a wrapper,
-not a second implementation, but it does not demand the new receiving permissions.
+the single-shot receive endpoint keeps its answers — it is a wrapper, not a second implementation — and,
+because it posts stock, demands the same two warehouse keys as a goods receipt (`receipt.write` and
+`stock.receive`, ORG) on top of `purchase_order.write`.
 
 ## Consequences
 

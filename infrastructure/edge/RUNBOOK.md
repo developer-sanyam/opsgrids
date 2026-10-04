@@ -715,7 +715,7 @@ peak hours and never as part of `make deploy`.
 
 ### Inventory Phase 2 (receiving and purchase): migration and the `operations` permission reconcile
 
-Migration `c5e91a7d3b28` (operations, after `b7d41e92c05a`) creates `purchase_requisitions`,
+Migration `c5e91a7d3b28` (operations, after `c4a8e1f6d273`) creates `purchase_requisitions`,
 `purchase_requisition_lines`, `goods_receipts`, `goods_receipt_lines`, and adds
 `purchase_order_lines.received_milli` / `short_closed` and `inventory_items.receipt_tolerance_bp`. It
 is part of the ordinary `migrate` step; nothing else to run. Take the nightly backup first
@@ -750,9 +750,17 @@ make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operatio
 
 Until it runs, the new requisition and goods-receipt routes answer 403 for every non-owner in every
 existing organization (a brand-new organization is fine). **The single-shot
-`POST /operations/purchase-orders/{id}/receive` is unaffected** — it keeps requiring
-`purchase_order.write` only and now runs through the goods-receipt path, so existing clients keep
-working before and after the reconcile (a quality-tracked item it receives lands in `QUALITY_HOLD`).
+`POST /operations/purchase-orders/{id}/receive` now needs more than before.** It runs through the
+goods-receipt path and posts stock, so besides `purchase_order.write` it requires
+`operations.procurement.receipt.write` and `operations.inventory.stock.receive` at ORG scope (the
+two keys `POST /operations/goods-receipts` needs) — previously `purchase_order.write` alone let a
+buyer put stock on the books. Consequences for the deploy: roles that already receive
+(`OPERATIONS_ADMIN`, `OPERATIONS_MANAGER`) get both codes from the reconcile, so **until the
+reconcile has run, the single-shot receive answers 403 for every non-owner in existing
+organizations — run it straight after the API deploy**, not later in the week. `OPERATIONS_USER`
+(`purchase_order.write` at OWN) and `BUYER` do not hold the two codes and can no longer receive a
+purchase order, by design; `OPERATIONS_WORKER` receives through `POST /goods-receipts` (it has never
+held `purchase_order.write`). A quality-tracked item it receives lands in `QUALITY_HOLD`.
 It is a fleet write — every organization's permission version bumps — so outside peak hours and never
 as part of `make deploy`.
 
