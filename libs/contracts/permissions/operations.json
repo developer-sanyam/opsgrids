@@ -578,6 +578,42 @@
       "resource": "supplier"
     },
     {
+      "action": "approve",
+      "default_scope": "ORG",
+      "description": "Release held stock to available (all or part), and manage QC templates",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "quality",
+      "resource": "inspection"
+    },
+    {
+      "action": "inspect",
+      "default_scope": "ORG",
+      "description": "Open inspections (putting stock on quality hold), record readings, hold or send stock for rework",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "quality",
+      "resource": "inspection"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See QC templates, inspections and their results",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "quality",
+      "resource": "inspection"
+    },
+    {
+      "action": "reject",
+      "default_scope": "ORG",
+      "description": "Reject held stock, and return it to the vendor or scrap it",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "quality",
+      "resource": "inspection"
+    },
+    {
       "action": "read",
       "default_scope": "ORG",
       "description": "See a warehouse's floors",
@@ -887,6 +923,22 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.quality.inspection.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.inspect",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.reject",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.warehouse.floor.read",
           "scope": "ORG"
         },
@@ -914,7 +966,7 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers lots and rolls, splits and merges rolls, moves stock between bins and statuses, and reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and posts goods receipts \u2014 partial, short and over-receipt within tolerance (Phase 2). Drafts, approves, dispatches and receives inter-warehouse transfers (Phase 3); does not set the approval thresholds \u2014 that stays with the admin. Exports the inventory lists (ADR-0027) \u2014 bulk import is dangerous and stays with the admin. Takes and refunds orders' online payments and reads the payment reconciliation. Does not create or rename warehouses, or connect or change the organization's payment-provider account \u2014 those stay with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
+      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers lots and rolls, splits and merges rolls, moves stock between bins and statuses, and reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and posts goods receipts \u2014 partial, short and over-receipt within tolerance (Phase 2). Drafts, approves, dispatches and receives inter-warehouse transfers (Phase 3); does not set the approval thresholds \u2014 that stays with the admin. Runs quality: inspects, releases and rejects held stock, and defines QC templates (Phase 4). Exports the inventory lists (ADR-0027) \u2014 bulk import is dangerous and stays with the admin. Takes and refunds orders' online payments and reads the payment reconciliation. Does not create or rename warehouses, or connect or change the organization's payment-provider account \u2014 those stay with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
       "grants": [
         {
           "code": "operations.automation.alert.manage",
@@ -1141,6 +1193,22 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.quality.inspection.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.inspect",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.reject",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.warehouse.floor.read",
           "scope": "ORG"
         },
@@ -1160,6 +1228,36 @@
       "is_admin": false,
       "is_default": false,
       "name": "Procurement manager"
+    },
+    {
+      "code": "QC_INSPECTOR",
+      "cross_product": false,
+      "description": "Inspects stock: sees QC templates and inspections, opens an inspection (which puts the quantity on quality hold), records readings, and keeps stock on hold or sends it for rework. Does not release or reject stock, or define templates \u2014 those are `approve` and `reject`, held by the manager and the admin, so the person measuring is never the person who decides (inventory plan Phase 4).",
+      "grants": [
+        {
+          "code": "operations.inventory.item.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.location.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.inspect",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Quality inspector"
     },
     {
       "code": "OPERATIONS_WORKER",

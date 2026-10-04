@@ -479,6 +479,47 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             is_dangerous=True,
         ),
+        # Quality (inventory plan Phase 4, docs/inventory/quality.md). Like counting, an inspection
+        # is a shared operational object with no meaningful OWN reading, so all four are ORG-only.
+        # `approve` and `reject` are dangerous: they are the steps that move stock out of quality
+        # hold (release to AVAILABLE; reject / return to vendor / scrap), through `post_move`.
+        # `approve` also owns QC template management — what counts as acceptable is an approver's
+        # call, not the inspector's who is being measured against it.
+        PermissionSpec(
+            "quality",
+            "inspection",
+            "read",
+            "See QC templates, inspections and their results",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "quality",
+            "inspection",
+            "inspect",
+            "Open inspections (putting stock on quality hold), record readings, hold or send "
+            "stock for rework",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "quality",
+            "inspection",
+            "approve",
+            "Release held stock to available (all or part), and manage QC templates",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        PermissionSpec(
+            "quality",
+            "inspection",
+            "reject",
+            "Reject held stock, and return it to the vendor or scrap it",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
         # Item master reference data: categories, typed attributes, variants, tracking flags,
         # HSN/tax fields and secondary UOM (ADR-0014 Phase 1). Reuses `inventory.item.read/write`
         # rather than a permission per sub-resource: these are all facets of the one item master
@@ -814,8 +855,10 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and "
             "posts goods receipts — partial, short and over-receipt within tolerance (Phase 2). "
             "Drafts, approves, dispatches and receives inter-warehouse transfers (Phase 3); does "
-            "not set the approval thresholds — that stays with the admin. Exports the inventory "
-            "lists (ADR-0027) — bulk import is dangerous and stays with the admin. Takes and "
+            "not set the approval thresholds — that stays with the admin. Runs quality: inspects, "
+            "releases and rejects held stock, and defines QC templates (Phase 4). Exports the "
+            "inventory lists (ADR-0027) — bulk import is dangerous and stays with the admin. "
+            "Takes and "
             "refunds orders' online payments and reads the payment reconciliation. Does not "
             "create or rename warehouses, or connect or change the organization's "
             "payment-provider account — those stay with the admin. Creates floors and edits a "
@@ -851,6 +894,10 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.inventory.count.manage", "ORG"),
             ("operations.inventory.count.execute", "ORG"),
             ("operations.inventory.count.review", "ORG"),
+            ("operations.quality.inspection.read", "ORG"),
+            ("operations.quality.inspection.inspect", "ORG"),
+            ("operations.quality.inspection.approve", "ORG"),
+            ("operations.quality.inspection.reject", "ORG"),
             ("operations.inventory.warehouse.read", "ORG"),
             ("operations.inventory.location.read", "ORG"),
             ("operations.inventory.location.write", "ORG"),
@@ -886,6 +933,25 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             # `warehouse.layout.publish` already draws for this role).
             ("operations.channels.channel.read", "ORG"),
             ("operations.channels.channel.sync", "ORG"),
+        ),
+    ),
+    RoleTemplate(
+        code="QC_INSPECTOR",
+        name="Quality inspector",
+        product=PRODUCT,
+        description=(
+            "Inspects stock: sees QC templates and inspections, opens an inspection (which puts "
+            "the quantity on quality hold), records readings, and keeps stock on hold or sends it "
+            "for rework. Does not release or reject stock, or define templates — those are "
+            "`approve` and `reject`, held by the manager and the admin, so the person measuring "
+            "is never the person who decides (inventory plan Phase 4)."
+        ),
+        grants=OPERATIONS.pick(
+            ("operations.quality.inspection.read", "ORG"),
+            ("operations.quality.inspection.inspect", "ORG"),
+            ("operations.inventory.item.read", "ORG"),
+            ("operations.inventory.warehouse.read", "ORG"),
+            ("operations.inventory.location.read", "ORG"),
         ),
     ),
     RoleTemplate(

@@ -3686,6 +3686,221 @@ class AdjustmentRequest(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     )
 
 
+# ------------------------------------------------------------------ quality (plan Phase 4)
+#
+# `item_id`, `location_id`, `lot_id`, `roll_id`, `template_id` and `supplier_id` on these tables are
+# **plain indexed UUIDs, never foreign keys** (docs/inventory/quality.md §2): lots and rolls are
+# introduced by another phase, and an inspection is a record about stock at a moment — it must
+# survive an item being renamed, a location being retired or a template being replaced, and must
+# not be able to block any of those. Every read re-checks organization on the referenced row.
+
+QC_KINDS = ("incoming", "in-process", "finished")
+QC_PARAM_KINDS = ("numeric", "pass_fail")
+INSPECTION_STATUSES = ("PENDING", "PASSED", "FAILED", "HOLD", "REWORK", "PARTIAL_PASS")
+_QC_KIND_SQL = ", ".join(f"'{k}'" for k in QC_KINDS)
+_INSPECTION_STATUS_SQL = ", ".join(f"'{s}'" for s in INSPECTION_STATUSES)
+
+
+class QcTemplate(Base, TenantBase):
+    """A reusable checklist of measurable parameters for one kind of inspection."""
+
+    __tablename__ = "qc_templates"
+
+    code: Mapped[str] = mapped_column(String(40), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    #: incoming | in-process | finished.
+    kind: Mapped[str] = mapped_column(String(12), nullable=False)
+    #: Optional narrowing to one item; plain UUID, no FK (see section comment).
+    item_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    description: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    create_key: Mapped[str | None] = mapped_column(String(128))
+    create_hash: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(f"kind IN ({_QC_KIND_SQL})", name="kind_known"),
+        Index(
+            "uq_qc_templates_org_code",
+            "organization_id",
+            "code",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "uq_qc_templates_org_create_key",
+            "organization_id",
+            "create_key",
+            unique=True,
+            postgresql_where=text("create_key IS NOT NULL"),
+        ),
+        Index("ix_qc_templates_org_kind", "organization_id", "kind"),
+    )
+
+
+class QcTemplateParam(Base, TenantBase):
+    """One measurable check. Bounds are milli-scaled integers (three implied decimals) — the same
+    exact-decimal representation quantities use; a float never touches one."""
+
+    __tablename__ = "qc_template_params"
+
+    template_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.qc_templates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    #: numeric | pass_fail.
+    kind: Mapped[str] = mapped_column(String(10), nullable=False, default="numeric")
+    unit: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    min_milli: Mapped[int | None] = mapped_column(BigInteger)
+    max_milli: Mapped[int | None] = mapped_column(BigInteger)
+    #: A failed critical parameter makes release impossible (domain.can_release).
+    is_critical: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('numeric', 'pass_fail')", name="kind_known"),
+        CheckConstraint(
+            "min_milli IS NULL OR max_milli IS NULL OR min_milli <= max_milli",
+            name="bounds_ordered",
+        ),
+        CheckConstraint(
+            "kind = 'numeric' OR (min_milli IS NULL AND max_milli IS NULL)",
+            name="pass_fail_has_no_bounds",
+        ),
+        Index(
+            "uq_qc_template_params_template_name",
+            "organization_id",
+            "template_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_qc_template_params_org_template", "organization_id", "template_id"),
+    )
+
+
+class Inspection(Base, TenantBase):
+    """One quality inspection of a quantity of stock (plan Phase 4).
+
+    `status` runs `app.quality.domain.INSPECTION_TRANSITIONS`. The inspected quantity sits in the
+    `QUALITY_HOLD` bucket from the moment the inspection is opened (or was received there), and
+    leaves it only through the kernel — released to `AVAILABLE`, rejected to `REJECTED` /
+    `QUARANTINE`, and finally disposed of (return to vendor / scrap) out of the rejected bucket.
+    """
+
+    __tablename__ = "inspections"
+
+    #: incoming | in-process | finished.
+    kind: Mapped[str] = mapped_column(String(12), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="PENDING")
+    template_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    item_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    location_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    supplier_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    reference_type: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    reference_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    accepted_milli: Mapped[int | None] = mapped_column(BigInteger)
+    rejected_milli: Mapped[int | None] = mapped_column(BigInteger)
+    #: Where rejected stock was parked: REJECTED | QUARANTINE.
+    rejected_bucket: Mapped[str | None] = mapped_column(String(20))
+    notes: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    hold_move_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    decision_move_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    decided_by: Mapped[str | None] = mapped_column(String(64))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    #: NONE | RETURN_TO_VENDOR | SCRAP — the follow-on for rejected stock.
+    disposition: Mapped[str] = mapped_column(String(20), nullable=False, default="NONE")
+    disposition_move_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    disposition_note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    disposition_reference: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    disposed_by: Mapped[str | None] = mapped_column(String(64))
+    disposed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    create_key: Mapped[str | None] = mapped_column(String(128))
+    create_hash: Mapped[str | None] = mapped_column(String(64))
+    decision_key: Mapped[str | None] = mapped_column(String(128))
+    decision_hash: Mapped[str | None] = mapped_column(String(64))
+    disposition_key: Mapped[str | None] = mapped_column(String(128))
+    disposition_hash: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(f"kind IN ({_QC_KIND_SQL})", name="kind_known"),
+        CheckConstraint(f"status IN ({_INSPECTION_STATUS_SQL})", name="status_known"),
+        CheckConstraint("quantity_milli > 0", name="quantity_positive"),
+        CheckConstraint(
+            "accepted_milli IS NULL OR (accepted_milli >= 0 AND accepted_milli <= quantity_milli)",
+            name="accepted_within_quantity",
+        ),
+        CheckConstraint(
+            "rejected_milli IS NULL OR (rejected_milli >= 0 AND rejected_milli <= quantity_milli)",
+            name="rejected_within_quantity",
+        ),
+        CheckConstraint(
+            "rejected_bucket IS NULL OR rejected_bucket IN ('REJECTED', 'QUARANTINE')",
+            name="rejected_bucket_known",
+        ),
+        CheckConstraint(
+            "disposition IN ('NONE', 'RETURN_TO_VENDOR', 'SCRAP')", name="disposition_known"
+        ),
+        Index("ix_inspections_org_status", "organization_id", "status"),
+        Index("ix_inspections_org_item", "organization_id", "item_id"),
+        Index("ix_inspections_org_lot", "organization_id", "lot_id"),
+        Index("ix_inspections_org_roll", "organization_id", "roll_id"),
+        Index("ix_inspections_org_location", "organization_id", "location_id"),
+        Index(
+            "uq_inspections_org_create_key",
+            "organization_id",
+            "create_key",
+            unique=True,
+            postgresql_where=text("create_key IS NOT NULL"),
+        ),
+    )
+
+
+class InspectionResult(Base, TenantBase):
+    """One measured parameter on an inspection. The parameter's name, bounds and criticality are
+    **snapshotted** at record time, so editing or deleting the template later never changes what
+    an inspection was judged against. `passed` is computed on the server, never trusted."""
+
+    __tablename__ = "inspection_results"
+
+    inspection_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inspections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    param_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    param_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    param_kind: Mapped[str] = mapped_column(String(10), nullable=False, default="numeric")
+    unit: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    min_milli: Mapped[int | None] = mapped_column(BigInteger)
+    max_milli: Mapped[int | None] = mapped_column(BigInteger)
+    is_critical: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: The measured value for a numeric parameter; NULL for pass_fail.
+    value_milli: Mapped[int | None] = mapped_column(BigInteger)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    recorded_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint("param_kind IN ('numeric', 'pass_fail')", name="param_kind_known"),
+        Index(
+            "uq_inspection_results_inspection_param",
+            "organization_id",
+            "inspection_id",
+            "param_name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_inspection_results_org_inspection", "organization_id", "inspection_id"),
+    )
+
+
 class OutboxEvent(Base, OutboxMixin):
     """Domain events staged in the same transaction as the change they describe."""
 
