@@ -76,9 +76,6 @@ STATUSES: Final[tuple[str, ...]] = (OPTED_IN, OPTED_OUT)
 #: — the reason `SuppressionIn` has no `reason` field either.
 API_SOURCES: Final[tuple[str, ...]] = ("checkout", "web_form", "import", "admin", "api")
 SOURCE_INBOUND_KEYWORD: Final = "inbound_keyword"
-#: A free-text opt-out the keyword list did not match, read by `app/intent.py`. Distinct from
-#: `inbound_keyword` so the ledger says it was inferred, not typed as a command.
-SOURCE_INBOUND_INTENT: Final = "inbound_intent"
 SOURCE_UNSUBSCRIBE_LINK: Final = "unsubscribe_link"
 #: Meta told us: a `user_preferences` webhook (`stop` / `resume` marketing) or a delivery failure
 #: with error 131050 ("recipient has chosen to stop receiving marketing messages").
@@ -91,7 +88,6 @@ SOURCE_COMPLAINT: Final = "complaint"
 SOURCE_LEGACY_IMPORT: Final = "legacy_import"
 SYSTEM_SOURCES: Final[tuple[str, ...]] = (
     SOURCE_INBOUND_KEYWORD,
-    SOURCE_INBOUND_INTENT,
     SOURCE_UNSUBSCRIBE_LINK,
     SOURCE_META_PREFERENCE,
     SOURCE_BOUNCE,

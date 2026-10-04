@@ -64,15 +64,6 @@ class Settings(ServiceSettings):
     whatsapp_access_token: SecretStr | None = None
     whatsapp_timeout_seconds: float = 10.0
 
-    # ----------------------------------------------------------------- inbound intent (TypeSafe)
-    #: Reads what an inbound WhatsApp message *means*, to catch opt-outs the exact-match keyword
-    #: list misses (`app/intent.py`). **Unset means off**, and it is off by default: enabling it
-    #: sends the text of customers' inbound messages (no number, no name) to a third party, which
-    #: is a decision for the operator, not a default. Platform configuration, never per-tenant.
-    typesafe_api_key: SecretStr | None = None
-    typesafe_base_url: str = "https://api.typesafe.ai"
-    typesafe_timeout_seconds: float = 10.0
-
     # ----------------------------------------------------------------- WhatsApp Embedded Signup
     #: The vendor's Meta app, for the Embedded Signup flow (slice W1). All optional at boot: with
     #: `META_APP_ID`, `META_APP_SECRET` (or the older `WHATSAPP_APP_SECRET`) or the configuration
