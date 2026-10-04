@@ -204,10 +204,17 @@ reported separately and reconciling; partial receipt and shortage; reservation e
 sweep; reconciler clean after every concurrency scenario; negative-authz and cross-tenant tests on every
 route; migration up/down verified; the event payloads validated against their committed contracts.
 
-### Phase 4 — Quality
+### Phase 4 — Quality — **BUILT on `feat/inventory-q4-on-p9`** (2026-10-05, stacked on Phase 9; not yet merged or deployed) · reference: [quality.md](quality.md)
 QC templates (incoming / in-process / finished), inspections with PENDING/PASSED/FAILED/HOLD/
 REWORK/PARTIAL_PASS, release/reject moving stock between buckets, rejection → return-to-vendor
 or scrap.
+
+Shipped: tables `qc_templates`, `qc_template_params`, `inspections`, `inspection_results`
+(migration `a3c5e8f1b290`); the `app/quality/` package; fifteen endpoints under
+`/operations/quality`; permissions `operations.quality.inspection.read|inspect|approve|reject`
+(approve and reject dangerous) and the `QC_INSPECTOR` role; events `operations.quality.hold`,
+`.released`, `.rejected` and `.disposed`; screens `/quality/templates`, `/quality/inspections`
+and `/quality/inspections/:id`. Deferred: see [quality.md §9](quality.md#9-deferred-and-risks).
 
 ### Phase 5 — Manufacturing
 Versioned multi-level BOMs with scrap %, substitutes and effective dates; production orders
