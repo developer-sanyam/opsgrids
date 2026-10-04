@@ -214,13 +214,42 @@ Shipped: tables `qc_templates`, `qc_template_params`, `inspections`, `inspection
 `/operations/quality`; permissions `operations.quality.inspection.read|inspect|approve|reject`
 (approve and reject dangerous) and the `QC_INSPECTOR` role; events `operations.quality.hold`,
 `.released`, `.rejected` and `.disposed`; screens `/quality/templates`, `/quality/inspections`
-and `/quality/inspections/:id`. Deferred: see [quality.md §9](quality.md#9-deferred-and-risks).
+and `/quality/inspections/:id`. Deferred: see [quality.md §10](quality.md#10-deferred-and-risks).
 
-### Phase 5 — Manufacturing
+### Phase 5 — Manufacturing — **DONE** (2026-10-05) · reference: [manufacturing.md](manufacturing.md)
 Versioned multi-level BOMs with scrap %, substitutes and effective dates; production orders
 pinned to a BOM version; reservation → issue (BOM-based, lot/roll picking) → WIP → output →
 finished-goods receipt with lot genealogy; wastage by type vs standard, with threshold alerts;
 returns to stock; variance.
+
+Built (`services/operations/app/manufacturing/`, migration `d3b9f2a7c614`):
+- 12 tables (`boms`, `bom_versions`, `bom_components`, `bom_substitutes`, `production_orders`,
+  `production_materials`, `production_picks`, `production_outputs`, `production_wastage`,
+  `production_genealogy`, `wastage_thresholds`, `manufacturing_requests`), RLS on every one; a
+  published BOM version is immutable in the service **and** by trigger; cycles refused with the
+  path; effective dating resolves the version in force without editing older rows.
+- All stock movement through `post_move` / `reserve` / `release` (WIP is the existing `WIP`
+  status bucket): reserve → issue (`AVAILABLE` → `WIP`) → output (consume WIP at standard, receive
+  finished goods) → wastage by type / return / complete; exact integer arithmetic, scrap rounded
+  up once, cumulative so split outputs never drift.
+- Events `operations.production.started|completed|material_shortage` plus
+  `wastage_threshold_exceeded`, audit rows, `Idempotency-Key` on every mutating endpoint.
+- Permissions `manufacturing.bom.read/write/publish`, `manufacturing.production_order.read/write/
+  approve/issue/complete` (publish and approve dangerous), role `PRODUCTION_PLANNER`, manager grants.
+- Screens `/manufacturing/boms` (+ detail, version, publish) and `/manufacturing/orders` (+ detail
+  with reserve / issue / output / wastage / return / complete).
+
+Differences from the plan text, and why:
+- **Genealogy lives in `production_genealogy`**, plain UUIDs, not `lot_genealogy`: the `lots` and
+  `rolls` tables belong to Phase 1, which is not in this lineage. When Phase 1 lands, the ids here
+  are already the right shape for a foreign key to be added.
+- **One live BOM per item**, with versions underneath — alternates are versions or substitutes, not
+  parallel BOMs, so a component's BOM is unambiguous.
+- **Production orders are single-level**; multi-level is a produced component with its own BOM and
+  its own order (explosion shows the whole tree).
+
+Not in Phase 5: costing and cost roll-up (8), MRP (7), routings/work centres/labour, co-products,
+QC release of output (4), mobile scan issue/output (9). See manufacturing.md.
 
 ### Phase 6 — Job work
 Job-work orders, issue to vendor (`AT_JOB_WORKER` bucket, delivery challan / e-way bill via

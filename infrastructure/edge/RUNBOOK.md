@@ -1409,6 +1409,39 @@ that box.
    member also uses, once an `owner` has issued *their* enrolment code the same way (step 8, or
    the audited `POST /auth/operator/enrollment-codes` route from inside the console itself).
 
+### Inventory Phase 5 (manufacturing): migration, order, and the permission reconcile
+
+What ships: `operations` migration `d3b9f2a7c614` (12 new tables, three BOM-immutability trigger
+functions, UPDATE/DELETE revoked from the app role on `production_outputs`, `production_wastage`
+and `production_genealogy`), the Manufacturing screens in the Operations SPA, and eight new
+`operations.manufacturing.*` permissions plus the `PRODUCTION_PLANNER` role template. Nothing here
+needs a new container, a new `.env` key or a new role: `operations` already owns its schema.
+
+1. **Order.** Deploy as usual (migrate → `operations` API → publish the Operations SPA). The SPA
+   goes **after** the API, as with every inventory phase; the old SPA keeps working against the
+   new API because nothing it reads changed. The migration only adds objects, so the API of the
+   previous release is unaffected by it.
+2. **Reconcile the `operations` permissions before anyone uses the screens in an organization that
+   existed before this deploy** (ADR-0007). `install_registration` skips role codes that already
+   exist, so `OPERATIONS_ADMIN` and `OPERATIONS_MANAGER` in every older organization keep exactly
+   the grants they had: every Manufacturing endpoint is a 403 for them (the SPA hides the nav
+   group) while a new organization works. **Dry run first, always**:
+
+   ```bash
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations
+   # read the diff — expect 8 new grants on OPERATIONS_ADMIN, 8 on OPERATIONS_MANAGER, and a new
+   # PRODUCTION_PLANNER role — then:
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+   ```
+
+   This is a fleet write (every organization's permission version bumps, which signs members out
+   of their cached token) and is never part of an ordinary `make deploy`. Customer-authored roles
+   are left alone; an admin grants them the new permissions by hand.
+3. **Verify.** As an admin of a pre-existing organization: `/manufacturing/boms` loads (empty
+   state, not a 403); create a BOM, publish it, plan an order. `make migration-roundtrip` proves
+   the revision up/down on a dev database; **the downgrade drops the manufacturing tables and
+   their data** — on a box with real production orders, restore from the nightly backup instead.
+
 ### Roll back a bad deploy
 
 **The application:**
