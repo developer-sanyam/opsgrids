@@ -100,9 +100,11 @@ class TestTheScannerItself:
     this file never contains a string the scan would flag."""
 
     def test_it_finds_each_shape(self) -> None:
+        test_secret = "cfsk_ma_" + "test_" + "a1b2c3d4e5f6a7b8c9d0"  # pragma: allowlist secret
+        prod_secret = "cfsk_ma_" + "prod_" + "A1B2C3D4E5F6A7B8C9D0e1"  # pragma: allowlist secret
         samples = {
-            "cashfree secret": "cfsk_ma_" + "test_" + "a1b2c3d4e5f6a7b8c9d0",
-            "cashfree prod secret": "cfsk_ma_" + "prod_" + "A1B2C3D4E5F6A7B8C9D0e1",
+            "cashfree secret": test_secret,
+            "cashfree prod secret": prod_secret,
             "sandbox app id": "TEST" + "10" + "9876543",
             "razorpay test": "rzp_" + "test_" + "AbCdEfGhIjKlMn",
             "razorpay live": "rzp_" + "live_" + "AbCdEfGhIjKlMn",
@@ -126,7 +128,7 @@ class TestTheScannerItself:
         assert _hits(f'KEY = "{fixture}"') == []
 
     def test_a_hit_reports_where_and_never_what(self) -> None:
-        secret = "cfsk_ma_" + "test_" + "a1b2c3d4e5f6a7b8c9d0"
+        secret = "cfsk_ma_" + "test_" + "a1b2c3d4e5f6a7b8c9d0"  # pragma: allowlist secret
         hits = _hits(f"line one\nCASHFREE_SECRET_KEY={secret}\n")
         assert hits == [(2, "a Cashfree secret key (cfsk_ma_...)")]
         assert secret not in repr(hits)

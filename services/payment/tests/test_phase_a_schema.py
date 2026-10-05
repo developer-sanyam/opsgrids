@@ -196,5 +196,6 @@ def test_the_revision_chains_from_the_previous_head() -> None:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.revision == "c7d8e9f0a1b2" and module.down_revision == "a8c1d2e3f4b5"
+    assert module.revision == "c7d8e9f0a1b2"  # pragma: allowlist secret
+    assert module.down_revision == "a8c1d2e3f4b5"  # pragma: allowlist secret
     assert callable(module.upgrade) and callable(module.downgrade)

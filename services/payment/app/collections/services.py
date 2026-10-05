@@ -94,8 +94,8 @@ from platform_core.logging import get_logger
 log = get_logger("payment.collections")
 
 #: Which of a merchant account's two sealed secrets — labels (and AAD parts), not credentials.
-KEY_SECRET = "key_secret"  # noqa: S105
-WEBHOOK_SECRET = "webhook_secret"  # noqa: S105
+KEY_SECRET = "key_secret"  # noqa: S105  # pragma: allowlist secret
+WEBHOOK_SECRET = "webhook_secret"  # noqa: S105  # pragma: allowlist secret
 
 
 class ProviderRefusedProblem(ProblemError):

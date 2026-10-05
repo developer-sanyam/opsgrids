@@ -15,8 +15,8 @@ _RAZORPAY_KEY_ID = re.compile(r"^rzp_(test|live)_[A-Za-z0-9]{6,40}$")
 #: Cashfree secret keys carry theirs too (`cfsk_ma_test_…` / `cfsk_ma_prod_…`), and a sandbox App ID
 #: starts with `TEST`. Third-party-sourced shapes: a mismatch is a safe false-refuse, never a
 #: reason to let a key through, and a key that matches neither is judged by the switch alone.
-_CASHFREE_SECRET_TEST_PREFIX = "cfsk_ma_test_"  # noqa: S105
-_CASHFREE_SECRET_PROD_PREFIX = "cfsk_ma_prod_"  # noqa: S105
+_CASHFREE_SECRET_TEST_PREFIX = "cfsk_ma_test_"  # noqa: S105  # pragma: allowlist secret
+_CASHFREE_SECRET_PROD_PREFIX = "cfsk_ma_prod_"  # noqa: S105  # pragma: allowlist secret
 _CASHFREE_APP_ID_TEST_PREFIX = "TEST"
 
 

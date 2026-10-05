@@ -252,7 +252,10 @@ class TestPaymentsAndCapabilities:
 
 class TestTheCheckoutCallbackSignature:
     #: `openssl dgst -sha256 -hmac "dev-only-razorpay-fake-secret" <"order_Abc123|pay_Xyz789">`.
-    KNOWN = "2f639a5a9d0759e72926c628b8deb48e1f54bea83f8fc49a28adb8d8eb93c107"
+    KNOWN = (
+        "2f639a5a9d0759e72926c628b8deb48e"  # pragma: allowlist secret
+        "1f54bea83f8fc49a28adb8d8eb93c107"  # pragma: allowlist secret
+    )
 
     def test_the_known_answer(self) -> None:
         provider = _live(FakeRazorpay())

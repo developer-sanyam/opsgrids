@@ -87,12 +87,13 @@ class TestProviderSecretsAreRedacted:
     `secret_key` is Cashfree's. Matched case-insensitively, at any depth."""
 
     def test_the_provider_credential_names_are_redacted_at_any_depth(self) -> None:
+        deep = {"inner": {"key_secret": "deep-secret-value"}}  # pragma: allowlist secret
         stored = _record(
             {
-                "key_secret": "rzp-secret-value",
-                "webhook_secret": "whsec-value",
-                "Secret_Key": "cf-secret-value",
-                "nested": [{"inner": {"key_secret": "deep-secret-value"}}],
+                "key_secret": "rzp-secret-value",  # pragma: allowlist secret
+                "webhook_secret": "whsec-value",  # pragma: allowlist secret
+                "Secret_Key": "cf-secret-value",  # pragma: allowlist secret
+                "nested": [deep],
                 "key_id": "rzp_test_public_id",  # the key id is public by design, and kept
             }
         )
