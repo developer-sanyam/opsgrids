@@ -656,6 +656,32 @@ class TestStatusAndWebhooks:
         with as_principal(principal_for(org_id, [READ])):
             assert (await client.get(ACCOUNT)).json()["last_webhook_at"] is not None
 
+    async def test_another_integrations_order_keeps_its_buyer_out_of_the_inbox(
+        self,
+        client: AsyncClient,
+        merchant_providers: MerchantProviders,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        """The account-wide webhook delivers the merchant's own website's Orders too. One of those
+        verifies (same Secret Key), finds no collection, and is recorded as ignored — without the
+        buyer its integration put in `order_tags`."""
+        account = await connect_cashfree(client, org_id)
+        body = json.loads(cf_body("PAYMENT_SUCCESS_WEBHOOK", order_id="shop-order-7781"))
+        body["data"]["order"]["order_tags"] = {
+            "customer_email": "jane@example.com",
+            "ship_to": "12 MG Road Pune 411001",
+        }
+        raw = json.dumps(body).encode()
+        response = await deliver(client, account["id"], raw, delivery="dlv-shop-1")
+        assert response.status_code == 200
+        assert response.json()["ignored_reason"] == "unknown_charge"
+        inbox = await inbox_rows(admin_session, org_id)
+        assert len(inbox) == 1
+        stored = json.dumps(inbox[0]["payload"])
+        for pii in ("jane@example.com", "MG Road", "411001", PHONE, "buyer@example.com"):
+            assert pii not in stored
+
     async def test_the_legacy_path_serves_a_cashfree_account_too_the_provider_is_the_rows(
         self, client: AsyncClient, merchant_providers: MerchantProviders, org_id: uuid.UUID
     ) -> None:

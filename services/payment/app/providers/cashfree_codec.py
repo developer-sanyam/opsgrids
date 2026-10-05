@@ -35,6 +35,8 @@ import base64
 import hashlib
 import hmac
 import json
+import re
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -341,13 +343,43 @@ def _amount_text(value: Any, currency: Any) -> str | None:
     )
 
 
+#: The `order_tags` keys this platform itself puts on an Order, and the only ones the inbox keeps.
+#: Ids must be UUIDs (the platform's own); a word must be a short lower-case slug. Nothing else
+#: survives, because `order_tags` is **free-form for anyone else's Order**: a merchant who
+#: registers the account-wide webhook (RUNBOOK) receives every Order on their Cashfree account —
+#: their own website's and plugins' included — and those put buyers' emails, phones and addresses
+#: in tags. A delivery for such an Order verifies (same Secret Key), finds no collection, and is
+#: still written to the append-only inbox: an allow-list of keys *and* of value shapes is what
+#: keeps a third party's customer out of it (the Razorpay redactor drops `notes` for the same
+#: reason). Nothing reads tags back from the stored body: a charge is found by `order_id`.
+_TAG_IDS: frozenset[str] = frozenset(
+    {"organization_id", "charge_id", "subscription_id", "reference_id"}
+)
+_TAG_WORDS: frozenset[str] = frozenset({"reference_type", "product_key", "flow"})
+_TAG_WORD = re.compile(r"[a-z][a-z0-9_.-]{0,39}")
+
+
+def _uuid_text(value: str) -> str | None:
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        return None
+
+
 def _clean_tags(tags: Any) -> dict[str, str]:
-    """`order_tags` — the platform's own metadata (ids), kept — as strings only."""
-    return {
-        str(k)[:40]: str(v)[:120]
-        for k, v in as_dict(tags).items()
-        if isinstance(v, str | int) and not isinstance(v, bool)
-    }
+    """`order_tags`, reduced to the platform's own metadata: its id keys with UUID values and its
+    word keys with slug values. Any other key, and any value of another shape, is dropped."""
+    kept: dict[str, str] = {}
+    for key, value in as_dict(tags).items():
+        if not isinstance(value, str):
+            continue
+        if key in _TAG_IDS:
+            text = _uuid_text(value)
+            if text is not None:
+                kept[key] = text
+        elif key in _TAG_WORDS and _TAG_WORD.fullmatch(value):
+            kept[key] = value
+    return kept
 
 
 def redact_webhook_body(parsed: dict[str, Any]) -> dict[str, Any]:
