@@ -19,11 +19,8 @@
  * `currency` and `entry_type` filters — no free-text search, so the ledger screen also filters its
  * page client-side for that.
  *
- * There is deliberately no `getCatalog()` here any more: catalog-service's `/admin/catalog` prefix
- * only carries **write** routes (create/patch/retire a plan, create/publish a version) — there is
- * no admin `GET` that lists products, plans or versions. A function that called it would 404 on
- * every read, so the catalog-browsing screen was rebuilt around what the API actually offers
- * instead of pointing at a route that doesn't exist (see `routes/Plans.tsx`).
+ * Catalog-service's own `/admin/catalog` reads and writes (the Plans & prices page) live in
+ * `./catalog.ts`, which owns that contract end to end.
  *
  * `admin.opsgrids.com` serves this console publicly, so `./fixtures` is loaded only through a
  * dynamic `import()` inside each `if (USE_FIXTURES)` branch below, never a static top-of-file
