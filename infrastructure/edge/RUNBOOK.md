@@ -1187,7 +1187,14 @@ The console's **Change plan** control (`/api/v1/admin/organizations/{id}/plan-op
 `.../subscriptions/{product_key}/plan-change:preview` and `.../plan-change`; owner and billing_ops) lets
 staff move a subscription to another plan. A **trial** switches immediately. A **paying** subscription
 switches at its **next billing period**, and an **equal-price** change applies at once — staff cannot force
-"now, prorated"; for goodwill sooner, use *Grant credit*.
+"now, prorated"; for goodwill sooner, use *Grant credit*. An equal-price change that applies now on a paying,
+usage-priced subscription is not free: the usage metered so far is closed at the current plan's usage rates
+and invoiced by the billing run (the confirm says so when it happens).
+
+Only versions catalog **offers the organization now** can be chosen: a version superseded by a newer one, or
+of a retired plan, is refused **422 `not_offerable`** even if an operator's open dialog still lists it (the
+dialog then reloads the list). Withdrawing a scheduled change back to the current pin is always allowed. If
+catalog cannot be reached the confirm answers **503 `catalog_unavailable`** and nothing is claimed or changed.
 
 **"Next billing period" only happens while the billing run is running.** The change is stored as a
 pending change and applied when the run claims the next period. So, before the first staff switch on the
@@ -1225,7 +1232,11 @@ FROM subscription.subscriptions WHERE organization_id = :org;
 
 A claim stuck `in_progress` is a request that died mid-call: after 60 seconds a retry with the same key
 reconciles it from a live read. `unknown` means the answer was lost; the operator sees **503
-`outcome_unknown`**, and repeating the same request is safe. A scheduled change emits **no event**, so the
+`outcome_unknown`**, and repeating the same request is safe. A failed **preview** is never `outcome_unknown`
+(it is a read): it answers **503 `preview_unavailable`**, nothing was changed. The operator's reason is on the
+audit rows above (console's, and subscription's `audit_logs.reason`) and **not** on the
+`commerce.subscription.*` event — a customer org's own notification templates render that payload. A
+scheduled change emits **no event**, so the
 account list does not show it — the Change plan card (the live pricing read) does. Product access follows a
 change that has taken effect within about **15 minutes**.
 

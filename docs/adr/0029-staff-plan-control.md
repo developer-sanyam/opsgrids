@@ -31,7 +31,10 @@ on paying subscriptions wait for the next period.
 
 1. **What staff may change, and when it lands.** A **trial** switches immediately and free. A **paying**
    subscription switches at its **next billing period**. An **equal-price** change on a paying subscription applies
-   now and charges nothing. **The server computes the direction** (subscription's own list-price rule, recurring
+   now with no proration — but because the pin moves now, the usage metered so far is closed at the current plan's
+   usage rates and invoiced by the billing run, and later usage is priced on the new plan. The preview says when
+   that happens (`usage_closed_now`, decided by the write's own rule), and the confirm copy says "nothing is
+   charged" only when it does not. **The server computes the direction** (subscription's own list-price rule, recurring
    flat and per-seat at quantity one, usage ignored); the console shows what the preview says and never decides it.
    There is **no immediate-proration path and no immediate-downgrade path** to ask for: the `timing` the console
    accepts is `auto` or `next_period`, which mean the same thing. Goodwill for a customer who should have the new
@@ -61,7 +64,11 @@ on paying subscriptions wait for the next period.
    * A **reason**, 1–500 characters, required.
 4. **The reason is a note, not the transition's reason.** The transition's `reason` stays a short machine code (it
    is 60 characters and `decide` types the emitted event from it). The operator's words are the audit row's `reason`
-   (text) and the event payload's `note`. Free text is checked against `RESERVED_REASONS` on **every** write that
+   (text) and **nothing else** — they are not put on the `commerce.subscription.*` event. That event is stamped
+   with the customer's organization, and notification renders a customer org's own templates from the whole
+   payload, so a `{{note}}` placeholder in a rule the customer's Notification author wrote would mail staff's
+   internal reason to the customer. A deferred change keeps its note on `pending_change` (subscription's own row)
+   and it becomes the applied transition's audit reason. Free text is checked against `RESERVED_REASONS` on **every** write that
    takes words — change-plan, subscribe, suspend, reactivate, and the customer cancel (where `renew` used to emit a
    `renewed` event for a cancellation) — and refused with 422 `reserved_reason`. This also removes a latent 500:
    suspend, reactivate and cancel accepted 200 characters into a 60-character column.
@@ -71,13 +78,16 @@ on paying subscriptions wait for the next period.
 6. **Refusals are machine-distinguishable, and the right one comes first.** Business refusals carry
    `errors[0].code` (the shape every other service's coded refusal uses; no change to `platform-core`): `state`,
    `cadence`, `currency`, `already_pinned`, `product_mismatch`, `not_published`, `not_found`, `reserved_reason`,
-   `bundle` (422); `state_changed`, `billing_catching_up`, `request_in_progress`, `idempotency_key_reused` (409);
-   `outcome_unknown`, `upstream_refused` (503). **Precedence:** `state_changed`, then every refusal that is a property
+   `bundle`, `not_offerable` (422); `state_changed`, `billing_catching_up`, `request_in_progress`,
+   `idempotency_key_reused` (409); `outcome_unknown` (a write's answer was lost), `upstream_refused`,
+   `catalog_unavailable` and, for the read-only preview, `preview_unavailable` — the last three say nothing was
+   changed (503). **Precedence:** `state_changed`, then every refusal that is a property
    of the request or the subscription's state, and only then `billing_catching_up` — the one transient refusal. A
    past-due subscription is no longer told to "try again shortly" for a change that will never be allowed. (While
    `BILLING_RUN_ENABLED=false` nothing claims the due period, so `billing_catching_up` is indefinite and the
    operator surface says so.) A version restricted to *another* organization is the same 404 `not_found` as one that
-   does not exist: a distinct `not_visible` code would disclose it.
+   does not exist, **whatever its state** (the audience check precedes the published check, so another
+   organization's draft never answers `not_published`): a distinct `not_visible` code would disclose it.
 7. **A deferred change keeps its operator and is labelled by its direction.** The scheduled-change and
    withdrawn/superseded audit rows carry `acting_as`; a second scheduled change names the one it replaced in
    `before`; a change that applies now over a waiting one leaves a `change_superseded` row (it used to clear it
@@ -90,11 +100,22 @@ on paying subscriptions wait for the next period.
    are public or negotiated for exactly the named organization (`visible_plans`' audience rule), and drops a version
    when a newer published version of the same plan has the same audience, cadence and currency — publishing does not
    grandfather the old one, so it stays pinnable by id and would otherwise be offered beside its successor.
+   **The same set is enforced, not only shown.** A UI gate hides a control; it does not protect data: a picker
+   loaded before a newer version was published or the plan retired, or a direct call with any published id of the
+   product, would otherwise pin a withdrawn price — subscription's pin lookup sees only that a version is published
+   and whose it is. So console re-reads the offerable set on every preview (after subscription's own refusals) and
+   every confirm (before the claim, so a catalogue outage claims nothing; enforced after the replay branches, so a
+   recorded success still replays), and refuses anything else with 422 `not_offerable`, recorded and replayed like
+   any refusal. The one exception is a withdrawal back to the pin the subscription is on, which is often a
+   superseded version and never a new price.
 9. **Outcome unknown is said plainly and reconciled, not guessed.** A timeout, transport failure or 5xx after the
    request left marks the claim `unknown` and answers 503 `outcome_unknown`. A retry with the same key reads the
    live subscription: if the target is already pinned or scheduled it records and returns that; otherwise it makes
-   the call, which the expected-state guard keeps from applying twice if the first attempt was merely late. A
-   claim left `in_progress` past a 60-second lease (a crashed process) is reconciled the same way.
+   the call, which the expected-state guard keeps from applying twice if the first attempt was merely late. If that
+   call is told `state_changed`, the live subscription is read again before the answer is recorded: a late first
+   attempt that committed in between is the change landing, recorded as succeeded (reconciled), not a refusal the
+   key would replay forever. A claim left `in_progress` past a 60-second lease (a crashed process) is reconciled the
+   same way. A failed **preview** is never `outcome_unknown`: it is a read with no key, and says nothing was changed.
 10. **One operator id format on new flows: `operator:<sub>`.** The older suspend/reactivate delegation sends the bare
     `sub`; changing it would rewrite what existing audit rows say, so it is left (recorded below).
 

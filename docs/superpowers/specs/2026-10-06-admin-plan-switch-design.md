@@ -46,8 +46,9 @@ unsafe; each is closed by this release.
 any other service, or none, is 401 and writes nothing.
 
 ### 3.2 The note
-`_transition(..., note=)`: the audit row's `reason` is the note (else the machine reason); the event payload gains
-`note`. The transition's `reason` stays a machine code — now `operator_suspend`, `operator_reactivate`,
+`_transition(..., note=)`: the audit row's `reason` is the note (else the machine reason). The note is **not** put
+on the event payload: the event carries the customer's organization and notification renders a customer org's own
+templates from the whole payload, so `{{note}}` would mail staff's internal reason to the customer. The transition's `reason` stays a machine code — now `operator_suspend`, `operator_reactivate`,
 `customer_cancel` for the three that used to store free text there (existing rows are unchanged; the words are in
 `audit_logs.reason` either way). `domain.assert_free_text_allowed` checks `RESERVED_REASONS` on change-plan,
 subscribe, suspend, reactivate and the customer cancel → 422 `reserved_reason`. `note` is 1–500 characters, optional
@@ -80,18 +81,24 @@ Include-in-schema false; no migration.
   pending_plan_version_id}`.
 * `POST /internal/v1/subscriptions/{id}/change-plan/preview` `{organization_id, plan_version_id}` → `{expected,
   action: switch|withdraw_scheduled, direction: upgrade|downgrade|equal|null, effective: now|next_period|null,
-  effective_at, would_clear_pending, entitled_added, entitled_removed, usage_priced, refusal_code,
+  effective_at, would_clear_pending, entitled_added, entitled_removed, usage_priced, usage_closed_now, refusal_code,
   refusal_detail}`. Read-only: no row written, no row lock taken (the billing-claim check reads the claim). A refusal
   is returned as data; only 404 and an unreachable catalog raise. Evaluated as the staff path is
-  (`timing="next_period"`).
+  (`timing="next_period"`). `usage_closed_now`: applying now closes the usage metered so far at the current pin's
+  usage rates (an active subscription, or a trial whose conversion is claimed, on a current version with a usage
+  price) — the apply branch's own `schedule_closing_usage` rule — so an equal-price switch is "no proration", not
+  "nothing charged".
+* Every operator route (`suspend`, `reactivate`, `change-plan`, `change-plan/preview`) looks the subscription up
+  **filtered on the payload's `organization_id`** as well as under the tenant binding: RLS is the net, not the only
+  guard.
 * Direction is `domain.plan_change_direction` over `_list_price_minor` — the exact rule the write uses.
 
 ### 4.3 Console (`/api/v1/admin/organizations/{id}`, role `OperatorBilling`)
 | Route | Purpose |
 |---|---|
 | `GET /plan-options?product_key=` | The live subscription and the offerable versions, each marked `is_current`, `is_pending` and `blocked_code` (`currency` / `cadence`) |
-| `POST /subscriptions/{product_key}/plan-change:preview` `{plan_version_id, timing: auto\|next_period}` | Subscription's preview, passed on |
-| `POST /subscriptions/{product_key}/plan-change` `{plan_version_id, timing, reason, expected}` + `Idempotency-Key` | The change |
+| `POST /subscriptions/{product_key}/plan-change:preview` `{plan_version_id, timing: auto\|next_period}` | Subscription's preview, passed on; a target it would accept but catalog no longer offers this organization is refused as data (`not_offerable`) |
+| `POST /subscriptions/{product_key}/plan-change` `{plan_version_id, timing, reason, expected}` + `Idempotency-Key` | The change — the target must be in catalog's offerable set *now* (re-read before the claim; enforced after the replay branches), except a withdrawal back to the current pin |
 
 The subscription is resolved server-side from `(organization, product_key)`; the body never names it. Response of
 the confirm: `{effective: now|next_period, state, plan_version_id, pending_plan_version_id, effective_at, replayed}`,
@@ -104,8 +111,8 @@ read back off subscription's own answer. `timing` has no `now` value.
 | 404 | `no_subscription`, `not_found` (also another organization's bespoke version) |
 | 403 | role / second factor (`require_operator`) |
 | 409 | `state_changed`, `billing_catching_up`, `request_in_progress`, `idempotency_key_reused` |
-| 422 | `state`, `cadence`, `currency`, `already_pinned`, `product_mismatch`, `not_published`, `reserved_reason`, `bundle`; and the body's own validation (reason 1–500, no extra fields, no `timing: now`, `Idempotency-Key` 8–255) |
-| 503 | `outcome_unknown` (timeout / 5xx — the change may or may not have been made), `upstream_refused` (console's own credentials) |
+| 422 | `state`, `cadence`, `currency`, `already_pinned`, `product_mismatch`, `not_published`, `not_offerable`, `reserved_reason`, `bundle`; and the body's own validation (reason 1–500, no extra fields, no `timing: now`, `Idempotency-Key` 8–255) |
+| 503 | `outcome_unknown` (a confirm's timeout / 5xx — the change may or may not have been made), `upstream_refused` (console's own credentials; nothing was changed), `catalog_unavailable` (the offerable re-read failed; this request changed nothing), `preview_unavailable` (the preview only — a read, so never `outcome_unknown`) |
 
 ## 5. The claim — `console.idempotency_keys`
 
@@ -126,7 +133,7 @@ not a directory-reader table.
 | after a definitive refusal (404 / 409 / 422) | the same refusal, no call; a new key is a new request |
 | while another request holds it (fresh `in_progress`) | 409 `request_in_progress` |
 | with a different fingerprint | 409 `idempotency_key_reused`, no call |
-| after `unknown` or a stale `in_progress` | reconcile: read the live subscription; landed → record and return it; not landed → compare-and-swap the claim and make the call |
+| after `unknown` or a stale `in_progress` | reconcile: read the live subscription; landed → record and return it; not landed → compare-and-swap the claim and make the call (if that call meets `state_changed`, read the live subscription again first: a late first attempt that landed meanwhile is recorded as succeeded, not refused) |
 | for another organization | an independent request |
 
 ## 6. Frontend — `opsgrids-internal`
@@ -140,25 +147,35 @@ result region in the card. The idempotency key is minted per preview; reused by 
 outcome; replaced after a refusal (which returns to the form with the server's sentence, its reference and the next
 step, and reloads the live state). The ConfirmDialog latches a double click; the flow adds its own latch. Copy says,
 before the confirm: nothing is charged before the next period for a paying subscription, access follows within about
-15 minutes, and a scheduled change needs the billing run. A role hint (owner and billing ops) and a state hint sit
-beside a disabled button. Dates are UTC and say so. `ApiError` now exposes `code` and `requestId`.
+15 minutes, and a scheduled change needs the billing run; an equal-price switch says "nothing is charged" only when
+`usage_closed_now` is false, and otherwise that usage so far is invoiced at the current plan's rates. The plan names
+in the form and the confirm come from the dialog's own fresh reads (plan-options, and the preview's `expected` pins
+mapped through it), never the card's snapshot, which can be stale. A `not_offerable` refusal reloads the picker and
+clears the choice. A 503 that says nothing was changed (`upstream_refused`, `catalog_unavailable`,
+`preview_unavailable`) is never shown as "may or may not have been made". The reason's helper says it stays on the
+staff audit trail. A role hint (owner and billing ops) and a state hint sit beside a disabled button. Dates are UTC
+and say so. `ApiError` now exposes `code` and `requestId`.
 
 ## 7. Tests (what pins this)
 
 * **Subscription** (`test_operator_plan_change.py`, plus reactivate/bundle updates): console-only on suspend,
   subscribe, change-plan and preview (no token, `tests`, `billing`, `catalog`); long notes do not 500; the note is the
-  audit reason and the event note; reserved words refused on every write incl. customer cancel; stable codes;
+  audit reason and never on the event; reserved words refused on every write incl. customer cancel; stable codes;
   state before `billing_catching_up`; `acting_as` on scheduled/withdrawn/superseded rows; `upgraded`/`downgraded` by
-  direction and the legacy label; preview direction/timing/bundle diff/usage flag/refusals-as-data/read-only;
-  **cross-tenant** (org B's name on org A's subscription id is 404 on every route and writes nothing); the
-  expected-state guard and its precedence.
+  direction and the legacy label; preview direction/timing/bundle diff/usage flag/`usage_closed_now` agreeing with
+  the close the write inserts/refusals-as-data/read-only; another org's *unpublished* bespoke is the same 404;
+  **cross-tenant** (org B's name on org A's subscription id is 404 on every route and writes nothing — also with the
+  RLS net removed); the expected-state guard and its precedence.
 * **Catalog** (`test_offerable_versions.py`): console-only; audience (another org's bespoke is never returned);
   drafts, retired plans and other products excluded; supersession per audience/cadence/currency.
 * **Console** (`test_plan_change.py`): negative-authz on all three routes (product audience 404, no-otp 403,
   support 403, no role 403, 401, owner and billing_ops admitted) with `downstream == []` and no claim; the picker;
   the preview; the claim → call → record contract; the idempotency matrix (replay, different body, per-org scope,
-  in-flight, **concurrent requests make one call**); every coded refusal surfaced, recorded and replayed; outcome
-  unknown and its reconcile paths; the claim table's RLS and `WITH CHECK`.
+  in-flight, **concurrent requests make one call**); every coded refusal surfaced, recorded and replayed; **only what
+  is on offer** (a superseded or retired target refused in the preview and the confirm with no downstream call, a
+  withdrawal to a superseded pin allowed, a recorded success still replayed, a catalogue outage claiming nothing);
+  outcome unknown and its reconcile paths, including a late first attempt met as `state_changed`; a failed preview
+  never `outcome_unknown`; the claim table's RLS and `WITH CHECK`.
 * **Frontend**: copy table tests; the card's states; role and state hints; the form's states; preview → confirm →
   result; **double click sends once**; key lifetime; every failure; focus return; fixtures that obey the live rules.
 
