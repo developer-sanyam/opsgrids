@@ -339,6 +339,7 @@ describe("a failed confirm", () => {
     [409, "already_subscribed", "this organization already has a subscription for 'crm' (cancelled)", /cannot be reopened or replaced yet/],
     [422, "org_currency_mismatch", "this organization's subscriptions are billed in INR", /one currency/],
     [422, "one_time", "a one_time plan has no billing period", /never billed/],
+    [422, "not_offerable", "that plan version is no longer on offer for this organization", /catalogue has moved on/],
   ] as const)("a %s %s returns to the form with the server's words, its reference and next step", async (status, code, detail, guidance) => {
     const { w, dialog } = await toConfirm(wire());
     w.addSpy.mockRejectedValue(problem(status, code, detail));
@@ -362,6 +363,18 @@ describe("a failed confirm", () => {
     await waitFor(() => expect(w.addSpy).toHaveBeenCalledTimes(2));
     const keys = w.addSpy.mock.calls.map((c) => c[2]);
     expect(keys[0]).not.toBe(keys[1]);
+  });
+
+  it("a catalogue outage says nothing was changed, not that the outcome is unknown", async () => {
+    const { w, confirm } = await toConfirm(wire());
+    w.addSpy
+      .mockRejectedValueOnce(problem(503, "catalog_unavailable", "could not check this plan against the catalogue"))
+      .mockResolvedValueOnce(TRIAL_RESULT);
+    await userEvent.click(within(confirm).getByRole("button", { name: "Start trial" }));
+    expect(await within(confirm).findByText(/Nothing was changed\. Try again in a moment/)).toBeTruthy();
+    expect(within(confirm).queryByText(/may or may not/)).toBeNull();
+    await userEvent.click(within(confirm).getByRole("button", { name: "Try again" }));
+    await screen.findByText("Trial started");
   });
 
   it.each([

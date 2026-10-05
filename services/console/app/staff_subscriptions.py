@@ -20,6 +20,11 @@ commercial truth and never writes another service's schema (ADR-0003 §2).
   and the picker never offers such a product. It also refuses a `one_time` version (never billed)
   and a currency other than the organization's live subscriptions' (`org_currency_mismatch`); the
   picker marks both up front.
+* **Only what is on offer.** The confirm re-reads catalog's offerable set for the product and
+  refuses any other version (`not_offerable`, recorded and replayed like any refusal; subscription
+  is never called) — the plan switch's own rule (ADR-0029): subscription's pin lookup sees only
+  that a version is published and whose it is, not that a newer one superseded it or its plan was
+  retired. A catalogue outage is 503 `catalog_unavailable` and claims nothing.
 * Bundles are sold here too, through the same operator subscribe; a bundle whose members the
   organization already pays for separately is marked, because both are billed with no credit.
 
@@ -111,6 +116,10 @@ _problem_dump = plan_change._problem_dump
 _replay_problem = plan_change._replay_problem
 _subscription_for = plan_change._subscription_for
 _feature = plan_change._feature
+#: The plan switch's own "only what is on offer now" rule (ADR-0029 review fix), applied to the add.
+_offerable_ids = plan_change._offerable_ids
+CODE_NOT_OFFERABLE = plan_change.CODE_NOT_OFFERABLE
+NOT_OFFERABLE_DETAIL = plan_change.NOT_OFFERABLE_DETAIL
 
 
 def _in_flight() -> ProblemError:
@@ -266,6 +275,12 @@ async def add_product(
         )
     label = plan_change.operator_label(operator)
     target = payload.plan_version_id
+    # The version must be one catalog offers this organization *now* — the picker's own set, read
+    # again rather than trusted from a picker loaded earlier (a newer version may have superseded
+    # it, or its plan been retired; a direct call may name any published id of the product). Read
+    # before the claim, so a catalogue outage claims nothing; enforced after the replay branches, so
+    # a request that already succeeded still replays as a success after the catalogue moves on.
+    offered = await _offerable_ids(settings, organization_id, payload.product_key, client=client)
     fingerprint = domain.add_product_fingerprint(
         organization_id=str(organization_id),
         product_key=payload.product_key,
@@ -299,29 +314,37 @@ async def add_product(
         raise _replay_problem(claim.response)
     if claim.outcome == "in_flight":
         raise _in_flight()
-    if claim.outcome == "reconcile":
-        assert claim.seen_updated_at is not None
+
+    async def _record_reconciled(landed: dict[str, Any]) -> AddProductOut:
+        out = _added_out(landed, replayed=True)
+        await _record(
+            app_session,
+            organization_id=organization_id,
+            key=idempotency_key,
+            status=IDEMPOTENCY_SUCCEEDED,
+            response=out.model_dump(mode="json", exclude={"replayed"}),
+            operator=operator,
+            entity_id=out.subscription_id,
+            action=ADD_APPLIED,
+            after={**out.model_dump(mode="json", exclude={"replayed"}), "reconciled": True},
+            reason=payload.reason,
+            request=request,
+        )
+        return out
+
+    async def _landed_now() -> dict[str, Any] | None:
         try:
             subs = await _list_subscriptions(settings, organization_id, client=client)
         except SubscriptionChangeError as exc:
             raise UpstreamUnavailableProblem(str(exc)) from exc
-        landed = _add_landed(subs, payload.product_key, target, trial=payload.trial)
+        return _add_landed(subs, payload.product_key, target, trial=payload.trial)
+
+    reconciling = claim.outcome == "reconcile"
+    if reconciling:
+        assert claim.seen_updated_at is not None
+        landed = await _landed_now()
         if landed is not None:
-            out = _added_out(landed, replayed=True)
-            await _record(
-                app_session,
-                organization_id=organization_id,
-                key=idempotency_key,
-                status=IDEMPOTENCY_SUCCEEDED,
-                response=out.model_dump(mode="json", exclude={"replayed"}),
-                operator=operator,
-                entity_id=out.subscription_id,
-                action=ADD_APPLIED,
-                after={**out.model_dump(mode="json", exclude={"replayed"}), "reconciled": True},
-                reason=payload.reason,
-                request=request,
-            )
-            return out
+            return await _record_reconciled(landed)
         if not await services.retake_idempotency_key(
             app_session,
             organization_id=organization_id,
@@ -329,6 +352,31 @@ async def add_product(
             seen_updated_at=claim.seen_updated_at,
         ):
             raise _in_flight()
+
+    if str(target) not in offered:
+        # Definitive, and recorded like any other refusal: the claim replays it, and the trail
+        # reads requested, then refused with the code that says why. Subscription is never called.
+        problem = _problem(BusinessRuleProblem, CODE_NOT_OFFERABLE, NOT_OFFERABLE_DETAIL)
+        log.warning(
+            "add_product.not_offerable",
+            organization_id=str(organization_id),
+            product_key=payload.product_key,
+            plan_version_id=str(target),
+        )
+        await _record(
+            app_session,
+            organization_id=organization_id,
+            key=idempotency_key,
+            status=IDEMPOTENCY_REFUSED,
+            response=_problem_dump(problem),
+            operator=operator,
+            entity_id=None,
+            action=ADD_REFUSED,
+            after={"status": problem.status_code, "code": CODE_NOT_OFFERABLE},
+            reason=payload.reason,
+            request=request,
+        )
+        raise problem
 
     try:
         opened = await _subscribe(
@@ -342,6 +390,16 @@ async def add_product(
             client=client,
         )
     except SubscriptionChangeError as exc:
+        if reconciling and exc.status_code == 409 and exc.code == "already_subscribed":
+            # The attempt whose answer was lost may only have been late: it can commit between the
+            # live read above and this call, which then finds the row it made. Look again before
+            # calling that a refusal, or the key would replay "already has it" for this very add.
+            try:
+                late = await _landed_now()
+            except UpstreamUnavailableProblem:
+                late = None
+            if late is not None:
+                return await _record_reconciled(late)
         await _record_failure(
             app_session,
             exc,
@@ -444,26 +502,34 @@ async def extend_trial(
         raise _replay_problem(claim.response)
     if claim.outcome == "in_flight":
         raise _in_flight()
-    if claim.outcome == "reconcile":
+
+    def _extended_to_target(live: dict[str, Any]) -> bool:
+        """The trial already ends where it was asked to: the earlier attempt landed."""
+        live_end = _instant(live.get("trial_ends_at"))
+        return str(live.get("state")) == "trial" and live_end is not None and live_end == new_end
+
+    async def _record_reconciled(live: dict[str, Any]) -> ExtendTrialOut:
+        out = _extended_out(live, product_key, previous=expected, replayed=True)
+        await _record(
+            app_session,
+            organization_id=organization_id,
+            key=idempotency_key,
+            status=IDEMPOTENCY_SUCCEEDED,
+            response=out.model_dump(mode="json", exclude={"replayed"}),
+            operator=operator,
+            entity_id=subscription_id,
+            action=EXTEND_APPLIED,
+            after={**out.model_dump(mode="json", exclude={"replayed"}), "reconciled": True},
+            reason=payload.reason,
+            request=request,
+        )
+        return out
+
+    reconciling = claim.outcome == "reconcile"
+    if reconciling:
         assert claim.seen_updated_at is not None
-        live_end = _instant(sub.get("trial_ends_at"))
-        if str(sub.get("state")) == "trial" and live_end is not None and live_end == new_end:
-            # The earlier attempt landed: the trial already ends where it was asked to.
-            out = _extended_out(sub, product_key, previous=expected, replayed=True)
-            await _record(
-                app_session,
-                organization_id=organization_id,
-                key=idempotency_key,
-                status=IDEMPOTENCY_SUCCEEDED,
-                response=out.model_dump(mode="json", exclude={"replayed"}),
-                operator=operator,
-                entity_id=subscription_id,
-                action=EXTEND_APPLIED,
-                after={**out.model_dump(mode="json", exclude={"replayed"}), "reconciled": True},
-                reason=payload.reason,
-                request=request,
-            )
-            return out
+        if _extended_to_target(sub):
+            return await _record_reconciled(sub)
         if not await services.retake_idempotency_key(
             app_session,
             organization_id=organization_id,
@@ -484,6 +550,18 @@ async def extend_trial(
             client=client,
         )
     except SubscriptionChangeError as exc:
+        if reconciling and exc.status_code == 409 and exc.code == "state_changed":
+            # A late first attempt can commit between the live read above and this call, which
+            # then finds the trial end moved — by that very extension. Look again before calling it
+            # a refusal, or the key would replay "it changed" for the change that was made.
+            try:
+                live = await _subscription_for(
+                    settings, organization_id, product_key, client=client
+                )
+            except ProblemError:
+                live = None
+            if live is not None and _extended_to_target(live):
+                return await _record_reconciled(live)
         await _record_failure(
             app_session,
             exc,

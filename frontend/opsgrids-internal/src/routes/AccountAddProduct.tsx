@@ -7,7 +7,7 @@ import { addProduct, getAddProductOptions } from "@/api/client";
 import type { AddProductOption, AddProductOptions, AddProductResult, PricingOrgRef } from "@/api/types";
 import { useAuth } from "@/auth/context";
 import { formatMoney } from "@/lib/money";
-import { ENTITLEMENT_LAG_COPY, failureKind, unknownOutcomeGuidance } from "@/lib/planChangeCopy";
+import { ENTITLEMENT_LAG_COPY, failureKind, notMadeGuidance, unknownOutcomeGuidance } from "@/lib/planChangeCopy";
 import {
   ADD_ROLE_HINT,
   PAID_ACKNOWLEDGEMENT,
@@ -193,7 +193,12 @@ function AddProductFlow({ org, onClose, onDone }: FlowProps) {
       } else {
         setConfirmFailure({
           ...failure,
-          guidance: kind === "unknown" ? unknownOutcomeGuidance() : failure.guidance,
+          guidance:
+            kind === "unknown"
+              ? unknownOutcomeGuidance()
+              : kind === "not_made"
+                ? notMadeGuidance(code)
+                : failure.guidance,
         });
       }
     } finally {

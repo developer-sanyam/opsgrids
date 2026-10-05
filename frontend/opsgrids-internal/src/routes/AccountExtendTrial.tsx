@@ -5,7 +5,7 @@ import { ConfirmDialog, FormDialog, InlineAlert, TextArea, TextField } from "@op
 import { extendTrial } from "@/api/client";
 import type { ExtendTrialResult, PricingOrgRef, ProductPricing } from "@/api/types";
 import { useAuth } from "@/auth/context";
-import { ENTITLEMENT_LAG_COPY, failureKind, unknownOutcomeGuidance } from "@/lib/planChangeCopy";
+import { ENTITLEMENT_LAG_COPY, failureKind, notMadeGuidance, unknownOutcomeGuidance } from "@/lib/planChangeCopy";
 import {
   EXTEND_ROLE_HINT,
   IST_LABEL,
@@ -105,7 +105,15 @@ function ExtendTrialFlow({ org, product, now, onClose, onRefresh, onDone }: Flow
         setFormFailure(failure);
         onRefresh();
       } else {
-        setConfirmFailure({ ...failure, guidance: kind === "unknown" ? unknownOutcomeGuidance() : failure.guidance });
+        setConfirmFailure({
+          ...failure,
+          guidance:
+            kind === "unknown"
+              ? unknownOutcomeGuidance()
+              : kind === "not_made"
+                ? notMadeGuidance(code)
+                : failure.guidance,
+        });
         if (kind === "unknown") onRefresh();
       }
     } finally {

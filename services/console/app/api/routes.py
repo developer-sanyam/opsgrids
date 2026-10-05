@@ -854,8 +854,10 @@ async def add_product(
 
     Errors carry a stable `errors[0].code`: 404 `not_found`; 409 `already_subscribed` (a row for
     the product in any state, cancelled included), `request_in_progress`,
-    `idempotency_key_reused`; 422 `charge_not_acknowledged`, `one_time`, `org_currency_mismatch`,
-    `trial_not_offered`, `not_published`, `product_mismatch`, `bundle`, `reserved_reason`; 503
+    `idempotency_key_reused`; 422 `charge_not_acknowledged`, `not_offerable` (a version catalog no
+    longer offers this organization — superseded, or its plan retired), `one_time`,
+    `org_currency_mismatch`, `trial_not_offered`, `not_published`, `product_mismatch`, `bundle`,
+    `reserved_reason`; 503 `catalog_unavailable` — this request changed nothing; 503
     `outcome_unknown` — the subscription may or may not have been opened: refresh, or repeat the
     same request, which reconciles.
     """

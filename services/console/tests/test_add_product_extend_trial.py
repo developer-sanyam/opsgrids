@@ -193,7 +193,20 @@ def world(upstreams: FakeUpstreams, org_id: uuid.UUID) -> dict[str, uuid.UUID]:
         _trialling(ids["sub"], ids["pin"], trial_ends_at=NEW_END.astimezone(UTC).isoformat()),
     )
     _stub_public_plans(upstreams, [])
+    _stub_offer(upstreams, org_id, {"crm": [ids["crm_version"]]})
     return ids
+
+
+def _stub_offer(
+    upstreams: FakeUpstreams, org: uuid.UUID, offer: dict[str, list[uuid.UUID]]
+) -> None:
+    """catalog's offerable-versions read for `org`, by product — what the confirm re-reads."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        ids = offer.get(request.url.params["product_key"], [])
+        return httpx.Response(200, json={"versions": [{"plan_version_id": str(v)} for v in ids]})
+
+    upstreams.on("GET", f"/internal/v1/organizations/{org}/offerable-versions", _handler)
 
 
 def _add_body(version: uuid.UUID, **extra: Any) -> dict[str, Any]:
@@ -702,6 +715,7 @@ class TestAddProductIdempotency:
         world: dict[str, uuid.UUID],
     ) -> None:
         _stub_directory(upstreams, org_b)
+        _stub_offer(upstreams, org_b, {"crm": [world["crm_version"]]})
         await _post(client, _urls(org_id)["add"], _add_body(world["crm_version"]))
         second = await _post(client, _urls(org_b)["add"], _add_body(world["crm_version"]))
         assert second.status_code == 201 and second.json()["replayed"] is False
@@ -772,6 +786,65 @@ class TestAddProductIdempotency:
         again = await _post(client, _urls(org_id)["add"], _add_body(world["crm_version"]))
         assert (again.status_code, _code(again), again.json()["detail"]) == (status, code, detail)
         assert len(_posts(upstreams, SUBSCRIBE_PATH)) == 1
+
+
+class TestOnlyWhatIsOnOffer:
+    """The plan switch's rule (ADR-0029), applied to the add: the confirm re-reads catalog's
+    offerable set and refuses any other version, whatever a picker loaded earlier showed."""
+
+    async def test_a_version_no_longer_on_offer_is_refused_recorded_and_replayed(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        superseded = uuid.uuid4()  # published and pinnable by id, but a newer version replaced it
+        first = await _post(client, _urls(org_id)["add"], _add_body(superseded))
+        assert first.status_code == 422 and _code(first) == "not_offerable"
+        assert _posts(upstreams, SUBSCRIBE_PATH) == [], "subscription is never called"
+        (claim,) = await _claims(admin_session, org_id)
+        assert claim.status == "refused"
+        requested, refused = await _audits(admin_session, org_id)
+        assert requested.action == "subscription.add_product.requested"
+        assert refused.action == "subscription.add_product.refused"
+        assert refused.after["code"] == "not_offerable"
+
+        again = await _post(client, _urls(org_id)["add"], _add_body(superseded))
+        assert again.status_code == 422 and _code(again) == "not_offerable"
+        assert _posts(upstreams, SUBSCRIBE_PATH) == []
+
+    async def test_a_catalogue_outage_claims_nothing(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        upstreams.json(
+            "GET", f"/internal/v1/organizations/{org_id}/offerable-versions", {"detail": "x"}, 503
+        )
+        response = await _post(client, _urls(org_id)["add"], _add_body(world["crm_version"]))
+        assert response.status_code == 503 and _code(response) == "catalog_unavailable"
+        assert "changed nothing" in response.json()["detail"]
+        assert await _claims(admin_session, org_id) == []
+        assert await _audits(admin_session, org_id, "%") == []
+        assert _posts(upstreams, SUBSCRIBE_PATH) == []
+
+    async def test_a_recorded_success_still_replays_after_the_catalogue_moves_on(
+        self,
+        client: AsyncClient,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        body = _add_body(world["crm_version"])
+        assert (await _post(client, _urls(org_id)["add"], body)).status_code == 201
+        _stub_offer(upstreams, org_id, {"crm": [uuid.uuid4()]})  # a newer version replaced it
+        again = await _post(client, _urls(org_id)["add"], body)
+        assert again.status_code == 201 and again.json()["replayed"] is True
 
 
 class TestAddProductConcurrency:
@@ -907,6 +980,42 @@ class TestAddProductOutcomeUnknown:
         retry = await _post(client, _urls(org_id)["add"], body)
         assert retry.status_code == 409 and _code(retry) == "already_subscribed"
         assert len(_posts(upstreams, SUBSCRIBE_PATH)) == 2
+
+    async def test_a_late_first_attempt_is_recognised_not_replayed_as_a_refusal(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        """The lost first attempt commits between the retry's live read (no row yet) and its call,
+        which answers `already_subscribed` — for the row that very attempt made. Console looks
+        again and records the success."""
+        self._fail(upstreams, None)
+        body = _add_body(world["crm_version"])
+        assert (await _post(client, _urls(org_id)["add"], body)).status_code == 503
+
+        reads = {"n": 0}
+        landed = _opened(world["new_sub"], product_key="crm", plan_version_id=world["crm_version"])
+
+        def _listing(_request: httpx.Request) -> httpx.Response:
+            reads["n"] += 1
+            return httpx.Response(200, json=[] if reads["n"] == 1 else [landed])
+
+        upstreams.on("GET", f"/internal/v1/organizations/{org_id}/subscriptions", _listing)
+        upstreams.json(
+            "POST",
+            SUBSCRIBE_PATH,
+            {"detail": "exists", "errors": [{"code": "already_subscribed", "message": "x"}]},
+            409,
+        )
+        retry = await _post(client, _urls(org_id)["add"], body)
+        assert retry.status_code == 201, retry.text
+        assert retry.json()["replayed"] is True
+        assert retry.json()["subscription_id"] == str(world["new_sub"])
+        (claim,) = await _claims(admin_session, org_id)
+        assert claim.status == "succeeded"
 
     @pytest.mark.parametrize("status", [401, 403])
     async def test_a_refused_service_credential_is_never_a_401_to_the_operator(
@@ -1128,6 +1237,44 @@ class TestExtendTrialOutcomeUnknown:
         applied = (await _audits(admin_session, org_id))[-1]
         assert applied.action == "subscription.trial_extension.applied"
         assert applied.after["reconciled"] is True
+
+    async def test_a_late_first_attempt_is_recognised_not_replayed_as_a_refusal(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        """The lost first attempt commits between the retry's live read (old end) and its call,
+        which then answers `state_changed` — moved by that very extension. Console looks again and
+        records the success, rather than a key that replays "it changed" forever."""
+        self._fail(upstreams, world)
+        assert (await _post(client, _urls(org_id)["extend"], _extend_body())).status_code == 503
+
+        reads = {"n": 0}
+        old = _trialling(world["sub"], world["pin"], trial_ends_at=TRIAL_END)
+        new = _trialling(
+            world["sub"], world["pin"], trial_ends_at=NEW_END.astimezone(UTC).isoformat()
+        )
+
+        def _listing(_request: httpx.Request) -> httpx.Response:
+            reads["n"] += 1
+            return httpx.Response(200, json=[old if reads["n"] == 1 else new])
+
+        upstreams.on("GET", f"/internal/v1/organizations/{org_id}/subscriptions", _listing)
+        upstreams.json(
+            "POST",
+            _extend_path(world["sub"]),
+            {"detail": "moved", "errors": [{"code": "state_changed", "message": "moved"}]},
+            409,
+        )
+        retry = await _post(client, _urls(org_id)["extend"], _extend_body())
+        assert retry.status_code == 200, retry.text
+        assert retry.json()["replayed"] is True
+        (claim,) = await _claims(admin_session, org_id)
+        assert claim.status == "succeeded"
+        assert (await _audits(admin_session, org_id))[-1].after["reconciled"] is True
 
     async def test_a_retry_that_finds_the_old_end_makes_the_call(
         self,
