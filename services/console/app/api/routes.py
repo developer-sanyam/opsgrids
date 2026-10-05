@@ -760,7 +760,7 @@ async def change_plan(
     refresh, or repeat the same request, which reconciles.
     """
     await _require_organization(organization_id, request, client)
-    return await plan_change.execute(
+    return await plan_change.switch_plan(
         settings(),
         organization_id=organization_id,
         product_key=product_key,

@@ -364,7 +364,7 @@ def _landed(
     return None
 
 
-async def execute(
+async def switch_plan(
     settings: Settings,
     *,
     organization_id: uuid.UUID,
