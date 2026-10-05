@@ -28,6 +28,7 @@ from app.config import settings
 from app.providers import cashfree_codec as codec
 from app.providers.cashfree_collections import CashfreeCollectionsProvider
 from app.providers.cashfree_fake import CashfreeFakeWire
+from app.providers.wire import ProviderTransient
 from platform_core.errors import ConflictProblem
 from tests.collections_support import (
     ACCOUNT,
@@ -650,6 +651,29 @@ class TestCheckout:
         wire(merchant_providers).expire(opened["collection"]["id"])
         again = await cf_checkout(client, org_id, order, payer={"phone": PHONE})
         assert again.status_code == 409 and "cancel it" in again.json()["detail"]
+
+    async def test_a_reopen_cashfree_could_not_answer_is_try_again_not_start_over(
+        self,
+        client: AsyncClient,
+        merchant_providers: MerchantProviders,
+        org_id: uuid.UUID,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A 503 from Cashfree says nothing about the Order: telling the operator to cancel it and
+        start a new one would leave the first Order payable beside a second."""
+        _, _, order = await _opened(client, merchant_providers, org_id)
+        fake = wire(merchant_providers)
+        answer = fake.request
+
+        def busy(method: str, path: str, **kw: Any) -> Any:
+            if method == "GET" and path.startswith("/orders/"):
+                raise ProviderTransient("cashfree", 503, "service_unavailable")
+            return answer(method, path, **kw)
+
+        monkeypatch.setattr(fake, "request", busy)
+        again = await cf_checkout(client, org_id, order, payer={"phone": PHONE})
+        assert again.status_code == 503, again.text
+        assert "cancel it" not in again.json()["detail"]
 
     def test_the_notify_url_is_sent_only_when_the_platform_is_public_https(
         self, monkeypatch: pytest.MonkeyPatch
