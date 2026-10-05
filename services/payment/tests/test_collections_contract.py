@@ -48,6 +48,9 @@ def _razorpay_stub() -> RazorpayCollectionsProvider:
 
 
 class _RazorpayBodies:
+    def unheld_order_id(self, receipt: str) -> str:
+        return f"order_{uuid.uuid4().hex[:14]}"
+
     def webhook_bodies(self, adapter: Any) -> tuple[bytes, bytes]:
         return (
             payment_webhook(event="payment.authorized", payment_id="pay_1", order_id="order_1"),
@@ -158,6 +161,9 @@ def _cashfree_body(
 
 
 class _CashfreeHooks:
+    def unheld_order_id(self, receipt: str) -> str:
+        return receipt  # a Cashfree Order's `order_id` *is* the collection's receipt
+
     def webhook_bodies(self, adapter: Any) -> tuple[bytes, bytes]:
         return (
             _cashfree_body(
@@ -297,6 +303,14 @@ class _OrderPerCall(_Broken):
         return super().ensure_order(**kwargs)
 
 
+class _RemintsARecordedOrder(_Broken):
+    """Forgets the Order the collection records: one this account does not hold is made again."""
+
+    def ensure_order(self, **kwargs: Any) -> OrderResult:
+        kwargs["recorded_order_id"] = None
+        return super().ensure_order(**kwargs)
+
+
 class _FindThatCreates(_Broken):
     def find_order(self, *, receipt: str) -> OrderResult | None:
         from tests.collections_contract import ensure
@@ -401,6 +415,10 @@ class _BrokenContract(_CashfreeHooks, CollectionsContract):
     [
         (_OrderPerCall, "test_ensure_order_is_idempotent_by_receipt"),
         (_AnotherOrderInAFreshProcess, "test_a_fresh_process_resumes_the_order_it_did_not_make"),
+        (
+            _RemintsARecordedOrder,
+            "test_a_recorded_order_the_account_does_not_hold_is_refused_and_nothing_is_made",
+        ),
         (_FindThatCreates, "test_find_order_never_creates"),
         (_RefundPerCall, "test_a_refund_is_idempotent_by_its_key"),
         (_SlowWire, "test_the_declared_request_timeouts_end_before_the_lease_does"),

@@ -7,13 +7,15 @@ wrong place: those words are Razorpay's, so they live here now, and collections 
 neutral `CollectionWebhookFacts` an adapter hands it.
 
 **No behaviour change.** This is the same `RazorpayProvider` a merchant's account always ran on —
-the same lookup-before-create Order, the same live wire behind `COLLECTIONS_WIRE=razorpay`, the
-same HMAC — with the collections half of the seam added around it:
+the same lookup-before-create Order (a best-effort receipt search on the live wire: Razorpay keeps
+no receipt unique and its search can lag a create, ADR-0029 "Sandbox facts"), the same live wire
+behind `COLLECTIONS_WIRE=razorpay`, the same HMAC — with the collections half of the seam added
+around it:
 
 * `ensure_order` takes the `payer`, `expires_at` and `notify_url` the seam allows and ignores all
   three: a Razorpay Order needs no customer (Checkout collects the contact itself), takes no expiry
   this platform sets, and Razorpay delivers webhooks to the URL the merchant registered in its
-  dashboard.
+  dashboard. A `recorded_order_id` is fetched by its id, never searched for or made again.
 * `refund` takes the Order id the seam allows and ignores it: Razorpay refunds a payment.
 * `verify_webhook` reads the signature from `X-Razorpay-Signature` when it is given the headers.
 * `webhook_delivery_id` is `X-Razorpay-Event-Id`, unsigned, a delivery id and nothing more.
@@ -165,9 +167,22 @@ class RazorpayCollectionsProvider(RazorpayProvider):
         payer: CheckoutCustomer | None = None,
         expires_at: datetime | None = None,
         notify_url: str | None = None,
+        recorded_order_id: str | None = None,
     ) -> OrderResult:
         """`RazorpayProvider.ensure_order`, unchanged. The payer, the expiry and the notify URL are
-        not Razorpay Order fields and are dropped here — the payer never leaves this process."""
+        not Razorpay Order fields and are dropped here — the payer never leaves this process.
+
+        An Order the collection already records (`recorded_order_id`) is fetched by its id
+        (`GET /orders/{id}`) and never searched for or made again — the platform's recorded-Order
+        rule (ADR-0029). Collections never reopens a Razorpay checkout at the provider today (the
+        browser is handed the recorded id), so this is the seam's promise kept, not a new call."""
+        if recorded_order_id is not None:
+            return self._recorded_order(
+                order_id=recorded_order_id,
+                receipt=receipt,
+                amount_minor=amount_minor,
+                currency=currency,
+            )
         return super().ensure_order(
             receipt=receipt, amount_minor=amount_minor, currency=currency, notes=notes
         )

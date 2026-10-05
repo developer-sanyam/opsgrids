@@ -675,6 +675,48 @@ class TestCheckout:
         assert again.status_code == 503, again.text
         assert "cancel it" not in again.json()["detail"]
 
+    async def test_a_reopen_never_mints_a_stand_in_for_an_order_made_live(
+        self, client: AsyncClient, merchant_providers: MerchantProviders, org_id: uuid.UUID
+    ) -> None:
+        """The live wire is turned back to the stub while a checkout is open at the real Cashfree.
+        The stub never saw that Order, and a Cashfree Order's `order_id` *is* the collection's id:
+        a reopen that minted one there would make the stand-in the authority on a payment it
+        cannot see. It is refused as "try again" and nothing is made (the recorded-Order rule,
+        ADR-0029); once the live wire is back, the payment made at the real Cashfree is found."""
+        merchant_providers.cashfree_live = True
+        _, opened, order = await _opened(client, merchant_providers, org_id)
+        charge_id = opened["collection"]["id"]
+        real = wire(merchant_providers)
+        real.pay(charge_id)
+
+        merchant_providers.cashfree_live = False
+        stand_in = merchant_providers.cashfree_wires[APP_ID] = CashfreeFakeWire()
+        again = await cf_checkout(client, org_id, order, payer={"phone": PHONE})
+
+        assert again.status_code == 503, again.text
+        assert "cancel it" not in again.json()["detail"]
+        assert stand_in.orders == {} and ("POST", "/orders") not in stand_in.requests
+
+        merchant_providers.cashfree_live = True
+        merchant_providers.cashfree_wires[APP_ID] = real
+        synced = await client.post(
+            f"{internal_base(org_id, order)}/charges/{charge_id}/sync", headers=operations_token()
+        )
+        assert synced.status_code == 200, synced.text
+        assert synced.json()["state"] == "captured"
+
+    async def test_a_stand_in_order_the_stub_forgot_is_made_again_on_reopen(
+        self, client: AsyncClient, merchant_providers: MerchantProviders, org_id: uuid.UUID
+    ) -> None:
+        """An Order the stub made can never have been paid, so a stub that no longer remembers it
+        (a restart, another process) may stand it up again: the reopen still answers."""
+        _, opened, order = await _opened(client, merchant_providers, org_id)
+        forgot = merchant_providers.cashfree_wires[APP_ID] = CashfreeFakeWire()
+        again = await cf_checkout(client, org_id, order, payer={"phone": PHONE})
+        assert again.status_code == 200, again.text
+        assert again.json()["collection"]["id"] == opened["collection"]["id"]
+        assert list(forgot.orders) == [opened["collection"]["id"]]
+
     def test_the_notify_url_is_sent_only_when_the_platform_is_public_https(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

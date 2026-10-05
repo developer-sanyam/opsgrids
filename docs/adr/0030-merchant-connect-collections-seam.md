@@ -31,8 +31,9 @@ that only worked because there had been one:
 ## Decision
 
 1. **`CollectionsProvider` is a standalone Protocol** (`app/providers/base.py`): `ensure_order` (lookup before
-   create, with an optional in-memory `payer`, `expires_at`, `notify_url`; `OrderResult.checkout_token` carries
-   a browser token that is never stored), `find_order`, `order_payments`, `refund` (with the provider Order id),
+   create, with an optional in-memory `payer`, `expires_at`, `notify_url`, and the `recorded_order_id` a reopen
+   fetches by its id and never makes again; `OrderResult.checkout_token` carries a browser token that is never
+   stored), `find_order`, `order_payments`, `refund` (with the provider Order id),
    `verify_webhook(headers, body)`, `parse_webhook`, `webhook_delivery_id`, `webhook_facts` (the collection
    outcome, refund facts, failure code and the allow-listed body to store — in the platform's vocabulary) and
    `probe`. `CollectionsContract` (`tests/collections_contract.py`) is its executable definition, run against
@@ -83,7 +84,10 @@ that only worked because there had been one:
    once the wire is live (the provider would refuse a lookup of an Order it never made), a stub that no longer
    remembers it (merchant adapters are built per call; another process; a restart) is "no payments", it is never
    reopened against a live provider (that would quietly mint a real Order nobody recorded), and once closed it
-   blocks nothing. That is what keeps a stub test checkout from wedging an account on the default wire.
+   blocks nothing. That is what keeps a stub test checkout from wedging an account on the default wire. The
+   converse holds too: a reopen names the Order the collection records (`ensure_order(recorded_order_id=…)`,
+   the payments Phase A recorded-Order rule), so an Order made live is never minted again by the stub after
+   the wire is turned back off — the reopen is refused "try again" (`recorded_order_not_found`) instead.
 9. **The payer travels only when the provider asks.** Operations opens a checkout with no customer; a provider
    that needs one answers 422 `payer-required` before anything is written, and operations asks again with the
    order's name and phone. Payment passes the phone to the provider and nowhere else (a pseudonymous

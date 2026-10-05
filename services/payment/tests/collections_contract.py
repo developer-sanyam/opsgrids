@@ -6,7 +6,12 @@ checkout.
 
 1. **Lookup before create.** `ensure_order` finds the Order by its receipt before it creates one —
    twice with one adapter, or once each with two adapters over the same provider account (a fresh
-   process after a crash), it is **one** Order; `find_order` never creates.
+   process after a crash), it is **one** Order; `find_order` never creates. (Against real
+   Razorpay the receipt search is best-effort — ADR-0029, "Sandbox facts" — so this is held
+   against a double whose search is exact; collections relies on it only until an Order id is
+   recorded.) **A recorded Order is never made again**: given `recorded_order_id`, the adapter
+   fetches that Order by its id, and one its account does not hold is refused
+   (`recorded_order_not_found`) with nothing created.
 2. **`order_payments`** is scoped to its own Order, in the neutral vocabulary, and carries no
    person.
 3. **A refund is idempotent by its key**: the same key twice is one refund at the provider, and the
@@ -40,7 +45,7 @@ import pytest
 from app.config import settings
 from app.domain import derive_event_id
 from app.providers.base import CheckoutCustomer, CollectionsProvider, MalformedWebhook
-from app.providers.wire import ProviderMisconfigured
+from app.providers.wire import ProviderMisconfigured, ProviderTransient
 
 PHONE = "9876543210"
 EMAIL = "contract.payer@example.com"
@@ -51,7 +56,13 @@ def payer() -> CheckoutCustomer:
     return CheckoutCustomer(customer_id=f"c{uuid.uuid4().hex}", name=NAME, email=EMAIL, phone=PHONE)
 
 
-def ensure(adapter: Any, receipt: str, *, amount_minor: int = 49_900) -> Any:
+def ensure(
+    adapter: Any,
+    receipt: str,
+    *,
+    amount_minor: int = 49_900,
+    recorded_order_id: str | None = None,
+) -> Any:
     return adapter.ensure_order(
         receipt=receipt,
         amount_minor=amount_minor,
@@ -60,6 +71,7 @@ def ensure(adapter: Any, receipt: str, *, amount_minor: int = 49_900) -> Any:
         payer=payer(),
         expires_at=datetime.now(UTC) + timedelta(days=1),
         notify_url="https://app.opsgrids.example/api/v1/webhooks/collections?account=x",
+        recorded_order_id=recorded_order_id,
     )
 
 
@@ -101,6 +113,11 @@ class CollectionsContract:
         the double cannot model a rejection (the legacy stub makes no request at all)."""
         raise NotImplementedError
 
+    def unheld_order_id(self, receipt: str) -> str:
+        """An Order id a collection with this `receipt` could have recorded, which the account
+        behind the adapter does not hold (made on the live wire before the stub, or elsewhere)."""
+        raise NotImplementedError
+
     # -- 0. the shape ------------------------------------------------------------------------
 
     def test_it_is_a_collections_provider(self, adapter: Any) -> None:
@@ -123,6 +140,25 @@ class CollectionsContract:
         resumed = ensure(self.fresh(adapter), receipt)
         assert made.provider_order_id == resumed.provider_order_id
         assert self.create_count(adapter) == 1
+
+    def test_a_recorded_order_is_fetched_by_its_id_and_never_made_again(self, adapter: Any) -> None:
+        receipt = str(uuid.uuid4())
+        made = ensure(adapter, receipt)
+        again = ensure(self.fresh(adapter), receipt, recorded_order_id=made.provider_order_id)
+        assert again.provider_order_id == made.provider_order_id
+        assert self.create_count(adapter) == 1, "a recorded Order was made again"
+
+    def test_a_recorded_order_the_account_does_not_hold_is_refused_and_nothing_is_made(
+        self, adapter: Any
+    ) -> None:
+        receipt = str(uuid.uuid4())
+        try:
+            ensure(adapter, receipt, recorded_order_id=self.unheld_order_id(receipt))
+        except ProviderTransient as exc:
+            assert exc.code == "recorded_order_not_found", exc.code
+        else:
+            raise AssertionError("an Order the collection records was minted where it is not held")
+        assert self.create_count(adapter) == 0, "a recorded Order was made again"
 
     def test_a_different_receipt_is_a_different_order(self, adapter: Any) -> None:
         a = ensure(adapter, str(uuid.uuid4()))

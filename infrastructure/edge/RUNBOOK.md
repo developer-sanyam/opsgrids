@@ -1249,7 +1249,9 @@ wire was still the stub never holds anything up once cancelled, and is never reo
 live (409 "cancel it and start a new one").
 
 **Rollback.** Set `COLLECTIONS_CASHFREE_WIRE=stub` (no data changes; checkouts become not-payable, with
-the UI saying so; webhooks still verify). **Do not roll the `payment` image back once a Cashfree row
+the UI saying so; webhooks still verify). A checkout opened while the wire was live is not reopened on
+the stub: it answers 503 "try again" until the wire is back, because the stub must never stand in for an
+Order a customer may have paid (the recorded-Order rule, ADR-0029). **Do not roll the `payment` image back once a Cashfree row
 exists** — the previous code would build a Razorpay adapter from Cashfree keys — and the migration's
 downgrade refuses while one exists.
 

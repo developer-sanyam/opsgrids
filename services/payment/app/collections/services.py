@@ -1119,7 +1119,8 @@ class CheckoutClaim:
     #: (or another request is creating its Order right now).
     ticket: ProviderTicket | None
     #: True when `ticket` only reopens an Order this platform already recorded: the call is a
-    #: lookup at the provider (it finds the Order by its receipt), and there is nothing to record.
+    #: lookup at the provider (the recorded Order, by its id: `_recorded_order_id`), and there is
+    #: nothing to record.
     reopen: bool = False
 
 
@@ -1240,8 +1241,9 @@ async def claim_checkout(
             )
         if spec.reopen_asks_provider and charge.state in domain.CANCELLABLE_STATES:
             # The browser's handle is not ours to keep (Cashfree's `payment_session_id`): ask the
-            # provider for the Order again. A lookup — the Order exists, by its receipt — so no
-            # right-to-call lease is taken, and nothing is recorded after it.
+            # provider for the Order again. A lookup of the recorded Order — one that may be real
+            # is never made again (`_recorded_order_id`) — so no right-to-call lease is taken, and
+            # nothing is recorded after it.
             return CheckoutClaim(
                 charge_id=charge.id, ticket=_ticket(account, charge, payer=customer), reopen=True
             )
@@ -1319,6 +1321,18 @@ async def _insert_collection(
     return charge
 
 
+def _recorded_order_id(ticket: ProviderTicket) -> str | None:
+    """The Order a reopen must find by its id and never make again (ADR-0029's recorded-Order
+    rule): the one the collection records, unless the stub made it. A stub Order can never have
+    been paid, so a stub that no longer remembers it (merchant adapters are built per call; another
+    process; a restart) may stand it up again; one made live — or not known to be the stub's — is
+    refused by an adapter that does not hold it, rather than re-minted under the same id by the
+    stub after the live wire was turned back off."""
+    if ticket.provider_order_id is None or ticket.order_wire == ORDER_WIRE_STUB:
+        return None
+    return ticket.provider_order_id
+
+
 def _ensure_order(provider: CollectionsProvider, ticket: ProviderTicket) -> OrderResult:
     return provider.ensure_order(
         # The collection's own id: 36 characters (Razorpay caps `receipt` at 40, Cashfree's
@@ -1331,6 +1345,7 @@ def _ensure_order(provider: CollectionsProvider, ticket: ProviderTicket) -> Orde
         payer=ticket.payer,
         expires_at=ticket.expires_at,
         notify_url=ticket.notify_url,
+        recorded_order_id=_recorded_order_id(ticket),
     )
 
 
@@ -1338,8 +1353,10 @@ async def create_provider_order(
     factory: CollectionsProviderFactory, ticket: ProviderTicket
 ) -> tuple[OrderResult, str]:
     """The call act: the provider Order the customer will pay, looked up by receipt before one
-    is created — so a repeat after a lost answer lands on the same Order — and which wire made it
-    (`order_wire_of`), for the record act to keep."""
+    is created — so a repeat after a lost answer usually lands on the same Order (Razorpay's
+    search is best-effort: when it misses the first, the repeat's Order is the one recorded, and
+    the first is never handed to anyone) — or, on a reopen, the recorded Order fetched by its id;
+    and which wire made it (`order_wire_of`), for the record act to keep."""
     provider = ticket.build(factory)
     order = await _off_loop(
         partial(_ensure_order, provider, ticket),

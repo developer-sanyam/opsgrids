@@ -12,7 +12,8 @@ paid. What this module adds is what only a merchant's collections need:
   and a phone — passed through, never kept), `order_expiry_time` and, when the platform has a
   public HTTPS base, `order_meta.notify_url`. The `payment_session_id` the browser needs comes back
   in `OrderResult.checkout_token`: held in memory for one response, never stored, and fetched again
-  when a checkout is reopened.
+  when a checkout is reopened. A reopen names the Order the collection records
+  (`recorded_order_id`), and an account that does not hold it is refused, never given a new one.
 * **Payments**: `GET /pg/orders/{id}/payments`, mapped by the codec — `SUCCESS` is captured,
   `FAILED` failed, and an abandoned attempt (`USER_DROPPED`, `NOT_ATTEMPTED`, `VOID`, `CANCELLED`)
   or a `PENDING` one is no observation at all. `USER_DROPPED` is never a failure.
@@ -152,12 +153,18 @@ class CashfreeCollectionsProvider:
         payer: CheckoutCustomer | None = None,
         expires_at: datetime | None = None,
         notify_url: str | None = None,
+        recorded_order_id: str | None = None,
     ) -> OrderResult:
         """The Order for `receipt` — looked up first, created only if Cashfree holds none — with
         its `payment_session_id` in `checkout_token`. A payer with no usable phone, an expiry not
         given, a currency other than INR or an amount under 100 paise is refused before any
         request; an Order found for another amount, or one that can no longer be paid, is refused
-        rather than reused."""
+        rather than reused.
+
+        A collection that already records its Order (`recorded_order_id`, a reopen) is never given
+        a new one: `CashfreeProvider.ensure_checkout` refuses `recorded_order_not_found` when this
+        account does not hold it — the stub after the live wire was turned back off would
+        otherwise mint a stand-in under the very `order_id` the real one has."""
         if expires_at is None:
             raise ProviderRejected(PROVIDER, 0, "expiry_required")
         session = self._orders.ensure_checkout(
@@ -169,6 +176,7 @@ class CashfreeCollectionsProvider:
                 expires_at=expires_at,
                 customer=payer,
                 notify_url=notify_url,
+                recorded_order_id=recorded_order_id,
             )
         )
         return session.order

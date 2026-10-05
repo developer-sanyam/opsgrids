@@ -407,8 +407,12 @@ class CollectionsProvider(Protocol):
       `notify_url` where it should deliver this Order's webhooks (both ignored by a provider that
       has no such field). The result's `checkout_token` is what the browser opens the provider's
       checkout with when that is not the Order id itself (Cashfree's `payment_session_id`): in
-      memory only, never stored.
-    * `find_order` — the lookup alone, never a create (the expiry sweep, a reopened checkout).
+      memory only, never stored. `recorded_order_id` is the Order the collection **already
+      records**, on a reopen: the adapter fetches that Order by its id and returns it, or refuses
+      (`ProviderTransient`, `recorded_order_not_found`) — never a receipt search, never another
+      create (the recorded-Order rule of `CheckoutRequest.recorded_order_id`, ADR-0029).
+    * `find_order` — the lookup alone, never a create (the expiry sweep, for a collection that
+      recorded no Order).
     * `order_payments` — every attempt on an Order as the provider reports it now, in the neutral
       vocabulary (`best_attempt`). This answer, or a signature-verified webhook, is the only thing
       that may ever move a collection to `captured`.
@@ -423,6 +427,13 @@ class CollectionsProvider(Protocol):
     * `probe` — one authenticated, read-only request that proves the credentials work. Returns on
       success; raises `ProviderMisconfigured` when the provider rejects the credentials and
       another `ProviderCallError` (or an `httpx` error) when it could not tell.
+
+    **Against real Razorpay the receipt lookup is best-effort** (see the module docstring): a
+    create whose answer was lost can leave an Order the search does not show, and the retry then
+    makes a second one. Collections binds the first Order id it is handed (`record_checkout`) and
+    from then on hands out and asks about only that id, so a duplicate is never payable — nobody is
+    ever given its id. Unlike the platform poller, collections does not search for payments on one
+    (`StrayPayment`).
 
     Every request is bounded: the declared per-request timeouts, summed, stay inside
     `collections_call_timeout_seconds` (`CollectionsContract`).
@@ -441,6 +452,7 @@ class CollectionsProvider(Protocol):
         payer: CheckoutCustomer | None = None,
         expires_at: datetime | None = None,
         notify_url: str | None = None,
+        recorded_order_id: str | None = None,
     ) -> OrderResult: ...
 
     def find_order(self, *, receipt: str) -> OrderResult | None: ...
