@@ -28,8 +28,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -67,6 +68,7 @@ from app.schemas import (
     ExpectedState,
     OperatorChangePlanIn,
     OperatorChangePlanPreviewIn,
+    OperatorExtendTrialIn,
     OperatorSubscribeIn,
     PaymentOutcome,
     SubscribeIn,
@@ -194,6 +196,8 @@ def _transition(
     to_plan_version_id: uuid.UUID | None,
     extra: dict[str, Any] | None = None,
     note: str | None = None,
+    audit_before: dict[str, Any] | None = None,
+    audit_after: dict[str, Any] | None = None,
 ) -> None:
     """Apply one validated transition: move the state, write the append-only row, stage the event.
 
@@ -214,6 +218,10 @@ def _transition(
     and notification renders a customer org's own templates from the whole payload — a rule on
     `commerce.subscription.*` with `{{note}}` in its body would mail staff's internal reason to the
     customer. Staff read the why on the audit trail, which is where it stays.
+
+    `audit_before`/`audit_after` add facts to the audit row's before/after for a move whose state
+    alone does not say what changed — a trial extension stays `trial`, and its row names the end
+    it moved from and to.
     """
     subscription.state = decision.to_state
 
@@ -238,8 +246,14 @@ def _transition(
         action=decision.event_type,
         entity="subscription",
         entity_id=subscription.id,
-        before={"state": decision.from_state} if decision.from_state else None,
-        after={"state": decision.to_state, "plan_version_id": str(subscription.plan_version_id)},
+        before=(
+            {"state": decision.from_state, **(audit_before or {})} if decision.from_state else None
+        ),
+        after={
+            "state": decision.to_state,
+            "plan_version_id": str(subscription.plan_version_id),
+            **(audit_after or {}),
+        },
         reason=note or decision.reason,
         acting_as=actor.get("id") if actor.get("type") == "operator" else None,
         request=request,
@@ -343,8 +357,22 @@ async def subscribe_as_operator(
     *,
     request: Request | None = None,
 ) -> Subscription:
-    """The platform team opens a subscription for a customer — the one path that sells a bundle."""
+    """The platform team opens a subscription for a customer — the one path that sells a bundle,
+    and console's "Add product" (ADR-0030).
+
+    Stricter than the customer path in two ways a staff surface needs (the customer path is left
+    as it was — see ADR-0030, "Not changed"): a `one_time` version is refused (it has no period
+    and the run never bills it, so it would be a free subscription), and so is a currency other
+    than the one the organization's live subscriptions are billed in (console sums one currency
+    per organization). Serialised per organization with a transaction-scoped advisory lock, so two
+    staff adds racing each other cannot both pass the currency check, or both pass the
+    one-row-per-product check and leave one of them to the unique index.
+    """
     domain.assert_free_text_allowed(payload.note)
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"{payload.organization_id}:operator-subscribe"},
+    )
     return await _subscribe(
         session,
         organization_id=payload.organization_id,
@@ -357,7 +385,33 @@ async def subscribe_as_operator(
         trial_requested=domain.MAX_TRIAL_DAYS if payload.trial else None,
         request=request,
         note=payload.note,
+        operator_rules=True,
     )
+
+
+async def _assert_org_currency(
+    session: AsyncSession, organization_id: uuid.UUID, currency: str
+) -> None:
+    """Refuse a currency the organization's other **live** subscriptions are not billed in.
+
+    Live is every state but `cancelled`: a past-due or suspended subscription still bills (or will
+    again). One currency per organization is what console's MRR assumes — it sums amounts and
+    takes the first currency — so a mixed-currency add would corrupt every figure for the account.
+    """
+    from app import selectors
+
+    live = {
+        s.currency.upper()
+        for s in await selectors.list_by_organization(session, organization_id)
+        if s.state != STATE_CANCELLED
+    }
+    if live and currency not in live:
+        billed = ", ".join(sorted(live))
+        raise domain.CodedRefusal(
+            domain.CODE_ORG_CURRENCY_MISMATCH,
+            f"this organization's subscriptions are billed in {billed}; a {currency} plan cannot "
+            "be added beside them",
+        )
 
 
 async def _subscribe(
@@ -372,21 +426,32 @@ async def _subscribe(
     trial_requested: int | None,
     request: Request | None,
     note: str | None = None,
+    operator_rules: bool = False,
 ) -> Subscription:
     """Start a subscription pinned to a validated catalog version.
 
     A trial opens in `trial` with an end date (a subscription state, never a separate object —
     ADR-0004 §4), its length the version's and not the caller's. One subscription per product per
-    organization: an existing one is a conflict, not a second row.
+    organization: an existing one — in any state, `cancelled` included — is a 409
+    `already_subscribed`, not a second row. `operator_rules` adds the staff path's refusals
+    (`one_time`, `org_currency_mismatch`; see `subscribe_as_operator`).
     """
     from app import selectors
 
     existing = await selectors.get_by_product(session, organization_id, product_key)
     if existing is not None:
-        raise ConflictProblem(f"this organization already has a subscription for {product_key!r}")
+        raise _already_subscribed(product_key, existing.state)
 
     version = _validate_new_pin(await catalog.get_plan_version(plan_version_id), organization_id)
     _require_product(version, product_key)
+    if operator_rules:
+        if version.billing_interval == domain.INTERVAL_ONE_TIME:
+            raise domain.CodedRefusal(
+                domain.CODE_ONE_TIME,
+                "a one_time plan has no billing period and would never be invoiced; "
+                "choose a monthly or yearly plan",
+            )
+        await _assert_org_currency(session, organization_id, version.currency.upper())
 
     features = version.feature_pairs()
     # Read off the pinned version and nothing else — never the request body.
@@ -415,7 +480,14 @@ async def _subscribe(
     # load (async forbids one), and populated for the response the route serializes.
     _append_items(subscription, version)
     session.add(subscription)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        # A concurrent subscribe for the same product won the unique index between the check
+        # above and this insert: the same answer the check gives, not a 500.
+        if "uq_subscription_org_product" in str(exc.orig):
+            raise _already_subscribed(product_key, None) from exc
+        raise
     if to_state == STATE_ACTIVE and subscription.current_period_end is not None:
         # A subscription that starts paid owes its first period now (review round 3): nothing
         # else ever charges it — the run charges a period when it *opens* a later one.
@@ -444,6 +516,19 @@ async def _subscribe(
     )
     await session.flush()
     return subscription
+
+
+def _already_subscribed(product_key: str, state: str | None) -> domain.CodedConflict:
+    """409 `already_subscribed`: one row per product per organization, whatever its state."""
+    if state == STATE_CANCELLED:
+        detail = (
+            f"this organization's {product_key!r} subscription was cancelled; a cancelled "
+            "subscription cannot be reopened or replaced yet"
+        )
+    else:
+        suffix = f" ({state})" if state else ""
+        detail = f"this organization already has a subscription for {product_key!r}{suffix}"
+    return domain.CodedConflict(domain.CODE_ALREADY_SUBSCRIBED, detail)
 
 
 async def change_plan(
@@ -1151,6 +1236,90 @@ async def reactivate(
         note=reason.strip() or None,
     )
     await charge_uncovered_remainder(session, subscription, at=datetime.now(UTC))
+    await session.flush()
+    return subscription
+
+
+async def extend_trial_as_operator(
+    session: AsyncSession,
+    subscription: Subscription,
+    payload: OperatorExtendTrialIn,
+    *,
+    request: Request | None = None,
+) -> Subscription:
+    """Move a trialling subscription's end later — console's owner-only "Extend trial" (ADR-0030).
+
+    Under the row lock the billing run's claim takes, in this order:
+
+    1. **The operator's picture still holds** — `expected_trial_ends_at` is the end now
+       (409 `state_changed` otherwise). This is what makes a retry safe: the target is absolute,
+       so a second attempt after the first landed finds the end already moved and adds nothing.
+    2. **It is a trial** (422 `not_trial`).
+    3. **The run has not claimed its conversion** (422 `claim_in_flight`): `record_billing_period`
+       voids a claimed conversion whose trial end moved (`still_due_for`), so extending under a
+       pending claim would turn an invoice already being priced into a void.
+    4. **The new end is later, in the future, and within `MAX_TOTAL_TRIAL_DAYS` of the trial's
+       start** (422 `trial_not_extended` / `trial_cap`; `domain.trial_extension_refusal`).
+
+    Then one `trial -> trial` transition typed `trial_extended` — never `trial_started`, which
+    console counts and notification rules fire on — carrying the lifecycle payload (whose
+    `trial_ends_at` is the new end, which product's projection folds) plus
+    `previous_trial_ends_at`. Nothing about money moves: the trial was free and stays free, and the
+    run converts it at the new end exactly as it would have at the old one.
+    """
+    from app import selectors
+
+    domain.assert_free_text_allowed(payload.note)
+    await selectors.lock_subscription(
+        session, subscription.organization_id, subscription.id, skip_locked=False
+    )
+    if subscription.trial_ends_at != payload.expected_trial_ends_at:
+        raise domain.CodedConflict(
+            domain.CODE_STATE_CHANGED,
+            "this subscription's trial end changed since you looked at it; refresh and review it "
+            "again",
+        )
+    if subscription.state != STATE_TRIAL:
+        raise domain.CodedRefusal(
+            domain.CODE_NOT_TRIAL,
+            f"a {subscription.state} subscription is not trialling; only a trial can be extended",
+        )
+    claim = await selectors.pending_lifecycle_claim(
+        session, subscription.organization_id, subscription.id
+    )
+    if claim is not None:
+        raise domain.CodedRefusal(
+            domain.CODE_CLAIM_IN_FLIGHT,
+            "billing has already claimed this trial's conversion and is pricing it; the trial can "
+            "no longer be extended",
+        )
+    new_end = payload.new_trial_ends_at.astimezone(UTC)
+    refusal = domain.trial_extension_refusal(
+        trial_started_at=subscription.current_period_start,
+        current_trial_ends_at=subscription.trial_ends_at,
+        new_trial_ends_at=new_end,
+        now=_wall(),
+    )
+    if refusal is not None:
+        raise domain.CodedRefusal(*refusal)
+
+    previous = subscription.trial_ends_at
+    subscription.trial_ends_at = new_end
+    _transition(
+        session,
+        subscription,
+        domain.decide(
+            from_state=STATE_TRIAL, to_state=STATE_TRIAL, reason=domain.REASON_TRIAL_EXTENDED
+        ),
+        actor=_operator_actor(payload.operator_id),
+        request=request,
+        from_plan_version_id=subscription.plan_version_id,
+        to_plan_version_id=subscription.plan_version_id,
+        extra={"previous_trial_ends_at": previous.isoformat() if previous else None},
+        note=payload.note,
+        audit_before={"trial_ends_at": previous.isoformat() if previous else None},
+        audit_after={"trial_ends_at": new_end.isoformat()},
+    )
     await session.flush()
     return subscription
 

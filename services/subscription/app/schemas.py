@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 
 class ServiceInfo(BaseModel):
@@ -114,11 +114,19 @@ class ChangePlanIn(BaseModel):
 
 
 class OperatorSubscribeIn(BaseModel):
-    """A subscription opened by the platform team for a customer — the only way a bundle is sold.
+    """A subscription opened by the platform team for a customer — the only way a bundle is sold,
+    and the console's "Add product" (ADR-0030).
 
     Delegated over `/internal` by an operator surface, like a suspension. `organization_id` binds
     the transaction; `operator_id` is the accountable human on the audit row. `trial` asks for the
-    version's own trial length; there is no length to type.
+    version's own trial length; there is no length to type. Left false, the subscription starts
+    `active` and its first period is claimed for billing in the same transaction — console asks the
+    operator to acknowledge that before it sends `trial: false`.
+
+    Refused, with a stable code, when the organization already has a row for the product in any
+    state (409 `already_subscribed`), when the version is `one_time` (422 `one_time`), and when its
+    currency differs from the organization's other live subscriptions (422
+    `org_currency_mismatch`).
     """
 
     organization_id: uuid.UUID
@@ -182,6 +190,36 @@ class OperatorChangePlanIn(BaseModel):
     @classmethod
     def _note_is_not_blank(cls, value: str | None) -> str | None:
         return _strip_note(value)
+
+
+class OperatorExtendTrialIn(BaseModel):
+    """Move a trialling subscription's end later, on the platform team's behalf (ADR-0030).
+
+    **Absolute, never relative.** `new_trial_ends_at` is the instant the trial will end, and
+    `expected_trial_ends_at` the end the operator saw — compared under the row lock (409
+    `state_changed` when it moved). A retried request therefore cannot add the time twice: the
+    second attempt finds the end already moved and its `expected` no longer true. Both must carry
+    a timezone; a naive time would be read in whatever zone the server runs in.
+
+    `note` is required: an extension is a concession, and its why belongs on the audit trail (and
+    only there — never on the customer org's event). `extra="forbid"` — a write accepts exactly
+    this shape.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    organization_id: uuid.UUID
+    operator_id: str = Field(min_length=1, max_length=64)
+    new_trial_ends_at: AwareDatetime
+    expected_trial_ends_at: AwareDatetime
+    note: str = Field(min_length=1, max_length=NOTE_MAX_LENGTH)
+
+    @field_validator("note")
+    @classmethod
+    def _note_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("note must not be blank")
+        return value.strip()
 
 
 class OperatorChangePlanPreviewIn(BaseModel):
@@ -390,3 +428,7 @@ class SubscriptionOperatorOut(SubscriptionOut):
     """
 
     updated_at: datetime
+    #: While trialling: the latest instant staff may move the trial's end to
+    #: (`current_period_start` + `domain.MAX_TOTAL_TRIAL_DAYS`). Null for any other state. Stated
+    #: here, from the one constant, so an operator surface never restates the cap and drifts.
+    trial_max_ends_at: datetime | None = None

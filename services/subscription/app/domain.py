@@ -69,6 +69,25 @@ CODE_BILLING_CATCHING_UP = "billing_catching_up"  # 409: a period is due and not
 CODE_STATE_CHANGED = "state_changed"  # 409: the caller's `expected` no longer holds
 CODE_RESERVED_REASON = "reserved_reason"
 CODE_BUNDLE = "bundle"  # a bundle the product registry cannot vouch for
+#: 409: the organization already has a row for that product — in any state, `cancelled` included
+#: (one row per product per organization; reopening a cancelled one is a later decision).
+CODE_ALREADY_SUBSCRIBED = "already_subscribed"
+#: 422: a staff-opened subscription in a currency the organization's other live subscriptions are
+#: not billed in (console's MRR sums one currency per organization).
+CODE_ORG_CURRENCY_MISMATCH = "org_currency_mismatch"
+#: 422: a `one_time` version has no period to bill and is never invoiced by the run.
+CODE_ONE_TIME = "one_time"
+#: 422: a trial was asked for on a version that sells none (`trial_days` 0).
+CODE_TRIAL_NOT_OFFERED = "trial_not_offered"
+#: 422: a trial extension on a subscription that is not trialling.
+CODE_NOT_TRIAL = "not_trial"
+#: 422: a trial extension while the run holds a claim on this subscription's conversion or
+#: renewal — extending would void a conversion already being priced.
+CODE_CLAIM_IN_FLIGHT = "claim_in_flight"
+#: 422: a trial extension past `MAX_TOTAL_TRIAL_DAYS` from the trial's start.
+CODE_TRIAL_CAP = "trial_cap"
+#: 422: a trial "extension" that ends no later than the trial already does, or not in the future.
+CODE_TRIAL_NOT_EXTENDED = "trial_not_extended"
 
 
 class CodedRefusal(BusinessRuleProblem):
@@ -104,6 +123,11 @@ EVT_DOWNGRADED = EVT_PREFIX + "downgraded"
 EVT_PAST_DUE = EVT_PREFIX + "past_due"
 EVT_SUSPENDED = EVT_PREFIX + "suspended"
 EVT_CANCELLED = EVT_PREFIX + "cancelled"
+#: Staff moved a trialling subscription's end date later. A `trial -> trial` self-edge that is
+#: deliberately **not** `trial_started`: console counts trial starts from that key and notification
+#: rules fire on it, so reusing it would count one trial twice and mail a "welcome to your trial"
+#: for an extension. Carries the full lifecycle payload plus `previous_trial_ends_at`.
+EVT_TRIAL_EXTENDED = EVT_PREFIX + "trial_extended"
 
 #: The retry request the dunning sweep emits (ADR-0005). Not a lifecycle transition — the
 #: subscription stays `past_due` while it is in flight — so it is deliberately *not* in
@@ -135,6 +159,8 @@ REASON_DUNNING_RECOVERED = "dunning_recovered"
 #: (`trial -> active` over trial starts, ADR-0004 §4) never counts an unpaid trial as converted.
 REASON_TRIAL_CONVERT = "trial_convert"
 REASON_TRIAL_UNPAID = "trial_ended_unpaid"
+#: A staff trial extension (`trial -> trial`), typed as its own event (`EVT_TRIAL_EXTENDED`).
+REASON_TRIAL_EXTENDED = "trial_extended"
 
 #: Reasons only the machinery writes. An operator's free-text reason may not borrow one: the
 #: transition stream would then say "dunning suspended this" of a person's hold (final money
@@ -150,6 +176,7 @@ RESERVED_REASONS = frozenset(
         REASON_DUNNING_RECOVERED,
         REASON_TRIAL_CONVERT,
         REASON_TRIAL_UNPAID,
+        REASON_TRIAL_EXTENDED,
         "grace_expired",
         "payment_captured",
         "pre_cutover",
@@ -232,6 +259,8 @@ def event_for(to_state: str, *, reason: str | None) -> str:
         return EVT_DOWNGRADED
     if reason == REASON_RENEW:
         return EVT_RENEWED
+    if reason == REASON_TRIAL_EXTENDED:
+        return EVT_TRIAL_EXTENDED
     return _EVENT_BY_TARGET[to_state]
 
 
@@ -252,6 +281,13 @@ def decide(*, from_state: str | None, to_state: str, reason: str | None = None) 
     an event for a move the lifecycle does not permit.
     """
     assert_legal(from_state, to_state)
+    if reason == REASON_TRIAL_EXTENDED and not (from_state == to_state == STATE_TRIAL):
+        # The extension event means "still trialling, ending later" and nothing else; on any other
+        # edge it would announce a trial that is not there.
+        raise IllegalTransition(
+            f"a trial extension keeps a trial a trial; not {from_state or 'nonexistent'!s} "
+            f"to {to_state!s}"
+        )
     return Decision(
         from_state=from_state,
         to_state=to_state,
@@ -323,8 +359,61 @@ def trial_days_granted(requested: int | None, allowance: int) -> int | None:
     if not requested:
         return None
     if allowance == 0:
-        raise BusinessRuleProblem("this plan version does not offer a trial")
+        raise CodedRefusal(CODE_TRIAL_NOT_OFFERED, "this plan version does not offer a trial")
     return min(requested, allowance)
+
+
+#: The longest a trial may run **in total** once staff extend it, in days, measured from the
+#: trial's start (`current_period_start`, which nothing moves while a subscription trials — there
+#: is no separate trial-start column). An owner-adjustable default (ADR-0030), not a law: a later
+#: release may make it per-product or per-plan. Distinct from `MAX_TRIAL_DAYS`, which bounds what
+#: one *version* may sell, not how far an operator may stretch one trial.
+MAX_TOTAL_TRIAL_DAYS = 90
+
+
+def trial_extension_refusal(
+    *,
+    trial_started_at: datetime | None,
+    current_trial_ends_at: datetime | None,
+    new_trial_ends_at: datetime,
+    now: datetime,
+    max_total_days: int = MAX_TOTAL_TRIAL_DAYS,
+) -> tuple[str, str] | None:
+    """Why moving a trial's end to `new_trial_ends_at` is refused, or None when it may be.
+
+    Pure, so the cap arithmetic is pinned exactly by a test: the new end must be **later** than the
+    trial already ends and later than `now` (an extension that leaves the trial ended is not one),
+    and no later than `max_total_days` after the trial began. A trial with no recorded start is
+    refused rather than guessed at — the cap cannot be measured.
+    """
+    if current_trial_ends_at is not None and new_trial_ends_at <= current_trial_ends_at:
+        return (
+            CODE_TRIAL_NOT_EXTENDED,
+            "the new trial end must be later than the trial already ends "
+            f"({current_trial_ends_at.isoformat()})",
+        )
+    if new_trial_ends_at <= now:
+        return CODE_TRIAL_NOT_EXTENDED, "the new trial end must be in the future"
+    if trial_started_at is None:
+        return CODE_TRIAL_CAP, "this trial has no recorded start, so its total length is unknown"
+    cap = trial_started_at + timedelta(days=max_total_days)
+    if new_trial_ends_at > cap:
+        return (
+            CODE_TRIAL_CAP,
+            f"a trial may run at most {max_total_days} days in total; this one started "
+            f"{trial_started_at.isoformat()}, so it can end no later than {cap.isoformat()}",
+        )
+    return None
+
+
+def trial_cap_at(
+    state: str, trial_started_at: datetime | None, max_total_days: int = MAX_TOTAL_TRIAL_DAYS
+) -> datetime | None:
+    """The latest a trialling subscription's end may be moved to — None when it is not a trial
+    or has no recorded start. What an operator surface shows next to the date it asks for."""
+    if state != STATE_TRIAL or trial_started_at is None:
+        return None
+    return trial_started_at + timedelta(days=max_total_days)
 
 
 def entitled_products(product_key: str, features: Iterable[tuple[str, Any]]) -> list[str]:

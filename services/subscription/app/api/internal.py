@@ -1,7 +1,8 @@
 """The internal API — service-to-service, never reachable from outside the cluster.
 
-Operator delegates: a suspension and its inverse, a reactivation, and the subscribe and
-change-plan that are the only way a bundle is sold (the customer routes refuse bundles). The
+Operator delegates: a suspension and its inverse, a reactivation, the subscribe and
+change-plan that are the only way a bundle is sold (the customer routes refuse bundles) and that
+console's Add product and Change plan drive, and a trial extension (ADR-0030). The
 operator console delegates here rather than reaching into this service's schema. Overrides are
 enacted in the service that owns the state —
 `subscription` owns the lifecycle, so a staff suspension is a `commerce.subscription.suspended`
@@ -28,13 +29,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import selectors, services
+from app import domain, selectors, services
 from app.api.routes import CatalogDep
 from app.registry import ProductRegistry
 from app.schemas import (
     ChangePlanPreviewOut,
     OperatorChangePlanIn,
     OperatorChangePlanPreviewIn,
+    OperatorExtendTrialIn,
     OperatorSubscribeIn,
     ReactivateIn,
     SubscriptionOperatorOut,
@@ -281,6 +283,48 @@ async def preview_change_plan_as_operator(
         )
 
 
+@router.post(
+    "/subscriptions/{subscription_id}/extend-trial",
+    response_model=SubscriptionOut,
+    summary="Move a trial's end later, on the platform team's behalf — console's Extend trial",
+)
+async def extend_trial_as_operator(
+    subscription_id: uuid.UUID,
+    payload: OperatorExtendTrialIn,
+    _caller: ConsoleCallerDep,
+    session: SessionDep,
+    request: Request,
+) -> SubscriptionOut:
+    """Set an absolute new trial end, guarded by the end the operator saw (ADR-0030).
+
+    Bound to the named organization as the first statement, filtered on it, and isolated by RLS
+    like every route here: another organization's subscription id is a 404, and nothing is
+    written. Console-only (`ConsoleCallerDep`). Refusals carry a stable `errors[0].code`: 409
+    `state_changed`; 422 `not_trial`, `claim_in_flight`, `trial_cap`, `trial_not_extended`,
+    `reserved_reason`.
+    """
+    settings: ServiceSettings = request.app.state.settings
+    async with session.begin():
+        await set_tenant(session, payload.organization_id)
+        if not settings.is_production:
+            await assert_tenant(session, payload.organization_id)
+        subscription = await services.require_subscription(
+            session, subscription_id, organization_id=payload.organization_id
+        )
+        subscription = await services.extend_trial_as_operator(
+            session, subscription, payload, request=request
+        )
+        result = SubscriptionOut.model_validate(subscription)
+    log.info(
+        "subscription.trial_extended",
+        subscription_id=str(subscription_id),
+        organization_id=str(payload.organization_id),
+        operator_id=payload.operator_id,
+        trial_ends_at=result.trial_ends_at.isoformat() if result.trial_ends_at else None,
+    )
+    return result
+
+
 @router.get(
     "/organizations/{organization_id}/subscriptions",
     response_model=list[SubscriptionOperatorOut],
@@ -310,4 +354,9 @@ async def list_subscriptions_for_operator(
         if not settings.is_production:
             await assert_tenant(session, organization_id)
         subscriptions = await selectors.list_by_organization(session, organization_id)
-        return [SubscriptionOperatorOut.model_validate(s) for s in subscriptions]
+        return [
+            SubscriptionOperatorOut.model_validate(s).model_copy(
+                update={"trial_max_ends_at": domain.trial_cap_at(s.state, s.current_period_start)}
+            )
+            for s in subscriptions
+        ]
