@@ -83,6 +83,11 @@ SUBSCRIPTION_EVENTS = (
     "commerce.subscription.past_due",
     "commerce.subscription.suspended",
     "commerce.subscription.cancelled",
+    # Staff moved a trial's end later (ADR-0030): still `trial`, with the new `trial_ends_at`.
+    # Folded like every other event — the state and the end decide the activation — so a
+    # customer whose old end has passed is entitled again instead of locked out while billing
+    # waits for the new one. Bound before subscription emits it (RUNBOOK deploy order).
+    "commerce.subscription.trial_extended",
     # Not a transition: the one-off backfill re-announces a bundle subscription that predates
     # `entitled_products`, with the same payload shape, so its members are finally projected.
     "commerce.subscription.entitlements_resynced",

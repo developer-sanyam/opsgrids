@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import consumers, selectors, services
+from app import consumers, domain, selectors, services
 from app.models import RevenueEvent
 from tests.helpers import envelope, make_fake_resolver, subscription_payload
 
@@ -130,6 +130,78 @@ class TestMetricsOnASeededStream:
         states = await selectors.all_org_states(directory_session)
         assert states[0].mrr_minor == 0, "a suspended subscription pays nothing"
         assert states[0].locked is True, "a suspension locks the organization"
+
+
+class TestTrialExtended:
+    """`commerce.subscription.trial_extended` (ADR-0030): the fold takes the new trial end, and
+    the extension is never a second trial start — trials started and conversions stay honest."""
+
+    def test_the_consumer_binds_it(self) -> None:
+        assert "commerce.subscription.trial_extended" in domain.SUBSCRIPTION_EVENTS
+        consumers.register(_resolver())
+        assert "commerce.subscription.trial_extended" in consumers.consumer._handlers
+
+    async def test_it_moves_the_trial_end_and_is_not_counted_as_a_trial_start(
+        self, engine_ready: None, directory_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        started = datetime.now(UTC) - timedelta(days=10)
+        first_end = datetime.now(UTC) + timedelta(days=4)
+        new_end = datetime.now(UTC) + timedelta(days=20)
+        await _fold_subscription(
+            envelope(
+                "commerce.subscription.trial_started",
+                organization_id=org_id,
+                payload=subscription_payload(
+                    org_id,
+                    product_key="hrms",
+                    state="trial",
+                    plan_version_id=PV1,
+                    trial_ends_at=first_end.isoformat(),
+                ),
+                occurred_at=started,
+            )
+        )
+        extended = subscription_payload(
+            org_id,
+            product_key="hrms",
+            state="trial",
+            plan_version_id=PV1,
+            trial_ends_at=new_end.isoformat(),
+        )
+        extended["previous_trial_ends_at"] = first_end.isoformat()
+        await _fold_subscription(
+            envelope(
+                "commerce.subscription.trial_extended",
+                organization_id=org_id,
+                payload=extended,
+                occurred_at=started + timedelta(days=1),
+            )
+        )
+        directory_session.expire_all()
+        (state,) = await selectors.all_org_states(directory_session)
+        assert state.trial_ends_at == new_end
+        assert state.mrr_minor == 0 and state.active_products == ["hrms"]
+
+        metrics = await selectors.platform_metrics(directory_session)
+        assert metrics["trials_started"] == 1, "an extension counted as a second trial start"
+
+        # It converts later: one trial, one conversion — the extension did not break the pairing.
+        await _fold_subscription(
+            envelope(
+                "commerce.subscription.activated",
+                organization_id=org_id,
+                payload=subscription_payload(
+                    org_id, product_key="hrms", state="active", plan_version_id=PV1
+                ),
+                occurred_at=started + timedelta(days=2),
+            )
+        )
+        metrics = await selectors.platform_metrics(directory_session)
+        assert (metrics["trials_started"], metrics["trial_conversions"]) == (1, 1)
+
+        series = await selectors.metrics_series(directory_session, months=2)
+        assert sum(v or 0 for v in series["trials_started"].values()) == 1
+        assert sum(v or 0 for v in series["trial_conversions"].values()) == 1
 
 
 class TestOutOfOrderFold:

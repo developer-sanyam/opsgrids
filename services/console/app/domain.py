@@ -37,6 +37,10 @@ SUBSCRIPTION_EVENTS: tuple[str, ...] = (
     "commerce.subscription.past_due",
     "commerce.subscription.suspended",
     "commerce.subscription.cancelled",
+    # Staff moved a trial's end later (ADR-0030). Folded like any transition — the snapshot's
+    # trial end moves — and recorded in `revenue_events` under its own kind, so it is never
+    # counted as a trial start (`TRIAL_STARTED_KIND` below, and `selectors.platform_metrics`).
+    "commerce.subscription.trial_extended",
 )
 INVOICE_EVENTS: tuple[str, ...] = (
     "commerce.invoice.finalized",

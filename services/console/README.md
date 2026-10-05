@@ -31,9 +31,11 @@ at a time (tenant GUC per message) and read cross-tenant on the SELECT-only BYPA
 Coupled to the producing services by **routing key and documented payload only — never an import**,
 so it builds and runs before those services' PRs are merged.
 
-- `commerce.subscription.{trial_started,activated,renewed,upgraded,downgraded,past_due,suspended,cancelled}`
+- `commerce.subscription.{trial_started,activated,renewed,upgraded,downgraded,past_due,suspended,cancelled,trial_extended}`
   → `org_commercial_state` + `revenue_events`. Drives MRR (pinned price resolved from catalog's
   `GET /internal/v1/plan-versions/{id}`), trial-conversion, churn, and `locked` on suspend.
+  `trial_extended` (ADR-0030) moves the trial end and is recorded under its own kind — never counted
+  as a trial start.
 - `commerce.invoice.{finalized,voided}` → `revenue_events`.
 - `commerce.credit.{granted,consumed,reversed}` → `revenue_events` (the comp/credit view).
 - `commerce.usage.recorded` → `usage_summary`.
