@@ -1240,6 +1240,61 @@ scheduled change emits **no event**, so the
 account list does not show it — the Change plan card (the live pricing read) does. Product access follows a
 change that has taken effect within about **15 minutes**.
 
+### Staff add product and extend trial (ADR-0030): deploy the consumers first
+
+Two more console controls on the account page, on the same claim table and the same rules as Change plan:
+
+* **Add product** (`GET /api/v1/admin/organizations/{id}/add-product-options`, `POST .../subscriptions`;
+  owner and billing_ops) gives an organization a product it has **no subscription row for in any state** —
+  a cancelled one cannot be re-added yet (409 `already_subscribed`). A **trial by default**. A **paid** start
+  bills at once: subscription claims the first period immediately and **no payment mandate is checked**,
+  so a failed charge opens dunning; the operator must tick that, or the API answers 422
+  `charge_not_acknowledged`. A `one_time` plan (422 `one_time`) and a currency other than the
+  organization's live subscriptions' (422 `org_currency_mismatch`) are refused.
+* **Extend trial** (`POST .../subscriptions/{product_key}/extend-trial`; **owner only**) moves a trial's end
+  to an absolute instant — the operator picks the last day in **IST**. Refused with 409 `state_changed` if
+  the trial end moved since it was read (which is also why a repeat never adds the time twice), 422
+  `not_trial`, `claim_in_flight` (the billing run is already pricing the conversion), `trial_not_extended`,
+  or `trial_cap`. **The cap is 90 days from the trial's start** (`MAX_TOTAL_TRIAL_DAYS` in
+  `services/subscription/app/domain.py`, an owner-adjustable default; changing it is a code change and a
+  subscription redeploy).
+
+Extend trial emits a **new event, `commerce.subscription.trial_extended`**, which product (the activation's
+trial end) and console (the account's trial end) must consume. **Deploy order:**
+
+1. **product** and **console** — their consumers bind the new routing key. A consumer bound before the
+   producer exists simply receives nothing.
+2. **subscription** — now it can emit `trial_extended`. Deployed before step 1, the event lands in queues
+   not bound to it: product keeps the old trial end and a customer whose old end has passed stays locked
+   out until the next lifecycle event.
+3. the **opsgrids-internal** frontend (and **notification**, whose catalogue now lists the key so a rule
+   can be written for it; nothing fires by default).
+
+No migration (console reuses `console.idempotency_keys`; actions `add_product`, `extend_trial`). The
+admin-gateway is not recreated. Rollback: the console and frontend images; consumers binding an extra key
+are harmless, and written rows stay.
+
+Checks after deploying, before the first staff use:
+
+```bash
+# Both queues carry the new binding (on the box; the management plugin's CLI).
+docker compose -f compose.prod.yml --env-file .env exec -T rabbitmq \
+  rabbitmqctl list_bindings source_name destination_name routing_key | grep trial_extended
+# Expect two rows: product.events and console.events.
+```
+
+```sql
+-- console: the claims and outcomes for one organization's staff actions
+SELECT key, action, status, response, updated_at FROM console.idempotency_keys
+WHERE organization_id = :org ORDER BY created_at DESC LIMIT 20;
+SELECT at, action, reason, acting_as, after FROM console.audit_logs
+WHERE organization_id = :org AND (action LIKE 'subscription.add_product%' OR action LIKE 'subscription.trial_extension%')
+ORDER BY at DESC;
+-- subscription: the extension itself (a trial -> trial transition) and its operator
+SELECT occurred_at, from_state, to_state, reason, actor FROM subscription.subscription_transitions
+WHERE organization_id = :org AND reason = 'trial_extended' ORDER BY occurred_at DESC;
+```
+
 ### Operator MFA: mandatory rollout, the MFA reseal, and the one-off codes
 
 The security review of the operator-MFA slice made a second factor mandatory for every staff

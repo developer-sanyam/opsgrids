@@ -53,6 +53,12 @@ so it builds and runs before those services' PRs are merged.
   row around the call. The preview and the confirm re-read catalog's offerable set and refuse any other target
   (`not_offerable`) — a withdrawal back to the current pin excepted; the operator's reason stays on the audit
   trail and never rides the subscription event.
+- Staff Add product (`owner`, `billing_ops`; ADR-0030): `GET .../organizations/{id}/add-product-options` and
+  `POST .../organizations/{id}/subscriptions` (requires an `Idempotency-Key`). A trial by default; a paid add
+  must carry `acknowledge_immediate_charge`, and the version must be one catalog offers the organization now
+  (`not_offerable`). Staff Extend trial (**owner only**, `OperatorOwner`):
+  `POST .../subscriptions/{product_key}/extend-trial` with an absolute end and the end the operator saw. Both on
+  the same claim table and audit discipline as plan switching.
 
 `require_operator` is defence in depth behind the gateway's staff gate: a non-operator-audience
 token gets 404, the same answer an unknown path gives.
