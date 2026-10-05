@@ -86,6 +86,8 @@ class ProviderSpec:
     """
 
     name: str
+    #: How a person is told the provider's name ("Cashfree").
+    display_name: str
     #: Razorpay signs deliveries with a webhook secret the merchant chooses; Cashfree signs them
     #: with the API Secret Key, so a Cashfree account holds one secret, not two.
     has_webhook_secret: bool
@@ -109,6 +111,7 @@ class ProviderSpec:
 
 RAZORPAY = ProviderSpec(
     name=PROVIDER_RAZORPAY,
+    display_name="Razorpay",
     has_webhook_secret=True,
     requires_payer=False,
     reopen_asks_provider=False,
@@ -119,6 +122,7 @@ RAZORPAY = ProviderSpec(
 )
 CASHFREE = ProviderSpec(
     name=PROVIDER_CASHFREE,
+    display_name="Cashfree",
     has_webhook_secret=False,
     requires_payer=True,
     reopen_asks_provider=True,

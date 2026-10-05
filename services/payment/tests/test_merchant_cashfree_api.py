@@ -135,6 +135,15 @@ async def deliver(
     )
 
 
+@pytest.fixture
+def live_wires(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both providers' collections wires switched on, as after the owner's go-live — what a
+    verification needs. The adapters are still the test's fakes (`merchant_providers`): no
+    request leaves the machine."""
+    monkeypatch.setattr(settings(), "collections_cashfree_wire", "live")
+    monkeypatch.setattr(settings(), "collections_wire", "razorpay")
+
+
 def wire(providers: MerchantProviders) -> CashfreeFakeWire:
     return providers.cashfree_wires[APP_ID]
 
@@ -252,6 +261,7 @@ class TestConnect:
         cashfree = await connect_cashfree(client, org_id)
         assert cashfree["id"] != razorpay["id"] and cashfree["provider"] == "cashfree"
 
+    @pytest.mark.usefixtures("live_wires")
     async def test_rotation_keeps_the_row_and_makes_it_unverified_again(
         self, client: AsyncClient, merchant_providers: MerchantProviders, org_id: uuid.UUID
     ) -> None:
@@ -300,6 +310,7 @@ class TestTheOneTimeCodeRule:
 # ============================================================================ verification
 
 
+@pytest.mark.usefixtures("live_wires")
 class TestVerify:
     async def test_good_credentials_are_verified_recorded_and_audited(
         self,
@@ -434,6 +445,50 @@ class TestVerify:
         assert response.status_code == 200 and response.json()["connection_state"] == "verified"
 
 
+class TestVerifyOnTheStubWire:
+    """The shipped default: no provider is reachable, so nobody can say the keys work."""
+
+    @pytest.mark.parametrize("provider", ["cashfree", "razorpay"])
+    async def test_nothing_is_probed_recorded_or_audited_and_the_answer_says_why(
+        self,
+        client: AsyncClient,
+        merchant_providers: MerchantProviders,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+        provider: str,
+    ) -> None:
+        if provider == "cashfree":
+            await connect_cashfree(client, org_id, key_secret="dev-only-mistyped-secret-0001")
+        else:
+            await connect(client, org_id)
+        with as_principal(principal_for(org_id, [READ, WRITE])):
+            response = await client.post(VERIFY)
+            assert response.status_code == 409, response.text
+            assert response.json()["type"].endswith("/verification-unavailable")
+            assert "not switched on" in response.json()["detail"]
+            account = (await client.get(ACCOUNT)).json()
+        assert account["connection_state"] == "unverified" and account["verified_at"] is None
+        assert merchant_providers.built == [] and merchant_providers.key_secrets_seen == []
+        actions = [a["action"] for a in await audit_rows(admin_session, org_id)]
+        assert actions == ["payment.merchant_account.connected"]
+
+    async def test_switching_the_wire_on_finds_the_account_still_unchecked(
+        self,
+        client: AsyncClient,
+        merchant_providers: MerchantProviders,
+        org_id: uuid.UUID,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No verdict reached on the stub can survive the switch: there is none to survive."""
+        await connect_cashfree(client, org_id)
+        with as_principal(principal_for(org_id, [READ, WRITE])):
+            assert (await client.post(VERIFY)).status_code == 409
+            monkeypatch.setattr(settings(), "collections_cashfree_wire", "live")
+            assert (await client.get(ACCOUNT)).json()["connection_state"] == "unverified"
+            checked = await client.post(VERIFY)
+        assert checked.status_code == 200 and checked.json()["connection_state"] == "verified"
+
+
 # ============================================================================ authorization
 
 
@@ -472,6 +527,7 @@ class TestAuthorization:
         with as_principal(principal_for(org_id, [READ, WRITE, RECON], entitlements=["crm"])):
             assert (await client.request(method, path)).status_code == 402
 
+    @pytest.mark.usefixtures("live_wires")
     async def test_another_organization_can_neither_see_verify_remove_nor_reconcile_it(
         self,
         client: AsyncClient,

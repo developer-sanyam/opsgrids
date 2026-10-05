@@ -141,6 +141,16 @@ class CredentialsRejectedProblem(ValidationProblem):
     title = "The payment provider did not accept these credentials"
 
 
+class VerificationUnavailableProblem(ConflictProblem):
+    """The provider's collections wire is the in-process stub on this platform: no request would
+    reach the provider, so there is nobody to ask whether the credentials work. Nothing is
+    recorded — a "verified" written now would be a claim no provider made, and it would outlive
+    the switch to the live wire."""
+
+    problem_type = "verification-unavailable"
+    title = "The connection cannot be checked on this platform yet"
+
+
 class DisconnectBlockedProblem(ConflictProblem):
     """The account still has online payments a customer could pay; disconnecting would leave them
     unverifiable (no keys to ask with, no secret to check a webhook against)."""
@@ -407,10 +417,23 @@ class ProbeOutcome:
 
 
 async def claim_verification(session: AsyncSession, *, organization_id: uuid.UUID) -> VerifyTicket:
-    """The claim act of a verification: the live account's credentials, opened for one probe."""
+    """The claim act of a verification: the live account's credentials, opened for one probe.
+
+    **Refused (409 `verification-unavailable`) while the account's provider runs on the stub
+    wire**, before any secret is opened: the stub holds no credentials and accepts any, so a probe
+    there proves nothing, and recording it would show — and audit — "the provider accepted these
+    keys" for keys no provider ever saw. The account stays `unverified` until it can be checked
+    for real, after the owner turns that provider's wire on."""
     account = await selectors.live_merchant_account(session, organization_id)
     if account is None:
         raise NotFoundProblem("No payment provider account is connected")
+    if settings().collections_wire_for(account.provider) != "live":
+        name = domain.spec_for(account.provider).display_name
+        raise VerificationUnavailableProblem(
+            f"This platform's connection to {name} is not switched on yet, so these credentials "
+            f"cannot be checked with {name}. Nothing was recorded; check the connection again "
+            "once online payments are live."
+        )
     return VerifyTicket(
         organization_id=organization_id,
         account_id=account.id,
