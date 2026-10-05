@@ -84,6 +84,7 @@ from app.providers.wire import (
     WIRE_CONNECT_TIMEOUT_SECONDS,
     WIRE_READ_TIMEOUT_SECONDS,
     ProviderRejected,
+    ProviderTransient,
     ProviderWire,
 )
 
@@ -522,6 +523,13 @@ class RazorpayProvider:
             items = found.get("items")
             snapshots = [_snapshot(item) for item in (items if isinstance(items, list) else [])]
             return [s for s in snapshots if s is not None]
+        if not self._stub_knows(order_id):
+            # The stub keeps its Orders in this process only. An Order it never minted — one made
+            # by a live wire before the switch was turned back to `stub`, or by this process
+            # before a restart — is not "an Order with no payments": the stub cannot tell. Saying
+            # `[]` would let the poller expire a checkout a customer may have paid at the real
+            # provider. Not being able to ask is the honest answer, and it changes nothing.
+            raise ProviderTransient(PROVIDER, 0, "stub_holds_no_such_order")
         recorded = list(self._stub_order_payments.get(order_id, []))
         made = self._payments_by_order.get(order_id)
         if made is not None and all(
@@ -536,6 +544,14 @@ class RazorpayProvider:
                 )
             )
         return recorded
+
+    def _stub_knows(self, order_id: str) -> bool:
+        """Whether this stub minted or was told about `order_id` (the stub's own bookkeeping)."""
+        return (
+            order_id in self._orders_by_receipt.values()
+            or order_id in self._stub_order_payments
+            or order_id in self._payments_by_order
+        )
 
     def stub_record_payment(self, order_id: str, snapshot: PaymentSnapshot) -> None:
         """What a customer paying in Checkout would leave behind at the provider — for tests and

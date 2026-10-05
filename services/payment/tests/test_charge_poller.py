@@ -228,6 +228,27 @@ class TestExpiry:
         assert (report.unchecked, report.expired) == (1, 0)
         assert (await _row(admin_session, out["charge_id"]))["state"] == "created"
 
+    async def test_a_stub_never_expires_a_checkout_a_live_wire_opened(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID, engines: None
+    ) -> None:
+        """The rollback (`PAYMENT_WIRE=stub`) with a checkout still open at the real provider. The
+        stub holds no such Order, and "no payments" would be a lie it cannot back: the customer
+        may have paid. It must say it cannot answer, and the charge must stay open."""
+        live = cs.razorpay_live()
+        _, out = await _open(client, org_id, live)
+        await force_charge(
+            admin_session, out["charge_id"], checkout_expires_at=datetime.now(UTC) - LONG_AGO
+        )
+        stub = RazorpayProvider(
+            key_id=None, key_secret=None, webhook_secret="x", platform_billing=True
+        )
+
+        report = await _poller(lambda name: stub).tick()
+
+        assert (report.unchecked, report.expired, report.captured) == (1, 0, 0)
+        row = await _row(admin_session, out["charge_id"])
+        assert (row["state"], row["failure_reason"]) == ("created", None)
+
     async def test_one_paid_before_it_was_closed_is_captured_not_expired(
         self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID, engines: None
     ) -> None:
