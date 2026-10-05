@@ -23,7 +23,9 @@ as one.
 
 from __future__ import annotations
 
+import hashlib
 import itertools
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -220,6 +222,198 @@ def bundle_member_problems(
     return problems
 
 
+# --------------------------------------------------------------------- what may be published
+
+#: The currencies a version may be **published** in. An allow-list, not "any three letters":
+#: `currency_iso` only checks the length, and a version published in a code nobody bills or
+#: collects in is an immutable price sheet nobody can ever be charged against. The exponents
+#: behind each code are `platform_core.money`'s (JPY 0, KWD 3, the rest 2); the console's money
+#: parser mirrors this list (`frontend/opsgrids-internal/src/lib/minorUnits.ts`). Extend it here,
+#: in one place, when a market opens — a draft in another currency can still be authored, it just
+#: cannot be frozen.
+SELLABLE_CURRENCIES = frozenset(
+    {"INR", "USD", "EUR", "GBP", "AED", "SGD", "AUD", "CAD", "JPY", "KWD"}
+)
+
+#: The display order of a version's price components: the recurring base first, then seats, then
+#: metered rates. With `price_sort_key` below it replaces the relationship's `created_at, id`
+#: order for every operator read, which ties inside the one transaction that authored the sheet
+#: and so fell back to uuid4 order.
+_KIND_RANK = {"flat": 0, "per_seat": 1, "usage": 2}
+
+
+@dataclass(frozen=True, slots=True)
+class PublishablePrice:
+    """One price component as publish validation reads it. A value object, not the ORM row."""
+
+    kind: str
+    amount_minor: int | None
+    currency: str
+    unit: str | None
+    unit_price_micros: int | None
+    meter_key: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PublishProblem:
+    """One reason a draft may not be frozen: which part of the sheet, a stable code, and a
+    sentence an operator can act on. Rendered as the problem document's `errors[]`."""
+
+    field: str
+    code: str
+    message: str
+
+
+def request_fingerprint(action: str, target: str | None, body: Mapping[str, object]) -> str:
+    """The identity of an operator write, for its `Idempotency-Key`: what was asked (`action`),
+    of what (`target`, the path id) and with what body — canonical JSON, sha256, hex. Two
+    requests with one key and different fingerprints are two different requests, and the second
+    is refused rather than silently answered with the first's result."""
+    canonical = json.dumps(
+        {"action": action, "target": target, "body": body},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def price_sort_key(
+    kind: str,
+    unit: str | None,
+    meter_key: str | None,
+    amount_minor: int | None,
+    unit_price_micros: int | None,
+    price_id: str,
+) -> tuple[int, str, str, int, int, str]:
+    """A total, deterministic order over a version's prices (the id breaks every tie)."""
+    return (
+        _KIND_RANK.get(kind, len(_KIND_RANK)),
+        unit or "",
+        meter_key or "",
+        amount_minor if amount_minor is not None else -1,
+        unit_price_micros if unit_price_micros is not None else -1,
+        price_id,
+    )
+
+
+def trial_days_problem(value: object) -> str | None:
+    """`trial_days` is whole days, 0 (sells no trial) to 365 — the only length subscription will
+    grant. `bool` is refused explicitly because it is an `int` subclass in Python."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 365:
+        return "trial_days must be a whole number of days, 0 to 365"
+    return None
+
+
+def publish_problems(
+    *,
+    currency: str,
+    prices: Sequence[PublishablePrice],
+    features: Mapping[str, object],
+    allow_zero_amounts: bool,
+) -> list[PublishProblem]:
+    """Everything that makes a draft unsafe to freeze, or nothing.
+
+    Publishing is irreversible (ADR-0000 §9), so this is the last moment a mistake is cheap.
+    Each rule is a failure somebody would otherwise find on an invoice:
+
+    * **at least one price** — a version that prices nothing pins a subscription to a free plan
+      nobody chose;
+    * **a sellable currency** (`SELLABLE_CURRENCIES`), and every price in it;
+    * **a usage price names its meter** and carries a rate — without `meter_key` billing cannot
+      find the usage to price, and fails on every invoice for every pin, permanently;
+    * **a per-seat price names its unit** — a seat price with no unit is not a seat price;
+    * **a flat or per-seat price carries an amount**;
+    * **no zero amount unless the caller said so** (`allow_zero_amounts`) — a free component is
+      legitimate (a free tier) but far more often a missing digit, so it must be deliberate;
+    * **`trial_days`**, when declared, is re-checked here because it is frozen with the version.
+
+    Bundle membership is re-checked by the caller against the product registry, which is I/O.
+    """
+    problems: list[PublishProblem] = []
+    if currency not in SELLABLE_CURRENCIES:
+        problems.append(
+            PublishProblem(
+                "currency",
+                "currency_not_sellable",
+                f"{currency} is not a currency this platform sells in "
+                f"({', '.join(sorted(SELLABLE_CURRENCIES))})",
+            )
+        )
+    if not prices:
+        problems.append(
+            PublishProblem("prices", "no_prices", "a version needs at least one price to publish")
+        )
+    for index, price in enumerate(prices):
+        field = f"prices.{index}"
+        if price.currency != currency:
+            problems.append(
+                PublishProblem(
+                    f"{field}.currency",
+                    "currency_mismatch",
+                    f"price #{index + 1} is in {price.currency}, the version is in {currency}",
+                )
+            )
+        if price.kind in RECURRING_KINDS:
+            if price.amount_minor is None:
+                problems.append(
+                    PublishProblem(
+                        f"{field}.amount_minor",
+                        "amount_missing",
+                        f"price #{index + 1} ({price.kind}) has no amount",
+                    )
+                )
+            elif price.amount_minor == 0 and not allow_zero_amounts:
+                problems.append(
+                    PublishProblem(
+                        f"{field}.amount_minor",
+                        "zero_amount",
+                        f"price #{index + 1} ({price.kind}) is zero; confirm a free component "
+                        "explicitly to publish it",
+                    )
+                )
+        if price.kind == "per_seat" and not (price.unit or "").strip():
+            problems.append(
+                PublishProblem(
+                    f"{field}.unit",
+                    "unit_missing",
+                    f"price #{index + 1} is per seat but names no unit (for example 'seat')",
+                )
+            )
+        if price.kind == "usage":
+            if not (price.meter_key or "").strip():
+                problems.append(
+                    PublishProblem(
+                        f"{field}.meter_key",
+                        "meter_missing",
+                        f"price #{index + 1} is a usage rate but names no meter, so billing "
+                        "could never price it",
+                    )
+                )
+            if price.unit_price_micros is None:
+                problems.append(
+                    PublishProblem(
+                        f"{field}.unit_price_micros",
+                        "rate_missing",
+                        f"price #{index + 1} is a usage rate with no rate",
+                    )
+                )
+            elif price.unit_price_micros == 0 and not allow_zero_amounts:
+                problems.append(
+                    PublishProblem(
+                        f"{field}.unit_price_micros",
+                        "zero_amount",
+                        f"price #{index + 1} (usage) is zero; confirm a free component "
+                        "explicitly to publish it",
+                    )
+                )
+    if "trial_days" in features:
+        message = trial_days_problem(features["trial_days"])
+        if message is not None:
+            problems.append(PublishProblem("features.trial_days", "trial_days_invalid", message))
+    return problems
+
+
 # --------------------------------------------------------------------- what a seat may do
 
 
@@ -251,14 +445,21 @@ def seat_class_grants(seat_class: SeatClassSpec, catalogue: Iterable[PermissionS
 __all__ = [
     "READ_ACTIONS",
     "RECURRING_KINDS",
+    "SELLABLE_CURRENCIES",
     "BundleRung",
     "PermissionSpec",
     "PricedComponent",
+    "PublishProblem",
+    "PublishablePrice",
     "SeatClassSpec",
     "bundle_saving",
     "cheaper_per_product",
     "is_read_only",
     "ladder_is_graduated",
     "list_total",
+    "price_sort_key",
+    "publish_problems",
+    "request_fingerprint",
     "seat_class_grants",
+    "trial_days_problem",
 ]

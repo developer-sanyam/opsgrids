@@ -10,6 +10,7 @@ left to notice would be the customer.
 from __future__ import annotations
 
 import contextlib
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -226,6 +227,16 @@ def _as(principal: Principal, registry: Any) -> Iterator[None]:
         app.dependency_overrides.pop(get_product_registry, None)
 
 
+def _key() -> dict[str, str]:
+    """Every catalog write requires a fresh `Idempotency-Key`."""
+    return {"Idempotency-Key": str(uuid.uuid4())}
+
+
+def _body(payload: VersionCreateIn) -> dict[str, Any]:
+    """The HTTP draft body: the sheet plus the reason every catalog write carries."""
+    return {**payload.model_dump(mode="json"), "reason": "Bundle authoring over HTTP"}
+
+
 class _DownRegistry:
     async def products(self) -> dict[str, RegisteredProduct]:
         raise UpstreamUnavailableProblem("product-service is unavailable")
@@ -236,7 +247,13 @@ class TestOverHttp:
         with _as(operator_principal(), REGISTRY):
             resp = await client.post(
                 "/api/v1/admin/catalog/plans",
-                json={"product_key": "suite", "code": "http-trio", "name": "HTTP Trio"},
+                json={
+                    "product_key": "suite",
+                    "code": "http-trio",
+                    "name": "HTTP Trio",
+                    "reason": "Bundle authoring over HTTP",
+                },
+                headers=_key(),
             )
         assert resp.status_code == 201, resp.text
         return str(resp.json()["id"])
@@ -246,7 +263,8 @@ class TestOverHttp:
         with _as(operator_principal(), REGISTRY):
             resp = await client.post(
                 f"/api/v1/admin/catalog/plans/{plan_id}/versions",
-                json=_bundle(["hrms", "core"]).model_dump(mode="json"),
+                json=_body(_bundle(["hrms", "core"])),
+                headers=_key(),
             )
         assert resp.status_code == 422
         assert "'core' is a platform product" in resp.text
@@ -256,7 +274,8 @@ class TestOverHttp:
         with _as(operator_principal(), REGISTRY):
             resp = await client.post(
                 f"/api/v1/admin/catalog/plans/{plan_id}/versions",
-                json=_bundle(["hrms", "crm"]).model_dump(mode="json"),
+                json=_body(_bundle(["hrms", "crm"])),
+                headers=_key(),
             )
         assert resp.status_code == 201, resp.text
 
@@ -265,7 +284,8 @@ class TestOverHttp:
         with _as(operator_principal(), _DownRegistry()):
             resp = await client.post(
                 f"/api/v1/admin/catalog/plans/{plan_id}/versions",
-                json=_bundle(["hrms", "crm"]).model_dump(mode="json"),
+                json=_body(_bundle(["hrms", "crm"])),
+                headers=_key(),
             )
         assert resp.status_code == 503
 
@@ -274,17 +294,20 @@ class TestOverHttp:
         with _as(operator_principal(staff=False), REGISTRY):
             resp = await client.post(
                 f"/api/v1/admin/catalog/plans/{plan_id}/versions",
-                json=_bundle(["hrms", "crm"]).model_dump(mode="json"),
+                json=_body(_bundle(["hrms", "crm"])),
+                headers=_key(),
             )
         assert resp.status_code == 404
 
     async def test_an_explicit_null_member_list_is_refused_not_ignored(self, client: Any) -> None:
         """The key's presence makes it a bundle declaration; `null` is a malformed one."""
         plan_id = await self._plan_id(client)
-        body = _bundle(["hrms"]).model_dump(mode="json")
+        body = _body(_bundle(["hrms"]))
         body["features"] = [{"feature_key": "bundled_products", "value": None}]
         with _as(operator_principal(), REGISTRY):
-            resp = await client.post(f"/api/v1/admin/catalog/plans/{plan_id}/versions", json=body)
+            resp = await client.post(
+                f"/api/v1/admin/catalog/plans/{plan_id}/versions", json=body, headers=_key()
+            )
         assert resp.status_code == 422
         assert "non-empty list" in resp.text
 
@@ -293,7 +316,8 @@ class TestOverHttp:
         with _as(operator_principal(), REGISTRY):
             resp = await client.post(
                 f"/api/v1/admin/catalog/plans/{plan_id}/versions",
-                json=_bundle(["hrms", "projects"]).model_dump(mode="json"),
+                json=_body(_bundle(["hrms", "projects"])),
+                headers=_key(),
             )
         assert resp.status_code == 422
         assert "'projects' has not launched" in resp.text
@@ -363,7 +387,9 @@ class TestTheDeployAudit:
         version = await services.create_version(
             session, operator_principal(), plan, _bundle(members), request=None, registry=permissive
         )
-        await services.publish_version(session, operator_principal(), version, request=None)
+        await services.publish_version(
+            session, operator_principal(), version, request=None, registry=permissive
+        )
         if retire:
             await services.retire_plan(session, operator_principal(), plan, request=None)
 

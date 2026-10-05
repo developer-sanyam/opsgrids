@@ -13,9 +13,14 @@ layer refuses it first, with a message a person can act on rather than a raw tri
 
 from __future__ import annotations
 
+import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
+from sqlalchemy import Table, delete, func, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -23,13 +28,16 @@ from app import domain, selectors
 from app.models import (
     FEATURE_BUNDLED_PRODUCTS,
     FEATURE_TRIAL_DAYS,
+    PLAN_ACTIVE,
     PLAN_RETIRED,
     PLATFORM_ORG,
     PRICE_PER_SEAT,
     VERSION_DRAFT,
+    VERSION_GRANDFATHERED,
     VERSION_PUBLISHED,
     AuditLog,
     Feature,
+    IdempotencyKey,
     OutboxEvent,
     Plan,
     PlanVersion,
@@ -44,7 +52,13 @@ from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundP
 from platform_core.events import publish_event
 
 EVT_VERSION_PUBLISHED = "catalog.plan_version.published"
+EVT_VERSION_GRANDFATHERED = "catalog.plan_version.grandfathered"
 EVT_PLAN_RETIRED = "catalog.plan.retired"
+EVT_PLAN_REACTIVATED = "catalog.plan.reactivated"
+
+#: How many times drafting a version re-reads the next number after losing the
+#: `uq_plan_versions_plan_version` race to a concurrent draft before giving up with a 409.
+DRAFT_ATTEMPTS = 3
 
 
 def _actor(principal: Principal) -> dict[str, Any]:
@@ -71,8 +85,19 @@ def _ensure_draft(version: PlanVersion) -> None:
 
 
 async def create_plan(
-    session: AsyncSession, principal: Principal, payload: PlanCreateIn, *, request: Request
+    session: AsyncSession,
+    principal: Principal,
+    payload: PlanCreateIn,
+    *,
+    request: Request | None,
+    reason: str | None = None,
+    registry: ProductRegistry | None = None,
 ) -> Plan:
+    """A new, version-less plan under a product. With a `registry` (the operator route always
+    passes one) the product key must be one product-service has registered and not a platform
+    product every customer already has — a typo here would be a plan nobody can ever buy."""
+    if registry is not None:
+        await _require_sellable_product(payload.product_key, registry)
     plan = Plan(
         product_key=payload.product_key,
         code=payload.code,
@@ -97,9 +122,27 @@ async def create_plan(
         entity="plan",
         entity_id=plan.id,
         after={"product_key": plan.product_key, "code": plan.code, "name": plan.name},
+        reason=reason,
         request=request,
     )
     return plan
+
+
+async def _require_sellable_product(product_key: str, registry: ProductRegistry) -> None:
+    products = await registry.products()
+    entry = products.get(product_key)
+    if entry is None:
+        message = f"{product_key!r} is not a registered product"
+        raise BusinessRuleProblem(
+            message,
+            errors=[{"field": "product_key", "code": "unknown_product", "message": message}],
+        )
+    if entry.is_platform:
+        message = f"{product_key!r} is a platform product every customer already has; not sold"
+        raise BusinessRuleProblem(
+            message,
+            errors=[{"field": "product_key", "code": "platform_product", "message": message}],
+        )
 
 
 async def update_plan(
@@ -108,7 +151,8 @@ async def update_plan(
     plan: Plan,
     patch: PlanPatchIn,
     *,
-    request: Request,
+    request: Request | None,
+    reason: str | None = None,
 ) -> Plan:
     """Edit a plan's presentation. Never its pricing — that is a new version (ADR-0000 §9)."""
     before = {"name": plan.name, "sort_order": plan.sort_order}
@@ -128,16 +172,27 @@ async def update_plan(
         entity_id=plan.id,
         before=before,
         after={"name": plan.name, "sort_order": plan.sort_order},
+        reason=reason,
         request=request,
     )
     return plan
 
 
 async def retire_plan(
-    session: AsyncSession, principal: Principal, plan: Plan, *, request: Request
+    session: AsyncSession,
+    principal: Principal,
+    plan: Plan,
+    *,
+    request: Request | None,
+    reason: str | None = None,
 ) -> Plan:
     """Stop offering a plan. Never deletes it — a subscription pinned to one of its versions
-    must stay reconstructable — and emits `catalog.plan.retired` for downstream consumers."""
+    must stay reconstructable — and emits `catalog.plan.retired` for downstream consumers.
+
+    Retiring hides the plan from the customer read (`visible_plans` filters on `active`). It does
+    **not** yet stop a pin by version id: subscription's `_validate_new_pin` does not read plan
+    state, which is a later slice (docs/superpowers/specs/2026-10-06-admin-plans-page-design.md).
+    """
     if plan.state == PLAN_RETIRED:
         raise BusinessRuleProblem(f"plan {plan.code!r} is already retired")
     plan.state = PLAN_RETIRED
@@ -151,7 +206,9 @@ async def retire_plan(
         action="catalog.plan.retired",
         entity="plan",
         entity_id=plan.id,
-        after={"product_key": plan.product_key, "code": plan.code},
+        before={"state": PLAN_ACTIVE},
+        after={"state": PLAN_RETIRED, "product_key": plan.product_key, "code": plan.code},
+        reason=reason,
         request=request,
     )
     publish_event(
@@ -159,6 +216,48 @@ async def retire_plan(
         OutboxEvent,
         organization_id=PLATFORM_ORG,
         event_type=EVT_PLAN_RETIRED,
+        aggregate_type="plan",
+        aggregate_id=plan.id,
+        payload={"plan_id": str(plan.id), "product_key": plan.product_key, "code": plan.code},
+        actor=_actor(principal),
+    )
+    return plan
+
+
+async def reactivate_plan(
+    session: AsyncSession,
+    principal: Principal,
+    plan: Plan,
+    *,
+    request: Request | None,
+    reason: str | None = None,
+) -> Plan:
+    """Undo a retire: offer the plan again. Its versions were never touched by retiring, so every
+    published one is offered again as it was; a version that should stay off sale is withdrawn
+    individually instead. Emits `catalog.plan.reactivated`."""
+    if plan.state != PLAN_RETIRED:
+        raise BusinessRuleProblem(f"plan {plan.code!r} is not retired")
+    plan.state = PLAN_ACTIVE
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=PLATFORM_ORG,
+        actor_id=principal.sub,
+        action="catalog.plan.reactivated",
+        entity="plan",
+        entity_id=plan.id,
+        before={"state": PLAN_RETIRED},
+        after={"state": PLAN_ACTIVE, "product_key": plan.product_key, "code": plan.code},
+        reason=reason,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=PLATFORM_ORG,
+        event_type=EVT_PLAN_REACTIVATED,
         aggregate_type="plan",
         aggregate_id=plan.id,
         payload={"plan_id": str(plan.id), "product_key": plan.product_key, "code": plan.code},
@@ -175,6 +274,7 @@ async def create_version(
     *,
     request: Request | None,
     registry: ProductRegistry | None = None,
+    reason: str | None = None,
 ) -> PlanVersion:
     """Clone the plan's latest version into a new **draft**, never mutating a published one.
 
@@ -270,16 +370,65 @@ async def create_version(
             if version.restricted_to_org_id
             else None,
         },
+        reason=reason,
         request=request,
     )
     return version
 
 
+async def draft_version(
+    session: AsyncSession,
+    principal: Principal,
+    plan: Plan,
+    payload: VersionCreateIn,
+    *,
+    request: Request | None,
+    registry: ProductRegistry | None,
+    reason: str | None,
+) -> PlanVersion:
+    """`create_version` for the operator route, safe against a concurrent draft on the same plan.
+
+    The next `version_no` is read, then inserted; two drafts racing (an owner here, console's
+    bespoke-price endpoint there) both read the same number and the loser hits
+    `uq_plan_versions_plan_version`. A SAVEPOINT around each attempt rolls back only the losing
+    insert — the request's tenant binding and its idempotency claim survive — and the next attempt
+    re-reads the number, as `console_internal` does. After `DRAFT_ATTEMPTS` it is a 409.
+    """
+    for _attempt in range(DRAFT_ATTEMPTS):
+        try:
+            async with session.begin_nested():
+                return await create_version(
+                    session,
+                    principal,
+                    plan,
+                    payload,
+                    request=request,
+                    registry=registry,
+                    reason=reason,
+                )
+        except IntegrityError as exc:
+            if _constraint_name(exc) != "uq_plan_versions_plan_version":
+                raise
+    raise ConflictProblem(
+        "other drafts on this plan kept taking the next version number; reload and try again"
+    )
+
+
+def _constraint_name(exc: IntegrityError) -> str | None:
+    """The constraint that fired, when asyncpg surfaces one (directly or on its cause)."""
+    orig = exc.orig
+    name = getattr(orig, "constraint_name", None)
+    if name is None:
+        name = getattr(getattr(orig, "__cause__", None), "constraint_name", None)
+    return str(name) if name is not None else None
+
+
 def _validate_trial_days(value: Any) -> None:
     """A version's trial length, the only one subscription will grant (the caller no longer
     chooses). Whole days, 0 (no trial) to 365."""
-    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 365:
-        raise BusinessRuleProblem(f"{FEATURE_TRIAL_DAYS} must be a whole number of days, 0 to 365")
+    message = domain.trial_days_problem(value)
+    if message is not None:
+        raise BusinessRuleProblem(message)
 
 
 async def _validate_bundle(
@@ -406,11 +555,24 @@ def _reject_currency_mismatch(version: PlanVersion, price: Price) -> None:
 
 
 async def publish_version(
-    session: AsyncSession, principal: Principal, version: PlanVersion, *, request: Request
+    session: AsyncSession,
+    principal: Principal,
+    version: PlanVersion,
+    *,
+    request: Request | None,
+    reason: str | None = None,
+    registry: ProductRegistry | None = None,
+    allow_zero_amounts: bool = False,
 ) -> PlanVersion:
     """Freeze a draft. From here the row is immutable (trigger + `_ensure_draft`), and
-    `catalog.plan_version.published` is emitted for subscription and console to consume."""
+    `catalog.plan_version.published` is emitted for subscription and console to consume.
+
+    Validated first (`domain.publish_problems`, plus the bundle members against the registry),
+    because this is the last moment a mistake in the sheet is cheap: every problem is returned at
+    once as the problem document's `errors[]`, so an operator fixes the draft in one pass.
+    """
     _ensure_draft(version)
+    await _ensure_publishable(session, version, registry, allow_zero_amounts=allow_zero_amounts)
 
     version.state = VERSION_PUBLISHED
     version.published_at = datetime.now(UTC)
@@ -427,7 +589,14 @@ async def publish_version(
         action="catalog.plan_version.published",
         entity="plan_version",
         entity_id=version.id,
-        after={"plan_id": str(version.plan_id), "version_no": version.version_no},
+        before={"state": VERSION_DRAFT},
+        after={
+            "plan_id": str(version.plan_id),
+            "version_no": version.version_no,
+            "state": VERSION_PUBLISHED,
+            "allow_zero_amounts": allow_zero_amounts,
+        },
+        reason=reason,
         request=request,
     )
     publish_event(
@@ -454,6 +623,262 @@ async def publish_version(
     return version
 
 
+async def _ensure_publishable(
+    session: AsyncSession,
+    version: PlanVersion,
+    registry: ProductRegistry | None,
+    *,
+    allow_zero_amounts: bool,
+) -> None:
+    fresh = await selectors.get_version(session, version.id)
+    if fresh is None:  # pragma: no cover - the caller holds the row
+        raise NotFoundProblem("No such plan version")
+    features = {f.feature_key: f.value for f in fresh.features}
+    problems = domain.publish_problems(
+        currency=fresh.currency,
+        prices=[
+            domain.PublishablePrice(
+                kind=p.kind,
+                amount_minor=p.amount_minor,
+                currency=p.currency,
+                unit=p.unit,
+                unit_price_micros=p.unit_price_micros,
+                meter_key=p.meter_key,
+            )
+            for p in fresh.prices
+        ],
+        features=features,
+        allow_zero_amounts=allow_zero_amounts,
+    )
+    if FEATURE_BUNDLED_PRODUCTS in features:
+        # Re-checked at publish, not only at draft: the registry may have moved on since the
+        # draft was written, and once frozen a wrong member list is a customer's problem.
+        if registry is None:
+            problems.append(
+                domain.PublishProblem(
+                    "features.bundled_products",
+                    "bundle_unverifiable",
+                    "a bundle cannot be published without the product registry to check it",
+                )
+            )
+        else:
+            products = await registry.products()
+            plan = fresh.plan
+            for message in domain.bundle_member_problems(
+                products.get(plan.product_key),
+                plan.product_key,
+                features[FEATURE_BUNDLED_PRODUCTS],
+                products,
+            ):
+                problems.append(
+                    domain.PublishProblem("features.bundled_products", "bundle_member", message)
+                )
+    if problems:
+        raise BusinessRuleProblem(
+            f"plan version {fresh.version_no} cannot be published: "
+            + "; ".join(p.message for p in problems),
+            errors=[{"field": p.field, "code": p.code, "message": p.message} for p in problems],
+        )
+
+
+async def withdraw_version(
+    session: AsyncSession,
+    principal: Principal,
+    version: PlanVersion,
+    *,
+    request: Request | None,
+    reason: str | None = None,
+) -> PlanVersion:
+    """Stop selling one published version: `published -> grandfathered`.
+
+    Every subscription already pinned to it keeps it — its prices, features and seat classes are
+    frozen exactly as before — but it is no longer published, so no customer browse and no
+    published-version check finds it. The only change the row trigger allows on a published
+    version (migration b7e4d2a9c613) is `state`, and nothing else, so `updated_at` is set to
+    itself here to keep the column's `onupdate` out of the statement. Emits
+    `catalog.plan_version.grandfathered`.
+    """
+    if version.state != VERSION_PUBLISHED:
+        raise BusinessRuleProblem(
+            f"plan version {version.version_no} is {version.state}; only a published version "
+            "can be withdrawn"
+        )
+    table = cast(Table, PlanVersion.__table__)
+    await session.execute(
+        update(table)
+        .where(table.c.id == version.id, table.c.state == VERSION_PUBLISHED)
+        .values(state=VERSION_GRANDFATHERED, updated_at=table.c.updated_at)
+    )
+    await session.refresh(version)
+    plan = await selectors.get_plan(session, version.plan_id)
+    product_key = plan.product_key if plan else None
+    withdrawn_at = datetime.now(UTC)
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=PLATFORM_ORG,
+        actor_id=principal.sub,
+        action="catalog.plan_version.grandfathered",
+        entity="plan_version",
+        entity_id=version.id,
+        before={"state": VERSION_PUBLISHED},
+        after={
+            "plan_id": str(version.plan_id),
+            "version_no": version.version_no,
+            "state": VERSION_GRANDFATHERED,
+        },
+        reason=reason,
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=PLATFORM_ORG,
+        event_type=EVT_VERSION_GRANDFATHERED,
+        aggregate_type="plan_version",
+        aggregate_id=version.id,
+        payload={
+            "plan_id": str(version.plan_id),
+            "plan_version_id": str(version.id),
+            "product_key": product_key,
+            "version_no": version.version_no,
+            "currency": version.currency,
+            "billing_interval": version.billing_interval,
+            "restricted_to_org_id": str(version.restricted_to_org_id)
+            if version.restricted_to_org_id
+            else None,
+            "withdrawn_at": withdrawn_at.isoformat(),
+        },
+        actor=_actor(principal),
+    )
+    return version
+
+
+async def delete_draft_version(
+    session: AsyncSession,
+    principal: Principal,
+    version: PlanVersion,
+    *,
+    request: Request | None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Discard a draft — it was never an offer, so nothing can be pinned to it.
+
+    A published or grandfathered version is refused here and by the delete trigger underneath
+    (migration e3f8a91c7b2d). Children go first and explicitly — seat classes, then prices and
+    features, then the version — because `seat_classes.price_id` is `ON DELETE RESTRICT` and the
+    order a cascade would take is not one to rely on. A discarded draft's number is reused by
+    the next draft only if it was the newest; nothing outside catalog ever saw it.
+    """
+    if version.state != VERSION_DRAFT:
+        raise BusinessRuleProblem(
+            f"plan version {version.version_no} is {version.state}; only a draft can be deleted "
+            "— withdraw a published version instead"
+        )
+    gone: dict[str, Any] = {
+        "id": version.id,
+        "plan_id": version.plan_id,
+        "version_no": version.version_no,
+    }
+    before = {
+        "plan_id": str(version.plan_id),
+        "version_no": version.version_no,
+        "state": VERSION_DRAFT,
+        "restricted_to_org_id": str(version.restricted_to_org_id)
+        if version.restricted_to_org_id
+        else None,
+    }
+    for model in (SeatClass, Price, Feature):
+        child = cast(Table, model.__table__)
+        await session.execute(delete(child).where(child.c.plan_version_id == version.id))
+    versions = cast(Table, PlanVersion.__table__)
+    await session.execute(delete(versions).where(versions.c.id == version.id))
+    session.expunge(version)
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=PLATFORM_ORG,
+        actor_id=principal.sub,
+        action="catalog.plan_version.draft_deleted",
+        entity="plan_version",
+        entity_id=gone["id"],
+        before=before,
+        reason=reason,
+        request=request,
+    )
+    return gone
+
+
+# --------------------------------------------------------------------- idempotency keys
+
+
+@dataclass(frozen=True, slots=True)
+class IdempotencyClaim:
+    """Either a fresh claim (`claim_id`) the caller must complete, or a recorded answer to
+    replay (`replay_status` + `replay_body`). Never both."""
+
+    claim_id: uuid.UUID | None = None
+    replay_status: int | None = None
+    replay_body: Any = None
+
+
+async def claim_idempotency_key(
+    session: AsyncSession, principal: Principal, *, key: str, action: str, fingerprint: str
+) -> IdempotencyClaim:
+    """Claim `key` for this request **before** the change, in the change's own transaction.
+
+    `ON CONFLICT DO NOTHING` on `(organization_id, key)`: a concurrent request with the same key
+    waits on the unique index until the first commits or rolls back. Rolled back — the claim was
+    never real, and this one takes it. Committed — its row is read and either replayed (same
+    operator, same fingerprint) or refused with a 409 (anything else). A claim is completed in
+    the same transaction as the change, so a committed one always carries its answer.
+    """
+    claimed = (
+        await session.execute(
+            pg_insert(IdempotencyKey)
+            .values(
+                id=uuid.uuid4(),
+                organization_id=PLATFORM_ORG,
+                key=key,
+                action=action,
+                actor_id=principal.sub,
+                fingerprint=fingerprint,
+            )
+            .on_conflict_do_nothing(constraint="uq_idempotency_keys_org_key")
+            .returning(IdempotencyKey.id)
+        )
+    ).scalar_one_or_none()
+    if claimed is not None:
+        return IdempotencyClaim(claim_id=claimed)
+
+    existing = await selectors.get_idempotency_claim(session, key=key)
+    if (
+        existing is None
+        or existing.actor_id != principal.sub
+        or existing.fingerprint != fingerprint
+    ):
+        raise ConflictProblem(
+            "This Idempotency-Key was already used for a different request; "
+            "send a new key for a new change"
+        )
+    if existing.status_code is None:  # pragma: no cover - completed in the claiming transaction
+        raise ConflictProblem("A request with this Idempotency-Key is still in progress")
+    return IdempotencyClaim(replay_status=existing.status_code, replay_body=existing.response)
+
+
+async def complete_idempotency_key(
+    session: AsyncSession, claim_id: uuid.UUID, *, status_code: int, response: Any
+) -> None:
+    """Record the answer on the claim, in the same transaction as the change it answers."""
+    await session.execute(
+        update(IdempotencyKey)
+        .where(IdempotencyKey.id == claim_id)
+        .values(status_code=status_code, response=response, completed_at=func.now())
+    )
+
+
 async def require_plan(session: AsyncSession, plan_id: Any) -> Plan:
     plan = await selectors.get_plan(session, plan_id)
     if plan is None:
@@ -463,6 +888,20 @@ async def require_plan(session: AsyncSession, plan_id: Any) -> Plan:
 
 async def require_version(session: AsyncSession, version_id: Any) -> PlanVersion:
     version = await selectors.get_version(session, version_id)
+    if version is None:
+        raise NotFoundProblem("No such plan version")
+    return version
+
+
+async def require_plan_for_update(session: AsyncSession, plan_id: Any) -> Plan:
+    plan = await selectors.get_plan_for_update(session, plan_id)
+    if plan is None:
+        raise NotFoundProblem("No such plan")
+    return plan
+
+
+async def require_version_for_update(session: AsyncSession, version_id: Any) -> PlanVersion:
+    version = await selectors.get_version_for_update(session, version_id)
     if version is None:
         raise NotFoundProblem("No such plan version")
     return version

@@ -106,6 +106,16 @@ async def _publish(
         PlanCreateIn(product_key=product_key, code=code, name=code.title()),
         request=None,
     )
+    # These ladders live under throwaway product keys; register them as the bundle and its
+    # members so authoring — and publishing, which re-checks the members — validates against a
+    # registry that knows them.
+    registry = FakeRegistry.default().with_bundle(
+        product_key,
+        next(
+            (list(f.value) for f in features or [] if f.feature_key == "bundled_products"),
+            [],
+        ),
+    )
     version = await services.create_version(
         session,
         op,
@@ -120,17 +130,11 @@ async def _publish(
             seat_classes=seat_classes or [],
         ),
         request=None,
-        # These ladders live under throwaway product keys; register them as the bundle and its
-        # members so authoring validates against a registry that knows them.
-        registry=FakeRegistry.default().with_bundle(
-            product_key,
-            next(
-                (list(f.value) for f in features or [] if f.feature_key == "bundled_products"),
-                [],
-            ),
-        ),
+        registry=registry,
     )
-    published = await services.publish_version(session, op, version, request=None)
+    published = await services.publish_version(
+        session, op, version, request=None, registry=registry
+    )
     fresh = await selectors.get_version(session, published.id)
     assert fresh is not None
     return fresh
