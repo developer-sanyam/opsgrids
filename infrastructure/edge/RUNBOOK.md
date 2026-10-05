@@ -969,6 +969,52 @@ record first. A rate of one in a long while is a database blip to read; every pu
 the rollback trigger above. Wiring `putaway.capture_failed` to an alert is a follow-up
 (`docs/backlog.md`).
 
+### Plans & prices in the console: catalog migration, rollout, what to watch
+
+The Plans & prices release (design: `docs/superpowers/specs/2026-10-06-admin-plans-page-design.md`;
+decision: [ADR-0029](../../docs/adr/0029-catalog-operator-writes.md)) gives the staff console a real
+catalogue page over catalog's existing `/api/v1/admin/catalog` prefix. **No route table changes** (the
+paths stay under the existing `staff_only` prefix, so admin-gateway and Caddy are not recreated) and **no
+new `.env` key**.
+
+**What migrates.** One catalog revision, `b7e4d2a9c613` (follows `c5f1e8a2b7d4`), in the ordinary
+`migrate` step. It replaces the body of `catalog.forbid_published_version_update()` (published rows may
+now take exactly one change, `state` to `grandfathered`; grandfathered rows take none) and creates
+`catalog.idempotency_keys` (empty, RLS on and forced). Both are instantaneous; nothing is backfilled.
+
+**Rollout order** (owner-approved deploy; merging deploys nothing): catalog first (migration + API), then
+notification (two new subscribable catalog events; harmless if it lags), then the console frontend.
+Old console builds keep working against the new catalog because the old stub made no catalog calls.
+
+**Verify, changing nothing.** On the box, from `infrastructure/edge/`:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T catalog alembic current
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT to_regclass('catalog.idempotency_keys') IS NOT NULL                         AS claims_table,
+       (SELECT relforcerowsecurity FROM pg_class WHERE oid = 'catalog.idempotency_keys'::regclass) AS rls_forced,
+       (SELECT count(*) FROM catalog.plan_versions WHERE state = 'grandfathered')     AS withdrawn;"
+```
+
+`alembic current` must print `b7e4d2a9c613 (head)`; the query prints `t|t|0` on a first deploy. Then, as
+an `owner`, open `admin.opsgrids.com/plans`: the table loads (public plans), a plan opens, a version's
+sheet opens. As `billing_ops` the same pages load with no actions; as `support` the page shows a notice.
+
+**The one irreversible step is publish.** Prove the write path with a throwaway: create a plan under a
+test product key, draft a version, then **delete the draft** — do not publish it. Publishing freezes the
+version for good; withdrawing afterwards keeps it pinned by anyone already on it.
+
+**What to watch.** A 409 "Idempotency-Key was already used for a different request" means a client reused
+a key — the console mints one per dialog open, so a stream of them is a client bug, not an operator one.
+A 422 on publish lists every problem in `errors[]`; the commonest is a zero amount the owner must
+acknowledge or a usage price missing its meter. **Retiring a plan does not yet stop a subscription pinning
+one of its versions by id** (subscription does not read plan state — a later slice); until then, withdraw
+the specific version as well when it must stop selling.
+
+**Rollback.** Roll the console and catalog images back; the migration can stay (old catalog code ignores
+the claims table and never withdraws). If it must go: `alembic downgrade c5f1e8a2b7d4` on catalog — a
+version withdrawn meanwhile stays `grandfathered`.
+
 ### The billing run: first deploy, watching it, and what to do when it complains
 
 The billing run (ADR-0005's 2026-09-23 addendum and its review fixes) is the loop that converts
