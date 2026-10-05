@@ -106,16 +106,25 @@ CASHFREE_SIGNATURE_HEADER = "x-webhook-signature"
 CASHFREE_EVENT_ID_HEADERS = ("x-idempotency-header", "x-idempotency-key")
 
 
-async def _capped_body(request: Request) -> bytes:
-    """The raw body, refused (413) above `MAX_WEBHOOK_BODY_BYTES` — before any signature work, and
-    from the declared length when there is one, so an oversized body is never buffered."""
+async def read_capped_body(request: Request, limit: int) -> bytes:
+    """The raw body, refused (413) above `limit` bytes — before any signature work, and never by
+    buffering it first: from the declared length when there is one, and otherwise (a chunked body
+    carries none) by counting the stream as it arrives and stopping at the first byte over."""
     declared = request.headers.get("content-length")
-    if declared is not None and declared.isdigit() and int(declared) > MAX_WEBHOOK_BODY_BYTES:
+    if declared is not None and declared.isdigit() and int(declared) > limit:
         raise PayloadTooLargeProblem("webhook body too large")
-    body = await request.body()
-    if len(body) > MAX_WEBHOOK_BODY_BYTES:
-        raise PayloadTooLargeProblem("webhook body too large")
-    return body
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            raise PayloadTooLargeProblem("webhook body too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _capped_body(request: Request) -> bytes:
+    return await read_capped_body(request, MAX_WEBHOOK_BODY_BYTES)
 
 
 def cashfree_enabled() -> bool:

@@ -22,6 +22,18 @@ So the shape here encodes Razorpay's constraints as first-class:
   final check at the attempt budget uses, because that check must never create anything.
   `charge` still carries the idempotency key; a Stripe adapter forwards it to Stripe's native
   idempotency header and may answer the lookups trivially.
+
+  **Against real Razorpay the receipt lookup is best-effort, never proof** (sandbox, observed
+  2026-10-06 by the owner's smoke tool): `POST /orders` with a receipt that already exists is
+  *accepted* and makes a second Order, and `GET /orders?receipt=` for an Order created seconds
+  earlier returned none (one call a `429`). So "found nothing" does not mean "there is none", and an
+  Order whose id this platform has **recorded** is fetched by that id (`GET /orders/{id}`), never
+  searched for by receipt. Every path that hands an Order to a customer records its id first and
+  hands out only the recorded id (`checkout/services.py`); a duplicate an unknown-outcome retry
+  made is never shown to anyone, and the poller still searches for one before it closes a checkout
+  (`StrayPayment`). The debit shape below is held to `ProviderContract` against the stub, whose
+  receipt index is exact; a live order-then-charge debit (Phase B) must record the Order id before
+  it creates the payment, because the receipt lookup alone cannot stop a second Order.
 * **Every wire call is bounded.** The service runs `ensure_order` + `find_payment` + `charge` on a
   worker thread and stops waiting after `Settings.provider_call_timeout_seconds`; the thread cannot
   be cancelled. An adapter's own per-request connect and read timeouts, **summed over those three
@@ -35,10 +47,11 @@ So the shape here encodes Razorpay's constraints as first-class:
 **The live adapter is bound by all of this (B5g), by the contract for its shape (ADR-0029).** The
 Razorpay adapter has a stubbed wire by default and a live one (`razorpay_wire.RazorpayHttpWire`)
 behind `PAYMENT_WIRE=live`; when it is live it implements the lookup-before-create contract above
-exactly as the stub models it — `ensure_order` finds the Order by `receipt` before it creates one
-(and, because Razorpay refuses a duplicate receipt with a `400`, looks once more after a `400`
-before giving up), `find_order` never creates, `find_payment` finds a payment already made against
-an Order, `charge` is reached only after that lookup found none — and declares per-request timeouts
+as far as Razorpay allows — `ensure_order` searches for the Order by `receipt` before it creates one
+(best-effort: see above; and it looks once more after a `400`, a harmless recovery of an Order an
+earlier unknown-outcome create left behind — Razorpay does not refuse a duplicate receipt),
+`find_order` never creates, `find_payment` finds a payment already made against an Order, `charge`
+is reached only after that lookup found none — and declares per-request timeouts
 (`request_timeouts_seconds`) whose sum stays inside `provider_call_timeout_seconds`. Nothing else in
 the platform re-checks it: a live adapter that "just creates" debits a customer twice after a crash
 between the call and its record. Which contract is the definition of done depends on the adapter's
@@ -222,6 +235,18 @@ class PaymentSnapshot:
     error_description: str | None = None
     #: Epoch seconds, the provider's own.
     created_at: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StrayPayment:
+    """A payment attempt on an Order that carries a charge's exact `receipt` but is **not** the
+    Order the charge records — a duplicate an unknown-outcome create left behind (Razorpay accepts
+    a duplicate receipt). Nobody was ever handed its id, so a customer should not be able to pay
+    it; the poller asks anyway before it closes a checkout (`checkout/services.record_poll`), and
+    one that moved money is recorded against the charge, loudly."""
+
+    provider_order_id: str
+    snapshot: PaymentSnapshot
 
 
 @runtime_checkable
@@ -544,6 +569,15 @@ class CheckoutRequest:
     #: Where the provider delivers this Order's webhooks (Cashfree `order_meta.notify_url`, which
     #: must be HTTPS). None: whatever the account's dashboard registers.
     notify_url: str | None = None
+    #: The Order id the charge **already records**, when it does (a reopened checkout). The adapter
+    #: then fetches **that Order by its id** and returns it, or refuses (`ProviderTransient`,
+    #: `recorded_order_not_found`) — it never searches by receipt (a receipt can name several
+    #: Orders, and the search can miss one that exists) and never creates another. An adapter that
+    #: cannot find an Order this charge already recorded is not looking at the account that made it
+    #: (the stub after a rollback from a live wire, another environment's keys), and a fresh Order
+    #: minted there under the same receipt would make that adapter the authority on a payment it
+    #: cannot see.
+    recorded_order_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -563,8 +597,9 @@ class CheckoutProvider(Protocol):
     from the browser."""
 
     def ensure_checkout(self, request: CheckoutRequest) -> CheckoutSession:
-        """Find the Order by `request.receipt` first, create it only if the provider holds none,
-        and return it with what the browser needs. Idempotent by receipt, like `ensure_order`."""
+        """The Order the charge records (`request.recorded_order_id`, fetched by its id — never
+        made again), or, when it records none, the Order found by `request.receipt` (best-effort)
+        or else created; returned with what the browser needs."""
         ...
 
 

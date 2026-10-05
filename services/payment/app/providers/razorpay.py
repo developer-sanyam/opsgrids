@@ -11,16 +11,34 @@ What is **real and tested** here:
 * **The state machine.** Razorpay's event names (`payment.captured`, `payment.failed`,
   `payment.authorized`) are mapped to the platform's charge states in one place, `_EVENT_OUTCOMES`
   — the only spot that knows Razorpay's vocabulary.
-* **Idempotency, the way Razorpay actually offers it.** Razorpay has no idempotency key on a
+* **Idempotency, as far as Razorpay actually offers it.** Razorpay has no idempotency key on a
   payment create. What it has is the **Order**: created with `receipt` = the platform's charge
-  key, and queryable — by receipt, and for the payments made against it. So the adapter's
-  contract is **lookup before create** (`ensure_order`, `find_payment`, then `charge`), and the
-  stubbed wire below keeps the state a real account would: Orders by receipt and payments by
-  Order, per adapter instance (one per process, `app/deps.py`). A resumed call finds the payment
-  a crashed one made; the ids are also derived from the key, so a fresh process agrees on them.
-  Razorpay's Create Order documents `receipt` as unique and answers a duplicate with a `400`, so a
-  create that is refused as a duplicate (the first create landed and its answer was lost, and the
-  lookup raced it) is followed by **one** more lookup before the error is believed.
+  id, fetchable by its id, and searchable by receipt. So the adapter's contract is **lookup before
+  create** (`ensure_order`, `find_payment`, then `charge`), and the stubbed wire below keeps the
+  state a real account would: Orders by receipt and payments by Order, per adapter instance (one
+  per process, `app/deps.py`). A resumed call finds the payment a crashed one made; the ids are
+  also derived from the key, so a fresh process agrees on them.
+
+  **What the sandbox showed (the owner's smoke tool, real test keys, 2026-10-06)** — and what the
+  adapter is built on since:
+
+  1. `POST /orders` with a receipt that already exists is **accepted** and makes a **second**
+     Order: no `400`, no "unique". The receipt is not an idempotency key.
+  2. `GET /orders?receipt=<receipt of an Order created seconds earlier>` answered `count: 0` (and
+     one call a `429`). The receipt search is **not** a reliable lookup-before-create guard: "found
+     none" never proves there is none.
+  3. `payment_capture` is not echoed on the Order; it is sent, and nothing reads it back.
+  4. A bad key is a `401` with `error.code = BAD_REQUEST_ERROR` (the wire classifies it by status).
+
+  So: an Order whose id the platform has **recorded** is only ever fetched by that id
+  (`GET /orders/{id}`, `ensure_checkout` with `recorded_order_id`) — never searched for, never made
+  again. The receipt search runs only when no id is recorded (an earlier create whose outcome is
+  unknown), as a best-effort recovery that saves a duplicate when it works and costs nothing when
+  it does not. The one re-search after a `400` on a create is kept as just that: a `400` is not a
+  duplicate receipt, but an exact, same-money Order an earlier create left behind is still the
+  better answer than the refusal. A duplicate that slips through is never handed to a browser (the
+  service hands out only the recorded id), and `stray_order_payments` is how the poller still looks
+  for a payment on one before a checkout is closed. A `429` anywhere is `ProviderTransient`.
 
 What is **stubbed**, unless a wire is given — the one seam:
 
@@ -36,7 +54,8 @@ What is **stubbed**, unless a wire is given — the one seam:
 **What the live platform wire does (Phase A, ADR-0029).** Customer-present checkout only:
 `ensure_order` is `GET /orders?receipt=…` then `POST /orders` (with `payment_capture: true`, so an
 authorised payment is captured rather than auto-refunded after three days) only if that found none;
-`find_order` is the GET alone; `order_payments` / `find_payment` is `GET /orders/{id}/payments`.
+a recorded Order is `GET /orders/{id}`; `find_order` is the receipt search alone;
+`order_payments` / `find_payment` is `GET /orders/{id}/payments`.
 **It never debits**: `charge` and `create_mandate` raise `NotImplementedError` on a wire — the
 mandate debit is Phase B — and the service layer refuses a charge that would need one (`no_mandate`,
 ADR-0005 Q4) before any call. A platform order is INR only and at least 100 paise, refused here
@@ -62,6 +81,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 from typing import Any
 
 from app.providers.base import (
@@ -76,6 +96,7 @@ from app.providers.base import (
     ProviderCallError,
     ProviderCapabilities,
     RefundResult,
+    StrayPayment,
     WebhookEvent,
     best_attempt,
 )
@@ -109,9 +130,17 @@ _REFUND_STATUS_STATES: dict[str, str] = {
     "failed": "failed",
 }
 
-#: How many Orders one receipt lookup reads. A receipt is unique by Razorpay's own rule, and the
-#: filter is a "contains" match, so a handful is plenty to find the exact one.
+#: How many Orders one receipt search reads. Razorpay does **not** keep a receipt unique (a
+#: duplicate create is accepted) and the filter is a "contains" match, so a few may come back; ten
+#: is plenty for the exact one and any duplicate an unknown-outcome create left behind.
 _RECEIPT_LOOKUP_COUNT = 10
+#: The most stray Orders (the charge's exact receipt, not the Order it records) whose payments one
+#: `stray_order_payments` asks about: one search plus this many lookups stays well inside a call's
+#: deadline beside the recorded Order's own lookup.
+_STRAY_ORDER_LIMIT = 2
+#: What a Razorpay Order id looks like (`order_` and letters/digits). A recorded id is put in a URL
+#: path, so anything else is refused before a request rather than sent.
+_ORDER_ID = re.compile(r"^order_[A-Za-z0-9]{1,40}$")
 
 #: Razorpay's minimum charge: 100 paise (Re 1). A platform order below it is refused before a call.
 MIN_AMOUNT_MINOR = 100
@@ -267,7 +296,7 @@ class RazorpayProvider:
     name = PROVIDER
     #: The declared worst-case budget of the live wire: one connect + read timeout per request,
     #: five requests to charge (`RAZORPAY_REQUESTS_PER_CHARGE`: the Order lookup, the Order
-    #: create, the duplicate-receipt re-lookup, the payments lookup, the payment create). 5 x 7s =
+    #: create, the re-search after a `400`, the payments lookup, the payment create). 5 x 7s =
     #: 35s, inside the 45s `provider_call_timeout_seconds` default. The stub opens no socket and
     #: honours none of it; the live wire must, and the contract holds it to the sum — and the
     #: wire's overall deadline holds it to the clock (`app/providers/wire.py`).
@@ -414,10 +443,16 @@ class RazorpayProvider:
         currency: str,
         notes: dict[str, str],
     ) -> OrderResult:
-        """`GET /orders?receipt=…` first (`find_order`); `POST /orders` only when there is none.
-        The stub answers the lookup from the state the create left behind. A create refused with a
-        `400` is looked up once more — Razorpay refuses a duplicate receipt that way — and the
-        Order found then is the answer; none found, the refusal stands."""
+        """`GET /orders?receipt=…` first (`find_order`); `POST /orders` only when that found none.
+        The stub answers the search from the state the create left behind.
+
+        **On the live wire the search is best-effort** (Razorpay's can miss an Order created
+        seconds earlier, and a duplicate receipt is accepted, not refused): it saves a duplicate
+        when an earlier create whose outcome was lost is visible, and proves nothing when it finds
+        none. A caller that has an Order id recorded never comes here — it fetches that Order by id
+        (`ensure_checkout`). A `429` on the search is `ProviderTransient` and nothing is created. A
+        create refused with a `400` is searched once more — an exact, same-money Order an earlier
+        create left behind is the answer — and otherwise the `400` stands."""
         # First, before a single request: an order Razorpay would refuse is not worth a lookup.
         self._require_platform_money(amount_minor, currency)
         entity = self._find_entity(receipt)
@@ -472,20 +507,88 @@ class RazorpayProvider:
         return OrderResult(provider=PROVIDER, provider_order_id=existing, receipt=receipt)
 
     def _find_entity(self, receipt: str) -> dict[str, Any] | None:
-        """`GET /orders?receipt=…` on the live wire: the Order entity whose receipt is **exactly**
-        `receipt` (Razorpay's filter "contains" the value, so a longer receipt is not ours), or
-        None. Never a create. Always None on the stub, which keeps no entities."""
+        """`GET /orders?receipt=…` on the live wire: an Order entity whose receipt is **exactly**
+        `receipt`, or None. Never a create. Always None on the stub, which keeps no entities.
+        Best-effort: None is "the search showed none", never "there is none"."""
+        found = self._receipt_entities(receipt)
+        return found[0] if found else None
+
+    def _receipt_entities(self, receipt: str) -> list[dict[str, Any]]:
+        """Every Order entity the receipt search returns whose receipt is **exactly** `receipt`
+        (Razorpay's filter "contains" the value, so a longer receipt is not ours), in the order
+        Razorpay listed them. Razorpay keeps no receipt unique, so there can be more than one."""
         if self._wire is None:
-            return None
+            return []
         found = self._wire.request(
             "GET", "/orders", params={"receipt": receipt, "count": _RECEIPT_LOOKUP_COUNT}
         )
         items = found.get("items")
-        for item in items if isinstance(items, list) else []:
-            entity = _as_dict(item)
-            if entity.get("receipt") == receipt and _as_text(entity.get("id")):
-                return entity
-        return None
+        return [
+            entity
+            for entity in (_as_dict(item) for item in (items if isinstance(items, list) else []))
+            if entity.get("receipt") == receipt and _as_text(entity.get("id"))
+        ]
+
+    def _recorded_order(
+        self, *, order_id: str, receipt: str, amount_minor: int, currency: str
+    ) -> OrderResult:
+        """The Order a charge already **records**, fetched by its id (`GET /orders/{id}`) — never
+        searched for by receipt (the search can miss it, and can return a duplicate instead) and
+        never made again. Refused `recorded_order_not_found` (`ProviderTransient`: could not be
+        asked, nothing made) when this account does not hold it — a `400`/`404` from Razorpay, an
+        id that is not an Order id, or the stub, which knows only the Orders it minted. An Order
+        that is someone else's receipt or money is refused, never handed out."""
+        self._require_platform_money(amount_minor, currency)
+        if self._wire is None:
+            if self._orders_by_receipt.get(receipt) != order_id:
+                raise ProviderTransient(PROVIDER, 0, "recorded_order_not_found")
+            return OrderResult(provider=PROVIDER, provider_order_id=order_id, receipt=receipt)
+        if _ORDER_ID.fullmatch(order_id) is None:
+            raise ProviderTransient(PROVIDER, 0, "recorded_order_not_found")
+        try:
+            entity = _as_dict(self._wire.request("GET", f"/orders/{order_id}"))
+        except ProviderRejected as exc:
+            if exc.status_code in (400, 404):
+                # Razorpay answers an id it does not hold with `400 BAD_REQUEST_ERROR`.
+                raise ProviderTransient(
+                    PROVIDER, exc.status_code, "recorded_order_not_found"
+                ) from None
+            raise
+        if entity.get("id") != order_id:
+            raise ProviderTransient(PROVIDER, 200, "recorded_order_not_found")
+        found_receipt = _as_text(entity.get("receipt"))
+        if found_receipt is not None and found_receipt != receipt:
+            raise ProviderRejected(PROVIDER, 0, "order_receipt_mismatch")
+        self._require_same_order(entity, amount_minor, currency)
+        return OrderResult(provider=PROVIDER, provider_order_id=order_id, receipt=receipt)
+
+    def stray_order_payments(self, *, receipt: str, recorded_order_id: str) -> list[StrayPayment]:
+        """Payments on Orders that carry this charge's **exact** `receipt` but are not the Order it
+        records — a duplicate an unknown-outcome create left behind (Razorpay accepts a duplicate
+        receipt). Nobody was handed such an Order's id, so a payment on one should be impossible;
+        the poller asks anyway before a checkout is closed, and through its late window
+        (`checkout/services.record_poll`).
+
+        **Best-effort, like every receipt search here**: it finds what Razorpay's search shows, at
+        most `_STRAY_ORDER_LIMIT` Orders. An Order whose `notes.charge_id` names another charge is
+        not this charge's and is skipped. Empty on the stub, which never makes a duplicate. A
+        failed request raises, classified by the wire; the caller treats that as "nothing found"."""
+        if self._wire is None:
+            return []
+        strays: list[str] = []
+        for entity in self._receipt_entities(receipt):
+            order_id = str(entity["id"])
+            charge_note = _note_text(_as_dict(entity.get("notes")).get("charge_id"))
+            if order_id == recorded_order_id or order_id in strays:
+                continue
+            if charge_note is not None and charge_note != receipt:
+                continue
+            strays.append(order_id)
+        return [
+            StrayPayment(provider_order_id=order_id, snapshot=snapshot)
+            for order_id in strays[:_STRAY_ORDER_LIMIT]
+            for snapshot in self.order_payments(order_id=order_id)
+        ]
 
     @staticmethod
     def _require_same_order(entity: dict[str, Any], amount_minor: int, currency: str) -> None:
@@ -501,7 +604,9 @@ class RazorpayProvider:
             raise ProviderRejected(PROVIDER, 0, "order_amount_mismatch")
 
     def find_order(self, *, receipt: str) -> OrderResult | None:
-        """`GET /orders?receipt=…` — the lookup alone, never a create."""
+        """`GET /orders?receipt=…` — the search alone, never a create. On the live wire None means
+        "the search showed none", which is not proof that there is none (Razorpay's search can lag
+        a create by seconds); a recorded Order is fetched by its id instead."""
         if self._wire is not None:
             entity = self._find_entity(receipt)
             if entity is None:
@@ -523,12 +628,17 @@ class RazorpayProvider:
             items = found.get("items")
             snapshots = [_snapshot(item) for item in (items if isinstance(items, list) else [])]
             return [s for s in snapshots if s is not None]
-        if not self._stub_knows(order_id):
-            # The stub keeps its Orders in this process only. An Order it never minted — one made
-            # by a live wire before the switch was turned back to `stub`, or by this process
-            # before a restart — is not "an Order with no payments": the stub cannot tell. Saying
-            # `[]` would let the poller expire a checkout a customer may have paid at the real
-            # provider. Not being able to ask is the honest answer, and it changes nothing.
+        if self._platform_billing and not self._stub_knows(order_id):
+            # The platform's stub keeps its Orders in this process only. An Order it never minted
+            # — one made by a live wire before the switch was turned back to `stub`, or by this
+            # process before a restart — is not "an Order with no payments": the stub cannot tell.
+            # Saying `[]` would let the poller expire a checkout a customer may have paid at the
+            # real provider. Not being able to ask is the honest answer, and it changes nothing.
+            #
+            # **The platform adapter only.** A merchant's collections adapter is built afresh for
+            # every call (`deps._collections_provider`, never cached), so its stub never holds the
+            # Order it is asked about; it keeps the "no payments" answer it has always given, or
+            # every stub-wire sync, cancel and expiry of a collection would fail.
             raise ProviderTransient(PROVIDER, 0, "stub_holds_no_such_order")
         recorded = list(self._stub_order_payments.get(order_id, []))
         made = self._payments_by_order.get(order_id)
@@ -589,17 +699,31 @@ class RazorpayProvider:
     # ------------------------------------------------------------------ checkout
 
     def ensure_checkout(self, request: CheckoutRequest) -> CheckoutSession:
-        """The Order a customer pays in Razorpay's Checkout — `ensure_order`, so it is found by
-        its receipt before one is made — and what `checkout.js` is opened with: the **public** key
-        id and the Order id. Nothing a browser must not have, and nothing about the customer (the
-        customer is not sent to Razorpay here at all). `openable` is False on the stub: its Order
-        id is a local stand-in no real Checkout would accept."""
-        order = self.ensure_order(
-            receipt=request.receipt,
-            amount_minor=request.amount_minor,
-            currency=request.currency,
-            notes=request.notes,
-        )
+        """The Order a customer pays in Razorpay's Checkout and what `checkout.js` is opened with:
+        the **public** key id and the Order id. Nothing a browser must not have, and nothing about
+        the customer (the customer is not sent to Razorpay here at all). `openable` is False on the
+        stub: its Order id is a local stand-in no real Checkout would accept.
+
+        A charge that already records an Order (`request.recorded_order_id`) gets **that Order**,
+        fetched by its id (`_recorded_order`): never a receipt search, which could miss it or hand
+        back a duplicate, and never a create — an adapter that cannot find it is not the account
+        that made it, and never mints one. A charge that records none goes through `ensure_order`
+        (a best-effort search, then a create); the service records the id before any browser sees
+        it."""
+        if request.recorded_order_id is None:
+            order = self.ensure_order(
+                receipt=request.receipt,
+                amount_minor=request.amount_minor,
+                currency=request.currency,
+                notes=request.notes,
+            )
+        else:
+            order = self._recorded_order(
+                order_id=request.recorded_order_id,
+                receipt=request.receipt,
+                amount_minor=request.amount_minor,
+                currency=request.currency,
+            )
         return CheckoutSession(
             order=order,
             client_action={

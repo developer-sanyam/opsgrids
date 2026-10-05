@@ -7,8 +7,10 @@ from the process environment only, test keys only, prints only ids / statuses / 
 are shared by every smoke tool and are the reason this is safe to run at all.
 
     # from the repository root, on your own machine. `uv run`, NOT `make` (make re-exports `.env`).
-    export RAZORPAY_KEY_ID=rzp_test_...        # test mode only; anything else is refused
-    export RAZORPAY_KEY_SECRET=...
+    # `read -rs` types the value without echoing it and keeps it out of the shell history (an
+    # `export NAME=value` typed at the prompt is recorded there like any other command).
+    read -rs RAZORPAY_KEY_ID && export RAZORPAY_KEY_ID          # rzp_test_... only; else refused
+    read -rs RAZORPAY_KEY_SECRET && export RAZORPAY_KEY_SECRET
     uv run python tools/payments_smoke_razorpay.py plan                  # calls nothing
     uv run python tools/payments_smoke_razorpay.py probe --confirm       # non-interactive checks
     uv run python tools/payments_smoke_razorpay.py payments order_XXXX --confirm  # after paying it

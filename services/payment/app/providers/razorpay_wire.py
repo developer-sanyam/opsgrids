@@ -11,10 +11,15 @@ in whose keys, and in who is paid), so `RazorpayProvider` takes an optional `wir
 The calls, exactly as Razorpay documents them (checked 2026-09-29; the open questions the owner-run
 `tools/payments_smoke_razorpay.py` settles are listed in the Phase A design):
 
-* `GET  /v1/orders?receipt=<receipt>` — find an Order by the receipt this platform set on it.
-  Razorpay's filter "contains" the value, so the adapter still matches the receipt exactly.
-* `POST /v1/orders` — `{amount, currency, receipt (≤ 40 chars, **unique**), notes (≤ 15 keys)}`,
-  and, for platform Orders, `payment_capture: true`.
+* `GET  /v1/orders?receipt=<receipt>` — search for an Order by the receipt this platform set on
+  it. Razorpay's filter "contains" the value, so the adapter still matches the receipt exactly.
+  **Best-effort only**: in the sandbox (2026-10-06) it answered `count: 0` for an Order created
+  seconds earlier, and once a `429`.
+* `POST /v1/orders` — `{amount, currency, receipt (≤ 40 chars), notes (≤ 15 keys)}`, and, for
+  platform Orders, `payment_capture: true` (not echoed back on the Order). The receipt is **not**
+  unique: a create with a receipt that already exists is accepted and makes a second Order.
+* `GET  /v1/orders/{id}` — one Order by its id: how an Order the platform has recorded is found
+  again (an id Razorpay does not hold is a `400 BAD_REQUEST_ERROR`).
 * `GET  /v1/orders/{id}/payments` — every payment attempt against an Order.
 * `POST /v1/payments/{id}/refund` — `{amount, speed}` with the `X-Refund-Idempotency` header
   (≥ 10 characters of `[A-Za-z0-9_-]`): a retry with the same key is the same refund.
@@ -28,8 +33,10 @@ bad key is classified `ProviderMisconfigured` whatever status Razorpay answers i
 Every request has a connect and a read timeout (`WIRE_CONNECT_TIMEOUT_SECONDS`,
 `WIRE_READ_TIMEOUT_SECONDS`), clamped to the call's overall deadline when there is one
 (`app/providers/wire.py`), and the caller bounds the whole call on a worker thread. A call
-abandoned that way is safe to repeat: an Order is looked up by receipt before one is created, and a
-refund carries its idempotency header.
+abandoned that way is repeated safely for the customer: an Order is searched for by receipt before
+one is created (which may still make a duplicate when the search misses — never handed to a browser:
+only the id the service recorded is), a recorded Order is fetched by its id, and a refund carries
+its idempotency header.
 """
 
 from __future__ import annotations
@@ -52,9 +59,10 @@ RazorpayApiError = ProviderApiError
 RazorpayWire = ProviderWire
 
 #: Razorpay's own answers to a bad key, normalised (lower-cased, trailing full stop dropped).
-#: Matched to produce a boolean and then discarded. Whether Razorpay answers these with `401` (the
-#: repo's assumption, and the smoke tool checks it) or a `400` is not documented, which is why the
-#: classification does not depend on the status alone.
+#: Matched to produce a boolean and then discarded. The sandbox answers a bad key with `401` and
+#: `error.code = BAD_REQUEST_ERROR` (observed 2026-10-06), which the status alone already
+#: classifies; the description match stays so a `400` carrying the same answer is not mistaken for
+#: a refusal.
 _INVALID_CREDENTIAL_DESCRIPTIONS = frozenset(
     {"the api key provided is invalid", "authentication failed"}
 )

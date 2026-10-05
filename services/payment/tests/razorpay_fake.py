@@ -4,14 +4,27 @@ placeholder.
 
 It remembers what a real account would — Orders by id, found by a **"contains"** receipt filter (so
 the adapter's exact-match is proven, not assumed), the payments made against each Order — and it
-refuses what Razorpay refuses: wrong credentials (a `401`), an amount below 100 paise or a currency
-that is not INR on a platform order, and a **duplicate receipt** (`400 BAD_REQUEST_ERROR`, which is
-what Create Order documents and what a create that landed-and-was-retried meets).
+answers the way the sandbox was **observed** to answer (the owner's smoke tool, real test keys,
+2026-10-06):
+
+* a create with a receipt that already exists is **accepted** and makes a second Order (no `400`);
+* the receipt search can miss an Order that exists — `index_new_orders = False` (every Order created
+  from then on is invisible to `GET /orders?receipt=`) or `unindexed` (chosen ids) model the
+  `count: 0` it answered for an Order created seconds earlier;
+* `payment_capture` is accepted on a create and **not echoed** on the Order (kept in
+  `capture_requested` for a test to read);
+* a bad key is `401` with `error.code = BAD_REQUEST_ERROR` (`invalid_key_status` changes the
+  status);
+* `GET /orders/{id}` finds an Order by its id; an id it does not hold is `400 BAD_REQUEST_ERROR`.
+
+It still refuses what Razorpay refuses on a platform order: an amount below 100 paise, or a
+currency that is not INR.
 
 Knobs a test turns to exercise the failure paths: `inject` queues a scripted answer for the next
-request, `lose_next_create_response` makes the next `POST /v1/orders` create the Order and then fail
-the way a timeout does (the first create landed and its answer was lost), and `invalid_key_status`
-sets the status a bad key is answered with (the real one is for the smoke tool to observe).
+request (a `429`, a `500`, a `400`), `lose_next_create_response` makes the next `POST /v1/orders`
+create the Order and then fail the way a timeout does (the first create landed and its answer was
+lost), and `duplicate` makes a second Order for a receipt directly — what an unknown-outcome create
+leaves behind.
 """
 
 from __future__ import annotations
@@ -35,11 +48,17 @@ class FakeRazorpay:
         self.payments: dict[str, list[dict[str, Any]]] = {}
         #: Refunds by their `X-Refund-Idempotency` key.
         self.refunds: dict[str, dict[str, Any]] = {}
+        self.capture_requested: dict[str, Any] = {}
         self.requests: list[httpx.Request] = []
         self.bodies: list[dict[str, Any]] = []
         self._inject: deque[httpx.Response | Exception] = deque()
         self.lose_next_create_response = False
         self.invalid_key_status = 401
+        #: Whether an Order created from now on shows in the receipt search. False models the
+        #: sandbox's `count: 0` for an Order created seconds earlier.
+        self.index_new_orders = True
+        #: Order ids the receipt search does not show (yet).
+        self.unindexed: set[str] = set()
 
     # -- knobs ---------------------------------------------------------------------------
 
@@ -53,6 +72,18 @@ class FakeRazorpay:
     def methods(self) -> list[str]:
         """`METHOD path` for every request made, in order — what a test asserts the adapter did."""
         return [f"{r.method} {r.url.path}" for r in self.requests]
+
+    def receipt_orders(self, receipt: str) -> list[str]:
+        """Every Order id the account holds whose receipt is exactly `receipt`."""
+        return [o["id"] for o in self.orders.values() if o["receipt"] == receipt]
+
+    def duplicate(self, receipt: str, **over: Any) -> str:
+        """A second Order for `receipt`, as an unknown-outcome create would leave behind: same
+        money and notes as the first unless `over` says otherwise. Not a request."""
+        first = next(o for o in self.orders.values() if o["receipt"] == receipt)
+        order_id = f"order_{uuid.uuid4().hex[:14]}"
+        self.orders[order_id] = {**first, "id": order_id, **over}
+        return order_id
 
     def pay(
         self,
@@ -102,6 +133,12 @@ class FakeRazorpay:
             return self._list_orders(request)
         if request.method == "POST" and path == "/v1/orders":
             return self._create_order(request)
+        parts = path.split("/")
+        if request.method == "GET" and len(parts) == 4 and parts[2] == "orders":
+            order = self.orders.get(parts[3])
+            if order is None:
+                return self._error(400, "BAD_REQUEST_ERROR", "The id provided does not exist")
+            return httpx.Response(200, json=order)
         if (
             request.method == "POST"
             and path.startswith("/v1/payments/")
@@ -113,7 +150,7 @@ class FakeRazorpay:
             and path.startswith("/v1/orders/")
             and path.endswith("/payments")
         ):
-            order_id = path.split("/")[3]
+            order_id = parts[3]
             if order_id not in self.orders:
                 return self._error(400, "BAD_REQUEST_ERROR", "The id provided does not exist")
             return httpx.Response(
@@ -152,29 +189,35 @@ class FakeRazorpay:
     def _list_orders(self, request: httpx.Request) -> httpx.Response:
         receipt = request.url.params.get("receipt")
         count = int(request.url.params.get("count", "10"))
-        items = [o for o in self.orders.values() if receipt is None or receipt in o["receipt"]]
-        return httpx.Response(200, json={"entity": "collection", "items": items[:count]})
+        items = [
+            o
+            for o in self.orders.values()
+            if (receipt is None or receipt in o["receipt"]) and o["id"] not in self.unindexed
+        ]
+        return httpx.Response(
+            200, json={"entity": "collection", "count": len(items[:count]), "items": items[:count]}
+        )
 
     def _create_order(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        receipt = body.get("receipt")
         if body.get("amount", 0) < 100:
             return self._error(400, "BAD_REQUEST_ERROR", "Order amount less than minimum amount")
         if body.get("currency") != "INR":
             return self._error(400, "BAD_REQUEST_ERROR", "The currency is not supported")
-        if any(o["receipt"] == receipt for o in self.orders.values()):
-            return self._error(400, "BAD_REQUEST_ERROR", "Order receipt should be unique.")
+        # A receipt that already exists is accepted: a second Order (observed 2026-10-06).
         order_id = f"order_{uuid.uuid4().hex[:14]}"
         self.orders[order_id] = {
             "id": order_id,
             "entity": "order",
             "amount": body["amount"],
             "currency": body["currency"],
-            "receipt": receipt,
+            "receipt": body.get("receipt"),
             "status": "created",
             "notes": body.get("notes", {}),
-            "payment_capture": body.get("payment_capture"),
         }
+        self.capture_requested[order_id] = body.get("payment_capture")
+        if not self.index_new_orders:
+            self.unindexed.add(order_id)
         if self.lose_next_create_response:
             self.lose_next_create_response = False
             raise httpx.ReadTimeout("the answer was lost")

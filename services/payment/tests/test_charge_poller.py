@@ -10,7 +10,8 @@ What these pin:
   yet paid).
 * **Claim → call → record**, routed by the **row's** provider.
 * **Expiry** — an unpaid checkout past its expiry is closed with **no** `commerce.payment.failed`,
-  but only if the provider was successfully asked, and a late capture on it is still recorded.
+  but only if the provider was successfully asked and reports no attempt still in flight; a closed
+  one keeps being asked about for its late-capture window, so a capture on it is still recorded.
 """
 
 from __future__ import annotations
@@ -28,7 +29,6 @@ from app import selectors, services
 from app.checkout import services as checkout_services
 from app.checkout.cron import ChargePoller
 from app.cron import StuckChargeSweep
-from app.providers.base import PaymentSnapshot
 from app.providers.razorpay import RazorpayProvider
 from platform_core.db import get_outbox_sessionmaker, session_scope
 from tests import checkout_support as cs
@@ -262,41 +262,291 @@ class TestExpiry:
         assert (report.captured, report.expired) == (1, 0)
         assert (await _row(admin_session, out["charge_id"]))["state"] == "captured"
 
-    async def test_a_capture_that_lands_after_the_close_is_still_recorded(
-        self,
-        client: AsyncClient,
-        admin_session: AsyncSession,
-        session: AsyncSession,
-        org_id: uuid.UUID,
-        engines: None,
+    async def test_a_capture_that_lands_after_the_close_is_recorded_by_the_poller(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID, engines: None
     ) -> None:
         """Razorpay Orders do not expire on their own: a customer with the page still open can pay
-        after this platform stopped waiting. The money moved, so the record follows it."""
+        after this platform stopped waiting. With the webhooks private, the poller is the only
+        thing that can learn of it — so it keeps asking about a closed checkout, at a longer gap,
+        and the money moved is recorded through the path production takes (not a direct call)."""
         live = cs.razorpay_live()
         _, out = await _open(client, org_id, live)
         await force_charge(
             admin_session, out["charge_id"], checkout_expires_at=datetime.now(UTC) - LONG_AGO
         )
-        await _poller(lambda name: live).tick()
+        poller = _poller(lambda name: live)
+        assert (await poller.tick()).expired == 1
         assert (await _row(admin_session, out["charge_id"]))["state"] == "failed"
 
         paid = cs.razorpay_pay(live, out["client_action"]["order_id"], status="captured")
-        async with session_scope(organization_id=org_id) as s:
-            charge = await selectors.lock_charge(s, org_id, uuid.UUID(out["charge_id"]))
-            assert charge is not None
-            moved = await services.apply_payment_snapshot(
-                s,
-                charge,
-                PaymentSnapshot(
-                    provider_payment_id=paid, status="captured", amount_minor=49_900, currency="INR"
-                ),
-            )
-        assert moved is True
+        # Inside the late gap it is not asked about again...
+        assert (await poller.tick()).considered == 0
+        # ...and once the gap has passed, it is.
+        report = await poller.tick(now=datetime.now(UTC) + timedelta(minutes=11))
+
+        assert (report.polled, report.captured, report.expired) == (1, 1, 0)
         row = await _row(admin_session, out["charge_id"])
         assert row["state"] == "captured" and row["failure_reason"] is None
+        assert row["provider_payment_id"] == paid
         actions = [a["action"] for a in await audit_rows(admin_session, org_id)]
         assert "payment.charge.captured_after_local_failure" in actions
-        assert "commerce.payment.captured" in await emitted(admin_session, org_id)
+        assert (await emitted(admin_session, org_id)).count("commerce.payment.captured") == 1
+
+    async def test_a_closed_checkout_is_asked_about_only_inside_its_window(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID, engines: None
+    ) -> None:
+        live = cs.razorpay_live()
+        _, out = await _open(client, org_id, live)
+        await force_charge(
+            admin_session,
+            out["charge_id"],
+            checkout_expires_at=datetime.now(UTC) - timedelta(days=6),
+        )
+        poller = _poller(lambda name: live)
+        assert (await poller.tick()).expired == 1
+        cs.razorpay_pay(live, out["client_action"]["order_id"], status="captured")
+        calls = len(live.fake.requests)
+
+        later = datetime.now(UTC) + timedelta(minutes=11)
+        report = await poller.tick(now=later)
+
+        # Discovered once more, retired by the claim, and never asked about again.
+        assert (report.considered, report.skipped, report.polled) == (1, 1, 0)
+        assert len(live.fake.requests) == calls
+        row = await _row(admin_session, out["charge_id"])
+        assert (row["state"], row["next_attempt_at"]) == ("failed", None)
+        assert (await poller.tick(now=later + timedelta(hours=1))).considered == 0
+
+
+class TestAnAttemptInFlightAtExpiry:
+    """A checkout is closed only when nobody is paying it: an attempt the provider still reports in
+    progress keeps it open (for a bounded grace), so a payment completing seconds later is
+    captured instead of labelled "nobody paid" and offered a second checkout."""
+
+    @pytest.mark.parametrize("status", ["created", "authorized"])
+    async def test_it_is_kept_open_and_the_capture_that_follows_is_recorded(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+        engines: None,
+        status: str,
+    ) -> None:
+        live = cs.razorpay_live()
+        _, out = await _open(client, org_id, live)
+        order_id = out["client_action"]["order_id"]
+        cs.razorpay_pay(live, order_id, status=status)
+        await force_charge(
+            admin_session,
+            out["charge_id"],
+            checkout_expires_at=datetime.now(UTC) - timedelta(seconds=5),
+        )
+        poller = _poller(lambda name: live)
+
+        report = await poller.tick()
+
+        assert (report.polled, report.expired) == (1, 0)
+        assert (await _row(admin_session, out["charge_id"]))["state"] == "created"
+        live.fake.payments[order_id][0]["status"] = "captured"
+        report = await poller.tick(now=datetime.now(UTC) + timedelta(minutes=2))
+        assert report.captured == 1
+        assert (await _row(admin_session, out["charge_id"]))["state"] == "captured"
+        assert (await emitted(admin_session, org_id)).count("commerce.payment.captured") == 1
+
+    async def test_a_cashfree_payment_still_pending_keeps_it_open(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID, engines: None
+    ) -> None:
+        cashfree = cs.cashfree_stub()
+        _, out = await _open(client, org_id, cashfree)
+        cs.cashfree_pay(cashfree, out["charge_id"], status="PENDING")
+        await force_charge(
+            admin_session,
+            out["charge_id"],
+            checkout_expires_at=datetime.now(UTC) - timedelta(seconds=5),
+        )
+        report = await _poller(lambda name: cashfree).tick()
+        assert (report.polled, report.expired) == (1, 0)
+        assert (await _row(admin_session, out["charge_id"]))["state"] == "created"
+
+    async def test_an_attempt_the_provider_never_resolves_holds_it_only_for_the_grace(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID, engines: None
+    ) -> None:
+        live = cs.razorpay_live()
+        _, out = await _open(client, org_id, live)
+        cs.razorpay_pay(live, out["client_action"]["order_id"], status="created")
+        await force_charge(
+            admin_session,
+            out["charge_id"],
+            checkout_expires_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+        report = await _poller(lambda name: live).tick()
+        assert report.expired == 1
+        row = await _row(admin_session, out["charge_id"])
+        assert (row["state"], row["failure_reason"]) == ("failed", "checkout_expired")
+        # Closed, but still asked about for the late-capture window.
+        assert row["next_attempt_at"] is not None
+
+
+class TestStrayOrders:
+    """Razorpay accepts a duplicate receipt (sandbox, 2026-10-06), so an unknown-outcome create can
+    leave a second Order for one checkout that the charge never recorded and nobody was handed.
+    Before the poller closes a checkout — and through its late window — it searches the receipt
+    for such an Order, and money that moved on one is recorded against the charge."""
+
+    async def _expired_with_stray(
+        self, client: AsyncClient, admin: AsyncSession, org_id: uuid.UUID, *, ago: timedelta
+    ) -> tuple[Any, dict[str, Any], str]:
+        live = cs.razorpay_live()
+        _, out = await _open(client, org_id, live)
+        stray = live.fake.duplicate(out["charge_id"])
+        await force_charge(admin, out["charge_id"], checkout_expires_at=datetime.now(UTC) - ago)
+        return live, out, stray
+
+    async def test_a_capture_on_a_stray_order_is_found_before_the_checkout_is_closed(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID, engines: None
+    ) -> None:
+        live, out, stray = await self._expired_with_stray(
+            client, admin_session, org_id, ago=LONG_AGO
+        )
+        paid = cs.razorpay_pay(live, stray, status="captured")
+
+        report = await _poller(lambda name: live).tick()
+
+        assert (report.captured, report.expired) == (1, 0)
+        row = await _row(admin_session, out["charge_id"])
+        assert (row["state"], row["provider_payment_id"]) == ("captured", paid)
+        (recorded,) = await rows(
+            admin_session,
+            "SELECT provider_order_id FROM payment.charges WHERE id = :id",
+            id=uuid.UUID(out["charge_id"]),
+        )
+        assert recorded["provider_order_id"] == out["client_action"]["order_id"]
+        audits = [
+            a
+            for a in await audit_rows(admin_session, org_id)
+            if str(a["entity_id"]) == out["charge_id"]
+        ]
+        (flagged,) = [a for a in audits if a["action"] == "payment.checkout.stray_order_payment"]
+        assert flagged["after"]["stray_order_id"] == stray
+        assert flagged["after"]["recorded_order_id"] == out["client_action"]["order_id"]
+        assert (await emitted(admin_session, org_id)).count("commerce.payment.captured") == 1
+
+    async def test_a_payment_in_flight_on_a_stray_order_holds_the_close(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID, engines: None
+    ) -> None:
+        live, out, stray = await self._expired_with_stray(
+            client, admin_session, org_id, ago=timedelta(seconds=5)
+        )
+        cs.razorpay_pay(live, stray, status="authorized")
+        report = await _poller(lambda name: live).tick()
+        assert (report.polled, report.expired) == (1, 0)
+        assert (await _row(admin_session, out["charge_id"]))["state"] == "created"
+
+    async def test_a_stray_capture_after_the_close_is_recorded_in_the_late_window(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID, engines: None
+    ) -> None:
+        """The receipt search can miss a fresh Order, so a stray may only show after the close: the
+        late-capture window keeps searching, and money found then is still recorded."""
+        live, out, stray = await self._expired_with_stray(
+            client, admin_session, org_id, ago=LONG_AGO
+        )
+        live.fake.unindexed.add(stray)  # not visible to the search yet
+        poller = _poller(lambda name: live)
+        assert (await poller.tick()).expired == 1
+
+        paid = cs.razorpay_pay(live, stray, status="captured")
+        live.fake.unindexed.discard(stray)
+        report = await poller.tick(now=datetime.now(UTC) + timedelta(minutes=11))
+
+        assert report.captured == 1
+        row = await _row(admin_session, out["charge_id"])
+        assert (row["state"], row["failure_reason"], row["provider_payment_id"]) == (
+            "captured",
+            None,
+            paid,
+        )
+        actions = [a["action"] for a in await audit_rows(admin_session, org_id)]
+        assert "payment.checkout.stray_order_payment" in actions
+        assert "payment.charge.captured_after_local_failure" in actions
+
+    async def test_a_stray_payment_for_another_amount_is_flagged_never_applied(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID, engines: None
+    ) -> None:
+        live, out, stray = await self._expired_with_stray(
+            client, admin_session, org_id, ago=timedelta(seconds=5)
+        )
+        cs.razorpay_pay(live, stray, status="captured", amount=100)
+        await _poller(lambda name: live).tick()
+        row = await _row(admin_session, out["charge_id"])
+        assert row["state"] == "created" and row["provider_payment_id"] is None
+        not_applied = [
+            a["after"]
+            for a in await audit_rows(admin_session, org_id)
+            if a["action"] == "payment.charge.sync_not_applied"
+        ]
+        assert [a["stray_order_id"] for a in not_applied] == [stray]
+
+    async def test_a_stray_paid_as_well_as_the_recorded_order_is_flagged_not_dropped(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID, engines: None
+    ) -> None:
+        """Both Orders paid: the recorded Order's capture settles the charge, and the stray's is the
+        same invoice collected twice — kept and flagged for a person, never silently dropped."""
+        live, out, stray = await self._expired_with_stray(
+            client, admin_session, org_id, ago=LONG_AGO
+        )
+        recorded_paid = cs.razorpay_pay(live, out["client_action"]["order_id"], status="captured")
+        cs.razorpay_pay(live, stray, status="captured")
+
+        report = await _poller(lambda name: live).tick()
+
+        assert report.captured == 1
+        row = await _row(admin_session, out["charge_id"])
+        assert (row["state"], row["provider_payment_id"]) == ("captured", recorded_paid)
+        not_applied = [
+            a["after"]
+            for a in await audit_rows(admin_session, org_id)
+            if a["action"] == "payment.charge.sync_not_applied"
+        ]
+        assert [a["stray_order_id"] for a in not_applied] == [stray]
+        assert (await emitted(admin_session, org_id)).count("commerce.payment.captured") == 1
+
+    async def test_strays_are_not_searched_for_while_a_checkout_is_open(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID, engines: None
+    ) -> None:
+        """A search per open checkout per poll would be a request Razorpay rate-limits for a
+        question that only matters at the close."""
+        live = cs.razorpay_live()
+        _, out = await _open(client, org_id, live)
+        live.fake.requests.clear()
+        await _poller(lambda name: live).tick()
+        assert live.fake.methods() == [
+            f"GET /v1/orders/{out['client_action']['order_id']}/payments"
+        ]
+
+    async def test_a_stray_search_that_fails_does_not_hold_the_close(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID, engines: None
+    ) -> None:
+        """Best-effort: a `429` on the search is "nothing found", logged; the recorded Order was
+        asked, so the checkout closes — and the late window searches again."""
+        live, out, _ = await self._expired_with_stray(client, admin_session, org_id, ago=LONG_AGO)
+        live.fake.inject(httpx.Response(200, json={"items": []}))  # the recorded Order's payments
+        live.fake.inject(httpx.Response(429, json={"error": {"code": "BAD_REQUEST_ERROR"}}))
+        report = await _poller(lambda name: live).tick()
+        assert report.expired == 1
+        row = await _row(admin_session, out["charge_id"])
+        assert (row["state"], row["failure_reason"]) == ("failed", "checkout_expired")
+        assert row["next_attempt_at"] is not None
+
+    async def test_the_read_through_finds_a_stray_capture_too(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        live, out, stray = await self._expired_with_stray(
+            client, admin_session, org_id, ago=LONG_AGO
+        )
+        cs.install(live)
+        cs.razorpay_pay(live, stray, status="captured")
+        status = await cs.get_checkout(client, org_id, out["charge_id"])
+        assert status.status_code == 200 and status.json()["paid"] is True
 
 
 class TestTheStuckChargeSweepNeverTouchesACheckout:

@@ -1,16 +1,24 @@
 """The platform's live Razorpay adapter (ADR-0029, Phase A), against a stateful fake Razorpay behind
-`httpx.MockTransport`: the requests it makes, the duplicate-receipt `400` it recovers from, the
-money it refuses before any request, the key it classifies as the platform's own, and the checkout
-callback signature it verifies. No network and no real keys.
+`httpx.MockTransport`: the requests it makes, the `400` it searches once more after, the money it
+refuses before any request, the key it classifies as the platform's own, and the checkout callback
+signature it verifies. No network and no real keys.
+
+`TestWhatTheSandboxShowed` pins the adapter to what the owner's smoke tool observed with real test
+keys on 2026-10-06: a duplicate receipt is accepted (a second Order), the receipt search can miss a
+fresh Order (and answer `429`), `payment_capture` is not echoed, and a bad key is a `401`
+`BAD_REQUEST_ERROR`. An Order a charge records is therefore fetched by its id, never searched for.
 """
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 import httpx
 import pytest
 
 from app.config import settings
-from app.providers.base import PaymentSnapshot
+from app.providers import razorpay as razorpay_module
+from app.providers.base import CheckoutRequest, PaymentSnapshot, StrayPayment
 from app.providers.razorpay import RazorpayProvider
 from app.providers.razorpay_wire import RazorpayHttpWire
 from app.providers.wire import ProviderMisconfigured, ProviderRejected, ProviderTransient
@@ -47,7 +55,7 @@ class TestEnsureOrder:
             "notes": {"charge_id": "r-1"},
             "payment_capture": True,
         }
-        assert fake.orders[order.provider_order_id]["payment_capture"] is True
+        assert fake.capture_requested[order.provider_order_id] is True
         assert fake.requests[0].url.params["receipt"] == "r-1"
         assert fake.requests[0].headers["Authorization"].startswith("Basic ")
 
@@ -90,18 +98,39 @@ class TestEnsureOrder:
         order = provider.ensure_order(receipt="r-1", amount_minor=49_900, currency="INR", notes={})
         assert len(fake.orders) == 1 and order.provider_order_id in fake.orders
 
-    def test_a_duplicate_receipt_400_is_looked_up_once_more_and_the_order_used(self) -> None:
-        """The lookup raced the create that landed: it found nothing, the POST was refused as a
-        duplicate. Without the re-lookup that is a permanent 400 on every retry."""
+    def test_a_400_on_the_create_is_searched_once_more_and_an_exact_order_used(self) -> None:
+        """Razorpay does not refuse a duplicate receipt, so a `400` is never "the Order exists".
+        The one re-search after it is kept as a harmless recovery: an exact, same-money Order an
+        earlier create left behind (the first search missed it) is a better answer than the
+        refusal, and a second create is never made."""
         fake = FakeRazorpay()
         provider = _live(fake)
         made = provider.ensure_order(receipt="r-1", amount_minor=49_900, currency="INR", notes={})
         fake.requests.clear()
         fake.inject(httpx.Response(200, json={"entity": "collection", "items": []}))  # a stale list
+        fake.inject(
+            httpx.Response(400, json={"error": {"code": "BAD_REQUEST_ERROR", "description": "x"}})
+        )
         order = provider.ensure_order(receipt="r-1", amount_minor=49_900, currency="INR", notes={})
         assert order.provider_order_id == made.provider_order_id
         assert fake.methods() == ["GET /v1/orders", "POST /v1/orders", "GET /v1/orders"]
         assert len(fake.orders) == 1
+
+    def test_a_400_whose_re_search_fails_concludes_nothing_and_creates_nothing_more(
+        self,
+    ) -> None:
+        """The re-search is a recovery, not a decision: when it cannot be had (a `429`) the call is
+        an unknown outcome to retry, and no second create is attempted."""
+        fake = FakeRazorpay()
+        provider = _live(fake)
+        fake.inject(httpx.Response(200, json={"items": []}))
+        fake.inject(httpx.Response(400, json={"error": {"code": "BAD_REQUEST_ERROR"}}))
+        fake.inject(httpx.Response(429, json={"error": {"code": "BAD_REQUEST_ERROR"}}))
+        with pytest.raises(ProviderTransient) as raised:
+            provider.ensure_order(receipt="r-1", amount_minor=49_900, currency="INR", notes={})
+        assert raised.value.status_code == 429
+        assert fake.methods() == ["GET /v1/orders", "POST /v1/orders", "GET /v1/orders"]
+        assert fake.orders == {}
 
     def test_a_400_with_no_order_to_find_is_the_400(self) -> None:
         fake = FakeRazorpay()
@@ -159,10 +188,209 @@ class TestEnsureOrder:
             _live(fake, platform=False).ensure_order(
                 receipt="r-1", amount_minor=49_900, currency="USD", notes={}
             )
-        # The refused create is looked up once more (the duplicate-receipt rule), finds nothing,
+        # The refused create is searched once more (the recovery after any 400), finds nothing,
         # and the 400 stands.
         assert fake.methods() == ["GET /v1/orders", "POST /v1/orders", "GET /v1/orders"]
         assert raised.value.status_code == 400
+
+
+class TestWhatTheSandboxShowed:
+    """The four facts the owner's smoke tool observed with real test keys (2026-10-06), each as
+    the fake now models it and as the adapter must cope with it."""
+
+    def test_a_duplicate_receipt_is_accepted_so_the_search_is_no_guard(self) -> None:
+        """(a) + (b): a create with an existing receipt makes a second Order, and the search can
+        miss the first. `ensure_order` alone therefore cannot promise one Order per receipt — which
+        is why nothing hands out an Order it did not record, and a recorded one is fetched by id."""
+        fake = FakeRazorpay()
+        fake.index_new_orders = False
+        provider = _live(fake)
+        first = provider.ensure_order(receipt="r-1", amount_minor=49_900, currency="INR", notes={})
+        second = provider.ensure_order(receipt="r-1", amount_minor=49_900, currency="INR", notes={})
+        assert first.provider_order_id != second.provider_order_id
+        assert fake.receipt_orders("r-1") == [first.provider_order_id, second.provider_order_id]
+
+    def test_a_429_on_the_receipt_search_is_transient_and_nothing_is_created(self) -> None:
+        fake = FakeRazorpay()
+        fake.inject(httpx.Response(429, json={"error": {"code": "BAD_REQUEST_ERROR"}}))
+        with pytest.raises(ProviderTransient) as raised:
+            _live(fake).ensure_order(receipt="r-1", amount_minor=49_900, currency="INR", notes={})
+        assert raised.value.status_code == 429
+        assert fake.methods() == ["GET /v1/orders"] and fake.orders == {}
+
+    def test_payment_capture_is_sent_and_never_read_back(self) -> None:
+        """(c): the Order Razorpay answers with carries no `payment_capture`; the adapter sends it
+        and does not depend on seeing it again."""
+        fake = FakeRazorpay()
+        order = _live(fake).ensure_order(
+            receipt="r-1", amount_minor=49_900, currency="INR", notes={}
+        )
+        assert "payment_capture" not in fake.orders[order.provider_order_id]
+        assert fake.capture_requested[order.provider_order_id] is True
+
+    def test_a_bad_key_is_a_401_bad_request_error_and_the_platforms_misconfiguration(
+        self,
+    ) -> None:
+        """(d): the observed shape — `401`, `error.code = BAD_REQUEST_ERROR`, whatever the
+        description says — is the platform's own key, never the customer's refusal."""
+        fake = FakeRazorpay()
+        fake.inject(
+            httpx.Response(
+                401,
+                json={"error": {"code": "BAD_REQUEST_ERROR", "description": "something else"}},
+            )
+        )
+        with pytest.raises(ProviderMisconfigured) as raised:
+            _live(fake).ensure_order(receipt="r-1", amount_minor=49_900, currency="INR", notes={})
+        assert (raised.value.status_code, raised.value.code) == (401, "BAD_REQUEST_ERROR")
+
+
+class TestARecordedOrder:
+    """`ensure_checkout` for a charge that already records its Order: `GET /orders/{id}`, never a
+    receipt search, never a create."""
+
+    def _recorded(self, fake: FakeRazorpay) -> tuple[RazorpayProvider, CheckoutRequest, str]:
+        provider = _live(fake)
+        request = checkout_request()
+        made = provider.ensure_checkout(request)
+        fake.requests.clear()
+        recorded = replace(request, recorded_order_id=made.order.provider_order_id)
+        return provider, recorded, made.order.provider_order_id
+
+    def test_it_is_fetched_by_its_id_even_when_the_search_cannot_see_it(self) -> None:
+        fake = FakeRazorpay()
+        provider, recorded, order_id = self._recorded(fake)
+        fake.unindexed.add(order_id)  # the sandbox's `count: 0` seconds after the create
+        session = provider.ensure_checkout(recorded)
+        assert session.order.provider_order_id == order_id
+        assert session.client_action["order_id"] == order_id
+        assert fake.methods() == [f"GET /v1/orders/{order_id}"]
+        assert len(fake.orders) == 1
+
+    def test_it_is_returned_never_a_duplicate_of_its_receipt(self) -> None:
+        """A duplicate Order carries the same receipt (an unknown-outcome create made it). A
+        receipt search could hand that one back instead — and a customer would pay an Order the
+        poller never asks about. The recorded id is the answer, whatever the search shows."""
+        fake = FakeRazorpay()
+        provider, recorded, order_id = self._recorded(fake)
+        duplicate = fake.duplicate(recorded.receipt)
+        fake.unindexed.add(order_id)  # the search shows only the duplicate
+        session = provider.ensure_checkout(recorded)
+        assert session.order.provider_order_id == order_id != duplicate
+        assert session.client_action["order_id"] == order_id
+
+    def test_one_the_account_does_not_hold_is_not_found_and_nothing_is_made(self) -> None:
+        fake = FakeRazorpay()
+        provider = _live(fake)
+        request = replace(checkout_request(), recorded_order_id="order_Missing0000001")
+        with pytest.raises(ProviderTransient) as raised:
+            provider.ensure_checkout(request)
+        assert raised.value.code == "recorded_order_not_found"
+        assert fake.methods() == ["GET /v1/orders/order_Missing0000001"]
+        assert fake.orders == {}
+
+    @pytest.mark.parametrize("bad", ["../payments", "order_x/payments", "pay_123", ""])
+    def test_an_id_that_is_not_an_order_id_is_never_put_in_a_url(self, bad: str) -> None:
+        fake = FakeRazorpay()
+        request = replace(checkout_request(), recorded_order_id=bad)
+        with pytest.raises(ProviderTransient) as raised:
+            _live(fake).ensure_checkout(request)
+        assert raised.value.code == "recorded_order_not_found" and fake.requests == []
+
+    def test_a_429_fetching_it_is_transient(self) -> None:
+        fake = FakeRazorpay()
+        provider, recorded, _ = self._recorded(fake)
+        fake.inject(httpx.Response(429, json={"error": {"code": "BAD_REQUEST_ERROR"}}))
+        with pytest.raises(ProviderTransient) as raised:
+            provider.ensure_checkout(recorded)
+        assert raised.value.status_code == 429
+        assert len(fake.orders) == 1
+
+    def test_one_for_another_receipt_or_amount_is_refused_never_handed_out(self) -> None:
+        fake = FakeRazorpay()
+        provider, recorded, order_id = self._recorded(fake)
+        fake.orders[order_id]["receipt"] = "someone-else"
+        with pytest.raises(ProviderRejected) as raised:
+            provider.ensure_checkout(recorded)
+        assert raised.value.code == "order_receipt_mismatch"
+        fake.orders[order_id]["receipt"] = recorded.receipt
+        fake.orders[order_id]["amount"] = 1_000
+        with pytest.raises(ProviderRejected) as raised:
+            provider.ensure_checkout(recorded)
+        assert raised.value.code == "order_amount_mismatch"
+
+
+class TestStrayOrders:
+    """`stray_order_payments`: payments on other Orders carrying the charge's exact receipt."""
+
+    def test_it_finds_payments_on_a_duplicate_and_never_on_the_recorded_order(self) -> None:
+        fake = FakeRazorpay()
+        provider = _live(fake)
+        made = provider.ensure_order(receipt="r-1", amount_minor=49_900, currency="INR", notes={})
+        recorded = made.provider_order_id
+        fake.pay(recorded, status="captured")
+        duplicate = fake.duplicate("r-1")
+        paid = fake.pay(duplicate, status="captured")
+        fake.requests.clear()
+
+        found = provider.stray_order_payments(receipt="r-1", recorded_order_id=recorded)
+
+        assert found == [
+            StrayPayment(
+                provider_order_id=duplicate,
+                snapshot=PaymentSnapshot(
+                    provider_payment_id=paid,
+                    status="captured",
+                    amount_minor=49_900,
+                    currency="INR",
+                    created_at=1_700_000_000,
+                ),
+            )
+        ]
+        assert fake.methods() == ["GET /v1/orders", f"GET /v1/orders/{duplicate}/payments"]
+
+    def test_a_longer_receipt_and_another_charges_order_are_not_strays(self) -> None:
+        fake = FakeRazorpay()
+        provider = _live(fake)
+        recorded = provider.ensure_order(
+            receipt="r-1", amount_minor=49_900, currency="INR", notes={"charge_id": "r-1"}
+        ).provider_order_id
+        longer = provider.ensure_order(
+            receipt="r-10", amount_minor=49_900, currency="INR", notes={}
+        ).provider_order_id
+        foreign = fake.duplicate("r-1", notes={"charge_id": "another-charge"})
+        for order_id in (longer, foreign):
+            fake.pay(order_id, status="captured")
+        assert provider.stray_order_payments(receipt="r-1", recorded_order_id=recorded) == []
+
+    def test_at_most_a_few_strays_are_asked_about(self) -> None:
+        fake = FakeRazorpay()
+        provider = _live(fake)
+        recorded = provider.ensure_order(
+            receipt="r-1", amount_minor=49_900, currency="INR", notes={}
+        ).provider_order_id
+        for _ in range(razorpay_module._STRAY_ORDER_LIMIT + 2):
+            fake.duplicate("r-1")
+        fake.requests.clear()
+        provider.stray_order_payments(receipt="r-1", recorded_order_id=recorded)
+        assert len(fake.requests) == 1 + razorpay_module._STRAY_ORDER_LIMIT
+
+    def test_it_finds_only_what_the_search_shows_and_the_stub_has_none(self) -> None:
+        """Best-effort, like every receipt search: a duplicate the search does not show yet is not
+        found (the poller asks again through the late window), and the stub never duplicates."""
+        fake = FakeRazorpay()
+        provider = _live(fake)
+        recorded = provider.ensure_order(
+            receipt="r-1", amount_minor=49_900, currency="INR", notes={}
+        ).provider_order_id
+        hidden = fake.duplicate("r-1")
+        fake.pay(hidden, status="captured")
+        fake.unindexed.add(hidden)
+        assert provider.stray_order_payments(receipt="r-1", recorded_order_id=recorded) == []
+        fake.unindexed.discard(hidden)
+        assert len(provider.stray_order_payments(receipt="r-1", recorded_order_id=recorded)) == 1
+        stub = RazorpayProvider(key_id=None, key_secret=None, webhook_secret=HOOK)
+        assert stub.stray_order_payments(receipt="r-1", recorded_order_id="order_x") == []
 
 
 class TestTheKey:

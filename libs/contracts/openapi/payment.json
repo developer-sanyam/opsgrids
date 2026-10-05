@@ -799,7 +799,7 @@
   "paths": {
     "/api/v1/payment/checkouts": {
       "post": {
-        "description": "Open the provider's hosted checkout for one invoice. The amount is the invoice's own\ncharge's, never the body's; a second request for an invoice with an open checkout returns that\ncheckout (at the provider it was created under). **404** if the organization has no charge for\nthe invoice, **409** if it is already paid, **422** for what could never be paid online.",
+        "description": "Open the provider's hosted checkout for one invoice. The amount is the invoice's own\ncharge's, never the body's; a second request for an invoice with an open checkout returns that\ncheckout (at the provider it was created under). **404** if the organization has no charge for\nthe invoice, **409** if it is already paid (`invoice_already_paid`) or cannot be opened right\nnow (each with its own code), **422** for what could never be paid online.\n\nThe Order handed back is always the one the charge **records**: it is recorded before this\nanswers, a reopen fetches it by its id, and an Order the call made that the charge does not\nrecord is never handed out (a 409 `checkout_in_progress` instead; the next request gets the\nrecorded one).",
         "operationId": "open_checkout_api_v1_payment_checkouts_post",
         "requestBody": {
           "content": {
@@ -822,15 +822,14 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "The organization has no payable charge for this invoice."
+          },
+          "409": {
+            "description": "Refused, with a stable machine code in `errors[0].code`: `invoice_already_paid` (field `invoice_id`; the invoice is paid \u2014 the only 409 that means paid), `checkout_in_progress` (another request holds the checkout; try again in a moment), `previous_checkout_not_closable` (the expired checkout could not be closed yet; try again shortly), `previous_checkout_payment_in_flight` (a payment on a previous checkout is still being processed; try again in a few minutes), `checkout_not_supported` (the provider has no hosted checkout)."
+          },
           "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
+            "description": "Could never be paid online, refused before any provider call, with `errors[0] = {field, code, message}`: `phone_required` (field `customer.phone`), `customer_details_required` (field `customer`), `currency_unsupported`, `amount_below_minimum` and `nothing_to_pay` (field `invoice_id`). A malformed body is a 422 with the framework's own field errors."
           }
         },
         "summary": "Open (or reopen) the checkout for an invoice",
@@ -841,7 +840,7 @@
     },
     "/api/v1/payment/checkouts/{charge_id}": {
       "get": {
-        "description": "Read-through status: while the checkout is open the provider is asked, server to server, what\nhappened to its Order, and the answer reconciled like a signed webhook's. What the return page\npolls. `paid` is true only for a captured payment.",
+        "description": "Read-through status: while the checkout is open the provider is asked, server to server, what\nhappened to its Order, and the answer reconciled like a signed webhook's. What the return page\npolls. `paid` is true only for a captured payment. A checkout closed as `checkout_expired` is\nstill asked about inside its late-capture window: a payment made on its Order after it closed is\nrecorded, and the answer is `paid: true`.",
         "operationId": "get_checkout_api_v1_payment_checkouts__charge_id__get",
         "parameters": [
           {

@@ -6,7 +6,8 @@ these providers: every tracked (or about-to-be-tracked) text file is scanned for
 **real** key —
 
 * Cashfree secret keys: `cfsk_ma_test_` / `cfsk_ma_prod_` and 16 or more letters and digits;
-* a Cashfree sandbox App ID: `TEST` followed by six or more digits (their shape: `TEST` + digits);
+* a Cashfree sandbox App ID: `TEST` followed by six or more digits, or by sixteen or more letters
+  and digits (Cashfree's published samples carry a hex-like tail: digits alone are not enough);
 * Razorpay key ids: `rzp_test_` / `rzp_live_` followed by **exactly 14** letters and digits (their
   shape; the fixtures in this repo are deliberately 12, 13 or 18 characters, never 14 — bar
   Razorpay's own documentation sample, allowed by value).
@@ -28,7 +29,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 PATTERNS: dict[str, re.Pattern[str]] = {
     "a Cashfree secret key (cfsk_ma_...)": re.compile(r"cfsk_ma_(?:test|prod)_[A-Za-z0-9]{16,}"),
-    "a Cashfree sandbox App ID (TEST<digits>)": re.compile(r"\bTEST[0-9]{6,}\b"),
+    "a Cashfree sandbox App ID (TEST<digits>)": re.compile(
+        r"\bTEST(?:[0-9]{6,}|[0-9A-Za-z]{16,})\b"
+    ),
     "a Razorpay key id (rzp_...)": re.compile(r"rzp_(?:test|live)_[A-Za-z0-9]{14}(?![A-Za-z0-9])"),
 }
 
@@ -106,6 +109,8 @@ class TestTheScannerItself:
             "cashfree secret": test_secret,
             "cashfree prod secret": prod_secret,
             "sandbox app id": "TEST" + "10" + "9876543",
+            "sandbox app id, hex tail": "TEST" + "00ff" * 8,
+            "sandbox app id, digits then letters": "TEST" + "10" + "9876543" + "abcdef" * 2,
             "razorpay test": "rzp_" + "test_" + "AbCdEfGhIjKlMn",
             "razorpay live": "rzp_" + "live_" + "AbCdEfGhIjKlMn",
         }

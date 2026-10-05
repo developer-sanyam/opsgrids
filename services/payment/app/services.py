@@ -337,7 +337,21 @@ async def stage_charge(
         # Born failed: no provider call is ever made for it, and no attempt was spent.
         charge.attempts = 0
         charge.next_attempt_at = None
-        _fail_locally(session, charge, refusal, acting_as="billing")
+        uncollectable = refusal in domain.UNCOLLECTABLE_REASONS
+        if uncollectable:
+            # Not announced: dunning would suspend a customer for an amount nothing can collect
+            # (see `domain.UNCOLLECTABLE_REASONS`). A person decides instead.
+            log.error(
+                "payment.charge.uncollectable",
+                charge_id=str(charge.id),
+                organization_id=str(charge.organization_id),
+                invoice_id=str(charge.invoice_id) if charge.invoice_id else None,
+                failure_reason=refusal,
+                amount_minor=charge.amount_minor,
+                currency=charge.currency,
+                hint="no provider can take this amount; settle the invoice by hand",
+            )
+        _fail_locally(session, charge, refusal, acting_as="billing", announce=not uncollectable)
         await session.flush()
         return charge, False
     return charge, True
@@ -402,11 +416,13 @@ async def claim_charge_lease(
 
 def _receipt(charge: Charge) -> str:
     """The provider Order's `receipt` for a charge: its own id. 36 characters, globally unique,
-    and fixed for the charge's life — Razorpay caps `receipt` at 40 characters and **requires it to
-    be unique** (Create Order: a duplicate is a `400`, so a create that landed and was retried is
-    refused, and the adapter looks once more — `RazorpayProvider.ensure_order`), so the platform
-    key (`invoice:<uuid>` is 44) would be refused, and a per-organization key could collide across
-    tenants on one merchant account. Cashfree calls the same handle the Order's `order_id`."""
+    and fixed for the charge's life — Razorpay caps `receipt` at 40 characters, so the platform key
+    (`invoice:<uuid>` is 44) would be refused, and a per-organization key could collide across
+    tenants on one merchant account. Razorpay does **not** keep a receipt unique (a duplicate create
+    is accepted, observed 2026-10-06) and its receipt search can miss a fresh Order, so the receipt
+    is a best-effort handle for finding an Order whose id was never recorded, not an idempotency
+    key (`RazorpayProvider.ensure_order`). Cashfree calls the same handle the Order's `order_id`,
+    and does keep it unique."""
     return str(charge.id)
 
 
@@ -441,6 +457,12 @@ def call_provider_charge(provider: PaymentProvider, charge: Charge) -> ChargeRes
     crash between this and `finalize_charge` therefore lands on the payment the first call made,
     never a second debit. A provider with no Order step (`debit_shape = "direct"`) is the same
     promise in two requests (`_call_direct_debit`).
+
+    **Only as good as the provider's receipt index.** The stub's is exact, so this holds there
+    (`ProviderContract`). Razorpay's live receipt search can miss an Order created seconds earlier
+    (ADR-0029, 2026-10-06), so a live order-then-charge debit — Phase B; no live adapter reaches
+    this today, a platform debit is refused `no_mandate` before any call — must record the Order id
+    in its own transaction before it creates the payment, and resume from the recorded id.
 
     The whole call runs under an overall monotonic deadline (`provider_call_timeout_seconds`) that
     the live wire clamps every request to — a per-request timeout alone restarts whenever bytes
@@ -864,12 +886,19 @@ async def fail_exhausted_charge(
 
 
 def _fail_locally(
-    session: AsyncSession, charge: Charge, reason: str, *, acting_as: str = "stuck-charge-sweep"
+    session: AsyncSession,
+    charge: Charge,
+    reason: str,
+    *,
+    acting_as: str = "stuck-charge-sweep",
+    announce: bool = True,
 ) -> None:
     """Fail a charge on this platform's own decision — `reason` is a stable code (one of
     `domain.LOCAL_FAILURE_REASONS` when a provider's late `payment.captured` may still turn out to
     be real, which is what lets `_reconcile_charge` record it; a refusal made before any call, like
-    `no_mandate`, can have no such payment). Audited and announced (`commerce.payment.failed`)."""
+    `no_mandate`, can have no such payment). Audited, and announced (`commerce.payment.failed`)
+    unless `announce` is False — a refusal no checkout can cure (`domain.UNCOLLECTABLE_REASONS`)
+    must not start dunning. The audit row says which (`announced`)."""
     before = charge.state
     charge.state = CHARGE_FAILED
     charge.failure_reason = reason
@@ -884,9 +913,15 @@ def _fail_locally(
         entity="charge",
         entity_id=charge.id,
         before={"state": before},
-        after={"state": charge.state, "failure_reason": reason, "attempts": charge.attempts},
+        after={
+            "state": charge.state,
+            "failure_reason": reason,
+            "attempts": charge.attempts,
+            "announced": announce,
+        },
     )
-    _publish_payment_event(session, charge, domain.EVT_FAILED)
+    if announce:
+        _publish_payment_event(session, charge, domain.EVT_FAILED)
 
 
 async def create_charge(
@@ -1656,6 +1691,7 @@ async def apply_payment_snapshot(
     snapshot: PaymentSnapshot,
     *,
     request: Request | None = None,
+    stray_order_id: str | None = None,
 ) -> bool:
     """Reconcile a **server-to-server status check** — what the provider says, now, about one
     payment on the charge's Order — through the very path a signed webhook takes
@@ -1664,6 +1700,13 @@ async def apply_payment_snapshot(
     Attributed `<provider>-sync`. The poller, a checkout's read-through and a confirm call this;
     **a customer's browser never does, and has no way to**: success is a captured payment found
     here, not a thing a client says.
+
+    `stray_order_id` names the Order the payment was found on when it is **not** the one the charge
+    records — a duplicate carrying the charge's exact receipt (`providers.base.StrayPayment`). Its
+    identity is that receipt, which only this platform's own key can set on an Order and which the
+    adapter matched exactly, server to server; so the Order check is skipped for it (and the
+    recorded Order id is left alone). Everything else — the money, the payment id, the state
+    machine — is checked as for any other snapshot.
 
     Returns whether a terminal outcome moved the charge. A status the neutral vocabulary asserts
     nothing from (`created`, an attempt in progress) is a no-op. A permanent condition — another
@@ -1687,7 +1730,7 @@ async def apply_payment_snapshot(
         charge_id=str(charge_id),
         provider_payment_id=snapshot.provider_payment_id,
         failure_reason=snapshot.error_code,
-        provider_order_id=charge.provider_order_id,
+        provider_order_id=charge.provider_order_id if stray_order_id is None else None,
         entity_id=snapshot.provider_payment_id,
         amount_minor=snapshot.amount_minor,
         currency=snapshot.currency,
@@ -1724,6 +1767,7 @@ async def apply_payment_snapshot(
             "disposition": verdict.disposition,
             "reason": verdict.reason,
             "provider_payment_id": snapshot.provider_payment_id,
+            **({"stray_order_id": stray_order_id} if stray_order_id is not None else {}),
             **verdict.facts,
         },
         request=request,

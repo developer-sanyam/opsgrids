@@ -1047,11 +1047,15 @@ the box ever holds is a live one**, and the first checkout it takes is real mone
 
    ```bash
    # from the repository root, on your laptop. `uv run`, NOT `make` (make re-exports the root .env).
-   export RAZORPAY_KEY_ID=rzp_test_…      RAZORPAY_KEY_SECRET=…      # test mode only
+   # Paste each value at the silent prompt `read -rs` gives: it is not echoed and, unlike a typed
+   # `export NAME=value`, it never lands in the shell history.
+   read -rs RAZORPAY_KEY_ID && export RAZORPAY_KEY_ID              # rzp_test_… only (test mode)
+   read -rs RAZORPAY_KEY_SECRET && export RAZORPAY_KEY_SECRET
    uv run python tools/payments_smoke_razorpay.py plan                # prints what it would do; calls nothing
    uv run python tools/payments_smoke_razorpay.py probe --confirm
 
-   export CASHFREE_APP_ID=TEST…           CASHFREE_SECRET_KEY=…       # sandbox only
+   read -rs CASHFREE_APP_ID && export CASHFREE_APP_ID              # sandbox only (TEST…)
+   read -rs CASHFREE_SECRET_KEY && export CASHFREE_SECRET_KEY
    uv run python tools/payments_smoke_cashfree.py probe --confirm
    ```
 
@@ -1060,6 +1064,15 @@ the box ever holds is a live one**, and the first checkout it takes is real mone
    `refund` / `webhook-listen` settle the refund idempotency and Cashfree's webhook headers. **If any
    answer differs from what the design assumed, stop and tell engineering before step 4**: the adapters
    were written to fail safe on each unknown, but a surprise is a reason to look, not to proceed.
+
+   **Razorpay's `probe` was run on 2026-10-06** and four answers differed from the design; the adapter
+   was corrected for each (ADR-0029, "Sandbox facts"), so the same output from a rerun is now expected,
+   not a reason to stop: a duplicate `receipt` is **accepted** (a second Order, no `400`); the receipt
+   search answered `count: 0` for an Order created seconds earlier (and once `429`); `payment_capture`
+   is not echoed on the Order; a bad key is `401` with `error.code = BAD_REQUEST_ERROR`. What changed:
+   a checkout's Order id is recorded before the customer sees it and is the only id a browser is ever
+   handed, a reopen fetches that Order by its id (`GET /orders/{id}`), and the poller searches the
+   receipt for a stray duplicate before it closes a checkout.
    Unset the variables when done (`unset RAZORPAY_KEY_SECRET CASHFREE_SECRET_KEY`); never paste a key
    into chat, a ticket or a shell history file.
 4. **Put the live keys on the box.** Edit `.env` on the box (same rules as "5. Secrets": nothing goes
@@ -1088,9 +1101,15 @@ no `ops-monitor` check, so someone has to look for the first week:
 |---|---|---|
 | `payment.provider.credentials_rejected` | error | The platform's own key was refused. **No charge is failed and no attempt is consumed** until a call succeeds again, and the latch holds for 15 minutes. Check the keys and the switches, then restart `payment`. Further refusals inside the window log `…_again` at warning, so one outage is one line. |
 | `payment.charge.poll_unavailable`, `payment.charge.poll_timeout` | warning | The provider could not be asked. Nothing changes; the next tick asks again. Many in a row means the provider (or the box's egress) is down. |
-| `payment.charge.checkout_expired` | info | A checkout nobody paid inside its day closed (`failure_reason = checkout_expired`). No `commerce.payment.failed` is emitted and dunning is not involved. |
-| `payment.charge.captured_after_local_failure` | error | A payment arrived for a checkout the platform had already closed (it expired). It is recorded and the invoice is paid; read the audit row of the same name. |
+| `payment.charge.checkout_expired` | info | A checkout nobody paid inside its day closed (`failure_reason = checkout_expired`). No `commerce.payment.failed` is emitted and dunning is not involved. It is still asked about every 10 minutes for five days (`CHECKOUT_LATE_CAPTURE_WINDOW_SECONDS`), because the customer can still pay its Order. `order=false` means no Order was ever made for it (every open failed at the provider); nothing can have been paid on it. |
+| `payment.checkout.expiry_deferred` | info | A checkout past its expiry was kept open because the provider reports a payment still in progress on it. It closes once that payment resolves, or an hour later (`CHECKOUT_INFLIGHT_GRACE_SECONDS`). |
+| `payment.checkout.expired_with_attempt_in_flight` | warning | The hour passed and the provider still reported an unresolved attempt (or a capture that could not be applied: look for `payment.charge.sync_not_applied`). Closed, and still asked about for five days. |
+| `payment.charge.captured_after_local_failure` | error | A payment arrived for a checkout the platform had already closed (it expired). The poller, the status page or the customer's confirm found it; it is recorded and the invoice is paid. Read the audit row of the same name, and check `payment.invoice.collected_twice`: the customer may have paid a second checkout too. |
+| `payment.charge.uncollectable` | error | An invoice's charge can never be collected online: its currency is not INR, or it is below the provider's minimum (Rs 1, e.g. a small proration). It is recorded `failed`, but **no `commerce.payment.failed` is sent**, so the subscription is not put into dunning over it. Settle the invoice by hand (write it off, or carry it to the next invoice). |
 | `payment.invoice.collected_twice` | error | The existing double-collection alarm (see "Payments: an invoice collected twice"); it applies to checkouts too. |
+| `payment.checkout.stray_order_found` | error | A payment attempt sits on a **second** Order carrying a checkout's receipt (a create whose answer was lost, then retried; Razorpay accepts a duplicate receipt). That Order's id was never handed to anyone, so this should not happen: look. Read the `statuses`: a `captured` one is recorded against the checkout (audit row `payment.checkout.stray_order_payment`, naming both Orders) and the invoice is paid; one that cannot be applied leaves a `payment.charge.sync_not_applied` row naming the stray Order. Check `payment.invoice.collected_twice` and both Orders on the provider's dashboard. |
+| `payment.checkout.unrecorded_order_withheld` | error | A checkout open came back with an Order its charge does not record; the customer got a 409 `checkout_in_progress` instead of it, and their next click is handed the recorded one. Rare (two Orders for one checkout, or a call that outlived its lease); look for `payment.checkout.order_id_mismatch` beside it. |
+| `payment.checkout.stray_search_unavailable`, `payment.checkout.stray_search_timeout` | warning | The search for a stray Order could not be had (often a `429`). Best-effort: the checkout's own Order was asked, so nothing waits on it; the five-day late window searches again. |
 
 ```sql
 -- the state of every checkout, by provider
@@ -1113,7 +1132,9 @@ docker compose -f compose.prod.yml --env-file .env up -d payment payment-worker
 Existing rows keep their provider; new invoices stop being offered a live checkout (`openable` is false on
 a stub). **A checkout still open at the real provider stays payable there**, and while the wire is the stub
 nothing here can tell whether it was paid: the stub says it cannot answer for an Order it never made, the
-poller records "could not be asked", and **no checkout is expired on that**. Prefer to let open checkouts
+poller records "could not be asked", and **no checkout is expired on that**. A customer who clicks "Pay"
+on such a checkout in the window gets a 503: the stub refuses to make a stand-in Order for a checkout that
+already has a real one. Prefer to let open checkouts
 resolve (`CHECKOUT_TTL_SECONDS`, a day) before turning the wire off, and check the provider's dashboard for
 money taken in the window. Turning the wire back on reconciles them. Switching only `PAYMENT_PROVIDER` is
 the gentler rollback when the other provider is healthy: open checkouts keep being polled through the
@@ -1122,7 +1143,11 @@ provider they were created under.
 **Tenant collections are separate.** A merchant's own Razorpay keys, and `COLLECTIONS_WIRE` /
 `COLLECTIONS_ALLOW_LIVE_KEYS`, are not changed by any of the above, and `PAYMENT_WIRE` never switches them.
 In this release a merchant account's provider and mode can no longer be changed in place (a `409`): the
-merchant disconnects and reconnects.
+merchant disconnects and reconnects. The Razorpay sandbox facts above apply to a merchant's account too:
+a collection already records its Order id before the customer sees it and never asks Razorpay again once
+it does, so a duplicate Order is never shown; but nothing searches a merchant's account for a stray
+duplicate, and a lost create retried after the lease can leave one there (unpayable, since nobody has its
+id). That is unchanged by this release.
 
 ### Merchant connect: Cashfree for tenant online payments
 

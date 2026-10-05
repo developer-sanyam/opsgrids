@@ -21,6 +21,7 @@ from app.models import (
     CHARGE_AUTHORIZED,
     CHARGE_CAPTURED,
     CHARGE_CREATED,
+    CHARGE_FAILED,
     FLOW_CHECKOUT,
     FLOW_DEBIT,
     MANDATE_ACTIVE,
@@ -356,7 +357,12 @@ async def due_pollable_charges(
 
     * a **checkout** the customer may have paid (`flow = 'checkout'`, `created` or `authorized`);
     * a **debit** the provider authorised and has not yet reported captured (`flow = 'debit'`,
-      `authorized`). The stuck-charge sweep never looks at an `authorized` charge.
+      `authorized`). The stuck-charge sweep never looks at an `authorized` charge;
+    * a **closed checkout** that may still be paid (`flow = 'checkout'`, `failed` with no payment,
+      and a `next_attempt_at` still set): `expire_checkout_charge` leaves it set, and
+      `checkout.services.claim_poll` clears it once the late-capture window is over — which is what
+      retires it from here. The window itself is judged there, on the app role: this role is not
+      granted `checkout_expires_at` or `failure_reason`, and does not need them.
 
     A `debit` charge that is merely `created` with an Order is the stuck-charge sweep's, not
     this: its payment may never have been made, and asking about it is the sweep's lookup, with
@@ -376,6 +382,10 @@ async def due_pollable_charges(
                 (Charge.flow == FLOW_CHECKOUT)
                 & Charge.state.in_((CHARGE_CREATED, CHARGE_AUTHORIZED)),
                 (Charge.flow == FLOW_DEBIT) & (Charge.state == CHARGE_AUTHORIZED),
+                (Charge.flow == FLOW_CHECKOUT)
+                & (Charge.state == CHARGE_FAILED)
+                & Charge.provider_payment_id.is_(None)
+                & Charge.next_attempt_at.is_not(None),
             ),
             or_(Charge.next_attempt_at.is_(None), Charge.next_attempt_at <= now),
         )

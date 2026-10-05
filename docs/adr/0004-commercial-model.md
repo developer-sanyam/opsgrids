@@ -532,6 +532,13 @@ in the way the check guards against, and requires it to fail.
 > (`providers/wire.py`). The platform's Razorpay Orders are created with `payment_capture: true`.
 > Whether Razorpay rejects a duplicate `receipt` is unverified; the adapter looks a receipt up once
 > more after any 400 on an Order create. The call timeout's default is now 45 s.
+>
+> **Amended again 2026-10-06 (ADR-0029, "Sandbox facts").** The Razorpay sandbox **accepts** a
+> duplicate `receipt` (a second Order) and its receipt search can miss an Order created seconds
+> earlier, so `ensure_order`'s lookup is best-effort, not proof. A checkout's recorded Order is
+> fetched by its id and is the only one handed out; `ProviderContract` is unchanged (it runs against
+> the stub's exact receipt index), and a live order-then-charge debit (Phase B) must record the
+> Order id before it creates the payment.
 
 ## Addendum (2026-09-24) — webhook identity and permanent conditions (PAY-A)
 

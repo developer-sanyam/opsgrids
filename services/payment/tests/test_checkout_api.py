@@ -28,7 +28,12 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.testing import capture_logs
 
+from app.checkout.cron import ChargePoller
+from app.providers.cashfree import CashfreeProvider
+from app.providers.cashfree_fake import CashfreeFakeWire
+from app.providers.razorpay import RazorpayProvider
 from app.providers.wire import CREDENTIALS
+from platform_core.db import get_outbox_sessionmaker, session_scope
 from tests import checkout_support as cs
 from tests.helpers import audit_rows, emitted, force_charge, rows
 
@@ -193,6 +198,70 @@ class TestOpeningARazorpayCheckout:
         assert provider.fake.methods() == []  # type: ignore[attr-defined]
         assert await _checkouts(admin_session, org_id) == []
         assert await _checkouts(admin_session, org_b) == []
+
+
+class TestTheRecordedOrderIsTheCheckout:
+    """Razorpay accepts a duplicate receipt and its receipt search can miss a fresh Order (sandbox,
+    2026-10-06). So the Order id is recorded before any browser sees it, a reopen fetches that Order
+    by its id, and nothing else is ever handed to a browser."""
+
+    async def test_a_reopen_finds_its_order_by_id_when_the_receipt_search_cannot_see_it(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        provider = cs.install(cs.razorpay_live())
+        invoice_id, _ = await cs.seed_invoice(client, org_id)
+        first = (await cs.open_checkout(client, org_id, invoice_id)).json()
+        order_id = first["client_action"]["order_id"]
+        provider.fake.unindexed.add(order_id)  # type: ignore[attr-defined]
+        provider.fake.requests.clear()  # type: ignore[attr-defined]
+
+        again = await cs.open_checkout(client, org_id, invoice_id)
+
+        assert again.status_code == 201, again.text
+        assert again.json()["client_action"]["order_id"] == order_id
+        assert provider.fake.methods() == [f"GET /v1/orders/{order_id}"]  # type: ignore[attr-defined]
+        assert len(provider.fake.orders) == 1  # type: ignore[attr-defined]
+
+    async def test_a_reopen_never_hands_out_a_duplicate_of_the_receipt(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        provider = cs.install(cs.razorpay_live())
+        invoice_id, _ = await cs.seed_invoice(client, org_id)
+        first = (await cs.open_checkout(client, org_id, invoice_id)).json()
+        order_id = first["client_action"]["order_id"]
+        duplicate = provider.fake.duplicate(first["charge_id"])  # type: ignore[attr-defined]
+        provider.fake.unindexed.add(order_id)  # type: ignore[attr-defined]
+
+        again = await cs.open_checkout(client, org_id, invoice_id)
+
+        assert again.status_code == 201, again.text
+        assert again.json()["client_action"]["order_id"] == order_id
+        assert duplicate not in again.text
+
+    async def test_a_lost_create_the_search_cannot_see_leaves_an_order_nobody_is_shown(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The unknown-outcome retry the sandbox makes possible: the first create landed and its
+        answer was lost, the retry's search sees nothing, and the retry makes a second Order. Only
+        the second is recorded, and only the recorded one is handed out, then and on every
+        reopen."""
+        provider = cs.install(cs.razorpay_live())
+        invoice_id, _ = await cs.seed_invoice(client, org_id)
+        provider.fake.index_new_orders = False  # type: ignore[attr-defined]
+        provider.fake.lose_next_create_response = True  # type: ignore[attr-defined]
+        assert (await cs.open_checkout(client, org_id, invoice_id)).status_code == 503
+        (lost,) = provider.fake.orders  # type: ignore[attr-defined]
+
+        opened = await cs.open_checkout(client, org_id, invoice_id)
+        reopened = await cs.open_checkout(client, org_id, invoice_id)
+
+        assert opened.status_code == reopened.status_code == 201, opened.text
+        recorded = opened.json()["client_action"]["order_id"]
+        assert recorded != lost and reopened.json()["client_action"]["order_id"] == recorded
+        assert lost not in opened.text and lost not in reopened.text
+        (row,) = await _checkouts(admin_session, org_id)
+        assert (await _charge(admin_session, row["id"]))["provider_order_id"] == recorded
+        assert provider.fake.receipt_orders(str(row["id"])) == [lost, recorded]  # type: ignore[attr-defined]
 
 
 class TestMoneyIsRefusedBeforeAnyCall:
@@ -529,6 +598,224 @@ class TestAnExpiredCheckout:
         (only,) = await _checkouts(admin_session, org_id)
         assert only["state"] == "captured"
         assert "commerce.payment.captured" in await emitted(admin_session, org_id)
+
+    async def test_one_that_never_got_an_order_is_closed_and_a_fresh_one_opened(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """Every open of it failed at the provider and the customer did not come back inside its
+        day. No Order id ever reached a browser, so nothing can have been paid on it, and there is
+        nothing to ask a provider about: it is closed on the spot, not left to answer every later
+        "Pay now" with a 409 for good."""
+        provider = cs.install(cs.razorpay_live())
+        invoice_id, _ = await cs.seed_invoice(client, org_id)
+        provider.fake.inject(httpx.Response(500, json={}))  # type: ignore[attr-defined]
+        assert (await cs.open_checkout(client, org_id, invoice_id)).status_code == 503
+        (stuck,) = await _checkouts(admin_session, org_id)
+        assert (await _charge(admin_session, stuck["id"]))["provider_order_id"] is None
+        await force_charge(
+            admin_session, stuck["id"], checkout_expires_at=datetime.now(UTC) - timedelta(hours=1)
+        )
+        before = await emitted(admin_session, org_id)
+
+        response = await cs.open_checkout(client, org_id, invoice_id)
+
+        assert response.status_code == 201, response.text
+        assert response.json()["charge_id"] != str(stuck["id"])
+        old, new = await _checkouts(admin_session, org_id)
+        assert (old["state"], old["failure_reason"]) == ("failed", "checkout_expired")
+        assert new["state"] == "created"
+        assert await emitted(admin_session, org_id) == before
+        audits = [
+            (a["action"], a["acting_as"])
+            for a in await audit_rows(admin_session, org_id)
+            if a["entity_id"] == old["id"]
+        ]
+        assert ("payment.charge.checkout_expired", "checkout") in audits
+
+    async def test_one_that_never_got_an_order_waits_while_a_call_for_it_is_out(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """A call still in flight may yet record an Order and hand it to a browser."""
+        provider = cs.install(cs.razorpay_live())
+        invoice_id, _ = await cs.seed_invoice(client, org_id)
+        provider.fake.inject(httpx.Response(500, json={}))  # type: ignore[attr-defined]
+        assert (await cs.open_checkout(client, org_id, invoice_id)).status_code == 503
+        (stuck,) = await _checkouts(admin_session, org_id)
+        await force_charge(
+            admin_session,
+            stuck["id"],
+            checkout_expires_at=datetime.now(UTC) - timedelta(hours=1),
+            lease_until=datetime.now(UTC) + timedelta(minutes=5),
+        )
+        assert (await cs.open_checkout(client, org_id, invoice_id)).status_code == 409
+        (still,) = await _checkouts(admin_session, org_id)
+        assert still["state"] == "created"
+
+    async def test_one_with_a_payment_in_flight_is_neither_closed_nor_replaced(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        provider = cs.install(cs.razorpay_live())
+        invoice_id, _ = await cs.seed_invoice(client, org_id)
+        first = (await cs.open_checkout(client, org_id, invoice_id)).json()
+        cs.razorpay_pay(provider, first["client_action"]["order_id"], status="authorized")
+        await force_charge(
+            admin_session,
+            first["charge_id"],
+            checkout_expires_at=datetime.now(UTC) - timedelta(seconds=5),
+        )
+
+        response = await cs.open_checkout(client, org_id, invoice_id)
+
+        assert response.status_code == 409, response.text
+        (only,) = await _checkouts(admin_session, org_id)
+        assert (only["state"], only["failure_reason"]) == ("created", None)
+        assert len(provider.fake.orders) == 1  # type: ignore[attr-defined]
+
+
+class TestAClosedCheckoutBesideANewOne:
+    """A checkout closed as `checkout_expired` keeps an Order the customer may still pay. Before a
+    second Order is put in front of the same customer for the same invoice, the closed one is asked
+    about: paid meanwhile is recorded (and the invoice is paid), a payment still in flight refuses
+    the new checkout."""
+
+    async def _closed(
+        self, client: AsyncClient, admin: AsyncSession, org_id: uuid.UUID, *, ago: timedelta
+    ) -> tuple[Any, uuid.UUID, dict[str, Any]]:
+        provider = cs.install(cs.razorpay_live())
+        invoice_id, _ = await cs.seed_invoice(client, org_id)
+        first = (await cs.open_checkout(client, org_id, invoice_id)).json()
+        await force_charge(admin, first["charge_id"], checkout_expires_at=datetime.now(UTC) - ago)
+        closed = await cs.get_checkout(client, org_id, first["charge_id"])
+        assert closed.json()["failure_reason"] == "checkout_expired", closed.text
+        return provider, invoice_id, first
+
+    async def test_one_paid_after_it_closed_is_recorded_and_no_second_is_opened(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        provider, invoice_id, first = await self._closed(
+            client, admin_session, org_id, ago=timedelta(hours=1)
+        )
+        cs.razorpay_pay(provider, first["client_action"]["order_id"], status="captured")
+
+        response = await cs.open_checkout(client, org_id, invoice_id)
+
+        assert response.status_code == 409  # already paid
+        (only,) = await _checkouts(admin_session, org_id)
+        assert only["state"] == "captured"
+        assert len(provider.fake.orders) == 1  # type: ignore[attr-defined]
+        assert (await emitted(admin_session, org_id)).count("commerce.payment.captured") == 1
+
+    async def test_one_with_a_payment_in_flight_refuses_a_second_until_its_grace_ends(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        provider, invoice_id, first = await self._closed(
+            client, admin_session, org_id, ago=timedelta(minutes=5)
+        )
+        cs.razorpay_pay(provider, first["client_action"]["order_id"], status="authorized")
+
+        refused = await cs.open_checkout(client, org_id, invoice_id)
+
+        assert refused.status_code == 409 and "still being processed" in refused.text
+        assert len(await _checkouts(admin_session, org_id)) == 1
+        # An attempt the provider never resolves holds the invoice for the grace and no longer.
+        await force_charge(
+            admin_session,
+            first["charge_id"],
+            checkout_expires_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+        opened = await cs.open_checkout(client, org_id, invoice_id)
+        assert opened.status_code == 201, opened.text
+        assert len(await _checkouts(admin_session, org_id)) == 2
+
+    async def test_one_nobody_is_paying_does_not_stand_in_the_way(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        provider, invoice_id, first = await self._closed(
+            client, admin_session, org_id, ago=timedelta(minutes=5)
+        )
+        cs.razorpay_pay(provider, first["client_action"]["order_id"], status="failed")
+        response = await cs.open_checkout(client, org_id, invoice_id)
+        assert response.status_code == 201, response.text
+        assert response.json()["charge_id"] != first["charge_id"]
+
+
+class TestARollbackToTheStub:
+    """The owner turns a live wire back to the stub while a checkout is open at the real provider.
+    The stub must never become the authority on that checkout's Order: reopening it is refused
+    rather than minting a stand-in Order under the same id (Cashfree's `order_id` *is* the
+    receipt), so the poller still cannot expire it, and the real wire recovers the payment."""
+
+    async def test_a_cashfree_checkout_opened_live_is_never_reminted_by_the_stub(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+        monkeypatch: pytest.MonkeyPatch,
+        engines: None,
+    ) -> None:
+        real_wire = CashfreeFakeWire()
+        real = CashfreeProvider(wire=real_wire, secret_key=cs.CASHFREE_SECRET, mode="production")
+        cs.install(real)
+        invoice_id, _ = await cs.seed_invoice(client, org_id)
+        first = await cs.open_checkout(client, org_id, invoice_id, cust=cs.customer())
+        assert first.status_code == 201, first.text
+        charge_id = first.json()["charge_id"]
+        real_wire.pay(charge_id, status="SUCCESS")
+
+        # Rolled back: the default is the Razorpay stub, Cashfree resolves to a fresh stub.
+        stub = cs.cashfree_stub()
+        cs.install(
+            RazorpayProvider(
+                key_id=None, key_secret=None, webhook_secret="x", platform_billing=True
+            )
+        )
+        monkeypatch.setattr("app.api.checkout.resolve_provider", lambda name: stub)
+        reopened = await cs.open_checkout(client, org_id, invoice_id, cust=cs.customer())
+
+        assert reopened.status_code == 503, reopened.text
+        assert stub.fake.orders == {}  # type: ignore[attr-defined]
+        await force_charge(
+            admin_session, charge_id, checkout_expires_at=datetime.now(UTC) - timedelta(hours=1)
+        )
+        report = await _poller(lambda name: stub).tick()
+        assert (report.unchecked, report.expired) == (1, 0)
+        assert (await _charge(admin_session, charge_id))["state"] == "created"
+
+        # The wire comes back on: the payment made at the real Cashfree is recorded.
+        report = await _poller(lambda name: real).tick(now=datetime.now(UTC) + timedelta(minutes=2))
+        assert report.captured == 1
+        assert (await _charge(admin_session, charge_id))["state"] == "captured"
+
+    async def test_a_razorpay_checkout_opened_live_is_never_reminted_by_the_stub(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+    ) -> None:
+        live = cs.install(cs.razorpay_live())
+        invoice_id, _ = await cs.seed_invoice(client, org_id)
+        first = (await cs.open_checkout(client, org_id, invoice_id)).json()
+        stub = RazorpayProvider(
+            key_id=None, key_secret=None, webhook_secret="x", platform_billing=True
+        )
+        cs.install(stub)
+
+        reopened = await cs.open_checkout(client, org_id, invoice_id)
+
+        assert reopened.status_code == 503, reopened.text
+        assert stub.find_order(receipt=first["charge_id"]) is None
+        row = await _charge(admin_session, first["charge_id"])
+        assert row["provider_order_id"] == first["client_action"]["order_id"]
+        assert len(live.fake.orders) == 1  # type: ignore[attr-defined]
+
+
+def _poller(resolver: Any) -> ChargePoller:
+    return ChargePoller(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=lambda organization_id: session_scope(organization_id=organization_id),
+        provider_resolver=resolver,
+        poll_interval=30.0,
+    )
 
 
 class TestRoutedByTheRowNotTheDefault:

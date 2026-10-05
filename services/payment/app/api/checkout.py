@@ -9,10 +9,10 @@ every live tenant for a gate the existing one already expresses.
 * `POST   /payment/checkouts` — open (or reopen) the checkout for an invoice. The amount comes from
   the invoice's own charge, never the body; one open checkout per invoice; claim → commit → provider
   call **outside any transaction** → record.
-* `GET    /payment/checkouts/{charge_id}` — read-through status: while the checkout is open the
-  provider is asked what happened, and the answer reconciled through the path a signed webhook
-  takes. What a
-  return page polls.
+* `GET    /payment/checkouts/{charge_id}` — read-through status: while the checkout is open (and,
+  once it has closed as `checkout_expired`, for its late-capture window) the provider is asked what
+  happened, and the answer reconciled through the path a signed webhook takes. What a return page
+  polls.
 * `POST   /payment/checkouts/{charge_id}/confirm` — Razorpay only. Checkout's callback hands the
   browser `{payment_id, order_id, signature}`; the server checks `HMAC(order_id|payment_id)` in
   constant time (a **precondition**, 400 on a mismatch or a missing field, nothing marked paid) and
@@ -27,6 +27,7 @@ organization; RLS is the net).
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -91,6 +92,17 @@ def _status_out(charge: Charge, *, provider_checked: bool) -> PlatformCheckoutSt
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _Settled:
+    """What asking about one checkout found: the charge as it stands afterwards, whether the
+    provider could be asked, and whether it reported a payment still in flight
+    (`services.payment_in_flight`)."""
+
+    charge: Charge | None
+    asked: bool
+    in_flight: bool = False
+
+
 async def _settle(
     session: AsyncSession,
     provider_for: ProviderResolver,
@@ -99,10 +111,10 @@ async def _settle(
     *,
     request: Request | None,
     respect_gap: bool = False,
-) -> tuple[Charge | None, bool]:
+) -> _Settled:
     """Ask the provider what happened to one checkout and reconcile the answer: claim → call →
-    record, three acts, **no transaction open across the call**. Returns the charge as it stands
-    afterwards and whether the provider could be asked."""
+    record, three acts, **no transaction open across the call**. An open checkout, or a closed one
+    still inside its late-capture window (`services.late_checkable`)."""
     now = datetime.now(UTC)
     async with session.begin():
         await bind(session, organization_id)
@@ -112,12 +124,34 @@ async def _settle(
     if ticket is None:
         async with session.begin():
             await bind(session, organization_id)
-            return await selectors.get_checkout_charge(session, organization_id, charge_id), False
-    snapshots = await services.fetch_order_payments(provider_for(ticket.provider), ticket)
+            charge = await selectors.get_checkout_charge(session, organization_id, charge_id)
+        return _Settled(charge, asked=False)
+    provider = provider_for(ticket.provider)
+    snapshots = await services.fetch_order_payments(provider, ticket)
+    strays = await services.fetch_stray_payments(provider, ticket) if snapshots is not None else ()
     async with session.begin():
         await bind(session, organization_id)
-        charge = await services.record_poll(session, ticket, snapshots, now=now, request=request)
-    return charge, snapshots is not None
+        charge = await services.record_poll(
+            session, ticket, snapshots, now=now, request=request, strays=strays
+        )
+    in_flight = (
+        charge is not None
+        and charge.state != CHARGE_CAPTURED
+        and snapshots is not None
+        and services.payment_in_flight(charge, [*snapshots, *(s.snapshot for s in strays)], now=now)
+    )
+    return _Settled(charge, asked=snapshots is not None, in_flight=in_flight)
+
+
+def _asks_provider(charge: Charge, now: datetime) -> bool:
+    """Whether a read of this checkout asks the provider: an open one with an Order, or a closed
+    one still inside its late-capture window (`services.late_checkable`) — a customer who paid a
+    checkout after it closed must see `paid: true`, not `failed`."""
+    if charge.provider_order_id is None or charge.state == CHARGE_CAPTURED:
+        return False
+    if charge.state == CHARGE_FAILED:
+        return services.late_checkable(charge, now=now)
+    return True
 
 
 @router.post(
@@ -125,6 +159,34 @@ async def _settle(
     response_model=PlatformCheckoutOut,
     status_code=status.HTTP_201_CREATED,
     summary="Open (or reopen) the checkout for an invoice",
+    responses={
+        404: {"description": "The organization has no payable charge for this invoice."},
+        409: {
+            "description": (
+                "Refused, with a stable machine code in `errors[0].code`: "
+                f"`{services.CODE_INVOICE_ALREADY_PAID}` (field `invoice_id`; the invoice is paid "
+                "— the only 409 that means paid), "
+                f"`{services.CODE_CHECKOUT_IN_PROGRESS}` (another request holds the checkout; try "
+                "again in a moment), "
+                f"`{services.CODE_PREVIOUS_CHECKOUT_NOT_CLOSABLE}` (the expired checkout could "
+                "not be closed yet; try again shortly), "
+                f"`{services.CODE_PREVIOUS_PAYMENT_IN_FLIGHT}` (a payment on a previous checkout "
+                "is still being processed; try again in a few minutes), "
+                f"`{services.CODE_CHECKOUT_NOT_SUPPORTED}` (the provider has no hosted checkout)."
+            )
+        },
+        422: {
+            "description": (
+                "Could never be paid online, refused before any provider call, with "
+                "`errors[0] = {field, code, message}`: "
+                f"`{services.CODE_PHONE_REQUIRED}` (field `customer.phone`), "
+                f"`{services.CODE_CUSTOMER_DETAILS_REQUIRED}` (field `customer`), "
+                f"`{services.CODE_CURRENCY_UNSUPPORTED}`, `{services.CODE_AMOUNT_BELOW_MINIMUM}` "
+                f"and `{services.CODE_NOTHING_TO_PAY}` (field `invoice_id`). A malformed body is "
+                "a 422 with the framework's own field errors."
+            )
+        },
+    },
 )
 async def open_checkout(
     payload: PlatformCheckoutIn,
@@ -136,10 +198,18 @@ async def open_checkout(
     """Open the provider's hosted checkout for one invoice. The amount is the invoice's own
     charge's, never the body's; a second request for an invoice with an open checkout returns that
     checkout (at the provider it was created under). **404** if the organization has no charge for
-    the invoice, **409** if it is already paid, **422** for what could never be paid online."""
+    the invoice, **409** if it is already paid (`invoice_already_paid`) or cannot be opened right
+    now (each with its own code), **422** for what could never be paid online.
+
+    The Order handed back is always the one the charge **records**: it is recorded before this
+    answers, a reopen fetches it by its id, and an Order the call made that the charge does not
+    record is never handed out (a 409 `checkout_in_progress` instead; the next request gets the
+    recorded one)."""
     organization_id = ctx.organization_id
     provider_for = _provider_for(provider)
     customer = payload.customer.model_dump() if payload.customer is not None else None
+
+    rechecked: set[uuid.UUID] = set()
 
     async def claim() -> services.CheckoutClaim:
         async with session.begin():
@@ -153,20 +223,45 @@ async def open_checkout(
                 customer=customer,
                 actor_id=ctx.principal.sub,
                 request=request,
+                rechecked=frozenset(rechecked),
             )
 
     claimed = await claim()
     if claimed.stale_charge_id is not None:
         # The invoice's open checkout has expired. Ask the provider about it first (it may have been
-        # paid), close it if it was not, and only then open a fresh one.
+        # paid), close it if it was not, and only then open a fresh one. One with a payment still
+        # in flight stays open, and so does one whose provider could not be asked: both a 409.
         await _settle(
             session, provider_for, organization_id, claimed.stale_charge_id, request=request
         )
+        # Just asked: if that closed it, it is not asked about a second time below.
+        rechecked.add(claimed.stale_charge_id)
         claimed = await claim()
         if claimed.stale_charge_id is not None:
-            raise ConflictProblem(
-                "The previous checkout for this invoice could not be closed yet; try again shortly"
+            raise services.conflict(
+                services.CODE_PREVIOUS_CHECKOUT_NOT_CLOSABLE,
+                "The previous checkout for this invoice could not be closed yet; try again shortly",
             )
+    if claimed.recheck_charge_ids:
+        # Closed checkouts of this invoice whose Orders may still be paid. Ask about each before a
+        # second Order is put in front of the customer: one paid meanwhile is recorded (and the
+        # next claim answers "already paid"), one with a payment in flight refuses the new one.
+        for closed_id in claimed.recheck_charge_ids:
+            settled = await _settle(
+                session, provider_for, organization_id, closed_id, request=request
+            )
+            if settled.in_flight:
+                raise services.conflict(
+                    services.CODE_PREVIOUS_PAYMENT_IN_FLIGHT,
+                    "A payment on this invoice's previous checkout is still being processed; "
+                    "try again in a few minutes",
+                )
+            rechecked.add(closed_id)
+        claimed = await claim()
+        if claimed.request is None:
+            # Every one was just rechecked, so only a concurrent request can have changed the
+            # picture meanwhile: never an open call made on a claim that holds no request.
+            raise services.checkout_in_progress()
 
     try:
         opened = await services.run_checkout_call(provider_for(claimed.provider), claimed)
@@ -180,6 +275,11 @@ async def open_checkout(
     async with session.begin():
         await bind(session, organization_id)
         charge = await services.record_checkout(session, claimed, opened, request=request)
+    if services.withheld_order(charge, opened):
+        # The charge records another Order than this call returned (two exist for one charge): the
+        # browser is never handed the unrecorded one. The lease is already given back, so the next
+        # request fetches the recorded Order by its id.
+        raise services.checkout_in_progress()
     log.info(
         "payment.checkout.opened",
         charge_id=str(charge.id),
@@ -225,15 +325,17 @@ async def get_checkout(
 ) -> PlatformCheckoutStatusOut:
     """Read-through status: while the checkout is open the provider is asked, server to server, what
     happened to its Order, and the answer reconciled like a signed webhook's. What the return page
-    polls. `paid` is true only for a captured payment."""
+    polls. `paid` is true only for a captured payment. A checkout closed as `checkout_expired` is
+    still asked about inside its late-capture window: a payment made on its Order after it closed is
+    recorded, and the answer is `paid: true`."""
     organization_id = ctx.organization_id
     charge = await _require_checkout(session, organization_id, charge_id)
-    if charge.state in (CHARGE_CAPTURED, CHARGE_FAILED) or charge.provider_order_id is None:
+    if not _asks_provider(charge, datetime.now(UTC)):
         return _status_out(charge, provider_checked=False)
-    settled, asked = await _settle(
+    settled = await _settle(
         session, _provider_for(provider), organization_id, charge_id, request=request
     )
-    return _status_out(settled or charge, provider_checked=asked)
+    return _status_out(settled.charge or charge, provider_checked=settled.asked)
 
 
 @router.post(
@@ -276,17 +378,20 @@ async def confirm_checkout(
     ):
         raise services.InvalidCheckoutConfirmationProblem("could not verify the confirmation")
 
-    if charge.state in (CHARGE_CAPTURED, CHARGE_FAILED):
+    # A checkout already closed as `checkout_expired` is asked about too, inside its late-capture
+    # window: the callback is proof that a payment was made on its Order, and a capture of it is
+    # money that moved after this platform stopped waiting.
+    if not _asks_provider(charge, datetime.now(UTC)):
         return _status_out(charge, provider_checked=False)
     if CREDENTIALS.tripped(adapter.name):
         raise services.CheckoutUnavailableProblem("Online payment is temporarily unavailable")
-    settled, asked = await _settle(
+    settled = await _settle(
         session, _provider_for(provider), organization_id, charge_id, request=request
     )
-    if not asked:
+    if not settled.asked:
         # The signature held, but the provider could not be asked: not "paid", not "failed" — the
         # browser polls `GET` and learns when it can.
         raise ProviderUnreachableProblem(
             "The payment provider could not confirm the payment yet; try again"
         )
-    return _status_out(settled or charge, provider_checked=True)
+    return _status_out(settled.charge or charge, provider_checked=True)

@@ -98,6 +98,17 @@ LOCAL_FAILURE_REASONS: frozenset[str] = frozenset(
 FAILURE_NO_MANDATE = "no_mandate"
 FAILURE_UNSUPPORTED_CURRENCY = "unsupported_currency"
 FAILURE_AMOUNT_BELOW_MINIMUM = "amount_below_minimum"
+#: The refusals **no payment path can cure**: the provider takes no such currency, or no amount
+#: that small, for a checkout any more than for a debit (the checkout refuses the same invoice with
+#: a 422). Such a charge is born `failed` and audited, but **never announced as
+#: `commerce.payment.failed`**: that event opens the dunning ladder, every retry would be refused
+#: the same way, and the subscription would be suspended over an amount — a 40-paise proration —
+#: the customer had no way to pay. Logged at error (`payment.charge.uncollectable`) for a person to
+#: settle by hand. `no_mandate` is deliberately not here: a checkout cures it, and dunning is how
+#: the customer is asked to.
+UNCOLLECTABLE_REASONS: frozenset[str] = frozenset(
+    {FAILURE_UNSUPPORTED_CURRENCY, FAILURE_AMOUNT_BELOW_MINIMUM}
+)
 #: A provider answered a create with a refusal that provably created nothing: this prefix and the
 #: provider's stable error code.
 FAILURE_PROVIDER_REJECTED_PREFIX = "provider_rejected:"
