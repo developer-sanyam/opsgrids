@@ -507,3 +507,26 @@ class TestFailClosed:
         assert (
             await client.post(CASHFREE, content=edge, headers={"x-webhook-signature": "bad"})
         ).status_code == 400
+
+    @pytest.mark.parametrize("path", [RAZORPAY, CASHFREE, "/api/v1/webhooks/razorpay/collections"])
+    async def test_a_chunked_body_with_no_length_is_refused_without_being_read_whole(
+        self, client: AsyncClient, org_id: uuid.UUID, path: str
+    ) -> None:
+        """A sender with no `Content-Length` (chunked) cannot make the service buffer its body: the
+        stream is counted as it arrives and refused at the first byte over the cap."""
+        cs.install(cs.cashfree_stub())
+        chunk = b"x" * (64 * 1024)
+        total = 4 * (MAX_WEBHOOK_BODY_BYTES // len(chunk))
+        pulled = 0
+
+        async def stream() -> Any:
+            nonlocal pulled
+            for _ in range(total):
+                pulled += 1
+                yield chunk
+
+        url = f"{path}?account={uuid.uuid4()}" if path.endswith("collections") else path
+        response = await client.post(url, content=stream(), headers={"x-webhook-signature": "x"})
+
+        assert response.status_code == 413
+        assert pulled < total, "the whole body was read before it was refused"
