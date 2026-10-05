@@ -39,7 +39,18 @@ describe("CopyField", () => {
     await user.click(screen.getByRole("button", { name: "Copy Webhook URL" }));
     expect(writeText).toHaveBeenCalledWith(URL);
     await waitFor(() => expect(screen.getByText("Webhook URL copied.")).toBeDefined());
-    expect(screen.getByRole("button", { name: "Copy Webhook URL" }).textContent).toContain("Copied");
+    // The accessible name says it too, not only the text a sighted user sees.
+    expect(screen.getByRole("button", { name: "Copied Webhook URL" }).textContent).toContain("Copied");
+  });
+
+  it("says so on screen when the clipboard refuses, with no announcer mounted at all", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(new Error("denied"));
+    render(<CopyField label="Webhook URL" value={URL} />);
+    await user.click(screen.getByRole("button", { name: "Copy Webhook URL" }));
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toBe("Couldn't copy the webhook url. Select it and copy it yourself.");
+    expect(screen.getByRole("button", { name: "Copy Webhook URL" }).textContent).toContain("Copy");
   });
 
   it("says how to copy it by hand when the clipboard refuses", async () => {

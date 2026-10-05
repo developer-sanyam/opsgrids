@@ -21,12 +21,15 @@ interface CopyFieldProps {
  *
  * The value is plain, selectable text (one click selects all of it), not a field: there is
  * nothing to edit, and a screen reader reads it in place. The clipboard can be refused (no
- * permission, an insecure origin), and then the honest answer is "select it and copy it yourself"
- * — said through the screen's live region, never a button that silently did nothing.
+ * permission, an insecure origin, a webview), and then the honest answer is "select it and copy it
+ * yourself" — **on screen**, under the value, in its own live region, never a button that silently
+ * did nothing. It does not depend on an `<Announcer>` being mounted: most apps mount none, and
+ * there `useAnnounce` is silent. The button's accessible name follows its text ("Copied …").
  */
 export function CopyField({ label, value, helper, className }: CopyFieldProps) {
   const announce = useAnnounce();
   const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     if (!copied) return;
@@ -37,10 +40,12 @@ export function CopyField({ label, value, helper, className }: CopyFieldProps) {
   async function copy() {
     try {
       await navigator.clipboard.writeText(value);
+      setFailed(false);
       setCopied(true);
       announce(`${label} copied.`);
     } catch {
-      announce(`Couldn't copy the ${label.toLowerCase()}. Select it and copy it yourself.`);
+      setCopied(false);
+      setFailed(true);
     }
   }
 
@@ -55,12 +60,15 @@ export function CopyField({ label, value, helper, className }: CopyFieldProps) {
           type="button"
           variant="secondary"
           onClick={() => void copy()}
-          aria-label={`Copy ${label}`}
+          aria-label={`${copied ? "Copied" : "Copy"} ${label}`}
           leadingIcon={copied ? <CheckIcon className="size-4 text-positive" /> : <ClipboardListIcon className="size-4" />}
         >
           {copied ? "Copied" : "Copy"}
         </Button>
       </div>
+      <p role="status" className="text-xs font-medium text-negative empty:hidden">
+        {failed ? `Couldn't copy the ${label.toLowerCase()}. Select it and copy it yourself.` : ""}
+      </p>
       {helper ? <p className="text-xs text-muted">{helper}</p> : null}
     </div>
   );
