@@ -115,7 +115,10 @@ Two more cards under Change plan, each hosting its own dialogs (the page reload 
 
 Both: key minted per confirm, reused by *Try again* after an unknown outcome, replaced after a refusal
 (which returns to the form with the server's sentence, its reference and the next step); a double click
-sends once; focus returns to the opening control.
+sends once; focus returns to the opening control — or, after an extension to the last day the cap
+allows (which disables that control), to the result's Dismiss. The Extend trial dialog works from the
+card's live row, so a refusal's re-read updates the end, the window and the next request's expected end;
+the request a key was minted for is fixed at Review, so *Try again* sends it unchanged.
 
 ## 6. Tests
 

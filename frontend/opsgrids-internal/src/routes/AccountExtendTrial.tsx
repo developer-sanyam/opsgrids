@@ -34,15 +34,27 @@ interface FlowProps {
   onDone: (result: ExtendTrialResult) => void;
 }
 
+/** What one idempotency key was minted for — fixed at Review, so *Try again* repeats it exactly. */
+interface PendingRequest {
+  new_trial_ends_at: string;
+  expected_trial_ends_at: string;
+}
+
 /**
  * Extend trial: pick the trial's new last day **in IST**, say why, confirm. The request carries the
  * absolute end (23:59:59 IST on that day) and the end the operator saw, exactly as it was read — so
  * a repeat can never add the time twice, and a trial that moved in between is refused rather than
  * stretched blind.
+ *
+ * `product` is the card's *live* row, not a snapshot taken when the dialog opened: after a refusal
+ * re-reads the account, the end, the window and the next request's expected end are the re-read
+ * ones. The request a key was minted for is pinned at Review, so a re-read during an unknown outcome
+ * never changes what *Try again* sends under that key.
  */
 function ExtendTrialFlow({ org, product, now, onClose, onRefresh, onDone }: FlowProps) {
   const sub = product.subscription;
-  const range = sub ? extensionWindow(sub.trial_ends_at, sub.trial_max_ends_at, now) : null;
+  const trialling = sub?.state === "trial" && sub.trial_ends_at !== null;
+  const range = sub && trialling ? extensionWindow(sub.trial_ends_at, sub.trial_max_ends_at, now) : null;
   const totalDays = sub ? totalTrialDays(sub.current_period_start, sub.trial_max_ends_at) : null;
 
   const [date, setDate] = useState("");
@@ -53,11 +65,12 @@ function ExtendTrialFlow({ org, product, now, onClose, onRefresh, onDone }: Flow
   const [confirming, setConfirming] = useState(false);
   const [confirmFailure, setConfirmFailure] = useState<Failure | null>(null);
   const keyRef = useRef<string | null>(null);
+  const [pending, setPending] = useState<PendingRequest | null>(null);
   const confirmingRef = useRef(false);
 
   const reasonTrimmed = reason.trim();
   const inWindow = range !== null && date >= range.min && date <= range.max;
-  const dateError = !touched
+  const dateError = !touched || !trialling
     ? undefined
     : date === ""
       ? "Choose the trial's new last day."
@@ -75,14 +88,18 @@ function ExtendTrialFlow({ org, product, now, onClose, onRefresh, onDone }: Flow
   function review() {
     setTouched(true);
     setFormFailure(null);
+    if (!trialling || !sub?.trial_ends_at) return;
     if (!inWindow || reasonTrimmed.length === 0 || reasonTrimmed.length > MAX_REASON) return;
     keyRef.current = crypto.randomUUID();
+    // The end the operator saw goes back exactly as it was read: the server compares it to the
+    // microsecond under its lock.
+    setPending({ new_trial_ends_at: endOfIstDay(date), expected_trial_ends_at: sub.trial_ends_at });
     setConfirmFailure(null);
     setPhase("confirm");
   }
 
   async function confirm() {
-    if (confirmingRef.current || !sub?.trial_ends_at || keyRef.current === null) return;
+    if (confirmingRef.current || pending === null || keyRef.current === null) return;
     confirmingRef.current = true;
     setConfirming(true);
     setConfirmFailure(null);
@@ -90,9 +107,7 @@ function ExtendTrialFlow({ org, product, now, onClose, onRefresh, onDone }: Flow
       const result = await extendTrial(
         org.organization_id,
         product.product_key,
-        // The end the operator saw goes back exactly as it was read: the server compares it to the
-        // microsecond under its lock.
-        { new_trial_ends_at: endOfIstDay(date), expected_trial_ends_at: sub.trial_ends_at, reason: reasonTrimmed },
+        { ...pending, reason: reasonTrimmed },
         keyRef.current,
       );
       onDone(result);
@@ -101,6 +116,7 @@ function ExtendTrialFlow({ org, product, now, onClose, onRefresh, onDone }: Flow
       const kind = failureKind(status, code);
       if (kind === "refused") {
         keyRef.current = null;
+        setPending(null);
         setPhase("form");
         setFormFailure(failure);
         onRefresh();
@@ -146,6 +162,12 @@ function ExtendTrialFlow({ org, product, now, onClose, onRefresh, onDone }: Flow
           ) : null}
         </p>
         {formFailure?.guidance ? <p className="text-sm text-muted">{formFailure.guidance}</p> : null}
+        {!trialling ? (
+          <InlineAlert tone="warning" title="Nothing to extend" live="off">
+            {product.product_name} is no longer on a trial, so there is nothing to extend. Close this and
+            check the account.
+          </InlineAlert>
+        ) : null}
         <TextField
           label="New last day of the trial"
           type="date"
@@ -171,14 +193,19 @@ function ExtendTrialFlow({ org, product, now, onClose, onRefresh, onDone }: Flow
       </FormDialog>
 
       <ConfirmDialog
-        open={phase === "confirm"}
+        open={phase === "confirm" && pending !== null}
         onClose={() => setPhase("form")}
         onConfirm={() => void confirm()}
         tone="primary"
         title="Confirm trial extension"
         body={
-          date
-            ? extendPreviewSentence(org.name, product.product_name, sub?.trial_ends_at ?? null, endOfIstDay(date))
+          pending
+            ? extendPreviewSentence(
+                org.name,
+                product.product_name,
+                pending.expected_trial_ends_at,
+                pending.new_trial_ends_at,
+              )
             : ""
         }
         confirmLabel="Extend trial"
@@ -227,9 +254,12 @@ export function ExtendTrialCard({
   const { hasRole } = useAuth();
   const isOwner = hasRole("owner");
   const [reloadKey, setReloadKey] = useState(0);
-  const [flow, setFlow] = useState<ProductPricing | null>(null);
+  /** The open dialog's product — its key and the row as it was when opened, used only until the
+   *  live read has the row (the dialog itself always works from the live one). */
+  const [flow, setFlow] = useState<{ key: string; opened: ProductPricing } | null>(null);
   const [done, setDone] = useState<DoneView | null>(null);
   const trigger = useRef<HTMLElement | null>(null);
+  const resultRegion = useRef<HTMLDivElement | null>(null);
   const hintId = useId();
 
   const live = useLivePricing(org.organization_id, reloadKey + refreshSignal);
@@ -242,9 +272,20 @@ export function ExtendTrialCard({
       .sort((a, b) => a.product_name.localeCompare(b.product_name));
   }, [live]);
 
-  const closeFlow = useCallback(() => {
+  const flowProduct = useMemo(() => {
+    if (flow === null) return null;
+    const current = live.status === "ready" ? live.data.products.find((p) => p.product_key === flow.key) : undefined;
+    return current ?? flow.opened;
+  }, [flow, live]);
+
+  /** Close the dialog and return focus to the control that opened it — or, when that control is
+   *  about to be disabled, to the result's Dismiss, so focus never falls back to the page. */
+  const closeFlow = useCallback((focusResult = false) => {
     setFlow(null);
-    window.requestAnimationFrame(() => trigger.current?.focus());
+    window.requestAnimationFrame(() => {
+      const dismiss = focusResult ? resultRegion.current?.querySelector<HTMLElement>("button") : null;
+      (dismiss ?? trigger.current)?.focus();
+    });
   }, []);
 
   const handleDone = useCallback(
@@ -252,15 +293,17 @@ export function ExtendTrialCard({
       const name = trials.find((p) => p.product_key === result.product_key)?.product_name ?? result.product_key;
       setDone({ sentence: extendResultSentence(org.name, name, result) });
       refresh();
-      closeFlow();
+      // Extended as far as the cap allows: the row's button disables once the re-read lands.
+      const cap = flowProduct?.subscription?.trial_max_ends_at ?? null;
+      closeFlow(extensionWindow(result.trial_ends_at, cap, now) === null);
     },
-    [closeFlow, org.name, refresh, trials],
+    [closeFlow, flowProduct, now, org.name, refresh, trials],
   );
 
   function open(product: ProductPricing, event: MouseEvent<HTMLButtonElement>) {
     trigger.current = event.currentTarget;
     setDone(null);
-    setFlow(product);
+    setFlow({ key: product.product_key, opened: product });
   }
 
   const columns: Column<ProductPricing>[] = [
@@ -327,7 +370,7 @@ export function ExtendTrialCard({
         {isOwner ? "This trial is already at its longest." : EXTEND_ROLE_HINT}
       </p>
 
-      <div role="status" aria-live="polite" aria-atomic="true">
+      <div ref={resultRegion} role="status" aria-live="polite" aria-atomic="true">
         {done ? (
           <InlineAlert
             tone="success"
@@ -356,12 +399,12 @@ export function ExtendTrialCard({
         <DataTable columns={columns} rows={trials} rowKey={(p) => p.product_key} caption="Subscriptions on a trial" />
       )}
 
-      {flow ? (
+      {flowProduct ? (
         <ExtendTrialFlow
           org={org}
-          product={flow}
+          product={flowProduct}
           now={now}
-          onClose={closeFlow}
+          onClose={() => closeFlow()}
           onRefresh={refresh}
           onDone={handleDone}
         />

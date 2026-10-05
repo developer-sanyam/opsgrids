@@ -244,6 +244,27 @@ describe("confirming", () => {
   });
 });
 
+describe("focus after an extension to the last day allowed", () => {
+  it("moves to the result's Dismiss, since the opening control is about to be disabled", async () => {
+    const last = "2026-12-29T18:29:59Z";
+    const w = wire();
+    w.extendSpy.mockResolvedValue({ ...RESULT, trial_ends_at: last });
+    render(<ExtendTrialCard org={ORG} now={NOW} />);
+    const { dialog, trigger } = await openDialog();
+    setDate(dialog, "2026-12-29");
+    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "As far as it can go");
+    w.getPricing.mockResolvedValue(pricing(trialling({ trial_ends_at: last })));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Review" }));
+    const confirm = await screen.findByRole("dialog", { name: "Confirm trial extension" });
+    await userEvent.click(within(confirm).getByRole("button", { name: "Extend trial" }));
+    const region = await screen.findByRole("status");
+    await waitFor(() => expect(within(region).getByText("Trial extended")).toBeTruthy());
+    await waitFor(() => expect((trigger as HTMLButtonElement).disabled).toBe(true));
+    const dismiss = within(region).getByRole("button", { name: "Dismiss" });
+    await waitFor(() => expect(document.activeElement).toBe(dismiss));
+  });
+});
+
 describe("a failed confirm", () => {
   it.each([
     [409, "state_changed", "this subscription's trial end changed since you looked at it", /not the way it was/],
@@ -261,8 +282,12 @@ describe("a failed confirm", () => {
     await waitFor(() => expect(w.getPricing.mock.calls.length).toBeGreaterThanOrEqual(2));
   });
 
-  it("an unknown outcome keeps the confirm open, and Try again reuses the same key", async () => {
+  it("an unknown outcome keeps the confirm open, and Try again repeats the same request under the same key", async () => {
     const { w, confirm } = await toConfirm(wire());
+    // The re-read after the unknown outcome shows the trial moved (it may be this very extension
+    // landing): Try again must still send exactly what the key was minted for, or the server would
+    // see a different body under the same key.
+    w.getPricing.mockResolvedValue(pricing(trialling({ trial_ends_at: "2026-11-03T18:29:59Z" })));
     w.extendSpy
       .mockRejectedValueOnce(problem(503, "outcome_unknown", "subscription did not answer, so the change may or may not have been made."))
       .mockResolvedValueOnce(RESULT);
@@ -271,8 +296,48 @@ describe("a failed confirm", () => {
       await within(confirm).findByText("subscription did not answer, so the change may or may not have been made."),
     ).toBeTruthy();
     expect(within(confirm).getByText(/Refresh this account to check/)).toBeTruthy();
+    await waitFor(() => expect(w.getPricing).toHaveBeenCalledTimes(2));
+    expect((await screen.findAllByText("03 Nov 2026, 23:59 IST")).length).toBeGreaterThan(0);
     await userEvent.click(within(confirm).getByRole("button", { name: "Try again" }));
     await screen.findByText("Trial extended");
     expect(w.extendSpy.mock.calls[0]?.[3]).toBe(w.extendSpy.mock.calls[1]?.[3]);
+    expect(w.extendSpy.mock.calls[1]?.[2]).toEqual(w.extendSpy.mock.calls[0]?.[2]);
+    expect((w.extendSpy.mock.calls[1]?.[2] as ExtendTrialRequest).expected_trial_ends_at).toBe(TRIAL_END);
+  });
+
+  it("after a state_changed refusal the form shows the re-read trial, and the next confirm sends what it read", async () => {
+    const moved = "2026-10-25T09:00:00.654321Z";
+    const { w, dialog } = await toConfirm(wire());
+    w.getPricing.mockResolvedValue(pricing(trialling({ trial_ends_at: moved })));
+    w.extendSpy.mockRejectedValueOnce(problem(409, "state_changed", "this subscription's trial end changed since you looked at it"));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Confirm trial extension" })).getByRole("button", { name: "Extend trial" }));
+    expect(await within(dialog).findByText("this subscription's trial end changed since you looked at it")).toBeTruthy();
+
+    // The open form follows the re-read: the new end, and a window that starts after it.
+    await waitFor(() => expect(within(dialog).getByText("25 Oct 2026, 14:30 IST")).toBeTruthy());
+    const input = within(dialog).getByLabelText(/New last day of the trial/) as HTMLInputElement;
+    expect(input.min).toBe("2026-10-25");
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Review" }));
+    const confirm = await screen.findByRole("dialog", { name: "Confirm trial extension" });
+    expect(within(confirm).getByText(/instead of 25 Oct 2026, 14:30 IST/)).toBeTruthy();
+    await userEvent.click(within(confirm).getByRole("button", { name: "Extend trial" }));
+    await screen.findByText("Trial extended");
+    expect(w.extendSpy).toHaveBeenCalledTimes(2);
+    const second = w.extendSpy.mock.calls[1] as [string, string, ExtendTrialRequest, string];
+    expect(second[2].expected_trial_ends_at).toBe(moved);
+    expect(second[3]).not.toBe(w.extendSpy.mock.calls[0]?.[3]);
+  });
+
+  it("a trial that is no longer trialling on the re-read says so, and cannot be confirmed again", async () => {
+    const { w, dialog } = await toConfirm(wire());
+    w.getPricing.mockResolvedValue(pricing(trialling({ state: "active", trial_ends_at: null, trial_max_ends_at: null })));
+    w.extendSpy.mockRejectedValueOnce(problem(422, "not_trial", "a active subscription is not trialling"));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Confirm trial extension" })).getByRole("button", { name: "Extend trial" }));
+    expect(await within(dialog).findByText("a active subscription is not trialling")).toBeTruthy();
+    expect(await within(dialog).findByText(/no longer on a trial/)).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Review" }));
+    expect(screen.queryByRole("dialog", { name: "Confirm trial extension" })).toBeNull();
+    expect(w.extendSpy).toHaveBeenCalledTimes(1);
   });
 });
