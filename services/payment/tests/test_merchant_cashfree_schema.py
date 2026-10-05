@@ -21,6 +21,9 @@ from tests.helpers import rows
 
 pytestmark = pytest.mark.integration
 
+REVISION = "d9e0f1a2b3c4"  # pragma: allowlist secret
+PREVIOUS = "c7d8e9f0a1b2"  # pragma: allowlist secret
+
 
 async def _insert(
     admin: AsyncSession,
@@ -121,7 +124,7 @@ def test_the_revision_chains_from_the_previous_head() -> None:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.revision == "d9e0f1a2b3c4" and module.down_revision == "c7d8e9f0a1b2"
+    assert module.revision == REVISION and module.down_revision == PREVIOUS
     revisions = {p.name.split("_", 1)[0] for p in versions.glob("*.py")}
     pointed_at = {
         match.group(1)
@@ -129,4 +132,4 @@ def test_the_revision_chains_from_the_previous_head() -> None:
         for match in [re.search(r"down_revision[^=]*=\s*['\"]([0-9a-f]+)['\"]", p.read_text())]
         if match is not None
     }
-    assert revisions - pointed_at == {"d9e0f1a2b3c4"}, "this revision must be the only head"
+    assert revisions - pointed_at == {REVISION}, "this revision must be the only head"

@@ -96,7 +96,7 @@ describe("PaymentSettingsPage — Cashfree", () => {
       expect(saveMerchantAccount).toHaveBeenCalledWith({
         provider: "cashfree",
         key_id: "TESTdevonlyapp01",
-        key_secret: "typed-cashfree-secret",
+        key_secret: "typed-cashfree-secret", // pragma: allowlist secret
         mode: "sandbox",
       }),
     );
