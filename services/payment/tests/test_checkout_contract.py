@@ -1,6 +1,6 @@
 """Runs `CheckoutContract` against every checkout adapter the platform has — the live Razorpay
 adapter over a stateful fake Razorpay, the Razorpay stub, and the Cashfree adapter over its stateful
-fake — and against eight broken ones.
+fake — and against the broken ones.
 
 The second half is why the contract can be trusted: each check is run against an adapter broken in
 exactly the way it exists to catch, and must fail. A contract that passes everything protects
@@ -20,6 +20,7 @@ import pytest
 from app.providers.base import (
     CheckoutRequest,
     CheckoutSession,
+    OrderResult,
     PaymentProvider,
     PaymentSnapshot,
     WebhookEvent,
@@ -28,6 +29,7 @@ from app.providers.cashfree import CashfreeProvider
 from app.providers.cashfree_fake import CashfreeFakeWire
 from app.providers.razorpay import RazorpayProvider
 from app.providers.razorpay_wire import RazorpayHttpWire
+from app.providers.wire import ProviderTransient
 from tests.checkout_contract import CheckoutContract
 from tests.helpers import razorpay_webhook_body
 from tests.razorpay_fake import KEY_ID, KEY_SECRET, FakeRazorpay
@@ -118,6 +120,13 @@ class TestTheLiveRazorpayAdapter(CheckoutContract):
 
     def webhook_bodies(self, adapter: PaymentProvider) -> tuple[bytes, bytes]:
         return _razorpay_bodies()
+
+    def hide_from_receipt_search(self, adapter: Any, order_id: str) -> None:
+        adapter.fake.unindexed.add(order_id)
+
+    def make_duplicate(self, adapter: Any, receipt: str) -> str | None:
+        duplicate: str = adapter.fake.duplicate(receipt)
+        return duplicate
 
 
 class TestTheRazorpayStub(CheckoutContract):
@@ -210,8 +219,6 @@ class _CreatesPerCall(_BrokenRazorpay):
             "receipt": f"{receipt}-{uuid.uuid4()}",
         }
         created = self._wire.request("POST", "/orders", json=body)  # type: ignore[union-attr]
-        from app.providers.base import OrderResult
-
         return OrderResult(provider="razorpay", provider_order_id=created["id"], receipt=receipt)
 
 
@@ -221,6 +228,26 @@ class _RemintsARecordedOrder(_BrokenRazorpay):
 
     def ensure_checkout(self, request: CheckoutRequest) -> CheckoutSession:
         return super().ensure_checkout(replace(request, recorded_order_id=None))
+
+
+class _SearchesForTheRecordedOrder(_BrokenRazorpay):
+    """The belief before the sandbox run: a recorded Order is found again by a receipt search. The
+    search misses a fresh Order (a customer refused), and hands back a duplicate when there is one
+    (a customer paying an Order nothing asks about)."""
+
+    def ensure_checkout(self, request: CheckoutRequest) -> CheckoutSession:
+        if request.recorded_order_id is None:
+            return super().ensure_checkout(request)
+        entity = self._find_entity(request.receipt)
+        if entity is None:
+            raise ProviderTransient("razorpay", 0, "recorded_order_not_found")
+        order = OrderResult(
+            provider="razorpay", provider_order_id=str(entity["id"]), receipt=request.receipt
+        )
+        return CheckoutSession(
+            order=order,
+            client_action={"type": "razorpay_checkout", "order_id": order.provider_order_id},
+        )
 
 
 class _FindThatCreates(_BrokenRazorpay):
@@ -319,6 +346,14 @@ class _BrokenContract(TestTheLiveRazorpayAdapter):
         (_CreatesPerCall, "test_a_fresh_process_resumes_the_order_it_did_not_make"),
         (_FindThatCreates, "test_find_order_never_creates"),
         (_RemintsARecordedOrder, "test_an_order_the_charge_already_records_is_never_made_again"),
+        (
+            _SearchesForTheRecordedOrder,
+            "test_a_recorded_order_is_found_when_the_receipt_search_cannot_see_it",
+        ),
+        (
+            _SearchesForTheRecordedOrder,
+            "test_a_recorded_order_is_handed_out_never_a_duplicate_of_its_receipt",
+        ),
         (_ReusesAnyOrder, "test_reopening_a_receipt_for_another_amount_is_refused_not_reused"),
         (_LeaksTheCustomer, "test_the_customer_never_appears_in_the_session_or_an_error"),
         (_HandsOutTheSecret, "test_the_browser_is_never_handed_a_secret"),
@@ -355,6 +390,8 @@ def test_a_correct_adapter_passes_the_checks_the_negatives_run() -> None:
         "test_ensure_checkout_is_idempotent_by_receipt",
         "test_find_order_never_creates",
         "test_an_order_the_charge_already_records_is_never_made_again",
+        "test_a_recorded_order_is_found_when_the_receipt_search_cannot_see_it",
+        "test_a_recorded_order_is_handed_out_never_a_duplicate_of_its_receipt",
         "test_reopening_a_receipt_for_another_amount_is_refused_not_reused",
         "test_the_customer_never_appears_in_the_session_or_an_error",
         "test_the_browser_is_never_handed_a_secret",

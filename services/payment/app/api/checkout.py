@@ -126,14 +126,19 @@ async def _settle(
             await bind(session, organization_id)
             charge = await selectors.get_checkout_charge(session, organization_id, charge_id)
         return _Settled(charge, asked=False)
-    snapshots = await services.fetch_order_payments(provider_for(ticket.provider), ticket)
+    provider = provider_for(ticket.provider)
+    snapshots = await services.fetch_order_payments(provider, ticket)
+    strays = await services.fetch_stray_payments(provider, ticket) if snapshots is not None else ()
     async with session.begin():
         await bind(session, organization_id)
-        charge = await services.record_poll(session, ticket, snapshots, now=now, request=request)
+        charge = await services.record_poll(
+            session, ticket, snapshots, now=now, request=request, strays=strays
+        )
     in_flight = (
         charge is not None
         and charge.state != CHARGE_CAPTURED
-        and services.payment_in_flight(charge, snapshots, now=now)
+        and snapshots is not None
+        and services.payment_in_flight(charge, [*snapshots, *(s.snapshot for s in strays)], now=now)
     )
     return _Settled(charge, asked=snapshots is not None, in_flight=in_flight)
 
@@ -154,6 +159,34 @@ def _asks_provider(charge: Charge, now: datetime) -> bool:
     response_model=PlatformCheckoutOut,
     status_code=status.HTTP_201_CREATED,
     summary="Open (or reopen) the checkout for an invoice",
+    responses={
+        404: {"description": "The organization has no payable charge for this invoice."},
+        409: {
+            "description": (
+                "Refused, with a stable machine code in `errors[0].code`: "
+                f"`{services.CODE_INVOICE_ALREADY_PAID}` (field `invoice_id`; the invoice is paid "
+                "— the only 409 that means paid), "
+                f"`{services.CODE_CHECKOUT_IN_PROGRESS}` (another request holds the checkout; try "
+                "again in a moment), "
+                f"`{services.CODE_PREVIOUS_CHECKOUT_NOT_CLOSABLE}` (the expired checkout could "
+                "not be closed yet; try again shortly), "
+                f"`{services.CODE_PREVIOUS_PAYMENT_IN_FLIGHT}` (a payment on a previous checkout "
+                "is still being processed; try again in a few minutes), "
+                f"`{services.CODE_CHECKOUT_NOT_SUPPORTED}` (the provider has no hosted checkout)."
+            )
+        },
+        422: {
+            "description": (
+                "Could never be paid online, refused before any provider call, with "
+                "`errors[0] = {field, code, message}`: "
+                f"`{services.CODE_PHONE_REQUIRED}` (field `customer.phone`), "
+                f"`{services.CODE_CUSTOMER_DETAILS_REQUIRED}` (field `customer`), "
+                f"`{services.CODE_CURRENCY_UNSUPPORTED}`, `{services.CODE_AMOUNT_BELOW_MINIMUM}` "
+                f"and `{services.CODE_NOTHING_TO_PAY}` (field `invoice_id`). A malformed body is "
+                "a 422 with the framework's own field errors."
+            )
+        },
+    },
 )
 async def open_checkout(
     payload: PlatformCheckoutIn,
@@ -165,7 +198,13 @@ async def open_checkout(
     """Open the provider's hosted checkout for one invoice. The amount is the invoice's own
     charge's, never the body's; a second request for an invoice with an open checkout returns that
     checkout (at the provider it was created under). **404** if the organization has no charge for
-    the invoice, **409** if it is already paid, **422** for what could never be paid online."""
+    the invoice, **409** if it is already paid (`invoice_already_paid`) or cannot be opened right
+    now (each with its own code), **422** for what could never be paid online.
+
+    The Order handed back is always the one the charge **records**: it is recorded before this
+    answers, a reopen fetches it by its id, and an Order the call made that the charge does not
+    record is never handed out (a 409 `checkout_in_progress` instead; the next request gets the
+    recorded one)."""
     organization_id = ctx.organization_id
     provider_for = _provider_for(provider)
     customer = payload.customer.model_dump() if payload.customer is not None else None
@@ -199,8 +238,9 @@ async def open_checkout(
         rechecked.add(claimed.stale_charge_id)
         claimed = await claim()
         if claimed.stale_charge_id is not None:
-            raise ConflictProblem(
-                "The previous checkout for this invoice could not be closed yet; try again shortly"
+            raise services.conflict(
+                services.CODE_PREVIOUS_CHECKOUT_NOT_CLOSABLE,
+                "The previous checkout for this invoice could not be closed yet; try again shortly",
             )
     if claimed.recheck_charge_ids:
         # Closed checkouts of this invoice whose Orders may still be paid. Ask about each before a
@@ -211,16 +251,17 @@ async def open_checkout(
                 session, provider_for, organization_id, closed_id, request=request
             )
             if settled.in_flight:
-                raise ConflictProblem(
+                raise services.conflict(
+                    services.CODE_PREVIOUS_PAYMENT_IN_FLIGHT,
                     "A payment on this invoice's previous checkout is still being processed; "
-                    "try again in a few minutes"
+                    "try again in a few minutes",
                 )
             rechecked.add(closed_id)
         claimed = await claim()
         if claimed.request is None:
             # Every one was just rechecked, so only a concurrent request can have changed the
             # picture meanwhile: never an open call made on a claim that holds no request.
-            raise ConflictProblem("This invoice's checkout is being prepared; try again shortly")
+            raise services.checkout_in_progress()
 
     try:
         opened = await services.run_checkout_call(provider_for(claimed.provider), claimed)
@@ -234,6 +275,11 @@ async def open_checkout(
     async with session.begin():
         await bind(session, organization_id)
         charge = await services.record_checkout(session, claimed, opened, request=request)
+    if services.withheld_order(charge, opened):
+        # The charge records another Order than this call returned (two exist for one charge): the
+        # browser is never handed the unrecorded one. The lease is already given back, so the next
+        # request fetches the recorded Order by its id.
+        raise services.checkout_in_progress()
     log.info(
         "payment.checkout.opened",
         charge_id=str(charge.id),

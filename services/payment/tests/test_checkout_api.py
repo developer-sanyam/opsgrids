@@ -200,6 +200,70 @@ class TestOpeningARazorpayCheckout:
         assert await _checkouts(admin_session, org_b) == []
 
 
+class TestTheRecordedOrderIsTheCheckout:
+    """Razorpay accepts a duplicate receipt and its receipt search can miss a fresh Order (sandbox,
+    2026-10-06). So the Order id is recorded before any browser sees it, a reopen fetches that Order
+    by its id, and nothing else is ever handed to a browser."""
+
+    async def test_a_reopen_finds_its_order_by_id_when_the_receipt_search_cannot_see_it(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        provider = cs.install(cs.razorpay_live())
+        invoice_id, _ = await cs.seed_invoice(client, org_id)
+        first = (await cs.open_checkout(client, org_id, invoice_id)).json()
+        order_id = first["client_action"]["order_id"]
+        provider.fake.unindexed.add(order_id)  # type: ignore[attr-defined]
+        provider.fake.requests.clear()  # type: ignore[attr-defined]
+
+        again = await cs.open_checkout(client, org_id, invoice_id)
+
+        assert again.status_code == 201, again.text
+        assert again.json()["client_action"]["order_id"] == order_id
+        assert provider.fake.methods() == [f"GET /v1/orders/{order_id}"]  # type: ignore[attr-defined]
+        assert len(provider.fake.orders) == 1  # type: ignore[attr-defined]
+
+    async def test_a_reopen_never_hands_out_a_duplicate_of_the_receipt(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        provider = cs.install(cs.razorpay_live())
+        invoice_id, _ = await cs.seed_invoice(client, org_id)
+        first = (await cs.open_checkout(client, org_id, invoice_id)).json()
+        order_id = first["client_action"]["order_id"]
+        duplicate = provider.fake.duplicate(first["charge_id"])  # type: ignore[attr-defined]
+        provider.fake.unindexed.add(order_id)  # type: ignore[attr-defined]
+
+        again = await cs.open_checkout(client, org_id, invoice_id)
+
+        assert again.status_code == 201, again.text
+        assert again.json()["client_action"]["order_id"] == order_id
+        assert duplicate not in again.text
+
+    async def test_a_lost_create_the_search_cannot_see_leaves_an_order_nobody_is_shown(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The unknown-outcome retry the sandbox makes possible: the first create landed and its
+        answer was lost, the retry's search sees nothing, and the retry makes a second Order. Only
+        the second is recorded, and only the recorded one is handed out, then and on every
+        reopen."""
+        provider = cs.install(cs.razorpay_live())
+        invoice_id, _ = await cs.seed_invoice(client, org_id)
+        provider.fake.index_new_orders = False  # type: ignore[attr-defined]
+        provider.fake.lose_next_create_response = True  # type: ignore[attr-defined]
+        assert (await cs.open_checkout(client, org_id, invoice_id)).status_code == 503
+        (lost,) = provider.fake.orders  # type: ignore[attr-defined]
+
+        opened = await cs.open_checkout(client, org_id, invoice_id)
+        reopened = await cs.open_checkout(client, org_id, invoice_id)
+
+        assert opened.status_code == reopened.status_code == 201, opened.text
+        recorded = opened.json()["client_action"]["order_id"]
+        assert recorded != lost and reopened.json()["client_action"]["order_id"] == recorded
+        assert lost not in opened.text and lost not in reopened.text
+        (row,) = await _checkouts(admin_session, org_id)
+        assert (await _charge(admin_session, row["id"]))["provider_order_id"] == recorded
+        assert provider.fake.receipt_orders(str(row["id"])) == [lost, recorded]  # type: ignore[attr-defined]
+
+
 class TestMoneyIsRefusedBeforeAnyCall:
     @pytest.mark.parametrize(("amount", "currency"), [(99, "INR"), (49_900, "USD"), (1, "INR")])
     async def test_an_unpayable_invoice_is_a_422_and_the_provider_is_never_asked(

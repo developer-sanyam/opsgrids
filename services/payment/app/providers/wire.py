@@ -50,8 +50,10 @@ from app.providers.base import ProviderCallError
 #: the budget to the worst adapter without importing one.
 WIRE_CONNECT_TIMEOUT_SECONDS = 2.0
 WIRE_READ_TIMEOUT_SECONDS = 5.0
-#: Razorpay: the Order lookup, the Order create, the duplicate-receipt re-lookup (a `400` from the
-#: create), the payments lookup, the payment create.
+#: Razorpay: the Order lookup, the Order create, the re-search after a `400` from the create, the
+#: payments lookup, the payment create. (A checkout whose Order is recorded makes one request, the
+#: `GET /orders/{id}`; Razorpay does not refuse a duplicate receipt, so the re-search is a recovery,
+#: not a duplicate check.)
 RAZORPAY_REQUESTS_PER_CHARGE = 5
 #: Cashfree: the lookup, the create, and the lookup again after a `409` on the create.
 CASHFREE_REQUESTS_PER_CHARGE = 3

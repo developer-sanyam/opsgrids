@@ -20,6 +20,12 @@ past its expiry **whose provider was successfully asked**, closes it (`record_po
 that cannot be reached changes nothing: a charge is never expired on a question that could not be
 asked.
 
+**Stray Orders.** Razorpay accepts a duplicate receipt, so an unknown-outcome create can leave a
+second Order for one charge that nobody recorded. Its id never reached a browser, but before a
+checkout is closed, and on every late check after, the receipt is also searched for such an Order
+and a payment on one is recorded against the charge (`fetch_stray_payments`, best-effort: the
+provider's receipt search can miss a fresh Order).
+
 **Routed by the row.** Each charge is asked at the provider it was created under
 (`charges.provider`), resolved per charge — a Razorpay checkout is polled through Razorpay while
 the default is Cashfree.
@@ -177,9 +183,12 @@ class ChargePoller:
             if snapshots is None:
                 report.unchecked += 1
                 return
+            strays = await checkout_services.fetch_stray_payments(provider, ticket)
             report.polled += 1
             async with self._work_scope(organization_id) as session:
-                charge = await checkout_services.record_poll(session, ticket, snapshots, now=now)
+                charge = await checkout_services.record_poll(
+                    session, ticket, snapshots, now=now, strays=strays
+                )
             if charge is not None and charge.state == CHARGE_CAPTURED:
                 report.captured += 1
             elif (
