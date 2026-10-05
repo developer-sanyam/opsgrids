@@ -53,6 +53,33 @@ with an ISO currency and only becomes a display string in `src/lib/format.ts`.
 - **Operations / Workspace** — Receiving, Warehouses, Reports, Integrations, Team Members, Settings
   and Help are routed "coming soon" placeholders reachable from the sidebar.
 
+### Warehouse map, floor view and Find stock
+
+Live-only screens (no fixture twin), all built so that no failure in them can break another screen.
+
+- **Warehouse map** (`/warehouses/map`) — every warehouse on a Google map, and always as a list
+  beside it; warehouses with no position are listed apart with "Set location". The warehouse dialog
+  takes the site position as degrees and sends integer micro-degrees.
+- **Floor view** (`/warehouses/:id/floors/:floorId/view`) — a floor's *published* layout as a 2-D plan
+  (SVG, no WebGL) and a 3-D scene. `?highlight=<location ids>` marks what a search found; `?view=3d`
+  picks the tab. The 3-D page (`/warehouses/:id/3d`) has a floor selector (`?floor=`): a floor with a
+  published layout is drawn from its real placements, anything else keeps the auto-arranged layout
+  and its banner.
+- **Find stock** — a card on the Stock page and on item, lot and roll detail. It asks
+  `GET /inventory/locate` only when clicked and groups the bins by warehouse and floor.
+- **Put-away details** — on a storage put-away's ledger row. The worker's GPS fix is behind "Show
+  worker location", offered only with `operations.inventory.putaway.location_read`; it is a POST, is
+  audited on the server, and the result lives in that drawer's state only.
+
+**The Google Maps key** is `VITE_GOOGLE_MAPS_API_KEY`, read at build time and baked into the bundle
+(`infrastructure/edge/publish-web.sh` sets it for this app only), so it must be referrer- and
+API-restricted in the Google console. **A build without it is a complete build**: the map page is the
+list, the dialog has only the manual latitude and longitude fields, the reveal shows coordinates as
+text, and the Maps loader (its own lazy chunk) is never requested. The same fallbacks apply when the
+script fails to load or Google refuses the key (`window.gm_authFailure`). Pins use the classic
+`Marker`, which needs no Cloud Map ID; Google logs a deprecation notice for it, and switching to
+`AdvancedMarker` needs a Map ID.
+
 ## Auth
 
 Sign-in lives in [`src/auth/`](src/auth). `AuthProvider` owns the session; `useAuth` reads it;

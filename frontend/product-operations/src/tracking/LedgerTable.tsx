@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
@@ -5,6 +6,7 @@ import type { LedgerRowOut } from "@/api/trackingTypes";
 import { formatDate } from "@/lib/format";
 import { formatQty, qtyToMilli } from "@/lib/quantity";
 import { ledgerRowLabel } from "@/lib/trackingLabels";
+import { PutawayDetailDrawer } from "@/putaway/PutawayDetailDrawer";
 import { EmptyState } from "@/ui";
 import type { Column } from "@/ui";
 import { LayersIcon } from "@opsgrids/ui";
@@ -26,6 +28,7 @@ interface LedgerTableProps {
  * empty state says what produces rows rather than inviting one to be added by hand.
  */
 export function LedgerTable({ list, hideItem, filtered, toolbar }: LedgerTableProps) {
+  const [putawayMoveId, setPutawayMoveId] = useState<string | null>(null);
   const columns: Column<LedgerRowOut>[] = [
     {
       key: "date",
@@ -56,6 +59,15 @@ export function LedgerTable({ list, hideItem, filtered, toolbar }: LedgerTablePr
             <Link to={`/purchase-orders/${r.reference_id}`} className={`text-xs ${LINK}`}>
               View purchase order
             </Link>
+          ) : null}
+          {r.reference_type === "putaway" ? (
+            <button
+              type="button"
+              onClick={() => setPutawayMoveId(r.move_id)}
+              className={`w-fit text-left text-xs ${LINK}`}
+            >
+              Put-away details
+            </button>
           ) : null}
         </div>
       ),
@@ -130,25 +142,28 @@ export function LedgerTable({ list, hideItem, filtered, toolbar }: LedgerTablePr
   ];
 
   return (
-    <CursorTable
-      list={list}
-      columns={columns}
-      rowKey={(r) => r.id}
-      caption="Stock ledger"
-      noun="ledger rows"
-      errorTitle="Couldn't load the ledger"
-      toolbar={toolbar}
-      emptyState={
-        <EmptyState
-          icon={<LayersIcon className="size-6" />}
-          title={filtered ? "No ledger rows match these filters" : "The ledger is empty"}
-          description={
-            filtered
-              ? "Try a wider date range, or clear the filters."
-              : "Rows appear here as stock is received, moved, adjusted or counted. The ledger can't be edited."
-          }
-        />
-      }
-    />
+    <>
+      <CursorTable
+        list={list}
+        columns={columns}
+        rowKey={(r) => r.id}
+        caption="Stock ledger"
+        noun="ledger rows"
+        errorTitle="Couldn't load the ledger"
+        toolbar={toolbar}
+        emptyState={
+          <EmptyState
+            icon={<LayersIcon className="size-6" />}
+            title={filtered ? "No ledger rows match these filters" : "The ledger is empty"}
+            description={
+              filtered
+                ? "Try a wider date range, or clear the filters."
+                : "Rows appear here as stock is received, moved, adjusted or counted. The ledger can't be edited."
+            }
+          />
+        }
+      />
+      <PutawayDetailDrawer moveId={putawayMoveId} onClose={() => setPutawayMoveId(null)} />
+    </>
   );
 }

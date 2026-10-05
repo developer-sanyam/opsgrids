@@ -6,6 +6,7 @@ import type { OnSiteRow } from "@/lib/rollBuckets";
 import { problemMessage, useAsync } from "@opsgrids/client";
 import { StockStatusChangeDialog } from "@/forms/StockStatusChangeDialog";
 import { StockTransferDialog } from "@/forms/StockTransferDialog";
+import { FindStockPanel } from "@/locate/FindStockPanel";
 import { formatDate } from "@/lib/format";
 import { formatQty } from "@/lib/quantity";
 import { Card, ErrorState, PageHeader, SectionHeader, Skeleton } from "@/ui";
@@ -112,6 +113,8 @@ function LotDetail() {
           </Link>
         </p>
       </Card>
+
+      <FindStockPanel itemId={lot.inventory_item_id} lotId={lot.id} subject={`lot ${lot.lot_no}`} uom={lot.uom} />
 
       <Card className="p-2 sm:p-4">
         <div className="px-3 pt-2 pb-3">

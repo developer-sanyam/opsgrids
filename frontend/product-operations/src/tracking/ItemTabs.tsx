@@ -8,6 +8,7 @@ import { LotFormDialog } from "@/forms/LotFormDialog";
 import { RollFormDialog } from "@/forms/RollFormDialog";
 import { StockStatusChangeDialog } from "@/forms/StockStatusChangeDialog";
 import { StockTransferDialog } from "@/forms/StockTransferDialog";
+import { FindStockPanel } from "@/locate/FindStockPanel";
 import type { OnSiteRow } from "@/lib/rollBuckets";
 import { Button, Card, EmptyState, SectionHeader } from "@/ui";
 import { PackageIcon, PlusIcon, useToast } from "@opsgrids/ui";
@@ -53,32 +54,35 @@ function LocationsList({ item, onChanged }: PanelProps) {
     onChanged();
   };
   return (
-    <Card className="p-2 sm:p-4">
-      <div className="px-3 pt-2 pb-3">
-        <SectionHeader title="Locations" subtitle="Where this item's stock sits, by status, lot and roll." />
-      </div>
-      <StockTable list={list} hideItem onTransfer={setTransferring} onChangeStatus={setChanging} />
-      {transferring ? (
-        <StockTransferDialog
-          row={transferring}
-          onClose={() => setTransferring(null)}
-          onSaved={() => {
-            setTransferring(null);
-            done("Stock transferred.");
-          }}
-        />
-      ) : null}
-      {changing ? (
-        <StockStatusChangeDialog
-          row={changing}
-          onClose={() => setChanging(null)}
-          onSaved={() => {
-            setChanging(null);
-            done("Status changed.");
-          }}
-        />
-      ) : null}
-    </Card>
+    <div className="flex flex-col gap-6">
+      <FindStockPanel itemId={item.id} subject={item.sku} uom={item.uom} />
+      <Card className="p-2 sm:p-4">
+        <div className="px-3 pt-2 pb-3">
+          <SectionHeader title="Locations" subtitle="Where this item's stock sits, by status, lot and roll." />
+        </div>
+        <StockTable list={list} hideItem onTransfer={setTransferring} onChangeStatus={setChanging} />
+        {transferring ? (
+          <StockTransferDialog
+            row={transferring}
+            onClose={() => setTransferring(null)}
+            onSaved={() => {
+              setTransferring(null);
+              done("Stock transferred.");
+            }}
+          />
+        ) : null}
+        {changing ? (
+          <StockStatusChangeDialog
+            row={changing}
+            onClose={() => setChanging(null)}
+            onSaved={() => {
+              setChanging(null);
+              done("Status changed.");
+            }}
+          />
+        ) : null}
+      </Card>
+    </div>
   );
 }
 

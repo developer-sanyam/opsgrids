@@ -45,6 +45,7 @@ export function stockRow(overrides: Partial<StockRowOut> = {}): StockRowOut {
     warehouse_code: "WH-1",
     location_id: "loc-1",
     location_code: "A-01",
+    location_kind: "bin",
     status: "AVAILABLE",
     lot_id: null,
     lot_no: null,

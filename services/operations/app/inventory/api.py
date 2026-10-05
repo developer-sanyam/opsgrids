@@ -18,14 +18,23 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 
 from app.api.routes import Entitled, IdempotencyKey, SessionDep
+from app.inventory import putaway_selectors, putaway_services, stock_ops
+from app.inventory import selectors as inv_selectors
 from app.inventory import services as inv_services
-from app.inventory import stock_ops
 from app.inventory import tracking_selectors as sel
 from app.inventory import tracking_services as tracking
 from app.inventory.pagination import CursorPage, CursorQuery, keyset_page
+from app.inventory.putaway_schemas import (
+    LocateOut,
+    PutawayDetailOut,
+    PutawayIn,
+    PutawayLocationOut,
+    PutawayOut,
+    PutawaySuggestOut,
+)
 from app.inventory.tracking_schemas import (
     LedgerRowOut,
     LotGenealogyIn,
@@ -62,8 +71,10 @@ from app.models import (
 from app.schemas import StockStatus
 from platform_core.auth import Scope, ScopeContext, require
 from platform_core.errors import NotFoundProblem
+from platform_core.logging import get_logger
 
 router = APIRouter(tags=["inventory"])
+log = get_logger("operations.inventory.api")
 
 LotWrite = Annotated[
     ScopeContext, Depends(require("operations.inventory.lot.write", minimum=Scope.ORG))
@@ -84,6 +95,37 @@ StockAdjust = Annotated[
 LocationWrite = Annotated[
     ScopeContext, Depends(require("operations.inventory.location.write", minimum=Scope.ORG))
 ]
+#: A worker's GPS fix is personal location data: its own permission, held by the administrator role
+#: alone (`app/catalogue.py`), and used only by the audited reveal. Like the platform's other
+#: reveal routes it also demands a session that proved a one-time code (`amr={"otp"}`, ADR-0023):
+#: the permission says the role may, `otp` says this token went through a second factor, so a
+#: stolen or unattended administrator token is not a standing route to every worker's position in
+#: the retention window — the audit row records a bulk pull, it does not stop one. `otp` alone and
+#: not the `stepup` marker the CRM routes add: the operations SPA has no step-up flow yet
+#: (ADR-0023 risk 5), so the marker would make the button unusable. Add it with the UI.
+PutawayLocationRead = Annotated[
+    ScopeContext,
+    Depends(require("operations.inventory.putaway.location_read", minimum=Scope.ORG, amr={"otp"})),
+]
+#: Unlike the other stock writes the key is **required** on a put-away: the offline queue replays
+#: under it, and a put-away with no key could be doubled by any retry.
+PutawayIdempotencyKey = Annotated[
+    str,
+    Header(
+        alias="Idempotency-Key",
+        min_length=1,
+        max_length=stock_ops.PUTAWAY_MAX_KEY_LENGTH,
+        description="Required. Retrying with the same key replays the first result instead of "
+        "putting stock away again; reusing it for a different request is a 409. The server "
+        "namespaces it, so it is at most 120 characters.",
+    ),
+]
+
+
+#: The one `Cache-Control` value the reveal sends, shared with the `headers` its OpenAPI response
+#: documents so the contract cannot drift from the behaviour. A worker's position must not sit in a
+#: browser or proxy cache.
+NO_STORE = "no-store"
 
 
 def _was_explicit(payload: object) -> bool:
@@ -513,6 +555,185 @@ async def change_stock_status(
     )
     _status_for(response, posted.replayed)
     return stock_ops.move_out(posted)
+
+
+# ------------------------------------------------------------------ storage put-away and find stock
+#
+# `suggest` is registered before `{move_id}`: a static segment after a parameterised one would be
+# matched as the id and answered 422.
+
+
+@router.post(
+    "/operations/inventory/putaway",
+    response_model=PutawayOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Store stock from a receiving or staging bin into the bin whose barcode was scanned",
+    responses={
+        200: {
+            "model": PutawayOut,
+            "description": (
+                "Replay: this `Idempotency-Key` already stored this put-away. The body is the "
+                "original receipt with `replayed: true` and no warnings, and nothing is stored "
+                "again: no second move, capture, audit row or event. The GPS fix, `captured_at` "
+                "and `suggested_location_id` are not part of what the key is compared on, so a "
+                "retry that differs only there is answered with the original; any other "
+                "difference is a 409."
+            ),
+        }
+    },
+    dependencies=[Entitled],
+)
+async def putaway_stock(
+    payload: PutawayIn,
+    response: Response,
+    session: SessionDep,
+    ctx: StockTransfer,
+    request: Request,
+    idempotency_key: PutawayIdempotencyKey,
+) -> PutawayOut:
+    result = await stock_ops.putaway_stock(
+        session,
+        ctx,
+        payload,
+        idempotency_key=idempotency_key,
+        occurred_on_explicit=_was_explicit(payload),
+        request=request,
+    )
+    _status_for(response, result.posted.replayed)
+    return putaway_selectors.putaway_out(
+        move_id=result.posted.move.id,
+        replayed=result.posted.replayed,
+        source=result.source,
+        target=result.target,
+        matched_suggestion=result.matched_suggestion,
+        geo_recorded=result.geo_recorded,
+        warnings=result.warnings,
+    )
+
+
+@router.get(
+    "/operations/inventory/putaway/suggest",
+    response_model=PutawaySuggestOut,
+    summary="Where to store an item: a bin already holding it, else the first empty one",
+    dependencies=[Entitled],
+)
+async def suggest_putaway(
+    session: SessionDep,
+    ctx: StockTransfer,
+    inventory_item_id: Annotated[uuid.UUID, Query()],
+    warehouse_id: Annotated[uuid.UUID, Query()],
+    lot_id: Annotated[uuid.UUID | None, Query()] = None,
+) -> PutawaySuggestOut:
+    """A bin already holding the item (this lot, when given), else the first empty one, in a
+    picker's walk order (pick sequence, then code). Only bins with a barcode are offered, because a
+    put-away resolves its destination by barcode alone; when none qualifies the suggestion is
+    `null`."""
+    org_id = ctx.organization_id
+    await stock_ops.load_items(session, org_id, [inventory_item_id])
+    if await inv_selectors.get_warehouse(session, org_id, warehouse_id) is None:
+        raise NotFoundProblem("That warehouse is not part of this organization")
+    if lot_id is not None and not await putaway_selectors.lot_belongs_to_item(
+        session, org_id, lot_id, inventory_item_id
+    ):
+        raise NotFoundProblem("That lot is not part of this organization")
+    suggestion = await putaway_selectors.suggest(
+        session, org_id, warehouse_id=warehouse_id, item_id=inventory_item_id, lot_id=lot_id
+    )
+    return PutawaySuggestOut(
+        suggestion=await putaway_selectors.suggestion_out(session, org_id, suggestion)
+    )
+
+
+@router.get(
+    "/operations/inventory/putaway/{move_id}",
+    response_model=PutawayDetailOut,
+    summary="What is recorded about a put-away (never the GPS fix)",
+    dependencies=[Entitled],
+)
+async def read_putaway(move_id: uuid.UUID, session: SessionDep, ctx: StockRead) -> PutawayDetailOut:
+    capture = await putaway_selectors.get_capture(session, ctx.organization_id, move_id)
+    if capture is None:
+        raise NotFoundProblem("That put-away has no recorded capture")
+    return await putaway_selectors.detail_out(session, ctx.organization_id, capture)
+
+
+@router.post(
+    "/operations/inventory/putaway/{move_id}/location:reveal",
+    response_model=PutawayLocationOut,
+    summary="Reveal the GPS fix recorded with a put-away (audited every time)",
+    responses={
+        200: {
+            "description": (
+                "The fix recorded with the put-away (nulls when the device gave none). Every "
+                "successful call writes an audit row, and the response is never cacheable."
+            ),
+            "headers": {
+                "Cache-Control": {
+                    "description": "A worker's position must not sit in a browser or proxy cache.",
+                    "schema": {"type": "string", "enum": [NO_STORE]},
+                }
+            },
+        }
+    },
+    dependencies=[Entitled],
+)
+async def reveal_putaway_location(
+    move_id: uuid.UUID,
+    response: Response,
+    session: SessionDep,
+    ctx: PutawayLocationRead,
+    request: Request,
+) -> PutawayLocationOut:
+    revealed = await putaway_services.reveal_putaway_location(
+        session, ctx, move_id, request=request
+    )
+    response.headers["Cache-Control"] = NO_STORE
+    return revealed
+
+
+@router.get(
+    "/operations/inventory/locate",
+    response_model=LocateOut,
+    summary="Where is this item (lot, roll)? Bins holding it, with their place on the floor plan",
+    dependencies=[Entitled],
+)
+async def locate_stock(
+    session: SessionDep,
+    ctx: StockRead,
+    inventory_item_id: Annotated[uuid.UUID, Query()],
+    lot_id: Annotated[uuid.UUID | None, Query()] = None,
+    roll_id: Annotated[uuid.UUID | None, Query()] = None,
+    warehouse_id: Annotated[uuid.UUID | None, Query()] = None,
+) -> LocateOut:
+    org_id = ctx.organization_id
+    await stock_ops.load_items(session, org_id, [inventory_item_id])
+    if lot_id is not None and not await putaway_selectors.lot_belongs_to_item(
+        session, org_id, lot_id, inventory_item_id
+    ):
+        raise NotFoundProblem("That lot is not part of this organization")
+    if roll_id is not None and not await putaway_selectors.roll_belongs_to_item(
+        session, org_id, roll_id, inventory_item_id
+    ):
+        raise NotFoundProblem("That roll is not part of this organization")
+    if (
+        warehouse_id is not None
+        and await inv_selectors.get_warehouse(session, org_id, warehouse_id) is None
+    ):
+        raise NotFoundProblem("That warehouse is not part of this organization")
+    try:
+        results, truncated = await putaway_selectors.locate(
+            session,
+            ctx,
+            item_id=inventory_item_id,
+            lot_id=lot_id,
+            roll_id=roll_id,
+            warehouse_id=warehouse_id,
+        )
+    except Exception as exc:
+        # Id and error class only — never the request's query, which names an item.
+        log.error("locate.failed", error=type(exc).__name__)
+        raise
+    return LocateOut(results=results, truncated=truncated)
 
 
 # ------------------------------------------------------------------ stock and ledger reads

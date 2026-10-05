@@ -23,8 +23,11 @@ import type {
   LotIn,
   LotOut,
   LotQualityStatus,
+  LocateOut,
   LotTraceOut,
   OpeningStockIn,
+  PutawayDetailOut,
+  PutawayRevealOut,
   RollEventOut,
   RollIn,
   RollMergeIn,
@@ -242,4 +245,40 @@ export interface ListLedgerParams extends CursorParams {
 export function listLedger(params: ListLedgerParams = {}): Promise<CursorPage<LedgerRowOut>> {
   const { signal, ...filters } = params;
   return apiRequest<CursorPage<LedgerRowOut>>(`${BASE}/ledger${query(filters)}`, { signal });
+}
+
+/* ------------------------- find stock and storage put-away ------------------------ */
+
+export interface LocateParams {
+  /** Required: the server answers 422 without it. */
+  inventory_item_id: string;
+  lot_id?: string | undefined;
+  roll_id?: string | undefined;
+  warehouse_id?: string | undefined;
+  signal?: AbortSignal | undefined;
+}
+
+/** `GET /operations/inventory/locate` — `operations.inventory.stock.read`. The bins that hold a
+ *  positive balance of the item (narrowed to a lot or roll), each with its floor-plan placement or
+ *  the reason it has none. Geometry arrives only for a caller who also holds
+ *  `operations.warehouse.layout.read`. */
+export function locateStock(params: LocateParams): Promise<LocateOut> {
+  const { signal, ...filters } = params;
+  return apiRequest<LocateOut>(`${BASE}/locate${query(filters)}`, { signal });
+}
+
+/** `GET /operations/inventory/putaway/{move_id}` — `operations.inventory.stock.read`. 404 when the
+ *  move has no capture, including one purged after its retention window. No coordinates. */
+export function getPutawayDetail(moveId: string, params: { signal?: AbortSignal | undefined } = {}): Promise<PutawayDetailOut> {
+  return apiRequest<PutawayDetailOut>(`${BASE}/putaway/${id(moveId)}`, { signal: params.signal });
+}
+
+/**
+ * `POST /operations/inventory/putaway/{move_id}/location:reveal` —
+ * `operations.inventory.putaway.location_read`, held by the operations admin role only. A POST on
+ * purpose: every successful call writes an audit row, and a GET is cacheable, prefetchable and
+ * logged in URLs. The response is `no-store`; keep it in memory only.
+ */
+export function revealPutawayLocation(moveId: string): Promise<PutawayRevealOut> {
+  return apiRequest<PutawayRevealOut>(`${BASE}/putaway/${id(moveId)}/location:reveal`, { method: "POST" });
 }

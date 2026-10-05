@@ -1,3 +1,5 @@
+import { useLocation } from "react-router-dom";
+
 import { useCan } from "@opsgrids/client";
 import {
   AlertTriangleIcon,
@@ -11,6 +13,7 @@ import {
   FolderIcon,
   HomeIcon,
   LayersIcon,
+  MapPinIcon,
   PackageIcon,
   PlugIcon,
   ReceiptIcon,
@@ -50,6 +53,7 @@ const GROUPS: NavGroup[] = [
       { to: "/counting", label: "Cycle Counts", icon: CheckSquareIcon },
       { to: "/suppliers", label: "Suppliers", icon: FactoryIcon },
       { to: "/warehouses", label: "Warehouses", icon: WarehouseIcon },
+      { to: "/warehouses/map", label: "Warehouse Map", icon: MapPinIcon },
       // The organization's own Razorpay account and payment reconciliation (ADR-0024 A4).
       { to: "/settings/payments", label: "Online Payments", icon: CreditCardIcon },
     ],
@@ -65,8 +69,18 @@ const GROUPS: NavGroup[] = [
  */
 export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
   const canReadStock = useCan("operations.inventory.stock.read", "ORG");
-  if (!canReadStock) return { groups: GROUPS, pinned: [] };
-  const groups = GROUPS.map((group) => {
+  const { pathname } = useLocation();
+  // "Warehouses" is active for every screen under /warehouses (locations, floors, 3D) — except the
+  // map, which has an entry of its own: there it matches the exact path only, so one screen never
+  // lights two entries.
+  const base = GROUPS.map((group) => ({
+    ...group,
+    items: group.items.map((entry) =>
+      entry.to === "/warehouses" ? { ...entry, end: pathname === "/warehouses/map" } : entry,
+    ),
+  }));
+  if (!canReadStock) return { groups: base, pinned: [] };
+  const groups = base.map((group) => {
     const at = group.items.findIndex((entry) => entry.to === "/inventory");
     if (at === -1) return group;
     return { ...group, items: [...group.items.slice(0, at + 1), ...STOCK_ENTRIES, ...group.items.slice(at + 1)] };

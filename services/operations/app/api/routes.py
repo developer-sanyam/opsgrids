@@ -120,6 +120,7 @@ from app.schemas import (
     PackagingMaterialOut,
     PickConfirmIn,
     PickTaskOut,
+    PublishedLayoutOut,
     PurchaseOrderIn,
     PurchaseOrderOut,
     PurchaseOrderPatch,
@@ -151,6 +152,7 @@ from app.schemas import (
     WarehouseFloorOut,
     WarehouseFloorPatch,
     WarehouseIn,
+    WarehouseMapOut,
     WarehouseOut,
     WarehousePatch,
     WorkerIn,
@@ -1260,6 +1262,18 @@ async def list_warehouses(
     return Page.build([inv_selectors.warehouse_out(w) for w in rows], total=total, params=params)
 
 
+# Registered **before** `/operations/warehouses/{warehouse_id}` below: a static segment after a
+# parameterised one is matched as the parameter and answered 422.
+@router.get(
+    "/operations/warehouses/map",
+    response_model=WarehouseMapOut,
+    summary="The org's warehouses for a map: placed sites and the ones with no coordinates yet",
+    dependencies=[Entitled],
+)
+async def warehouses_map(session: SessionDep, ctx: WarehouseRead) -> WarehouseMapOut:
+    return await inv_selectors.warehouse_map(session, ctx.organization_id)
+
+
 @router.post(
     "/operations/warehouses",
     response_model=WarehouseOut,
@@ -1276,6 +1290,8 @@ async def create_warehouse(
         code=payload.code,
         name=payload.name,
         location=payload.location,
+        lat_micro=payload.lat_micro,
+        lng_micro=payload.lng_micro,
         request=request,
     )
     return inv_selectors.warehouse_out(warehouse)
@@ -1678,6 +1694,19 @@ async def compute_route(
         node_ids=[str(n) for n in plan.node_ids],
         distance_mm=plan.distance_mm,
     )
+
+
+@router.get(
+    "/operations/floors/{floor_id}/published-layout",
+    response_model=PublishedLayoutOut,
+    summary="What is live on a floor: the published layout's placements with their locations",
+    dependencies=[Entitled],
+)
+async def read_published_layout(
+    floor_id: uuid.UUID, session: SessionDep, ctx: LayoutRead
+) -> PublishedLayoutOut:
+    floor = await _get_floor_or_404(session, ctx, floor_id)
+    return await wh_selectors.published_layout(session, ctx.organization_id, floor)
 
 
 # ------------------------------------------------------------------ orders (ADR-0024, ADR-0025)

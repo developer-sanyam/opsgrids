@@ -4,7 +4,7 @@
  * surface exist, and nothing on it edits a row.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ApiError } from "@opsgrids/client";
@@ -16,13 +16,18 @@ import { InventoryLedgerPage } from "./InventoryLedger";
 const listLedger = vi.fn();
 const getInventoryItem = vi.fn();
 
+const getPutawayDetail = vi.fn();
+
 vi.mock("@/api/tracking", () => ({
   listLedger: (...args: unknown[]) => listLedger(...args),
   listLots: () => Promise.resolve({ items: [], next_cursor: null }),
   listRolls: () => Promise.resolve({ items: [], next_cursor: null }),
+  getPutawayDetail: (...args: unknown[]) => getPutawayDetail(...args),
+  revealPutawayLocation: () => Promise.reject(new Error("not used")),
 }));
 vi.mock("@/api/client", () => ({
   FULL_PAGE: 200,
+  listWorkers: () => Promise.resolve({ items: [], total: 0, page: 1, size: 200, pages: 0 }),
   listWarehouses: () =>
     Promise.resolve({ items: [{ id: "wh-1", name: "Bhiwandi DC" }], total: 1, page: 1, size: 200, pages: 1 }),
   listLocations: () => Promise.resolve([{ id: "loc-1", code: "A-01", name: "A-01" }]),
@@ -159,5 +164,50 @@ describe("InventoryLedgerPage", () => {
 
     expect(await screen.findByText("Showing all 2 ledger rows")).toBeDefined();
     expect(listLedger).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "next-1" }));
+  });
+});
+
+describe("InventoryLedgerPage — storage put-away rows", () => {
+  beforeEach(() => {
+    listLedger.mockReset();
+    getInventoryItem.mockReset();
+    getPutawayDetail.mockReset().mockResolvedValue({
+      move_id: "move-9",
+      to_location: { id: "loc-9", code: "R1-B04", name: "Rack 1 bin 4", kind: "bin" },
+      worker_id: null,
+      captured_at: "2026-10-05T09:30:00Z",
+      matched_suggestion: true,
+      has_location: true,
+    });
+  });
+
+  it("names a put-away as such and offers its details, on that row only", async () => {
+    listLedger.mockResolvedValue({
+      items: [
+        row({ id: "led-1", move_id: "move-1", reference_type: "bin_transfer" }),
+        row({ id: "led-9", move_id: "move-9", reference_type: "putaway", inventory_item_id: "item-2", sku: "FAB-200" }),
+      ],
+      next_cursor: null,
+    });
+    renderScreen(<InventoryLedgerPage />, [READ]);
+
+    expect(await screen.findByText("Storage put-away")).toBeDefined();
+    expect(screen.getByText("Bin transfer")).toBeDefined();
+    expect(screen.getAllByRole("button", { name: "Put-away details" })).toHaveLength(1);
+  });
+
+  it("opens the put-away's drawer for that move, and shows no position in it", async () => {
+    const user = userEvent.setup();
+    listLedger.mockResolvedValue({
+      items: [row({ id: "led-9", move_id: "move-9", reference_type: "putaway" })],
+      next_cursor: null,
+    });
+    renderScreen(<InventoryLedgerPage />, [READ]);
+
+    await user.click(await screen.findByRole("button", { name: "Put-away details" }));
+    const drawer = await screen.findByRole("dialog", { name: "Put-away details" });
+    expect(getPutawayDetail).toHaveBeenCalledWith("move-9");
+    expect(await within(drawer).findByText("R1-B04")).toBeDefined();
+    expect(within(drawer).queryByRole("button", { name: "Show worker location" })).toBeNull();
   });
 });

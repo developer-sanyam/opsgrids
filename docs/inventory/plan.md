@@ -107,6 +107,8 @@ Frontend status (`frontend/product-operations`): `/inventory/stock`, `/inventory
 
 Backend status: I0-I2 (partial release, UOMs, item master) shipped earlier; I3-I6 (lots/rolls/genealogy tables and FKs, opening/transfer/status/split/merge through `post_move`, cursor-paginated stock/ledger/lot/roll reads and traces, location delete, the four permissions and their ADR-0007 rollout) are in migration `b7d41e92c05a`. Not done: `uom_conversions` wiring (deferred to Phase 2 — see ledger.md).
 
+**Follow-on (2026-10-05) — warehouse map, find-stock and storage put-away: built on branch `feat/warehouse-map-putaway`, not deployed.** A site map and a 2-D/3-D floor view fed by the *published* layout, a search that shows where an item, lot or roll sits, and a worker-app **Put away** screen: scan the destination bin's barcode, with the device's GPS fix kept as 30-day audit evidence (migration `d7a3c9e5b184`; [ledger.md](ledger.md#storage-put-away-warehouse-coordinates-and-the-map-reads), [ADR-0028](../adr/0028-putaway-gps-captures.md), ADR-0014 §12's amendment, the [design](../superpowers/specs/2026-10-05-warehouse-map-putaway-design.md)). Put-away is allowed only from `receiving` or `staging` bins; the order engine still reserves only at an item's home bin, so stock put away elsewhere is invisible to order accept until multi-location allocation exists (RUNBOOK; backlog).
+
 **Scope**
 
 *Backend* (`app/inventory/`, one migration):
@@ -218,6 +220,7 @@ data (multi-warehouse textile org).
 | `inventory.location.write`, `inventory.lot.write`, `inventory.roll.write` | |
 | `inventory.stock.read`, `inventory.stock.transfer`, `inventory.stock.receive`, `inventory.stock.issue`, `inventory.stock.reserve` | |
 | `inventory.stock.adjust`, `inventory.stocktake.approve`, `inventory.stock.negative_override` | ✔ |
+| `inventory.putaway.location_read` (a worker's GPS fix at put-away; ADMIN only; the route also needs a one-time-code session; every reveal audited, ADR-0028) | ✔ |
 | `inventory.data.import`, `inventory.data.export` | import ✔ |
 | `manufacturing.bom.read/write/publish`, `manufacturing.production_order.read/write/approve/issue/complete` | |
 | `quality.inspection.read/inspect/approve/reject` | |

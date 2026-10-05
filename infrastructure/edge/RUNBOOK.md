@@ -713,6 +713,262 @@ Until it runs, every new route answers 403 for every non-owner in every existing
 It is a fleet write — every organization's permission version bumps — so, as always, outside
 peak hours and never as part of `make deploy`.
 
+### Warehouse map and storage put-away: migration, rollout, the 30-day purge, the Maps key
+
+The warehouse-map release (design: `docs/superpowers/specs/2026-10-05-warehouse-map-putaway-design.md`;
+decisions: [ADR-0028](../../docs/adr/0028-putaway-gps-captures.md) and the addendum to ADR-0014 §12) adds
+a site map and a 2-D/3-D floor view to Inventory (`ops.opsgrids.com`), a "find stock" search, and a
+**Put away** screen to the worker app (`worker.opsgrids.com`): a worker scans the destination bin's
+label and the device's GPS fix is recorded as proof. The bin is the location of record; the fix is
+audit evidence, kept 30 days. **There is no new `.env` key to add before this deploy** — the Google
+Maps key is optional (see "The Google Maps key" below), so nothing here makes preflight refuse a box
+that does not have it.
+
+**What migrates.** One revision, `d7a3c9e5b184` (operations; it follows `c4a8e1f6d273`), part of the
+ordinary `migrate` step, nothing else to run. It adds two nullable columns and three named CHECKs to
+`warehouses` (`lat_micro`, `lng_micro`: a site's position as integer micro-degrees, both set or both
+empty) and creates `putaway_captures`: **append-only** (`UPDATE` and `DELETE` are revoked from the app
+role `opsgrids_operations`; row-level security on and forced). Everything is additive: `warehouses` is
+a handful of rows and the new table is empty, so the `lock_timeout = 5s` lock is instantaneous; there
+is no backfill; the ledger is untouched (a put-away is an ordinary `relocation` move whose
+`reference_type` is the free-text `putaway`, so no DDL was needed). The previous API ignores the new
+columns and table. Another inventory stack shares the previous head; whichever merges second re-points
+this revision's `down_revision`, so confirm `alembic heads` shows **one** head at release time and use
+the revision id `alembic current` prints on the box rather than this page's.
+
+**Rollout order** (staged by the owner; merging deploys nothing):
+
+1. Backend PR reviewed and squash-merged.
+2. Owner-approved `make deploy` (`migrate` is additive: old and new code both run against the new schema).
+3. **Verify the migration, changing nothing.** On the box, from `infrastructure/edge/`:
+
+   ```bash
+   docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T operations alembic current
+   docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+   SELECT to_regclass('operations.putaway_captures') IS NOT NULL                          AS table_present,
+          has_table_privilege('opsgrids_operations', 'operations.putaway_captures', 'INSERT') AS app_can_insert,
+          has_table_privilege('opsgrids_operations', 'operations.putaway_captures', 'UPDATE') AS app_can_update,
+          has_table_privilege('opsgrids_operations', 'operations.putaway_captures', 'DELETE') AS app_can_delete,
+          (SELECT count(*) FROM operations.putaway_captures)                              AS captures,
+          (SELECT count(*) FROM operations.warehouses WHERE lat_micro IS NOT NULL)        AS sites_with_coordinates;"
+   ```
+
+   `alembic current` must print the revision with `(head)`; the query must print `t|t|f|f|0|0` on a
+   first deploy. **`app_can_update` or `app_can_delete` true is a stop**: the table is no longer
+   append-only. Then run one synthetic put-away in a test organization (the new bundles are not
+   published until step 5, so through the API with an ADMIN's token: from a receiving or staging bin
+   to a rack bin, by the bin's barcode) and read it back: `GET …/inventory/putaway/{move_id}` shows
+   the bin and **no coordinates**; an ADMIN's `POST …/inventory/putaway/{move_id}/location:reveal`,
+   **from a session that gave a one-time code** (see "The reveal needs a one-time code", below), writes
+   exactly one new audit row, whose `fields` are the *names* `lat_micro`, `lng_micro`, `accuracy_m`:
+
+   ```sql
+   SELECT count(*) FROM operations.audit_logs
+    WHERE action = 'entity.sensitive_read' AND entity = 'inventory_move' AND entity_id = '<move_id>';
+   ```
+
+   In an organization that existed before this release the reveal answers **403 until step 4**: that
+   403 is the expected negative result (it writes no audit row, so the count stays 0); repeat the
+   reveal once step 4 has run. Each successful reveal adds exactly one row (two reveals, two rows).
+   A 403 whose body says `Additional authentication required: otp` is a different refusal, not a
+   missing reconcile: the session had no one-time code.
+4. **Reconcile the `operations` permissions** (ADR-0007; the same order as every permission rollout:
+   the code that enforces them deployed, then reconcile, then the UI that assumes them). One code is
+   new: `operations.inventory.putaway.location_read` — **ADMIN only** (`OPERATIONS_ADMIN` through
+   `all()`; no other role template includes it; owner decision D3). Putting stock away needs the
+   existing `operations.inventory.stock.transfer`, reconciled by the Phase 1 rollout, so workers
+   need nothing new.
+
+   ```bash
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations          # dry run
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+   ```
+
+   A fleet write (every organization's permission version bumps), so outside peak hours and never as
+   part of `make deploy`.
+5. **Publish the bundles**, operations first, then the worker app:
+
+   ```bash
+   make edge-web HOST=deploy@<ip> CONFIRM=edge.opsgrids.com APP=operations
+   make edge-web HOST=deploy@<ip> CONFIRM=edge.opsgrids.com APP=worker
+   ```
+
+   Each is one symlink swap with no restart, and each is undone the same way
+   (`make edge-web-rollback … APP=operations`).
+
+**The reveal needs a one-time code, and an administrator without one gets a 403.** Showing a worker's
+position takes the permission **and** a session that gave a one-time code (`amr` includes `otp`,
+ADR-0023). This was added in review, beyond what the owner approved for D3, and is an **open owner
+decision: keep it, or revert to permission plus audit only** (ADR-0028, "Owner decision"; the revert is one
+line). It is `otp` alone and not the `{otp, stepup}` pair the CRM reveals use, because the operations SPA
+has no step-up prompt. The failure mode: an `OPERATIONS_ADMIN` who has no authenticator enrolled, whose
+session started before they enrolled one, or who signed in through single sign-on or a social login
+(those sessions carry `sso` / `oauth`, never `otp`) is refused with **403** and the body
+`Additional authentication required: otp`. Nothing is revealed and no audit row is written; the drawer says
+it could not show the location. Tell this 403 from the one a missed reconcile gives by the body: that one reads
+`Missing permission: operations.inventory.putaway.location_read` (step 4). The remedy for the person is to
+enrol an authenticator on the dashboard's Security page and sign in again with a code. It is not an outage
+and not a reason to roll back. The administrator's synthetic check in step 3 has to come from such a session
+too.
+
+**The Google Maps key (optional, set by the owner).** The Google Cloud project, billing, the spend
+cap and the key in the box's `.env` are the owner's, separate from this release, and **the release does
+not wait for them.** `publish-web.sh` reads `VITE_GOOGLE_MAPS_API_KEY` from the box's `.env` for
+`APP=operations` **only** (never `worker`, never any other app) and bakes it into the bundle. If the
+line is absent, empty or malformed it prints a loud `WARNING` and publishes the bundle **without the
+map**: the sites page shows a table of warehouses, the warehouse dialog takes latitude and longitude by
+hand, and nothing else changes. To turn the map on later, add the line to the box's `.env` (keep mode
+600) and publish operations again — a key added after a publish does nothing to a bundle already live:
+
+```bash
+ssh deploy@<ip>
+cd /srv/opsgrids/repo/infrastructure/edge
+printf 'VITE_GOOGLE_MAPS_API_KEY=%s\n' '<the key>' >> .env && stat -c '%a' .env      # prints 600
+# then, from your laptop:
+make edge-web HOST=deploy@<ip> CONFIRM=edge.opsgrids.com APP=operations
+```
+
+With a key, the audited reveal also draws the worker's position on a Google map, and the browser asks
+Google for the tiles around it, so **Google learns the viewport position** (street level for a good fix).
+Without a key the reveal is text only and nothing is sent to Google; that is the way to keep a worker's
+position out of a third party's hands (ADR-0028).
+
+The key is **not a server secret**: it ships inside the bundle, so every visitor of `ops.opsgrids.com`
+receives it. It must be restricted in the Google Cloud console — HTTP referrers limited to
+`https://ops.opsgrids.com/*`, the API list limited to the Maps APIs the app calls, a budget and a quota
+cap — and it must never be a server-side key. The build log says whether a key was found and how long
+it is; it never prints it. **No Caddy change ships with this release:** `ops` and `worker` send no
+`Content-Security-Policy` or `Permissions-Policy` today (a test pins that), so the map loads and the
+worker's location prompt works without an allow-list. CSP hardening is a separate release and will have
+to allow the Google Maps origins when it lands. For local development, put the key in
+`frontend/product-operations/.env.local` (untracked); with none, the app runs map-less.
+
+**Limitation (c): the order engine reserves only at the item's home bin.** `accept_order` reserves
+each line at `inventory_items.home_location_id` (`orders/services.py`, `_reserve_lines_for`) and
+nowhere else; there is no multi-location allocation yet. So stock that has been put away into any
+other bin **is not seen by order accept**: if the home bin does not hold the quantity, the accept is
+refused as insufficient stock although the warehouse holds it. Storage put-away is therefore allowed
+only **from `receiving` or `staging` bins** (a 422 otherwise, error code
+`source_not_receiving_or_staging`; owner decision D1), and an item whose home bin is one of those kinds
+drops out of what orders can reserve as soon as it is put away. Know this before telling a warehouse to
+start putting stock away: the way back is an ordinary bin transfer to the item's home bin, and the
+limitation lifts when multi-location allocation exists. Also, on `main` today a goods receipt lands in
+the item's home bin (`receive_into_home`; kind `bin`, not `receiving`), so stock reaches a
+receiving/staging bin only through opening stock posted there, an explicit bin transfer, or Phase 2
+receipts (not yet merged): until then the Put away screen has little to offer a warehouse that has not
+set up receiving or staging bins. Both are tracked in `docs/backlog.md`.
+
+**The 30-day purge (owner decision D3).** A capture holds a worker's GPS fix. It is kept **30 days**
+from the server's `created_at`, then erased by an **admin-run procedure, not an in-app job**: the app
+role cannot delete the rows, and erasure is a decision a person takes. Coordinates are not PII under
+ADR-0000, so they are stored in plaintext; the controls are the ADMIN-only permission, a one-time-code
+session, the audit row on every reveal, and this erasure (ADR-0028). The tool is
+`tools/purge_putaway_captures.py`. It connects as `opsgrids_admin` (the only role that can delete), is a **read-only dry run unless `--apply`**,
+prints **counts only** (never a coordinate, a worker or a move), and takes `--organization-id <uuid>`
+to confine it to one organization; the 30-day window is deliberately not an option. On the box, from
+`infrastructure/edge/`, run it the way `remote.sh reconcile-permissions` runs its tool, from the
+`operations` image:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T \
+  -e PYTHONPATH=/app -v "$(cd ../.. && pwd)/tools:/opt/tools:ro" \
+  operations python /opt/tools/purge_putaway_captures.py            # dry run
+# the same command with `--apply` appended deletes; add `--organization-id <uuid>` to confine either
+```
+
+Read the dry run first: `eligible` is what `--apply` deletes, `retained` is what stays, and `database`
+names the host and database it is aimed at. Keep the printed output with the change record; the purge
+writes no audit row of its own. It is safe to re-run and to interrupt (it deletes in batches, one
+transaction each). **Run it weekly** (a recommendation; it is the owner's calendar entry, nothing runs
+it for you): a capture becomes eligible 30 days after it is written and goes at the next run, so the
+real retention is 30 days plus the gap between runs. After a purge, the reveal of a purged capture
+answers 404 (the UI says "capture expired") and the put-away itself — the move, the bin, the ledger,
+the audit rows — is untouched. The rows survive in backups taken before the purge until those age out
+(`docs/engage-erasure-and-unsubscribe.md` says the same of every delete in this database, with the WAL
+and dead-tuple caveats). The tool purges by age and organization only; a narrower erasure (one worker)
+is a hand-run `DELETE` as `opsgrids_admin` after a backup, and an owner decision.
+
+**Rollback.** **Code-only; the schema stays.** `make edge-rollback` redeploys the previous ref and
+`remote.sh migrate` then skips `operations` with the loud `SKIPPED` warning, leaving the schema as this
+release made it; the previous API ignores the new columns and table. Roll the **bundles** back first
+(`make edge-web-rollback … APP=operations`, then `APP=worker`; one symlink each) so no screen calls a
+route the older API does not have (by design the worker app parks a put-away the server answers 4xx
+as "needs attention" instead of losing it). Put-aways already posted stay in the ledger as ordinary
+relocations with `reference_type` `putaway`, and their captures stay. To turn only the map off, remove
+the `VITE_GOOGLE_MAPS_API_KEY` line from the box's `.env` and publish operations again. **Never
+`alembic downgrade` past `d7a3c9e5b184`** (`downgrade -1`, `downgrade c4a8e1f6d273`) once captures
+exist: it drops `putaway_captures` and the warehouse columns — every put-away's proof and every site's
+map position. The migration enforces this: its `downgrade()` refuses, with a message, when any capture
+row exists **or any warehouse has coordinates** (so a fully purged table alone does not lift the
+refusal), unless `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1` is set in the environment of the `alembic`
+command — which you do only after a fresh backup and a decision to throw that data away. On a database
+that never held either, it reverses completely.
+
+**Roll back when** any of these is true after the deploy (counts and key names only, never a value):
+
+- the migration failed, or `alembic current` is not the head;
+- the put-away error rate (5xx on `…/inventory/putaway`) is above what the same hours looked like
+  before the release;
+- a **coordinate key** is found where none may be. Both counts must be **0** (the reveal's own audit
+  row lists field *names* in an array, which these do not match). A **site's** position is approved
+  data and legitimately appears as `lat_micro` / `lng_micro` keys in the `before` and `after` of a
+  `warehouse.updated` audit row (`entity = 'warehouse'`) every time someone sets, changes or clears a
+  warehouse's location, so the audit query leaves the `warehouse` entity out: it stays at 0 after the
+  owner's first "Set location", and a hit in any *other* row (a put-away's `inventory_move` rows
+  above all) is a worker coordinate that must not be there. The outbox needs no such exception: a
+  `warehouse.updated` event lists the changed field *names* only.
+
+  ```sql
+  SELECT (SELECT count(*) FROM operations.audit_logs
+           WHERE entity <> 'warehouse'
+             AND (jsonb_path_exists(after,  '$.**.lat_micro') OR jsonb_path_exists(after,  '$.**.lng_micro')
+               OR jsonb_path_exists(before, '$.**.lat_micro') OR jsonb_path_exists(before, '$.**.lng_micro'))) AS audit_rows,
+         (SELECT count(*) FROM operations.outbox
+           WHERE jsonb_path_exists(payload, '$.**.lat_micro') OR jsonb_path_exists(payload, '$.**.lng_micro')) AS outbox_rows;
+  ```
+
+  and `make edge-logs HOST=… CONFIRM=… SERVICE=operations TAIL=5000 | grep -c -E 'lat_micro|lng_micro'`
+  must print 0 too (a hit may be a coordinate in a log: read it with care, it is personal data);
+- **a reveal without an audit row**: every successful `…/location:reveal` (200) must have exactly one
+  `entity.sensitive_read` row (`entity = 'inventory_move'`, `entity_id` the move) in
+  `operations.audit_logs` at that moment, for that actor. A 403 or a 404 writes none, by design;
+- **the proof is not being kept** (see "A put-away whose proof was not kept", next): `putaway.capture_failed`
+  appears for every put-away since the deploy, or the query below keeps returning rows. Roll the **bundles**
+  back so workers stop putting stock away with no proof, then fix the cause.
+
+**A put-away whose proof was not kept does not look like a failure.** The capture row is written in a
+savepoint after the stock has moved. If that write fails (a missing grant, a constraint, a database
+error), the move **stands**, the response is a **201** with the warning `geo_not_recorded`, and the service
+logs one `putaway.capture_failed` line (move id and the error's class name, never a value). Nothing a
+rollback trigger above watches would notice it: not a 5xx on `…/inventory/putaway`, not a coordinate, not a
+reveal. **No alert fires on it:** `ops-monitor`'s six checks are not log-based, so this is a check someone
+runs, as `payment.invoice.collected_twice` is. After the deploy, and once a day for the first week:
+
+```bash
+make edge-logs HOST=… CONFIRM=… SERVICE=operations TAIL=5000 | grep -c 'putaway.capture_failed'   # 0
+```
+
+and, because logs rotate and this does not, the durable form, from the same `psql` as step 3 (a role that
+bypasses row-level security): the put-aways inside the purge window that have no capture row.
+
+```sql
+SELECT count(*) AS putaways_without_capture
+  FROM operations.inventory_moves m
+ WHERE m.reference_type = 'putaway'
+   AND m.created_at > now() - interval '29 days'
+   AND NOT EXISTS (SELECT 1 FROM operations.putaway_captures c
+                    WHERE c.organization_id = m.organization_id AND c.move_id = m.id);
+```
+
+Both must be **0**. A hit means a put-away happened and its proof (who, which bin, the fix) was lost; the
+move itself is correct. The log line names the move and the error class: `grep putaway.capture_failed`
+beside it, then re-run step 3's privilege query (`app_can_insert` must be `t`) and read the error class.
+The 29 days keep the window inside the 30-day purge, so a capture the purge removed is never counted.
+Captures erased by hand (see the purge section) do show up here as hits, so check a hit against that
+record first. A rate of one in a long while is a database blip to read; every put-away since the deploy is
+the rollback trigger above. Wiring `putaway.capture_failed` to an alert is a follow-up
+(`docs/backlog.md`).
+
 ### The billing run: first deploy, watching it, and what to do when it complains
 
 The billing run (ADR-0005's 2026-09-23 addendum and its review fixes) is the loop that converts

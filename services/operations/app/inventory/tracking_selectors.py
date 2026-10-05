@@ -391,6 +391,7 @@ def stock_stmt(
             Location.code,
             Lot.lot_no,
             Roll.roll_no,
+            Location.kind,
         )
         .join(InventoryItem, InventoryItem.id == InventoryBalance.inventory_item_id)
         .join(Location, Location.id == InventoryBalance.location_id)
@@ -443,6 +444,7 @@ def stock_row_out(row: Any) -> StockRowOut:
         warehouse_code=row[5],
         location_id=str(balance.location_id),
         location_code=row[6],
+        location_kind=row[9],
         status=balance.status,
         lot_id=str(balance.lot_id) if balance.lot_id else None,
         lot_no=row[7],

@@ -1,31 +1,22 @@
-import { useState } from "react";
-
 import { Avatar, Button, Card, PageHeader } from "@opsgrids/ui";
 import { useAuth, useCurrentUser } from "@opsgrids/client";
+
+import { useSignOut } from "@/lib/useSignOut";
 
 /**
  * Who is signed in, and the way out. Needs nothing beyond what `AuthProvider` already loaded from
  * `GET /auth/me` at boot, so — unlike task/scan screens — this is real today.
  */
 export function ProfilePage() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const currentUser = useCurrentUser();
-  const [signingOut, setSigningOut] = useState(false);
+  // `logout()` clears the local session even when the server call fails, and `RequireAuth` takes
+  // the app to `/login` once `status` flips — so there is nothing for this screen to recover.
+  const { requestSignOut, signingOut, dialog } = useSignOut();
 
   if (!currentUser || !user) return null;
 
   const activeOrg = user.organizations.find((org) => org.organization_id === user.organization_id);
-
-  async function handleSignOut() {
-    setSigningOut(true);
-    try {
-      await logout();
-    } catch {
-      // `logout()` already clears the local session even when the server call fails
-      // (`@opsgrids/client`'s `AuthProvider`) — nothing left to recover here, and `RequireAuth`
-      // takes the app to `/login` regardless once `status` flips.
-    }
-  }
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -54,9 +45,10 @@ export function ProfilePage() {
         </dl>
       </Card>
 
-      <Button variant="secondary" onClick={() => void handleSignOut()} loading={signingOut}>
+      <Button variant="secondary" onClick={requestSignOut} loading={signingOut}>
         Sign out
       </Button>
+      {dialog}
     </div>
   );
 }

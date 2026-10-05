@@ -309,6 +309,25 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Storage put-away's GPS proof. `stock.transfer` is what lets a worker put stock away (the
+        # bin they scan is the location of record); *where the worker stood* when they did is
+        # personal location data, so reading it is its own permission — ORG only, **dangerous**
+        # and, unlike every other grant here, held by the administrator role alone (it reaches
+        # `OPERATIONS_ADMIN` through `all()` and is picked into no other template). Four segments
+        # like the other reveal codes, and like them the route also needs a session that gave a
+        # one-time code (`amr={"otp"}`, `PutawayLocationRead` in `app/inventory/api.py`). Every
+        # successful use writes an `entity.sensitive_read` audit row
+        # (`app.inventory.putaway_services.reveal_putaway_location`).
+        PermissionSpec(
+            "inventory",
+            "putaway",
+            "location_read",
+            "See the GPS position a worker's device reported when they put stock away — "
+            "every reveal is audited",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
         # Cycle counting / stocktaking (ADR-0026, Fulfilment plan F8). A count session is a shared
         # operational object, the same reasoning `orders.order.*`/`dispatch.shipment.*` already
         # give for ORG-only, no-OWN-reading permissions: any worker with `count.execute` counts

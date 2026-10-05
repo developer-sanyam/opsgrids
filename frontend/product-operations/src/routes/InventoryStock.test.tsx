@@ -9,13 +9,16 @@ import userEvent from "@testing-library/user-event";
 
 import { ApiError } from "@opsgrids/client";
 import { renderScreen } from "@/test-utils/renderScreen";
-import { stockRow } from "@/test-utils/tracking";
+import { item, stockRow } from "@/test-utils/tracking";
 import { InventoryStockPage } from "./InventoryStock";
 
 const listStock = vi.fn();
+const locateStock = vi.fn();
+const getInventoryItem = vi.fn();
 
 vi.mock("@/api/tracking", () => ({
   listStock: (...args: unknown[]) => listStock(...args),
+  locateStock: (...args: unknown[]) => locateStock(...args),
   listLots: () => Promise.resolve({ items: [], next_cursor: null }),
   listRolls: () => Promise.resolve({ items: [], next_cursor: null }),
   transferStock: () => Promise.reject(new Error("not used")),
@@ -27,7 +30,7 @@ vi.mock("@/api/client", () => ({
   listWarehouses: () => Promise.resolve({ items: [], total: 0, page: 1, size: 200, pages: 0 }),
   listLocations: () => Promise.resolve([]),
   searchInventory: () => Promise.resolve([]),
-  getInventoryItem: () => Promise.reject(new Error("not used")),
+  getInventoryItem: (...args: unknown[]) => getInventoryItem(...args),
 }));
 
 const READ = "operations.inventory.stock.read:ORG";
@@ -133,5 +136,75 @@ describe("InventoryStockPage", () => {
     expect(await screen.findByText("Timed out")).toBeDefined();
     expect(screen.getByText("A-01")).toBeDefined();
     await waitFor(() => expect(screen.getByRole("button", { name: "Try again" })).toBeDefined());
+  });
+
+  describe("Find stock", () => {
+    beforeEach(() => {
+      listStock.mockResolvedValue({ items: [], next_cursor: null });
+      locateStock.mockReset();
+      getInventoryItem.mockReset();
+    });
+
+    it("sits beside the filters, waiting for an item, and asks nothing until then", async () => {
+      renderScreen(<InventoryStockPage />, [READ]);
+      expect(await screen.findByText("Find stock")).toBeDefined();
+      expect((screen.getByRole("button", { name: "Find where it is" }) as HTMLButtonElement).disabled).toBe(true);
+      expect(screen.getByText("Choose an item above to see which bins hold it.")).toBeDefined();
+      expect(locateStock).not.toHaveBeenCalled();
+    });
+
+    it("searches for the item the page is narrowed to, with the lot and roll from the address", async () => {
+      const user = userEvent.setup();
+      getInventoryItem.mockResolvedValue(item({ id: "item-1", sku: "FAB-100", uom: "m" }));
+      locateStock.mockResolvedValue({
+        results: [
+          {
+            warehouse_id: "wh-1",
+            warehouse_name: "Bhiwandi DC",
+            floor_id: "floor-1",
+            floor_name: "Ground",
+            location_id: "loc-1",
+            code: "A-01",
+            name: "Bin A-01",
+            kind: "bin",
+            path: "Zone A / A-01",
+            quantity: "40",
+            status: "AVAILABLE",
+            placement: {
+              layout_version_id: "lv-1",
+              x_mm: 0,
+              y_mm: 0,
+              z_mm: null,
+              width_mm: 800,
+              depth_mm: 600,
+              height_mm: null,
+              source: "own",
+              ancestor_location_id: null,
+            },
+            placement_reason: null,
+          },
+        ],
+      });
+      renderScreen(<InventoryStockPage />, [READ], {
+        path: "/inventory/stock",
+        at: "/inventory/stock?item=item-1&lot=lot-1&roll=roll-1",
+      });
+
+      await user.click(await screen.findByRole("button", { name: "Find where it is" }));
+      expect(locateStock).toHaveBeenCalledWith({ inventory_item_id: "item-1", lot_id: "lot-1", roll_id: "roll-1" });
+      expect(await screen.findByRole("link", { name: "Show on floor for A-01" })).toBeDefined();
+    });
+
+    it("keeps a failed lookup inside its own card: the stock table beside it still loads", async () => {
+      const user = userEvent.setup();
+      getInventoryItem.mockResolvedValue(item({ id: "item-1" }));
+      listStock.mockResolvedValue({ items: [stockRow()], next_cursor: null });
+      locateStock.mockRejectedValue(new ApiError(500, "Locate is unavailable", { detail: "Locate is unavailable" }));
+      renderScreen(<InventoryStockPage />, [READ], { path: "/inventory/stock", at: "/inventory/stock?item=item-1" });
+
+      await user.click(await screen.findByRole("button", { name: "Find where it is" }));
+      expect(await screen.findByText("Locate is unavailable")).toBeDefined();
+      expect(await screen.findByText("A-01")).toBeDefined();
+    });
   });
 });

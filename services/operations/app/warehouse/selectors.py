@@ -21,6 +21,8 @@ from app.schemas import (
     LayoutValidationOut,
     LayoutVersionOut,
     LocationPlacementOut,
+    PublishedLayoutOut,
+    PublishedPlacementOut,
     WalkEdgeOut,
     WalkNodeOut,
     WarehouseFloorOut,
@@ -192,6 +194,61 @@ async def locations_by_id(
         return {}
     stmt = select(Location).where(Location.organization_id == org_id, Location.id.in_(location_ids))
     return {loc.id: loc for loc in (await session.execute(stmt)).scalars().all()}
+
+
+async def published_layout(
+    session: AsyncSession, org_id: uuid.UUID, floor: WarehouseFloor
+) -> PublishedLayoutOut:
+    """What is live on a floor: the **published** version's placements with each location's
+    identity, never a draft's. A floor with no published version answers `published: false` and no
+    placements (it is not an error — the viewer falls back to its computed layout). Soft-deleted
+    locations are skipped: a placement outlives the soft delete of the bin it places."""
+    version = await get_published_version(session, org_id, floor.id)
+    if version is None:
+        return PublishedLayoutOut(
+            floor_id=str(floor.id),
+            warehouse_id=str(floor.warehouse_id),
+            floor_name=floor.name,
+            published=False,
+            layout_version_id=None,
+            placements=[],
+        )
+    rows = (
+        await session.execute(
+            select(LocationPlacement, Location)
+            .join(Location, Location.id == LocationPlacement.location_id)
+            .where(
+                LocationPlacement.organization_id == org_id,
+                Location.organization_id == org_id,
+                LocationPlacement.layout_version_id == version.id,
+                Location.deleted_at.is_(None),
+            )
+            .order_by(Location.code.asc(), Location.id.asc())
+        )
+    ).all()
+    return PublishedLayoutOut(
+        floor_id=str(floor.id),
+        warehouse_id=str(floor.warehouse_id),
+        floor_name=floor.name,
+        published=True,
+        layout_version_id=str(version.id),
+        placements=[
+            PublishedPlacementOut(
+                location_id=str(loc.id),
+                code=loc.code,
+                name=loc.name,
+                kind=loc.kind,
+                parent_id=str(loc.parent_id) if loc.parent_id else None,
+                x_mm=pl.x_mm,
+                y_mm=pl.y_mm,
+                z_mm=pl.z_mm,
+                width_mm=pl.width_mm,
+                depth_mm=pl.depth_mm,
+                height_mm=pl.height_mm,
+            )
+            for pl, loc in rows
+        ],
+    )
 
 
 def placement_out(placement: LocationPlacement, location: Location) -> LocationPlacementOut:

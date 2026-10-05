@@ -215,7 +215,8 @@ reservation(s) in the way, through the same kernel.**
 operations).** Four choices a later phase will lean on:
 
 - **Splits, merges, transfers and status changes are `relocation` moves**, told apart by `reference_type`
-  (`roll_split`, `roll_merge`, `bin_transfer`, `status_change`) — not four new move kinds. Stock is conserved in each
+  (`roll_split`, `roll_merge`, `bin_transfer`, `status_change`; `putaway` added 2026-10-05, see the amendment at
+  the end of this section) — not four new move kinds. Stock is conserved in each
   (a negative line and positive ones in one move), which is what `relocation` already means; a new kind would
   have meant every reconciler, filter and event consumer learning a vocabulary for no new semantics.
 - **The bucket's lot/roll foreign keys are composite and organization-scoped**
@@ -251,6 +252,52 @@ Three further rules, added after review of the slice:
   in id order before its first balance lock; split and merge take theirs `FOR UPDATE`. A transfer racing a split
   of the same roll therefore queues on the roll row and loses cleanly (409 / `INSUFFICIENT_STOCK`) instead of
   deadlocking. A split/merge also verifies the lines it posted left the consumed roll at exactly zero.
+
+**Amended 2026-10-05 — storage put-away joins the move reference vocabulary.** The warehouse-map change
+([ADR-0028](0028-putaway-gps-captures.md); design in
+`docs/superpowers/specs/2026-10-05-warehouse-map-putaway-design.md`) adds one value, **`putaway`**, to the
+`relocation` references listed in the first bullet above (`reference_type` is a free `String(30)`, so there is no
+migration for it). A storage put-away moves received or staged stock into a rack bin by scanning the bin's
+barcode. It is the same conserving relocation as a `bin_transfer` (a negative line out of the source bin, a
+positive line into the destination, one `post_move`, through the same private `_transfer` helper, the same lock
+order and the same refusal of reserved stock with a 409), and it differs from a bin transfer in these ways. None
+of them touches `bin_transfer`, whose behaviour and `operations.inventory.stock.transferred` event are unchanged
+byte for byte:
+
+- **The reference.** `reference_type` is `putaway` (a bin transfer's is `bin_transfer`), and its `reference_id` is
+  a deterministic uuid5 of the idempotency key (a bin transfer's is empty), because both are part of the move's
+  request hash.
+- **The audit row and the event.** It stages the audit action `putaway.recorded` and the event
+  `operations.inventory.putaway.recorded` (a closed schema that carries `matched_suggestion` and `has_location`
+  and never a coordinate) **instead of** `stock.transferred`. `post_move` still stages `inventory_move.posted` /
+  `stock.posted` for both.
+- **A capture row.** It writes a `putaway_captures` row (the scanned bin, the suggested bin, the worker, the
+  worker's GPS fix when the device gave one), which is what ADR-0028 decides. The row is written in a savepoint:
+  if it cannot be written the move stands and the response carries the warning `geo_not_recorded`.
+- **Where the stock may come from and go to.** The source must be a `receiving` or `staging` bin and the
+  destination a storable bin (`bin` or `shelf`) in the same warehouse (owner decision D1, 2026-10-05: 422 otherwise,
+  with the codes `source_not_receiving_or_staging` and `destination_not_storable`). A bin transfer has no
+  source-kind or destination-kind rule, only the same-warehouse one. Because the order engine reserves only at an
+  item's `home_location_id` (`orders/services.py`), stock put away into any other bin is not seen by order accept
+  until multi-location allocation exists; that limitation is documented in the RUNBOOK and the backlog.
+- **How the destination is named.** By the bin's barcode, resolved server-side (a worker holds no
+  `location.read`), where a bin transfer names `to_location_id`. An unknown, foreign or deleted barcode is one
+  identical 404.
+- **What is moved.** Only `AVAILABLE` stock (a bin transfer takes any on-site `status`), and it runs
+  `check_tracking`, so a tracked item must name its lot or roll and an untracked one must not (the bin-transfer
+  path does not call it).
+- **The idempotency namespace.** The `Idempotency-Key` header is **required** (a bin transfer's is optional) and is
+  stored as `putaway:<key>`, so a put-away's key can never collide with a bin transfer's. The GPS fix,
+  `captured_at` and `suggested_location_id` are outside the request hash: a retry that differs only in those
+  replays the original and writes nothing.
+- **The response.** `PutawayOut` carries `matched_suggestion`, `geo_recorded` and a `warnings` list
+  (`geo_dropped:<reason>`, `captured_at_adjusted`, `suggestion_ignored`, `geo_not_recorded`), and never a
+  coordinate; invalid geo is dropped with a warning rather than refused.
+
+**Terminology.** "Storage put-away" is the name of this feature and of the `putaway` reference. ADR-0025's
+"putaway task" (the reversal that carries picked stock back to its bin when an order is cancelled, §1 and the
+state table) is a different thing and is left untouched; where both could be meant, say "storage put-away" for the
+first and "putaway task" for the second.
 
 ## Consequences
 

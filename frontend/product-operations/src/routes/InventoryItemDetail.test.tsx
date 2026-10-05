@@ -15,6 +15,7 @@ const listStock = vi.fn();
 const listLots = vi.fn();
 const listRolls = vi.fn();
 const listLedger = vi.fn();
+const locateStock = vi.fn();
 
 vi.mock("@/api/client", () => ({
   FULL_PAGE: 200,
@@ -25,12 +26,16 @@ vi.mock("@/api/client", () => ({
   listWarehouses: () => Promise.resolve({ items: [], total: 0, page: 1, size: 200, pages: 0 }),
   listLocations: () => Promise.resolve([]),
   searchInventory: () => Promise.resolve([]),
+  listWorkers: () => Promise.resolve({ items: [], total: 0, page: 1, size: 200, pages: 0 }),
 }));
 vi.mock("@/api/tracking", () => ({
   listStock: (...args: unknown[]) => listStock(...args),
   listLots: (...args: unknown[]) => listLots(...args),
   listRolls: (...args: unknown[]) => listRolls(...args),
   listLedger: (...args: unknown[]) => listLedger(...args),
+  locateStock: (...args: unknown[]) => locateStock(...args),
+  getPutawayDetail: () => Promise.reject(new Error("not used")),
+  revealPutawayLocation: () => Promise.reject(new Error("not used")),
   transferStock: () => Promise.reject(new Error("not used")),
   changeStockStatus: () => Promise.reject(new Error("not used")),
   postOpeningStock: () => Promise.reject(new Error("not used")),
@@ -78,6 +83,18 @@ describe("InventoryItemDetailPage tabs", () => {
 
     expect(await screen.findByText("A-01")).toBeDefined();
     expect(listStock).toHaveBeenCalledWith(expect.objectContaining({ item_id: "item-1" }));
+  });
+
+  it("puts Find stock on the Locations tab, for this item, asking only when clicked", async () => {
+    const user = userEvent.setup();
+    locateStock.mockResolvedValue({ results: [] });
+    renderDetail([READ]);
+    await user.click(await screen.findByRole("tab", { name: "Locations" }));
+
+    await screen.findByText("A-01");
+    expect(locateStock).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Find where it is" }));
+    expect(locateStock).toHaveBeenCalledWith({ inventory_item_id: "item-1", lot_id: undefined, roll_id: undefined });
   });
 
   it("opens Lots and Rolls for the item, and Ledger with its slice of the ledger", async () => {

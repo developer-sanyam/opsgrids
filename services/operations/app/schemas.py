@@ -22,11 +22,13 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     Field,
+    StrictInt,
     TypeAdapter,
     field_validator,
     model_validator,
 )
 
+from app import domain
 from app.inventory.quantity import MAX_ABS_MILLI, QTY_SCALE
 
 #: Validates a non-empty string as an email address — used where the field is "email format or
@@ -648,7 +650,11 @@ class StockMovementOut(BaseModel):
     balance_after: Qty
     location_id: str
     status: StockStatus
-    reference_type: Literal["purchase_order"] | None
+    #: Free text, like `LedgerRowOut.reference_type`: a move says what it was *for* in the
+    #: vocabulary ADR-0014 §12 lists (`purchase_order`, `bin_transfer`, `status_change`,
+    #: `roll_split`, `putaway`, a sales order ...). It was once the single literal `purchase_order`,
+    #: which made this route answer 500 for any item that had ever been transferred.
+    reference_type: str | None
     reference_id: str | None
     note: str
     occurred_on: date
@@ -809,7 +815,71 @@ class DiscrepancyTrendPointOut(BaseModel):
 
 class WarehouseOut(BaseModel):
     """A stocking location. Reference data behind the warehouse names the POs and inventory
-    rows carry."""
+    rows carry. `lat_micro`/`lng_micro` are the *site's* position on a map in integer
+    micro-degrees (10^-6), both set or both null."""
+
+    id: str
+    code: str
+    name: str
+    location: str
+    lat_micro: int | None = None
+    lng_micro: int | None = None
+
+
+class WarehouseIn(BaseModel):
+    """`POST /warehouses`. `code` is immutable once created — it never appears on
+    `WarehousePatch`. `lat_micro`/`lng_micro` place the site on a map: integers (never floats),
+    given together or not at all, latitude within +-90 degrees and longitude within +-180."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=120)
+    location: str = Field(default="", max_length=160)
+    lat_micro: StrictInt | None = None
+    lng_micro: StrictInt | None = None
+
+    @model_validator(mode="after")
+    def _coordinates(self) -> Self:
+        if errors := domain.site_coordinate_errors(self.lat_micro, self.lng_micro):
+            raise ValueError(errors[0][1])
+        return self
+
+
+class WarehousePatch(BaseModel):
+    """`PATCH /warehouses/{id}`. A rename cascades to `purchase_orders.warehouse` and
+    `inventory_items.warehouse` in the same transaction — those columns are denormalised copies
+    of `name`, not a join.
+
+    `lat_micro`/`lng_micro` are checked against the **merged** state (a patch that sets only the
+    latitude is checked against the persisted longitude — `app.inventory.services
+    .update_warehouse`); an explicit `null` for both clears the site's position."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    location: str | None = Field(default=None, max_length=160)
+    lat_micro: StrictInt | None = None
+    lng_micro: StrictInt | None = None
+
+
+class WarehouseMapSiteOut(BaseModel):
+    """One placed site on the warehouses map — `GET /warehouses/map`. These are *site*
+    coordinates (a business address), not a worker's position."""
+
+    id: str
+    code: str
+    name: str
+    location: str
+    lat_micro: int
+    lng_micro: int
+    floor_count: int
+    #: Locations in this warehouse that hold stock right now (a positive on-site balance).
+    stocked_location_count: int
+
+
+class WarehouseMapUnplacedOut(BaseModel):
+    """A warehouse with no coordinates yet — listed beside the map so it can be placed."""
 
     id: str
     code: str
@@ -817,26 +887,9 @@ class WarehouseOut(BaseModel):
     location: str
 
 
-class WarehouseIn(BaseModel):
-    """`POST /warehouses`. `code` is immutable once created — it never appears on
-    `WarehousePatch`."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    code: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
-    name: str = Field(min_length=1, max_length=120)
-    location: str = Field(default="", max_length=160)
-
-
-class WarehousePatch(BaseModel):
-    """`PATCH /warehouses/{id}`. A rename cascades to `purchase_orders.warehouse` and
-    `inventory_items.warehouse` in the same transaction — those columns are denormalised copies
-    of `name`, not a join."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str | None = Field(default=None, min_length=1, max_length=120)
-    location: str | None = Field(default=None, max_length=160)
+class WarehouseMapOut(BaseModel):
+    sites: list[WarehouseMapSiteOut]
+    without_coordinates: list[WarehouseMapUnplacedOut]
 
 
 # ------------------------------------------------------------------ locations (ADR-0024 §5)
@@ -990,6 +1043,35 @@ class LocationPlacementOut(BaseModel):
     height_mm: int | None
     location_code: str
     location_kind: LocationKind
+
+
+class PublishedPlacementOut(BaseModel):
+    """One location on a floor's *published* layout, with the identity a map needs — so a viewer
+    never has to fetch the location tree beside it. Integer millimetres throughout."""
+
+    location_id: str
+    code: str
+    name: str
+    kind: LocationKind
+    parent_id: str | None
+    x_mm: int
+    y_mm: int
+    z_mm: int | None
+    width_mm: int
+    depth_mm: int
+    height_mm: int | None
+
+
+class PublishedLayoutOut(BaseModel):
+    """`GET /floors/{floor_id}/published-layout` — what is live on a floor, never a draft.
+    `published` is false (with no placements) when the floor has no published layout."""
+
+    floor_id: str
+    warehouse_id: str
+    floor_name: str
+    published: bool
+    layout_version_id: str | None
+    placements: list[PublishedPlacementOut]
 
 
 class WalkNodeIn(BaseModel):

@@ -2,7 +2,7 @@
   "extends": "@opsgrids/config/tsconfig.base.json",
   "compilerOptions": {
     "paths": { "@/*": ["./src/*"] },
-    "types": ["node", "vite/client"]
+    "types": ["node", "vite/client", "google.maps"]
   },
   "include": ["src", "vite.config.ts"],
   "exclude": ["node_modules", "dist"]

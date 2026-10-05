@@ -95,7 +95,10 @@ export function WarehousesPage() {
         title="Warehouses"
         description="The stocking locations every inventory item and purchase order names."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" onClick={() => navigate("/warehouses/map")}>
+              Map view
+            </Button>
             <ImportExportButton
               meta={dx.meta}
               state={dx.state}

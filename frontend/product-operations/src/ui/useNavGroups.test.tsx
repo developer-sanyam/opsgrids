@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 
 import { PermissionProvider } from "@opsgrids/client";
 import { useNavGroups } from "./useNavGroups";
 
-function wrapper(grants: string[]) {
+function wrapper(grants: string[], at = "/") {
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
-      <PermissionProvider grants={grants} entitlements={[]}>
-        {children}
-      </PermissionProvider>
+      <MemoryRouter initialEntries={[at]}>
+        <PermissionProvider grants={grants} entitlements={[]}>
+          {children}
+        </PermissionProvider>
+      </MemoryRouter>
     );
   };
 }
@@ -41,5 +44,30 @@ describe("useNavGroups", () => {
     for (const to of ["/inventory/stock", "/inventory/lots", "/inventory/rolls", "/inventory/ledger"]) {
       expect(targets).toContain(to);
     }
+  });
+
+  it("lists the warehouse map straight after Warehouses, whatever the caller can read", () => {
+    for (const grants of [[], ["operations.inventory.stock.read:ORG"]]) {
+      const all = labels(grants);
+      const at = all.indexOf("Warehouses");
+      expect(all.slice(at, at + 2)).toEqual(["Warehouses", "Warehouse Map"]);
+    }
+  });
+
+  it("points the map entry at the route registered ahead of warehouses/:id", () => {
+    const { result } = renderHook(() => useNavGroups(), { wrapper: wrapper([]) });
+    const targets = result.current.groups.flatMap((g) => g.items.map((i) => i.to));
+    expect(targets).toContain("/warehouses/map");
+  });
+
+  it("matches Warehouses exactly on the map page, so one screen never lights two entries, and as a prefix everywhere else", () => {
+    const endOf = (at: string) => {
+      const { result } = renderHook(() => useNavGroups(), { wrapper: wrapper([], at) });
+      return result.current.groups.flatMap((g) => g.items).find((i) => i.to === "/warehouses")?.end;
+    };
+    expect(endOf("/warehouses/map")).toBe(true);
+    expect(endOf("/warehouses")).toBe(false);
+    expect(endOf("/warehouses/wh-1/floors")).toBe(false);
+    expect(endOf("/warehouses/wh-1/floors/f-1/view")).toBe(false);
   });
 });

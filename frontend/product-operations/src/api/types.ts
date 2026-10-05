@@ -353,7 +353,8 @@ export interface StockMovementOut {
   balance_after: Qty;
   location_id: string;
   status: StockStatus;
-  reference_type: "purchase_order" | null;
+  /** A free vocabulary (`purchase_order`, `bin_transfer`, `putaway`, ...), not a single literal. */
+  reference_type: string | null;
   reference_id: string | null;
   note: string;
   occurred_on: string;
@@ -363,25 +364,65 @@ export interface StockMovementOut {
 
 /* ------------------------------- warehouses ------------------------------ */
 
-/** A stocking location. Reference data behind the warehouse names POs and inventory carry. */
+/**
+ * A stocking location. Reference data behind the warehouse names POs and inventory carry.
+ *
+ * `lat_micro` / `lng_micro` are the *site's* position as integer micro-degrees (degrees x 10^6),
+ * given together or not at all. Optional on the type because the shape is constructed as a literal
+ * in many places; the server always sends both, `null` until a position is set.
+ */
 export interface WarehouseOut {
+  id: string;
+  code: string;
+  name: string;
+  location: string;
+  lat_micro?: number | null;
+  lng_micro?: number | null;
+}
+
+/** `POST /warehouses`. `code` is immutable once created. The two coordinates are paired. */
+export interface WarehouseIn {
+  code: string;
+  name: string;
+  location?: string;
+  lat_micro?: number | null;
+  lng_micro?: number | null;
+}
+
+/** `PATCH /warehouses/{id}`. `code` never appears — it is immutable. The server checks the
+ *  *merged* state of the coordinates; an explicit `null` for both clears the position. */
+export interface WarehousePatch {
+  name?: string;
+  location?: string;
+  lat_micro?: number | null;
+  lng_micro?: number | null;
+}
+
+/** One warehouse with a position on `GET /operations/warehouses/map`. These are *site*
+ *  coordinates (approved for display), never a worker's. */
+export interface WarehouseMapSiteOut {
+  id: string;
+  code: string;
+  name: string;
+  location: string;
+  lat_micro: number;
+  lng_micro: number;
+  floor_count: number;
+  stocked_location_count: number;
+}
+
+/** A warehouse the map cannot place yet — it has no position. */
+export interface WarehouseUnlocatedOut {
   id: string;
   code: string;
   name: string;
   location: string;
 }
 
-/** `POST /warehouses`. `code` is immutable once created. */
-export interface WarehouseIn {
-  code: string;
-  name: string;
-  location?: string;
-}
-
-/** `PATCH /warehouses/{id}`. `code` never appears — it is immutable. */
-export interface WarehousePatch {
-  name?: string;
-  location?: string;
+/** `GET /operations/warehouses/map` — `operations.inventory.warehouse.read`. */
+export interface WarehouseMapOut {
+  sites: WarehouseMapSiteOut[];
+  without_coordinates: WarehouseUnlocatedOut[];
 }
 
 /* -------------------------------- locations -------------------------------- */
@@ -1117,6 +1158,34 @@ export interface LayoutGeometryOut {
   placements: LocationPlacementOut[];
   walk_nodes: WalkNodeOut[];
   walk_edges: WalkEdgeOut[];
+}
+
+/** One location on a floor's *published* layout (`GET /operations/floors/{floor_id}/published-layout`).
+ *  Millimetres throughout. `z_mm` / `height_mm` are `null` when the layout never set them. */
+export interface PublishedPlacementOut {
+  location_id: string;
+  code: string;
+  name: string;
+  kind: LocationKind;
+  parent_id: string | null;
+  x_mm: number;
+  y_mm: number;
+  z_mm: number | null;
+  width_mm: number;
+  depth_mm: number;
+  height_mm: number | null;
+}
+
+/** `GET /operations/floors/{floor_id}/published-layout` — `operations.warehouse.layout.read`.
+ *  Only ever the published version: `published: false` with no placements when the floor has none.
+ *  A draft never appears here. */
+export interface PublishedLayoutOut {
+  floor_id: string;
+  warehouse_id: string;
+  floor_name: string;
+  published: boolean;
+  layout_version_id: string | null;
+  placements: PublishedPlacementOut[];
 }
 
 /** One problem `POST /layout-versions/{id}/validate` (or a refused publish) found. */

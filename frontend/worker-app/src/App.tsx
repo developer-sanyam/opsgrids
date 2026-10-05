@@ -1,8 +1,11 @@
-import { AppShell as Shell, Button, InlineAlert, UserIcon } from "@opsgrids/ui";
+import { AppShell as Shell, Button, InlineAlert } from "@opsgrids/ui";
 import { useAuth, useCurrentUser, usePermissions } from "@opsgrids/client";
 
-import { useNavGroups } from "./ui/useNavGroups";
+import { PutawayQueueProvider } from "./lib/PutawayQueueProvider";
+import { useSignOut } from "./lib/useSignOut";
 import { LogoMark } from "./ui/LogoMark";
+import { PutawayAttentionBanner } from "./ui/PutawayAttentionBanner";
+import { PROFILE_NAV_ENTRY, useNavGroups } from "./ui/useNavGroups";
 
 /**
  * Once, at the shell — never per screen. If the grants fetch itself failed, `<Can>` and `useCan`
@@ -32,30 +35,43 @@ function GrantsStatusBanner() {
  * The app shell — the mobile header, bottom navigation and routed main column — is
  * `@opsgrids/ui`'s `AppShell`, the same component every product app uses. This file supplies only
  * what is this app's own: its mark, its (short) nav, and Profile as a first-class bottom tab
- * (`bottomNavExtra`) rather than buried behind "More" — a phone-first surface with two
- * destinations puts both of them one tap away.
+ * (`bottomNavExtra`) rather than buried behind "More" — a phone-first surface with a handful of
+ * destinations puts the ones a worker needs one tap away.
+ *
+ * It is also where the put-away queue's drainer lives (`PutawayQueueProvider`), because a put-away
+ * saved on a basement floor has to sync when the signal returns wherever the worker happens to be
+ * in the app, not only while the Put away screen is open.
  *
  * No `modules` and no `adminLinks`: a picker/packer/dispatcher's device has one job (ADR-0024 §7
  * quotes ADR-0001's own reasoning — "a warehouse app and a sales app have nothing in common but
  * the account"), so cross-product switching and admin destinations are left out rather than
- * wired to unused hooks. No `search`: two destinations need no command palette, and
+ * wired to unused hooks. No `search`: a handful of destinations need no command palette, and
  * `AppShell` already hides the trigger entirely when `search` is omitted.
  */
 export function AppShell() {
-  const { logout } = useAuth();
+  const { user } = useAuth();
   const currentUser = useCurrentUser();
-  const { groups } = useNavGroups();
+  const { groups, bottomExtra } = useNavGroups();
+  const { requestSignOut, dialog } = useSignOut();
 
-  if (!currentUser) return null;
+  if (!currentUser || !user) return null;
 
   return (
-    <Shell
-      product={{ name: "OpsGrids Worker", mark: <LogoMark className="size-7" /> }}
-      nav={groups}
-      user={{ name: currentUser.name, email: currentUser.email, roleLabel: currentUser.roleDisplay }}
-      onSignOut={() => void logout()}
-      bottomNavExtra={[{ to: "/profile", label: "Profile", icon: UserIcon }]}
-      banner={<GrantsStatusBanner />}
-    />
+    <PutawayQueueProvider ownerSub={user.user_id} organizationId={user.organization_id}>
+      <Shell
+        product={{ name: "OpsGrids Worker", mark: <LogoMark className="size-7" /> }}
+        nav={groups}
+        user={{ name: currentUser.name, email: currentUser.email, roleLabel: currentUser.roleDisplay }}
+        onSignOut={requestSignOut}
+        bottomNavExtra={[...bottomExtra, PROFILE_NAV_ENTRY]}
+        banner={
+          <>
+            <GrantsStatusBanner />
+            <PutawayAttentionBanner />
+          </>
+        }
+      />
+      {dialog}
+    </PutawayQueueProvider>
   );
 }

@@ -18,6 +18,7 @@ import type {
   CountLineSubmitIn,
   CountSessionOut,
   CountSessionStatus,
+  CursorPage,
   ExceptionResolveIn,
   LocationOut,
   Page,
@@ -27,7 +28,11 @@ import type {
   PickConfirmIn,
   PickTaskOut,
   PickTaskStatus,
+  PutawayIn,
+  PutawayOut,
+  PutawaySuggestionOut,
   ScanIn,
+  StockRowOut,
   TaskReleaseIn,
   WorkerOut,
   WorkerPresenceIn,
@@ -257,5 +262,57 @@ export async function addCountLine(sessionId: string, input: CountLineAddIn): Pr
   return apiRequest<CountLineOut>(`/operations/counting/sessions/${encodeURIComponent(sessionId)}/lines`, {
     method: "POST",
     body: input,
+  });
+}
+
+// ------------------------------------------------------------------ storage put-away
+
+export interface ListStockParams {
+  cursor?: string | undefined;
+  limit?: number | undefined;
+}
+
+/** `GET /operations/inventory/stock?status=AVAILABLE` — `operations.inventory.stock.read`, which
+ *  `OPERATIONS_WORKER` holds. AVAILABLE only, since that is all a put-away moves; empty buckets
+ *  are left out by the server (`include_empty` defaults to false). The endpoint has no text
+ *  search, so the screen filters what it has loaded and pages on with the cursor. */
+export async function listAvailableStock(params: ListStockParams = {}): Promise<CursorPage<StockRowOut>> {
+  const query = buildQuery({ status: "AVAILABLE", limit: params.limit ?? FULL_PAGE, cursor: params.cursor });
+  return apiRequest<CursorPage<StockRowOut>>(`/operations/inventory/stock${query}`);
+}
+
+export interface SuggestPutawayParams {
+  inventory_item_id: string;
+  warehouse_id: string;
+  lot_id?: string | undefined;
+}
+
+/** `GET /operations/inventory/putaway/suggest` — `operations.inventory.stock.transfer`. */
+export async function suggestPutawayBin(params: SuggestPutawayParams): Promise<PutawaySuggestionOut> {
+  const query = buildQuery({
+    inventory_item_id: params.inventory_item_id,
+    warehouse_id: params.warehouse_id,
+    lot_id: params.lot_id,
+  });
+  return apiRequest<PutawaySuggestionOut>(`/operations/inventory/putaway/suggest${query}`);
+}
+
+/**
+ * `POST /operations/inventory/putaway` — `operations.inventory.stock.transfer:ORG`. The
+ * `Idempotency-Key` is required and makes a retry a replay (200, `replayed: true`, nothing written
+ * twice), which is what lets `lib/putawayQueue.ts` resend the very same body after a dropped
+ * connection. The server leaves the geo fields out of its request hash: a retry that carries
+ * different coordinates replays the original, and the new ones are ignored.
+ */
+export async function postPutaway(
+  input: PutawayIn,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<PutawayOut> {
+  return apiRequest<PutawayOut>("/operations/inventory/putaway", {
+    method: "POST",
+    body: input,
+    headers: { "Idempotency-Key": idempotencyKey },
+    ...(signal ? { signal } : {}),
   });
 }

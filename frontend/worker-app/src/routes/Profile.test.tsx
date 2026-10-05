@@ -2,11 +2,13 @@
  * Who is signed in, and signing out — real today because it needs nothing beyond `GET /auth/me`,
  * which `AuthProvider` already loads at boot for every screen.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AuthProvider, getAccessToken, setAccessToken } from "@opsgrids/client";
+
+import { enqueuePutaway, getPutawayQueue, purgePutawayQueue } from "@/lib/putawayQueue";
 
 import { ProfilePage } from "./Profile";
 
@@ -116,5 +118,78 @@ describe("sign out", () => {
 
     resolveLogout?.(json({}));
     await waitFor(() => expect(getAccessToken()).toBeNull());
+  });
+
+  describe("the put-away queue", () => {
+    function seedPutaway() {
+      return enqueuePutaway({
+        ownerSub: "u-1",
+        organizationId: ORG.organization_id,
+        body: {
+          inventory_item_id: "item-1",
+          from_location_id: "loc-rcv-1",
+          to_barcode: "A-01-03",
+          quantity: "3",
+          lat_micro: 12_971_599,
+          lng_micro: 77_594_563,
+        },
+        summary: { sku: "SKU-100", itemName: "Cotton roll", uom: "m", fromLocationCode: "RCV-01", toBarcode: "A-01-03" },
+      });
+    }
+
+    afterEach(() => {
+      purgePutawayQueue();
+      localStorage.clear();
+    });
+
+    it("is purged on sign-out — and an empty queue signs out without a question", async () => {
+      const user = userEvent.setup();
+      setAccessToken("session-token");
+      routes = { "/api/v1/auth/me": () => json(ME), "/api/v1/auth/logout": () => json({}) };
+      renderPage();
+      await screen.findByText("Asha Rao");
+
+      await user.click(screen.getByRole("button", { name: "Sign out" }));
+
+      expect(screen.queryByRole("dialog")).toBeNull();
+      await waitFor(() => expect(getAccessToken()).toBeNull());
+      expect(getPutawayQueue()).toEqual([]);
+    });
+
+    it("asks before throwing away put-aways that never reached the server, then purges them with the session", async () => {
+      const user = userEvent.setup();
+      setAccessToken("session-token");
+      routes = { "/api/v1/auth/me": () => json(ME), "/api/v1/auth/logout": () => json({}) };
+      seedPutaway();
+      renderPage();
+      await screen.findByText("Asha Rao");
+
+      await user.click(screen.getByRole("button", { name: "Sign out" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText(/1 put-away on this phone hasn't been recorded/)).toBeTruthy();
+      expect(getAccessToken()).toBe("session-token");
+      expect(getPutawayQueue()).toHaveLength(1);
+
+      await user.click(within(dialog).getByRole("button", { name: "Sign out and discard" }));
+
+      await waitFor(() => expect(getAccessToken()).toBeNull());
+      expect(getPutawayQueue()).toEqual([]);
+      expect(localStorage.getItem("opsgrids.worker.putawayQueue")).toBeNull();
+    });
+
+    it("Stay signed in changes nothing", async () => {
+      const user = userEvent.setup();
+      setAccessToken("session-token");
+      routes = { "/api/v1/auth/me": () => json(ME) };
+      seedPutaway();
+      renderPage();
+      await screen.findByText("Asha Rao");
+
+      await user.click(screen.getByRole("button", { name: "Sign out" }));
+      await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Stay signed in" }));
+
+      expect(getAccessToken()).toBe("session-token");
+      expect(getPutawayQueue()).toHaveLength(1);
+    });
   });
 });

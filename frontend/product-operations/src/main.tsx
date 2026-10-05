@@ -12,6 +12,7 @@ import { RequireAuth } from "./auth/RequireAuth";
 import { OverviewPage } from "./routes/Overview";
 import { LoginPage } from "./routes/Login";
 import { NotFoundPage } from "./routes/NotFound";
+import { RouteError } from "./routes/RouteError";
 import { RouteFallback } from "./routes/RouteFallback";
 import { LogoMark } from "./ui/LogoMark";
 
@@ -76,6 +77,10 @@ const WarehouseLocationsPage = lazy(() =>
 const WarehouseLocationLabelsPage = lazy(() =>
   import("./routes/WarehouseLocationLabels").then((m) => ({ default: m.WarehouseLocationLabelsPage })),
 );
+const WarehousesMapPage = lazy(() =>
+  import("./routes/WarehousesMap").then((m) => ({ default: m.WarehousesMapPage })),
+);
+const FloorViewPage = lazy(() => import("./routes/FloorView").then((m) => ({ default: m.FloorViewPage })));
 const WarehouseFloorsPage = lazy(() =>
   import("./routes/WarehouseFloors").then((m) => ({ default: m.WarehouseFloorsPage })),
 );
@@ -109,6 +114,11 @@ const ChannelsPage = lazy(() => import("./routes/Channels").then((m) => ({ defau
 
 function lazyRoute(path: string, element: ReactNode) {
   return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
+}
+
+/** A route that keeps a render failure to itself: the shell and every other screen stay up. */
+function guardedRoute(path: string, element: ReactNode) {
+  return { ...lazyRoute(path, element), errorElement: <RouteError /> };
 }
 
 const router = createBrowserRouter([
@@ -158,9 +168,12 @@ const router = createBrowserRouter([
           lazyRoute("suppliers", <SuppliersPage />),
           lazyRoute("suppliers/:id", <SupplierDetailPage />),
           lazyRoute("warehouses", <WarehousesPage />),
+          // Static segment ahead of `warehouses/:id/…`, so "map" can never be read as a warehouse id.
+          guardedRoute("warehouses/map", <WarehousesMapPage />),
           lazyRoute("warehouses/:id/locations", <WarehouseLocationsPage />),
           lazyRoute("warehouses/:id/floors", <WarehouseFloorsPage />),
           lazyRoute("warehouses/:id/floors/:floorId", <FloorLayoutEditorPage />),
+          guardedRoute("warehouses/:id/floors/:floorId/view", <FloorViewPage />),
           lazyRoute("warehouses/:id/3d", <Warehouse3DPage />),
           lazyRoute("orders", <OrdersPage />),
           lazyRoute("orders/new", <OrderFormPage />),

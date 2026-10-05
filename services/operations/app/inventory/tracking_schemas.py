@@ -26,7 +26,7 @@ from pydantic import (
 )
 
 from app.domain import MAX_LOT_ATTRIBUTES
-from app.schemas import Qty, StockStatus
+from app.schemas import LocationKind, Qty, StockStatus
 
 LotQualityStatus = Literal["PENDING", "APPROVED", "ON_HOLD", "REJECTED"]
 RollState = Literal["ACTIVE", "SPLIT", "MERGED"]
@@ -459,6 +459,11 @@ class StockRowOut(BaseModel):
     warehouse_code: str
     location_id: str
     location_code: str
+    #: The kind of the row's location (`receiving`, `staging`, `bin`, ...). A worker reads stock
+    #: but not locations, so the put-away screen reads "is this stock waiting to be stored" off
+    #: this. Typed nullable as the shared contract has it; `locations.kind` is NOT NULL, so every
+    #: row carries one today.
+    location_kind: LocationKind | None
     status: StockStatus
     lot_id: str | None
     lot_no: str | None
