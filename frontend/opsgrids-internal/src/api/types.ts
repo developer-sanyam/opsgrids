@@ -294,6 +294,11 @@ export interface PricingSubscriptionRef {
   cancel_at: string | null;
   /** What the subscription switches on — one key, or a bundle's members. */
   entitled_products: string[];
+  /** When the current period — for a trial, the trial itself — began. UTC. */
+  current_period_start: string | null;
+  /** While trialling: the latest the trial may be extended to, stated by the subscription service
+   *  from its own cap (ADR-0030). Null for any other state. UTC. */
+  trial_max_ends_at: string | null;
 }
 
 /** What this organization is paying right now for one product — `null` until a price has ever
@@ -490,6 +495,99 @@ export interface PlanChangeResult {
   pending_plan_version_id: string | null;
   effective_at: string | null;
   /** True when this is the recorded result of an earlier request with the same key. */
+  replayed: boolean;
+}
+
+/* ------------------------- add product, extend trial (console) ------------------------- */
+/* Verified field-for-field against `services/console/app/schemas.py`'s "staff add product" and
+ * "staff extend trial" models (ADR-0030). */
+
+/** One plan version the Add product picker may offer. Amounts are integer minor units. */
+export interface AddProductOption {
+  plan_id: string;
+  plan_name: string;
+  plan_version_id: string;
+  version_no: number;
+  billing_interval: "month" | "year" | "one_time" | string;
+  currency: string;
+  is_bespoke: boolean;
+  /** Flat plus per-seat at quantity one — display only. */
+  recurring_minor: number;
+  prices: PlanOptionPrice[];
+  bundled_products: string[] | null;
+  /** The version's own trial length; null means the platform default. */
+  trial_days: number | null;
+  /** False when the version sells no trial — only a paid add is possible. */
+  offers_trial: boolean;
+  /** A bundle's members the organization already pays for through another subscription. */
+  overlapping_products: string[];
+  /** `org_currency_mismatch` or `one_time` when the organization cannot take it; null when it can. */
+  blocked_code: "org_currency_mismatch" | "one_time" | string | null;
+  blocked_reason: string | null;
+}
+
+export interface AddProductCandidate {
+  product_key: string;
+  product_name: string;
+  versions: AddProductOption[];
+}
+
+/** A product the organization already has a row for, in any state — never offered. */
+export interface ExistingSubscriptionRef {
+  product_key: string;
+  state: string;
+}
+
+/** `GET /api/v1/admin/organizations/{id}/add-product-options`. `owner` and `billing_ops`. */
+export interface AddProductOptions {
+  organization_id: string;
+  /** The currency the organization's live subscriptions are billed in, when there is one. */
+  currency: string | null;
+  existing: ExistingSubscriptionRef[];
+  products: AddProductCandidate[];
+}
+
+/** `POST /api/v1/admin/organizations/{id}/subscriptions` body. The `Idempotency-Key` header is
+ *  required and travels separately. A paid add (`trial: false`) is refused unless
+ *  `acknowledge_immediate_charge` is true: its first period is claimed for payment at once. */
+export interface AddProductRequest {
+  product_key: string;
+  plan_version_id: string;
+  trial: boolean;
+  acknowledge_immediate_charge: boolean;
+  reason: string;
+}
+
+/** What was opened, read back off the subscription service's own answer. */
+export interface AddProductResult {
+  subscription_id: string;
+  product_key: string;
+  state: string;
+  plan_version_id: string;
+  currency: string;
+  trial_ends_at: string | null;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  entitled_products: string[];
+  /** True for a paid add: its first period was claimed for billing in the same transaction. */
+  charge_claimed: boolean;
+  replayed: boolean;
+}
+
+/** `POST .../subscriptions/{product_key}/extend-trial` body — **absolute** instants, both with a
+ *  zone. `expected_trial_ends_at` is the end the operator saw, sent back exactly as it was read. */
+export interface ExtendTrialRequest {
+  new_trial_ends_at: string;
+  expected_trial_ends_at: string;
+  reason: string;
+}
+
+export interface ExtendTrialResult {
+  subscription_id: string;
+  product_key: string;
+  state: string;
+  trial_ends_at: string | null;
+  previous_trial_ends_at: string | null;
   replayed: boolean;
 }
 

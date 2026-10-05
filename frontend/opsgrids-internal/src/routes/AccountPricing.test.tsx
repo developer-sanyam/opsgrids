@@ -39,6 +39,8 @@ function product(overrides: Partial<ProductPricing> = {}): ProductPricing {
       pending_plan_name: null,
       cancel_at: null,
       entitled_products: ["crm"],
+      current_period_start: "2026-09-01T00:00:00Z",
+      trial_max_ends_at: null,
     },
     current_price: {
       plan_version_id: "pv_crm_scale_v1",
@@ -136,6 +138,8 @@ describe("table states", () => {
             pending_plan_name: null,
             cancel_at: null,
             entitled_products: ["crm"],
+            current_period_start: "2026-09-01T00:00:00Z",
+            trial_max_ends_at: null,
           },
         }),
       ]),

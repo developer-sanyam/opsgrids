@@ -3,10 +3,9 @@ import type { MouseEvent } from "react";
 import { ConfirmDialog, FormDialog, InlineAlert, RadioGroup, TextArea } from "@opsgrids/ui";
 import type { RadioOption } from "@opsgrids/ui";
 
-import { changePlan, getOrganizationPricing, getPlanOptions, previewPlanChange } from "@/api/client";
+import { changePlan, getPlanOptions, previewPlanChange } from "@/api/client";
 import { ApiError } from "@/api/http";
 import type {
-  OrganizationPricing,
   PlanChangePreview,
   PlanChangeResult,
   PlanOption,
@@ -17,6 +16,7 @@ import type {
 import { useAuth } from "@/auth/context";
 import { formatDate } from "@/lib/format";
 import { formatMoney } from "@/lib/money";
+import { useLivePricing } from "@/lib/useLivePricing";
 import {
   BILLING_RUN_COPY,
   ENTITLEMENT_LAG_COPY,
@@ -85,48 +85,6 @@ function planNameFor(id: string | null, options: PlanOptions | null): string | n
 
 function intervalWord(interval: string): string {
   return interval === "year" ? "year" : interval === "month" ? "month" : interval.replace("_", " ");
-}
-
-/* ------------------------------- the live read ------------------------------- */
-
-type Live =
-  | { status: "loading" }
-  | { status: "error"; error: Error }
-  | { status: "ready"; data: OrganizationPricing; refreshing: boolean };
-
-/**
- * The live pricing composite, **kept on screen while it reloads**. The page-level `useAsync`
- * replaces its data with a skeleton on every reload, which unmounts whatever stands on it — a
- * dialog and the control that opened it included. This card reloads quietly instead, so the button
- * the operator pressed is still the button on the page when the dialog closes, and focus has
- * somewhere to return to.
- */
-function useLivePricing(organizationId: string, reloadKey: number): Live {
-  const [live, setLive] = useState<Live>({ status: "loading" });
-
-  useEffect(() => {
-    let active = true;
-    setLive((previous) =>
-      previous.status === "ready" ? { ...previous, refreshing: true } : { status: "loading" },
-    );
-    getOrganizationPricing(organizationId)
-      .then((data) => {
-        if (active) setLive({ status: "ready", data, refreshing: false });
-      })
-      .catch((err: unknown) => {
-        if (!active) return;
-        setLive((previous) =>
-          previous.status === "ready"
-            ? { ...previous, refreshing: false }
-            : { status: "error", error: err instanceof Error ? err : new Error(String(err)) },
-        );
-      });
-    return () => {
-      active = false;
-    };
-  }, [organizationId, reloadKey]);
-
-  return live;
 }
 
 /* ---------------------------------- the flow ---------------------------------- */

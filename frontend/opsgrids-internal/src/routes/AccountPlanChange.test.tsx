@@ -44,6 +44,8 @@ function product(overrides: Partial<ProductPricing> = {}): ProductPricing {
       pending_plan_name: null,
       cancel_at: null,
       entitled_products: ["hrms"],
+      current_period_start: "2026-10-01T00:00:00Z",
+      trial_max_ends_at: null,
     },
     current_price: {
       plan_version_id: "pv_growth",
