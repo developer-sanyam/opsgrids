@@ -192,10 +192,20 @@ async def set_merchant_account(
     now = _now()
     existing = await selectors.lock_live_merchant_account(session, organization_id)
     if existing is not None:
+        if existing.provider != provider or existing.mode != mode:
+            # **Provider and mode are fixed for the life of a row** (ADR-0029). Every charge taken
+            # into this account is pointed at it by `merchant_account_id`, and the keys are what
+            # reaches the provider for it (status checks, refunds): overwriting the provider or
+            # the mode in place would repoint every earlier charge at keys of another provider or
+            # of the other mode, where its Orders do not exist. A key id may change on rotation —
+            # within the same provider and mode. Switching is remove, then connect: a new row, a
+            # new account id, a new webhook URL.
+            raise ConflictProblem(
+                "A connected payment account's provider and mode cannot be changed; disconnect "
+                "it first, then connect the new one"
+            )
         before = {"provider": existing.provider, "key_id": existing.key_id, "mode": existing.mode}
-        existing.provider = provider
         existing.key_id = key_id
-        existing.mode = mode
         existing.key_secret_enc = _seal(organization_id, existing.id, KEY_SECRET, key_secret)
         existing.key_secret_masked = domain.mask_secret(key_secret)
         existing.webhook_secret_enc = _seal(
@@ -604,6 +614,20 @@ async def _account_for(session: AsyncSession, charge: Charge) -> MerchantAccount
         raise ConflictProblem(
             "This payment was taken into a payment provider account that is no longer "
             "connected; check it in that account's own dashboard"
+        )
+    if account.provider != charge.provider:
+        # Belt and braces behind the immutability of `merchant_accounts.provider`: a charge is only
+        # ever asked about, or refunded, with keys of the provider that took it. A mismatch would
+        # build one provider's adapter from another's credentials.
+        log.error(
+            "payment.collection.account_provider_mismatch",
+            organization_id=str(charge.organization_id),
+            charge_id=str(charge.id),
+            charge_provider=charge.provider,
+            account_provider=account.provider,
+        )
+        raise ConflictProblem(
+            "This payment was taken through a different payment provider than the one connected now"
         )
     return account
 

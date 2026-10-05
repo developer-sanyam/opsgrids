@@ -79,3 +79,26 @@ class TestSnapshotsAreStorable:
         stored = _record({"password": "hunter2", "nested": {"token": uuid.uuid4()}})
         assert stored["password"] == REDACTED
         assert stored["nested"]["token"] == REDACTED
+
+
+class TestProviderSecretsAreRedacted:
+    """Merchant-connect P0 (ADR-0029): a payment-provider credential must never be stored in an
+    audit row. `key_secret` and `webhook_secret` are the merchant account's own field names;
+    `secret_key` is Cashfree's. Matched case-insensitively, at any depth."""
+
+    def test_the_provider_credential_names_are_redacted_at_any_depth(self) -> None:
+        stored = _record(
+            {
+                "key_secret": "rzp-secret-value",
+                "webhook_secret": "whsec-value",
+                "Secret_Key": "cf-secret-value",
+                "nested": [{"inner": {"key_secret": "deep-secret-value"}}],
+                "key_id": "rzp_test_public_id",  # the key id is public by design, and kept
+            }
+        )
+        assert stored["key_secret"] == REDACTED
+        assert stored["webhook_secret"] == REDACTED
+        assert stored["Secret_Key"] == REDACTED
+        assert stored["nested"][0]["inner"]["key_secret"] == REDACTED
+        assert stored["key_id"] == "rzp_test_public_id"
+        assert "secret-value" not in json.dumps(stored)
