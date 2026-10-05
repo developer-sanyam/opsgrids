@@ -67,8 +67,8 @@ from app.providers.base import (
     PaymentProvider,
     PaymentSnapshot,
     ProviderCallError,
+    ProviderCapabilities,
     best_attempt,
-    capabilities_of,
     valid_phone,
 )
 from app.providers.wire import (
@@ -232,10 +232,10 @@ async def claim_checkout_lease(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def claim_checkout(
+async def claim_platform_checkout(
     session: AsyncSession,
     *,
-    provider_for: Callable[[str], PaymentProvider],
+    capabilities_for: Callable[[str], ProviderCapabilities],
     default_name: str,
     organization_id: uuid.UUID,
     invoice_id: uuid.UUID,
@@ -270,12 +270,12 @@ async def claim_checkout(
         raise ConflictProblem("This invoice has already been paid")
     source = debits[-1]
     checkouts = [c for c in charges if c.flow == FLOW_CHECKOUT]
-    open_checkout = next(
+    existing_checkout = next(
         (c for c in checkouts if c.state in (CHARGE_CREATED, CHARGE_AUTHORIZED)), None
     )
 
-    provider_name = open_checkout.provider if open_checkout is not None else default_name
-    capabilities = capabilities_of(provider_for(provider_name))
+    provider_name = existing_checkout.provider if existing_checkout is not None else default_name
+    capabilities = capabilities_for(provider_name)
     if not capabilities.supports_checkout:
         raise ConflictProblem("Online payment is not available with the configured provider")
     if source.amount_minor <= 0:
@@ -294,19 +294,19 @@ async def claim_checkout(
     if source.amount_minor < capabilities.min_amount_minor:
         raise ValidationProblem(_REQUEST_CODES["amount_below_minimum"])
 
-    if open_checkout is not None:
+    if existing_checkout is not None:
         if (
-            open_checkout.checkout_expires_at is not None
-            and open_checkout.checkout_expires_at <= now
+            existing_checkout.checkout_expires_at is not None
+            and existing_checkout.checkout_expires_at <= now
         ):
             return CheckoutClaim(
                 organization_id=organization_id,
-                charge_id=open_checkout.id,
-                provider=open_checkout.provider,
+                charge_id=existing_checkout.id,
+                provider=existing_checkout.provider,
                 request=None,
-                stale_charge_id=open_checkout.id,
+                stale_charge_id=existing_checkout.id,
             )
-        claimed = await claim_checkout_lease(session, open_checkout, now=now)
+        claimed = await claim_checkout_lease(session, existing_checkout, now=now)
         if claimed is None:
             raise ConflictProblem(
                 "This invoice's checkout is being prepared; try again in a moment"

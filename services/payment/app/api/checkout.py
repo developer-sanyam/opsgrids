@@ -144,9 +144,9 @@ async def open_checkout(
     async def claim() -> services.CheckoutClaim:
         async with session.begin():
             await bind(session, organization_id)
-            return await services.claim_checkout(
+            return await services.claim_platform_checkout(
                 session,
-                provider_for=provider_for,
+                capabilities_for=lambda name: capabilities_of(provider_for(name)),
                 default_name=provider.name,
                 organization_id=organization_id,
                 invoice_id=payload.invoice_id,
