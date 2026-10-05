@@ -846,6 +846,65 @@ class TestWithdrawTrigger:
         with pytest.raises(IntegrityError, match="grandfathered and immutable"):
             await self._raw(platform_session, sql, version_id)
 
+    async def test_a_draft_cannot_skip_publish_into_grandfathered(
+        self, platform_session: AsyncSession
+    ) -> None:
+        """Otherwise a raw UPDATE makes an unvalidated, frozen, undeletable version."""
+        async with platform_session.begin():
+            plan = await _plan(platform_session)
+            draft = await _draft(platform_session, plan)
+            draft_id = draft.id
+        with pytest.raises(IntegrityError, match="only a published version can become"):
+            await self._raw(
+                platform_session,
+                "UPDATE catalog.plan_versions SET state = 'grandfathered' "
+                "WHERE id = CAST(:id AS uuid)",
+                draft_id,
+            )
+
+    @pytest.mark.parametrize("withdrawn", [False, True], ids=["published", "grandfathered"])
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "INSERT INTO catalog.prices (id, plan_version_id, kind, amount_minor, currency) "
+            "VALUES (gen_random_uuid(), CAST(:id AS uuid), 'flat', 100, 'INR')",
+            "INSERT INTO catalog.features (id, plan_version_id, feature_key, value) "
+            "VALUES (gen_random_uuid(), CAST(:id AS uuid), 'seats', '5'::jsonb)",
+        ],
+        ids=["price", "feature"],
+    )
+    async def test_nothing_can_be_added_under_a_frozen_version(
+        self, platform_session: AsyncSession, sql: str, withdrawn: bool
+    ) -> None:
+        version_id = await self._published_id(platform_session)
+        if withdrawn:
+            await self._raw(
+                platform_session,
+                "UPDATE catalog.plan_versions SET state = 'grandfathered' "
+                "WHERE id = CAST(:id AS uuid)",
+                version_id,
+            )
+        with pytest.raises(IntegrityError, match="rows are immutable"):
+            await self._raw(platform_session, sql, version_id)
+
+    async def test_a_drafts_price_cannot_be_moved_onto_a_frozen_version(
+        self, platform_session: AsyncSession
+    ) -> None:
+        frozen_id = await self._published_id(platform_session)
+        async with platform_session.begin():
+            plan = await _plan(platform_session, code="other")
+            draft = await _draft(platform_session, plan)
+            draft_id = draft.id
+        with pytest.raises(IntegrityError, match="rows are immutable"):
+            async with platform_session.begin():
+                await platform_session.execute(
+                    text(
+                        "UPDATE catalog.prices SET plan_version_id = CAST(:frozen AS uuid) "
+                        "WHERE plan_version_id = CAST(:draft AS uuid)"
+                    ),
+                    {"frozen": str(frozen_id), "draft": str(draft_id)},
+                )
+
     async def test_a_draft_stays_editable(self, platform_session: AsyncSession) -> None:
         async with platform_session.begin():
             plan = await _plan(platform_session)

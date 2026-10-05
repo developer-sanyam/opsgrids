@@ -1,7 +1,7 @@
 """withdraw a published version, freeze grandfathered rows, and claim idempotency keys
 
 Two changes for the operator Plans & prices page (docs/superpowers/specs/
-2026-10-06-admin-plans-page-design.md, ADR-0029).
+2026-10-06-admin-plans-page-design.md, ADR-0030).
 
 **The version-row trigger learns exactly one transition.** `forbid_published_version_update`
 (migration 549e7957161c) refused every UPDATE of a `published` row and nothing else, which left
@@ -16,8 +16,16 @@ two problems:
 The replacement allows one change on a published row — `state` from `published` to
 `grandfathered` with **every other column identical** (compared as whole rows, so a column added
 later is covered without editing this function) — and refuses any UPDATE of a grandfathered row.
-Drafts stay freely editable. The child-row and delete triggers (e3f8a91c7b2d, 8fef75a4a797)
-already treat `grandfathered` as frozen and are unchanged.
+Drafts stay freely editable, except that a draft cannot become `grandfathered` (only a published
+version can be withdrawn). The delete trigger (e3f8a91c7b2d) already treats `grandfathered` as
+frozen and is unchanged.
+
+**The child-row trigger also judges the parent a row is written under.** The e3f8a91c7b2d
+function (on `prices`, `features`, and since 8fef75a4a797 `seat_classes`) fired on UPDATE and
+DELETE and checked OLD's parent only, so an INSERT under a frozen version — or an UPDATE moving a
+draft's row onto one — changed a pinned sheet with nothing below the application to stop it. The
+function now checks NEW's parent on INSERT and UPDATE as well, and a second trigger per table
+(`trg_<table>_frozen_no_insert`) runs it on INSERT.
 
 **`idempotency_keys`** is the claim table behind the now-required `Idempotency-Key` on every
 `/admin/catalog` write: unique on `(organization_id, key)`, claimed before the change in the same
@@ -45,6 +53,74 @@ depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "catalog"
 APP_ROLE = "opsgrids_catalog"
+FROZEN_STATES = "('published', 'grandfathered')"
+#: Every table whose rows belong to one version (e3f8a91c7b2d, 8fef75a4a797).
+CHILD_TABLES = ("prices", "features", "seat_classes")
+
+
+def _child_function(*, check_new: bool) -> str:
+    """`forbid_frozen_version_child_mutation`: with `check_new`, the parent a row is written
+    *under* is judged too (INSERT, and the target of an UPDATE); without it, e3f8a91c7b2d's
+    body exactly, for the downgrade."""
+    new_check = (
+        f"""
+            IF TG_OP IN ('INSERT', 'UPDATE') THEN
+                SELECT state INTO parent_state
+                    FROM {SCHEMA}.plan_versions
+                    WHERE id = NEW.plan_version_id;
+                IF parent_state IN {FROZEN_STATES} THEN
+                    RAISE EXCEPTION
+                        'plan_version % is % and its % rows are immutable; clone into a new draft'
+                        , NEW.plan_version_id
+                        , parent_state
+                        , TG_TABLE_NAME
+                        USING ERRCODE = 'restrict_violation';
+                END IF;
+            END IF;"""
+        if check_new
+        else ""
+    )
+    old_guard = "IF TG_OP IN ('UPDATE', 'DELETE') THEN" if check_new else "IF TRUE THEN"
+    return f"""
+        CREATE OR REPLACE FUNCTION {SCHEMA}.forbid_frozen_version_child_mutation()
+            RETURNS trigger
+            LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            parent_state text;
+        BEGIN
+            {old_guard}
+                SELECT state INTO parent_state
+                    FROM {SCHEMA}.plan_versions
+                    WHERE id = OLD.plan_version_id;
+                IF parent_state IN {FROZEN_STATES} THEN
+                    RAISE EXCEPTION
+                        'plan_version % is % and its % rows are immutable; clone into a new draft'
+                        , OLD.plan_version_id
+                        , parent_state
+                        , TG_TABLE_NAME
+                        USING ERRCODE = 'restrict_violation';
+                END IF;
+            END IF;{new_check}
+            IF TG_OP = 'DELETE' THEN
+                RETURN OLD;
+            END IF;
+            RETURN NEW;
+        END;
+        $$
+        """
+
+
+def _insert_trigger(table: str) -> str:
+    """A second trigger for INSERT beside the existing UPDATE-or-DELETE one, rather than dropping
+    and recreating that one: `CREATE TRIGGER` takes a lock that does not wait on readers, while
+    `DROP TRIGGER` takes ACCESS EXCLUSIVE and would queue behind every open read of the table."""
+    return f"""
+        CREATE TRIGGER trg_{table}_frozen_no_insert
+            BEFORE INSERT ON {SCHEMA}.{table}
+            FOR EACH ROW
+            EXECUTE FUNCTION {SCHEMA}.forbid_frozen_version_child_mutation()
+        """
 
 
 def upgrade() -> None:
@@ -77,11 +153,29 @@ def upgrade() -> None:
                     , OLD.id
                     USING ERRCODE = 'restrict_violation';
             END IF;
+            -- Only a published version can be withdrawn. A draft flipped straight to
+            -- grandfathered would be frozen and undeletable without ever passing publish
+            -- validation.
+            IF NEW.state = 'grandfathered' THEN
+                RAISE EXCEPTION
+                    'plan_version % is %; only a published version can become grandfathered'
+                    , OLD.id
+                    , OLD.state
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
             RETURN NEW;
         END;
         $$
         """
     )
+
+    # The child rows of a frozen version were protected against UPDATE and DELETE only, judged
+    # by OLD's parent: a new price could still be INSERTed under a published version, or a
+    # draft's price moved onto one, changing every pinned subscription's sheet. Judge the NEW
+    # parent on INSERT and UPDATE as well.
+    op.execute(_child_function(check_new=True))
+    for table in CHILD_TABLES:
+        op.execute(_insert_trigger(table))
 
     op.create_table(
         "idempotency_keys",
@@ -119,6 +213,11 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute(f"DROP POLICY IF EXISTS tenant_isolation ON {SCHEMA}.idempotency_keys")
     op.drop_table("idempotency_keys", schema=SCHEMA)
+
+    # The child guard back to e3f8a91c7b2d / 8fef75a4a797: UPDATE or DELETE, judged by OLD.
+    for table in CHILD_TABLES:
+        op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_frozen_no_insert ON {SCHEMA}.{table}")
+    op.execute(_child_function(check_new=False))
 
     # Back to 549e7957161c's body exactly. A version withdrawn while this revision was live
     # stays `grandfathered` — data is not rewritten on the way down — and is simply no longer
