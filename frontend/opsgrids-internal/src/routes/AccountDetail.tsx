@@ -330,15 +330,16 @@ export function AccountDetailPage() {
 
       {/* Its own card, with its own live read and its own dialogs: the page-level reload above
           replaces this whole page with a skeleton, which would unmount a dialog mid-flow. */}
-      <PlanChangeCard org={pricingOrg} />
+      <PlanChangeCard org={pricingOrg} refreshSignal={commerceTick} />
 
-      {/* Same reason, same shape: each hosts its own dialogs. Adding a product may start a trial,
-          so it asks the Extend trial card to re-read. */}
+      {/* Same reason, same shape: each hosts its own dialogs. Adding a product changes what the
+          sibling cards show — a new subscription to switch, a trial to extend, a plan price — so
+          it asks each of them to re-read. */}
       <AddProductCard org={pricingOrg} onChanged={bumpCommerce} />
 
       <ExtendTrialCard org={pricingOrg} refreshSignal={commerceTick} />
 
-      <ClientPricingCard org={pricingOrg} />
+      <ClientPricingCard org={pricingOrg} refreshSignal={commerceTick} />
 
       <UsageCard orgId={data.organization_id} reloadKey={reloadKey} />
 

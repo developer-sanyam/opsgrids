@@ -487,7 +487,14 @@ interface DoneView {
  * `billing_ops` — and a paying subscription's change waiting for its next period is the only thing
  * staff can ask for; goodwill for a customer who should have the new plan sooner is a comp credit.
  */
-export function PlanChangeCard({ org }: { org: PricingOrgRef }) {
+export function PlanChangeCard({
+  org,
+  refreshSignal = 0,
+}: {
+  org: PricingOrgRef;
+  /** Bumped by a sibling (Add product) when the account's subscriptions changed. */
+  refreshSignal?: number;
+}) {
   const { hasRole } = useAuth();
   const canChange = hasRole("owner") || hasRole("billing_ops");
   const [reloadKey, setReloadKey] = useState(0);
@@ -496,7 +503,7 @@ export function PlanChangeCard({ org }: { org: PricingOrgRef }) {
   const trigger = useRef<HTMLElement | null>(null);
   const hintId = useId();
 
-  const live = useLivePricing(org.organization_id, reloadKey);
+  const live = useLivePricing(org.organization_id, reloadKey + refreshSignal);
   const refresh = useCallback(() => setReloadKey((k) => k + 1), []);
 
   const subscribed = useMemo(() => {

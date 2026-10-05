@@ -111,7 +111,8 @@ Two more cards under Change plan, each hosting its own dialogs (the page reload 
   `lib/`), with the end and the cap in IST. FormDialog: the trial's new last day (`type=date`, `min`/`max`
   computed in IST from the end, now and the cap), "ends at 23:59 IST (UTC+05:30)", reason →
   ConfirmDialog → result. Sends `…T23:59:59+05:30` and the end exactly as read. Disabled with a hint for
-  non-owners and for a trial at its cap. Re-reads when Add product reports a change.
+  non-owners and for a trial at its cap. Re-reads when Add product reports a change — as do Change plan
+  and Client pricing, so a product just added shows on every card without a page reload.
 
 Both: key minted per confirm, reused by *Try again* after an unknown outcome, replaced after a refusal
 (which returns to the form with the server's sentence, its reference and the next step); a double click

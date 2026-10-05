@@ -400,7 +400,15 @@ function SetPriceDialog({ org, product, onClose, onSuccess }: SetPriceDialogProp
 
 /* -------------------------------- the card -------------------------------- */
 
-export function ClientPricingCard({ org }: { org: PricingOrgRef }) {
+export function ClientPricingCard({
+  org,
+  refreshSignal = 0,
+}: {
+  org: PricingOrgRef;
+  /** Bumped by a sibling (Add product) when the account's subscriptions changed. Only ever while
+   *  that sibling's dialog has closed, so this card's own dialog cannot be open at the time. */
+  refreshSignal?: number;
+}) {
   const [reloadKey, setReloadKey] = useState(0);
   const [dialogProduct, setDialogProduct] = useState<ProductPricing | null>(null);
   const { hasRole } = useAuth();
@@ -410,7 +418,7 @@ export function ClientPricingCard({ org }: { org: PricingOrgRef }) {
   const canWritePricing = hasRole("owner") || hasRole("billing_ops");
 
   const loader = useCallback(() => getOrganizationPricing(org.organization_id), [org.organization_id]);
-  const pricing = useAsync(loader, [org.organization_id, reloadKey]);
+  const pricing = useAsync(loader, [org.organization_id, reloadKey, refreshSignal]);
 
   const products = useMemo(() => {
     if (pricing.status !== "success") return [];

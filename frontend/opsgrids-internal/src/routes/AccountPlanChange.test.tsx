@@ -228,6 +228,25 @@ describe("the card", () => {
     expect((await screen.findByRole("button", { name: "Change plan for OpsGrids HR" })).hasAttribute("disabled")).toBe(false);
   });
 
+  it("re-reads when a sibling says the account changed, so a product just added appears", async () => {
+    const w = wire({ products: [product()] });
+    const { rerender } = render(<PlanChangeCard org={ORG} refreshSignal={0} />);
+    await screen.findByText("OpsGrids HR");
+    w.getPricing.mockResolvedValue(
+      pricing(
+        product(),
+        product({
+          product_key: "crm",
+          product_name: "OpsGrids CRM",
+          subscription: { ...(product().subscription as NonNullable<ProductPricing["subscription"]>), id: "sub_crm" },
+        }),
+      ),
+    );
+    rerender(<PlanChangeCard org={ORG} refreshSignal={1} />);
+    expect(await screen.findByText("OpsGrids CRM")).toBeTruthy();
+    expect(w.getPricing).toHaveBeenCalledTimes(2);
+  });
+
   it("shows a scheduled change, and where it lands, beside the current plan", async () => {
     wire({
       products: [
