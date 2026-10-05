@@ -858,7 +858,8 @@ async def add_product(
     `idempotency_key_reused`; 422 `charge_not_acknowledged`, `not_offerable` (a version catalog no
     longer offers this organization — superseded, or its plan retired), `one_time`,
     `org_currency_mismatch`, `trial_not_offered`, `not_published`, `product_mismatch`, `bundle`,
-    `reserved_reason`; 503 `catalog_unavailable` — this request changed nothing; 503
+    `reserved_reason`; 503 `catalog_unavailable` — this request changed nothing (a key not used
+    before; a key already used still replays its recorded answer while catalog is down); 503
     `outcome_unknown` — the subscription may or may not have been opened: refresh, or repeat the
     same request, which reconciles.
     """

@@ -128,6 +128,19 @@ def _in_flight() -> ProblemError:
     return _problem(ConflictProblem, "request_in_progress", _IN_FLIGHT_DETAIL)
 
 
+def _offer_unreadable() -> ProblemError:
+    """A retry of an earlier attempt with no recorded answer, while catalog is down: the live read
+    shows no sign it landed, and the call cannot be made again without checking the offer. The
+    outcome is still unknown — never "changed nothing", which only a fresh key may say."""
+    return _problem(
+        UpstreamUnavailableProblem,
+        "outcome_unknown",
+        "the catalogue could not be read to repeat this request, and the earlier attempt with this "
+        "key has not been confirmed, so it may or may not have been made. Refresh this account to "
+        "see where it stands; repeating the same request (same Idempotency-Key) is safe.",
+    )
+
+
 # ------------------------------------------------------------------------------- the picker
 
 
@@ -291,7 +304,21 @@ async def add_product(
     # it, or its plan been retired; a direct call may name any published id of the product). Read
     # before the claim, so a catalogue outage claims nothing; enforced after the replay branches, so
     # a request that already succeeded still replays as a success after the catalogue moves on.
-    offered = await _offerable_ids(settings, organization_id, payload.product_key, client=client)
+    offered: frozenset[str] | None
+    try:
+        offered = await _offerable_ids(
+            settings, organization_id, payload.product_key, client=client
+        )
+    except UpstreamUnavailableProblem:
+        # "Changed nothing" is true only of a fresh key. A key that already names an earlier
+        # attempt still owes that attempt's answer — a paid add it made has claimed a first
+        # period for charging — so the claim below replays a recorded success or refusal; only
+        # making the call again needs the offer (`_offer_unreadable`).
+        if not await services.idempotency_key_seen(
+            app_session, organization_id=organization_id, key=idempotency_key
+        ):
+            raise
+        offered = None
     fingerprint = domain.add_product_fingerprint(
         organization_id=str(organization_id),
         product_key=payload.product_key,
@@ -356,6 +383,10 @@ async def add_product(
         landed = await _landed_now()
         if landed is not None:
             return await _record_reconciled(landed)
+        if offered is None:
+            # Not landed (yet), and the call cannot be made again without the offer: the key is
+            # left `unknown`, untouched, for a later retry to reconcile.
+            raise _offer_unreadable()
         if not await services.retake_idempotency_key(
             app_session,
             organization_id=organization_id,
@@ -364,6 +395,10 @@ async def add_product(
         ):
             raise _in_flight()
 
+    if offered is None:
+        # Unreachable while keys are never deleted (the key was seen, so the claim found it). Left
+        # `in_progress`, it is reconciled by a retry once the lease runs out.
+        raise _offer_unreadable()
     if str(target) not in offered:
         # Definitive, and recorded like any other refusal: the claim replays it, and the trail
         # reads requested, then refused with the code that says why. Subscription is never called.

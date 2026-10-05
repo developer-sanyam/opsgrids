@@ -892,6 +892,101 @@ class TestOnlyWhatIsOnOffer:
         again = await _post(client, _urls(org_id)["add"], body)
         assert again.status_code == 201 and again.json()["replayed"] is True
 
+    def _catalog_down(self, upstreams: FakeUpstreams, org_id: uuid.UUID) -> None:
+        upstreams.json(
+            "GET", f"/internal/v1/organizations/{org_id}/offerable-versions", {"detail": "x"}, 503
+        )
+
+    async def test_a_recorded_paid_add_replays_during_a_catalogue_outage(
+        self,
+        client: AsyncClient,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        """The browser lost the 201 of a paid add whose first period is already claimed; the retry
+        lands while catalog is down. It must replay the success — never "this request changed
+        nothing", which would have the operator tell the customer no charge was set up."""
+        upstreams.json(
+            "POST",
+            SUBSCRIBE_PATH,
+            _opened(
+                world["new_sub"],
+                product_key="crm",
+                plan_version_id=world["crm_version"],
+                state="active",
+            ),
+            201,
+        )
+        body = _add_body(world["crm_version"], trial=False, acknowledge_immediate_charge=True)
+        first = await _post(client, _urls(org_id)["add"], body)
+        assert first.status_code == 201 and first.json()["charge_claimed"] is True
+        self._catalog_down(upstreams, org_id)
+        again = await _post(client, _urls(org_id)["add"], body)
+        assert again.status_code == 201, again.text
+        assert again.json()["replayed"] is True and again.json()["charge_claimed"] is True
+        assert len(_posts(upstreams, SUBSCRIBE_PATH)) == 1
+
+    async def test_a_recorded_refusal_replays_during_a_catalogue_outage(
+        self,
+        client: AsyncClient,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        upstreams.json(
+            "POST",
+            SUBSCRIBE_PATH,
+            {"detail": "exists", "errors": [{"code": "already_subscribed", "message": "exists"}]},
+            409,
+        )
+        body = _add_body(world["crm_version"])
+        assert (await _post(client, _urls(org_id)["add"], body)).status_code == 409
+        self._catalog_down(upstreams, org_id)
+        again = await _post(client, _urls(org_id)["add"], body)
+        assert (again.status_code, _code(again)) == (409, "already_subscribed")
+
+    async def test_an_unknown_earlier_attempt_during_an_outage_is_reconciled_or_stays_unknown(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        """An earlier attempt with this key has no recorded answer. With catalog down the request
+        cannot be repeated (the offer cannot be checked), so the key is left `unknown` and the
+        answer says the outcome is unknown — not that nothing changed. Once the live read shows the
+        add landed, the same key reconciles even while catalog is still down."""
+
+        def _timeout(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("timed out", request=request)
+
+        upstreams.on("POST", SUBSCRIBE_PATH, _timeout)
+        body = _add_body(world["crm_version"])
+        assert (await _post(client, _urls(org_id)["add"], body)).status_code == 503
+        self._catalog_down(upstreams, org_id)
+        audits_before = len(await _audits(admin_session, org_id, "%"))
+
+        retry = await _post(client, _urls(org_id)["add"], body)
+        assert retry.status_code == 503 and _code(retry) == "outcome_unknown", retry.text
+        assert "changed nothing" not in retry.json()["detail"]
+        (claim,) = await _claims(admin_session, org_id)
+        assert claim.status == "unknown"
+        assert len(await _audits(admin_session, org_id, "%")) == audits_before
+        assert len(_posts(upstreams, SUBSCRIBE_PATH)) == 1, "never called without the offer"
+
+        _stub_subscriptions(
+            upstreams,
+            org_id,
+            [_opened(world["new_sub"], product_key="crm", plan_version_id=world["crm_version"])],
+        )
+        landed = await _post(client, _urls(org_id)["add"], body)
+        assert landed.status_code == 201, landed.text
+        assert landed.json()["replayed"] is True
+        (claim,) = await _claims(admin_session, org_id)
+        assert claim.status == "succeeded"
+
 
 class TestAddProductConcurrency:
     @pytest_asyncio.fixture

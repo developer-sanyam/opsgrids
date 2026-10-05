@@ -86,7 +86,7 @@ when the live trial ends at the target.
 | 404 | `not_found` (add), `no_subscription` (extend) |
 | 409 | `already_subscribed`, `state_changed`, `request_in_progress`, `idempotency_key_reused` |
 | 422 | `charge_not_acknowledged` (console, before any claim), `not_offerable` (console, recorded), `one_time`, `org_currency_mismatch`, `trial_not_offered`, `not_published`, `product_mismatch`, `bundle`, `not_trial`, `claim_in_flight`, `trial_cap`, `trial_not_extended`, `reserved_reason`; body validation |
-| 503 | `outcome_unknown`, `upstream_refused`, `catalog_unavailable` (add: the offer could not be re-read; nothing was claimed or changed) |
+| 503 | `outcome_unknown`, `upstream_refused`, `catalog_unavailable` (add, fresh key: the offer could not be re-read; nothing was claimed or changed. A retry of a key already used still replays its recorded success or refusal; with no recorded answer it reconciles from the live read, or is `outcome_unknown` — never "changed nothing") |
 
 **Only what is on offer** (the plan switch's review fix, applied to the add): the confirm re-reads
 catalog's offerable set for the product before the claim and, after the replay branches, refuses any
