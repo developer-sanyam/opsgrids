@@ -60,6 +60,12 @@ version that declares `bundled_products` asks product-service's registry
 (`GET /internal/v1/products`, `PRODUCT_SERVICE_URL`) whether every member is a real, non-platform,
 non-bundle product and refuses the draft otherwise (503 if the registry cannot be reached).
 
+## Internal reads (`/internal/v1`, service token)
+
+`GET /internal/v1/organizations/{org_id}/offerable-versions?product_key=` — console's plan picker (console token
+only): active plans' published versions that are public or negotiated for exactly that organization, with plan
+identity and prices (ids and amounts), superseded versions dropped (ADR-0029).
+
 ## Surfaces
 
 - **Customer** (product gateway): `GET /api/v1/plans?product_key=`, `GET /api/v1/catalog/plans/{id}`

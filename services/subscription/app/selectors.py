@@ -66,15 +66,22 @@ async def list_subscriptions(session: AsyncSession, ctx: ScopeContext) -> list[S
 
 
 async def get_subscription(
-    session: AsyncSession, subscription_id: uuid.UUID
+    session: AsyncSession,
+    subscription_id: uuid.UUID,
+    *,
+    organization_id: uuid.UUID | None = None,
 ) -> Subscription | None:
     """One subscription by id, with its items.
 
-    No explicit organization filter is needed to keep tenants apart: the row is invisible under
-    RLS unless the transaction is bound to its organization, so another org's id simply resolves
-    to None — a 404, never a disclosure.
+    The row is invisible under RLS unless the transaction is bound to its organization, so another
+    org's id resolves to None — a 404, never a disclosure. A caller that is told the organization
+    by its payload rather than by a principal (the console's `/internal` routes) passes it as
+    `organization_id` too, so the query filters on it and RLS is the net, not the only guard
+    (CLAUDE.md).
     """
     stmt = _with_items(select(Subscription).where(Subscription.id == subscription_id))
+    if organization_id is not None:
+        stmt = stmt.where(Subscription.organization_id == organization_id)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -467,6 +474,24 @@ async def lock_billing_period(
         )
         .with_for_update()
         .execution_options(populate_existing=True)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def find_billing_period(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    subscription_id: uuid.UUID,
+    kind: str,
+    period_start: datetime,
+) -> BillingPeriod | None:
+    """`lock_billing_period` without the lock — the read-only plan-change preview asks whether
+    the run has claimed a due period, and must not hold a row to find out."""
+    stmt = select(BillingPeriod).where(
+        BillingPeriod.organization_id == organization_id,
+        BillingPeriod.subscription_id == subscription_id,
+        BillingPeriod.kind == kind,
+        BillingPeriod.period_start == period_start,
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 

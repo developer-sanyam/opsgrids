@@ -615,7 +615,8 @@ not fail the check. Changing a product's `status` on the box is exactly the edit
 this fail, so run it after that too.
 
 Bundles are sold only through subscription's operator routes (`POST /internal/v1/subscriptions`,
-`…/{id}/change-plan`, service token); the customer route answers 403. A trial's length is the
+`…/{id}/change-plan`, a service token minted by **console** — a token from any other service is
+refused, ADR-0029); the customer route answers 403. A trial's length is the
 plan version's `trial_days` feature (14 when absent), never the customer's.
 
 ### Inventory Phase 1 (lots, rolls, stock operations): migration and the `operations` permission reconcile
@@ -1179,6 +1180,65 @@ in force for that date; insert the rate (a new row, never an edit) or unset the 
 
 **Tax.** `BILLING_TAX_CODE` / `BILLING_TAX_JURISDICTION` in `.env` choose the `tax_rates` row;
 empty (the default) writes no tax line. Insert the rate row **before** setting the code.
+
+### Staff plan switching (ADR-0029): the billing run must be on, and what to check first
+
+The console's **Change plan** control (`/api/v1/admin/organizations/{id}/plan-options`,
+`.../subscriptions/{product_key}/plan-change:preview` and `.../plan-change`; owner and billing_ops) lets
+staff move a subscription to another plan. A **trial** switches immediately. A **paying** subscription
+switches at its **next billing period**, and an **equal-price** change applies at once — staff cannot force
+"now, prorated"; for goodwill sooner, use *Grant credit*. An equal-price change that applies now on a paying,
+usage-priced subscription is not free: the usage metered so far is closed at the current plan's usage rates
+and invoiced by the billing run (the confirm says so when it happens).
+
+Only versions catalog **offers the organization now** can be chosen: a version superseded by a newer one, or
+of a retired plan, is refused **422 `not_offerable`** even if an operator's open dialog still lists it (the
+dialog then reloads the list). Withdrawing a scheduled change back to the current pin is always allowed. If
+catalog cannot be reached the confirm answers **503 `catalog_unavailable`** and nothing is claimed or changed.
+
+**"Next billing period" only happens while the billing run is running.** The change is stored as a
+pending change and applied when the run claims the next period. So, before the first staff switch on the
+box, confirm from the section above that:
+
+```bash
+# Expect `True`, then the cutover instant, then `None`. `BILLING_RUN_ENABLED` defaults to false.
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T subscription-worker \
+  python -c 'from app.config import settings; s = settings(); print(s.billing_run_enabled, s.billing_run_not_before, s.billing_run_not_before_invalid)'
+```
+
+* `BILLING_RUN_ENABLED=true` and a valid `BILLING_RUN_NOT_BEFORE`. With the run **off**, a scheduled change
+  waits indefinitely, and a change on any subscription whose period is already due is refused with
+  **409 `billing_catching_up`** — which is indefinite then, not "try again shortly".
+* `/health/billing-run` is not climbing (`overdue`, `failing_permanent`). A permanently failing claim also
+  freezes that subscription's plan changes until a person fixes the claim.
+
+Deploy order: **catalog and subscription first, then console** (it runs the migration for
+`console.idempotency_keys`) **and the `opsgrids-internal` frontend**. The admin-gateway is not recreated.
+Rollback is the console and frontend images; the other changes are additive and written rows stay.
+
+What to read when an operator reports a problem:
+
+```sql
+-- console: the claim and its outcome for one staff action (the Idempotency-Key the operator's browser sent)
+SELECT key, status, response, created_at, updated_at FROM console.idempotency_keys
+WHERE organization_id = :org ORDER BY created_at DESC LIMIT 20;
+-- console: every attempt leaves an intent row, then exactly one outcome row
+SELECT at, action, reason, acting_as, after FROM console.audit_logs
+WHERE organization_id = :org AND action LIKE 'subscription.plan_change%' ORDER BY at DESC;
+-- subscription: the scheduled change itself, and its operator
+SELECT id, state, plan_version_id, pending_plan_version_id, pending_change
+FROM subscription.subscriptions WHERE organization_id = :org;
+```
+
+A claim stuck `in_progress` is a request that died mid-call: after 60 seconds a retry with the same key
+reconciles it from a live read. `unknown` means the answer was lost; the operator sees **503
+`outcome_unknown`**, and repeating the same request is safe. A failed **preview** is never `outcome_unknown`
+(it is a read): it answers **503 `preview_unavailable`**, nothing was changed. The operator's reason is on the
+audit rows above (console's, and subscription's `audit_logs.reason`) and **not** on the
+`commerce.subscription.*` event — a customer org's own notification templates render that payload. A
+scheduled change emits **no event**, so the
+account list does not show it — the Change plan card (the live pricing read) does. Product access follows a
+change that has taken effect within about **15 minutes**.
 
 ### Operator MFA: mandatory rollout, the MFA reseal, and the one-off codes
 

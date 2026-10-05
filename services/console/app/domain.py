@@ -114,6 +114,54 @@ def pricing_request_fingerprint(
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+def plan_change_fingerprint(
+    *,
+    organization_id: str,
+    product_key: str,
+    subscription_id: str,
+    plan_version_id: str,
+    expected_state: str,
+    expected_plan_version_id: str,
+    expected_pending_plan_version_id: str | None,
+) -> str:
+    """A stable digest of what a plan-change request *decided*, for the `Idempotency-Key` claim.
+
+    The same key with a different digest is a 409 — never a replay of someone else's answer.
+    Every field that decides what happens is in it: where, to which version, and the state the
+    operator confirmed against. Deliberately **not** in it: `reason` (free text an operator may
+    phrase slightly differently on a retry, which should stay a replay — the same call
+    `pricing_request_fingerprint` makes) and `timing` (`auto` and `next_period` are the same rule,
+    ADR-0029, so they are the same request).
+    """
+    material = json.dumps(
+        {
+            "action": "plan_change",
+            "organization_id": organization_id,
+            "product_key": product_key,
+            "subscription_id": subscription_id,
+            "plan_version_id": plan_version_id,
+            "expected": {
+                "state": expected_state,
+                "plan_version_id": expected_plan_version_id,
+                "pending_plan_version_id": expected_pending_plan_version_id,
+            },
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def recurring_list_price_minor(prices: Sequence[dict[str, Any]]) -> int:
+    """One period's recurring list price for **display**: flat and per-seat components at quantity
+    one, usage ignored — the same rule subscription uses to classify a change's direction
+    (`services._list_price_minor`), restated here because console cannot import another service's
+    code. It labels a plan in the picker; it never decides direction (subscription's preview does)
+    and never prices anything."""
+    return sum(
+        int(p.get("amount_minor") or 0) for p in prices if p.get("kind") in ("flat", "per_seat")
+    )
+
+
 def _is_stale(entry: dict[str, Any], occurred_at: str | None) -> bool:
     """True when `occurred_at` predates (or ties) what the entry already reflects.
 

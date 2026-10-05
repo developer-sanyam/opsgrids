@@ -6,8 +6,8 @@ themselves are the authority — this page exists so you can find the right one 
 **Every question an ADR left open is decided or recorded as waiting on demand** in
 [adr/open-questions-register.md](adr/open-questions-register.md). That page links each question
 to the ADR section that decides it and to the backlog item that builds it. Numbers are allocated in
-order and never reused. The next free number is **0029** (0027 is allocated to the inventory Phase 9
-work, which has not merged). This table was last brought up to date at 0019, apart from 0028 below;
+order and never reused. The next free number is **0030** (0027 is allocated to the inventory Phase 9
+work, which has not merged). This table was last brought up to date at 0019, apart from 0028 and 0029 below;
 [`adr/`](adr/) is the complete list.
 
 | ADR | Title | Header status | What exists today |
@@ -33,6 +33,8 @@ work, which has not merged). This table was last brought up to date at 0019, apa
 | [0018](adr/0018-domain-verification-lifecycle.md) | Email-domain verification lifecycle | Accepted | Built (P1) |
 | [0019](adr/0019-statutory-portal-credentials.md) | Statutory portal credentials live in finance | Accepted 2026-09-24 | Not built; B5 (5b) |
 | [0028](adr/0028-putaway-gps-captures.md) | Storage put-away: GPS captures are audit evidence, kept 30 days | Accepted 2026-10-05 | Built on `feat/warehouse-map-putaway`, not deployed; the admin-run purge is `tools/purge_putaway_captures.py`. The reveal's one-time-code requirement was added in review and is an open owner decision (keep or revert) |
+
+| [0029](adr/0029-staff-plan-control.md) | Staff plan control: what staff may change, and what every change is made of | Accepted 2026-10-06 | Built on `feat/admin-plan-switch` (hardening and plan switching), not deployed; cancel, add-product, extend-trial and the Plans page are later releases. Amends ADR-0005 addendum §4 (a deferred change's event is labelled by direction) |
 
 Several header status lines (0002, 0004, 0006, 0007, 0009, 0010, 0012) were written before the
 work they describe shipped. The "What exists today" column is the current fact. Correcting the

@@ -136,8 +136,13 @@ function baseProductPricing(organizationId: string, productKey: string, productN
           id: sub.subscription_id,
           state: sub.state,
           plan_version_id: sub.plan_version_id,
+          plan_name: planVersionById(sub.plan_version_id)?.plan_name ?? null,
           trial_ends_at: sub.trial_ends_at,
           current_period_end: sub.current_period_end,
+          pending_plan_version_id: null,
+          pending_plan_name: null,
+          cancel_at: null,
+          entitled_products: planVersionById(sub.plan_version_id)?.bundled_products ?? [productKey],
         }
       : null,
     current_price: currentPriceFor(sub),
@@ -234,6 +239,23 @@ export function applyFixturePrice(organizationId: string, request: SetPriceReque
       hasSubscription && request.apply_to_subscription ? (product.subscription?.id ?? null) : null,
     effective,
   };
+}
+
+/**
+ * Edit one product's live pricing entry in place — how the plan-switch fixtures (`planChange.ts`)
+ * make a switch visible to the next read, the same round trip the live gateway gives. Returns
+ * false when the organization or the product has no entry to edit.
+ */
+export function editProductPricing(
+  organizationId: string,
+  productKey: string,
+  edit: (product: ProductPricing) => void,
+): boolean {
+  const entry = ensurePricing(organizationId);
+  const product = entry?.products.find((p) => p.product_key === productKey);
+  if (!product) return false;
+  edit(product);
+  return true;
 }
 
 /** Test-only: fixtures modules are singletons for the app's lifetime, but a test suite needs each
