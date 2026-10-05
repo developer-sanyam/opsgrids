@@ -2,21 +2,24 @@
 
 Five things are decided here:
 
-1. **What a merchant's credentials must look like** (`mode_for_key_id`, `valid_secret`,
-   `mask_secret`). Razorpay key ids carry their mode in the prefix (`rzp_test_` / `rzp_live_`),
-   so the mode is derived, never asserted separately.
+1. **What a merchant's credentials must look like, per provider** (`ProviderSpec`,
+   `validate_credentials`, `mask_secret`). Razorpay key ids carry their mode in the prefix
+   (`rzp_test_` / `rzp_live_`), so the mode is derived, never asserted separately; a Cashfree App ID
+   carries none, so the merchant chooses Sandbox or Production and only an obvious mismatch with
+   the key's shape is refused.
 2. **What an observation of the provider does to a collection** (`decide`). A collection is a
-   Razorpay *Order* the customer pays in Checkout, and an Order can take several payment attempts
-   — a wrong OTP, then a successful retry. So unlike a platform charge, a collection may go
-   `failed → captured` on a *different* payment of the same Order, and a late failure of an
-   older attempt must never undo a capture. `cancelled` and `expired` are this platform's own
-   decisions: a capture that lands after them is still recorded, because the money moved.
-3. **Which provider words mean which state** (`COLLECTION_EVENT_OUTCOMES`,
-   `state_for_provider_status`, `refund_state_for_provider_status`) — the only place collections
-   knows Razorpay's vocabulary.
-4. **What of a webhook body is kept** (`redact_webhook_body`). The inbox is append-only; a
-   merchant webhook names the tenant's own customer (email, phone, card, UPI handle), and that
-   must never be written somewhere it can never be erased.
+   provider *Order* the customer pays in the provider's checkout, and an Order can take several
+   payment attempts — a wrong OTP, then a successful retry. So unlike a platform charge, a
+   collection may go `failed → captured` on a *different* payment of the same Order, and a late
+   failure of an older attempt must never undo a capture. `cancelled` and `expired` are this
+   platform's own decisions: a capture that lands after them is still recorded, because the money
+   moved.
+3. **Which neutral payment status means which state** (`state_for_provider_status`). A provider's
+   own words — event names, refund statuses, where an error code sits, what of a webhook body is
+   kept — live with its adapter (ADR-0030: `app/providers/razorpay_collections.py`,
+   `app/providers/cashfree_collections.py`), which hands collections `CollectionWebhookFacts` in
+   the platform's vocabulary.
+4. **What a refund's provider key is** (`refund_idempotency_key`), in each provider's own shape.
 5. **Whether this platform's record agrees with the provider's** (`reconcile_one`) — read-only,
    a list of stable mismatch codes, never a correction.
 """
@@ -25,8 +28,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 from app.domain import WebhookNotApplied, illegal_transition, provider_id_conflict
 from app.models import (
@@ -38,11 +41,14 @@ from app.models import (
     CHARGE_FAILED,
     MERCHANT_MODE_LIVE,
     MERCHANT_MODE_TEST,
-    REFUND_CREATED,
-    REFUND_FAILED,
-    REFUND_PROCESSED,
 )
-from app.providers.base import PaymentSnapshot
+from app.providers import cashfree_codec
+from app.providers import cashfree_collections as cashfree
+from app.providers import razorpay_collections as razorpay
+from app.providers.base import PaymentSnapshot, valid_phone
+
+# Re-exported where collections has always found it: Razorpay's webhook allow-list
+# (`app.providers.razorpay.redact_webhook_body`, shared with the platform inbox).
 from app.providers.razorpay import redact_webhook_body
 
 # --- what a collection is for ---------------------------------------------------------------
@@ -52,7 +58,86 @@ REFERENCE_OPERATIONS_ORDER = "operations.order"
 REFERENCE_TYPES: frozenset[str] = frozenset({REFERENCE_OPERATIONS_ORDER})
 
 PROVIDER_RAZORPAY = "razorpay"
-PROVIDERS: frozenset[str] = frozenset({PROVIDER_RAZORPAY})
+PROVIDER_CASHFREE = "cashfree"
+PROVIDERS: frozenset[str] = frozenset({PROVIDER_RAZORPAY, PROVIDER_CASHFREE})
+
+# --- the merchant webhook --------------------------------------------------------------------
+
+#: The neutral public path every merchant webhook is delivered to (`?account=<id>` names the
+#: account, and the account row — never the URL or the body — names the provider).
+WEBHOOK_PATH = "/api/v1/webhooks/collections"
+#: The path Razorpay merchants registered before there was a second provider. Kept forever as an
+#: alias onto the same handler: a merchant's dashboard is not ours to edit.
+LEGACY_RAZORPAY_WEBHOOK_PATH = "/api/v1/webhooks/razorpay/collections"
+#: Cashfree's ceiling on `order_meta.notify_url`.
+NOTIFY_URL_MAX = 250
+
+
+def webhook_url(public_api_base: str, account_id: object, path: str = WEBHOOK_PATH) -> str:
+    """The absolute URL a merchant registers (and a Cashfree Order is told to notify): the
+    platform's public `/api/v1` base, the webhook path, and the account."""
+    return f"{public_api_base.rstrip('/')}{path.removeprefix('/api/v1')}?account={account_id}"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderSpec:
+    """What collections must know about a provider **before** an adapter is built — in a claim's
+    transaction, from the account row alone. Everything else about the provider is its adapter's.
+    """
+
+    name: str
+    #: Razorpay signs deliveries with a webhook secret the merchant chooses; Cashfree signs them
+    #: with the API Secret Key, so a Cashfree account holds one secret, not two.
+    has_webhook_secret: bool
+    #: Cashfree will not create an Order without the paying customer (an id and a phone).
+    requires_payer: bool
+    #: The browser's handle is a short-lived token fetched from the provider every time a checkout
+    #: is (re)opened (Cashfree's `payment_session_id`, never stored) rather than the Order id the
+    #: platform keeps (Razorpay).
+    reopen_asks_provider: bool
+    #: What the merchant subscribes to on the webhook it registers.
+    webhook_events: tuple[str, ...]
+    #: The provider's refund key for a refund whose identity hashes to a hex digest.
+    refund_key: Callable[[str], str]
+    #: The (lower-cased) header a delivery's signature travels in — kept on the inbox row.
+    signature_header: str
+    #: The path a merchant is shown to register. Both paths reach one handler, which takes the
+    #: provider from the account row; a Razorpay account keeps showing the path every Razorpay
+    #: merchant already registered.
+    webhook_path: str
+
+
+RAZORPAY = ProviderSpec(
+    name=PROVIDER_RAZORPAY,
+    has_webhook_secret=True,
+    requires_payer=False,
+    reopen_asks_provider=False,
+    webhook_events=razorpay.WEBHOOK_EVENTS,
+    refund_key=razorpay.refund_key,
+    signature_header=razorpay.SIGNATURE_HEADER,
+    webhook_path=LEGACY_RAZORPAY_WEBHOOK_PATH,
+)
+CASHFREE = ProviderSpec(
+    name=PROVIDER_CASHFREE,
+    has_webhook_secret=False,
+    requires_payer=True,
+    reopen_asks_provider=True,
+    webhook_events=cashfree.WEBHOOK_EVENTS,
+    refund_key=cashfree.refund_key,
+    signature_header=cashfree.SIGNATURE_HEADER,
+    webhook_path=WEBHOOK_PATH,
+)
+_SPECS: dict[str, ProviderSpec] = {RAZORPAY.name: RAZORPAY, CASHFREE.name: CASHFREE}
+
+
+def spec_for(provider: str) -> ProviderSpec:
+    """The spec of a provider an account row names. A row naming anything else is a defect (the
+    database CHECK refuses one), raised rather than guessed at."""
+    try:
+        return _SPECS[provider]
+    except KeyError:
+        raise ValueError(f"{provider!r} is not a collections provider") from None
+
 
 # --- events (never `commerce.payment.*`: a merchant's failure must never suspend anyone) ------
 
@@ -63,10 +148,16 @@ EVT_COLLECTION_REFUNDED = "payment.collections.payment.refunded"
 # --- credentials -----------------------------------------------------------------------------
 
 _KEY_ID = re.compile(r"^rzp_(test|live)_[A-Za-z0-9]{6,40}$")
-#: Printable ASCII, no whitespace, a sane length: what a Razorpay key secret or a webhook secret
-#: a person chose looks like. Anything else is refused before it is ever sealed.
+#: Printable ASCII, no whitespace, a sane length: what a Razorpay key secret, a webhook secret a
+#: person chose or a Cashfree Secret Key looks like. Anything else is refused before it is sealed.
 _SECRET = re.compile(r"^[\x21-\x7e]{8,128}$")
+#: A Cashfree App ID: a sanity check only (no prefix rule — Cashfree documents none), letters,
+#: digits, `_` and `-`.
+_APP_ID = re.compile(r"^[A-Za-z0-9_-]{4,64}$")
 _MASK_BULLETS = "••••"
+
+#: The environments a merchant chooses for a Cashfree account, and the platform mode each is.
+CASHFREE_MODES: dict[str, str] = {"sandbox": MERCHANT_MODE_TEST, "production": MERCHANT_MODE_LIVE}
 
 
 def mode_for_key_id(key_id: str) -> str | None:
@@ -79,6 +170,93 @@ def mode_for_key_id(key_id: str) -> str | None:
 
 def valid_secret(value: str) -> bool:
     return _SECRET.fullmatch(value) is not None
+
+
+class CredentialProblem(ValueError):
+    """A merchant's credentials are not what the provider's would look like, or are not allowed
+    here. The message names the field and never echoes a secret."""
+
+
+def validate_credentials(
+    provider: str,
+    *,
+    key_id: str,
+    key_secret: str,
+    webhook_secret: str | None,
+    mode: str | None,
+    allow_live: bool,
+) -> str:
+    """The account's mode (`test` / `live`), or a `CredentialProblem` naming what is wrong.
+
+    * **Razorpay** — the key id's prefix is the mode (`mode` must not be given: it cannot
+      disagree with the key), a webhook secret is required, and live keys need `allow_live`.
+    * **Cashfree** — the merchant chooses `sandbox` or `production` (an App ID does not say), the
+      Secret Key signs webhooks so no webhook secret is accepted, Production needs `allow_live`,
+      and keys whose shape plainly belongs to the other environment are refused (a safe
+      false-refuse, never a reason to let a key through)."""
+    if provider not in PROVIDERS:
+        raise CredentialProblem(f"{provider!r} is not a supported payment provider")
+    if not valid_secret(key_secret):
+        raise CredentialProblem("key_secret must be 8-128 printable characters with no spaces")
+    if provider == PROVIDER_RAZORPAY:
+        derived = mode_for_key_id(key_id)
+        if derived is None:
+            raise CredentialProblem("key_id must be a Razorpay key id (rzp_test_… or rzp_live_…)")
+        if mode is not None:
+            raise CredentialProblem("mode is not set for Razorpay: the key id says it")
+        if derived == MERCHANT_MODE_LIVE and not allow_live:
+            raise CredentialProblem(
+                "Live Razorpay keys are not enabled on this platform yet; connect test-mode keys "
+                "(rzp_test_…)"
+            )
+        if webhook_secret is None or not valid_secret(webhook_secret):
+            raise CredentialProblem(
+                "webhook_secret must be 8-128 printable characters with no spaces"
+            )
+        return derived
+    if not _APP_ID.fullmatch(key_id):
+        raise CredentialProblem(
+            "key_id must be a Cashfree App ID: 4-64 letters, digits, '_' or '-'"
+        )
+    if webhook_secret is not None:
+        raise CredentialProblem(
+            "webhook_secret is not set for Cashfree: its Secret Key signs every webhook"
+        )
+    if mode not in CASHFREE_MODES:
+        raise CredentialProblem("mode must be sandbox or production for Cashfree")
+    platform_mode = CASHFREE_MODES[mode]
+    if platform_mode == MERCHANT_MODE_LIVE and not allow_live:
+        raise CredentialProblem(
+            "Cashfree Production is not enabled on this platform yet; connect a Sandbox account"
+        )
+    if mode == "sandbox" and cashfree_codec.production_shaped(key_secret):
+        raise CredentialProblem(
+            "These look like Production keys; choose Production, or use the Sandbox keys"
+        )
+    if mode == "production" and cashfree_codec.sandbox_shaped(key_id, key_secret):
+        raise CredentialProblem(
+            "These look like Sandbox keys; choose Sandbox, or use the Production keys"
+        )
+    return platform_mode
+
+
+def checkout_mode(mode: str) -> str:
+    """A Cashfree account's platform mode as its SDK names it (`Cashfree({mode})`)."""
+    return "production" if mode == MERCHANT_MODE_LIVE else "sandbox"
+
+
+#: Characters an operator types between a phone's digits that are not part of the number.
+_PHONE_SEPARATORS = re.compile(r"[\s().-]")
+
+
+def normalize_phone(raw: str | None) -> str | None:
+    """A customer phone as a provider takes it — 10 digits, or `+` and 8-15 digits — with the
+    spaces, dots, dashes and brackets a person types removed; None when what is left is not one.
+    Nothing is ever added: a phone is never invented, completed or guessed."""
+    if not raw:
+        return None
+    candidate = _PHONE_SEPARATORS.sub("", raw.strip())
+    return candidate if valid_phone(candidate) else None
 
 
 def mask_secret(value: str) -> str:
@@ -95,28 +273,22 @@ def seal_aad(organization_id: object, account_id: object, field: str) -> bytes:
     return f"payment.merchant_account:{organization_id}:{account_id}:{field}".encode()
 
 
-def refund_idempotency_key(organization_id: object, charge_id: object, caller_key: str) -> str:
-    """The provider's refund idempotency key for a caller's key: stable (a retry is the same
-    refund at Razorpay), scoped to one charge (the same caller key on two charges is two
-    refunds), and inside Razorpay's own shape — at least 10 of `[A-Za-z0-9_-]`."""
+def refund_idempotency_key(
+    organization_id: object, charge_id: object, caller_key: str, provider: str = PROVIDER_RAZORPAY
+) -> str:
+    """The provider's refund key for a caller's key: stable (a retry is the same refund at the
+    provider), scoped to one charge (the same caller key on two charges is two refunds), and in the
+    provider's own shape — Razorpay's `X-Refund-Idempotency` (`rfd-` and 40 hex, unchanged) or
+    Cashfree's `refund_id` (`rfd` and 36 hex: 3-40 alphanumeric). Also what the refund row is found
+    again by (`refunds.idempotency_key`)."""
     digest = hashlib.sha256(f"{organization_id}:{charge_id}:{caller_key}".encode()).hexdigest()
-    return f"rfd-{digest[:40]}"
+    return spec_for(provider).refund_key(digest)
 
 
-# --- provider vocabulary ---------------------------------------------------------------------
+# --- the neutral payment vocabulary ----------------------------------------------------------
 
-#: Razorpay event name → the collection outcome it asserts. `order.paid` carries the payment
-#: entity too, and means exactly what `payment.captured` does for an Order-based payment.
-COLLECTION_EVENT_OUTCOMES: dict[str, str] = {
-    "payment.authorized": CHARGE_AUTHORIZED,
-    "payment.captured": CHARGE_CAPTURED,
-    "payment.failed": CHARGE_FAILED,
-    "order.paid": CHARGE_CAPTURED,
-}
-#: Razorpay refund events. Their `payload.refund.entity` is the refund; `payload.payment.entity`
-#: the payment it returns money from.
-REFUND_EVENTS: frozenset[str] = frozenset({"refund.created", "refund.processed", "refund.failed"})
-
+#: `PaymentSnapshot.status` is in the neutral vocabulary every adapter maps its provider's own
+#: statuses into (`app/providers/base.py`); this is what each means for a collection.
 _PAYMENT_STATUS_STATES: dict[str, str] = {
     "created": CHARGE_CREATED,
     "authorized": CHARGE_AUTHORIZED,
@@ -126,22 +298,10 @@ _PAYMENT_STATUS_STATES: dict[str, str] = {
     "refunded": CHARGE_CAPTURED,
     "failed": CHARGE_FAILED,
 }
-_REFUND_STATUS_STATES: dict[str, str] = {
-    "pending": REFUND_CREATED,
-    "created": REFUND_CREATED,
-    "processed": REFUND_PROCESSED,
-    "failed": REFUND_FAILED,
-}
 
 
 def state_for_provider_status(status: str) -> str | None:
     return _PAYMENT_STATUS_STATES.get(status)
-
-
-def refund_state_for_provider_status(status: str | None) -> str:
-    """A refund whose status the provider did not say (or said in words this code does not
-    know) is `created` — pending, the one state that claims nothing about the outcome."""
-    return _REFUND_STATUS_STATES.get(status or "", REFUND_CREATED)
 
 
 # --- the collection state machine ------------------------------------------------------------
@@ -274,57 +434,6 @@ def observation_from_snapshot(snapshot: PaymentSnapshot, order_id: str) -> Obser
     )
 
 
-def payment_error_code(parsed: dict[str, Any]) -> str | None:
-    """The stable `error_code` of a webhook's payment entity (a free-text description is never
-    what the history records)."""
-    payload = parsed.get("payload")
-    wrapper = payload.get("payment") if isinstance(payload, dict) else None
-    entity = wrapper.get("entity") if isinstance(wrapper, dict) else None
-    code = entity.get("error_code") if isinstance(entity, dict) else None
-    return code[:64] if isinstance(code, str) and code else None
-
-
-# --- webhook body redaction ------------------------------------------------------------------
-# The allow-list itself lives with the adapter that knows Razorpay's payload shape
-# (`app.providers.razorpay.redact_webhook_body`): platform billing's inbox needs the very same
-# reduction since Phase A, and the two must never drift. Re-exported here, where collections
-# has always found it (see `__all__`).
-
-
-@dataclass(frozen=True, slots=True)
-class RefundFacts:
-    """A refund entity from a verified refund webhook — ids, money and status only."""
-
-    provider_refund_id: str
-    provider_payment_id: str | None
-    amount_minor: int | None
-    currency: str | None
-    status: str | None
-
-
-def refund_facts(parsed: dict[str, Any]) -> RefundFacts | None:
-    payload = parsed.get("payload")
-    wrapper = payload.get("refund") if isinstance(payload, dict) else None
-    entity = wrapper.get("entity") if isinstance(wrapper, dict) else None
-    if not isinstance(entity, dict):
-        return None
-    refund_id = entity.get("id")
-    if not isinstance(refund_id, str) or not refund_id:
-        return None
-
-    def _text(value: Any) -> str | None:
-        return value if isinstance(value, str) and value else None
-
-    amount = entity.get("amount")
-    return RefundFacts(
-        provider_refund_id=refund_id,
-        provider_payment_id=_text(entity.get("payment_id")),
-        amount_minor=amount if isinstance(amount, int) and not isinstance(amount, bool) else None,
-        currency=(_text(entity.get("currency")) or "").upper() or None,
-        status=_text(entity.get("status")),
-    )
-
-
 # --- reconciliation (read-only) --------------------------------------------------------------
 
 MISMATCH_CAPTURED_AT_PROVIDER_ONLY = "captured_at_provider_only"
@@ -367,18 +476,24 @@ def reconcile_one(
 
 
 __all__ = [
-    "COLLECTION_EVENT_OUTCOMES",
+    "CASHFREE",
     "EVT_COLLECTION_CAPTURED",
     "EVT_COLLECTION_FAILED",
     "EVT_COLLECTION_REFUNDED",
     "NOOP",
+    "RAZORPAY",
     "REFERENCE_OPERATIONS_ORDER",
+    "CredentialProblem",
     "Decision",
     "Observation",
+    "ProviderSpec",
     "WebhookNotApplied",
     "decide",
     "mask_secret",
     "mode_for_key_id",
+    "normalize_phone",
     "reconcile_one",
     "redact_webhook_body",
+    "spec_for",
+    "validate_credentials",
 ]

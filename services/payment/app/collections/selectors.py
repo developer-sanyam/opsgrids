@@ -32,6 +32,7 @@ from app.models import (
     REFUND_FAILED,
     Charge,
     MerchantAccount,
+    ProviderEvent,
     Refund,
     StatusHistory,
 )
@@ -90,6 +91,35 @@ async def merchant_account_by_id(
         MerchantAccount.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def count_open_collections(
+    session: AsyncSession, organization_id: uuid.UUID, account_id: uuid.UUID
+) -> int:
+    """How many collections taken into this account a customer could still pay — `created`,
+    `authorized` or `failed` (a failed attempt's Order takes a retry). What blocks a disconnect."""
+    stmt = select(func.count()).where(
+        Charge.organization_id == organization_id,
+        Charge.payee == PAYEE_MERCHANT,
+        Charge.merchant_account_id == account_id,
+        Charge.state.in_(("created", "authorized", "failed")),
+    )
+    return int((await session.execute(stmt)).scalar_one())
+
+
+async def last_webhook_at(
+    session: AsyncSession, organization_id: uuid.UUID, account: MerchantAccount
+) -> datetime | None:
+    """When the inbox last recorded a delivery from this account's provider for this organization
+    since the account was connected — "is my webhook reaching you?", derived, never stored."""
+    stmt = select(func.max(ProviderEvent.received_at)).where(
+        ProviderEvent.organization_id == organization_id,
+        ProviderEvent.payee == PAYEE_MERCHANT,
+        ProviderEvent.provider == account.provider,
+        ProviderEvent.received_at >= account.created_at,
+    )
+    found: datetime | None = (await session.execute(stmt)).scalar_one_or_none()
+    return found
 
 
 async def lock_collection(

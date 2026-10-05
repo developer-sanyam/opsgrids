@@ -50,6 +50,26 @@ PROVIDER = "cashfree"
 #: designed from names; the owner-run smoke tool prints whether the account accepts it.
 API_VERSION = "2025-01-01"
 
+#: Cashfree's credential shapes, as far as third-party sources describe them: a Secret Key is
+#: `cfsk_ma_test_…` or `cfsk_ma_prod_…`, and a sandbox App ID starts `TEST`. Used only to refuse an
+#: obvious mismatch (production keys on a sandbox switch, test keys on a production one) — a key
+#: that matches neither is judged by the switch alone, and a mismatch is a safe false-refuse, never
+#: a reason to let a key through. Shared by the platform's settings and a merchant's connect form.
+SECRET_TEST_PREFIX = "cfsk_ma_test_"  # noqa: S105  # pragma: allowlist secret
+SECRET_PROD_PREFIX = "cfsk_ma_prod_"  # noqa: S105  # pragma: allowlist secret
+APP_ID_TEST_PREFIX = "TEST"
+
+
+def production_shaped(secret: str) -> bool:
+    """Whether a Secret Key looks like a production one."""
+    return secret.startswith(SECRET_PROD_PREFIX)
+
+
+def sandbox_shaped(app_id: str, secret: str) -> bool:
+    """Whether an App ID / Secret Key pair looks like a sandbox one."""
+    return secret.startswith(SECRET_TEST_PREFIX) or app_id.startswith(APP_ID_TEST_PREFIX)
+
+
 #: Minor-unit exponent per ISO currency this adapter will convert. INR only (owner decision).
 CURRENCY_EXPONENTS: dict[str, int] = {"INR": 2}
 #: The largest amount, in major units, an inbound number may be: a defence against a body whose
@@ -183,6 +203,37 @@ PAYMENT_STATUS_STATES: dict[str, str] = {
 #: The PG webhook types that assert an outcome, and what. Anything else — `PAYMENT_FAILED`,
 #: `PAYMENT_USER_DROPPED`, settlement and refund events — asserts none here: the poll settles it.
 EVENT_OUTCOMES: dict[str, str] = {"PAYMENT_SUCCESS": "captured"}
+
+#: Tenant collections reads one more (ADR-0030): a collection's Order takes several attempts, and
+#: its state machine records a failed attempt — bound to that attempt's own payment id — without
+#: ever letting it undo a capture (`app.collections.domain.decide`). `PAYMENT_USER_DROPPED` (the
+#: customer closed the page) is **never** a failure: the Order is still payable.
+COLLECTION_EVENT_OUTCOMES: dict[str, str] = {
+    "PAYMENT_SUCCESS": "captured",
+    "PAYMENT_FAILED": "failed",
+}
+#: The refund webhook type (`REFUND_STATUS_WEBHOOK`, suffix dropped). An automatic refund of a late
+#: payment (`AUTO_REFUND_STATUS`) and settlement events assert nothing collections acts on.
+REFUND_EVENTS: frozenset[str] = frozenset({"REFUND_STATUS"})
+
+#: Cashfree refund status → the platform's refund states. Anything still moving is `created`
+#: (pending), the one state that claims nothing about the outcome.
+REFUND_STATUS_STATES: dict[str, str] = {
+    "SUCCESS": "processed",
+    "PENDING": "created",
+    "PENDING_APPROVAL": "created",
+    "ONHOLD": "created",
+    "INITIATED": "created",
+    "CANCELLED": "failed",
+    "REJECTED": "failed",
+    "FAILED": "failed",
+}
+
+
+def refund_state(status: Any) -> str:
+    """A Cashfree refund status in the platform's refund vocabulary; an unknown one is `created`."""
+    return REFUND_STATUS_STATES.get(str(status or "").upper(), "created")
+
 
 _EVENT_SUFFIX = "_WEBHOOK"
 
@@ -333,4 +384,38 @@ def redact_webhook_body(parsed: dict[str, Any]) -> dict[str, Any]:
         payment_out[_KEEP_PAYMENT_AMOUNT] = paid
 
     kept["data"] = {"order": order_out, "payment": payment_out}
+    error_code = as_text(as_dict(data.get("error_details")).get("error_code"))
+    if error_code is not None:
+        # The stable code only: `error_description` and `error_reason` are free text.
+        kept["data"]["error_details"] = {"error_code": error_code[:64]}
+    refund = data.get("refund")
+    if isinstance(refund, dict):
+        kept["data"]["refund"] = _redact_refund(refund)
     return kept
+
+
+_KEEP_REFUND: tuple[str, ...] = (
+    "cf_refund_id",
+    "refund_id",
+    "cf_payment_id",
+    "order_id",
+    "refund_currency",
+    "refund_status",
+    "refund_type",
+    "created_at",
+    "processed_at",
+)
+
+
+def _redact_refund(refund: dict[str, Any]) -> dict[str, Any]:
+    """A refund entity (`REFUND_STATUS_WEBHOOK`) reduced to ids, money and status — no note, no
+    bank reference (`refund_arn`), no free-text `status_description`."""
+    out: dict[str, Any] = {}
+    for key in _KEEP_REFUND:
+        text = as_text(refund.get(key))
+        if text is not None:
+            out[key] = text
+    amount = _amount_text(refund.get("refund_amount"), refund.get("refund_currency"))
+    if amount is not None:
+        out["refund_amount"] = amount
+    return out

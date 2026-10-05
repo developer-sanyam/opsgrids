@@ -33,6 +33,7 @@ from app.providers import cashfree_codec as codec
 from app.providers.wire import ProviderMisconfigured, ProviderRejected
 
 _ORDER_ID = re.compile(r"^[A-Za-z0-9_-]{3,45}$")
+_REFUND_ID = re.compile(r"^[A-Za-z0-9]{3,40}$")
 _PHONE = re.compile(r"^(?:[0-9]{10}|\+[0-9]{8,15})$")
 
 PROVIDER = "cashfree"
@@ -48,6 +49,9 @@ class CashfreeFakeWire:
         self.payments: dict[str, list[dict[str, Any]]] = {}
         self._idempotency: dict[str, str] = {}
         self._cf_ids = itertools.count(1_000_001)
+        #: Refunds by `order_id`, oldest first (tenant collections, ADR-0030).
+        self.refunds: dict[str, list[dict[str, Any]]] = {}
+        self._cf_refund_ids = itertools.count(5_000_001)
         #: Every request made, `(method, path)`: what a test asserts the adapter did and did not do.
         self.requests: list[tuple[str, str]] = []
         #: Set to make every call answer as a rejected-credentials `401`.
@@ -89,6 +93,14 @@ class CashfreeFakeWire:
     def expire(self, order_id: str) -> None:
         self.orders[order_id]["order_status"] = "EXPIRED"
 
+    def settle_refund(self, order_id: str, refund_id: str, status: str = "SUCCESS") -> None:
+        """What Cashfree does to a refund later (`SUCCESS`, `CANCELLED`, …)."""
+        for refund in self.refunds.get(order_id, []):
+            if refund["refund_id"] == refund_id:
+                refund["refund_status"] = status
+                return
+        raise KeyError(refund_id)
+
     # -- the API -------------------------------------------------------------------------
 
     def request(
@@ -113,7 +125,71 @@ class CashfreeFakeWire:
         if method == "GET" and len(parts) == 3 and parts[0] == "orders" and parts[2] == "payments":
             self._get_order(parts[1])
             return codec.loads(codec.dumps(list(self.payments.get(parts[1], []))))
+        if method == "POST" and len(parts) == 3 and parts[0] == "orders" and parts[2] == "refunds":
+            return self._create_refund(parts[1], json, content, headers or {})
+        if method == "GET" and len(parts) == 4 and parts[0] == "orders" and parts[2] == "refunds":
+            return self._get_refund(parts[1], parts[3])
         raise ProviderRejected(PROVIDER, 404, "endpoint_not_found")
+
+    def _get_refund(self, order_id: str, refund_id: str) -> dict[str, Any]:
+        self._get_order(order_id)
+        for refund in self.refunds.get(order_id, []):
+            if refund["refund_id"] == refund_id:
+                result: dict[str, Any] = codec.loads(codec.dumps(refund))
+                return result
+        raise ProviderRejected(PROVIDER, 404, "refund_not_found")
+
+    def _create_refund(
+        self, order_id: str, body: Any, content: bytes | None, headers: dict[str, str]
+    ) -> dict[str, Any]:
+        """`POST /orders/{id}/refunds`: Cashfree's own rules as the docs state them — a 3-40
+        character alphanumeric `refund_id` unique per Order (a duplicate is a `409`, unless the
+        `x-idempotency-key` is the one it was made under: the same refund, replayed), an amount no
+        larger than what the Order's successful payment has left unrefunded."""
+        order = self.orders.get(order_id)
+        if order is None:
+            raise ProviderRejected(PROVIDER, 404, "order_not_found")
+        payload = codec.loads(content if content is not None else codec.dumps(body))
+        refund_id = payload.get("refund_id")
+        amount = payload.get("refund_amount")
+        if not isinstance(refund_id, str) or not _REFUND_ID.fullmatch(refund_id):
+            raise ProviderRejected(PROVIDER, 400, "refund_id_invalid")
+        if not isinstance(amount, Decimal | int) or isinstance(amount, bool) or amount <= 0:
+            raise ProviderRejected(PROVIDER, 400, "refund_amount_invalid")
+        key = headers.get("x-idempotency-key")
+        existing = self.refunds.setdefault(order_id, [])
+        for refund in existing:
+            if refund["refund_id"] == refund_id:
+                if key is not None and self._idempotency.get(key) == f"refund:{refund_id}":
+                    return self._get_refund(order_id, refund_id)
+                raise ProviderRejected(PROVIDER, 409, "refund_already_exists")
+        paid = next(
+            (p for p in self.payments.get(order_id, []) if p["payment_status"] == "SUCCESS"), None
+        )
+        if paid is None:
+            raise ProviderRejected(PROVIDER, 400, "refund_not_allowed")
+        standing = sum(
+            (Decimal(r["refund_amount"]) for r in existing if r["refund_status"] != "CANCELLED"),
+            Decimal(0),
+        )
+        if standing + Decimal(amount) > Decimal(order["order_amount"]):
+            raise ProviderRejected(PROVIDER, 400, "refund_amount_exceeded")
+        existing.append(
+            {
+                "cf_refund_id": next(self._cf_refund_ids),
+                "cf_payment_id": paid["cf_payment_id"],
+                "refund_id": refund_id,
+                "order_id": order_id,
+                "refund_amount": Decimal(amount),
+                "refund_currency": order["order_currency"],
+                "refund_status": "PENDING",
+                "refund_speed": payload.get("refund_speed"),
+                "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            }
+        )
+        if key is not None:
+            self._idempotency[key] = f"refund:{refund_id}"
+        return self._get_refund(order_id, refund_id)
 
     def _get_order(self, order_id: str) -> dict[str, Any]:
         order = self.orders.get(order_id)

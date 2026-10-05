@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -57,7 +57,6 @@ from app.models import (
     INBOX_PROCESSED,
     MERCHANT_ACCOUNT_ACTIVE,
     MERCHANT_ACCOUNT_REMOVED,
-    MERCHANT_MODE_LIVE,
     PAYEE_MERCHANT,
     REFUND_CREATED,
     REFUND_FAILED,
@@ -69,6 +68,8 @@ from app.models import (
     StatusHistory,
 )
 from app.providers.base import (
+    CheckoutCustomer,
+    CollectionRefundFacts,
     CollectionsProvider,
     MalformedWebhook,
     OrderResult,
@@ -77,6 +78,7 @@ from app.providers.base import (
     RefundResult,
     best_attempt,
 )
+from app.providers.wire import ProviderMisconfigured, ProviderRejected, ProviderTransient
 from app.schemas import WebhookAck
 from platform_core import pii
 from platform_core.audit import record_audit
@@ -112,6 +114,39 @@ class ProviderUnreachableProblem(UpstreamUnavailableProblem):
     """The provider did not answer in time, or at all. What it did is unknown; every call here is
     safe to repeat (an Order is looked up by receipt before one is created; a refund carries an
     idempotency key), so the answer is "try again"."""
+
+
+class PayerRequiredProblem(ValidationProblem):
+    """The connected provider will not create an Order without the paying customer (Cashfree: an
+    id and a phone on every Order), and the caller sent none. Operations answers it by sending the
+    order's own customer phone — server to server, and only to a provider that needs it."""
+
+    problem_type = "payer-required"
+    title = "The payment provider needs the paying customer's details"
+
+
+class PhoneRequiredProblem(ValidationProblem):
+    """The provider needs a customer phone and the order has no usable one. A phone is never
+    invented: the operator adds the real one to the order."""
+
+    problem_type = "phone-required"
+    title = "A customer phone number is required"
+
+
+class CredentialsRejectedProblem(ValidationProblem):
+    """Verification reached the provider and it refused the merchant's credentials. Recorded on
+    the account (`last_error_code`) before this is raised."""
+
+    problem_type = "credentials-rejected"
+    title = "The payment provider did not accept these credentials"
+
+
+class DisconnectBlockedProblem(ConflictProblem):
+    """The account still has online payments a customer could pay; disconnecting would leave them
+    unverifiable (no keys to ask with, no secret to check a webhook against)."""
+
+    problem_type = "disconnect-blocked"
+    title = "Online payments are still open on this account"
 
 
 def _now() -> datetime:
@@ -152,23 +187,21 @@ def _open(account: MerchantAccount, field: str) -> str:
     )
 
 
-def _validate_credentials(provider: str, key_id: str, key_secret: str, webhook_secret: str) -> str:
+def _validate_credentials(
+    provider: str, key_id: str, key_secret: str, webhook_secret: str | None, mode: str | None
+) -> str:
     """The account's mode, or a 422 naming the field that is wrong — never echoing a secret."""
-    if provider not in domain.PROVIDERS:
-        raise ValidationProblem(f"{provider!r} is not a supported payment provider")
-    mode = domain.mode_for_key_id(key_id)
-    if mode is None:
-        raise ValidationProblem("key_id must be a Razorpay key id (rzp_test_… or rzp_live_…)")
-    if mode == MERCHANT_MODE_LIVE and not settings().collections_allow_live_keys:
-        raise ValidationProblem(
-            "Live Razorpay keys are not enabled on this platform yet; connect test-mode keys "
-            "(rzp_test_…)"
+    try:
+        return domain.validate_credentials(
+            provider,
+            key_id=key_id,
+            key_secret=key_secret,
+            webhook_secret=webhook_secret,
+            mode=mode,
+            allow_live=settings().collections_allow_live_keys,
         )
-    if not domain.valid_secret(key_secret):
-        raise ValidationProblem("key_secret must be 8-128 printable characters with no spaces")
-    if not domain.valid_secret(webhook_secret):
-        raise ValidationProblem("webhook_secret must be 8-128 printable characters with no spaces")
-    return mode
+    except domain.CredentialProblem as exc:
+        raise ValidationProblem(str(exc)) from None
 
 
 async def set_merchant_account(
@@ -179,16 +212,21 @@ async def set_merchant_account(
     provider: str,
     key_id: str,
     key_secret: str,
-    webhook_secret: str,
+    webhook_secret: str | None,
+    mode: str | None = None,
     request: Request | None = None,
 ) -> MerchantAccount:
     """Connect the organization's provider account, or rotate its credentials in place.
 
     Rotation keeps the row — and so the webhook URL registered at the provider, which names the
-    row's id. Both secrets are re-sealed on every call (a PUT is the whole credential set), under
-    AAD bound to this row, and only their masked hints are kept readable. The audit row names the
-    key id and mode — never a secret, its mask, its length or its hash (ADR-0019 §2)."""
-    mode = _validate_credentials(provider, key_id, key_secret, webhook_secret)
+    row's id. Every secret is re-sealed on every call (a PUT is the whole credential set), under
+    AAD bound to this row, and only its masked hint is kept readable. A Cashfree account holds one
+    secret (its Secret Key signs webhooks too); a Razorpay account two. Connecting or rotating
+    makes the account **unverified** again (`verified_at`, `last_error_code` cleared): a
+    verification was of the keys it probed. The audit row names the key id and mode — never a
+    secret, its mask, its length or its hash (ADR-0019 §2)."""
+    mode = _validate_credentials(provider, key_id, key_secret, webhook_secret, mode)
+    spec = domain.spec_for(provider)
     now = _now()
     existing = await selectors.lock_live_merchant_account(session, organization_id)
     if existing is not None:
@@ -208,10 +246,13 @@ async def set_merchant_account(
         existing.key_id = key_id
         existing.key_secret_enc = _seal(organization_id, existing.id, KEY_SECRET, key_secret)
         existing.key_secret_masked = domain.mask_secret(key_secret)
-        existing.webhook_secret_enc = _seal(
-            organization_id, existing.id, WEBHOOK_SECRET, webhook_secret
-        )
-        existing.webhook_secret_masked = domain.mask_secret(webhook_secret)
+        if spec.has_webhook_secret and webhook_secret is not None:
+            existing.webhook_secret_enc = _seal(
+                organization_id, existing.id, WEBHOOK_SECRET, webhook_secret
+            )
+            existing.webhook_secret_masked = domain.mask_secret(webhook_secret)
+        existing.verified_at = None
+        existing.last_error_code = None
         existing.rotated_at = now
         existing.updated_at = now
         existing.updated_by = str(actor_id) if actor_id else None
@@ -231,6 +272,7 @@ async def set_merchant_account(
         return existing
 
     account_id = uuid.uuid4()
+    hook_secret = webhook_secret if spec.has_webhook_secret else None
     account = MerchantAccount(
         id=account_id,
         organization_id=organization_id,
@@ -239,8 +281,12 @@ async def set_merchant_account(
         mode=mode,
         key_secret_enc=_seal(organization_id, account_id, KEY_SECRET, key_secret),
         key_secret_masked=domain.mask_secret(key_secret),
-        webhook_secret_enc=_seal(organization_id, account_id, WEBHOOK_SECRET, webhook_secret),
-        webhook_secret_masked=domain.mask_secret(webhook_secret),
+        webhook_secret_enc=(
+            _seal(organization_id, account_id, WEBHOOK_SECRET, hook_secret)
+            if hook_secret is not None
+            else None
+        ),
+        webhook_secret_masked=domain.mask_secret(hook_secret) if hook_secret is not None else "",
         status=MERCHANT_ACCOUNT_ACTIVE,
         created_by=str(actor_id) if actor_id else None,
         updated_at=now,
@@ -277,10 +323,24 @@ async def remove_merchant_account(
     """Disconnect: the sealed secrets are wiped (not kept "just in case"), the row is
     soft-removed and kept as history. From then on no checkout can be opened, no webhook for it
     verifies, and no status check or refund can be made with it — a later account is a new row
-    with a new webhook URL."""
+    with a new webhook URL (switching provider is exactly this, then connect).
+
+    **Refused (409, with the count) while any collection taken into it is still open** — created,
+    authorized or failed-and-retryable: a customer can still pay it, and with the keys gone that
+    payment could be neither asked about nor verified. Cancel them (that needs no account), or let
+    them finish or expire, first. A refund of a payment taken into a removed account is made in the
+    provider's own dashboard."""
     account = await selectors.lock_live_merchant_account(session, organization_id)
     if account is None:
         raise NotFoundProblem("No payment provider account is connected")
+    still_open = await selectors.count_open_collections(session, organization_id, account.id)
+    if still_open:
+        raise DisconnectBlockedProblem(
+            f"{still_open} online "
+            f"{'payment is' if still_open == 1 else 'payments are'} still open on this account. "
+            "Cancel them from their orders, or wait for them to be paid or to expire, then "
+            "disconnect."
+        )
     now = _now()
     account.key_secret_enc = None
     account.webhook_secret_enc = None
@@ -302,6 +362,172 @@ async def remove_merchant_account(
         before={"provider": account.provider, "key_id": account.key_id, "mode": account.mode},
         request=request,
     )
+
+
+# ============================================================================ verification
+
+#: `connection_state` of an account: never checked (or changed since), accepted, refused.
+CONNECTION_UNVERIFIED = "unverified"
+CONNECTION_VERIFIED = "verified"
+CONNECTION_FAILED = "failed"
+#: The stable code recorded when the provider refuses the credentials themselves.
+ERROR_CREDENTIALS_REJECTED = "credentials_rejected"
+
+
+def connection_state(account: MerchantAccount) -> str:
+    """What the last verification said about the account's current credentials."""
+    if account.last_error_code is not None:
+        return CONNECTION_FAILED
+    if account.verified_at is not None:
+        return CONNECTION_VERIFIED
+    return CONNECTION_UNVERIFIED
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class VerifyTicket:
+    """What a verification claim hands the probe: the account's opened key secret (for this one
+    call, never logged) and the snapshot the record checks is still current."""
+
+    organization_id: uuid.UUID
+    account_id: uuid.UUID
+    provider: str
+    mode: str
+    key_id: str
+    key_secret: str
+    rotated_at: datetime | None
+
+    def build(self, factory: CollectionsProviderFactory) -> CollectionsProvider:
+        return factory(self.key_id, self.key_secret, "", provider=self.provider, mode=self.mode)
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeOutcome:
+    accepted: bool
+    error_code: str | None = None
+
+
+async def claim_verification(session: AsyncSession, *, organization_id: uuid.UUID) -> VerifyTicket:
+    """The claim act of a verification: the live account's credentials, opened for one probe."""
+    account = await selectors.live_merchant_account(session, organization_id)
+    if account is None:
+        raise NotFoundProblem("No payment provider account is connected")
+    return VerifyTicket(
+        organization_id=organization_id,
+        account_id=account.id,
+        provider=account.provider,
+        mode=account.mode,
+        key_id=account.key_id,
+        key_secret=_open(account, KEY_SECRET),
+        rotated_at=account.rotated_at,
+    )
+
+
+def _probe(provider: CollectionsProvider) -> None:
+    provider.probe()
+
+
+async def run_probe(factory: CollectionsProviderFactory, ticket: VerifyTicket) -> ProbeOutcome:
+    """The call act: one authenticated, read-only request to the provider, on a worker thread with
+    no transaction open, bounded by `collections_call_timeout_seconds`. The provider rejecting the
+    credentials is an outcome (`credentials_rejected`), as is any other refusal (its stable code);
+    a timeout or a transport failure is not — nothing was learned, so `ProviderUnreachableProblem`
+    and nothing is recorded."""
+    provider = ticket.build(factory)
+    timeout = settings().collections_call_timeout_seconds
+    try:
+        await asyncio.wait_for(asyncio.to_thread(partial(_probe, provider)), timeout=timeout)
+    except TimeoutError:
+        log.warning(
+            "payment.merchant_account.verify_timeout",
+            provider=ticket.provider,
+            organization_id=str(ticket.organization_id),
+            timeout_seconds=timeout,
+        )
+        raise ProviderUnreachableProblem(
+            "The payment provider did not answer in time; try again"
+        ) from None
+    except (httpx.HTTPError, ProviderTransient) as exc:
+        log.warning(
+            "payment.merchant_account.verify_unreachable",
+            provider=ticket.provider,
+            organization_id=str(ticket.organization_id),
+            error=type(exc).__name__,
+        )
+        raise ProviderUnreachableProblem("The payment provider could not be reached") from None
+    except ProviderMisconfigured:
+        return ProbeOutcome(accepted=False, error_code=ERROR_CREDENTIALS_REJECTED)
+    except ProviderRejected as exc:
+        return ProbeOutcome(accepted=False, error_code=(exc.code or f"http_{exc.status_code}")[:64])
+    except ProviderCallError:
+        return ProbeOutcome(accepted=False, error_code="provider_refused")
+    return ProbeOutcome(accepted=True)
+
+
+async def record_verification(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    ticket: VerifyTicket,
+    outcome: ProbeOutcome,
+    actor_id: uuid.UUID | None,
+    request: Request | None = None,
+) -> MerchantAccount:
+    """The record act: what the probe learned, on the account it probed — re-read under the row
+    lock, and refused (409) if the account was disconnected or its credentials replaced meanwhile:
+    a verdict about the old keys must never stand for the new ones. Audited either way, with the
+    stable code only."""
+    account = await selectors.lock_live_merchant_account(session, organization_id)
+    if (
+        account is None
+        or account.id != ticket.account_id
+        or account.key_id != ticket.key_id
+        or account.rotated_at != ticket.rotated_at
+    ):
+        raise ConflictProblem(
+            "The payment account changed while it was being checked; check it again"
+        )
+    now = _now()
+    before = connection_state(account)
+    if outcome.accepted:
+        account.verified_at = now
+        account.last_error_code = None
+    else:
+        account.verified_at = None
+        account.last_error_code = outcome.error_code
+    account.updated_at = now
+    account.updated_by = str(actor_id) if actor_id else None
+    await session.flush()
+    after = connection_state(account)
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=actor_id,
+        action=(
+            "payment.merchant_account.verified"
+            if outcome.accepted
+            else "payment.merchant_account.verification_failed"
+        ),
+        entity="merchant_account",
+        entity_id=account.id,
+        before={"connection_state": before},
+        after={
+            "provider": account.provider,
+            "key_id": account.key_id,
+            "mode": account.mode,
+            "connection_state": after,
+            "error_code": outcome.error_code,
+        },
+        request=request,
+    )
+    log.info(
+        "payment.merchant_account.verification",
+        organization_id=str(organization_id),
+        provider=account.provider,
+        connection_state=after,
+        error_code=outcome.error_code,
+    )
+    return account
 
 
 # ============================================================================ shared recording
@@ -570,7 +796,9 @@ async def _off_loop[T](fn: Callable[[], T], *, what: str, organization_id: uuid.
 @dataclass(frozen=True, slots=True, repr=False)
 class ProviderTicket:
     """What a claim hands a call: the merchant's opened keys (for this one call, never logged —
-    `repr` is suppressed so a traceback cannot print them) and the identifiers the call needs."""
+    `repr` is suppressed so a traceback cannot print them), the account's provider and mode, and
+    the identifiers the call needs. `payer` is the paying customer for a provider that requires one
+    (Cashfree): passed to the provider and nowhere else — never stored, logged or audited."""
 
     organization_id: uuid.UUID
     charge_id: uuid.UUID
@@ -581,18 +809,52 @@ class ProviderTicket:
     currency: str
     provider_order_id: str | None
     notes: dict[str, str] = dataclasses.field(default_factory=dict)
+    provider: str = domain.PROVIDER_RAZORPAY
+    mode: str = "test"
+    payer: CheckoutCustomer | None = None
+    expires_at: datetime | None = None
+    notify_url: str | None = None
 
     def build(self, factory: CollectionsProviderFactory) -> CollectionsProvider:
-        return factory(self.key_id, self.key_secret, self.webhook_secret)
+        return factory(
+            self.key_id,
+            self.key_secret,
+            self.webhook_secret,
+            provider=self.provider,
+            mode=self.mode,
+        )
 
 
-def _ticket(account: MerchantAccount, charge: Charge) -> ProviderTicket:
+#: The least time a provider Order is created with before it stops taking payment (Cashfree
+#: refuses an `order_expiry_time` under 15 minutes away). A checkout whose own lifetime is nearly
+#: spent still gets this much; the expiry sweep asks the provider before it closes one regardless.
+_MIN_ORDER_LIFETIME = timedelta(minutes=20)
+
+
+def _order_expiry(charge: Charge) -> datetime:
+    lifetime = timedelta(seconds=settings().collection_checkout_ttl_seconds)
+    return max(charge.created_at + lifetime, _now() + _MIN_ORDER_LIFETIME)
+
+
+def _notify_url(account: MerchantAccount) -> str | None:
+    """Where the provider should deliver this account's webhooks for an Order it creates, when it
+    takes one per Order (Cashfree `order_meta.notify_url`): the account's own webhook URL, built
+    from the platform's public base — and only when that base is HTTPS (a development box's
+    `http://localhost` is no URL a provider can reach, and Cashfree refuses a non-HTTPS one)."""
+    url = domain.webhook_url(settings().collections_public_api_base, account.id)
+    return url if url.startswith("https://") and len(url) <= domain.NOTIFY_URL_MAX else None
+
+
+def _ticket(
+    account: MerchantAccount, charge: Charge, *, payer: CheckoutCustomer | None = None
+) -> ProviderTicket:
+    spec = domain.spec_for(account.provider)
     return ProviderTicket(
         organization_id=charge.organization_id,
         charge_id=charge.id,
         key_id=account.key_id,
         key_secret=_open(account, KEY_SECRET),
-        webhook_secret=_open(account, WEBHOOK_SECRET),
+        webhook_secret=_open(account, WEBHOOK_SECRET) if spec.has_webhook_secret else "",
         amount_minor=charge.amount_minor,
         currency=charge.currency,
         provider_order_id=charge.provider_order_id,
@@ -602,13 +864,18 @@ def _ticket(account: MerchantAccount, charge: Charge) -> ProviderTicket:
             "reference_type": charge.reference_type or "",
             "reference_id": str(charge.reference_id) if charge.reference_id else "",
         },
+        provider=account.provider,
+        mode=account.mode,
+        payer=payer,
+        expires_at=_order_expiry(charge),
+        notify_url=_notify_url(account),
     )
 
 
 async def _account_for(session: AsyncSession, charge: Charge) -> MerchantAccount:
     """The live account a collection was taken into. Refused (409) when that account has since
     been removed or replaced: its keys are gone, and a different account's keys cannot see a
-    payment made into another Razorpay account."""
+    payment made into another provider account."""
     account = await selectors.live_merchant_account(session, charge.organization_id)
     if account is None or account.id != charge.merchant_account_id:
         raise ConflictProblem(
@@ -691,12 +958,59 @@ async def _claim_call(session: AsyncSession, charge: Charge, now: datetime) -> b
     return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class CheckoutClaim:
     charge_id: uuid.UUID
-    #: Set when a provider Order must still be created; None when the checkout is already open
+    #: Set when a provider Order must still be created — or, for a provider whose browser handle
+    #: is fetched on every open (Cashfree), asked for again; None when the checkout is already open
     #: (or another request is creating its Order right now).
     ticket: ProviderTicket | None
+    #: True when `ticket` only reopens an Order this platform already recorded: the call is a
+    #: lookup at the provider (it finds the Order by its receipt), and there is nothing to record.
+    reopen: bool = False
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class Payer:
+    """The paying customer as operations sends it, server to server, for a provider that needs
+    one. Never stored, logged, audited or published — `repr` is suppressed."""
+
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+
+
+def _required_payer(spec: domain.ProviderSpec, payer: Payer | None) -> Payer | None:
+    """The payer, normalised, for a provider that needs one — or the 422 that says what is
+    missing; None for a provider that does not (whatever was sent is then simply not used)."""
+    if not spec.requires_payer:
+        return None
+    if payer is None:
+        raise PayerRequiredProblem(
+            "This payment provider needs the paying customer's phone number for every payment"
+        )
+    phone = domain.normalize_phone(payer.phone)
+    if phone is None:
+        raise PhoneRequiredProblem(
+            "Add the customer's phone number to this order (10 digits, or + and the country "
+            "code) to take an online payment"
+        )
+    return Payer(
+        name=(payer.name or "").strip()[:100] or None,
+        email=(payer.email or "").strip()[:254] or None,
+        phone=phone,
+    )
+
+
+def _checkout_customer(payer: Payer | None, charge_id: uuid.UUID) -> CheckoutCustomer | None:
+    """The provider's customer for one collection. The `customer_id` is pseudonymous (`c` and the
+    collection's id): the provider needs one, and the merchant's own customer id is nobody else's
+    business."""
+    if payer is None:
+        return None
+    return CheckoutCustomer(
+        customer_id=f"c{charge_id.hex}", name=payer.name, email=payer.email, phone=payer.phone
+    )
 
 
 async def claim_checkout(
@@ -707,6 +1021,7 @@ async def claim_checkout(
     reference_id: uuid.UUID,
     amount_minor: int,
     currency: str,
+    payer: Payer | None = None,
     request: Request | None = None,
 ) -> CheckoutClaim:
     """The claim act of opening a checkout for one order. The amount is whatever the *caller*
@@ -714,17 +1029,23 @@ async def claim_checkout(
 
     Refused (409) when the organization has no connected account, when the order is already paid
     online (and not wholly refunded), or when an open collection for a different amount exists.
-    Otherwise the one open collection for the order is reused — the same provider Order, which the
-    customer may retry against — or a new one is created."""
+    A provider that needs the paying customer (Cashfree) refuses a request without one (422
+    `payer-required`) or without a usable phone (422 `phone-required`) **before anything is
+    written**. Otherwise the one open collection for the order is reused — the same provider
+    Order, which the customer may retry against — or a new one is created."""
     if reference_type not in domain.REFERENCE_TYPES:
         raise ValidationProblem(f"{reference_type!r} is not something a payment can be taken for")
     currency = currency.upper()
     account = await selectors.live_merchant_account(session, organization_id)
     if account is None:
         raise ConflictProblem(
-            "Online payments are not set up for this organization; connect a Razorpay account "
-            "in payment settings first"
+            "Online payments are not set up for this organization; connect a payment provider "
+            "account in payment settings first"
         )
+    spec = domain.spec_for(account.provider)
+    # Checked before anything is written; the provider's customer is built once the collection's
+    # id is known (it is pseudonymous on it).
+    required = _required_payer(spec, payer)
     for captured in await selectors.captured_collections_for_reference(
         session, organization_id, reference_type, reference_id
     ):
@@ -755,11 +1076,19 @@ async def claim_checkout(
             currency=currency,
             request=request,
         )
+    customer = _checkout_customer(required, charge.id)
     if charge.provider_order_id is not None:
+        if spec.reopen_asks_provider and charge.state in domain.CANCELLABLE_STATES:
+            # The browser's handle is not ours to keep (Cashfree's `payment_session_id`): ask the
+            # provider for the Order again. A lookup — the Order exists, by its receipt — so no
+            # right-to-call lease is taken, and nothing is recorded after it.
+            return CheckoutClaim(
+                charge_id=charge.id, ticket=_ticket(account, charge, payer=customer), reopen=True
+            )
         return CheckoutClaim(charge_id=charge.id, ticket=None)
     if not await _claim_call(session, charge, _now()):
         return CheckoutClaim(charge_id=charge.id, ticket=None)
-    return CheckoutClaim(charge_id=charge.id, ticket=_ticket(account, charge))
+    return CheckoutClaim(charge_id=charge.id, ticket=_ticket(account, charge, payer=customer))
 
 
 async def _insert_collection(
@@ -832,12 +1161,16 @@ async def _insert_collection(
 
 def _ensure_order(provider: CollectionsProvider, ticket: ProviderTicket) -> OrderResult:
     return provider.ensure_order(
-        # The collection's own id: 36 characters (Razorpay caps `receipt` at 40), globally
-        # unique, and fixed for the collection's life — what the Order is found again by.
+        # The collection's own id: 36 characters (Razorpay caps `receipt` at 40, Cashfree's
+        # `order_id` at 45), globally unique, and fixed for the collection's life — what the Order
+        # is found again by.
         receipt=str(ticket.charge_id),
         amount_minor=ticket.amount_minor,
         currency=ticket.currency,
         notes=ticket.notes,
+        payer=ticket.payer,
+        expires_at=ticket.expires_at,
+        notify_url=ticket.notify_url,
     )
 
 
@@ -1070,6 +1403,7 @@ class RefundClaim:
     provider_payment_id: str | None = None
     refund_amount_minor: int = 0
     idempotency_key: str = ""
+    provider_order_id: str | None = None
 
 
 async def claim_refund(
@@ -1084,8 +1418,17 @@ async def claim_refund(
 ) -> RefundClaim:
     """The claim act of a refund: a captured collection, a positive amount, never more than what
     still stands unrefunded. The same caller key is the same refund — here (a replay returns the
-    recorded one) and at the provider (`X-Refund-Idempotency`)."""
-    provider_key = domain.refund_idempotency_key(organization_id, charge_id, caller_key)
+    recorded one) and at the provider (Razorpay's `X-Refund-Idempotency`, Cashfree's `refund_id`,
+    each in its provider's shape)."""
+    # The key's shape is the charge's provider's; an unknown charge falls through to the 404
+    # below exactly as before.
+    found = await selectors.get_collection(session, organization_id, charge_id)
+    provider_key = domain.refund_idempotency_key(
+        organization_id,
+        charge_id,
+        caller_key,
+        found.provider if found is not None else domain.PROVIDER_RAZORPAY,
+    )
     existing = await selectors.refund_by_idempotency_key(session, organization_id, provider_key)
     if existing is not None:
         return RefundClaim(existing=existing, ticket=None)
@@ -1113,6 +1456,7 @@ async def claim_refund(
         provider_payment_id=charge.provider_payment_id,
         refund_amount_minor=amount_minor,
         idempotency_key=provider_key,
+        provider_order_id=charge.provider_order_id,
     )
 
 
@@ -1123,6 +1467,7 @@ def _refund(provider: CollectionsProvider, claim: RefundClaim) -> RefundResult:
         provider_payment_id=claim.provider_payment_id,
         amount_minor=claim.refund_amount_minor,
         currency=claim.ticket.currency,
+        provider_order_id=claim.provider_order_id,
     )
 
 
@@ -1270,31 +1615,53 @@ async def record_refund(
 # ============================================================================ the merchant webhook
 
 
+def _webhook_provider(
+    factory: CollectionsProviderFactory, account: MerchantAccount
+) -> CollectionsProvider:
+    """The adapter that verifies a delivery for `account`, built from the one secret that signs
+    its deliveries — Razorpay's webhook secret, or Cashfree's Secret Key — and **the account row's
+    own provider**: never the URL's, never the body's."""
+    spec = domain.spec_for(account.provider)
+    if spec.has_webhook_secret:
+        return factory(
+            account.key_id,
+            "",
+            _open(account, WEBHOOK_SECRET),
+            provider=account.provider,
+            mode=account.mode,
+        )
+    return factory(
+        account.key_id, _open(account, KEY_SECRET), "", provider=account.provider, mode=account.mode
+    )
+
+
 async def ingest_merchant_webhook(
     session: AsyncSession,
     factory: CollectionsProviderFactory,
     *,
     organization_id: uuid.UUID,
     account_id: uuid.UUID,
-    signature: str | None,
+    headers: Mapping[str, str],
     body: bytes,
-    event_id: str | None,
     is_production: bool,
     request: Request | None = None,
 ) -> WebhookAck:
     """Verify, record and reconcile one merchant webhook. `organization_id` is what the
     pre-tenant lookup found for `account_id` (the URL's merchant account) — the body is not
     trusted for anything, the tenant included, until it verifies against that account's own
-    webhook secret.
+    signing secret. `headers` are the request's, lower-cased.
 
-    1. **Bind** the tenant, read the account under RLS and open its webhook secret (only that
-       one: verifying a body needs no key secret). An account removed meanwhile is a 400.
-    2. **Verify** the signature over the raw bytes. A bad one is a 400 and nothing is recorded.
-    3. **Parse** and **resolve the event id** (the `X-Razorpay-Event-Id` header, else the body's
+    1. **Bind** the tenant, read the account under RLS and open the one secret its provider signs
+       deliveries with. An account removed meanwhile is a 400. **The provider is the account
+       row's**, so a delivery to the legacy Razorpay path for a Cashfree account is verified as
+       Cashfree's, and fails as anything else.
+    2. **Verify** the signature over the raw bytes (and the headers the provider signs). A bad one
+       is a 400 and nothing is recorded.
+    3. **Parse** and **resolve the event id** (the provider's delivery-id header, else the body's
        own identity) — the platform inbox's rules, unchanged.
     4. **Record and reconcile inside a SAVEPOINT**: the inbox insert is idempotent, so a
-       redelivery is recorded once and applied once; the stored body is the redacted one
-       (`domain.redact_webhook_body`). A permanent condition — a collection that is not this
+       redelivery is recorded once and applied once; the stored body is the adapter's allow-list
+       (`CollectionWebhookFacts.stored`). A permanent condition — a collection that is not this
        organization's, a contradiction — rolls the attempt back and is recorded as `ignored` or
        `conflict`, audited, and answered 200 (a retry could not change it).
     """
@@ -1302,27 +1669,38 @@ async def ingest_merchant_webhook(
     if not is_production:
         await assert_tenant(session, organization_id)
     account = await selectors.merchant_account_by_id(session, organization_id, account_id)
-    if account is None or account.webhook_secret_enc is None:
+    if account is None or account.key_secret_enc is None:
         raise charge_services.WebhookSignatureProblem("could not verify the webhook signature")
-    provider = factory(account.key_id, "", _open(account, WEBHOOK_SECRET))
-    if not provider.verify_webhook(signature=signature, body=body):
+    if domain.spec_for(account.provider).has_webhook_secret and account.webhook_secret_enc is None:
         raise charge_services.WebhookSignatureProblem("could not verify the webhook signature")
+    provider = _webhook_provider(factory, account)
+    if not provider.verify_webhook(headers=headers, body=body):
+        log.warning(
+            "payment.collection.webhook_bad_signature",
+            provider=account.provider,
+            organization_id=str(organization_id),
+            account_id=str(account_id),
+        )
+        raise charge_services.WebhookSignatureProblem("could not verify the webhook signature")
+    # Kept on the inbox row as it always was (it is the provider's, not a secret).
+    signature = headers.get(domain.spec_for(account.provider).signature_header)
 
     try:
         parsed = provider.parse_webhook(body=body)
     except MalformedWebhook as exc:
         log.warning("payment.collection.webhook_malformed", reason=str(exc))
         raise charge_services.WebhookRejectedProblem("the webhook body could not be read") from None
-    resolved = charge_domain.resolve_event_id(header=event_id, event=parsed)
+    resolved = charge_domain.resolve_event_id(
+        header=provider.webhook_delivery_id(headers), event=parsed
+    )
     if resolved is None:
         raise charge_services.WebhookRejectedProblem("the webhook carries no usable event id")
     event = dataclasses.replace(parsed, provider_event_id=resolved)
-    stored = domain.redact_webhook_body(event.raw)
+    facts = provider.webhook_facts(event)
+    stored = facts.stored
 
     charge: Charge | None = None
-    refund_facts = (
-        domain.refund_facts(event.raw) if event.event_name in domain.REFUND_EVENTS else None
-    )
+    refund_facts = facts.refund
     known_refund: Refund | None = None
     if refund_facts is not None:
         known_refund = await selectors.refund_by_provider_id(
@@ -1336,7 +1714,7 @@ async def ingest_merchant_webhook(
             charge = await selectors.collection_by_provider_payment(
                 session, organization_id, refund_facts.provider_payment_id
             )
-    elif event.event_name in domain.COLLECTION_EVENT_OUTCOMES:
+    elif facts.outcome is not None:
         if event.provider_order_id:
             charge = await selectors.collection_by_provider_order(
                 session, organization_id, event.provider_order_id
@@ -1366,20 +1744,20 @@ async def ingest_merchant_webhook(
                     reconciled=False,
                 )
             event = recorded
-            if event.event_name in domain.COLLECTION_EVENT_OUTCOMES:
+            if refund_facts is None and facts.outcome is not None:
                 if charge is None:
                     raise charge_domain.unknown_charge()
                 reconciled = await apply_observation(
                     session,
                     charge,
                     domain.Observation(
-                        outcome=domain.COLLECTION_EVENT_OUTCOMES[event.event_name],
+                        outcome=facts.outcome,
                         provider_payment_id=event.provider_payment_id,
                         provider_order_id=event.provider_order_id,
                         amount_minor=event.amount_minor,
                         currency=event.currency,
                         failure_reason=event.failure_reason,
-                        failure_code=domain.payment_error_code(event.raw),
+                        failure_code=facts.failure_code,
                     ),
                     source=HISTORY_SOURCE_WEBHOOK,
                     provider_event_id=event.provider_event_id,
@@ -1494,7 +1872,7 @@ async def _insert_inbox_once(
 async def _apply_refund_webhook(
     session: AsyncSession,
     charge: Charge,
-    facts: domain.RefundFacts,
+    facts: CollectionRefundFacts,
     known: Refund | None,
     *,
     provider_event_id: str,
@@ -1504,7 +1882,7 @@ async def _apply_refund_webhook(
     a status-history row (the refund row is append-only). A refund it never asked for — made in
     the merchant's own provider dashboard — is recorded from the provider's word, because the
     money moved and this record follows it. Either way the order hears the new refund total."""
-    new_state = domain.refund_state_for_provider_status(facts.status)
+    new_state = facts.state
     if known is None:
         if facts.amount_minor is None or facts.amount_minor <= 0:
             raise charge_domain.WebhookNotApplied(INBOX_IGNORED, domain.REASON_UNKNOWN_REFUND)

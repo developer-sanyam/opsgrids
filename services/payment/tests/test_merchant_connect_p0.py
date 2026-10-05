@@ -101,9 +101,11 @@ class TestProviderAndModeAreImmutable:
         async with admin_session.begin():
             from sqlalchemy import text
 
+            # A Cashfree row holds no webhook secret (ADR-0030's CHECK), so the stand-in drops it.
             await admin_session.execute(
                 text(
-                    "UPDATE payment.merchant_accounts SET provider = 'cashfree' "
+                    "UPDATE payment.merchant_accounts SET provider = 'cashfree', "
+                    "webhook_secret_enc = NULL, webhook_secret_masked = '' "
                     "WHERE organization_id = :o"
                 ),
                 {"o": org_id},
@@ -137,10 +139,13 @@ class TestProviderAndModeAreImmutable:
         assert second.status_code == 200, second.text
         assert second.json()["id"] != first["id"] and second.json()["mode"] == "live"
 
-    async def test_no_second_collections_provider_value_is_accepted(
+    async def test_only_the_two_collections_providers_are_accepted(
         self, client: AsyncClient, org_id: uuid.UUID
     ) -> None:
+        """P0 pinned "no second provider value"; P1 (ADR-0030) accepts Cashfree — in Cashfree's
+        own shape only (a Razorpay body naming `cashfree` is still a 422) — and nothing else."""
         assert (await _put(client, org_id, provider="cashfree")).status_code == 422
+        assert (await _put(client, org_id, provider="stripe")).status_code == 422
 
 
 class TestAChargeIsOnlyEverAskedAboutThroughItsOwnProvider:

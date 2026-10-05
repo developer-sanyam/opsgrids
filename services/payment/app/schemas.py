@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -131,37 +131,71 @@ COLLECTION_WEBHOOK_EVENTS = (
 
 
 class MerchantAccountIn(BaseModel):
-    """`PUT /payment/collections/merchant-account` — connect the organization's Razorpay account,
-    or rotate its credentials in place. The key id is public (the browser gets it); the key secret
-    and webhook secret are sealed on arrival and never returned — only a masked hint of each."""
+    """`PUT /payment/collections/merchant-account` — connect the organization's payment-provider
+    account, or rotate its credentials in place (same provider and mode only: switching is
+    disconnect, then connect). Needs a session that signed in with a one-time code.
+
+    * **Razorpay**: `key_id` (`rzp_test_…` / `rzp_live_…`, public — Checkout is opened with it; the
+      mode is read from it, so `mode` is not sent), `key_secret`, `webhook_secret` (the one set on
+      the webhook in Razorpay's dashboard).
+    * **Cashfree**: `key_id` is the App ID, `key_secret` the Secret Key (it also signs webhooks, so
+      there is no `webhook_secret`), and `mode` is `sandbox` or `production` — an App ID does not
+      say which.
+
+    Secrets are sealed on arrival and never returned — only a masked hint of each."""
 
     model_config = ConfigDict(extra="forbid")
 
-    provider: Literal["razorpay"] = "razorpay"
+    provider: Literal["razorpay", "cashfree"] = "razorpay"
     key_id: str = Field(min_length=1, max_length=64)
     key_secret: SecretStr = Field(min_length=8, max_length=128)
-    webhook_secret: SecretStr = Field(min_length=8, max_length=128)
+    webhook_secret: SecretStr | None = Field(default=None, min_length=8, max_length=128)
+    mode: Literal["sandbox", "production"] | None = None
+
+
+class CollectionWiresOut(BaseModel):
+    """Per provider, whether a merchant's adapter talks to the provider for real (`live`) or runs
+    on the in-process stub (`stub`: a checkout cannot be paid for real)."""
+
+    razorpay: Literal["stub", "live"]
+    cashfree: Literal["stub", "live"]
 
 
 class MerchantAccountOut(BaseModel):
     """The organization's payment-provider connection as an admin may see it: masked secrets
-    only, and the webhook URL path to register at the provider (`?account=` names this account)."""
+    only, the webhook URL to register at the provider (`?account=` names this account), whether
+    the credentials have been verified, and when a webhook last arrived."""
 
     configured: bool
     id: uuid.UUID | None = None
     provider: str | None = None
     key_id: str | None = None
+    #: `test` / `live` — for Cashfree, Sandbox / Production.
     mode: Literal["test", "live"] | None = None
     key_secret_masked: str | None = None
+    #: Razorpay only; None for a Cashfree account, which has no webhook secret of its own.
     webhook_secret_masked: str | None = None
+    #: The neutral webhook path (`/api/v1/webhooks/collections?account=<id>`).
     webhook_path: str | None = None
+    #: The absolute webhook URL, from the platform's public base (`APP_BASE_URL`).
+    webhook_url: str | None = None
     webhook_events: list[str] = Field(default_factory=lambda: list(COLLECTION_WEBHOOK_EVENTS))
     rotated_at: datetime | None = None
     created_at: datetime | None = None
-    #: Whether this deployment accepts `rzp_live_…` keys at all (`COLLECTIONS_ALLOW_LIVE_KEYS`).
+    #: `unverified` (never checked, or changed since), `verified` (the provider accepted these
+    #: credentials at `verified_at`) or `failed` (it refused them: `last_error_code`).
+    connection_state: Literal["unverified", "verified", "failed"] | None = None
+    verified_at: datetime | None = None
+    last_error_code: str | None = None
+    #: When the platform last received a webhook from this account's provider (since connecting).
+    last_webhook_at: datetime | None = None
+    #: Whether this deployment accepts live keys at all (`COLLECTIONS_ALLOW_LIVE_KEYS`): Razorpay
+    #: `rzp_live_…`, Cashfree Production.
     live_keys_allowed: bool
-    #: `stub` when no provider call leaves this platform (checkouts cannot be paid for real).
+    #: `stub` when no Razorpay call leaves this platform. Kept as it always was for existing
+    #: clients; `wires` says it per provider.
     wire: Literal["stub", "razorpay"]
+    wires: CollectionWiresOut
 
 
 class CollectionRefundOut(BaseModel):
@@ -206,12 +240,12 @@ class CollectionOut(BaseModel):
     updated_at: datetime
 
 
-class CheckoutSessionOut(BaseModel):
-    """Everything the browser needs to open the provider's own hosted Checkout — and nothing a
-    browser must not have: the **public** key id and the provider Order id. The amount is the
-    Order's (fixed server-side from the order's own total); Checkout charges exactly it."""
+class RazorpayCheckoutSessionOut(BaseModel):
+    """Everything the browser needs to open Razorpay's own hosted Checkout — and nothing a browser
+    must not have: the **public** key id and the provider Order id. The amount is the Order's
+    (fixed server-side from the order's own total); Checkout charges exactly it."""
 
-    provider: str
+    provider: Literal["razorpay"]
     key_id: str
     provider_order_id: str
     amount_minor: int
@@ -219,6 +253,28 @@ class CheckoutSessionOut(BaseModel):
     mode: Literal["test", "live"]
     #: False on the stub wire: the Order id is a local stand-in no real Checkout would accept.
     openable: bool
+
+
+class CashfreeCheckoutSessionOut(BaseModel):
+    """What the browser's `Cashfree({mode}).checkout({paymentSessionId})` needs. The session id is
+    the provider's, fetched for this response and **never stored**: reopening fetches it again.
+    No credential, and no customer detail (the phone went to Cashfree server to server)."""
+
+    provider: Literal["cashfree"]
+    payment_session_id: str = Field(repr=False)
+    #: The SDK's own word for the environment.
+    mode: Literal["sandbox", "production"]
+    provider_order_id: str
+    amount_minor: int
+    currency: str
+    #: False on the stub: the session is a local stand-in no real checkout would accept.
+    openable: bool
+
+
+#: The browser's handle, by provider.
+CheckoutSessionOut = Annotated[
+    RazorpayCheckoutSessionOut | CashfreeCheckoutSessionOut, Field(discriminator="provider")
+]
 
 
 class CheckoutOut(BaseModel):
@@ -234,17 +290,35 @@ class ReferenceCollectionsOut(BaseModel):
     merchant_account_configured: bool
     mode: Literal["test", "live"] | None = None
     wire: Literal["stub", "razorpay"]
+    #: The connected account's provider, and whether its wire is live — None when not connected.
+    provider: str | None = None
+    provider_wire: Literal["stub", "live"] | None = None
     collections: list[CollectionOut]
+
+
+class PayerIn(BaseModel):
+    """Internal: who is paying, from the order — sent by operations **only** when payment asks
+    for it (a provider that requires a customer on every Order, Cashfree). Passed through to the
+    provider and nowhere else: never stored, logged, audited or put in an event."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=160, repr=False)
+    email: str | None = Field(default=None, max_length=254, repr=False)
+    phone: str | None = Field(default=None, max_length=32, repr=False)
 
 
 class CheckoutIn(BaseModel):
     """Internal (operations → payment): open or reuse the checkout for one order. The amount is
-    the order's own stored total, sent by the service that owns the order — never a browser."""
+    the order's own stored total, sent by the service that owns the order — never a browser.
+    `payer` is the order's customer, for a provider that needs one (a request without it is then
+    answered 422 `payer-required`, and operations sends it again with one)."""
 
     model_config = ConfigDict(extra="forbid")
 
     amount_minor: int = Field(gt=0)
     currency: str = Field(pattern=r"^[A-Z]{3}$")
+    payer: PayerIn | None = Field(default=None, repr=False)
 
 
 class CollectionActorIn(BaseModel):

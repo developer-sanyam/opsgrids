@@ -20,21 +20,39 @@ dependencies so a test overrides them the same way it overrides a session.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from functools import cache, lru_cache
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal, Protocol
 
 from fastapi import Depends
 
 from app.config import settings
 from app.providers import registry
 from app.providers.base import CollectionsProvider, PaymentProvider
-from app.providers.razorpay import build_collections_provider
+from app.providers.cashfree_collections import CashfreeCollectionsProvider
+from app.providers.cashfree_fake import CashfreeFakeWire
+from app.providers.cashfree_wire import CashfreeHttpWire
+from app.providers.razorpay_collections import build_collections_provider
 from app.providers.razorpay_wire import RazorpayHttpWire
 
-#: Builds one merchant account's adapter from its opened keys:
-#: `(key_id, key_secret, webhook_secret) -> CollectionsProvider`.
-CollectionsProviderFactory = Callable[[str, str, str], CollectionsProvider]
+
+class CollectionsProviderFactory(Protocol):
+    """Builds one merchant account's adapter from its opened keys and the account's own provider
+    and mode (`test` / `live`) — never from configuration alone, and never with a fallback to the
+    platform's own credentials. For a provider with no webhook secret (Cashfree) `webhook_secret`
+    is empty and `key_secret` is what verifies a delivery."""
+
+    def __call__(
+        self,
+        key_id: str,
+        key_secret: str,
+        webhook_secret: str,
+        *,
+        provider: str = ...,
+        mode: str = ...,
+    ) -> CollectionsProvider: ...
+
 
 #: Resolves an existing row's provider by name — what the sweeps and the poller use.
 ProviderResolver = Callable[[str], PaymentProvider]
@@ -101,18 +119,57 @@ def _collections_wire_live(cfg: Any, provider: str) -> bool:
     return bool(getattr(cfg, "collections_wire", "stub") == provider)
 
 
-def _collections_provider(key_id: str, key_secret: str, webhook_secret: str) -> CollectionsProvider:
+#: The in-process Cashfree a merchant's stub adapter runs on, one per App ID, so what one call
+#: created is still there on the next (a status check finds the Order a checkout made) — as a real
+#: account would be. It holds no credential (a fake wire takes none), only stub Orders, and exists
+#: only while `COLLECTIONS_CASHFREE_WIRE=stub`.
+_CASHFREE_STUB_WIRES: dict[str, CashfreeFakeWire] = {}
+_CASHFREE_STUB_LOCK = threading.Lock()
+
+
+def _cashfree_stub_wire(app_id: str) -> CashfreeFakeWire:
+    with _CASHFREE_STUB_LOCK:
+        wire = _CASHFREE_STUB_WIRES.get(app_id)
+        if wire is None:
+            wire = _CASHFREE_STUB_WIRES[app_id] = CashfreeFakeWire()
+        return wire
+
+
+def _collections_provider(
+    key_id: str,
+    key_secret: str,
+    webhook_secret: str,
+    *,
+    provider: str = registry.PROVIDER_RAZORPAY,
+    mode: str = "test",
+) -> CollectionsProvider:
     """A merchant's adapter, built per call from that merchant's opened keys and never cached —
     a cached adapter would hold a tenant's plaintext key secret in memory past the one call it
-    exists for (ADR-0019 §3). The live wire only when the deployment enables it."""
-    wire = (
-        RazorpayHttpWire(key_id=key_id, key_secret=key_secret)
-        if _collections_wire_live(settings(), registry.PROVIDER_RAZORPAY)
-        else None
-    )
-    return build_collections_provider(
-        key_id=key_id, key_secret=key_secret, webhook_secret=webhook_secret, wire=wire
-    )
+    exists for (ADR-0019 §3). The live wire only when the deployment enables it for that provider
+    (`collections_wire_for`); the platform's own `RAZORPAY_*` / `CASHFREE_*` credentials are never
+    read here — a merchant's adapter has only the merchant's keys, or none."""
+    cfg = settings()
+    if provider == registry.PROVIDER_RAZORPAY:
+        wire = (
+            RazorpayHttpWire(key_id=key_id, key_secret=key_secret)
+            if _collections_wire_live(cfg, registry.PROVIDER_RAZORPAY)
+            else None
+        )
+        return build_collections_provider(
+            key_id=key_id, key_secret=key_secret, webhook_secret=webhook_secret, wire=wire
+        )
+    if provider == registry.PROVIDER_CASHFREE:
+        env: Literal["sandbox", "production"] = "production" if mode == "live" else "sandbox"
+        if _collections_wire_live(cfg, registry.PROVIDER_CASHFREE):
+            return CashfreeCollectionsProvider(
+                wire=CashfreeHttpWire(app_id=key_id, secret_key=key_secret, env=env),
+                secret_key=key_secret,
+                mode=env,
+            )
+        return CashfreeCollectionsProvider(
+            wire=_cashfree_stub_wire(key_id), secret_key=key_secret, mode="stub"
+        )
+    raise ValueError(f"{provider!r} is not a collections provider")
 
 
 def get_collections_provider_factory() -> CollectionsProviderFactory:
