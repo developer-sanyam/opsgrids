@@ -1279,10 +1279,12 @@ are harmless, and written rows stay.
 Checks after deploying, before the first staff use:
 
 ```bash
-# Both queues carry the new binding (on the box; the management plugin's CLI).
+# Every consuming queue carries the new binding (on the box; rabbitmqctl, the broker's own CLI).
 docker compose -f compose.prod.yml --env-file .env exec -T rabbitmq \
   rabbitmqctl list_bindings source_name destination_name routing_key | grep trial_extended
-# Expect two rows: product.events and console.events.
+# Expect three rows: product.events, console.events and notification.events (notification binds
+# every key in its SUBSCRIBABLE_EVENTS). Only the first two until notification is redeployed in
+# step 3 — and product.events or console.events missing at any point means stop.
 ```
 
 ```sql
