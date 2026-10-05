@@ -26,8 +26,17 @@ export interface PutawayQueueControls {
    * connection mid-request loses nothing, then sent now if the phone believes it is online.
    * Resolves with what became of it: synced, still queued, or refused (in which case it has left
    * the queue and the screen shows why).
+   *
+   * `watching` says whether the screen that is waiting on the answer is still there. It is asked
+   * when a refusal arrives, which on a weak signal can be long after the worker tapped Home: with
+   * no screen to show the refusal, the entry is parked for the worker to read instead of dropped.
+   * Omitted, the screen is taken to be there.
    */
-  submit: (input: { body: PutawayIn; summary: PutawaySummary }) => Promise<PutawayOutcome>;
+  submit: (input: {
+    body: PutawayIn;
+    summary: PutawaySummary;
+    watching?: () => boolean;
+  }) => Promise<PutawayOutcome>;
   /** Try the queue now, by hand. */
   syncNow: () => void;
   /** Throw a parked entry away. */

@@ -51,6 +51,15 @@ export function PutawaySuggestedBin({ status, suggestion, onRetry }: PutawaySugg
       {suggestion.name ? <p className="text-sm text-ink">{suggestion.name}</p> : null}
       {suggestion.path ? <p className="text-xs text-muted">{suggestion.path}</p> : null}
       <p className="text-xs text-muted">{REASON[suggestion.reason]}</p>
+      {suggestion.barcode === null ? (
+        <InlineAlert tone="warning" title="This bin has no scannable label">
+          The system can't recognise a bin without one. Ask a manager to add a barcode to it, or scan a different bin.
+        </InlineAlert>
+      ) : suggestion.barcode !== suggestion.code ? (
+        <p className="text-xs text-muted">
+          Its label reads <span className="font-mono font-semibold text-ink">{suggestion.barcode}</span>
+        </p>
+      ) : null}
     </div>
   );
 }

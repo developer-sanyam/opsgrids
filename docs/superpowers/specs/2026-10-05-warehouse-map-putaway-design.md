@@ -100,12 +100,35 @@ Response `PutawayOut`: `{move_id, replayed, from_location:{id,code,name}, to_loc
 matched_suggestion: bool|null, geo_recorded: bool, warnings: [str]}` — **no coordinates**, 201 fresh /
 200 replay. `warnings` is a new field: flow it into OpenAPI.
 
+> **Amendment 2026-10-05 (review) — an unresolvable `suggested_location_id` is ignored, not a 404.**
+> `suggested_location_id` is only what the device *showed*; the move does not depend on it. A
+> put-away queued offline can be replayed after the suggested bin was deleted, and answering 404 would
+> park a valid move. So an id that is **unknown, soft-deleted or another tenant's** no longer fails the
+> request: the move posts, `putaway_captures.suggested_location_id` is stored `NULL`, and
+> `warnings += ["suggestion_ignored"]` — **the same warning for all three causes**, so the response
+> never says whether an id exists in another tenant. `matched_suggestion` is still computed
+> server-side from `suggest_putaway_bin`, independent of the ignored id. The warning is raised only on
+> a fresh 201; a replay (200) reports `warnings: []` like every other replay and writes nothing. A
+> malformed (non-UUID) value is still a 422 at the schema. The 404 for an unknown or foreign
+> `inventory_item_id`, `from_location_id`, `lot_id`, `roll_id` and `to_barcode` is unchanged. A
+> resolvable same-organization id is stored as before, with no warning. Order of warnings:
+> `suggestion_ignored` first, then `geo_dropped:*`, `captured_at_adjusted`, `geo_not_recorded`.
+
 ### 4.3 `GET /operations/inventory/putaway/suggest` — perm `…stock.transfer`
 Query `inventory_item_id`, `warehouse_id`, `lot_id?`. Pure rule in `domain.py`
 (`suggest_putaway_bin`): (1) a storable bin in that warehouse already holding the item (same lot if
 lot given); (2) else the empty storable bin with lowest `pick_sequence` then code; (3) else null.
 No capacity logic (capacity fields are unused today). Response
-`{suggestion: {location_id, code, name, path, reason: "holds_item"|"empty_bin"} | null}`.
+`{suggestion: {location_id, code, barcode: string|null, name, path, reason: "holds_item"|"empty_bin"} | null}`.
+
+> **Amendment 2026-10-05 (review) — the suggestion carries the bin's own `barcode`.** Added as a
+> required-but-nullable field (`null` when the bin has no barcode; the key is always present). Workers
+> hold `stock.transfer` but not `location.read`, so they cannot resolve a bin's barcode themselves;
+> the suggestion is how the worker app learns the label it is asking the worker to scan. The caller
+> already holds the permission this route requires, and a bin's barcode is a printed label, not a
+> secret. The worker app's amber "different bin" check now matches the scanned label against the
+> suggestion's `barcode` **or** `code`, case-insensitively (a bin with no barcode matches on code
+> alone); the server's `matched_suggestion` remains the recorded verdict. No coordinates are involved.
 
 ### 4.4 `GET /operations/inventory/putaway/{move_id}` — perm `…stock.read`
 `{move_id, to_location:{id,code,name,kind}, worker_id|null, captured_at, matched_suggestion,
@@ -254,7 +277,9 @@ ignores the new columns/table) → verify (`alembic current`, privileges, synthe
 reveal) → permission reconcile dry-run then `APPLY=1` (new routes 403 until it runs) →
 `make edge-web APP=operations` then `APP=worker`. Rollback triggers: failed migration, put-away
 error rate above baseline, any coordinate found in audit/outbox/logs, a reveal without an audit
-row. Rollback: code-only; bundles by symlink swap; Maps off by rebuilding without the key.
+row. (A *site's* position is approved data and legitimately appears in `warehouse.updated` audit
+rows, entity `warehouse`; the trigger is a *worker's* coordinate anywhere else.) Rollback:
+code-only; bundles by symlink swap; Maps off by rebuilding without the key.
 
 ## 11. Acceptance checklist
 

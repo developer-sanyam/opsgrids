@@ -70,6 +70,9 @@ PUTAWAY_KEY_PREFIX = "putaway:"
 PUTAWAY_MAX_KEY_LENGTH = 128 - len(PUTAWAY_KEY_PREFIX)
 #: Namespace of a put-away move's deterministic `reference_id` (a uuid5 of the client's key).
 PUTAWAY_NAMESPACE = uuid.UUID("5f0d2f3a-8f0c-4a63-9b8e-7a1f6c2d9e41")
+#: The `PutawayOut.warnings` entry for a `suggested_location_id` that is unknown, deleted or another
+#: tenant's: the move stands, the id is not stored, and the text is the same for every cause.
+SUGGESTION_IGNORED_WARNING = "suggestion_ignored"
 
 log = get_logger("operations.inventory.putaway")
 
@@ -487,6 +490,11 @@ async def putaway_stock(
     would roll the stock move back); a bad one is dropped with a warning; and the capture row is
     written in a savepoint, so even failing to write it leaves the move standing.
 
+    `suggested_location_id` is the device's note of what it showed, not a reference the move
+    depends on: one that is unknown, deleted or another tenant's is ignored (stored NULL, warning
+    `suggestion_ignored`), never a 404 — a put-away queued offline must not park over a bin that
+    has since been deleted. `matched_suggestion` is still the server's own verdict.
+
     Idempotency: the key is namespaced (`putaway:<key>`) and the move's `reference_id` is a uuid5
     of it — deterministic, because the reference is part of the request hash. The geo,
     `captured_at` and `suggested_location_id` are not in the hash: a retry that differs only in
@@ -502,11 +510,6 @@ async def putaway_stock(
     target = await inv_selectors.get_location_by_barcode(session, org_id, payload.to_barcode)
     if target is None:
         raise NotFoundProblem("That barcode does not resolve to a location in this organization")
-    suggested: Location | None = None
-    if payload.suggested_location_id is not None:
-        suggested = await inv_selectors.get_location(session, org_id, payload.suggested_location_id)
-        if suggested is None:
-            raise NotFoundProblem(f"Location {payload.suggested_location_id} is not in this org")
 
     if source.id == target.id:
         raise _putaway_refusal(
@@ -543,6 +546,15 @@ async def putaway_stock(
 
     # Everything the proof needs is settled before the move posts.
     warnings: list[str] = []
+    # `suggested_location_id` is only what the device *showed* — never a reason to refuse a move
+    # that is otherwise valid (a put-away queued offline may name a bin deleted since). An id that
+    # is unknown, soft-deleted or another tenant's is ignored, stored as NULL, with one and the same
+    # warning for all three: the response must not say whether the id exists elsewhere.
+    suggested: Location | None = None
+    if payload.suggested_location_id is not None:
+        suggested = await inv_selectors.get_location(session, org_id, payload.suggested_location_id)
+        if suggested is None:
+            warnings.append(SUGGESTION_IGNORED_WARNING)
     fix, dropped = domain.validate_geo(payload.lat_micro, payload.lng_micro, payload.accuracy_m)
     if dropped is not None:
         warnings.append(f"geo_dropped:{dropped}")

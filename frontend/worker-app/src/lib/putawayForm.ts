@@ -6,7 +6,7 @@
 
 import type { PutawayIn, PutawayOut, PutawaySuggestion, Qty, StockRowOut } from "@/api/types";
 import type { GeoFix } from "@/lib/geo";
-import type { PutawaySummary } from "@/lib/putawayQueue";
+import type { PutawayQueueEntry, PutawaySummary } from "@/lib/putawayQueue";
 import type { QueuedReason } from "@/lib/putawaySync";
 import { formatQty, milliToQty, qtyToMilli } from "@/lib/quantity";
 
@@ -70,14 +70,45 @@ export function filterStock(rows: readonly StockRowOut[], query: string): StockR
 }
 
 /**
- * Does the label the worker scanned name the bin that was suggested? The suggestion carries the
- * bin's code, not its barcode, and a worker has no `location.read` to resolve a barcode with — so
- * this can only recognise a label that is the code. Where a barcode differs from its code the
- * screen asks for a confirmation it didn't strictly need; the server's own answer
- * (`matched_suggestion`) is the one that is recorded.
+ * What can still be put away from each bucket once the put-aways waiting to sync are taken out of
+ * it. The server's `available_qty` cannot know about them yet, so without this a worker could queue
+ * the same stock twice. Entries the server has refused are not taken out: they are never sent.
+ * A bucket with nothing left is dropped. Exact, in milli-units; the rows given are not changed.
+ */
+export function deductQueued(rows: readonly StockRowOut[], entries: readonly PutawayQueueEntry[]): StockRowOut[] {
+  const waiting = entries.filter((entry) => entry.status === "pending");
+  if (waiting.length === 0) return [...rows];
+  return rows
+    .map((row) => {
+      const queued = waiting
+        .filter(
+          ({ body }) =>
+            body.inventory_item_id === row.inventory_item_id &&
+            body.from_location_id === row.location_id &&
+            (body.lot_id ?? null) === row.lot_id &&
+            (body.roll_id ?? null) === row.roll_id,
+        )
+        // An entry is only trusted as far as its shape (`isEntry`): a quantity that is not one is
+        // worth nothing here rather than a throw while the screen renders.
+        .reduce((total, { body }) => (QTY_RE.test(body.quantity) ? total + qtyToMilli(body.quantity) : total), 0);
+      if (queued === 0) return row;
+      return { ...row, available_qty: milliToQty(Math.max(0, qtyToMilli(row.available_qty) - queued)) };
+    })
+    .filter(hasAvailableStock);
+}
+
+/**
+ * Does the label the worker scanned name the bin that was suggested? The server resolves a scanned
+ * label by a bin's barcode and by nothing else, and a worker has no `location.read` to resolve one
+ * with — so the suggestion carries the bin's own `barcode`, and the label matches when it is that,
+ * ignoring case. The bin's code is not a label: typing it sends a barcode the server cannot resolve
+ * (or one that resolves to some other bin whose barcode happens to read the same), so it is not a
+ * match, and a bin with no barcode cannot be matched by anything a worker could scan. This only
+ * decides whether to ask for a confirmation; the server's own answer (`matched_suggestion`) is the
+ * one that is recorded.
  */
 export function matchesSuggestion(label: string, suggestion: PutawaySuggestion): boolean {
-  return label.toLowerCase() === suggestion.code.toLowerCase();
+  return suggestion.barcode !== null && label.toLowerCase() === suggestion.barcode.toLowerCase();
 }
 
 /** The UTC calendar date of an ISO timestamp. `toISOString` is always UTC, so this is the same
@@ -96,10 +127,22 @@ export interface BuildPutawayInput {
   suggestion: PutawaySuggestion | null;
   /** The moment the worker confirmed, as `toISOString()`. */
   capturedAt: string;
+  /** Whether the phone believes it is online, so the request is about to go straight to the server. */
+  online: boolean;
   geo: GeoFix | null;
 }
 
-/** The request as it will be frozen into the queue. Keys with no value are left out, not `null`. */
+/**
+ * The request as it will be frozen into the queue. Keys with no value are left out, not `null`.
+ *
+ * `occurred_on` is the one date the server checks against its own clock — it refuses any after its
+ * own today, where `captured_at` is merely replaced when absurd — and the only clock a phone has is
+ * its own, which can be a day ahead. So while the phone is online it is left out and the server
+ * dates the put-away itself: a day-ahead phone is never refused, and a date the server supplied is
+ * kept out of the idempotency hash, so a retry is still the same request. Offline there is no
+ * server to ask, and the UTC date of the confirm is frozen into the entry so a replay days later
+ * still names the day the stock moved.
+ */
 export function buildPutawayBody(input: BuildPutawayInput): PutawayIn {
   const { row, geo } = input;
   const body: PutawayIn = {
@@ -108,8 +151,8 @@ export function buildPutawayBody(input: BuildPutawayInput): PutawayIn {
     to_barcode: input.toBarcode,
     quantity: milliToQty(qtyToMilli(input.quantity.trim())),
     captured_at: input.capturedAt,
-    occurred_on: utcDate(input.capturedAt),
   };
+  if (!input.online) body.occurred_on = utcDate(input.capturedAt);
   if (row.lot_id !== null) body.lot_id = row.lot_id;
   if (row.roll_id !== null) body.roll_id = row.roll_id;
   if (input.suggestion) body.suggested_location_id = input.suggestion.location_id;
@@ -140,7 +183,9 @@ export type PutawayCompletion =
     };
 
 /** A server warning in the worker's words — or `null` for one this app has no sentence for. None
- *  of them means the put-away failed: the move is recorded in every case. */
+ *  of them means the put-away failed: the move is recorded in every case. `suggestion_ignored` is
+ *  deliberately silent: it says the bin the screen suggested was deleted or changed before a queued
+ *  put-away synced, which the worker can do nothing about and the move does not depend on. */
 export function warningNotice(warning: string): string | null {
   if (warning.startsWith("geo_dropped:")) {
     return "The server couldn't use your location reading, so it wasn't recorded.";

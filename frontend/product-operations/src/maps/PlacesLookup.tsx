@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useMapsLibrary } from "@vis.gl/react-google-maps";
 
 import type { ReportReason } from "@/lib/clientReport";
+import { useSlowLoad } from "@/lib/useSlowLoad";
 import { Combobox } from "@/ui";
 import type { ComboboxOption } from "@/ui";
 import { MapShell } from "./MapShell";
@@ -15,6 +16,10 @@ const COPY = {
   noMatchesHint: "Try the street and town, or enter the coordinates below.",
   error: "Couldn't look up addresses.",
 };
+
+const HELPER = "Fills the location and the coordinates. Check them before you save.";
+/** Said in the helper line while the lookup is slow to load: that line is already there, so nothing moves. */
+const SLOW_HELPER = "Loading address lookup is taking longer than usual. You can enter the coordinates below instead.";
 
 interface PlacesLookupProps {
   apiKey: string;
@@ -40,6 +45,7 @@ function Lookup({ onPlace, onFailure }: Pick<PlacesLookupProps, "onPlace" | "onF
   const places = useMapsLibrary("places");
   const adapter = useMemo(() => (places ? createPlacesAdapter(places) : null), [places]);
   const [resolveError, setResolveError] = useState<string | undefined>(undefined);
+  const slow = useSlowLoad(adapter === null);
 
   async function pick(option: ComboboxOption | null) {
     if (!option || !adapter) return;
@@ -66,7 +72,7 @@ function Lookup({ onPlace, onFailure }: Pick<PlacesLookupProps, "onPlace" | "onF
       placeholder={adapter ? "Search for the warehouse's address…" : "Loading address lookup…"}
       disabled={adapter === null}
       copy={COPY}
-      helper="Fills the location and the coordinates. Check them before you save."
+      helper={slow ? SLOW_HELPER : HELPER}
       {...(resolveError !== undefined ? { error: resolveError } : {})}
     />
   );

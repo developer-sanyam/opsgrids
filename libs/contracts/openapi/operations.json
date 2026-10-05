@@ -7620,7 +7620,7 @@
       },
       "PutawayIn": {
         "additionalProperties": false,
-        "description": "`POST /inventory/putaway` \u2014 store stock from a receiving or staging bin into the bin whose\nbarcode the worker scanned.\n\n`to_barcode` takes the shape a location's barcode is stored in (printable ASCII, no space, no\n`/`, 1-64 characters): a scanner's trailing CR/LF is a 422 here \u2014 the apps trim it. The server\nresolves it to a bin (a worker holds no `location.read`). `suggested_location_id` is only what\nthe device *showed*; whether the scan matched the server's own rule is computed server-side.\n\nThe GPS fix is audit evidence, never a location of record, and it never blocks the move: a fix\nthe server cannot use (unpaired, out of range, negative accuracy) is dropped with a warning in\nthe response, and the stock still moves. `captured_at` is the device's claim of when the fix\nwas taken; it is replaced by the receipt time when absurd. None of the geo is part of the\nidempotency hash \u2014 a retry that differs only in geo replays the original.",
+        "description": "`POST /inventory/putaway` \u2014 store stock from a receiving or staging bin into the bin whose\nbarcode the worker scanned.\n\n`to_barcode` takes the shape a location's barcode is stored in (printable ASCII, no space, no\n`/`, 1-64 characters): a scanner's trailing CR/LF is a 422 here \u2014 the apps trim it. The server\nresolves it to a bin (a worker holds no `location.read`). `suggested_location_id` is only what\nthe device *showed*; whether the scan matched the server's own rule is computed server-side.\nAn id that is unknown, deleted or another tenant's is ignored, not refused (warning\n`suggestion_ignored`), so a put-away queued offline is never parked over a stale suggestion.\n\nThe GPS fix is audit evidence, never a location of record, and it never blocks the move: a fix\nthe server cannot use (unpaired, out of range, negative accuracy) is dropped with a warning in\nthe response, and the stock still moves. `captured_at` is the device's claim of when the fix\nwas taken; it is replaced by the receipt time when absurd. None of the geo is part of the\nidempotency hash \u2014 a retry that differs only in geo replays the original.",
         "properties": {
           "accuracy_m": {
             "anyOf": [
@@ -7801,7 +7801,7 @@
         "type": "object"
       },
       "PutawayOut": {
-        "description": "The put-away's receipt: the move, the two bins, whether the scan matched the server's\nsuggestion (`null` when it had none) and whether a fix was kept. **No coordinates.**\n\n`warnings` says what was adjusted without failing the request: `geo_dropped:<reason>`,\n`captured_at_adjusted`, `geo_not_recorded` (the capture row could not be written; the move\nstands).",
+        "description": "The put-away's receipt: the move, the two bins, whether the scan matched the server's\nsuggestion (`null` when it had none) and whether a fix was kept. **No coordinates.**\n\n`warnings` says what was adjusted without failing the request: `geo_dropped:<reason>`,\n`captured_at_adjusted`, `suggestion_ignored` (the `suggested_location_id` was not one of the\ncaller's bins; it was not stored), `geo_not_recorded` (the capture row could not be written;\nthe move stands).",
         "properties": {
           "from_location": {
             "$ref": "#/components/schemas/PutawayFromOut"
@@ -7873,7 +7873,19 @@
         "type": "object"
       },
       "PutawaySuggestionOut": {
+        "description": "The bin the server would store the item in. `barcode` is that bin's own scannable label\n(`null` when it has none): a worker holds no `location.read`, so this is how the device\ncompares a scanned label with the suggestion; the caller already holds `stock.transfer`.",
         "properties": {
+          "barcode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barcode"
+          },
           "code": {
             "title": "Code",
             "type": "string"
@@ -7902,6 +7914,7 @@
         "required": [
           "location_id",
           "code",
+          "barcode",
           "name",
           "path",
           "reason"
@@ -9669,7 +9682,6 @@
           "reference_type": {
             "anyOf": [
               {
-                "const": "purchase_order",
                 "type": "string"
               },
               {

@@ -246,6 +246,37 @@ class TestOpenApi:
             "warnings",
         }
 
+    def test_the_suggestion_declares_the_bins_own_barcode_as_a_required_nullable_string(
+        self,
+    ) -> None:
+        """A worker holds no `location.read`: the suggestion's `barcode` is how the device matches
+        a scanned label. Required (the key is always present) and nullable (a bin may have none)."""
+        suggestion = LIVE["components"]["schemas"]["PutawaySuggestionOut"]
+        assert suggestion["properties"]["barcode"]["anyOf"] == [
+            {"type": "string"},
+            {"type": "null"},
+        ]
+        assert "barcode" in suggestion["required"]
+        assert set(suggestion["properties"]) == {
+            "location_id",
+            "code",
+            "barcode",
+            "name",
+            "path",
+            "reason",
+        }
+
+    def test_the_inbound_body_documents_that_an_unresolvable_suggestion_is_ignored(self) -> None:
+        body = LIVE["components"]["schemas"]["PutawayIn"]
+        assert "suggestion_ignored" in body["description"]
+        assert "suggestion_ignored" in LIVE["components"]["schemas"]["PutawayOut"]["description"]
+
+    def test_a_movements_reference_type_is_any_string_not_a_single_literal(self) -> None:
+        """`reference_type` is a free column (`purchase_order`, `bin_transfer`, `putaway`, ...): a
+        `const` in the schema would make a generated client reject a legitimate row."""
+        prop = LIVE["components"]["schemas"]["StockMovementOut"]["properties"]["reference_type"]
+        assert prop["anyOf"] == [{"type": "string"}, {"type": "null"}]
+
     def test_the_inbound_body_is_closed_and_the_fix_is_integers(self) -> None:
         body = LIVE["components"]["schemas"]["PutawayIn"]
         assert body["additionalProperties"] is False

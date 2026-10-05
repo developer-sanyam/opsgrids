@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import BigInteger, Select, cast, func, or_, select, text
+from sqlalchemy import BigInteger, Select, cast, func, or_, select, text, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import contains_eager
 
@@ -856,11 +856,48 @@ def warehouse_out(warehouse: Warehouse) -> WarehouseOut:
     )
 
 
+def stocked_location_counts_stmt(
+    org_id: uuid.UUID, warehouse_ids: Sequence[uuid.UUID]
+) -> Select[Any]:
+    """`(warehouse_id, count)` of the live locations in `warehouse_ids` holding stock on site now.
+
+    One probe per location that stops at its first positive on-site balance, so the cost follows the
+    number of locations and never the number of balances. The obvious form — `count(DISTINCT
+    location)` over a join of every positive balance — sorts every balance row of the tenant: a
+    37 MB disk spill at ~900k balances under the production 4 MB `work_mem`, on a page-load read.
+    A plain `EXISTS` is no safer, since the planner may still turn it into a semi-join that scans
+    every balance; a scalar subquery with `LIMIT 1` is always a probe of
+    `ix_inventory_balances_org_location` (`tests/test_putaway_query_plans.py` holds the plan)."""
+    holds_stock = (
+        select(true())
+        .select_from(InventoryBalance)
+        .where(
+            InventoryBalance.organization_id == org_id,
+            InventoryBalance.location_id == Location.id,
+            InventoryBalance.quantity_milli > 0,
+            InventoryBalance.status.notin_(OFF_SITE_STATUSES),
+        )
+        .limit(1)
+        .scalar_subquery()
+    )
+    return (
+        select(Location.warehouse_id, func.count())
+        .where(
+            Location.organization_id == org_id,
+            Location.deleted_at.is_(None),
+            Location.warehouse_id.in_(warehouse_ids),
+            holds_stock.is_(True),
+        )
+        .group_by(Location.warehouse_id)
+    )
+
+
 async def warehouse_map(session: AsyncSession, org_id: uuid.UUID) -> WarehouseMapOut:
     """The org's warehouses split for a map: the placed ones with two counts a marker popup shows
-    (live floors; locations holding stock now), and the ones with no coordinates yet. Three queries
-    however many sites there are — the counts are grouped, never per warehouse. Site coordinates
-    only: nothing here is a person's position."""
+    (live floors; locations holding stock now), and the ones with no coordinates yet. At most three
+    queries however many sites there are — the counts are grouped, never per warehouse, and only
+    the placed sites' locations are probed. Site coordinates only: nothing here is a person's
+    position."""
     warehouses = (await session.execute(warehouses_stmt(org_id))).scalars().all()
     floor_rows = await session.execute(
         select(WarehouseFloor.warehouse_id, func.count())
@@ -868,20 +905,11 @@ async def warehouse_map(session: AsyncSession, org_id: uuid.UUID) -> WarehouseMa
         .group_by(WarehouseFloor.warehouse_id)
     )
     floor_counts: dict[uuid.UUID, int] = {row[0]: row[1] for row in floor_rows.all()}
-    stocked_rows = await session.execute(
-        select(Location.warehouse_id, func.count(func.distinct(Location.id)))
-        .select_from(InventoryBalance)
-        .join(Location, Location.id == InventoryBalance.location_id)
-        .where(
-            InventoryBalance.organization_id == org_id,
-            Location.organization_id == org_id,
-            Location.deleted_at.is_(None),
-            InventoryBalance.quantity_milli > 0,
-            InventoryBalance.status.notin_(OFF_SITE_STATUSES),
-        )
-        .group_by(Location.warehouse_id)
-    )
-    stocked_counts: dict[uuid.UUID, int] = {row[0]: row[1] for row in stocked_rows.all()}
+    placed_ids = [w.id for w in warehouses if w.lat_micro is not None and w.lng_micro is not None]
+    stocked_counts: dict[uuid.UUID, int] = {}
+    if placed_ids:
+        stocked_rows = await session.execute(stocked_location_counts_stmt(org_id, placed_ids))
+        stocked_counts = {row[0]: row[1] for row in stocked_rows.all()}
     sites: list[WarehouseMapSiteOut] = []
     without: list[WarehouseMapUnplacedOut] = []
     for w in warehouses:

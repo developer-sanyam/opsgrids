@@ -39,9 +39,10 @@ async def reveal_putaway_location(
 
     A move with no capture (it was not a put-away, the capture could not be written, or it was
     purged after 30 days) and another tenant's move are the same 404 and write nothing; so does a
-    caller without the permission, who never reaches this function. The audit row and the response
-    commit or roll back together: a reveal the request could not complete leaves no row claiming it
-    happened, and a returned fix always has its row."""
+    caller without the permission or without a session that gave a one-time code (`amr={"otp"}`,
+    both checked by the route's dependency), who never reaches this function. The audit row and
+    the response commit or roll back together: a reveal the request could not complete leaves no
+    row claiming it happened, and a returned fix always has its row."""
     capture = await putaway_selectors.get_capture(session, ctx.organization_id, move_id)
     if capture is None:
         raise NotFoundProblem("That put-away has no recorded capture")

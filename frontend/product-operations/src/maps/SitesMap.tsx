@@ -5,6 +5,7 @@ import type { WarehouseMapSiteOut } from "@/api/types";
 import { microToDegrees } from "@/lib/geo";
 import { formatNumber } from "@/lib/format";
 import { Button } from "@/ui";
+import { MapLoadingOverlay } from "./MapLoadingOverlay";
 import { MapShell } from "./MapShell";
 import type { ReportReason } from "@/lib/clientReport";
 
@@ -30,6 +31,11 @@ const FRAME_PADDING_PX = 64;
 /**
  * The warehouses on a Google map, one pin each, with a popup of what the Operations team asks of a
  * site: its address, how many floors, how many bins hold stock, and the way into its floors.
+ *
+ * Google draws the popup's bubble white whatever the app's theme, so the popup's text is never left
+ * to sit on it: the heading and the body each paint their own `surface`, the background the `ink` and
+ * `muted` tokens are contrast-checked against in both themes. (Theme-token text straight on the
+ * white bubble is near-invisible in dark.)
  *
  * The map itself is not a keyboard surface — the list beside it is the accessible way to the same
  * information and the same actions (`WarehousesMap.tsx`).
@@ -67,7 +73,8 @@ export default function SitesMap({ apiKey, sites, selectedId, onSelect, onOpenFl
 
   return (
     <MapShell apiKey={apiKey} onFailure={onFailure}>
-      <div className="h-96 w-full overflow-hidden rounded-tile" data-testid="sites-map">
+      <div className="relative h-96 w-full overflow-hidden rounded-tile" data-testid="sites-map">
+        <MapLoadingOverlay />
         {frame ? (
           <Map
             {...frame}
@@ -88,11 +95,11 @@ export default function SitesMap({ apiKey, sites, selectedId, onSelect, onOpenFl
             {selected ? (
               <InfoWindow
                 position={selected.position}
-                headerContent={<span className="font-semibold text-ink">{selected.site.name}</span>}
+                headerContent={<span className="rounded-chip bg-surface px-2 py-1 font-semibold text-ink">{selected.site.name}</span>}
                 pixelOffset={[0, -36]}
                 onCloseClick={() => onSelect(null)}
               >
-                <div className="flex max-w-60 flex-col gap-2 text-sm text-ink">
+                <div className="flex max-w-60 flex-col gap-2 rounded-tile bg-surface p-2 text-sm text-ink">
                   <p>{selected.site.location || "No address recorded"}</p>
                   <p className="tnum text-muted">
                     {formatNumber(selected.site.floor_count)} floor{selected.site.floor_count === 1 ? "" : "s"} ·{" "}

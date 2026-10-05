@@ -81,9 +81,15 @@ export function PutawayBinScan({ label, onAccept, onClear }: PutawayBinScanProps
   // is accepted or changed — so it says where focus goes. Looking for a label: the field, because a
   // keyboard-wedge scanner types into whatever has focus. Accepted: the label itself, a place a
   // scanner's trailing Enter does nothing, so a second read can never confirm the put-away.
+  //
+  // The field comes back holding the label that was just changed or refused, so a person can fix a
+  // typo in it — and with that text *selected*, because a scanner types at the caret: left
+  // unselected, the next scan would land on the end of the old label and make a third one.
   useEffect(() => {
-    if (label === null) fieldRef.current?.focus();
-    else acceptedRef.current?.focus();
+    if (label === null) {
+      fieldRef.current?.focus();
+      fieldRef.current?.select();
+    } else acceptedRef.current?.focus();
   }, [label]);
 
   function accept(raw: string) {

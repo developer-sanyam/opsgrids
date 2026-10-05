@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { PutawayIn } from "@/api/types";
+import type { PutawayQueueEntry } from "@/lib/putawayQueue";
 import { makeStockRow, makeSuggestion } from "@/worker/testKit";
 
 import {
   barcodeProblem,
   buildPutawayBody,
   cleanBarcode,
+  deductQueued,
   filterStock,
   hasAvailableStock,
   matchesSuggestion,
@@ -95,10 +98,26 @@ describe("stock helpers", () => {
 });
 
 describe("matchesSuggestion", () => {
-  it("recognises a label that is the suggested bin's code, ignoring case", () => {
-    expect(matchesSuggestion("A-01-03", makeSuggestion({ code: "A-01-03" }))).toBe(true);
-    expect(matchesSuggestion("a-01-03", makeSuggestion({ code: "A-01-03" }))).toBe(true);
-    expect(matchesSuggestion("B-02-01", makeSuggestion({ code: "A-01-03" }))).toBe(false);
+  it("recognises a label that is the suggested bin's barcode, ignoring case", () => {
+    const suggestion = makeSuggestion({ code: "A-01-03", barcode: "LBL-A0103" });
+    expect(matchesSuggestion("LBL-A0103", suggestion)).toBe(true);
+    expect(matchesSuggestion("lbl-a0103", suggestion)).toBe(true);
+    expect(matchesSuggestion("Lbl-A0103", suggestion)).toBe(true);
+    expect(matchesSuggestion("LBL-A0104", suggestion)).toBe(false);
+  });
+
+  it("a code that is not the barcode is not a label: the server resolves a scan by barcode alone", () => {
+    const suggestion = makeSuggestion({ code: "A-01-03", barcode: "LBL-A0103" });
+    expect(matchesSuggestion("A-01-03", suggestion)).toBe(false);
+    expect(matchesSuggestion("a-01-03", suggestion)).toBe(false);
+  });
+
+  it("a bin with no barcode cannot be matched by anything a worker could scan, its code included", () => {
+    const suggestion = makeSuggestion({ code: "A-01-03", barcode: null });
+    expect(matchesSuggestion("A-01-03", suggestion)).toBe(false);
+    expect(matchesSuggestion("a-01-03", suggestion)).toBe(false);
+    expect(matchesSuggestion("null", suggestion)).toBe(false);
+    expect(matchesSuggestion("", suggestion)).toBe(false);
   });
 });
 
@@ -137,6 +156,7 @@ describe("buildPutawayBody", () => {
       toBarcode: "A-01-03",
       suggestion: makeSuggestion({ location_id: "loc-bin-1" }),
       capturedAt,
+      online: false,
       geo: { lat_micro: 12_971_599, lng_micro: 77_594_563, accuracy_m: 12 },
     });
 
@@ -164,6 +184,7 @@ describe("buildPutawayBody", () => {
       toBarcode: "A-01-03",
       suggestion: null,
       capturedAt,
+      online: false,
       geo: null,
     });
 
@@ -179,11 +200,120 @@ describe("buildPutawayBody", () => {
       toBarcode: "A-01-03",
       suggestion: null,
       capturedAt,
+      online: false,
       geo: { lat_micro: 1, lng_micro: 2 },
     });
 
     expect(body).toMatchObject({ lat_micro: 1, lng_micro: 2 });
     expect(body).not.toHaveProperty("accuracy_m");
+  });
+
+  it("confirmed online it leaves occurred_on out, so the server's own date applies and a wrong phone clock cannot send a date it refuses", () => {
+    // A phone whose clock is a day ahead: its UTC date is tomorrow as far as the server is concerned.
+    const body = buildPutawayBody({
+      row: makeStockRow(),
+      quantity: "1",
+      toBarcode: "A-01-03",
+      suggestion: null,
+      capturedAt: "2026-09-30T09:00:00.000Z",
+      online: true,
+      geo: null,
+    });
+
+    expect(body).not.toHaveProperty("occurred_on");
+    expect(body.captured_at).toBe("2026-09-30T09:00:00.000Z");
+  });
+
+  it("confirmed offline it freezes the phone's UTC date, so a replay days later still names the day the stock moved", () => {
+    const body = buildPutawayBody({
+      row: makeStockRow(),
+      quantity: "1",
+      toBarcode: "A-01-03",
+      suggestion: null,
+      capturedAt,
+      online: false,
+      geo: null,
+    });
+
+    expect(body.occurred_on).toBe("2026-09-29");
+  });
+});
+
+describe("deductQueued", () => {
+  function queued(body: Partial<PutawayIn>, status: PutawayQueueEntry["status"] = "pending"): PutawayQueueEntry {
+    return {
+      ownerSub: "user-1",
+      organizationId: "org-1",
+      idempotencyKey: `key-${Math.random()}`,
+      body: {
+        inventory_item_id: "item-1",
+        from_location_id: "loc-rcv-1",
+        to_barcode: "A-01-03",
+        quantity: "5",
+        ...body,
+      },
+      summary: { sku: "SKU-100", itemName: "Cotton roll", uom: "m", fromLocationCode: "RCV-01", toBarcode: "A-01-03" },
+      queuedAt: "2026-09-29T09:00:00.000Z",
+      status,
+      attention: status === "needs_attention" ? { httpStatus: 409, message: "no" } : null,
+    };
+  }
+
+  it("takes what is waiting to sync out of the bucket it came from, so the same stock is not offered twice", () => {
+    const rows = [makeStockRow({ available_qty: "20" })];
+
+    const [row] = deductQueued(rows, [queued({ quantity: "5" })]);
+
+    expect(row?.available_qty).toBe("15");
+  });
+
+  it("adds up several waiting entries, exactly, in milli-units", () => {
+    const rows = [makeStockRow({ available_qty: "1" })];
+
+    const [row] = deductQueued(rows, [queued({ quantity: "0.1" }), queued({ quantity: "0.2" })]);
+
+    expect(row?.available_qty).toBe("0.7");
+  });
+
+  it("drops a bucket once everything in it is spoken for", () => {
+    const rows = [makeStockRow({ id: "a", available_qty: "5" }), makeStockRow({ id: "b", inventory_item_id: "item-2" })];
+
+    expect(deductQueued(rows, [queued({ quantity: "5" })]).map((row) => row.id)).toEqual(["b"]);
+  });
+
+  it("only touches the bucket it matches: same item and bin, and the same lot and roll", () => {
+    const rows = [
+      makeStockRow({ id: "plain" }),
+      makeStockRow({ id: "lot", lot_id: "lot-1" }),
+      makeStockRow({ id: "roll", roll_id: "roll-1" }),
+      makeStockRow({ id: "elsewhere", location_id: "loc-rcv-2" }),
+      makeStockRow({ id: "other-item", inventory_item_id: "item-2" }),
+    ];
+
+    const result = deductQueued(rows, [queued({ quantity: "5", lot_id: "lot-1" })]);
+
+    expect(Object.fromEntries(result.map((row) => [row.id, row.available_qty]))).toEqual({
+      plain: "20",
+      lot: "15",
+      roll: "20",
+      elsewhere: "20",
+      "other-item": "20",
+    });
+  });
+
+  it("ignores an entry the server has refused: it is never sent again, so it holds nothing back", () => {
+    const rows = [makeStockRow({ available_qty: "20" })];
+
+    expect(deductQueued(rows, [queued({ quantity: "5" }, "needs_attention")])[0]?.available_qty).toBe("20");
+  });
+
+  it("changes nothing when nothing is waiting, and does not mutate what it was given", () => {
+    const rows = [makeStockRow()];
+    const before = JSON.stringify(rows);
+
+    expect(deductQueued(rows, [])).toEqual(rows);
+    deductQueued(rows, [queued({ quantity: "5" })]);
+    expect(JSON.stringify(rows)).toBe(before);
   });
 });
 
@@ -193,6 +323,10 @@ describe("notices", () => {
     expect(warningNotice("captured_at_adjusted")).toMatch(/clock/i);
     expect(warningNotice("geo_not_recorded")).toMatch(/location/i);
     expect(warningNotice("something_new")).toBeNull();
+  });
+
+  it("says nothing about a suggestion the server ignored: the move stands and the worker can't act on it", () => {
+    expect(warningNotice("suggestion_ignored")).toBeNull();
   });
 
   it("says why a put-away is waiting on the phone", () => {

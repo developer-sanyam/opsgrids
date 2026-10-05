@@ -78,7 +78,7 @@ export function PutawayQueueProvider({ ownerSub, organizationId, children }: Put
   const requestBackgroundRef = useRef<() => void>(() => undefined);
 
   /** Queue a pass behind any already running — one at a time, in order. */
-  const schedulePass = useCallback((foregroundKey?: string): Promise<DrainResult> => {
+  const schedulePass = useCallback((foregroundKey?: string, foregroundWatched?: () => boolean): Promise<DrainResult> => {
     const run = chainRef.current.then(async (): Promise<DrainResult> => {
       if (foregroundKey === undefined) backgroundQueuedRef.current = false;
       if (!mountedRef.current || phoneThinksItIsOffline()) return NOTHING_SENT;
@@ -88,6 +88,7 @@ export function PutawayQueueProvider({ ownerSub, organizationId, children }: Put
       try {
         result = await drainPutawayQueue(ownerRef.current, {
           foregroundKey,
+          foregroundWatched,
           ...(abortRef.current ? { signal: abortRef.current.signal } : {}),
         });
       } finally {
@@ -152,7 +153,7 @@ export function PutawayQueueProvider({ ownerSub, organizationId, children }: Put
     async (input) => {
       const entry = enqueuePutaway({ ...ownerRef.current, body: input.body, summary: input.summary });
       if (phoneThinksItIsOffline()) return { kind: "queued", reason: "offline" };
-      const result = await schedulePass(entry.idempotencyKey);
+      const result = await schedulePass(entry.idempotencyKey, input.watching);
       // Not reached this pass (an earlier entry hit a dead connection first): it is still queued.
       return result.outcomes.get(entry.idempotencyKey) ?? { kind: "queued", reason: "network" };
     },

@@ -353,7 +353,8 @@ export interface StockMovementOut {
   balance_after: Qty;
   location_id: string;
   status: StockStatus;
-  reference_type: "purchase_order" | null;
+  /** A free vocabulary (`purchase_order`, `bin_transfer`, `putaway`, ...), not a single literal. */
+  reference_type: string | null;
   reference_id: string | null;
   note: string;
   occurred_on: string;

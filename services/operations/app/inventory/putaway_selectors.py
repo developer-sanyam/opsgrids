@@ -243,6 +243,7 @@ async def suggestion_out(
     return PutawaySuggestionOut(
         location_id=str(location.id),
         code=location.code,
+        barcode=location.barcode,
         name=location.name,
         path=path_of(chains.get(location.id, [])),
         reason=reason,

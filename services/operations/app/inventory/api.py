@@ -96,10 +96,16 @@ LocationWrite = Annotated[
     ScopeContext, Depends(require("operations.inventory.location.write", minimum=Scope.ORG))
 ]
 #: A worker's GPS fix is personal location data: its own permission, held by the administrator role
-#: alone (`app/catalogue.py`), and used only by the audited reveal.
+#: alone (`app/catalogue.py`), and used only by the audited reveal. Like the platform's other
+#: reveal routes it also demands a session that proved a one-time code (`amr={"otp"}`, ADR-0023):
+#: the permission says the role may, `otp` says this token went through a second factor, so a
+#: stolen or unattended administrator token is not a standing route to every worker's position in
+#: the retention window — the audit row records a bulk pull, it does not stop one. `otp` alone and
+#: not the `stepup` marker the CRM routes add: the operations SPA has no step-up flow yet
+#: (ADR-0023 risk 5), so the marker would make the button unusable. Add it with the UI.
 PutawayLocationRead = Annotated[
     ScopeContext,
-    Depends(require("operations.inventory.putaway.location_read", minimum=Scope.ORG)),
+    Depends(require("operations.inventory.putaway.location_read", minimum=Scope.ORG, amr={"otp"})),
 ]
 #: Unlike the other stock writes the key is **required** on a put-away: the offline queue replays
 #: under it, and a put-away with no key could be doubled by any retry.

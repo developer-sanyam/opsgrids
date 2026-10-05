@@ -11,6 +11,24 @@ import type { AvailableStock } from "@/lib/useAvailableStock";
 /** More than this on a phone is a wall of radios; the filter is how a worker gets to the rest. */
 const MAX_SHOWN = 30;
 
+/** The list on screen is the last one that loaded, because asking again failed — shown rather than
+ *  an error, so a worker with a weak signal can still enter the next line of what they carry. */
+function StaleNotice({ onRefresh }: { onRefresh: () => void }) {
+  return (
+    <InlineAlert
+      tone="warning"
+      title="Couldn't refresh the stock list"
+      action={
+        <Button variant="secondary" size="sm" onClick={onRefresh}>
+          Refresh
+        </Button>
+      }
+    >
+      Showing the list from earlier, so quantities may be out of date.
+    </InlineAlert>
+  );
+}
+
 interface PutawayStockPickerProps {
   stock: AvailableStock;
   onSelect: (row: StockRowOut) => void;
@@ -58,6 +76,7 @@ export function PutawayStockPicker({ stock, onSelect, focusSearch = false }: Put
   if (stock.rows.length === 0 && !stock.hasMore) {
     return (
       <Card className="p-2">
+        {stock.stale ? <StaleNotice onRefresh={stock.reload} /> : null}
         <EmptyState
           icon={<WarehouseIcon className="size-6" aria-hidden />}
           title="No stock to put away"
@@ -76,6 +95,7 @@ export function PutawayStockPicker({ stock, onSelect, focusSearch = false }: Put
 
   return (
     <Card className="flex flex-col gap-4 p-4">
+      {stock.stale ? <StaleNotice onRefresh={stock.reload} /> : null}
       <TextField
         ref={searchRef}
         label="Find stock"

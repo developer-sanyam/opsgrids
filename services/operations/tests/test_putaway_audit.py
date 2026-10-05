@@ -34,6 +34,7 @@ from tests.putaway_fixtures import (
     LAT,
     LNG,
     PUTAWAY,
+    REVEAL_AMR,
     REVEAL_PERM,
     STOCK_READ,
     STOCK_TRANSFER,
@@ -69,6 +70,7 @@ async def reveal(client, pw: PutawayWorld, move_id: Any, *, principal=None):  # 
         "POST",
         f"{PUTAWAY}/{move_id}/location:reveal",
         principal=principal,
+        amr=REVEAL_AMR,
     )
 
 
@@ -98,7 +100,7 @@ class TestTheRevealIsAuditedEveryTime:
     ) -> None:
         made = await put(client, pw, putaway_body(pw, lat_micro=LAT, lng_micro=LNG, accuracy_m=ACC))
         move_id = made.json()["move_id"]
-        admins = [principal_for(pw.org_id, [REVEAL_PERM]) for _ in range(2)]
+        admins = [principal_for(pw.org_id, [REVEAL_PERM], amr=REVEAL_AMR) for _ in range(2)]
         calls = 5
         for i in range(calls):
             resp = await reveal(client, pw, move_id, principal=admins[i % 2])
@@ -213,7 +215,12 @@ class TestARefusedOrMissingRevealWritesNothing:
 
     async def test_a_malformed_move_id_is_422_and_leaves_no_row(self, client, session, pw) -> None:
         resp = await call(
-            client, pw.org_id, [REVEAL_PERM], "POST", f"{PUTAWAY}/not-a-uuid/location:reveal"
+            client,
+            pw.org_id,
+            [REVEAL_PERM],
+            "POST",
+            f"{PUTAWAY}/not-a-uuid/location:reveal",
+            amr=REVEAL_AMR,
         )
         assert resp.status_code == 422
         assert await reads(session, pw) == []
@@ -560,7 +567,7 @@ class TestLogsCarryIdsAndCountsNeverCoordinates:
     async def test_the_lines_are_exactly_the_ids_the_runbook_says(
         self, client, session, pw
     ) -> None:
-        who = principal_for(pw.org_id, [REVEAL_PERM])
+        who = principal_for(pw.org_id, [REVEAL_PERM], amr=REVEAL_AMR)
         with capture_logs() as entries:
             await put(client, pw, putaway_body(pw, lat_micro=LAT), key="l-4")  # geo dropped
             made = await put(client, pw, putaway_body(pw, lat_micro=LAT, lng_micro=LNG), key="l-5")

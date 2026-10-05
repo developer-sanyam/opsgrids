@@ -314,8 +314,10 @@ OPERATIONS = PermissionCatalogue(
         # personal location data, so reading it is its own permission — ORG only, **dangerous**
         # and, unlike every other grant here, held by the administrator role alone (it reaches
         # `OPERATIONS_ADMIN` through `all()` and is picked into no other template). Four segments
-        # like the other reveal codes. Every successful use writes an `entity.sensitive_read`
-        # audit row (`app.inventory.putaway_services.reveal_putaway_location`).
+        # like the other reveal codes, and like them the route also needs a session that gave a
+        # one-time code (`amr={"otp"}`, `PutawayLocationRead` in `app/inventory/api.py`). Every
+        # successful use writes an `entity.sensitive_read` audit row
+        # (`app.inventory.putaway_services.reveal_putaway_location`).
         PermissionSpec(
             "inventory",
             "putaway",

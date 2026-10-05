@@ -9,7 +9,7 @@ vi.mock("@/api/client", () => ({ postPutaway: vi.fn() }));
 
 import { postPutaway } from "@/api/client";
 
-import { enqueuePutaway, getPutawayQueue, parkPutaway, purgePutawayQueue } from "./putawayQueue";
+import { enqueuePutaway, getPutawayQueue, parkPutaway, purgePutawayQueue, removePutaway } from "./putawayQueue";
 import { classifyFailure, drainPutawayQueue } from "./putawaySync";
 
 const post = vi.mocked(postPutaway);
@@ -226,6 +226,106 @@ describe("drainPutawayQueue", () => {
       message: "No bin has that label.",
     });
     expect(getPutawayQueue()).toEqual([]);
+  });
+
+  it("the entry the worker was watching is parked, not dropped, when the screen is gone by the time the refusal arrives", async () => {
+    const left = enqueue("1");
+    post.mockRejectedValueOnce(refused(409, "That stock is reserved."));
+
+    const result = await drainPutawayQueue(ME, { foregroundKey: left.idempotencyKey, foregroundWatched: () => false });
+
+    expect(getPutawayQueue()).toHaveLength(1);
+    expect(getPutawayQueue()[0]).toMatchObject({
+      idempotencyKey: left.idempotencyKey,
+      status: "needs_attention",
+      attention: { httpStatus: 409, message: "That stock is reserved." },
+    });
+    expect(getPutawayQueue()[0]?.body).not.toHaveProperty("lat_micro");
+    expect(result.outcomes.get(left.idempotencyKey)).toMatchObject({ kind: "rejected", status: 409 });
+  });
+
+  it("whether the screen is still there is asked when the refusal arrives, not when the put-away was confirmed", async () => {
+    const watched = enqueue("1");
+    let stillThere = true;
+    post.mockImplementationOnce(() => {
+      stillThere = false; // the worker taps Home while the request is on the wire
+      return Promise.reject(refused(404, "No bin has that label."));
+    });
+
+    await drainPutawayQueue(ME, { foregroundKey: watched.idempotencyKey, foregroundWatched: () => stillThere });
+
+    expect(getPutawayQueue()[0]).toMatchObject({ idempotencyKey: watched.idempotencyKey, status: "needs_attention" });
+  });
+
+  it("an entry discarded while a pass is running is not sent: a sign-out purge reaches the entries the pass has not got to", async () => {
+    enqueue("1");
+    enqueue("2");
+    enqueue("3");
+    let answer: (() => void) | undefined;
+    post.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = () => resolve(makePutawayOut());
+        }),
+    );
+
+    const pass = drainPutawayQueue(ME);
+    await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    purgePutawayQueue();
+    answer?.();
+    const result = await pass;
+
+    // Only the one that was already on the wire when the worker signed out.
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(result.synced).toBe(1);
+    expect(getPutawayQueue()).toEqual([]);
+  });
+
+  it("an entry the worker discards by hand mid-pass is not sent either", async () => {
+    const first = enqueue("1");
+    const second = enqueue("2");
+    post.mockImplementationOnce(() => {
+      removePutaway(second.idempotencyKey);
+      return Promise.resolve(makePutawayOut());
+    });
+
+    await drainPutawayQueue(ME);
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post.mock.calls[0]?.[1]).toBe(first.idempotencyKey);
+  });
+
+  it("a refusal for a date after the server's own says it is the phone's clock, not 'payload failed validation'", async () => {
+    const entry = enqueue("1");
+    post.mockRejectedValueOnce(
+      new ApiError(422, "Request payload failed validation", {
+        status: 422,
+        detail: "Request payload failed validation",
+        errors: [{ field: "occurred_on", code: "value_error", message: "Value error, occurred_on cannot be in the future" }],
+      }),
+    );
+
+    await drainPutawayQueue(ME);
+
+    const parked = getPutawayQueue().find((e) => e.idempotencyKey === entry.idempotencyKey);
+    expect(parked?.attention?.message).toMatch(/date on this phone/i);
+    expect(parked?.attention?.message).not.toMatch(/payload/i);
+  });
+
+  it("any other 422 keeps the server's own sentence", async () => {
+    const entry = enqueue("1");
+    post.mockRejectedValueOnce(
+      new ApiError(422, "x", {
+        status: 422,
+        detail: "Storage put-away takes stock from a receiving or staging bin",
+        errors: [{ field: "from_location_id", code: "source_not_receiving_or_staging", message: "starts from a receiving or staging bin" }],
+      }),
+    );
+
+    await drainPutawayQueue(ME);
+
+    const parked = getPutawayQueue().find((e) => e.idempotencyKey === entry.idempotencyKey);
+    expect(parked?.attention?.message).toBe("Storage put-away takes stock from a receiving or staging bin");
   });
 
   it("a watched entry that hits a 5xx stays queued, and a different entry's refusal is still parked", async () => {

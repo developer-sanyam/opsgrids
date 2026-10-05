@@ -66,20 +66,34 @@ worker needs no `location.read` because the server resolves the scanned label.
   micro-degrees (`Math.round(degrees * 1e6)`) in the request body and nowhere else — never logged,
   never rendered, never stored beyond the queue entry that has not synced yet.
 - **Its own queue** (`src/lib/putawayQueue.ts`, not `scanQueue`, which is for `scan_events` only).
-  Confirming freezes the request — body, a random `Idempotency-Key`, `captured_at`, a UTC
-  `occurred_on` — into `localStorage` *before* sending, and every resend is that same request. A
+  Confirming freezes the request — body, a random `Idempotency-Key`, `captured_at` — into
+  `localStorage` *before* sending, and every resend is that same request. `occurred_on` is the
+  exception to "the phone dates it": the server refuses a date after its own today, so while the
+  phone is online it is left out and the server dates the put-away itself (a phone with a wrong
+  clock is never refused); confirmed offline, the UTC date is frozen into the entry. A
   network failure or 5xx (and 408/429) retries under the same key; any other 4xx is parked on the
-  Put away screen with the server's reason and a Discard, and the queue carries on. The drainer
-  (`PutawayQueueProvider`, mounted in `App.tsx`'s `AppShell`) runs on mount, on reconnect, by hand
-  and on a backing-off timer, one pass at a time. Entries belong to the signed-in user and
+  Put away screen with the server's reason and a Discard, and the queue carries on. The one
+  entry the worker is watching is refused straight back to the screen instead — unless they have
+  left it by the time the answer comes, in which case it is parked like the rest and the
+  attention banner says so. The drainer (`PutawayQueueProvider`, mounted in `App.tsx`'s
+  `AppShell`) runs on mount, on reconnect, by hand and on a backing-off timer, one pass at a time,
+  and re-reads the queue before every send. Entries belong to the signed-in user and
   organization and replay only for them; signing out purges the queue (asking first if put-aways
-  would be lost). With `localStorage` unavailable the queue lives in memory for the session and the
-  screen says closing the app would lose what is waiting.
+  would be lost), stops a running pass from sending what was purged, and purges again once the
+  session has ended. With `localStorage` unavailable the queue lives in memory for the session and
+  the screen says closing the app would lose what is waiting.
+- **The stock list outlives one put-away.** It is held above the form, so *Put away more* asks the
+  server for fresh quantities when online and, if that fails, keeps the last list that loaded
+  (marked as possibly out of date) rather than blocking the next line. Quantities waiting in the
+  queue are always taken out of it, so the same stock is not offered twice. The server has no
+  filter for receiving/staging bins and does not send a bin's kind with a stock row, so the list
+  is every available bucket and the server's 422 is what enforces the source rule.
 - **This is not offline-first.** There is no service worker: the app has to be open and loaded for
   anything to sync, and a phone that loses signal before first load cannot open it at all.
-- A suggested bin comes from `GET /putaway/suggest`. It carries the bin's code, not its barcode, so
-  the amber "different bin" confirmation compares the scanned label with the code; a bin whose
-  barcode differs from its code asks for one confirmation it did not strictly need. The server's own
+- A suggested bin comes from `GET /putaway/suggest`. It carries the bin's code and its barcode
+  (`null` when it has none). The server resolves a scanned label by barcode alone, so the amber
+  "different bin" confirmation compares the scanned label with the barcode only — a bin's code is
+  not a label — and a suggested bin with no barcode says it cannot be scanned. The server's own
   `matched_suggestion` is what is recorded.
 
 ## Auth

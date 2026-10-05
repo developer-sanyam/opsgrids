@@ -5,14 +5,16 @@
  * detail, that the key goes to the provider and nowhere else, and that the places lookup fills the
  * form from a chosen suggestion.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import type { WarehouseMapSiteOut } from "@/api/types";
 import LocationPinMap from "./LocationPinMap";
+import { SLOW_LOAD_MS } from "@/lib/useSlowLoad";
 import { MapShell } from "./MapShell";
+import { SCRIPT_HANG_MS } from "./scriptStatus";
 import PlacesLookup from "./PlacesLookup";
 import SitesMap from "./SitesMap";
 
@@ -73,6 +75,17 @@ beforeEach(() => {
   state.providerOnError = undefined;
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+/** Moves the clock, inside `act`, so the timers a component armed fire and React sees their updates. */
+function advance(ms: number) {
+  act(() => {
+    vi.advanceTimersByTime(ms);
+  });
+}
+
 describe("MapShell", () => {
   it("hears Google refusing the key through gm_authFailure — which no provider status reports — and tells the page once", () => {
     const onFailure = vi.fn();
@@ -129,6 +142,79 @@ describe("MapShell", () => {
     window.gm_authFailure?.();
     expect(onFailure).toHaveBeenCalledTimes(1);
     expect(onFailure).toHaveBeenCalledWith("script_error");
+  });
+
+  describe("a script that never answers", () => {
+    function renderShell(onFailure = vi.fn()) {
+      const view = render(
+        <MapShell apiKey="k" onFailure={onFailure}>
+          <p>inside</p>
+        </MapShell>,
+      );
+      return { onFailure, ...view };
+    }
+
+    it("gives up on the map, with the fixed script reason, once the script has been pending for the cap", () => {
+      vi.useFakeTimers();
+      state.status = "LOADING";
+      const { onFailure } = renderShell();
+      advance(SCRIPT_HANG_MS - 1);
+      expect(onFailure).not.toHaveBeenCalled();
+      advance(1);
+      expect(onFailure).toHaveBeenCalledTimes(1);
+      expect(onFailure).toHaveBeenCalledWith("script_error");
+      advance(SCRIPT_HANG_MS);
+      expect(onFailure).toHaveBeenCalledTimes(1);
+    });
+
+    it("counts a script that has not started yet as pending", () => {
+      vi.useFakeTimers();
+      state.status = "NOT_LOADED";
+      const { onFailure } = renderShell();
+      advance(SCRIPT_HANG_MS);
+      expect(onFailure).toHaveBeenCalledWith("script_error");
+    });
+
+    it("keeps the clock running when the page re-renders, rather than restarting it each time", () => {
+      vi.useFakeTimers();
+      state.status = "LOADING";
+      const first = vi.fn();
+      const { rerender } = renderShell(first);
+      advance(SCRIPT_HANG_MS - 5_000);
+      const second = vi.fn();
+      rerender(
+        <MapShell apiKey="k" onFailure={second}>
+          <p>inside</p>
+        </MapShell>,
+      );
+      advance(5_000);
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledWith("script_error");
+    });
+
+    it("lets a script that arrives in time be", () => {
+      vi.useFakeTimers();
+      state.status = "LOADING";
+      const { onFailure, rerender } = renderShell();
+      advance(SCRIPT_HANG_MS - 1_000);
+      state.status = "LOADED";
+      rerender(
+        <MapShell apiKey="k" onFailure={onFailure}>
+          <p>inside</p>
+        </MapShell>,
+      );
+      advance(SCRIPT_HANG_MS);
+      expect(onFailure).not.toHaveBeenCalled();
+    });
+
+    it("stops waiting when the map goes away", () => {
+      vi.useFakeTimers();
+      state.status = "LOADING";
+      const { onFailure, unmount } = renderShell();
+      unmount();
+      advance(SCRIPT_HANG_MS);
+      expect(onFailure).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -227,6 +313,61 @@ describe("SitesMap", () => {
     const props = renderSites();
     expect(props.onFailure).not.toHaveBeenCalled();
   });
+
+  it("puts every word of the popup on a surface of its own, because Google's bubble is white in either theme", () => {
+    renderSites({ selectedId: "wh-1" });
+    const popup = screen.getByRole("dialog", { name: "popup" });
+    // `ink` and `muted` are contrast-checked against `surface` in light and dark (tokens.test.ts); on
+    // Google's white bubble the dark theme's pale text is about 1.1:1. So each piece of themed text
+    // must sit on a `bg-surface` of its own, not on whatever is behind the popup.
+    const themed = Array.from(popup.querySelectorAll<HTMLElement>(".text-ink, .text-muted"));
+    expect(themed.length).toBeGreaterThanOrEqual(3);
+    for (const node of themed) expect(node.closest(".bg-surface"), node.textContent ?? "").not.toBeNull();
+    expect(within(popup).getByText("Bhiwandi DC").closest(".bg-surface")).not.toBeNull();
+    expect(within(popup).getByText("Plot 5, MIDC").closest(".bg-surface")).not.toBeNull();
+  });
+
+  describe("while Google's script loads", () => {
+    it("fills the box with a loading state instead of leaving it blank", () => {
+      state.status = "LOADING";
+      renderSites();
+      const box = screen.getByTestId("sites-map");
+      expect(within(box).getByTestId("map-loading").textContent).toContain("Loading the map…");
+      expect(box.className).toContain("h-96");
+      expect(box.className).toContain("relative");
+    });
+
+    it("shows it from the very start, before the provider has begun", () => {
+      state.status = "NOT_LOADED";
+      renderSites();
+      expect(screen.getByTestId("map-loading")).toBeDefined();
+    });
+
+    it("says it is taking longer than usual after the slow-load threshold, and not before", () => {
+      vi.useFakeTimers();
+      state.status = "LOADING";
+      renderSites();
+      advance(SLOW_LOAD_MS - 1);
+      expect(screen.getByTestId("map-loading").textContent).not.toContain("taking longer");
+      advance(1);
+      expect(screen.getByTestId("map-loading").textContent).toContain("Loading the map is taking longer than usual");
+    });
+
+    it("hands over to the list when the script never answers", () => {
+      vi.useFakeTimers();
+      state.status = "LOADING";
+      const props = renderSites();
+      advance(SCRIPT_HANG_MS);
+      expect(props.onFailure).toHaveBeenCalledTimes(1);
+      expect(props.onFailure).toHaveBeenCalledWith("script_error");
+    });
+
+    it("goes away once the script has loaded", () => {
+      state.status = "LOADED";
+      renderSites();
+      expect(screen.queryByTestId("map-loading")).toBeNull();
+    });
+  });
 });
 
 describe("LocationPinMap", () => {
@@ -253,6 +394,25 @@ describe("LocationPinMap", () => {
     render(<LocationPinMap apiKey="k" lat={1} lng={2} accuracyM={5} onFailure={onFailure} />);
     expect(onFailure).toHaveBeenCalledWith("auth_failure");
   });
+
+  it("fills its box with a loading state, then the slow note, then gives up, while the script is pending", () => {
+    vi.useFakeTimers();
+    state.status = "LOADING";
+    const onFailure = vi.fn();
+    render(<LocationPinMap apiKey="k" lat={1} lng={2} accuracyM={5} onFailure={onFailure} />);
+    const box = screen.getByTestId("location-pin-map");
+    expect(within(box).getByTestId("map-loading").textContent).toContain("Loading the map…");
+    advance(SLOW_LOAD_MS);
+    expect(within(box).getByTestId("map-loading").textContent).toContain("taking longer than usual");
+    expect(onFailure).not.toHaveBeenCalled();
+    advance(SCRIPT_HANG_MS - SLOW_LOAD_MS);
+    expect(onFailure).toHaveBeenCalledWith("script_error");
+  });
+
+  it("shows no loading state once the script has loaded", () => {
+    render(<LocationPinMap apiKey="k" lat={1} lng={2} accuracyM={5} onFailure={vi.fn()} />);
+    expect(screen.queryByTestId("map-loading")).toBeNull();
+  });
 });
 
 describe("PlacesLookup", () => {
@@ -277,6 +437,32 @@ describe("PlacesLookup", () => {
   it("is disabled while the places library loads", () => {
     render(<PlacesLookup apiKey="k" onPlace={vi.fn()} onFailure={vi.fn()} />);
     expect((screen.getByLabelText("Look up an address") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("says the lookup is slow to load, in the line that is already there, after the slow-load threshold", () => {
+    vi.useFakeTimers();
+    render(<PlacesLookup apiKey="k" onPlace={vi.fn()} onFailure={vi.fn()} />);
+    expect(screen.getByText(/Check them before you save/)).toBeDefined();
+    advance(SLOW_LOAD_MS);
+    expect(screen.getByText(/Loading address lookup is taking longer than usual/)).toBeDefined();
+    expect(screen.queryByText(/Check them before you save/)).toBeNull();
+  });
+
+  it("never says it is slow once the library is there", () => {
+    vi.useFakeTimers();
+    state.places = fakePlaces();
+    render(<PlacesLookup apiKey="k" onPlace={vi.fn()} onFailure={vi.fn()} />);
+    advance(SLOW_LOAD_MS);
+    expect(screen.queryByText(/taking longer than usual/)).toBeNull();
+  });
+
+  it("gives up on the lookup when the script never answers, so the form falls back to the manual fields", () => {
+    vi.useFakeTimers();
+    state.status = "LOADING";
+    const onFailure = vi.fn();
+    render(<PlacesLookup apiKey="k" onPlace={vi.fn()} onFailure={onFailure} />);
+    advance(SCRIPT_HANG_MS);
+    expect(onFailure).toHaveBeenCalledWith("script_error");
   });
 
   it("searches as you type and hands the form the chosen place's address and micro-degree position", async () => {

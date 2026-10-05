@@ -330,7 +330,8 @@ export interface PutawayToLocationOut extends PutawayFromLocationOut {
 
 /** `PutawayOut` — 201 fresh, 200 replay of the same `Idempotency-Key`. `warnings` are
  *  machine-readable notes on what the server did not take as sent: `geo_dropped:<reason>`,
- *  `captured_at_adjusted`, `geo_not_recorded`. The move itself is recorded in every case. */
+ *  `captured_at_adjusted`, `suggestion_ignored` (the `suggested_location_id` was not one of the
+ *  caller's bins and was not stored), `geo_not_recorded`. The move itself is recorded in every case. */
 export interface PutawayOut {
   move_id: string;
   replayed: boolean;
@@ -346,6 +347,9 @@ export type PutawaySuggestionReason = "holds_item" | "empty_bin";
 export interface PutawaySuggestion {
   location_id: string;
   code: string;
+  /** The bin's own barcode label, `null` when it has none. A worker has no `location.read`, so this
+   *  is how a scanned label is matched to the suggestion. */
+  barcode: string | null;
   name: string;
   path: string;
   reason: PutawaySuggestionReason;

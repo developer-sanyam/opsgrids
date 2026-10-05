@@ -55,6 +55,7 @@ __all__ = [
     "LAYOUT_READ",
     "LNG",
     "PUTAWAY",
+    "REVEAL_AMR",
     "REVEAL_PERM",
     "STOCK_READ",
     "STOCK_TRANSFER",
@@ -82,6 +83,11 @@ __all__ = [
 
 PUTAWAY = "/operations/inventory/putaway"
 REVEAL_PERM = "operations.inventory.putaway.location_read:ORG"
+#: What a session that went through a second factor carries (`verify_mfa` mints `pwd` then `otp`).
+#: The reveal route demands `otp` on top of its permission (`PutawayLocationRead`), so a principal
+#: that is meant to get a reveal through holds this; one that must be refused for want of it holds
+#: the permission and none of this.
+REVEAL_AMR = ["pwd", "otp"]
 LAYOUT_READ = "operations.warehouse.layout.read:ORG"
 WAREHOUSE_READ = "operations.inventory.warehouse.read:ORG"
 WAREHOUSE_WRITE = "operations.inventory.warehouse.write:ORG"

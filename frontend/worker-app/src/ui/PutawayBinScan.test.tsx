@@ -4,7 +4,7 @@
  * step does with a label however it arrives: trimmed, validated, accepted once, and never typed over
  * by a camera that is no longer needed.
  */
-import { createRef } from "react";
+import { createRef, useState } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -91,6 +91,43 @@ describe("PutawayBinScan", () => {
 
     expect(screen.getByText(message)).toBeTruthy();
     expect(screen.getByLabelText("Bin label")).toBeTruthy();
+  });
+
+  describe("a label that is being replaced", () => {
+    /** The parent owns the accepted label, as the Put away screen does. */
+    function Screen() {
+      const [label, setLabel] = useState<string | null>(null);
+      return <PutawayBinScan label={label} onAccept={setLabel} onClear={() => setLabel(null)} />;
+    }
+
+    it("is selected when the field comes back, so the next scan replaces it rather than landing on the end of it", async () => {
+      camera();
+      const user = userEvent.setup();
+      render(<Screen />);
+      await user.type(screen.getByLabelText("Bin label"), "WRONG{Enter}");
+
+      await user.click(screen.getByRole("button", { name: "Change bin label" }));
+
+      const field = screen.getByLabelText("Bin label") as HTMLInputElement;
+      expect(document.activeElement).toBe(field);
+      expect(field.value).toBe("WRONG");
+      expect([field.selectionStart, field.selectionEnd]).toEqual([0, 5]);
+
+      // What a keyboard-wedge scanner does: type the label it read at the caret, then Enter.
+      await user.keyboard("RIGHT{Enter}");
+      expect(screen.getByText("RIGHT")).toBeTruthy();
+    });
+
+    it("can still be corrected by hand: the text is there to edit, not cleared", async () => {
+      camera();
+      const user = userEvent.setup();
+      render(<Screen />);
+      await user.type(screen.getByLabelText("Bin label"), "A-01-0O{Enter}");
+      await user.click(screen.getByRole("button", { name: "Change bin label" }));
+
+      const field = screen.getByLabelText("Bin label") as HTMLInputElement;
+      expect(field.value).toBe("A-01-0O");
+    });
   });
 
   it("an accepted label replaces the camera and the field, and can be changed", async () => {

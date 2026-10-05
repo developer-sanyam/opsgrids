@@ -1,6 +1,7 @@
 # ruff: noqa: S608 — every f-string here interpolates only `SCHEMA` and this module's own constants.
-"""The plans behind find-stock and the put-away capture lookup (CLAUDE.md: every index leads with
-`organization_id`; `test_tracking_query_plans.py` for the method).
+"""The plans behind find-stock, the put-away capture lookup and the warehouse map's stocked-bin
+count (CLAUDE.md: every index leads with `organization_id`; `test_tracking_query_plans.py` for the
+method).
 
 Seeded at a realistic size and `ANALYZE`d, the **exact** statement the selector compiles is
 `EXPLAIN`ed as the app role with the tenant GUC set — RLS's own qual and the selector's explicit
@@ -8,6 +9,8 @@ Seeded at a realistic size and `ANALYZE`d, the **exact** statement the selector 
 one it reaches for, with no sequential scan of the big table. `locate` runs on every "where is this
 item" a storekeeper types; a quiet fall back to scanning every balance of the tenant would be a
 production incident at a few hundred thousand rows, and nothing else in the suite would notice.
+The map's count runs on every visit to the Sites page: it must probe each bin once and stop, not
+sort every balance of the tenant (a disk spill under the production 4 MB `work_mem`).
 """
 
 from __future__ import annotations
@@ -17,13 +20,13 @@ import uuid
 from typing import Any
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import settings
-from app.inventory import putaway_selectors
-from app.models import SCHEMA, PutawayCapture
+from app.inventory import putaway_selectors, selectors
+from app.models import OFF_SITE_STATUSES, SCHEMA, InventoryBalance, Location, PutawayCapture
 from platform_core.auth import Scope
 from platform_core.db import TENANT_GUC
 from tests.helpers import ctx_for
@@ -187,6 +190,25 @@ def seq_scans(nodes: list[dict[str, Any]]) -> set[str]:
     return {n["Relation Name"] for n in nodes if n["Node Type"] == "Seq Scan"}
 
 
+def node_types(nodes: list[dict[str, Any]]) -> set[str]:
+    return {n["Node Type"] for n in nodes}
+
+
+async def only_warehouse(org: uuid.UUID) -> uuid.UUID:
+    """The id of the fixture's one warehouse (the fixture does not hand it out)."""
+    admin = create_async_engine(settings().admin_dsn, connect_args=_connect_args())
+    try:
+        async with admin.connect() as conn:
+            return (
+                await conn.execute(
+                    text(f"SELECT id FROM {SCHEMA}.warehouses WHERE organization_id = :org"),
+                    {"org": org},
+                )
+            ).scalar_one()
+    finally:
+        await admin.dispose()
+
+
 async def test_locate_reads_one_items_balances_through_the_tenant_leading_bucket_index(
     at_scale,
 ) -> None:
@@ -231,6 +253,43 @@ async def test_the_captures_of_one_bin_are_read_through_the_tenant_and_location_
     )
     nodes = await explain(org, sql)
     assert "ix_putaway_captures_org_location" in indexes_used(nodes), indexes_used(nodes)
+
+
+async def test_the_warehouse_map_count_probes_each_bin_and_neither_scans_nor_sorts_the_balances(
+    at_scale,
+) -> None:
+    """`GET /warehouses/map` counts the bins holding stock for every placed site on every visit.
+    Probing `ix_inventory_balances_org_location` once per bin and stopping at the first positive
+    balance costs by bins; the `count(DISTINCT)` over a join of every balance it replaced sorted all
+    of them, and under the production `work_mem` that sort went to disk."""
+    org, _, _ = at_scale
+    warehouse = await only_warehouse(org)
+    nodes = await explain(org, _compiled(selectors.stocked_location_counts_stmt(org, [warehouse])))
+    assert "inventory_balances" not in seq_scans(nodes), seq_scans(nodes)
+    assert "ix_inventory_balances_org_location" in indexes_used(nodes), indexes_used(nodes)
+    assert "Sort" not in node_types(nodes), node_types(nodes)
+
+
+async def test_the_count_distinct_shape_the_map_replaced_trips_those_guards(at_scale) -> None:
+    """The control for the test above: the old statement is a sequential scan of every balance and
+    a sort, so the guard would have caught it."""
+    org, _, _ = at_scale
+    legacy = (
+        select(Location.warehouse_id, func.count(func.distinct(Location.id)))
+        .select_from(InventoryBalance)
+        .join(Location, Location.id == InventoryBalance.location_id)
+        .where(
+            InventoryBalance.organization_id == org,
+            Location.organization_id == org,
+            Location.deleted_at.is_(None),
+            InventoryBalance.quantity_milli > 0,
+            InventoryBalance.status.notin_(OFF_SITE_STATUSES),
+        )
+        .group_by(Location.warehouse_id)
+    )
+    nodes = await explain(org, _compiled(legacy))
+    assert "inventory_balances" in seq_scans(nodes), seq_scans(nodes)
+    assert "Sort" in node_types(nodes), node_types(nodes)
 
 
 async def test_the_control_the_guards_can_fire(at_scale) -> None:

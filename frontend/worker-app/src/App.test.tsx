@@ -217,6 +217,32 @@ describe("AppShell — sign out", () => {
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 
+  it("a put-away confirmed while the sign-out request is still on its way does not outlive the sign-out", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window.navigator, "onLine", "get").mockReturnValue(false);
+    let finishLogout: (() => void) | undefined;
+    logout.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishLogout = resolve;
+      }),
+    );
+    seed();
+    stubGateway({});
+    renderShell();
+
+    await openSignOut(user);
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Sign out and discard" }));
+    expect(getPutawayQueue()).toEqual([]);
+
+    // The logout round trip is slow and the Put away screen is still usable: a confirm lands now.
+    seed();
+    expect(getPutawayQueue()).toHaveLength(1);
+
+    finishLogout?.();
+    await waitFor(() => expect(getPutawayQueue()).toEqual([]));
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
   it("staying signed in keeps the queue and the session", async () => {
     const user = userEvent.setup();
     vi.spyOn(window.navigator, "onLine", "get").mockReturnValue(false);

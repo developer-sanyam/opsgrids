@@ -48,6 +48,7 @@ from tests.putaway_fixtures import (
     LAT,
     LNG,
     PUTAWAY,
+    REVEAL_AMR,
     REVEAL_PERM,
     STOCK_READ,
     STOCK_TRANSFER,
@@ -699,6 +700,7 @@ class TestIdempotency:
             [REVEAL_PERM],
             "POST",
             f"{PUTAWAY}/{first.json()['move_id']}/location:reveal",
+            amr=REVEAL_AMR,
         )
         assert (revealed.json()["lat_micro"], revealed.json()["lng_micro"]) == (LAT, LNG)
 
@@ -1105,7 +1107,12 @@ class TestAFailedCaptureLeavesTheMovePosted:
         move = resp.json()["move_id"]
         detail = await call(client, pw.org_id, [STOCK_READ], "GET", f"{PUTAWAY}/{move}")
         reveal = await call(
-            client, pw.org_id, [REVEAL_PERM], "POST", f"{PUTAWAY}/{move}/location:reveal"
+            client,
+            pw.org_id,
+            [REVEAL_PERM],
+            "POST",
+            f"{PUTAWAY}/{move}/location:reveal",
+            amr=REVEAL_AMR,
         )
         assert (detail.status_code, reveal.status_code) == (404, 404)
         assert await audit_rows(session, pw.org_id, action="entity.sensitive_read") == []
@@ -1457,12 +1464,119 @@ class TestValidation:
             "foreign item": putaway_body(pw, inventory_item_id=str(foreign.t.dye)),
             "unknown source": putaway_body(pw, from_location_id=str(uuid.uuid4())),
             "foreign source": putaway_body(pw, from_location_id=str(foreign.t.weaving)),
-            "unknown suggestion": putaway_body(pw, suggested_location_id=str(uuid.uuid4())),
-            "foreign suggestion": putaway_body(pw, suggested_location_id=str(foreign.t.weaving)),
             "foreign lot": tracked_body(pw, lot_id=str(foreign.lot)),
             "foreign roll": tracked_body(pw, roll_id=str(foreign.roll)),
         }
         for i, (name, body) in enumerate(cases.items()):
             resp = await put(client, pw, body, key=f"k-{i}")
             assert resp.status_code == 404, (name, resp.status_code, resp.text)
+        await stage_nothing_posted(session, pw)
+
+    # -------------------------------------------------- a suggestion the server cannot resolve
+
+    async def test_an_unknown_deleted_or_foreign_suggestion_is_ignored_not_a_404(
+        self, client, session, admin_session, pw
+    ) -> None:
+        """`suggested_location_id` is what the device showed, not something the move depends on: a
+        put-away queued offline must not park over a bin deleted since. The move posts, the id is
+        not stored, and the warning is the same word for all three causes — the response never says
+        whether the id exists in another tenant."""
+        foreign = await make_foreign_world(admin_session)
+        dead = await make_location(session, pw, kind="bin", code="DEAD-1", barcode="DEAD-1-BC")
+        async with session.begin():
+            await inv_services.delete_location(session, pw.w.t.ctx, dead)
+        cases = {
+            "unknown": uuid.uuid4(),
+            "foreign": foreign.t.weaving,
+            "deleted": dead,
+        }
+        bodies = []
+        for i, (name, suggested) in enumerate(cases.items()):
+            resp = await put(
+                client,
+                pw,
+                putaway_body(pw, suggested_location_id=str(suggested), quantity="1"),
+                key=f"s-{i}",
+            )
+            assert resp.status_code == 201, (name, resp.status_code, resp.text)
+            out = resp.json()
+            assert out["warnings"] == ["suggestion_ignored"], name
+            assert out["matched_suggestion"] is not None, name
+            bodies.append({k: v for k, v in out.items() if k != "move_id"})
+        assert bodies[0] == bodies[1] == bodies[2]
+
+        stored = await captures(session, pw.org_id)
+        assert len(stored) == 3
+        assert [c.suggested_location_id for c in stored] == [None, None, None]
+        assert len(await move_ids(session, pw.org_id, reference_type="putaway")) == 3
+        assert (await bucket_qty(session, pw.w, location=pw.rack_bin, item=pw.dye))[0] == q("3")
+        await assert_reconciled(session, pw.org_id)
+
+    async def test_an_ignored_suggestion_does_not_change_the_servers_own_verdict(
+        self, client, session, pw
+    ) -> None:
+        """`matched_suggestion` is judged against the server's rule whatever the device claims: the
+        suggestion R1-B01 matches a scan of R1-B01 and misses a scan of R1-B02, ignored id or
+        not."""
+        hit = await put(
+            client, pw, putaway_body(pw, suggested_location_id=str(uuid.uuid4())), key="v-1"
+        )
+        miss = await put(
+            client,
+            pw,
+            putaway_body(
+                pw, to_barcode="RACK-1-B02", suggested_location_id=str(uuid.uuid4()), quantity="1"
+            ),
+            key="v-2",
+        )
+        assert hit.json()["matched_suggestion"] is True
+        assert miss.json()["matched_suggestion"] is False
+        assert hit.json()["warnings"] == miss.json()["warnings"] == ["suggestion_ignored"]
+        by_move = {str(c.move_id): c for c in await captures(session, pw.org_id)}
+        assert by_move[hit.json()["move_id"]].matched_suggestion is True
+        assert by_move[miss.json()["move_id"]].matched_suggestion is False
+
+    async def test_a_resolvable_suggestion_is_stored_and_raises_no_warning(
+        self, client, session, pw
+    ) -> None:
+        resp = await put(
+            client, pw, putaway_body(pw, suggested_location_id=str(pw.rack_bin2)), key="r-1"
+        )
+        assert resp.status_code == 201
+        assert resp.json()["warnings"] == []
+        [capture] = await captures(session, pw.org_id)
+        assert capture.suggested_location_id == pw.rack_bin2
+
+    async def test_an_ignored_suggestion_sits_beside_the_other_warnings(
+        self, client, session, pw
+    ) -> None:
+        resp = await put(
+            client,
+            pw,
+            putaway_body(pw, suggested_location_id=str(uuid.uuid4()), lat_micro=LAT),
+            key="w-1",
+        )
+        assert resp.status_code == 201
+        assert resp.json()["warnings"] == ["suggestion_ignored", "geo_dropped:unpaired"]
+
+    async def test_the_replay_of_a_put_away_with_an_ignored_suggestion_is_a_quiet_200(
+        self, client, session, pw
+    ) -> None:
+        body = putaway_body(pw, suggested_location_id=str(uuid.uuid4()))
+        first = await put(client, pw, body, key="p-1")
+        again = await put(client, pw, body, key="p-1")
+        assert (first.status_code, again.status_code) == (201, 200)
+        assert again.json()["move_id"] == first.json()["move_id"]
+        assert again.json()["warnings"] == []
+        assert len(await captures(session, pw.org_id)) == 1
+        assert len(await move_ids(session, pw.org_id, reference_type="putaway")) == 1
+
+    async def test_a_suggestion_that_is_not_a_uuid_is_still_a_422(
+        self, client, session, pw
+    ) -> None:
+        """Ignoring a *resolvable-but-wrong* id is not leniency about the shape of the field."""
+        resp = await put(
+            client, pw, putaway_body(pw, suggested_location_id="not-a-uuid"), key="u-1"
+        )
+        assert resp.status_code == 422
         await stage_nothing_posted(session, pw)

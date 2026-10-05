@@ -34,6 +34,7 @@ pytestmark = pytest.mark.integration
 CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "libs" / "contracts"
 
 REVEAL_PERM = "operations.inventory.putaway.location_read:ORG"
+REVEAL_AMR = ["pwd", "otp"]  # the reveal route also demands a session that gave a one-time code
 LAYOUT_READ = "operations.warehouse.layout.read:ORG"
 WAREHOUSE_READ = "operations.inventory.warehouse.read:ORG"
 WAREHOUSE_WRITE = "operations.inventory.warehouse.write:ORG"
@@ -184,7 +185,7 @@ async def test_putaway_end_to_end(client, session, org_id, world) -> None:
     assert rows["R1-B01"]["quantity"] == "5.000" or rows["R1-B01"]["quantity"] == "5"
     assert rows["R1-B01"]["placement_reason"] == "no_permission"
 
-    with as_principal(principal_for(org_id, [REVEAL_PERM])):
+    with as_principal(principal_for(org_id, [REVEAL_PERM], amr=REVEAL_AMR)):
         revealed = await client.post(
             f"{API}/operations/inventory/putaway/{out['move_id']}/location:reveal"
         )

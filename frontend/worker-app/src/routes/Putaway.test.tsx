@@ -11,6 +11,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { UserEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Route, Routes, useNavigate } from "react-router-dom";
 
 import type { PutawayIn } from "@/api/types";
 import { PutawayQueueProvider } from "@/lib/PutawayQueueProvider";
@@ -112,9 +113,9 @@ describe("PutawayPage", () => {
         quantity: "5",
         lot_id: "lot-1",
         suggested_location_id: "loc-bin-1",
-        // `NOW` is pinned in test-setup.ts, so the confirm moment and its UTC date are exact.
+        // `NOW` is pinned in test-setup.ts, so the confirm moment is exact. No `occurred_on`: online,
+        // the server's own date applies (see "a phone whose clock is a day ahead" below).
         captured_at: NOW,
-        occurred_on: "2026-09-29",
         lat_micro: 12_971_599,
         lng_micro: 77_594_563,
         accuracy_m: 12,
@@ -143,27 +144,46 @@ describe("PutawayPage", () => {
       expect(stock?.search.get("status")).toBe("AVAILABLE");
     });
 
-    it("occurred_on is the UTC date even when the phone's own date is a day behind", async () => {
+    it("a put-away saved offline freezes the UTC date, even when the phone's own date is a day behind", async () => {
       process.env.TZ = "America/Los_Angeles";
       try {
         vi.setSystemTime(new Date("2026-09-30T00:30:00.000Z")); // 5:30 pm on the 29th in Los Angeles
-        const { calls } = gateway();
+        setOnline(false);
+        gateway();
         const user = userEvent.setup();
         renderPutaway();
 
         await pickStock(user);
         await enterBin(user, "A-01-03");
         await confirm(user);
-        await screen.findByText("Put away recorded");
+        await screen.findByText("Saved on this phone");
 
         expect(new Date().getDate()).toBe(29);
-        expect(posts(calls)[0]?.body).toMatchObject({
+        expect(getPutawayQueue()[0]?.body).toMatchObject({
           captured_at: "2026-09-30T00:30:00.000Z",
           occurred_on: "2026-09-30",
         });
       } finally {
         delete process.env.TZ;
       }
+    });
+
+    it("a phone whose clock is a day ahead is not refused: online, no date is sent and the server's own applies", async () => {
+      // The server rejects an `occurred_on` after its own today; the phone's clock is the only thing
+      // that could make one, so the phone does not send it while the server is there to ask.
+      vi.setSystemTime(new Date("2026-09-30T09:00:00.000Z"));
+      const { calls } = gateway();
+      const user = userEvent.setup();
+      renderPutaway();
+
+      await pickStock(user);
+      await enterBin(user, "A-01-03");
+      await confirm(user);
+
+      await screen.findByText("Put away recorded");
+      const body = posts(calls)[0]?.body as PutawayIn;
+      expect(body).not.toHaveProperty("occurred_on");
+      expect(body.captured_at).toBe("2026-09-30T09:00:00.000Z");
     });
 
     it("trims the CR/LF a scanner adds, so the label sent is the label printed", async () => {
@@ -258,6 +278,57 @@ describe("PutawayPage", () => {
 
       expect(await screen.findByRole("button", { name: "Put away" })).toBeTruthy();
       expect(screen.queryByText("That isn't the suggested bin")).toBeNull();
+    });
+
+    it("scanning the suggested bin's printed barcode, which is not its code, raises no warning either", async () => {
+      const { calls } = gateway({ [SUGGEST]: () => json({ suggestion: makeSuggestion({ barcode: "LBL-A0103" }) }) });
+      const user = userEvent.setup();
+      renderPutaway();
+      await pickStock(user);
+      // The card says what the label reads, since that — not the code — is what gets scanned.
+      expect(await screen.findByText("LBL-A0103")).toBeTruthy();
+      await enterBin(user, "lbl-a0103");
+
+      const put = await screen.findByRole("button", { name: "Put away" });
+      expect(screen.queryByText("That isn't the suggested bin")).toBeNull();
+
+      await user.click(put);
+      await screen.findByText("Put away recorded");
+      expect(posts(calls)[0]?.body).toMatchObject({ to_barcode: "lbl-a0103", suggested_location_id: "loc-bin-1" });
+    });
+
+    it("typing the suggested bin's code, when its label reads something else, is not a match: the server resolves labels only", async () => {
+      gateway({ [SUGGEST]: () => json({ suggestion: makeSuggestion({ barcode: "LBL-A0103" }) }) });
+      const user = userEvent.setup();
+      renderPutaway();
+      await pickStock(user);
+      await enterBin(user, "A-01-03");
+
+      expect(await screen.findByText("That isn't the suggested bin")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Put away" })).toBeNull();
+    });
+
+    it("a suggested bin with no barcode says it can't be scanned, and typing its code is not a match", async () => {
+      gateway({ [SUGGEST]: () => json({ suggestion: makeSuggestion({ barcode: null }) }) });
+      const user = userEvent.setup();
+      renderPutaway();
+      await pickStock(user);
+
+      expect(await screen.findByText("This bin has no scannable label")).toBeTruthy();
+      await enterBin(user, "A-01-03");
+
+      expect(await screen.findByText("That isn't the suggested bin")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Put away" })).toBeNull();
+    });
+
+    it("a labelled suggested bin does not claim to be unlabelled", async () => {
+      gateway();
+      const user = userEvent.setup();
+      renderPutaway();
+      await pickStock(user);
+
+      expect(await screen.findByText("Suggested bin")).toBeTruthy();
+      expect(screen.queryByText("This bin has no scannable label")).toBeNull();
     });
 
     it("scanning again clears the warning along with the old label", async () => {
@@ -526,6 +597,85 @@ describe("PutawayPage", () => {
       await waitFor(() => expect(posts(calls)).toHaveLength(2));
     });
 
+    async function putAwayFive(user: UserEvent) {
+      await pickStock(user);
+      const quantity = await screen.findByLabelText(/Quantity to put away/);
+      await user.clear(quantity);
+      await user.type(quantity, "5");
+      await enterBin(user, "A-01-03");
+      await confirm(user);
+    }
+
+    it("offline, Put away more keeps the list that was already loaded — less what is waiting to sync — so the next line can be entered", async () => {
+      setOnline(false);
+      const { calls } = gateway();
+      const user = userEvent.setup();
+      renderPutaway();
+      await putAwayFive(user);
+      await screen.findByText("Saved on this phone");
+
+      await user.click(screen.getByRole("button", { name: "Put away more" }));
+
+      expect(await screen.findByRole("radio", { name: /SKU-100/ })).toBeTruthy();
+      expect(screen.getByText(/15 m available/)).toBeTruthy();
+      expect(screen.queryByText("Couldn't load stock")).toBeNull();
+      expect(calls.filter((call) => call.key === STOCK)).toHaveLength(1);
+    });
+
+    it("when the list cannot be refreshed, Put away more offers the one it has, says so, and Refresh asks again", async () => {
+      let lists = 0;
+      gateway({
+        [PUTAWAY]: () => problem(503, "Service unavailable"),
+        [STOCK]: () => {
+          lists += 1;
+          if (lists === 2) throw new TypeError("Failed to fetch");
+          return json({ items: [makeStockRow()], next_cursor: null });
+        },
+      });
+      const user = userEvent.setup();
+      renderPutaway();
+      await putAwayFive(user);
+      await screen.findByText("Saved on this phone");
+
+      await user.click(screen.getByRole("button", { name: "Put away more" }));
+
+      expect(await screen.findByText("Couldn't refresh the stock list")).toBeTruthy();
+      expect(screen.getByRole("radio", { name: /SKU-100/ })).toBeTruthy();
+      expect(screen.getByText(/15 m available/)).toBeTruthy();
+
+      await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+      await waitFor(() => expect(screen.queryByText("Couldn't refresh the stock list")).toBeNull());
+      expect(screen.getByRole("radio", { name: /SKU-100/ })).toBeTruthy();
+    });
+
+    it("stock already waiting to sync is not offered at full quantity again, even when the list loads fine", async () => {
+      gateway({ [PUTAWAY]: () => problem(503, "Service unavailable") });
+      const user = userEvent.setup();
+      renderPutaway();
+      await putAwayFive(user);
+      await screen.findByText("Saved on this phone");
+
+      await user.click(screen.getByRole("button", { name: "Put away more" }));
+
+      expect(await screen.findByText(/15 m available/)).toBeTruthy();
+      expect(screen.queryByText(/20 m available/)).toBeNull();
+    });
+
+    it("a put-away the server refused and parked holds nothing back: it will never be sent", async () => {
+      const refused = enqueuePutaway({
+        ownerSub: "user-1",
+        organizationId: "org-1",
+        body: { inventory_item_id: "item-1", from_location_id: "loc-rcv-1", to_barcode: "A-01-03", quantity: "5" },
+        summary: { sku: "SKU-100", itemName: "Cotton roll", uom: "m", fromLocationCode: "RCV-01", toBarcode: "A-01-03" },
+      });
+      parkPutaway(refused.idempotencyKey, { httpStatus: 409, message: "That stock is reserved." });
+      gateway();
+      renderPutaway();
+
+      expect(await screen.findByText(/20 m available/)).toBeTruthy();
+    });
+
     it("with localStorage unavailable the queue still works for the session — and says it can't promise more", async () => {
       vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
         throw new DOMException("quota", "QuotaExceededError");
@@ -631,6 +781,51 @@ describe("PutawayPage", () => {
       expect(posts(calls)[1]?.headers["idempotency-key"]).not.toBe(posts(calls)[0]?.headers["idempotency-key"]);
     });
 
+    it("after a refused label the next scan replaces it — a scanner types at the caret, so the old text is selected", async () => {
+      let attempt = 0;
+      const { calls } = gateway({
+        [PUTAWAY]: () => {
+          attempt += 1;
+          return attempt === 1 ? problem(404, "No bin has that label.") : json(makePutawayOut(), 201);
+        },
+      });
+      const user = userEvent.setup();
+      renderPutaway();
+      await pickStock(user);
+      await enterBin(user, "WRONG");
+      await confirm(user, "Put away here anyway");
+      await screen.findByText("No bin has that label.");
+
+      const field = (await screen.findByLabelText("Bin label")) as HTMLInputElement;
+      await waitFor(() => expect(document.activeElement).toBe(field));
+      expect(field.value).toBe("WRONG");
+      expect([field.selectionStart, field.selectionEnd]).toEqual([0, 5]);
+
+      // A keyboard-wedge scanner types what it reads into whatever has focus.
+      await user.keyboard("A-01-03{Enter}");
+
+      // Matches the suggested bin exactly, so no warning: it did not become "WRONGA-01-03".
+      await confirm(user);
+      await screen.findByText("Put away recorded");
+      expect(posts(calls)[1]?.body).toMatchObject({ to_barcode: "A-01-03" });
+    });
+
+    it("the same after tapping Change on a label that was accepted by mistake", async () => {
+      gateway();
+      const user = userEvent.setup();
+      renderPutaway();
+      await pickStock(user);
+      await enterBin(user, "B-02-01");
+      await screen.findByText("That isn't the suggested bin");
+
+      await user.click(screen.getByRole("button", { name: "Change bin label" }));
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Bin label")));
+      await user.keyboard("A-01-03{Enter}");
+
+      expect(await screen.findByRole("button", { name: "Put away" })).toBeTruthy();
+      expect(screen.queryByText("That isn't the suggested bin")).toBeNull();
+    });
+
     it.each([
       [409, "That stock is reserved for an order."],
       [422, "Put-away only moves stock out of receiving or staging."],
@@ -644,6 +839,81 @@ describe("PutawayPage", () => {
 
       expect(await screen.findByText(detail)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Put away" })).toBeTruthy();
+      expect(getPutawayQueue()).toEqual([]);
+    });
+  });
+
+  describe("leaving the screen while a put-away is in flight", () => {
+    /** The provider lives above the screens, as in the app shell, so Home is reachable and the
+     *  queue — unlike the Put away screen — survives the worker walking away from it. */
+    function Shell() {
+      const navigate = useNavigate();
+      return (
+        <PutawayQueueProvider ownerSub="user-1" organizationId="org-1">
+          <button type="button" onClick={() => navigate("/")}>
+            Go home
+          </button>
+          <Routes>
+            <Route path="putaway" element={<PutawayPage />} />
+            <Route path="*" element={<p>Home screen</p>} />
+          </Routes>
+        </PutawayQueueProvider>
+      );
+    }
+
+    function renderShell() {
+      return renderScreen(<Shell />, { at: "/putaway", path: "/*", grants: GRANTS });
+    }
+
+    it.each([
+      [404, "No bin has that label."],
+      [409, "That stock is reserved for an order."],
+      [422, "Put-away only moves stock out of receiving or staging."],
+    ])("a %i that arrives after the worker has left is parked for them to read, not dropped", async (status, detail) => {
+      let answer: (() => void) | undefined;
+      const { calls } = gateway({
+        [PUTAWAY]: () =>
+          new Promise<Response>((resolve) => {
+            answer = () => resolve(problem(status, detail));
+          }),
+      });
+      const user = userEvent.setup();
+      renderShell();
+      await pickStock(user);
+      await enterBin(user, "A-01-03");
+      await confirm(user);
+      await waitFor(() => expect(posts(calls)).toHaveLength(1));
+
+      await user.click(screen.getByRole("button", { name: "Go home" }));
+      expect(await screen.findByText("Home screen")).toBeTruthy();
+      answer?.();
+
+      await waitFor(() => expect(getPutawayQueue()).toHaveLength(1));
+      expect(getPutawayQueue()[0]).toMatchObject({
+        status: "needs_attention",
+        attention: { httpStatus: status, message: detail },
+      });
+      expect(getPutawayQueue()[0]?.body).not.toHaveProperty("lat_micro");
+    });
+
+    it("a refusal that arrives while the screen is still there is shown on it and leaves nothing behind", async () => {
+      let answer: (() => void) | undefined;
+      const { calls } = gateway({
+        [PUTAWAY]: () =>
+          new Promise<Response>((resolve) => {
+            answer = () => resolve(problem(409, "That stock is reserved for an order."));
+          }),
+      });
+      const user = userEvent.setup();
+      renderShell();
+      await pickStock(user);
+      await enterBin(user, "A-01-03");
+      await confirm(user);
+      await waitFor(() => expect(posts(calls)).toHaveLength(1));
+
+      answer?.();
+
+      expect(await screen.findByText("That stock is reserved for an order.")).toBeTruthy();
       expect(getPutawayQueue()).toEqual([]);
     });
   });

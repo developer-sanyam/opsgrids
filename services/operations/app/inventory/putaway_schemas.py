@@ -32,6 +32,8 @@ class PutawayIn(BaseModel):
     `/`, 1-64 characters): a scanner's trailing CR/LF is a 422 here — the apps trim it. The server
     resolves it to a bin (a worker holds no `location.read`). `suggested_location_id` is only what
     the device *showed*; whether the scan matched the server's own rule is computed server-side.
+    An id that is unknown, deleted or another tenant's is ignored, not refused (warning
+    `suggestion_ignored`), so a put-away queued offline is never parked over a stale suggestion.
 
     The GPS fix is audit evidence, never a location of record, and it never blocks the move: a fix
     the server cannot use (unpaired, out of range, negative accuracy) is dropped with a warning in
@@ -81,8 +83,9 @@ class PutawayOut(BaseModel):
     suggestion (`null` when it had none) and whether a fix was kept. **No coordinates.**
 
     `warnings` says what was adjusted without failing the request: `geo_dropped:<reason>`,
-    `captured_at_adjusted`, `geo_not_recorded` (the capture row could not be written; the move
-    stands)."""
+    `captured_at_adjusted`, `suggestion_ignored` (the `suggested_location_id` was not one of the
+    caller's bins; it was not stored), `geo_not_recorded` (the capture row could not be written;
+    the move stands)."""
 
     move_id: str
     replayed: bool
@@ -117,8 +120,13 @@ class PutawayLocationOut(BaseModel):
 
 
 class PutawaySuggestionOut(BaseModel):
+    """The bin the server would store the item in. `barcode` is that bin's own scannable label
+    (`null` when it has none): a worker holds no `location.read`, so this is how the device
+    compares a scanned label with the suggestion; the caller already holds `stock.transfer`."""
+
     location_id: str
     code: str
+    barcode: str | None
     name: str
     path: str
     reason: Literal["holds_item", "empty_bin"]

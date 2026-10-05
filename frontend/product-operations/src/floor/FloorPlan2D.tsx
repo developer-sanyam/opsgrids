@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from "react";
-import type { KeyboardEvent, PointerEvent as ReactPointerEvent, WheelEvent } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 
 import { LOCATION_KIND_COLOR } from "@/data/locationKindColor";
 import { LOCATION_KIND_LABEL } from "@/data/locationKinds";
@@ -88,11 +88,22 @@ export function FloorPlan2D({ rects, highlightIds, selectedId, onSelect, label }
     event.preventDefault();
   }
 
-  function onWheel(event: WheelEvent<SVGSVGElement>) {
-    if (!event.ctrlKey && !event.metaKey) return;
-    event.preventDefault();
-    zoomBy(event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP);
-  }
+  // A native listener, not React's `onWheel`: React registers wheel listeners passive, and a passive
+  // listener cannot `preventDefault`, so the browser would zoom the whole page along with the plan.
+  // Ctrl/⌘ + wheel is also how a trackpad pinch arrives. Only that combination is taken; a plain
+  // wheel still scrolls the page.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    function onWheel(event: WheelEvent) {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const factor = event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+      setZoom((current) => clamp(current * factor, MIN_ZOOM, MAX_ZOOM));
+    }
+    svg.addEventListener("wheel", onWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", onWheel);
+  }, []);
 
   function onPointerDown(event: ReactPointerEvent<SVGSVGElement>) {
     if (event.target !== event.currentTarget) return;
@@ -143,7 +154,6 @@ export function FloorPlan2D({ rects, highlightIds, selectedId, onSelect, label }
         tabIndex={0}
         className="h-auto max-h-screen min-h-48 w-full touch-none rounded-tile bg-sunken"
         onKeyDown={onKeyDown}
-        onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}

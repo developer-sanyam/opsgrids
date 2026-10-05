@@ -200,6 +200,8 @@ export function makeSuggestion(overrides: Partial<PutawaySuggestion> = {}): Puta
   return {
     location_id: "loc-bin-1",
     code: "A-01-03",
+    // Most bins are labelled with their own code; a test about a label that differs says so.
+    barcode: "A-01-03",
     name: "Rack A, bay 1, level 3",
     path: "WH1 / Zone A / Rack 1",
     reason: "holds_item",

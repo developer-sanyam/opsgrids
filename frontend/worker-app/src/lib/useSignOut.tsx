@@ -10,6 +10,9 @@ import { getPutawayQueue, purgePutawayQueue } from "@/lib/putawayQueue";
  * Signing out of this app: empty the put-away queue, then end the session — every entry, whoever
  * made it, because a shared handset must not keep one person's GPS fixes for the next. Both places
  * that sign out (the shell's account menu and Profile) go through here, so neither can forget.
+ * The queue is emptied again when the session has ended, for what was confirmed while it was ending;
+ * a pass that is already sending reads the live queue before each send, so the first purge also
+ * stops it from sending the rest (`lib/putawaySync.ts`).
  *
  * Put-aways that never reached the server would be lost with the queue, and a stock move silently
  * lost is worse than an extra tap, so with any left the worker is asked first. Nothing is asked
@@ -24,8 +27,12 @@ export function useSignOut(): { requestSignOut: () => void; signingOut: boolean;
   const signOutNow = useCallback(() => {
     setSigningOut(true);
     purgePutawayQueue();
-    // `logout()` clears the local session even when the server call fails; nothing to recover.
-    void logout().catch(() => undefined);
+    // `logout()` clears the local session even when the server call fails; nothing to recover. It
+    // is a slow round trip, though, and the app is usable until it lands: a put-away confirmed in
+    // that window is queued after the purge above, so purge again once the session is gone.
+    void logout()
+      .catch(() => undefined)
+      .finally(() => purgePutawayQueue());
   }, [logout]);
 
   const requestSignOut = useCallback(() => {

@@ -13,12 +13,19 @@
  *   a different body, 422 a rule): retrying cannot change the answer (frontend/CLAUDE.md: never
  *   retry a 4xx). The entry is parked for a person to read and discard, and the queue carries on.
  *   The one entry the worker is looking at, submitted a moment ago, is not parked: its refusal
- *   goes straight back to the screen so the bin can be rescanned, and it leaves the queue.
+ *   goes straight back to the screen so the bin can be rescanned, and it leaves the queue. That is
+ *   only so while the screen is still there to show it — a worker who has walked away (the request
+ *   can take half a minute on a weak signal) would otherwise lose the refusal along with the entry,
+ *   so then it is parked like any other and the attention banner tells them.
+ * - **Gone from the queue before its turn** (signed out and purged, or discarded by hand while the
+ *   pass was running): not sent. The pass re-reads the live queue before every send, so it never
+ *   puts on the wire something the worker has since thrown away. The one request already in flight
+ *   when that happens cannot be recalled.
  * - **401**: the session is gone. The gateway client has already tried a silent refresh. The entry
  *   is untouched and the pass stops; it syncs when the same person signs back in.
  */
 
-import { ApiError, problemMessage } from "@opsgrids/client";
+import { ApiError, fieldError, problemMessage } from "@opsgrids/client";
 
 import { postPutaway } from "@/api/client";
 import type { PutawayOut } from "@/api/types";
@@ -62,7 +69,26 @@ export interface DrainResult {
 export interface DrainOptions {
   /** The entry the worker just confirmed and is watching the screen for; see the file header. */
   foregroundKey?: string | undefined;
+  /** Whether that screen is still there. Asked when a refusal arrives, not when the entry was
+   *  confirmed — the worker may have left in between. Omitted, it is taken to be. */
+  foregroundWatched?: (() => boolean) | undefined;
   signal?: AbortSignal | undefined;
+}
+
+/** What to tell the worker about a refusal: the server's own sentence, except for a date after its
+ *  own today. Only a phone whose clock is ahead can send one, and neither "occurred_on cannot be in
+ *  the future" nor the generic "payload failed validation" the same response carries as its
+ *  `detail` means anything to the person holding the phone. */
+function refusalMessage(error: ApiError): string {
+  if (error.status === 422 && fieldError(error.problem, "occurred_on") !== undefined) {
+    return "The date on this phone is ahead of the server's. Fix the phone's date and time settings, then put it away again.";
+  }
+  return problemMessage(error);
+}
+
+/** Still queued and still waiting to be sent: not purged, discarded or parked since the pass began. */
+function stillWaiting(key: string): boolean {
+  return getPutawayQueue().some((entry) => entry.idempotencyKey === key && entry.status === "pending");
 }
 
 async function send(entry: PutawayQueueEntry, outer: AbortSignal | undefined): Promise<PutawayOut> {
@@ -90,6 +116,8 @@ export async function drainPutawayQueue(owner: PutawayOwner, options: DrainOptio
       break;
     }
     const key = entry.idempotencyKey;
+    // `waiting` was read once, before the first send; the queue may not be what it was.
+    if (!stillWaiting(key)) continue;
     try {
       const result = await send(entry, options.signal);
       removePutaway(key);
@@ -98,10 +126,11 @@ export async function drainPutawayQueue(owner: PutawayOwner, options: DrainOptio
     } catch (error) {
       const failure = classifyFailure(error);
       if (failure === "reject" && error instanceof ApiError) {
-        const message = problemMessage(error);
+        const message = refusalMessage(error);
         if (key === options.foregroundKey) {
-          removePutaway(key);
           outcomes.set(key, { kind: "rejected", status: error.status, message });
+          if (options.foregroundWatched?.() ?? true) removePutaway(key);
+          else parkPutaway(key, { httpStatus: error.status, message });
         } else {
           parkPutaway(key, { httpStatus: error.status, message });
         }

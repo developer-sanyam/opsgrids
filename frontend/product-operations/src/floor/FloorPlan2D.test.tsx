@@ -168,6 +168,53 @@ describe("FloorPlan2D", () => {
     expect(viewBox()[2]).toBeLessThan(w0 ?? 0);
   });
 
+  it("takes over a Ctrl/⌘ wheel from the browser, whose own page zoom would otherwise scale the whole app", () => {
+    renderPlan();
+    const plan = screen.getByRole("group", { name: "Floor plan of Ground" });
+    // `fireEvent` returns false when a listener cancelled the event. A listener the browser was told
+    // is passive cannot cancel it, which is what a React `onWheel` is: React registers wheel
+    // listeners passive, so `preventDefault` there is ignored and the page zooms with the plan.
+    expect(fireEvent.wheel(plan, { deltaY: -100, ctrlKey: true, cancelable: true })).toBe(false);
+    expect(fireEvent.wheel(plan, { deltaY: -100, metaKey: true, cancelable: true })).toBe(false);
+    expect(fireEvent.wheel(plan, { deltaY: -100, cancelable: true })).toBe(true);
+  });
+
+  it("registers its wheel listener as non-passive, the only kind that may cancel the browser's zoom", () => {
+    const registered: Array<boolean | AddEventListenerOptions | undefined> = [];
+    const original = SVGSVGElement.prototype.addEventListener;
+    vi.spyOn(SVGSVGElement.prototype, "addEventListener").mockImplementation(function (
+      this: SVGSVGElement,
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | AddEventListenerOptions,
+    ) {
+      if (type === "wheel") registered.push(options);
+      original.call(this, type, listener, options);
+    });
+    renderPlan();
+    expect(registered).toHaveLength(1);
+    expect(registered[0]).toMatchObject({ passive: false });
+  });
+
+  it("stops listening for the wheel when the plan goes away", () => {
+    const removed: string[] = [];
+    const original = SVGSVGElement.prototype.removeEventListener;
+    vi.spyOn(SVGSVGElement.prototype, "removeEventListener").mockImplementation(function (
+      this: SVGSVGElement,
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | EventListenerOptions,
+    ) {
+      removed.push(type);
+      original.call(this, type, listener, options);
+    });
+    const { unmount } = render(
+      <FloorPlan2D rects={drawable} highlightIds={new Set()} selectedId={null} onSelect={vi.fn()} label="Floor plan of Ground" />,
+    );
+    unmount();
+    expect(removed).toContain("wheel");
+  });
+
   it("explains how to pan and zoom in words", () => {
     renderPlan();
     expect(screen.getByText(/Drag to pan/)).toBeDefined();

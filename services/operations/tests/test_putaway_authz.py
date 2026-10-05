@@ -3,6 +3,8 @@ find-stock, the published floor layout and the warehouse map add (the `test_trac
 — one table drives all of it, so a route added without a row here is visible in review):
 
 * a caller with **no** permission is 403;
+* the reveal also needs a session that gave a **one-time code** (`otp` in `amr`): the permission
+  alone is 403, and a refused reveal writes no audit row (ADR-0023);
 * a caller holding **every other** permission this surface touches — including the existing
   worker-location permission, which must not unlock the put-away reveal — is 403;
 * the right permission at a scope **below** the route's floor (`:OWN` where the route needs `ORG`)
@@ -50,6 +52,7 @@ from tests.putaway_fixtures import (
     LAYOUT_READ,
     LNG,
     PUTAWAY,
+    REVEAL_AMR,
     REVEAL_PERM,
     STOCK_READ,
     STOCK_TRANSFER,
@@ -135,6 +138,8 @@ class Route:
     cross_tenant: str = "404"
     #: Whether the route's dependency refuses a grant below ORG scope.
     org_floor: bool = False
+    #: The authentication methods the route also demands, beyond its permission.
+    amr: tuple[str, ...] = ()
 
 
 ROUTES: dict[str, Route] = {
@@ -159,7 +164,11 @@ ROUTES: dict[str, Route] = {
         "GET", lambda az: f"{PUTAWAY}/{az.move_id}", STOCK_READ, org_floor=True
     ),
     "reveal": Route(
-        "POST", lambda az: f"{PUTAWAY}/{az.move_id}/location:reveal", REVEAL_PERM, org_floor=True
+        "POST",
+        lambda az: f"{PUTAWAY}/{az.move_id}/location:reveal",
+        REVEAL_PERM,
+        org_floor=True,
+        amr=tuple(REVEAL_AMR),
     ),
     "locate": Route(
         "GET",
@@ -201,31 +210,38 @@ def _grant(code: str, scope: str = "ORG") -> str:
     return f"{code}:{scope}"
 
 
+def _who(org_id: uuid.UUID, perms: list[str], route: Route, **kwargs: Any):  # type: ignore[no-untyped-def]
+    """A caller holding `perms` *and* whatever authentication `route` also demands, so a refusal in
+    this module is for the reason it names (the permission, the scope, the entitlement, the tenant)
+    and not for want of a second factor. The one-time-code rule has its own tests below."""
+    return principal_for(org_id, perms, amr=list(route.amr), **kwargs)
+
+
 @pytest.mark.parametrize("name", sorted(ROUTES))
 class TestEveryRoute:
     async def test_no_permission_is_forbidden(self, client, az, name) -> None:
-        resp = await send(client, az, ROUTES[name], principal_for(az.org_id, []))
+        resp = await send(client, az, ROUTES[name], _who(az.org_id, [], ROUTES[name]))
         assert resp.status_code == 403, resp.text
 
     async def test_every_other_permission_is_still_forbidden(self, client, az, name) -> None:
         route = ROUTES[name]
         others = [p for p in OTHER_PERMS if p != route.perm]
-        resp = await send(client, az, route, principal_for(az.org_id, others))
+        resp = await send(client, az, route, _who(az.org_id, others, route))
         assert resp.status_code == 403, resp.text
 
     async def test_the_right_permission_without_the_entitlement_is_payment_required(
         self, client, az, name
     ) -> None:
         route = ROUTES[name]
-        who = principal_for(az.org_id, [route.perm], entitlements=[])
+        who = _who(az.org_id, [route.perm], route, entitlements=[])
         resp = await send(client, az, route, who)
         assert resp.status_code == 402, resp.text
-        who = principal_for(az.org_id, [route.perm], entitlements=["crm"])
+        who = _who(az.org_id, [route.perm], route, entitlements=["crm"])
         assert (await send(client, az, route, who)).status_code == 402
 
     async def test_another_tenant_gets_404_or_an_empty_map(self, client, az, name) -> None:
         route = ROUTES[name]
-        intruder = principal_for(uuid.uuid4(), [route.perm])
+        intruder = _who(uuid.uuid4(), [route.perm], route)
         resp = await send(client, az, route, intruder)
         if route.cross_tenant == "empty_map":
             assert resp.status_code == 200, resp.text
@@ -237,7 +253,7 @@ class TestEveryRoute:
         """The control: every row above is refused for the reason it says, not because the call is
         malformed."""
         route = ROUTES[name]
-        resp = await send(client, az, route, principal_for(az.org_id, [route.perm]))
+        resp = await send(client, az, route, _who(az.org_id, [route.perm], route))
         assert resp.status_code in (200, 201), resp.text
 
 
@@ -248,7 +264,7 @@ async def test_a_grant_below_org_scope_is_forbidden(client, az, name) -> None:
     route = ROUTES[name]
     code = route.perm.rsplit(":", 1)[0]
     for scope in ("OWN", "TEAM", "LOCATION"):
-        resp = await send(client, az, route, principal_for(az.org_id, [_grant(code, scope)]))
+        resp = await send(client, az, route, _who(az.org_id, [_grant(code, scope)], route))
         assert resp.status_code == 403, (scope, resp.text)
 
 
@@ -300,10 +316,10 @@ class TestRefusedWritesChangeNothing:
         before_owner = await _footprint(session, az.org_id)
         before_coords = await _coordinates_of_the_warehouse(session, az)
         refused = [
-            principal_for(az.org_id, []),
-            principal_for(az.org_id, [p for p in OTHER_PERMS if p != route.perm]),
-            principal_for(az.org_id, [route.perm], entitlements=[]),
-            principal_for(intruder_org, [route.perm]),
+            _who(az.org_id, [], route),
+            _who(az.org_id, [p for p in OTHER_PERMS if p != route.perm], route),
+            _who(az.org_id, [route.perm], route, entitlements=[]),
+            _who(intruder_org, [route.perm], route),
         ]
         for who in refused:
             resp = await send(client, az, route, who, key="refused-1")
@@ -318,11 +334,16 @@ async def test_a_refused_reveal_writes_no_audit_row_whatever_the_reason(
 ) -> None:
     others = [p for p in OTHER_PERMS if p != REVEAL_PERM]
     for who in (
-        principal_for(az.org_id, []),
-        principal_for(az.org_id, others),
-        principal_for(az.org_id, [_grant("operations.inventory.putaway.location_read", "OWN")]),
-        principal_for(az.org_id, [REVEAL_PERM], entitlements=[]),
-        principal_for(uuid.uuid4(), [REVEAL_PERM]),
+        principal_for(az.org_id, [], amr=REVEAL_AMR),
+        principal_for(az.org_id, others, amr=REVEAL_AMR),
+        principal_for(
+            az.org_id,
+            [_grant("operations.inventory.putaway.location_read", "OWN")],
+            amr=REVEAL_AMR,
+        ),
+        principal_for(az.org_id, [REVEAL_PERM], entitlements=[], amr=REVEAL_AMR),
+        principal_for(uuid.uuid4(), [REVEAL_PERM], amr=REVEAL_AMR),
+        principal_for(az.org_id, [REVEAL_PERM]),  # the right grant, no one-time code
     ):
         await send(client, az, ROUTES["reveal"], who)
     async with session.begin():
@@ -336,6 +357,82 @@ async def test_a_refused_reveal_writes_no_audit_row_whatever_the_reason(
             .all()
         )
     assert rows == []
+
+
+# ------------------------------------------------------------------ the second factor
+
+
+async def _sensitive_reads(session) -> list[AuditLog]:  # type: ignore[no-untyped-def]
+    async with session.begin():
+        return list(
+            (
+                await session.execute(
+                    select(AuditLog).where(AuditLog.action == "entity.sensitive_read")
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+class TestTheRevealNeedsASessionThatGaveAOneTimeCode:
+    """ADR-0023: every reveal route pairs its permission with `amr={"otp"}` — the permission says
+    the role may, `otp` says this token went through a second factor. Without it a stolen or
+    unattended administrator token could list move ids and pull every worker's position in the
+    retention window; the audit row would record that, not stop it."""
+
+    @pytest.mark.parametrize(
+        "amr",
+        [[], ["pwd"], ["sso"], ["stepup"]],
+        ids=["none", "password-only", "single-sign-on", "marker-without-code"],
+    )
+    async def test_the_permission_alone_is_403_and_discloses_nothing(
+        self, client, session, az, amr
+    ) -> None:
+        who = principal_for(az.org_id, [REVEAL_PERM], amr=amr)
+        resp = await send(client, az, ROUTES["reveal"], who)
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"] == "Additional authentication required: otp"
+        assert "lat_micro" not in resp.text and str(LAT) not in resp.text
+        assert await _sensitive_reads(session) == []
+
+    async def test_the_administrator_template_without_a_code_is_refused_and_with_one_is_not(
+        self, client, session, az
+    ) -> None:
+        perms = _role_perms("OPERATIONS_ADMIN")
+        refused = await send(client, az, ROUTES["reveal"], principal_for(az.org_id, perms))
+        assert refused.status_code == 403, refused.text
+        assert await _sensitive_reads(session) == []
+        for amr in (["pwd", "otp"], ["otp"], ["pwd", "otp", "stepup"]):
+            granted = await send(
+                client, az, ROUTES["reveal"], principal_for(az.org_id, perms, amr=amr)
+            )
+            assert granted.status_code == 200, (amr, granted.text)
+            assert (granted.json()["lat_micro"], granted.json()["lng_micro"]) == (LAT, LNG)
+        assert len(await _sensitive_reads(session)) == 3
+
+    async def test_the_refusal_comes_before_any_lookup_so_it_confirms_no_move_exists(
+        self, client, session, az
+    ) -> None:
+        """No code and an unknown (or another tenant's) move id is the same 403 as no code and a
+        real one: the second factor is checked before the capture is read, so the route cannot be
+        used to probe which move ids hold a fix."""
+        who = principal_for(az.org_id, [REVEAL_PERM])
+        real = await send(client, az, ROUTES["reveal"], who)
+        unknown = await call(
+            client, az.org_id, [REVEAL_PERM], "POST", f"{PUTAWAY}/{uuid.uuid4()}/location:reveal"
+        )
+        assert (real.status_code, unknown.status_code) == (403, 403)
+        assert real.json()["detail"] == unknown.json()["detail"]
+        assert await _sensitive_reads(session) == []
+
+    async def test_the_other_put_away_routes_do_not_ask_for_one(self, client, az) -> None:
+        """The code is the reveal's alone: a storekeeper puts stock away, reads the detail and
+        locates stock with an ordinary session."""
+        for name in ("putaway", "suggest", "putaway_detail", "locate"):
+            route = ROUTES[name]
+            resp = await send(client, az, route, principal_for(az.org_id, [route.perm]))
+            assert resp.status_code in (200, 201), (name, resp.text)
 
 
 # ------------------------------------------------------------------ the real roles
@@ -368,7 +465,7 @@ class TestTheRealRoleTemplates:
     async def test_each_role_reaches_exactly_the_routes_it_should(
         self, client, az, name, role
     ) -> None:
-        who = principal_for(az.org_id, _role_perms(role), subject_ref=uuid.uuid4())
+        who = _who(az.org_id, _role_perms(role), ROUTES[name], subject_ref=uuid.uuid4())
         resp = await send(client, az, ROUTES[name], who)
         if role in ALLOWED[name]:
             assert resp.status_code in (200, 201), (role, name, resp.text)
@@ -382,7 +479,10 @@ class TestTheRealRoleTemplates:
         self, client, session, az
     ) -> None:
         worker = principal_for(
-            az.org_id, _role_perms("OPERATIONS_WORKER"), subject_ref=uuid.uuid4()
+            az.org_id,
+            _role_perms("OPERATIONS_WORKER"),
+            subject_ref=uuid.uuid4(),
+            amr=REVEAL_AMR,
         )
         made = await send(client, az, ROUTES["putaway"], worker, key="worker-1")
         assert made.status_code == 201
@@ -555,5 +655,5 @@ class TestRowLevelSecurityOnTheCapturesTable:
             ("GET", f"{PUTAWAY}/{foreign_move}", STOCK_READ),
             ("POST", f"{PUTAWAY}/{foreign_move}/location:reveal", REVEAL_PERM),
         ):
-            resp = await call(client, az.org_id, [perm], method, path)
+            resp = await call(client, az.org_id, [perm], method, path, amr=REVEAL_AMR)
             assert resp.status_code == 404, (path, resp.text)

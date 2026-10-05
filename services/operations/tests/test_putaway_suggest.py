@@ -75,11 +75,37 @@ class TestTheSuggestion:
             "suggestion": {
                 "location_id": str(pw.rack_bin),
                 "code": "R1-B01",
+                "barcode": "RACK-1-B01",
                 "name": "Rack 1 bin 1",
                 "path": "RACK-1 / R1-B01",
                 "reason": "empty_bin",
             }
         }
+
+    async def test_the_suggestion_carries_the_bins_own_barcode_so_a_worker_can_match_a_scan(
+        self, client, session, pw
+    ) -> None:
+        """Workers lack `location.read`, so the suggestion is how the device learns the label of
+        the bin it is asking the worker to scan. The barcode offered is the one a scan resolves."""
+        body = (await suggest(client, pw)).json()["suggestion"]
+        assert body["barcode"] == "RACK-1-B01"
+        scanned = await put(client, pw, putaway_body(pw, to_barcode=body["barcode"]))
+        assert scanned.status_code == 201, scanned.text
+        assert scanned.json()["to_location"]["id"] == body["location_id"]
+        assert scanned.json()["matched_suggestion"] is True
+
+    async def test_a_suggested_bin_with_no_barcode_carries_null_not_an_absent_key(
+        self, client, session, pw
+    ) -> None:
+        async with session.begin():
+            await session.execute(
+                update(Location)
+                .where(Location.id.in_([pw.rack_bin, pw.rack_bin2, pw.shelf, pw.w.bin_b]))
+                .values(deleted_at=datetime.now(UTC))
+            )
+        body = (await suggest(client, pw)).json()["suggestion"]
+        assert body["code"] == "DEFAULT"
+        assert "barcode" in body and body["barcode"] is None
 
     async def test_a_bin_already_holding_the_item_is_preferred_to_an_emptier_walk_position(
         self, client, session, pw

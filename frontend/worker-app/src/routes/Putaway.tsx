@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useAsync } from "@opsgrids/client";
 import { Button, Card, InlineAlert, PageHeader, TextField } from "@opsgrids/ui";
@@ -7,11 +7,19 @@ import { suggestPutawayBin } from "@/api/client";
 import type { StockRowOut } from "@/api/types";
 import { RequireGrant } from "@/auth/RequireGrant";
 import { geoSkipNotice, requestGeoFix } from "@/lib/geo";
-import { buildPutawayBody, matchesSuggestion, quantityProblem, stockDetail, stockLabel } from "@/lib/putawayForm";
+import {
+  buildPutawayBody,
+  deductQueued,
+  matchesSuggestion,
+  quantityProblem,
+  stockDetail,
+  stockLabel,
+} from "@/lib/putawayForm";
 import type { PutawayCompletion } from "@/lib/putawayForm";
 import { usePutawayQueue } from "@/lib/putawayQueueContext";
 import { formatQty } from "@/lib/quantity";
 import { useAvailableStock } from "@/lib/useAvailableStock";
+import type { AvailableStock } from "@/lib/useAvailableStock";
 import { PutawayBinScan } from "@/ui/PutawayBinScan";
 import { PutawayQueuePanel } from "@/ui/PutawayQueuePanel";
 import { PutawayResult } from "@/ui/PutawayResult";
@@ -27,16 +35,29 @@ export function PutawayPage() {
 }
 
 function PutawayContent() {
+  const queue = usePutawayQueue();
   const [completion, setCompletion] = useState<PutawayCompletion | null>(null);
+  // Held here, not in the form, so it outlives the form between one put-away and the next: a
+  // worker with a weak signal keeps the list they had instead of losing it to a failed refetch.
+  const loaded = useAvailableStock();
+  // The server's quantities cannot yet know about put-aways that are still waiting to sync.
+  const stock: AvailableStock = { ...loaded, rows: deductQueued(loaded.rows, queue.entries) };
 
   return (
     <div className="rise flex flex-col gap-6">
       <PageHeader title="Put away" description="Move stock from receiving or staging into its storage bin." />
       <PutawayQueuePanel />
       {completion ? (
-        <PutawayResult completion={completion} onAnother={() => setCompletion(null)} />
+        <PutawayResult
+          completion={completion}
+          onAnother={() => {
+            // Fresh quantities when the server is there to give them; offline, what loaded stands.
+            if (queue.online) stock.reload();
+            setCompletion(null);
+          }}
+        />
       ) : (
-        <PutawayForm onDone={setCompletion} />
+        <PutawayForm stock={stock} onDone={setCompletion} />
       )}
     </div>
   );
@@ -50,9 +71,8 @@ type Phase = "idle" | "locating" | "saving";
  * can never hold the put-away up — if it is denied, slow, unsupported or offline the put-away goes
  * through without it and says so.
  */
-function PutawayForm({ onDone }: { onDone: (completion: PutawayCompletion) => void }) {
+function PutawayForm({ stock, onDone }: { stock: AvailableStock; onDone: (completion: PutawayCompletion) => void }) {
   const queue = usePutawayQueue();
-  const stock = useAvailableStock();
   const [selected, setSelected] = useState<StockRowOut | null>(null);
   const [quantity, setQuantity] = useState("");
   const [quantityError, setQuantityError] = useState<string | undefined>(undefined);
@@ -62,6 +82,15 @@ function PutawayForm({ onDone }: { onDone: (completion: PutawayCompletion) => vo
   // Latched synchronously: `phase` lands a render after the click, one render too late to stop a
   // double tap from confirming the same put-away twice.
   const busy = useRef(false);
+  // Whether this screen is still here. A refusal can arrive half a minute after the tap, by which
+  // time the worker may have gone to Home: the queue asks, and parks the entry if nobody is looking.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   // Each step replaces the control that had focus, which would otherwise drop it to the page. The
   // bin step takes focus itself once stock is chosen (`PutawayBinScan`: the quantity is already
@@ -114,6 +143,7 @@ function PutawayForm({ onDone }: { onDone: (completion: PutawayCompletion) => vo
         toBarcode: bin,
         suggestion,
         capturedAt,
+        online: queue.online,
         geo: geo.kind === "fix" ? geo.fix : null,
       });
       const summary = {
@@ -123,7 +153,7 @@ function PutawayForm({ onDone }: { onDone: (completion: PutawayCompletion) => vo
         fromLocationCode: selected.location_code,
         toBarcode: bin,
       };
-      const outcome = await queue.submit({ body, summary });
+      const outcome = await queue.submit({ body, summary, watching: () => mounted.current });
       const geoNotice = geo.kind === "skipped" ? geoSkipNotice(geo.reason) : null;
 
       if (outcome.kind === "rejected") {

@@ -888,12 +888,19 @@ that never held either, it reverses completely.
 - the put-away error rate (5xx on `…/inventory/putaway`) is above what the same hours looked like
   before the release;
 - a **coordinate key** is found where none may be. Both counts must be **0** (the reveal's own audit
-  row lists field *names* in an array, which these do not match):
+  row lists field *names* in an array, which these do not match). A **site's** position is approved
+  data and legitimately appears as `lat_micro` / `lng_micro` keys in the `before` and `after` of a
+  `warehouse.updated` audit row (`entity = 'warehouse'`) every time someone sets, changes or clears a
+  warehouse's location, so the audit query leaves the `warehouse` entity out: it stays at 0 after the
+  owner's first "Set location", and a hit in any *other* row (a put-away's `inventory_move` rows
+  above all) is a worker coordinate that must not be there. The outbox needs no such exception: a
+  `warehouse.updated` event lists the changed field *names* only.
 
   ```sql
   SELECT (SELECT count(*) FROM operations.audit_logs
-           WHERE jsonb_path_exists(after,  '$.**.lat_micro') OR jsonb_path_exists(after,  '$.**.lng_micro')
-              OR jsonb_path_exists(before, '$.**.lat_micro') OR jsonb_path_exists(before, '$.**.lng_micro')) AS audit_rows,
+           WHERE entity <> 'warehouse'
+             AND (jsonb_path_exists(after,  '$.**.lat_micro') OR jsonb_path_exists(after,  '$.**.lng_micro')
+               OR jsonb_path_exists(before, '$.**.lat_micro') OR jsonb_path_exists(before, '$.**.lng_micro'))) AS audit_rows,
          (SELECT count(*) FROM operations.outbox
            WHERE jsonb_path_exists(payload, '$.**.lat_micro') OR jsonb_path_exists(payload, '$.**.lng_micro')) AS outbox_rows;
   ```

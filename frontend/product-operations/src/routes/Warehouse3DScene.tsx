@@ -20,6 +20,10 @@ interface Warehouse3DSceneProps {
 /** More root labels than this is a wall of text; the hover tooltip names whatever you point at. */
 const MAX_ROOT_LABELS = 40;
 
+/** Drawn after every box. With depth testing off for the parts of a highlight that must always be
+ *  found, this is what keeps them on top of the boxes rather than at the mercy of draw order. */
+const HIGHLIGHT_RENDER_ORDER = 10;
+
 /** Every colour the scene draws with, resolved once from the live stylesheet (light or dark,
  *  whichever is active) rather than written as a literal — a three.js material needs an actual
  *  value, not a Tailwind class, and this is the one place that reads the token that way. */
@@ -135,9 +139,15 @@ export function Warehouse3DScene({ layout, selectedId, highlightIds, onSelect }:
             <boxGeometry args={[node.size[0] * 1.05, node.size[1] * 1.05, node.size[2] * 1.05]} />
             <meshStandardMaterial color={colors.selection} transparent opacity={0.85} />
           </mesh>
-          <mesh position={[node.position[0], node.position[1], node.position[2]]}>
+          {/* The outline and the name do not depth-test: a match is always findable, even when a taller
+              neighbour (or a container drawn around it) would otherwise hide it. The filled box above
+              keeps its depth test, so the matched box itself still sits where it really is. */}
+          <mesh
+            position={[node.position[0], node.position[1], node.position[2]]}
+            renderOrder={HIGHLIGHT_RENDER_ORDER}
+          >
             <boxGeometry args={[node.size[0] * 1.25, node.size[1] * 1.25, node.size[2] * 1.25]} />
-            <meshBasicMaterial color={colors.label} wireframe />
+            <meshBasicMaterial color={colors.label} wireframe depthTest={false} />
           </mesh>
           <Text
             position={[node.position[0], node.position[1] + node.size[1] / 2 + labelSize * 2, node.position[2]]}
@@ -145,6 +155,8 @@ export function Warehouse3DScene({ layout, selectedId, highlightIds, onSelect }:
             color={colors.label}
             anchorX="center"
             anchorY="bottom"
+            renderOrder={HIGHLIGHT_RENDER_ORDER}
+            material-depthTest={false}
           >
             {`Found: ${node.location.code}`}
           </Text>

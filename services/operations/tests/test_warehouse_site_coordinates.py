@@ -448,6 +448,40 @@ class TestTheMap:
             )
         assert (await map_of(client, pw))["sites"][0]["stocked_location_count"] == 1
 
+    async def test_each_placed_site_counts_its_own_bins_and_an_unplaced_one_is_left_out(
+        self, client, session, pw
+    ) -> None:
+        """Only the placed sites' bins are probed (the count is for a marker popup), and each site
+        gets its own figure, not a share of another's."""
+        async with session.begin():
+            finished = (
+                await session.execute(
+                    select(Location.warehouse_id).where(Location.id == pw.other_warehouse_bin)
+                )
+            ).scalar_one()
+            session.add(
+                InventoryBalance(
+                    organization_id=pw.org_id,
+                    inventory_item_id=pw.dye,
+                    location_id=pw.other_warehouse_bin,
+                    status="AVAILABLE",
+                    quantity_milli=3_000,
+                    reserved_milli=0,
+                )
+            )
+        await set_site(client, pw)
+        body = await map_of(client, pw)
+        assert [(s["code"], s["stocked_location_count"]) for s in body["sites"]] == [
+            ("WH-WEAVE", 2)
+        ]
+        assert [w["code"] for w in body["without_coordinates"]] == ["WH-FIN"]
+        placed = await patch(client, pw, {"lat_micro": LAT2, "lng_micro": LNG2}, finished)
+        assert placed.status_code == 200, placed.text
+        counts = {
+            s["code"]: s["stocked_location_count"] for s in (await map_of(client, pw))["sites"]
+        }
+        assert counts == {"WH-WEAVE": 2, "WH-FIN": 1}
+
     async def test_a_soft_deleted_warehouse_is_on_neither_list(self, client, session, pw) -> None:
         await set_site(client, pw)
         async with session.begin():
@@ -494,7 +528,12 @@ class TestTheMap:
                 event.remove(engine, "before_cursor_execute", count_it)
             return len(seen)
 
+        # No site has a position yet, so there is nothing to count and the grouped stocked-bin
+        # query is not issued; the first placed site brings it, and then it stays one query.
+        none_placed = await statements()
+        await set_site(client, pw)
         few = await statements()
+        assert few == none_placed + 1
         async with session.begin():
             for i in range(12):
                 session.add(

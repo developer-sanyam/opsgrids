@@ -1,6 +1,7 @@
 import { Circle, Map, Marker } from "@vis.gl/react-google-maps";
 
 import type { ReportReason } from "@/lib/clientReport";
+import { MapLoadingOverlay } from "./MapLoadingOverlay";
 import { MapShell } from "./MapShell";
 
 interface LocationPinMapProps {
@@ -28,7 +29,8 @@ export default function LocationPinMap({ apiKey, lat, lng, accuracyM, onFailure 
   const center = { lat, lng };
   return (
     <MapShell apiKey={apiKey} onFailure={onFailure}>
-      <div className="h-64 w-full overflow-hidden rounded-tile" data-testid="location-pin-map">
+      <div className="relative h-64 w-full overflow-hidden rounded-tile" data-testid="location-pin-map">
+        <MapLoadingOverlay />
         <Map
           defaultCenter={center}
           defaultZoom={zoomFor(accuracyM)}
