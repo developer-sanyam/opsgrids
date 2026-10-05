@@ -19,6 +19,10 @@
 #   dashboard   app.opsgrids.com — sign up, sign in, the marketplace  (ADR-0013 §4)
 #   operations  ops.opsgrids.com — the Inventory product's own app    (ADR-0013 slice 3)
 #
+# `operations` alone also bakes in `VITE_GOOGLE_MAPS_API_KEY` from the box's `.env` (the warehouse
+# map). An absent key publishes the bundle map-less behind a loud warning; `worker` and every
+# other app are built without the variable. See the build section below.
+#
 # The buyer bundle lives at `$EDGE_WEB_ROOT/{releases,current}` — the root itself, because the
 # first deploy put it there and moving a live store's directory buys nothing. Every other app
 # lives at `$EDGE_WEB_ROOT/<app>/{releases,current}`, and the Caddyfile's per-host blocks point
@@ -373,6 +377,56 @@ MISSING
 			exit 1
 			;;
 		esac
+		;;
+	esac
+
+	# The warehouse map (docs/superpowers/specs/2026-10-05-warehouse-map-putaway-design.md §5, §7)
+	# needs a Google Maps JavaScript API key, and ONLY the operations bundle has a map: the worker
+	# app takes a put-away by scanning a bin label and never draws one. So this is the one case in
+	# the script that reads it, and every other app is built with the variable removed — a key a
+	# maintainer happens to have exported in the laptop's own shell must not ride into a bundle
+	# that never asked for it.
+	#
+	# It is read from the box's `.env`, over ssh, the same way as every other build-time value
+	# above, so the box stays the one place the key is recorded. It is NOT a server secret: Vite
+	# bakes it into the bundle and every visitor's browser receives it, which is why the Google
+	# Cloud console restriction (HTTP referrer, API list, budget cap) is the real protection, not
+	# this script. It is still never PRINTED here — not its value, only whether it was found.
+	#
+	# A missing, empty or malformed key is a warning, never a refusal: the map must be fully
+	# DISABLED, never broken, so the bundle is published map-less (the sites page falls back to a
+	# table, the warehouse dialog to manual coordinates) and a build log that scrolls past is the
+	# only place a forgotten key would otherwise go unnoticed. The variable is exported EMPTY in
+	# that case rather than left unset, so a `frontend/product-operations/.env.local` on this
+	# machine cannot quietly re-enable a map the box was not given a key for.
+	case "$app" in
+	operations)
+		maps_key=$(ssh_box "sed -n 's/^VITE_GOOGLE_MAPS_API_KEY=//p' '$repo/infrastructure/edge/.env' | tail -n 1")
+		maps_key=$(_dotenv_value "$maps_key")
+		if [ -z "$maps_key" ]; then
+			maps_problem="is not set in the box's .env"
+		elif ! printf '%s' "$maps_key" | grep -Eq '^[A-Za-z0-9_-]{20,}$'; then
+			# Names the failure, never the value: a malformed key is still a key.
+			maps_problem="in the box's .env does not look like a Google API key (letters, digits, - and _ only, 20 or more of them: check for a stray quote, space or CRLF)"
+			maps_key=""
+		fi
+		if [ -n "$maps_key" ]; then
+			echo "  VITE_GOOGLE_MAPS_API_KEY: found in the box's .env (${#maps_key} characters; the value is not printed)"
+		else
+			cat >&2 <<NOMAP
+================================================================================
+WARNING: VITE_GOOGLE_MAPS_API_KEY $maps_problem.
+  Publishing operations WITHOUT the Google map. Nothing breaks: the sites page shows a
+  table of warehouses and the warehouse dialog takes latitude/longitude by hand.
+  To enable the map, add the key to infrastructure/edge/.env on the box (RUNBOOK.md,
+  'Warehouse map and storage put-away') and publish operations again.
+================================================================================
+NOMAP
+		fi
+		export VITE_GOOGLE_MAPS_API_KEY="$maps_key"
+		;;
+	*)
+		unset VITE_GOOGLE_MAPS_API_KEY
 		;;
 	esac
 	(cd "$repo_root/frontend" && pnpm install --frozen-lockfile)

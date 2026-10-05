@@ -17,6 +17,33 @@ Phased plan: [inventory/plan.md](inventory/plan.md), decisions in
 quantities, posting kernel, reconciler — [inventory/ledger.md](inventory/ledger.md)).
 **Next: Phase 1** — item master, UOMs, lots, rolls, locations (scope and exit criteria in the plan).
 
+### Warehouse map & storage put-away — built on branch, not deployed
+
+Branch `feat/warehouse-map-putaway` (design: [the spec](superpowers/specs/2026-10-05-warehouse-map-putaway-design.md);
+decisions: [ADR-0028](adr/0028-putaway-gps-captures.md) and the amendment to ADR-0014 §12; migration `d7a3c9e5b184`;
+rollout, rollback and the purge: RUNBOOK, "Warehouse map and storage put-away"). A site map and 2-D/3-D floor view
+over the published layout, a find-stock search, and a worker-app **Put away** screen: scan the destination bin, with
+the device's GPS fix kept 30 days as audit evidence. **Nothing is deployed**; merging deploys nothing, and the owner
+approves any deploy. Open items:
+
+- **D1 against the warehouse's reality.** Put-away is allowed only from `receiving` or `staging` bins, and the order
+  engine reserves only at an item's home bin (limitation (c)), so stock put away elsewhere is invisible to order
+  accept. On `main` a goods receipt lands in the item's home bin (kind `bin`), so stock reaches a receiving/staging bin
+  only by opening stock posted there, an explicit bin transfer, or Phase 2 receipts (not merged). Decide whether the
+  warehouse sets up receiving/staging bins first, and schedule multi-location allocation, which lifts (c).
+- **The Maps key (owner).** The Google Cloud project, billing, spend cap, the referrer and API restrictions, and the
+  `VITE_GOOGLE_MAPS_API_KEY` line in the box's `.env`. The release does not wait for it: without the key the operations
+  bundle publishes map-less with a loud warning. Adding it later is a `make edge-web ... APP=operations` republish.
+- **Permission reconcile after the API deploy.** `make edge-reconcile ... PRODUCTS=operations` (dry run, then
+  `APPLY=1`) so `OPERATIONS_ADMIN` gains `operations.inventory.putaway.location_read`; the reveal answers 403 in
+  existing organizations until it runs.
+- **Two-stack re-parent.** Two unmerged inventory stacks share head `c4a8e1f6d273`; whichever merges second re-points
+  `d7a3c9e5b184`'s `down_revision` (marked `# RE-PARENT HERE`) and confirms a single `alembic heads`.
+- **The weekly purge (owner).** `tools/purge_putaway_captures.py` is run by hand, weekly, dry run first; nothing runs it
+  for you. The purge writes no audit row of its own: revisit if an auditor wants a tamper-evident erasure log.
+- **CSP hardening (separate release).** `ops` and `worker` send no `Content-Security-Policy` today; when one is
+  added it must allow the Google Maps origins.
+
 ## Now — as of 2026-09-22 (`main` @ `a60baa1`)
 
 This section is the current order. The sections below it keep their history and have been

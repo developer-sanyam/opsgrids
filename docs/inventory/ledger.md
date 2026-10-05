@@ -307,6 +307,44 @@ quantity handling**: wiring a container unit through opening, transfer and split
 rules, and a half-applied conversion is worse than none. It lands with the receiving slice (Phase 2), where
 `box` quantities first appear on a document.
 
+## Storage put-away, warehouse coordinates and the map reads
+
+*Built on `feat/warehouse-map-putaway`, not deployed.* Migration `d7a3c9e5b184` (down_revision
+`c4a8e1f6d273`; it is re-pointed if another inventory stack merges first). Design:
+[`docs/superpowers/specs/2026-10-05-warehouse-map-putaway-design.md`](../superpowers/specs/2026-10-05-warehouse-map-putaway-design.md);
+decisions: [ADR-0028](../adr/0028-putaway-gps-captures.md) and the 2026-10-05 amendment to
+[ADR-0014](../adr/0014-inventory-and-manufacturing.md) §12; rollout, rollback and the purge:
+RUNBOOK, "Warehouse map and storage put-away".
+
+| Table / column | What it is | Writable by the app role |
+|---|---|---|
+| `warehouses.lat_micro`, `lng_micro` | the *site's* position, integer micro-degrees (no float), both set or both empty, range-checked | yes |
+| `putaway_captures` | one row per put-away move: the scanned bin, the suggested bin, the worker (nullable), the actor, the GPS fix when the device gave one, `captured_at` (device's claim) and `created_at` (server) | INSERT only; deleted only by `tools/purge_putaway_captures.py` as the admin role |
+
+A **storage put-away** is a `relocation` move with `reference_type` `putaway`: stock out of a `receiving` or
+`staging` bin, into a storable bin (`bin` or `shelf`) of the same warehouse, found by **scanning the bin's
+barcode** (resolved server-side, so a worker without `location.read` can still do it). The bin is the location of
+record; the GPS fix is proof, never the location. `bin_transfer` and its `operations.inventory.stock.transferred`
+event are unchanged; a put-away stages `operations.inventory.putaway.recorded` instead (no coordinates).
+
+| Route | Permission | Notes |
+|---|---|---|
+| `POST /operations/inventory/putaway` | `inventory.stock.transfer` (ORG) | `Idempotency-Key` required (stored `putaway:<key>`); source must be `receiving`/`staging` (422 `source_not_receiving_or_staging`); unknown, foreign or deleted barcode is one identical 404; bad geo is dropped with a warning, never blocks the move; geo is not in the request hash, so a retry with different geo replays the original |
+| `GET /operations/inventory/putaway/suggest` | `inventory.stock.transfer` | the bin already holding the item, else the empty storable bin with the lowest `pick_sequence`; no capacity logic |
+| `GET /operations/inventory/putaway/{move_id}` | `inventory.stock.read` | bin, worker, time, `matched_suggestion`, `has_location`; **never coordinates**; 404 once the capture is purged |
+| `POST /operations/inventory/putaway/{move_id}/location:reveal` | `inventory.putaway.location_read` (ORG, ADMIN only) | the only response that carries coordinates; POST only, `Cache-Control: no-store`; one `entity.sensitive_read` audit row per successful call |
+| `GET /operations/inventory/locate` | `inventory.stock.read` | bins holding an item/lot/roll with their placement on the *published* layout (own or nearest placed ancestor); geometry only with `warehouse.layout.read` |
+| `GET /operations/floors/{floor_id}/published-layout` | `warehouse.layout.read` | published placements only; draft data never appears |
+| `GET /operations/warehouses/map` | `inventory.warehouse.read` (as the warehouse list) | sites with coordinates, and those without |
+
+**Retention.** Captures are kept 30 days from `created_at`, then erased by the admin-run
+`tools/purge_putaway_captures.py` (dry run unless `--apply`; counts only). It is not an in-app job: the app role
+cannot delete the rows.
+
+**Limitation.** The order engine reserves only at `item.home_location_id` (`orders/services.py`), so stock put away
+into any other bin is not seen by order accept until multi-location allocation exists; that is why put-away is
+restricted to `receiving`/`staging` sources.
+
 ## Not in Phase 0
 
 Costing layers and every later phase (lots, rolls, multi-location moves and locations got their HTTP
