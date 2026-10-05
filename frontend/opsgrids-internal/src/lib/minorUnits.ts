@@ -39,13 +39,37 @@ export function exponentOf(currency: string): number {
 
 export type Parsed = { ok: true; value: number } | { ok: false; error: string };
 
+/** A whole part grouped in thousands (1,250,000) or in the Indian lakh style (12,50,000). */
+const WESTERN_GROUPS = /^\d{1,3}(?:[,\s_]\d{3})+$/;
+const INDIAN_GROUPS = /^\d{1,2}(?:[,\s_]\d{2})*[,\s_]\d{3}$/;
+const SEPARATOR = /[,\s_]/;
+
 /**
  * A decimal string with at most `digits` fraction digits, as an integer count of 10^-digits.
- * Thousands separators (`,`, spaces, `_`) are allowed; signs, exponents and anything else are not.
+ *
+ * A separator (`,`, a space, `_`) is accepted **only where it is a real group separator** in the
+ * whole part — `1,250.50`, `12,50,000` — and never in the fraction. Stripping every comma would
+ * read a decimal comma as a group separator and scale the value silently: "1,99" EUR would be
+ * EUR 199.00 and a "0,0025" rate 25 per unit. Those are refused instead. `grouping: false` (a usage
+ * rate) refuses every separator. Signs, exponents and anything else are refused too.
  */
-function parseScaled(text: string, digits: number, noun: string): Parsed {
-  const cleaned = text.trim().replace(/[,\s_]/g, "");
-  if (cleaned === "") return { ok: false, error: `Enter ${noun}.` };
+function parseScaled(text: string, digits: number, noun: string, grouping = true): Parsed {
+  const trimmed = text.trim();
+  if (trimmed === "") return { ok: false, error: `Enter ${noun}.` };
+  const [wholeRaw = "", ...rest] = trimmed.split(".");
+  const fractionRaw = rest.join(".");
+  if (SEPARATOR.test(wholeRaw) || SEPARATOR.test(fractionRaw)) {
+    const grouped = grouping && !SEPARATOR.test(fractionRaw) && rest.length <= 1;
+    if (!grouped || !(WESTERN_GROUPS.test(wholeRaw) || INDIAN_GROUPS.test(wholeRaw))) {
+      return {
+        ok: false,
+        error: grouping
+          ? `Use a dot for decimals, like 1250.50. A comma may only group thousands (1,250.50).`
+          : `Use a dot for decimals, like 0.0025, with no commas or spaces.`,
+      };
+    }
+  }
+  const cleaned = trimmed.replace(/[,\s_]/g, "");
   const match = /^(\d+)(?:\.(\d*))?$/.exec(cleaned);
   if (!match) return { ok: false, error: `Enter ${noun} as digits, like 1250 or 1250.50.` };
   const whole = match[1] ?? "0";
@@ -69,9 +93,13 @@ export function parseAmountToMinor(text: string, currency: string): Parsed {
   return parseScaled(text, exponentOf(currency), "an amount");
 }
 
-/** A usage rate in major units, to micros: "0.0025" → 2500. Up to six decimal places. */
+/**
+ * A usage rate in major units, to micros: "0.0025" → 2500. Up to six decimal places. No separator
+ * is accepted at all: a rate is never large enough to need grouping, and "0,0025" read as grouped
+ * would be 10,000 times the rate.
+ */
 export function parseRateToMicros(text: string): Parsed {
-  return parseScaled(text, MICROS_DIGITS, "a rate");
+  return parseScaled(text, MICROS_DIGITS, "a rate", false);
 }
 
 /** The inverse of `parseScaled`: an integer count of 10^-digits as a plain decimal string. */

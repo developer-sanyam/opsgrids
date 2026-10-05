@@ -4,7 +4,14 @@ import { Button, FormDialog, InlineAlert, Select, TextArea, TextField } from "@o
 
 import { createVersion } from "@/api/catalog";
 import type { BillingIntervalWire, PlanVersionOut, PriceKind } from "@/api/catalog";
-import { SELLABLE_CURRENCIES, exponentOf } from "@/lib/minorUnits";
+import {
+  SELLABLE_CURRENCIES,
+  exponentOf,
+  formatMicros,
+  formatMinor,
+  parseAmountToMinor,
+  parseRateToMicros,
+} from "@/lib/minorUnits";
 import { buildVersionRequest, draftFromVersion, newPriceRow } from "./draftSheet";
 import type { PriceDraft, SheetDraft, SheetErrors } from "./draftSheet";
 import { ProblemList } from "./ProblemList";
@@ -50,6 +57,18 @@ function PriceRow({
 }) {
   const at = `prices.${index}`;
   const digits = exponentOf(currency);
+  // Read back exactly what will be sent, so a misread separator or exponent is visible before
+  // the draft exists rather than only on the sheet afterwards.
+  const rate = row.rate.trim() === "" ? null : parseRateToMicros(row.rate);
+  const amount = row.amount.trim() === "" ? null : parseAmountToMinor(row.amount, currency);
+  const rateHelper =
+    rate?.ok === true ? `= ${formatMicros(rate.value, currency)} per unit` : "Up to 6 decimal places, e.g. 0.0025.";
+  const amountHelper =
+    amount?.ok === true
+      ? `= ${formatMinor(amount.value, currency)}`
+      : digits === 0
+        ? "Whole units only."
+        : `Up to ${digits} decimal places.`;
   return (
     <fieldset className="flex flex-col gap-3 rounded-card border border-line p-4">
       <legend className="px-1 text-sm font-semibold text-ink">Price {index + 1}</legend>
@@ -68,7 +87,7 @@ function PriceRow({
             label={`Rate per unit (${currency})`}
             required
             inputMode="decimal"
-            helper="Up to 6 decimal places, e.g. 0.0025."
+            helper={rateHelper}
             value={row.rate}
             onChange={(event) => onChange({ ...row, rate: event.target.value })}
             error={errors[`${at}.rate`]}
@@ -78,7 +97,7 @@ function PriceRow({
             label={`Amount (${currency})`}
             required
             inputMode={digits === 0 ? "numeric" : "decimal"}
-            helper={digits === 0 ? "Whole units only." : `Up to ${digits} decimal places.`}
+            helper={amountHelper}
             value={row.amount}
             onChange={(event) => onChange({ ...row, amount: event.target.value })}
             error={errors[`${at}.amount`]}
