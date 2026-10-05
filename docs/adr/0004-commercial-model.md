@@ -525,6 +525,14 @@ The stub passes it today; the live adapter's test module subclasses it and passe
 before it can merge. `test_provider_contract.py` also runs each check against an adapter broken
 in the way the check guards against, and requires it to fail.
 
+> **Amended 2026-10-06 by [ADR-0029](0029-payment-provider-seam-and-checkout.md).** `ProviderContract`
+> is the contract for an adapter of the *order-then-charge* shape (Razorpay) and is unchanged; an
+> adapter of another shape is held to its own sibling contract (`CheckoutContract`,
+> `DirectDebitContract`). The overall per-call deadline asked for below is built
+> (`providers/wire.py`). The platform's Razorpay Orders are created with `payment_capture: true`.
+> Whether Razorpay rejects a duplicate `receipt` is unverified; the adapter looks a receipt up once
+> more after any 400 on an Order create. The call timeout's default is now 45 s.
+
 ## Addendum (2026-09-24) — webhook identity and permanent conditions (PAY-A)
 
 Two defects in how a verified Razorpay webhook was recorded, both invisible while the wire is
