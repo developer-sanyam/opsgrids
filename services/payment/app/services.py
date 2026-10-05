@@ -336,7 +336,21 @@ async def stage_charge(
         # Born failed: no provider call is ever made for it, and no attempt was spent.
         charge.attempts = 0
         charge.next_attempt_at = None
-        _fail_locally(session, charge, refusal, acting_as="billing")
+        uncollectable = refusal in domain.UNCOLLECTABLE_REASONS
+        if uncollectable:
+            # Not announced: dunning would suspend a customer for an amount nothing can collect
+            # (see `domain.UNCOLLECTABLE_REASONS`). A person decides instead.
+            log.error(
+                "payment.charge.uncollectable",
+                charge_id=str(charge.id),
+                organization_id=str(charge.organization_id),
+                invoice_id=str(charge.invoice_id) if charge.invoice_id else None,
+                failure_reason=refusal,
+                amount_minor=charge.amount_minor,
+                currency=charge.currency,
+                hint="no provider can take this amount; settle the invoice by hand",
+            )
+        _fail_locally(session, charge, refusal, acting_as="billing", announce=not uncollectable)
         await session.flush()
         return charge, False
     return charge, True
@@ -863,12 +877,19 @@ async def fail_exhausted_charge(
 
 
 def _fail_locally(
-    session: AsyncSession, charge: Charge, reason: str, *, acting_as: str = "stuck-charge-sweep"
+    session: AsyncSession,
+    charge: Charge,
+    reason: str,
+    *,
+    acting_as: str = "stuck-charge-sweep",
+    announce: bool = True,
 ) -> None:
     """Fail a charge on this platform's own decision — `reason` is a stable code (one of
     `domain.LOCAL_FAILURE_REASONS` when a provider's late `payment.captured` may still turn out to
     be real, which is what lets `_reconcile_charge` record it; a refusal made before any call, like
-    `no_mandate`, can have no such payment). Audited and announced (`commerce.payment.failed`)."""
+    `no_mandate`, can have no such payment). Audited, and announced (`commerce.payment.failed`)
+    unless `announce` is False — a refusal no checkout can cure (`domain.UNCOLLECTABLE_REASONS`)
+    must not start dunning. The audit row says which (`announced`)."""
     before = charge.state
     charge.state = CHARGE_FAILED
     charge.failure_reason = reason
@@ -883,9 +904,15 @@ def _fail_locally(
         entity="charge",
         entity_id=charge.id,
         before={"state": before},
-        after={"state": charge.state, "failure_reason": reason, "attempts": charge.attempts},
+        after={
+            "state": charge.state,
+            "failure_reason": reason,
+            "attempts": charge.attempts,
+            "announced": announce,
+        },
     )
-    _publish_payment_event(session, charge, domain.EVT_FAILED)
+    if announce:
+        _publish_payment_event(session, charge, domain.EVT_FAILED)
 
 
 async def create_charge(

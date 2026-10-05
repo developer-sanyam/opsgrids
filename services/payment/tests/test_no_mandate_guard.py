@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
+from structlog.testing import capture_logs
 
 from app import domain, services
 from app.config import settings
@@ -164,10 +165,58 @@ class TestALiveProviderWithNoMandate:
         reason: str,
     ) -> None:
         live = cs.install(cs.razorpay_live())
-        charge = (await _post(client, org_id, amount_minor=amount, currency=currency)).json()
+        with capture_logs() as logs:
+            charge = (await _post(client, org_id, amount_minor=amount, currency=currency)).json()
         assert charge["state"] == "failed"
         assert (await _row(admin_session, charge["id"]))["failure_reason"] == reason
         assert live.fake.requests == []  # type: ignore[attr-defined]
+        # **Never announced.** `commerce.payment.failed` opens dunning, and nothing — no retry,
+        # no checkout (it refuses the same amount with a 422) — could ever collect this: the
+        # subscription would be suspended over money the customer had no way to pay.
+        assert "commerce.payment.failed" not in await emitted(admin_session, org_id)
+        assert any(
+            line["event"] == "payment.charge.uncollectable"
+            and line["log_level"] == "error"
+            and line["failure_reason"] == reason
+            for line in logs
+        )
+        audit = next(
+            a
+            for a in await audit_rows(admin_session, org_id)
+            if str(a["entity_id"]) == charge["id"] and a["action"] == "payment.charge.failed"
+        )
+        assert audit["after"]["announced"] is False
+
+    async def test_an_invoice_below_the_minimum_does_not_start_dunning_nor_checkout(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+        monkeypatch: pytest.MonkeyPatch,
+        _engine: Any,
+    ) -> None:
+        """A mid-period change leaves a 40-paise invoice. Its debit is refused, and so is a
+        checkout for it; neither may put the subscription into dunning over it."""
+        live = cs.install(cs.razorpay_live())
+        monkeypatch.setattr("app.consumers.get_provider", lambda: live)
+        invoice_id = uuid.uuid4()
+        await charge_on_invoice_finalized(
+            {
+                "event_id": str(uuid.uuid4()),
+                "event_type": "commerce.invoice.finalized",
+                "payload": {
+                    "organization_id": str(org_id),
+                    "invoice_id": str(invoice_id),
+                    "subscription_id": str(uuid.uuid4()),
+                    "product_key": "hrms",
+                    "total_minor": 40,
+                    "currency": "INR",
+                },
+            }
+        )
+        assert "commerce.payment.failed" not in await emitted(admin_session, org_id)
+        refused = await cs.open_checkout(client, org_id, invoice_id)
+        assert refused.status_code == 422
 
     async def test_a_cashfree_default_fails_the_same_way_and_the_fake_is_never_asked(
         self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
