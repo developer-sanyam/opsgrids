@@ -987,7 +987,10 @@ added under a frozen version), and creates `catalog.idempotency_keys` (empty, RL
 instantaneous; nothing is backfilled.
 
 **Rollout order** (owner-approved deploy; merging deploys nothing): catalog first (migration + API), then
-notification (two new subscribable catalog events; harmless if it lags), then the console frontend.
+notification (two new subscribable catalog events; harmless if it lags), subscription (lets a scheduled plan
+change be withdrawn back to a current pin whose version has been withdrawn; if it lags, that one request is
+refused `not_published` until it lands), console (the `not_offerable` wording names withdraw), then the
+console frontend.
 Old console builds keep working against the new catalog because the old stub made no catalog calls.
 
 **Verify, changing nothing.** On the box, from `infrastructure/edge/`:
@@ -1019,7 +1022,9 @@ A 422 on publish lists every problem in `errors[]`; the commonest is a zero amou
 acknowledge or a usage price missing its meter. **Retiring a plan does not yet stop a subscription pinning
 one of its versions by id** (subscription does not read plan state — a later slice that needs catalog's
 internal version read to carry the plan's state too); until then, withdraw the specific version as well
-when it must stop selling.
+when it must stop selling. The console's **Change plan** already refuses a retired plan's versions and
+withdrawn ones (`not_offerable`, see "Staff plan switching" below). Withdrawing a plan's newest version puts
+the published version before it back on offer there, so withdraw that one too if it must stop selling.
 
 **Withdrawing does not cancel a plan change already scheduled onto the version.** A downgrade deferred to
 the next period re-pins at renewal without asking catalog, so it lands on the withdrawn version anyway.
@@ -1259,9 +1264,10 @@ switches at its **next billing period**, and an **equal-price** change applies a
 usage-priced subscription is not free: the usage metered so far is closed at the current plan's usage rates
 and invoiced by the billing run (the confirm says so when it happens).
 
-Only versions catalog **offers the organization now** can be chosen: a version superseded by a newer one, or
-of a retired plan, is refused **422 `not_offerable`** even if an operator's open dialog still lists it (the
-dialog then reloads the list). Withdrawing a scheduled change back to the current pin is always allowed. If
+Only versions catalog **offers the organization now** can be chosen: a version superseded by a newer one,
+withdrawn on the Plans page (ADR-0030), or of a retired plan, is refused **422 `not_offerable`** even if an
+operator's open dialog still lists it (the dialog then reloads the list). Withdrawing a scheduled change back to
+the current pin is always allowed, even when that pin's version has since been withdrawn. If
 catalog cannot be reached the confirm answers **503 `catalog_unavailable`** and nothing is claimed or changed.
 
 **"Next billing period" only happens while the billing run is running.** The change is stored as a

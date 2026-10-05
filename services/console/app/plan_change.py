@@ -47,10 +47,11 @@ rephrasing it on a retry is still a replay.
 
 **Only what is on offer.** The picker lists what catalog offers this organization now; the preview
 and the confirm re-read that set and refuse any other target (`not_offerable`) — a picker loaded
-before a newer version was published or the plan was retired, or a direct call with any published
-id of the product, must not pin a price the catalogue has withdrawn (a UI gate hides a control; it
-does not protect data). The one exception is a withdrawal, which moves back to the pin the
-subscription is already on.
+before a newer version was published, the version itself was withdrawn on the Plans page
+(ADR-0030) or the plan was retired, or a direct call with any published id of the product, must
+not pin a price the catalogue has withdrawn (a UI gate hides a control; it does not protect data).
+The one exception is withdrawing a scheduled change, which moves back to the pin the subscription
+is already on.
 """
 
 from __future__ import annotations
@@ -118,12 +119,14 @@ DEFINITIVE_REFUSALS = frozenset({404, 409, 422})
 CHANGEABLE_STATES = frozenset({"trial", "active"})
 
 #: The target is not in the set catalog offers this organization now: a newer version of its plan
-#: superseded it, or the plan was retired. Subscription cannot tell (its pin lookup sees only that
-#: the version is published and whose it is), so console applies the picker's own filter again.
+#: superseded it, the version was withdrawn, or the plan was retired. Subscription cannot tell the
+#: first and the last apart from an offerable pin (its pin lookup sees only that the version is
+#: published and whose it is), so console applies the picker's own filter again. A withdrawn
+#: version is no longer published, so subscription would refuse it too; this answers first.
 CODE_NOT_OFFERABLE = "not_offerable"
 NOT_OFFERABLE_DETAIL = (
     "that plan version is no longer on offer for this organization: a newer version has replaced "
-    "it, or its plan was retired. Choose again from the plans on offer now."
+    "it, it was withdrawn, or its plan was retired. Choose again from the plans on offer now."
 )
 
 

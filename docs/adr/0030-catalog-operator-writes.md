@@ -8,8 +8,8 @@ Builds on [ADR-0000](0000-phase-0-decisions.md) §8 (integer minor units), §9 (
 subscriptions pin a version) and "Also settled" (authorization is server-side); [ADR-0003](0003-surfaces-and-authorization-topology.md)
 (the operator role matrix, updated by this change); [ADR-0004](0004-commercial-model.md) §2 (bespoke versions are
 `restricted_to_org_id`). ADR-0027 is reserved for another change and is not this one; ADR-0029 is the staff
-plan-control record on `feat/admin-plan-switch`. This record was first drafted as 0029 and renumbered before
-merge so the two never share a number.
+plan-control record (merged in #105). This record was first drafted as 0029 and renumbered before merge so the
+two never share a number.
 
 ## Context
 
@@ -78,8 +78,16 @@ and those writes were unsafe to put behind a button (admin_synth H2, H3, H5, B6)
   making it refuse new pins on a retired plan is deferred, and it needs **two** changes, not one: catalog's
   internal version read (`GET /internal/v1/plan-versions/{id}`, `InternalPlanVersionOut`) must carry
   `plan_state`, and subscription must refuse on it. Until then retire hides the plan from the customer browse
-  (`selectors.visible_plans` reads only active plans), and a version that must stop selling is withdrawn as
-  well. The console's retire dialog says exactly this.
+  (`selectors.visible_plans` reads only active plans) and from the staff plan switch (ADR-0029: console offers
+  and accepts only `selectors.offerable_versions`, which is built on `visible_plans`, and answers anything else
+  `not_offerable`), and a version that must stop selling is withdrawn as well. The console's retire dialog says
+  exactly this.
+- **The staff plan switch honours withdraw.** A withdrawn version is not published, so `offerable_versions`
+  never offers it and subscription's own pin check refuses it. Withdrawn versions also supersede nothing: withdraw
+  a plan's newest version and the published one before it is offered again, so withdraw that one too if it must
+  stop selling. Staying on a withdrawn version is not a new pin: subscription's `_validate_new_pin` accepts the
+  subscription's own current pin whatever its state, so a scheduled change can still be withdrawn back to it
+  (before withdraw existed no current pin could be anything but published, so nothing exercised this).
 - **Withdraw does not stop a scheduled change** (decision 4). Deferred subscription work: re-validate the pending
   pin in `apply_pending_change` (refuse or drop a change onto a version that is no longer published).
 - `idempotency_keys` grows by one row per owner write and has no purge; at owner-write volume that is negligible.

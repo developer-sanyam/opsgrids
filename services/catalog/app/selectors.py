@@ -117,6 +117,11 @@ async def offerable_versions(
     when a higher-numbered published version of the same plan has the same audience, cadence and
     currency — those are the things a customer cannot cross (one currency and one cadence per
     subscription), so a monthly version is not superseded by a yearly one.
+
+    A version withdrawn on the Plans page (`published -> grandfathered`, ADR-0030) is no longer
+    published, so it is never offered — and, for the same reason, it supersedes nothing: withdraw
+    the newest version of a plan and the published one before it is the current one again. Withdraw
+    that one too if it must stop selling.
     """
     offered: list[tuple[Plan, PlanVersion]] = []
     for plan, versions in await visible_plans(session, product_key=product_key, org_id=org_id):
