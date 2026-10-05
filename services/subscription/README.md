@@ -62,10 +62,12 @@ Every operator write takes `ConsoleCallerDep` — a valid service token minted b
 tenant named in the body before RLS confirms the subscription belongs to it (another organization's id is a
 404). `suspend`, `reactivate`, `POST /subscriptions` (opens one, the only way a bundle is sold),
 `POST /subscriptions/{id}/change-plan` and the read-only `POST /subscriptions/{id}/change-plan/preview`
-(direction, timing, what it replaces, products added and removed; no amount; writes and locks nothing).
-`change-plan` takes an optional `note` (the operator's reason, 1–500 characters: the audit row's reason and the
-event's `note`, never the 60-character transition reason) and `expected` (409 `state_changed` when the
-subscription is no longer what the caller saw). Refusals carry `errors[0].code`. ADR-0029.
+(direction, timing, what it replaces, products added and removed, whether applying now closes usage so far
+at the current pin's usage rates — `usage_closed_now`; no amount; writes and locks nothing).
+`change-plan` takes an optional `note` (the operator's reason, 1–500 characters: the audit row's reason only —
+never the 60-character transition reason, and never on the event, which a customer org's own notification
+templates can render) and `expected` (409 `state_changed` when the subscription is no longer what the caller
+saw). Refusals carry `errors[0].code`. ADR-0029.
 
 ## Publishes
 

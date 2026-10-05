@@ -126,8 +126,9 @@ class OperatorSubscribeIn(BaseModel):
     plan_version_id: uuid.UUID
     trial: bool = False
     operator_id: str = Field(min_length=1, max_length=64)
-    #: The operator's reason, in words (1-500). Stored as the audit row's `reason` and on the
-    #: event payload as `note` — never in the transition's 60-character machine `reason`.
+    #: The operator's reason, in words (1-500). Stored as the audit row's `reason` only — never in
+    #: the transition's 60-character machine `reason`, and never on the event, which a customer
+    #: org's own notification templates can render.
     note: str | None = Field(default=None, min_length=1, max_length=NOTE_MAX_LENGTH)
 
     @field_validator("note")
@@ -227,6 +228,13 @@ class ChangePlanPreviewOut(BaseModel):
     #: Either version carries a usage-priced component. Direction compares the recurring part
     #: only, so an operator is told when that is not the whole story.
     usage_priced: bool = False
+    #: Applying now closes the usage metered so far **on the current pin, at its usage rates**, as
+    #: its own invoice the billing run raises (the pin moves, so usage from here on is priced on the
+    #: new one). True only when the change applies now, the time since the period began is paid
+    #: time (an active subscription, or a trial whose conversion is already claimed), and the
+    #: current version has a usage price. An equal-price switch is "no proration", not "nothing
+    #: charged", whenever this is set.
+    usage_closed_now: bool = False
     #: Set (with `refusal_detail`) when the write would be refused. The preview still answers 200:
     #: a refusal is an answer to "what would happen", not a failure of the question.
     refusal_code: str | None = None

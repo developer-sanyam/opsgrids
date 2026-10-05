@@ -7,9 +7,11 @@ What is pinned:
 
 * **Console only.** Suspend, subscribe, change-plan and its preview each refuse a token minted by
   any other service (401) and write nothing.
-* **A person's words are a note.** They are the audit row's reason and the event's `note`, never
-  the transition's 60-character machine `reason` — so a long reason is not a 500 — and a word only
-  the machinery writes (`renew`, `upgrade`...) is refused on every write, cancel included.
+* **A person's words are a note.** They are the audit row's reason — never the transition's
+  60-character machine `reason` (so a long reason is not a 500), and **never on the event**: the
+  event is the customer org's, and its own notification templates can render any payload key. A
+  word only the machinery writes (`renew`, `upgrade`...) is refused on every write, cancel
+  included.
 * **Refusals are machine-distinguishable**, and the state refusal wins over `billing_catching_up`.
 * **A deferred change keeps its operator**, and applies with the event its direction names.
 * **The preview answers what the write would do**, writes nothing, and cannot be pointed at another
@@ -20,14 +22,14 @@ What is pinned:
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select, text, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app import domain, services
 from app.api.internal import get_product_registry
@@ -35,18 +37,21 @@ from app.billing_run import BillingRunSweep
 from app.config import settings
 from app.main import app
 from app.models import (
+    SCHEMA,
     STATE_ACTIVE,
     STATE_CANCELLED,
     STATE_PAST_DUE,
     STATE_SUSPENDED,
     STATE_TRIAL,
     AuditLog,
+    BillingPeriod,
     OutboxEvent,
     Subscription,
     SubscriptionTransition,
 )
 from app.schemas import CatalogPrice, OperatorChangePlanIn, OperatorSubscribeIn, SubscribeIn
 from platform_core.auth import Scope, ScopeContext
+from platform_core.db import get_session
 from platform_core.internal_auth import mint_service_token
 from tests.billing_fakes import FakeBilling
 from tests.helpers import FakeCatalog, FakeRegistry, customer_principal, make_bundle, make_version
@@ -269,7 +274,8 @@ class TestTheNoteIsNotTheTransitionReason:
     ) -> None:
         """Suspend accepts 200 characters; the transition's `reason` column holds 60. Before, a
         61-character reason was a database error and a 500 — the words now live in the audit
-        row and on the event, and the transition keeps a machine code."""
+        row, and the transition keeps a machine code. They are not on the event: the customer
+        org's own notification rules render its payload."""
         sub_id, _ = await _subscribe(session, catalog, org_id)
         words = "customer asked us to pause the account while their audit completes - " * 3
         words = words.strip()[:200]
@@ -299,7 +305,8 @@ class TestTheNoteIsNotTheTransitionReason:
         assert audit.reason == words and audit.acting_as == "op-1"
         event = (await _events(admin_session, org_id))[-1]
         assert event.event_type == "commerce.subscription.suspended"
-        assert event.payload["note"] == words
+        assert "note" not in event.payload
+        assert words not in str(event.payload)
 
     async def test_a_change_plan_note_over_sixty_characters_does_not_500(
         self,
@@ -324,7 +331,8 @@ class TestTheNoteIsNotTheTransitionReason:
         assert audit.acting_as == OPERATOR
         event = (await _events(admin_session, org_id))[-1]
         assert event.event_type == "commerce.subscription.upgraded"
-        assert event.payload["note"] == note
+        assert "note" not in event.payload
+        assert note not in str(event.payload)
         admin_session.expunge_all()
         transition = (
             (
@@ -535,6 +543,37 @@ class TestCodedRefusalsAndPrecedence:
         assert _code(missing) == _code(foreign) == domain.CODE_NOT_FOUND
         assert missing.json()["detail"] == foreign.json()["detail"]
 
+    @pytest.mark.parametrize("state", ["draft", "grandfathered"])
+    async def test_another_orgs_unpublished_bespoke_is_the_same_404_too(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        catalog: FakeCatalog,
+        org_id: uuid.UUID,
+        other_org: uuid.UUID,
+        state: str,
+    ) -> None:
+        """The audience check comes before the state check: a draft negotiated for another
+        organization must not answer `not_published` (which says the id exists) on the write or
+        the preview."""
+        sub_id, _ = await _subscribe(session, catalog, org_id, 1000)
+        draft = catalog.add(
+            make_version(
+                product_key="hrms",
+                amount_minor=500,
+                restricted_to_org_id=other_org,
+                state=state,
+            )
+        )
+        missing = await _change(client, sub_id, org_id, uuid.uuid4())
+        for response in (
+            await _change(client, sub_id, org_id, draft.id),
+            await _preview(client, sub_id, org_id, draft.id),
+        ):
+            assert response.status_code == 404, response.text
+            assert _code(response) == domain.CODE_NOT_FOUND
+            assert response.json()["detail"] == missing.json()["detail"]
+
 
 class TestDeferredChangeKeepsItsOperator:
     async def test_the_scheduled_and_withdrawn_audit_rows_carry_acting_as_and_the_note(
@@ -650,7 +689,7 @@ class TestTheAppliedEventNamesItsDirection:
         assert sub.current_period_end is not None
         await run.tick(now=sub.current_period_end)  # the roll, which applies the change
 
-    async def test_a_deferred_increase_emits_upgraded_with_the_note(
+    async def test_a_deferred_increase_emits_upgraded_and_keeps_the_note_on_the_audit_trail(
         self,
         run: BillingRunSweep,
         billing: FakeBilling,
@@ -673,8 +712,12 @@ class TestTheAppliedEventNamesItsDirection:
             for e in await _events(admin_session, org_id)
             if e.event_type == "commerce.subscription.upgraded"
         )
-        assert applied.payload["note"] == "negotiated uplift"
+        assert "note" not in applied.payload
+        assert "negotiated uplift" not in str(applied.payload)
         assert applied.payload["plan_version_id"] == str(target.id)
+        # The why stays with staff: the applied transition's audit row carries it.
+        (applied_audit,) = await _audits(admin_session, org_id, "commerce.subscription.upgraded")
+        assert applied_audit.reason == "negotiated uplift"
 
     async def test_a_deferred_decrease_still_emits_downgraded(
         self,
@@ -855,6 +898,70 @@ class TestPreview:
         # Same recurring price, a usage rate besides: the direction is by the recurring part only
         # (the exact `_list_price_minor` rule the write uses) — and the preview says so.
         assert body["direction"] == "equal" and body["usage_priced"] is True
+        # Only the *new* plan meters: nothing metered so far has a price to close at.
+        assert body["usage_closed_now"] is False
+
+    @pytest.mark.parametrize(
+        ("trial", "to_minor", "effective", "closed"),
+        [
+            (False, 1000, "now", True),
+            (False, 2000, "next_period", False),
+            (True, 2000, "now", False),
+        ],
+        ids=["paying-equal-price-now", "paying-scheduled", "trial-now"],
+    )
+    async def test_it_says_when_applying_now_invoices_the_usage_so_far(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        catalog: FakeCatalog,
+        org_id: uuid.UUID,
+        trial: bool,
+        to_minor: int,
+        effective: str,
+        closed: bool,
+    ) -> None:
+        """An equal-price switch on a paying, metered subscription is not "nothing charged": the
+        apply-now branch closes the usage so far at the current pin's usage rates, and the billing
+        run invoices it. The preview says exactly when that happens, by the write's own rule — and
+        the write then does what the preview said."""
+        sub_id, current = await _subscribe(session, catalog, org_id, 1000, trial=trial)
+        current.prices.append(
+            CatalogPrice(
+                id=uuid.uuid4(),
+                kind="usage",
+                currency="USD",
+                unit_price_micros=2_500_000,
+                meter_key="api_calls",
+            )
+        )
+        target = catalog.add(make_version(product_key="hrms", amount_minor=to_minor))
+        body = (await _preview(client, sub_id, org_id, target.id)).json()
+        assert body["effective"] == effective and body["usage_priced"] is True
+        assert body["usage_closed_now"] is closed
+
+        written = await _change(
+            client, sub_id, org_id, target.id, timing="next_period", expected=body["expected"]
+        )
+        assert written.status_code == 200, written.text
+        admin_session.expunge_all()
+        closes = (
+            (
+                await admin_session.execute(
+                    select(BillingPeriod).where(
+                        BillingPeriod.subscription_id == sub_id,
+                        BillingPeriod.kind == domain.KIND_CLOSE,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert bool(closes) is closed
+        if closed:
+            (close,) = closes
+            assert close.plan_version_id == current.id  # priced at the pin it was metered on
 
     async def test_a_per_seat_price_counts_at_quantity_one(
         self, client: AsyncClient, session: AsyncSession, catalog: FakeCatalog, org_id: uuid.UUID
@@ -994,6 +1101,59 @@ class TestCrossTenant:
         assert sub.state == STATE_ACTIVE and sub.pending_plan_version_id is None
         assert await _counts(admin_session) == before
 
+    async def test_the_named_organization_is_filtered_on_not_left_to_rls_alone(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        catalog: FakeCatalog,
+        org_id: uuid.UUID,
+        other_org: uuid.UUID,
+    ) -> None:
+        """CLAUDE.md: every query filters on the organization; RLS is the net, not permission to
+        skip the filter. With the net taken away — a BYPASSRLS session standing in for a role
+        recreated with it, or a dropped policy — org B's name on org A's subscription id is still
+        a 404 on every operator route, and nothing of org A's is read or written."""
+        sub_id, _ = await _subscribe(session, catalog, org_id, 1000)
+        target = catalog.add(make_version(product_key="hrms", amount_minor=2000))
+        before = await _counts(admin_session)
+
+        engine = create_async_engine(
+            settings().admin_dsn,
+            connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}},
+        )
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+
+        async def _no_rls_net() -> AsyncIterator[AsyncSession]:
+            async with maker() as unpoliced:
+                yield unpoliced
+
+        previous = app.dependency_overrides[get_session]
+        app.dependency_overrides[get_session] = _no_rls_net
+        try:
+            responses = [
+                await _change(client, sub_id, other_org, target.id, timing="next_period"),
+                await _preview(client, sub_id, other_org, target.id),
+                await client.post(
+                    f"/internal/v1/subscriptions/{sub_id}/suspend",
+                    json={"organization_id": str(other_org), "reason": "nonpayment"},
+                    headers=_headers(),
+                ),
+                await client.post(
+                    f"/internal/v1/subscriptions/{sub_id}/reactivate",
+                    json={"organization_id": str(other_org), "reason": "paid up"},
+                    headers=_headers(),
+                ),
+            ]
+        finally:
+            app.dependency_overrides[get_session] = previous
+            await engine.dispose()
+        for response in responses:
+            assert response.status_code == 404, response.text
+        sub = await _read(session, sub_id)
+        assert sub.state == STATE_ACTIVE and sub.pending_plan_version_id is None
+        assert await _counts(admin_session) == before
+
 
 class TestExpectedStateGuard:
     async def test_a_matching_expected_state_applies(
@@ -1078,7 +1238,7 @@ class TestExpectedStateGuard:
 
 
 class TestOperatorSubscribeNote:
-    async def test_the_note_is_the_audit_reason_and_rides_the_event(
+    async def test_the_note_is_the_audit_reason_and_never_rides_the_event(
         self,
         client: AsyncClient,
         session: AsyncSession,
@@ -1101,6 +1261,6 @@ class TestOperatorSubscribeNote:
         assert response.status_code == 201, response.text
         (audit,) = await _audits(admin_session, org_id, "commerce.subscription.activated")
         assert audit.reason == "sold on the enterprise call" and audit.acting_as == OPERATOR
-        assert (await _events(admin_session, org_id))[-1].payload["note"] == (
-            "sold on the enterprise call"
-        )
+        event = (await _events(admin_session, org_id))[-1]
+        assert "note" not in event.payload
+        assert "sold on the enterprise call" not in str(event.payload)

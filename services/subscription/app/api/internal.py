@@ -103,7 +103,9 @@ async def suspend_subscription(
         await set_tenant(session, payload.organization_id)
         if not settings.is_production:
             await assert_tenant(session, payload.organization_id)
-        subscription = await services.require_subscription(session, subscription_id)
+        subscription = await services.require_subscription(
+            session, subscription_id, organization_id=payload.organization_id
+        )
         subscription = await services.suspend(
             session,
             subscription,
@@ -146,7 +148,9 @@ async def reactivate_subscription(
         await set_tenant(session, payload.organization_id)
         if not settings.is_production:
             await assert_tenant(session, payload.organization_id)
-        subscription = await services.require_subscription(session, subscription_id)
+        subscription = await services.require_subscription(
+            session, subscription_id, organization_id=payload.organization_id
+        )
         subscription = await services.reactivate(
             session,
             subscription,
@@ -226,7 +230,9 @@ async def change_plan_as_operator(
         if not settings.is_production:
             await assert_tenant(session, payload.organization_id)
         # RLS does the isolation: another organization's id is invisible here, a 404.
-        subscription = await services.require_subscription(session, subscription_id)
+        subscription = await services.require_subscription(
+            session, subscription_id, organization_id=payload.organization_id
+        )
         subscription = await services.change_plan_as_operator(
             session, catalog, registry, subscription, payload, request=request
         )
@@ -267,7 +273,9 @@ async def preview_change_plan_as_operator(
         await set_tenant(session, payload.organization_id)
         if not settings.is_production:
             await assert_tenant(session, payload.organization_id)
-        subscription = await services.require_subscription(session, subscription_id)
+        subscription = await services.require_subscription(
+            session, subscription_id, organization_id=payload.organization_id
+        )
         return await services.preview_change_plan_as_operator(
             session, catalog, registry, subscription, payload
         )

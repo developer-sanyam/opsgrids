@@ -120,15 +120,17 @@ def _validate_new_pin(
     """
     if version is None:
         raise domain.CodedNotFound(domain.CODE_NOT_FOUND, "No such plan version")
+    if version.restricted_to_org_id is not None and version.restricted_to_org_id != organization_id:
+        # The same body a nonexistent version gets, code included: another organization's
+        # negotiated price must not be distinguishable from no such version. Decided before the
+        # state check, so that holds whatever its state — a draft prepared for someone else must
+        # not answer `not_published` and so confirm it exists.
+        raise domain.CodedNotFound(domain.CODE_NOT_FOUND, "No such plan version")
     if version.state != VERSION_PUBLISHED:
         raise domain.CodedRefusal(
             domain.CODE_NOT_PUBLISHED,
             "that plan version is not published and cannot be subscribed to",
         )
-    if version.restricted_to_org_id is not None and version.restricted_to_org_id != organization_id:
-        # The same body a nonexistent version gets, code included: another organization's
-        # negotiated price must not be distinguishable from no such version.
-        raise domain.CodedNotFound(domain.CODE_NOT_FOUND, "No such plan version")
     return version
 
 
@@ -207,8 +209,11 @@ def _transition(
 
     `note` is a person's reason, in words. It is **not** the transition's `reason`: that column is
     sixty characters of machine code (`decide` types the event from it, and a free-text word could
-    name the wrong event). The note is the audit row's `reason` (text, unbounded here) and the
-    event payload's `note`, so the why travels with the what.
+    name the wrong event). The note is the audit row's `reason` (text, unbounded here) and nothing
+    else: it is **never put on the event**. The event is stamped with the customer's organization,
+    and notification renders a customer org's own templates from the whole payload — a rule on
+    `commerce.subscription.*` with `{{note}}` in its body would mail staff's internal reason to the
+    customer. Staff read the why on the audit trail, which is where it stays.
     """
     subscription.state = decision.to_state
 
@@ -242,8 +247,6 @@ def _transition(
     payload = _lifecycle_payload(subscription)
     if extra:
         payload.update(extra)
-    if note:
-        payload["note"] = note
     publish_event(
         session,
         OutboxEvent,
@@ -551,6 +554,7 @@ async def preview_change_plan_as_operator(
         entitled_added=[m for m in change.members if m not in current],
         entitled_removed=[m for m in current if m not in change.members],
         usage_priced=change.usage_priced,
+        usage_closed_now=change.action == _ACT_APPLY and change.usage_closed_now,
     )
 
 
@@ -593,6 +597,10 @@ class _PlanChange:
     #: When a scheduled change lands: the end of the period it waits for.
     effective_at: datetime | None
     usage_priced: bool
+    #: Applying it now closes the usage metered so far on the current pin, at that pin's usage
+    #: rates — the `schedule_closing_usage` the apply branch calls before the pin moves, decided by
+    #: the same rule (paid time since the period began, and a usage price on the current version).
+    usage_closed_now: bool = False
 
 
 def _has_usage_price(version: CatalogPlanVersion | None) -> bool:
@@ -717,6 +725,12 @@ async def _evaluate_change_plan(
         if claim is not None and claim.period_end is not None
         else subscription.current_period_end
     )
+    # Mirrors the apply branch's `schedule_closing_usage`: usage since the period began is paid
+    # time on an active subscription, and on a trial from its claimed conversion; it closes at the
+    # current pin, so it is billed only when that pin has a usage price.
+    usage_paid_time = subscription.state == STATE_ACTIVE or (
+        claim is not None and claim.kind == domain.KIND_TRIAL_CONVERSION
+    )
     return _PlanChange(
         action=_ACT_SCHEDULE if schedule else _ACT_APPLY,
         new_version=new_version,
@@ -727,6 +741,7 @@ async def _evaluate_change_plan(
         paid=paid,
         effective_at=boundary,
         usage_priced=_has_usage_price(new_version) or _has_usage_price(old_version),
+        usage_closed_now=not schedule and usage_paid_time and _has_usage_price(old_version),
     )
 
 
@@ -899,7 +914,8 @@ def _schedule_downgrade(
     schedules through here). It is stored with the pending change, so the event the run emits at
     the roll is labelled by direction, and it is the audit row's action name too, so the trail does
     not call a deferred price *increase* a "downgrade". `note` is the operator's reason in words:
-    it becomes the audit row's `reason`, and rides the pending change to the applying event.
+    it becomes the audit row's `reason`, and rides the pending change (subscription's own row) to
+    the audit row written when it is applied — never onto an event.
 
     A second scheduled change replaces the first; the replaced one is named in `before`.
     """
@@ -1106,7 +1122,7 @@ async def reactivate(
     that rolled while suspended was not charged (the customer was not served), and the rest of
     the current one, from now, is — never a second, operator-only rule for the same situation.
     Anyone with the billing-ops role may lift a suspension whoever placed it; the operator's id is
-    on the transition row and their words are the audit row's reason (and the event's `note`).
+    on the transition row and their words are the audit row's reason (never the event's).
     """
     from app import selectors
 
@@ -1583,10 +1599,20 @@ async def suspend_for_dunning(
     return subscription
 
 
-async def require_subscription(session: AsyncSession, subscription_id: uuid.UUID) -> Subscription:
+async def require_subscription(
+    session: AsyncSession,
+    subscription_id: uuid.UUID,
+    *,
+    organization_id: uuid.UUID | None = None,
+) -> Subscription:
+    """The subscription, or a 404. `organization_id` (the `/internal` routes, which are told the
+    tenant by the payload) filters the query on it too, so a wrong pairing is a 404 even if the RLS
+    net were ever missing."""
     from app import selectors
 
-    subscription = await selectors.get_subscription(session, subscription_id)
+    subscription = await selectors.get_subscription(
+        session, subscription_id, organization_id=organization_id
+    )
     if subscription is None:
         # Invisible under RLS unless the transaction is bound to its organization — so another
         # tenant's id is a 404, never a disclosure.
@@ -2027,7 +2053,7 @@ async def apply_pending_change(
     members) so the label is for the humans and the reports that read it. A pending change
     scheduled before the direction was stored has none and keeps the old label, `downgraded`,
     exactly as it always did — nothing already waiting changes meaning. The operator's note, when
-    the change had one, rides the event.
+    the change had one, is the applied transition's audit reason; it is not put on the event.
     """
     change = subscription.pending_change
     if not change:
