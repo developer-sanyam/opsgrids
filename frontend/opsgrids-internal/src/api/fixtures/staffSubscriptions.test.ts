@@ -47,6 +47,20 @@ describe("add product", () => {
     expect(suite?.versions[0]?.overlapping_products).toEqual(["hrms"]);
   });
 
+  it("names the live bundle that already entitles a product offered on its own", () => {
+    const suite = addProductOptionsForOrg(TRIAL).products.find((p) => p.product_key === "suite");
+    const version = suite?.versions[0];
+    if (!version) throw new Error("no suite version");
+    expect(addProductOptionsForOrg(TRIAL).products.find((p) => p.product_key === "hrms")?.entitled_through).toEqual([]);
+    applyFixtureAddProduct(
+      TRIAL,
+      { product_key: "suite", plan_version_id: version.plan_version_id, trial: true, acknowledge_immediate_charge: false, reason: "r" },
+      "suite-key",
+    );
+    const hrms = addProductOptionsForOrg(TRIAL).products.find((p) => p.product_key === "hrms");
+    expect(hrms?.entitled_through).toEqual(["suite"]);
+  });
+
   it("refuses an unacknowledged paid start, and a product it already has", () => {
     const version = addProductOptionsForOrg(GROWTH_PAYING).products.find((p) => p.product_key === "crm")?.versions[0];
     if (!version) throw new Error("no crm version");

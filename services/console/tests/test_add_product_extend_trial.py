@@ -501,6 +501,52 @@ class TestAddProductOptions:
         )
         assert asked == ["finance", "projects", "suite"], "catalog is asked only for candidates"
 
+    async def test_a_product_a_live_bundle_already_entitles_names_the_bundle(
+        self, client: AsyncClient, upstreams: FakeUpstreams, org_id: uuid.UUID
+    ) -> None:
+        """The other direction of the overlap: the organization holds a live `suite` covering
+        hrms and crm, and has no row of its own for either. Each is still offered — subscription
+        accepts it — but names the bundle that already entitles it, because adding it bills both
+        with no credit. A cancelled bundle entitles nothing and is not named."""
+        _stub_directory(upstreams, org_id)
+        suite = {
+            **_subscription(
+                subscription_id=uuid.uuid4(), product_key="suite", plan_version_id=uuid.uuid4()
+            ),
+            "entitled_products": ["hrms", "crm"],
+        }
+        old_bundle = {
+            **_subscription(
+                subscription_id=uuid.uuid4(),
+                product_key="suite_legacy",
+                plan_version_id=uuid.uuid4(),
+                state="cancelled",
+            ),
+            "entitled_products": ["finance"],
+        }
+        _stub_subscriptions(upstreams, org_id, [suite, old_bundle])
+        _stub_public_plans(
+            upstreams,
+            [_public("hrms", "People"), _public("crm", "Sales"), _public("finance", "Books")],
+        )
+
+        def _by_product(request: httpx.Request) -> httpx.Response:
+            key = request.url.params["product_key"]
+            return httpx.Response(200, json={"versions": [_offered(key, uuid.uuid4())]})
+
+        upstreams.on("GET", f"/internal/v1/organizations/{org_id}/offerable-versions", _by_product)
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            response = await client.get(_urls(org_id)["options"])
+        assert response.status_code == 200, response.text
+        products = {p["product_key"]: p for p in response.json()["products"]}
+
+        assert sorted(products) == ["crm", "finance", "hrms"], "offered, not hidden"
+        assert products["hrms"]["entitled_through"] == ["suite"]
+        assert products["crm"]["entitled_through"] == ["suite"]
+        assert products["finance"]["entitled_through"] == [], "a cancelled bundle entitles nothing"
+        (hrms,) = products["hrms"]["versions"]
+        assert hrms["blocked_code"] is None, "a warning, not a block — subscription accepts it"
+
     async def test_an_organization_with_nothing_live_may_take_any_currency(
         self, client: AsyncClient, upstreams: FakeUpstreams, org_id: uuid.UUID
     ) -> None:

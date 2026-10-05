@@ -529,6 +529,9 @@ export interface AddProductOption {
 export interface AddProductCandidate {
   product_key: string;
   product_name: string;
+  /** The live subscriptions (by product key — a bundle) that already entitle the organization to
+   *  this product. Adding it on its own bills both, with no credit. */
+  entitled_through: string[];
   versions: AddProductOption[];
 }
 

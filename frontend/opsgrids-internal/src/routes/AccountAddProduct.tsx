@@ -273,9 +273,16 @@ function AddProductFlow({ org, onClose, onDone }: FlowProps) {
                 {...(versionError ? { error: versionError } : {})}
               />
             ) : null}
+            {product && product.entitled_through.length > 0 ? (
+              <InlineAlert tone="warning" title="Already included in a bundle">
+                This organization already gets {product.product_name} through its{" "}
+                {product.entitled_through.join(", ")} subscription. Adding it on its own bills both, with no
+                credit.
+              </InlineAlert>
+            ) : null}
             {version && version.overlapping_products.length > 0 ? (
               <InlineAlert tone="warning" title="Already paid for separately">
-                This organization already has {version.overlapping_products.join(", ")} on its own
+                This organization already has {version.overlapping_products.join(", ")} through another
                 subscription. Adding this bundle bills both, with no credit.
               </InlineAlert>
             ) : null}
@@ -334,6 +341,12 @@ function AddProductFlow({ org, onClose, onDone }: FlowProps) {
         <div className="flex flex-col gap-3 text-sm">
           <ul className="flex flex-col gap-2 text-muted">
             {version?.is_bespoke ? <li>This is a price negotiated for this organization.</li> : null}
+            {product && product.entitled_through.length > 0 ? (
+              <li>
+                Bills alongside the {product.entitled_through.join(", ")} subscription, which already includes{" "}
+                {product.product_name}, with no credit.
+              </li>
+            ) : null}
             {version && version.overlapping_products.length > 0 ? (
               <li>Bills alongside the separate {version.overlapping_products.join(", ")} subscription, with no credit.</li>
             ) : null}

@@ -73,6 +73,20 @@ function entitledNow(organizationId: string): Set<string> {
   );
 }
 
+/** The live subscriptions (by product key) whose entitlement already includes `productKey`. */
+function entitledThrough(organizationId: string, productKey: string): string[] {
+  return pricing(organizationId)
+    .products.filter(
+      (p) =>
+        p.subscription !== null &&
+        LIVE_STATES.has(p.subscription.state) &&
+        p.product_key !== productKey &&
+        p.subscription.entitled_products.includes(productKey),
+    )
+    .map((p) => p.product_key)
+    .sort();
+}
+
 function optionFor(organizationId: string, version: FixturePlanVersion): AddProductOption {
   const currencies = liveCurrencies(organizationId);
   const wrongCurrency = currencies.length > 0 && !currencies.includes(version.currency);
@@ -118,6 +132,7 @@ export function addProductOptionsForOrg(organizationId: string): AddProductOptio
     .map((p) => ({
       product_key: p.product_key,
       product_name: p.name,
+      entitled_through: entitledThrough(organizationId, p.product_key),
       versions: PLAN_VERSIONS.filter(
         (v) =>
           v.product_key === p.product_key &&

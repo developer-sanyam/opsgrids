@@ -609,6 +609,10 @@ class AddProductCandidateOut(BaseModel):
 
     product_key: str
     product_name: str
+    #: The live subscriptions (by product key — a bundle such as `suite`) that already entitle this
+    #: organization to this product. Subscription still accepts the add, and both are billed with
+    #: no credit — said before the confirm, like a bundle's `overlapping_products`.
+    entitled_through: list[str] = Field(default_factory=list)
     versions: list[AddProductOptionOut] = Field(default_factory=list)
 
 

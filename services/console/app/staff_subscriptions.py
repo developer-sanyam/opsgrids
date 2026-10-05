@@ -26,7 +26,9 @@ commercial truth and never writes another service's schema (ADR-0003 §2).
   that a version is published and whose it is, not that a newer one superseded it or its plan was
   retired. A catalogue outage is 503 `catalog_unavailable` and claims nothing.
 * Bundles are sold here too, through the same operator subscribe; a bundle whose members the
-  organization already pays for separately is marked, because both are billed with no credit.
+  organization already pays for separately is marked, because both are billed with no credit —
+  and so, the other way round, is a product a live bundle already entitles it to
+  (`entitled_through`). Subscription accepts either; the picker says so before the confirm.
 
 ## Extend trial (owner only)
 
@@ -169,7 +171,16 @@ async def add_product_options(
         if options:
             products.append(
                 AddProductCandidateOut(
-                    product_key=key, product_name=names[key] or key, versions=options
+                    product_key=key,
+                    product_name=names[key] or key,
+                    # A candidate has no row of its own, so any live subscription that entitles it
+                    # is a bundle covering it: adding it standalone bills both, with no credit.
+                    entitled_through=sorted(
+                        str(s["product_key"])
+                        for s in live
+                        if key in {str(p) for p in (s.get("entitled_products") or [])}
+                    ),
+                    versions=options,
                 )
             )
     return AddProductOptionsOut(

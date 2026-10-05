@@ -67,7 +67,7 @@ payload). The audit row's before/after name the two ends.
 
 | Route | Role | Purpose |
 |---|---|---|
-| `GET /add-product-options` | billing | products from catalog's public-flat-plans with **no row in any state**, each with its offerable versions; `blocked_code` `org_currency_mismatch` / `one_time`; `offers_trial`; `overlapping_products` for a bundle; the org's live `currency`; `existing` |
+| `GET /add-product-options` | billing | products from catalog's public-flat-plans with **no row in any state**, each with its offerable versions; `blocked_code` `org_currency_mismatch` / `one_time`; `offers_trial`; `overlapping_products` for a bundle; `entitled_through` (per product: the live bundles that already entitle it); the org's live `currency`; `existing` |
 | `POST /subscriptions` + `Idempotency-Key` | billing | `{product_key, plan_version_id, trial=true, acknowledge_immediate_charge=false, reason}` → 201 `{subscription_id, product_key, state, plan_version_id, currency, trial_ends_at, current_period_start, current_period_end, entitled_products, charge_claimed, replayed}` |
 | `POST /subscriptions/{product_key}/extend-trial` + `Idempotency-Key` | **owner** | `{new_trial_ends_at, expected_trial_ends_at, reason}` → `{subscription_id, product_key, state, trial_ends_at, previous_trial_ends_at, replayed}` |
 
@@ -104,7 +104,8 @@ Two more cards under Change plan, each hosting its own dialogs (the page reload 
 * **Add product** — FormDialog: product (Select, with the not-offered products named), plan (RadioGroup;
   blocked versions disabled with the server's reason), start (Trial — default — or Paid from today; Trial
   disabled when the plan sells none), the acknowledgement checkbox for a paid start, a bundle-overlap
-  warning, reason → ConfirmDialog (the sentence; a paid start says no mandate is checked and what a failed
+  warning either way (a bundle over members held separately; a product a live bundle already includes),
+  reason → ConfirmDialog (the sentence; a paid start says no mandate is checked and what a failed
   charge does) → `aria-live=polite` result. Role hint for support.
 * **Extend trial** — a table of trialling subscriptions from the live composite (`useLivePricing`, now in
   `lib/`), with the end and the cap in IST. FormDialog: the trial's new last day (`type=date`, `min`/`max`

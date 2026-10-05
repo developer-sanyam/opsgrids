@@ -4,6 +4,13 @@
       "AddProductCandidateOut": {
         "description": "A product this organization has no subscription row for, in any state.",
         "properties": {
+          "entitled_through": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entitled Through",
+            "type": "array"
+          },
           "product_key": {
             "title": "Product Key",
             "type": "string"

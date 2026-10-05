@@ -53,6 +53,7 @@ function options(overrides: Partial<AddProductOptions> = {}): AddProductOptions 
       {
         product_key: "crm",
         product_name: "OpsGrids CRM",
+        entitled_through: [],
         versions: [
           version(),
           version({ plan_name: "Starter", plan_version_id: "pv_starter", offers_trial: false, trial_days: 0 }),
@@ -68,6 +69,7 @@ function options(overrides: Partial<AddProductOptions> = {}): AddProductOptions 
       {
         product_key: "suite",
         product_name: "OpsGrids Suite",
+        entitled_through: [],
         versions: [
           version({
             plan_name: "Suite Duo",
@@ -257,6 +259,34 @@ describe("the form", () => {
     await fill(dialog, { product: "suite", plan: /Suite Duo/ });
     expect(within(dialog).getByText("Already paid for separately")).toBeTruthy();
     expect(within(dialog).getByText(/Adding this bundle bills both, with no credit/)).toBeTruthy();
+    expect(within(dialog).queryByText("Already included in a bundle")).toBeNull();
+  });
+
+  it("warns, in the form and the confirm, that a live bundle already includes the product", async () => {
+    const base = options();
+    const [crm, suite] = base.products;
+    if (!crm || !suite) throw new Error("fixture");
+    vi.spyOn(client, "getAddProductOptions").mockResolvedValue({
+      ...base,
+      existing: [{ product_key: "suite", state: "active" }],
+      products: [{ ...crm, entitled_through: ["suite"] }],
+    });
+    const addSpy = vi.spyOn(client, "addProduct").mockResolvedValue(TRIAL_RESULT);
+    render(<AddProductCard org={ORG} />);
+    const { dialog } = await openDialog();
+    expect(within(dialog).queryByText("Already included in a bundle")).toBeNull();
+    await fill(dialog);
+    expect(within(dialog).getByText("Already included in a bundle")).toBeTruthy();
+    expect(
+      within(dialog).getByText(/already gets OpsGrids CRM through its suite subscription\. Adding it on its own bills both, with no credit/),
+    ).toBeTruthy();
+    expect(within(dialog).queryByText("Already paid for separately")).toBeNull();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Review" }));
+    const confirm = await screen.findByRole("dialog", { name: "Confirm new subscription" });
+    expect(within(confirm).getByText(/Bills alongside the suite subscription, which already includes OpsGrids CRM/)).toBeTruthy();
+    await userEvent.click(within(confirm).getByRole("button", { name: "Start trial" }));
+    await waitFor(() => expect(addSpy).toHaveBeenCalledTimes(1));
   });
 
   it("explains an organization with nothing left to add", async () => {

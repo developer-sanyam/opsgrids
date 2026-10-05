@@ -66,7 +66,11 @@ behind a button:
    offerable versions for it (ADR-0029 §8's audience and supersession rule). A version the organization
    cannot take is listed, disabled, with the reason (`org_currency_mismatch`, `one_time`); a bundle
    whose members it already pays for separately names them (`overlapping_products`), because both are
-   billed with no credit (docs/commerce-packaging.md).
+   billed with no credit (docs/commerce-packaging.md) — and, the other way round, a product a live
+   bundle already entitles it to names that bundle (`entitled_through`), for the same reason. Both are
+   warnings shown in the form and the confirm, not blocks: subscription accepts either (one row per
+   product is its only overlap rule), and moving between a bundle and standalone products is two
+   subscriptions for a while by design.
 5. **Extend trial is absolute and guarded.** `POST .../subscriptions/{product_key}/extend-trial` takes
    `new_trial_ends_at` (an instant with a zone) and `expected_trial_ends_at` (the end the operator saw,
    sent back verbatim). Subscription, under the row lock the billing run's claim takes, refuses in this
