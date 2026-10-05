@@ -59,6 +59,14 @@ const CASHFREE: MerchantAccountOut = {
   wires: { razorpay: "stub", cashfree: "live" },
 };
 
+const BLOCKED = new ApiError(409, "blocked", {
+  type: "https://errors.opsgrids.dev/disconnect-blocked",
+  title: "Payments on this account have not settled yet",
+  status: 409,
+  detail:
+    "2 online payments are still open; 1 refund is still pending at Cashfree. Disconnecting now would leave what happens to them unrecorded here.",
+});
+
 function otpRefusal(): ApiError {
   return new ApiError(403, "Additional authentication required: otp", {
     type: "https://errors.opsgrids.dev/forbidden",
@@ -170,22 +178,69 @@ describe("PaymentSettingsPage — Cashfree", () => {
     expect(await within(dialog).findByText(/needs a session signed in with a one-time code/)).toBeDefined();
   });
 
-  it("shows the server's count when open payments block a disconnect", async () => {
+  it("says what is outstanding when a disconnect is refused, and only disconnects anyway when asked to", async () => {
     const user = userEvent.setup();
-    getMerchantAccount.mockResolvedValue(CASHFREE);
-    removeMerchantAccount.mockRejectedValue(
-      new ApiError(409, "blocked", {
-        type: "https://errors.opsgrids.dev/disconnect-blocked",
-        title: "Online payments are still open on this account",
-        status: 409,
-        detail: "2 online payments are still open on this account. Cancel them from their orders, or wait for them to be paid or to expire, then disconnect.",
-      }),
-    );
+    getMerchantAccount.mockResolvedValueOnce(CASHFREE).mockResolvedValue(NOT_CONNECTED);
+    removeMerchantAccount.mockRejectedValueOnce(BLOCKED).mockResolvedValue(undefined);
     renderScreen(<PaymentSettingsPage />, [READ, WRITE]);
     await user.click(await screen.findByRole("button", { name: "Disconnect" }));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "Disconnect" }));
     expect(await within(dialog).findByText(/2 online payments are still open/)).toBeDefined();
+    expect(within(dialog).getByText(/1 refund is still pending at Cashfree/)).toBeDefined();
+    expect(removeMerchantAccount).toHaveBeenLastCalledWith({ force: false });
+    // Nothing here quietly retries into a forced disconnect.
+    expect(within(dialog).queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(within(dialog).getByText(/an order paid after this stays unpaid/)).toBeDefined();
+
+    await user.click(within(dialog).getByRole("button", { name: "Disconnect anyway" }));
+    await waitFor(() => expect(removeMerchantAccount).toHaveBeenLastCalledWith({ force: true }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("opens a fresh disconnect dialog after a refused one was closed", async () => {
+    const user = userEvent.setup();
+    getMerchantAccount.mockResolvedValue(CASHFREE);
+    removeMerchantAccount.mockRejectedValue(BLOCKED);
+    renderScreen(<PaymentSettingsPage />, [READ, WRITE]);
+    await user.click(await screen.findByRole("button", { name: "Disconnect" }));
+    let dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+    await within(dialog).findByRole("button", { name: "Disconnect anyway" });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Disconnect" }));
+    dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByRole("button", { name: "Disconnect anyway" })).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Disconnect" })).toBeDefined();
+  });
+
+  it("cannot check the connection while the platform runs Cashfree on the stub, and says why", async () => {
+    getMerchantAccount.mockResolvedValue({ ...CASHFREE, wires: { razorpay: "stub", cashfree: "stub" } });
+    renderScreen(<PaymentSettingsPage />, [READ, WRITE]);
+    const button = await screen.findByRole("button", { name: "Check connection" });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/can be checked with Cashfree once the platform turns its/)).toBeDefined();
+    expect(verifyMerchantAccount).not.toHaveBeenCalled();
+  });
+
+  it("drops an earlier check's refusal once the credentials are replaced", async () => {
+    const user = userEvent.setup();
+    getMerchantAccount.mockResolvedValue(CASHFREE);
+    verifyMerchantAccount.mockRejectedValue(
+      new ApiError(422, "rejected", {
+        type: "https://errors.opsgrids.dev/credentials-rejected",
+        title: "The payment provider did not accept these credentials",
+        status: 422,
+        detail: "The payment provider did not accept these credentials (credentials_rejected).",
+      }),
+    );
+    saveMerchantAccount.mockResolvedValue(CASHFREE);
+    renderScreen(<PaymentSettingsPage />, [READ, WRITE]);
+    await user.click(await screen.findByRole("button", { name: "Check connection" }));
+    expect(await screen.findByText(/did not accept these credentials \(credentials_rejected\)/)).toBeDefined();
+
+    await user.click(screen.getByRole("button", { name: "Replace credentials" }));
+    expect(screen.queryByText(/did not accept these credentials \(credentials_rejected\)/)).toBeNull();
   });
 
   it("names Cashfree in the reconciliation", async () => {

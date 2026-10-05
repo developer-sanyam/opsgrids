@@ -2441,8 +2441,12 @@ export async function saveMerchantAccount(input: MerchantAccountIn): Promise<Mer
 
 /** `DELETE /payment/collections/merchant-account` — `operations.payments.merchant_account.write:ORG`
  *  and a one-time-code session. Refused (409, with the count) while an online payment is open. */
-export async function removeMerchantAccount(): Promise<void> {
-  await apiRequest<undefined>("/payment/collections/merchant-account", { method: "DELETE" });
+/** `DELETE /payment/collections/merchant-account`. A 409 `disconnect-blocked` says what the provider
+ *  may still do for the account (an open payment, a cancelled one it can still take, a pending
+ *  refund); `force` disconnects anyway, and the server audits what was outstanding. */
+export async function removeMerchantAccount(options: { force?: boolean } = {}): Promise<void> {
+  const query = options.force ? "?force=true" : "";
+  await apiRequest<undefined>(`/payment/collections/merchant-account${query}`, { method: "DELETE" });
 }
 
 /** `POST /payment/collections/merchant-account/verify` — the server asks the provider, with the

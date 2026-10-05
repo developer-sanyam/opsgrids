@@ -22,7 +22,7 @@ import {
   providerName,
   wireFor,
 } from "@/lib/paymentProviders";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { ApiError, Can, problemMessage, problemSlug, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -42,6 +42,11 @@ const ONE_TIME_CODE_MESSAGE =
 
 function errorText(error: unknown): string {
   return needsOneTimeCodeSession(error) ? ONE_TIME_CODE_MESSAGE : problemMessage(error);
+}
+
+/** The server refused a disconnect because the provider may still move money for the account. */
+function disconnectBlocked(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && problemSlug(error.problem) === "disconnect-blocked";
 }
 
 const PROVIDER_OPTIONS = [
@@ -98,10 +103,13 @@ function AccountDetails({ account }: { account: MerchantAccountOut }) {
 
 function ConnectionStatus({
   account,
+  checkable,
   checking,
   onCheck,
 }: {
   account: MerchantAccountOut;
+  /** Whether the provider can be asked at all: not while this platform runs it on the stub. */
+  checkable: boolean;
   checking: boolean;
   onCheck: () => void;
 }) {
@@ -116,12 +124,18 @@ function ConnectionStatus({
           <span className="tnum text-xs text-muted">Checked {formatDateTime(account.verified_at)}</span>
         ) : null}
         <Can permission="operations.payments.merchant_account.write" scope="ORG">
-          <Button size="sm" variant="outline" loading={checking} onClick={onCheck}>
+          <Button size="sm" variant="outline" loading={checking} disabled={!checkable} onClick={onCheck}>
             Check connection
           </Button>
         </Can>
       </div>
-      {state === "failed" ? (
+      {!checkable ? (
+        <p className="text-sm text-ink-soft">
+          These credentials can be checked with {providerName(account.provider)} once the platform turns its{" "}
+          {providerName(account.provider)} connection on. Until then nothing reaches {providerName(account.provider)}, so
+          nothing can say whether they work.
+        </p>
+      ) : state === "failed" ? (
         <p className="text-sm text-ink-soft">{connectionErrorHint(account.provider, account.last_error_code)}</p>
       ) : state === "unverified" ? (
         <p className="text-sm text-ink-soft">
@@ -154,13 +168,6 @@ export function PaymentSettingsPage() {
   const [removing, setRemoving] = useState(false);
   const [report, setReport] = useState<ReconciliationOut | null>(null);
 
-  const save = useMutation((input: MerchantAccountIn) => saveMerchantAccount(input), {
-    onSuccess: (saved) => {
-      setEditing(false);
-      toast.success(`${providerName(saved.provider)} account saved. Check the connection next.`);
-      state.reload();
-    },
-  });
   const verify = useMutation(() => verifyMerchantAccount(), {
     onSuccess: (checked) => {
       toast.success(`${providerName(checked.provider)} accepted these credentials.`);
@@ -169,13 +176,30 @@ export function PaymentSettingsPage() {
     // A refusal is recorded on the account too: show what the server now says.
     onError: () => state.reload(),
   });
-  const remove = useMutation(() => removeMerchantAccount(), {
+  const save = useMutation((input: MerchantAccountIn) => saveMerchantAccount(input), {
+    onSuccess: (saved) => {
+      setEditing(false);
+      // A refusal of the old credentials says nothing about these.
+      verify.reset();
+      const checkable = saved.provider ? wireFor(saved, saved.provider) === "live" : false;
+      toast.success(
+        checkable
+          ? `${providerName(saved.provider)} account saved. Check the connection next.`
+          : `${providerName(saved.provider)} account saved.`,
+      );
+      state.reload();
+    },
+  });
+  const remove = useMutation((force: boolean) => removeMerchantAccount({ force }), {
     onSuccess: () => {
       setRemoving(false);
+      verify.reset();
       toast.success("Payment account disconnected.");
       state.reload();
     },
   });
+  // Refused because money may still move: the operator now chooses, knowingly, to go ahead.
+  const blocked = disconnectBlocked(remove.error);
   const reconcile = useMutation(() => getPaymentReconciliation(), { onSuccess: (r) => setReport(r) });
 
   if (!canRead) {
@@ -252,7 +276,12 @@ export function PaymentSettingsPage() {
         {account.configured ? (
           <>
             <AccountDetails account={account} />
-            <ConnectionStatus account={account} checking={verify.pending} onCheck={() => void verify.mutate(undefined)} />
+            <ConnectionStatus
+              account={account}
+              checkable={wireFor(account, provider) === "live"}
+              checking={verify.pending}
+              onCheck={() => void verify.mutate(undefined)}
+            />
             {verify.error ? <InlineAlert tone="danger" title={errorText(verify.error)} /> : null}
           </>
         ) : (
@@ -283,13 +312,20 @@ export function PaymentSettingsPage() {
               <Button
                 onClick={() => {
                   save.reset();
+                  verify.reset();
                   setEditing(true);
                 }}
               >
                 {account.configured ? "Replace credentials" : `Connect ${name}`}
               </Button>
               {account.configured ? (
-                <Button variant="outline" onClick={() => setRemoving(true)}>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    remove.reset();
+                    setRemoving(true);
+                  }}
+                >
                   Disconnect
                 </Button>
               ) : null}
@@ -352,15 +388,26 @@ export function PaymentSettingsPage() {
       <ConfirmDialog
         open={removing}
         onClose={() => setRemoving(false)}
-        onConfirm={() => void remove.mutate(undefined)}
-        title={`Disconnect ${name}?`}
-        body={`Customers can no longer pay orders online, and its webhooks stop being accepted. Payments already made stay recorded; online payments still open must be cancelled first. Connecting again — ${name} or another provider — gives a new webhook URL.`}
-        confirmLabel="Disconnect"
+        onConfirm={() => void remove.mutate(blocked)}
+        title={blocked ? `Disconnect ${name} anyway?` : `Disconnect ${name}?`}
+        body={
+          blocked
+            ? `${name} can still move money for this account. Once it is disconnected, nothing it reports about those payments or refunds is accepted here: an order paid after this stays unpaid, and a refund that fails stays refunded. You would settle each one in ${name}'s own dashboard.`
+            : `Customers can no longer pay orders online, and its webhooks stop being accepted. Payments already made stay recorded. Connecting again — ${name} or another provider — gives a new webhook URL.`
+        }
+        confirmLabel={blocked ? "Disconnect anyway" : "Disconnect"}
         pendingLabel="Disconnecting…"
         tone="danger"
         pending={remove.pending}
-        {...(remove.error ? { error: errorText(remove.error) } : {})}
-      />
+        {...(remove.error && !blocked ? { error: errorText(remove.error) } : {})}
+      >
+        {blocked ? (
+          // No "Try again" here: the only way on is the explicit "Disconnect anyway" above.
+          <InlineAlert tone="warning" title="Not everything on this account has settled">
+            {problemMessage(remove.error)}
+          </InlineAlert>
+        ) : undefined}
+      </ConfirmDialog>
     </div>
   );
 }
