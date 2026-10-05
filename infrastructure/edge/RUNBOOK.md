@@ -615,7 +615,8 @@ not fail the check. Changing a product's `status` on the box is exactly the edit
 this fail, so run it after that too.
 
 Bundles are sold only through subscription's operator routes (`POST /internal/v1/subscriptions`,
-`…/{id}/change-plan`, service token); the customer route answers 403. A trial's length is the
+`…/{id}/change-plan`, a service token minted by **console** — a token from any other service is
+refused, ADR-0029); the customer route answers 403. A trial's length is the
 plan version's `trial_days` feature (14 when absent), never the customer's.
 
 ### Inventory Phase 1 (lots, rolls, stock operations): migration and the `operations` permission reconcile
