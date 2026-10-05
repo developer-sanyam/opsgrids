@@ -8,6 +8,7 @@ import { Can, problemMessage, useAsync } from "@opsgrids/client";
 import { RollSplitDialog } from "@/forms/RollSplitDialog";
 import { StockStatusChangeDialog } from "@/forms/StockStatusChangeDialog";
 import { StockTransferDialog } from "@/forms/StockTransferDialog";
+import { FindStockPanel } from "@/locate/FindStockPanel";
 import { formatDateTime } from "@/lib/format";
 import { formatQty } from "@/lib/quantity";
 import { rollEventLabel } from "@/lib/trackingLabels";
@@ -196,6 +197,8 @@ function RollDetail() {
           }
         />
       </Card>
+
+      <FindStockPanel itemId={roll.inventory_item_id} rollId={roll.id} subject={`roll ${roll.roll_no}`} uom={roll.uom} />
 
       <Card className="p-2 sm:p-4">
         <div className="px-3 pt-2 pb-3">

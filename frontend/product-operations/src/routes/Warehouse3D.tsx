@@ -1,60 +1,63 @@
-import { Component, Suspense, lazy, useMemo, useState } from "react";
-import type { ReactNode } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
-import { getWarehouseById, listLocations } from "@/api/client";
-import type { LocationKind, LocationOut } from "@/api/types";
-import { LOCATION_KIND_LABEL } from "@/data/locationKinds";
-import { LOCATION_KIND_COLOR } from "@/data/locationKindColor";
-import { formatNumber } from "@/lib/format";
-import { computeWarehouseLayout } from "@/lib/warehouseLayout";
-import { hasWebGLSupport } from "@/lib/webgl";
+import { getWarehouseById } from "@/api/client";
+import { BinDrawer } from "@/floor/BinDrawer";
+import type { BinSummary } from "@/floor/binSummary";
+import { Floor3DPanel } from "@/floor/Floor3DPanel";
+import { FloorSelect } from "@/floor/FloorSelect";
+import { SkippedPlacements } from "@/floor/SkippedPlacements";
+import { usePublishedLayout } from "@/floor/usePublishedLayout";
+import { normalizePlacements, parseHighlightIds } from "@/lib/floorGeometry";
 import { problemMessage, useAsync } from "@opsgrids/client";
-import { Button, Card, Drawer, EmptyState, ErrorState, InlineAlert, PageHeader, Skeleton } from "@/ui";
-import { ArrowRightIcon, BoxIcon, cn } from "@opsgrids/ui";
+import { Button, Card, ErrorState, PageHeader, Skeleton } from "@/ui";
+import { useSlowLoad } from "@/lib/useSlowLoad";
+import { SlowLoadNotice } from "@/ui/SlowLoadNotice";
+import { ArrowRightIcon } from "@opsgrids/ui";
 
 /**
- * Every location, in one 3D view (Fulfilment F9 MVP) — `docs/fulfilment/plan.md` flags F9 as
- * depending on F7's floor-plan geometry, which does not exist yet (a `Location` has no x/y/z of
- * its own). Rather than wait, this ships against the one thing that is real and already live —
- * `listLocations` — with the layout computed client-side (`computeWarehouseLayout`) and the
- * screen honest about that everywhere: the persistent banner below, never a claim that this is
- * the warehouse's real floor plan.
+ * Every location of a warehouse in one 3D view (Fulfilment F9), now with a floor selector.
  *
- * Sibling to `/warehouses/:id/locations` (the F1 tree screen), which links here and back —
- * neither hides the other. The tree screen stays the accessible, keyboard-first way to browse and
- * edit this same data; this view is a spatial read of it, pointer-driven like any WebGL scene.
+ * Choose a floor that has a published layout and the view is drawn from that layout's real
+ * placements, with nothing on the page calling it approximate. Choose no floor, or a floor with no
+ * published layout, and it is the auto-arranged picture computed from the location tree, under the
+ * banner that says so (`Floor3DPanel`). `?floor=` picks the floor and `?highlight=` marks locations
+ * a search found, the same parameter the floor view reads.
+ *
+ * Sibling to `/warehouses/:id/locations` (the F1 tree screen), which links here and back — neither
+ * hides the other. The tree screen stays the accessible, keyboard-first way to browse and edit this
+ * same data; this view is a spatial read of it, pointer-driven like any WebGL scene.
  */
-const Warehouse3DScene = lazy(() =>
-  import("./Warehouse3DScene").then((m) => ({ default: m.Warehouse3DScene })),
-);
-
 export function Warehouse3DPage() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
-  const [selected, setSelected] = useState<LocationOut | null>(null);
-  // A synchronous, one-time capability check — never re-run, since a browser does not gain or
-  // lose WebGL mid-session. Checked before the scene (and `three`/`@react-three/fiber`/
-  // `@react-three/drei`) is ever imported, so a browser without it never downloads that chunk.
-  const [webglSupported] = useState(hasWebGLSupport);
+  const [params, setParams] = useSearchParams();
+  const floorId = params.get("floor") ?? "";
+  const highlightSet = useMemo(() => new Set(parseHighlightIds(params.get("highlight"))), [params]);
+  const [bin, setBin] = useState<BinSummary | null>(null);
 
-  const warehouseLoader = () => getWarehouseById(id);
-  const warehouseState = useAsync(warehouseLoader, [id]);
-  const locationsLoader = () => listLocations(id);
-  const locationsState = useAsync(locationsLoader, [id]);
-
-  const layout = useMemo(
-    () => (locationsState.status === "success" ? computeWarehouseLayout(locationsState.data) : []),
-    [locationsState],
+  const warehouseState = useAsync(() => getWarehouseById(id), [id]);
+  const published = usePublishedLayout(floorId === "" ? null : floorId);
+  const slow = useSlowLoad(published.status === "loading" && floorId !== "");
+  const skipped = useMemo(
+    () => (published.status === "success" && published.data ? normalizePlacements(published.data.placements).skipped : []),
+    [published],
   );
 
-  const kindsPresent = useMemo(() => {
-    const seen = new Set<LocationKind>();
-    for (const node of layout) seen.add(node.location.kind);
-    return Array.from(seen).sort((a, b) => LOCATION_KIND_LABEL[a].localeCompare(LOCATION_KIND_LABEL[b]));
-  }, [layout]);
-
   const warehouseName = warehouseState.status === "success" ? warehouseState.data.name : "Loading…";
+
+  function changeFloor(next: string) {
+    setParams(
+      (current) => {
+        const copy = new URLSearchParams(current);
+        if (next === "") copy.delete("floor");
+        else copy.set("floor", next);
+        return copy;
+      },
+      { replace: true },
+    );
+    setBin(null);
+  }
 
   if (warehouseState.status === "error") {
     return (
@@ -71,6 +74,12 @@ export function Warehouse3DPage() {
     );
   }
 
+  const toList = (
+    <Button variant="secondary" size="sm" onClick={() => navigate(`/warehouses/${id}/locations`)}>
+      Go to 2D / list view
+    </Button>
+  );
+
   return (
     <div className="rise flex flex-col gap-6">
       <BackLink warehouseId={id} />
@@ -80,180 +89,43 @@ export function Warehouse3DPage() {
         title={warehouseName}
         description="A spatial read of this warehouse's locations."
         actions={
-          <Button variant="secondary" onClick={() => navigate(`/warehouses/${id}/locations`)}>
-            2D / list view
-          </Button>
+          <>
+            <FloorSelect warehouseId={id} value={floorId} onChange={changeFloor} noneLabel="Auto-arranged (all locations)" />
+            <Button variant="secondary" onClick={() => navigate(`/warehouses/${id}/locations`)}>
+              2D / list view
+            </Button>
+          </>
         }
       />
 
-      <InlineAlert tone="warning" title="Layout is auto-arranged — no floor plan has been configured for this warehouse yet" live="off">
-        Positions and clusters below are computed from the location tree, not a surveyed floor plan. Colour marks each
-        location's kind; size reflects its recorded weight or volume capacity where set.
-      </InlineAlert>
-
-      {locationsState.status === "loading" || warehouseState.status === "loading" ? (
-        <Card className="flex h-120 flex-col gap-4 p-6">
+      {warehouseState.status === "loading" || (floorId !== "" && published.status === "loading") ? (
+        <Card className="flex h-120 flex-col gap-4 p-6" aria-busy="true">
           <Skeleton className="h-6 w-48" />
           <Skeleton className="h-full w-full rounded-tile" />
+          <SlowLoadNotice show={slow} what="the floor" />
         </Card>
-      ) : locationsState.status === "error" ? (
+      ) : published.status === "error" ? (
         <Card className="p-6">
-          <ErrorState
-            title="Couldn't load locations"
-            message={problemMessage(locationsState.error)}
-            onRetry={locationsState.reload}
-          />
+          <ErrorState title="Couldn't load this floor's layout" message={problemMessage(published.error)} onRetry={published.reload} />
         </Card>
-      ) : layout.length === 0 ? (
-        <Card className="p-6">
-          <EmptyState
-            icon={<BoxIcon className="size-6" />}
-            title="No locations yet"
-            description="Add a zone in the 2D view to start the tree — this view fills in once locations exist."
-            action={
-              <Button size="sm" onClick={() => navigate(`/warehouses/${id}/locations`)}>
-                Go to 2D / list view
-              </Button>
-            }
-          />
-        </Card>
-      ) : !webglSupported ? (
-        <WebGLUnavailable warehouseId={id} />
       ) : (
-        <div className="flex flex-col gap-4 lg:flex-row">
-          <Card className="h-120 flex-1 overflow-hidden p-0">
-            <Warehouse3DErrorBoundary warehouseId={id}>
-              <Suspense fallback={<CanvasLoading />}>
-                <Warehouse3DScene layout={layout} selectedId={selected?.id ?? null} onSelect={setSelected} />
-              </Suspense>
-            </Warehouse3DErrorBoundary>
-          </Card>
-          <Legend kinds={kindsPresent} count={layout.length} />
-        </div>
+        <>
+          <Floor3DPanel
+            warehouseId={id}
+            floorId={floorId === "" ? null : floorId}
+            published={published.status === "success" ? published.data : null}
+            highlightIds={highlightSet}
+            selectedId={bin?.id ?? null}
+            onSelect={setBin}
+            unavailableAction={toList}
+          />
+          <SkippedPlacements placements={skipped} />
+        </>
       )}
 
-      <Drawer
-        open={selected !== null}
-        onClose={() => setSelected(null)}
-        title={selected ? selected.name : "Location"}
-        description={selected ? selected.code : undefined}
-      >
-        {selected ? <LocationDetail location={selected} /> : null}
-      </Drawer>
+      <BinDrawer bin={bin} onClose={() => setBin(null)} />
     </div>
   );
-}
-
-function CanvasLoading() {
-  return (
-    <div className="flex h-full w-full flex-col items-center justify-center gap-3">
-      <Skeleton className="h-10 w-10" />
-      <p className="text-sm text-muted">Loading the 3D scene…</p>
-    </div>
-  );
-}
-
-function Legend({ kinds, count }: { kinds: LocationKind[]; count: number }) {
-  return (
-    <Card className="flex w-full flex-col gap-3 p-4 lg:w-64">
-      <div className="flex flex-col gap-1">
-        <p className="text-sm font-bold text-ink">Legend</p>
-        <p className="text-xs text-muted">
-          {formatNumber(count)} location{count === 1 ? "" : "s"} shown, coloured by kind.
-        </p>
-      </div>
-      <ul className="flex flex-col gap-2">
-        {kinds.map((kind) => (
-          <li key={kind} className="flex items-center gap-2 text-sm">
-            <span className={cn("size-3 shrink-0 rounded-chip", LOCATION_KIND_COLOR[kind].swatchClass)} aria-hidden />
-            <span className="text-ink-soft">{LOCATION_KIND_LABEL[kind]}</span>
-          </li>
-        ))}
-      </ul>
-      <p className="text-xs text-faint">Click a box to see that location's recorded fields.</p>
-    </Card>
-  );
-}
-
-function FieldRow({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="flex items-center justify-between gap-3 border-t border-line py-3 text-sm first:border-t-0 first:pt-0">
-      <dt className="text-muted">{label}</dt>
-      <dd className="tnum text-right font-semibold text-ink">{value}</dd>
-    </div>
-  );
-}
-
-function LocationDetail({ location }: { location: LocationOut }) {
-  return (
-    <div className="flex flex-col gap-4">
-      <dl className="flex flex-col">
-        <FieldRow label="Kind" value={LOCATION_KIND_LABEL[location.kind]} />
-        <FieldRow label="Code" value={location.code} />
-        <FieldRow label="Barcode" value={location.barcode ?? "—"} />
-        <FieldRow label="Pick sequence" value={location.pick_sequence !== null ? formatNumber(location.pick_sequence) : "—"} />
-        <FieldRow
-          label="Max weight"
-          value={location.max_weight_grams !== null ? `${formatNumber(location.max_weight_grams)} g` : "—"}
-        />
-        <FieldRow
-          label="Max volume"
-          value={location.max_volume_milli !== null ? `${formatNumber(location.max_volume_milli)} mL` : "—"}
-        />
-        <FieldRow label="Storage type" value={location.storage_type ?? "—"} />
-        <FieldRow label="Default location" value={location.is_default ? "Yes" : "No"} />
-      </dl>
-      <InlineAlert tone="info" title="Stock detail not available yet" live="off">
-        This location's data has no stock level or SKU field, and no live inventory-by-location endpoint exists yet.
-      </InlineAlert>
-    </div>
-  );
-}
-
-/** The one fallback both the no-WebGL and the render-error paths share: the 3D view genuinely
- *  cannot show anything here, so it says so plainly and hands off to the real, existing 2D/list
- *  view rather than a blank canvas or a crashed page. */
-function WebGLUnavailable({ warehouseId }: { warehouseId: string }) {
-  const navigate = useNavigate();
-  return (
-    <Card className="p-6">
-      <ErrorState
-        tone="neutral"
-        title="This browser can't show the 3D view"
-        message="WebGL isn't available here — it may be disabled, or this device doesn't support it. The same locations are in the 2D / list view."
-        action={
-          <Button variant="secondary" size="sm" onClick={() => navigate(`/warehouses/${warehouseId}/locations`)}>
-            Go to 2D / list view
-          </Button>
-        }
-      />
-    </Card>
-  );
-}
-
-interface BoundaryProps {
-  warehouseId: string;
-  children: ReactNode;
-}
-interface BoundaryState {
-  failed: boolean;
-}
-
-/** Catches a runtime failure in the 3D scene (a `three`/WebGL error the feature-detect above
- *  could not predict) and falls back to the same message the no-WebGL path shows, rather than
- *  taking the whole page down with it. React itself still reports the error to the console
- *  (its own default error-boundary behaviour) — nothing here needs to duplicate that. */
-class Warehouse3DErrorBoundary extends Component<BoundaryProps, BoundaryState> {
-  override state: BoundaryState = { failed: false };
-
-  static getDerivedStateFromError(): BoundaryState {
-    return { failed: true };
-  }
-
-  override render(): ReactNode {
-    if (this.state.failed) return <WebGLUnavailable warehouseId={this.props.warehouseId} />;
-    return this.props.children;
-  }
 }
 
 function BackLink({ warehouseId }: { warehouseId: string }) {

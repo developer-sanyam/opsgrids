@@ -15,11 +15,13 @@ import { RollDetailPage } from "./RollDetail";
 const getRollTrace = vi.fn();
 const listRollEvents = vi.fn();
 const listStock = vi.fn();
+const locateStock = vi.fn();
 
 vi.mock("@/api/tracking", () => ({
   getRollTrace: (...args: unknown[]) => getRollTrace(...args),
   listRollEvents: (...args: unknown[]) => listRollEvents(...args),
   listStock: (...args: unknown[]) => listStock(...args),
+  locateStock: (...args: unknown[]) => locateStock(...args),
   splitRoll: () => Promise.reject(new Error("not used")),
 }));
 vi.mock("@/api/client", () => ({
@@ -141,5 +143,18 @@ describe("RollDetailPage", () => {
     await screen.findByRole("heading", { name: "R-001" });
     expect(screen.queryByRole("button", { name: "Split roll" })).toBeNull();
     expect(screen.getAllByText("Split").length).toBeGreaterThan(0);
+  });
+
+  it("offers Find stock for this roll, narrowing the search to the roll", async () => {
+    const user = userEvent.setup();
+    locateStock.mockResolvedValue({ results: [] });
+    renderRoll([READ]);
+
+    await screen.findByRole("heading", { name: "R-001" });
+    expect(screen.getByText("Which bins hold roll R-001 right now, and where they are.")).toBeDefined();
+    expect(locateStock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Find where it is" }));
+    expect(locateStock).toHaveBeenCalledWith({ inventory_item_id: "item-1", lot_id: undefined, roll_id: "roll-1" });
   });
 });

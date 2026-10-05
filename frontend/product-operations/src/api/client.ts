@@ -106,6 +106,7 @@ import type {
   PickTaskOut,
   PickTaskStatus,
   PoStatus,
+  PublishedLayoutOut,
   PurchaseOrderIn,
   PurchaseOrderOut,
   PurchaseOrderPatch,
@@ -137,6 +138,7 @@ import type {
   WarehouseFloorOut,
   WarehouseFloorPatch,
   WarehouseIn,
+  WarehouseMapOut,
   WarehouseOut,
   WarehousePatch,
   WorkerWorkloadOut,
@@ -1229,6 +1231,8 @@ export async function createWarehouse(input: WarehouseIn): Promise<WarehouseOut>
       code: input.code,
       name: input.name,
       location: input.location ?? "",
+      ...(input.lat_micro !== undefined ? { lat_micro: input.lat_micro } : {}),
+      ...(input.lng_micro !== undefined ? { lng_micro: input.lng_micro } : {}),
     };
     WAREHOUSES.push(warehouse);
     return settle(warehouse);
@@ -1252,6 +1256,8 @@ export async function updateWarehouse(id: string, patch: WarehousePatch): Promis
       ...current,
       ...(patch.name !== undefined ? { name: patch.name } : {}),
       ...(patch.location !== undefined ? { location: patch.location } : {}),
+      ...(patch.lat_micro !== undefined ? { lat_micro: patch.lat_micro } : {}),
+      ...(patch.lng_micro !== undefined ? { lng_micro: patch.lng_micro } : {}),
     };
     WAREHOUSES[index] = updated;
     if (patch.name !== undefined && patch.name !== current.name) {
@@ -1289,6 +1295,16 @@ export async function deleteWarehouse(id: string): Promise<void> {
     return settle(undefined);
   }
   await apiRequest<undefined>(`/operations/warehouses/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/**
+ * `GET /operations/warehouses/map` — `operations.inventory.warehouse.read`. The warehouses that
+ * have a position (with floor and stocked-bin counts) and, separately, those that do not, so the
+ * sites map can offer "Set location" for each. **Live only** — no fixture twin: fixture warehouses
+ * carry no floors or stock to count, and an invented answer would be a second implementation.
+ */
+export async function getWarehousesMap(params: { signal?: AbortSignal } = {}): Promise<WarehouseMapOut> {
+  return apiRequest<WarehouseMapOut>("/operations/warehouses/map", { signal: params.signal });
 }
 
 /* -------------------------------- locations -------------------------------- */
@@ -2157,6 +2173,21 @@ export async function validateLayoutVersion(versionId: string): Promise<LayoutVa
 export async function publishLayoutVersion(versionId: string): Promise<LayoutVersionOut> {
   return apiRequest<LayoutVersionOut>(`/operations/layout-versions/${encodeURIComponent(versionId)}/publish`, {
     method: "POST",
+  });
+}
+
+/**
+ * `GET /operations/floors/{floor_id}/published-layout` — `operations.warehouse.layout.read`. A floor's
+ * *published* placements only (a draft never leaks), each with its location's code, name, kind and
+ * parent. `published: false` with no placements when the floor has no published version; 404 for a
+ * floor that is missing or belongs to another organization.
+ */
+export async function getPublishedLayout(
+  floorId: string,
+  params: { signal?: AbortSignal } = {},
+): Promise<PublishedLayoutOut> {
+  return apiRequest<PublishedLayoutOut>(`/operations/floors/${encodeURIComponent(floorId)}/published-layout`, {
+    signal: params.signal,
   });
 }
 

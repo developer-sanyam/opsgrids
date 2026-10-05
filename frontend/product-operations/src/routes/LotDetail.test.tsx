@@ -15,11 +15,13 @@ import { LotDetailPage } from "./LotDetail";
 const getLotTrace = vi.fn();
 const listStock = vi.fn();
 const listRolls = vi.fn();
+const locateStock = vi.fn();
 
 vi.mock("@/api/tracking", () => ({
   getLotTrace: (...args: unknown[]) => getLotTrace(...args),
   listStock: (...args: unknown[]) => listStock(...args),
   listRolls: (...args: unknown[]) => listRolls(...args),
+  locateStock: (...args: unknown[]) => locateStock(...args),
   transferStock: () => Promise.reject(new Error("not used")),
   changeStockStatus: () => Promise.reject(new Error("not used")),
 }));
@@ -102,5 +104,19 @@ describe("LotDetailPage", () => {
 
     expect(await screen.findByText("No stock on the books yet")).toBeDefined();
     expect(await screen.findByText("No rolls yet")).toBeDefined();
+  });
+
+  it("offers Find stock for this lot, asking only when clicked and narrowing the search to the lot", async () => {
+    const user = userEvent.setup();
+    locateStock.mockResolvedValue({ results: [] });
+    renderLot();
+
+    await screen.findByRole("heading", { name: "LOT-1" });
+    expect(screen.getByText("Which bins hold lot LOT-1 right now, and where they are.")).toBeDefined();
+    expect(locateStock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Find where it is" }));
+    expect(locateStock).toHaveBeenCalledWith({ inventory_item_id: "item-1", lot_id: "lot-1", roll_id: undefined });
+    expect(await screen.findByText("Nothing is stored anywhere right now")).toBeDefined();
   });
 });

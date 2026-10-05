@@ -62,9 +62,11 @@ export const LEDGER_KIND_OPTIONS = [
   { value: "issue", label: "Issue" },
 ] as const;
 
-/** Phase 1 posts four operations as `relocation` moves told apart by `reference_type` (ADR-0014 §12). */
+/** Phase 1 posts four operations as `relocation` moves told apart by `reference_type` (ADR-0014 §12);
+ *  storage put-away adds a fifth. */
 const RELOCATION_LABEL: Record<string, string> = {
   bin_transfer: "Bin transfer",
+  putaway: "Storage put-away",
   roll_split: "Roll split",
   roll_merge: "Roll merge",
   status_change: "Status change",

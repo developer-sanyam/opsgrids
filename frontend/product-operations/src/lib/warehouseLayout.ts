@@ -16,8 +16,12 @@
 import type { LocationOut } from "@/api/types";
 import { flattenTree } from "./locationTree";
 
+/** The few location fields a layout node needs, so a node can come from the computed tree
+ *  (`LocationOut`) or from a published placement, which carries no more than this. */
+export type LayoutLocation = Pick<LocationOut, "id" | "parent_id" | "kind" | "code" | "name">;
+
 export interface WarehouseLayoutNode {
-  location: LocationOut;
+  location: LayoutLocation;
   /** World-space centre, metres-ish (unitless — there is no real scale to be true to). */
   position: readonly [number, number, number];
   /** Box dimensions (width, height, depth), centred on `position`. */

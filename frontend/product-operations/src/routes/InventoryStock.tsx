@@ -6,6 +6,7 @@ import type { OnSiteRow } from "@/lib/rollBuckets";
 import { OpeningStockDialog } from "@/forms/OpeningStockDialog";
 import { StockStatusChangeDialog } from "@/forms/StockStatusChangeDialog";
 import { StockTransferDialog } from "@/forms/StockTransferDialog";
+import { FindStockPanel } from "@/locate/FindStockPanel";
 import { Button, PageHeader } from "@/ui";
 import { PlusIcon, useToast } from "@opsgrids/ui";
 import { RequireStockRead } from "@/tracking/pageParts";
@@ -74,6 +75,15 @@ function StockScreen() {
         onClear={clear}
         active={active}
         showStatus
+      />
+
+      <FindStockPanel
+        key={`${itemId}|${filters.lotId}|${filters.rollId}`}
+        itemId={itemId}
+        lotId={filters.lotId === "" ? undefined : filters.lotId}
+        rollId={filters.rollId === "" ? undefined : filters.rollId}
+        subject={filters.item?.sku}
+        uom={filters.item?.uom}
       />
 
       <StockTable

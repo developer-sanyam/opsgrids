@@ -6,7 +6,7 @@
  * model here never takes a `number` for a quantity, so a float cannot reach the wire.
  */
 
-import type { Qty, StockStatus } from "./types";
+import type { LocationKind, Qty, StockStatus } from "./types";
 
 /** The envelope the keyset-paginated reads return (`app/inventory/pagination.py`). No total: a
  *  ledger has none worth computing, so a screen pages with "Load more" until `next_cursor` is null. */
@@ -289,4 +289,87 @@ export interface LotGenealogyOut {
   move_id: string | null;
   note: string;
   created_at: string;
+}
+
+/* ------------------------------ find stock (locate) ------------------------------ */
+
+/** Why a bin that holds stock carries no floor-plan geometry. `null` means it has some. */
+export type PlacementReason = "unplaced" | "no_published_layout" | "no_permission";
+
+/**
+ * Where a bin sits on its floor's published layout, in millimetres. `source` is `ancestor` when the
+ * bin itself is not drawn but a rack or zone above it is — the geometry is then the ancestor's, and
+ * `ancestor_location_id` names it.
+ */
+export interface LocatePlacementOut {
+  layout_version_id: string;
+  x_mm: number;
+  y_mm: number;
+  z_mm: number | null;
+  width_mm: number;
+  depth_mm: number;
+  height_mm: number | null;
+  source: "own" | "ancestor";
+  ancestor_location_id: string | null;
+}
+
+/** One bin holding a positive balance of what was searched for. */
+export interface LocateResultOut {
+  warehouse_id: string;
+  warehouse_name: string;
+  floor_id: string | null;
+  floor_name: string | null;
+  location_id: string;
+  code: string;
+  name: string;
+  kind: LocationKind;
+  /** The bin's place in the location tree, as the server renders it. */
+  path: string;
+  quantity: Qty;
+  status: StockStatus;
+  placement: LocatePlacementOut | null;
+  placement_reason: PlacementReason | null;
+}
+
+/** `GET /operations/inventory/locate` — `operations.inventory.stock.read`. An empty `results` is a
+ *  valid answer: nothing is stocked. Geometry is only present for a caller who may read layouts. */
+export interface LocateOut {
+  results: LocateResultOut[];
+}
+
+/* -------------------------------- storage put-away ------------------------------- */
+
+/** A bin named in a put-away response. */
+export interface PutawayLocationOut {
+  id: string;
+  code: string;
+  name: string;
+  kind: LocationKind;
+}
+
+/**
+ * `GET /operations/inventory/putaway/{move_id}` — `operations.inventory.stock.read`. Never carries
+ * coordinates: `has_location` only says whether a position was captured. A move with no capture
+ * (including one purged after its retention window) is a 404.
+ */
+export interface PutawayDetailOut {
+  move_id: string;
+  to_location: PutawayLocationOut;
+  worker_id: string | null;
+  captured_at: string;
+  matched_suggestion: boolean | null;
+  has_location: boolean;
+}
+
+/**
+ * `POST /operations/inventory/putaway/{move_id}/location:reveal` — the only response in the whole
+ * product that carries a worker's position. Micro-degrees (degrees x 10^6) and metres, all `null`
+ * when the capture holds no geo. Held in component state for the length of one drawer; never
+ * stored, logged or put in an address.
+ */
+export interface PutawayRevealOut {
+  lat_micro: number | null;
+  lng_micro: number | null;
+  accuracy_m: number | null;
+  captured_at: string;
 }
