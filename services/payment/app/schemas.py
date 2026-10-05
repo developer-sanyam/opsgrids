@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -73,6 +73,10 @@ class UsableMandateOut(BaseModel):
     amount_minor: int
     usable: bool
     mandate_id: uuid.UUID | None = None
+    #: The provider the mandate is held at, and the provider the question was asked of (the
+    #: configured default for new charges). Additive (ADR-0029): a mandate at another provider does
+    #: not count, because a Razorpay token cannot be debited through Cashfree.
+    provider: str | None = None
 
 
 # --------------------------------------------------------------------- webhook (provider)
@@ -291,3 +295,77 @@ class ReconciliationOut(BaseModel):
     mismatched: int
     unchecked: int
     rows: list[ReconciliationRowOut]
+
+
+# ===================================================================== platform checkout
+# (ADR-0029). A customer paying one of OpsGrids' own invoices in the provider's hosted checkout.
+# The amount, the currency and the subscription are never in a request: they are read from the
+# invoice's own charge.
+
+
+class CheckoutCustomerIn(BaseModel):
+    """Who is paying, as the provider's checkout needs it (Cashfree requires a phone on every
+    Order). **Passed through to the provider and nowhere else** — never stored, logged, audited or
+    put in an event. A phone is 10 digits, or `+` and 8-15 digits."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=100)
+    email: str | None = Field(default=None, max_length=254)
+    phone: str | None = Field(default=None, max_length=16)
+
+
+class PlatformCheckoutIn(BaseModel):
+    """`POST /payment/checkouts` — open (or reopen) the checkout for one invoice."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    invoice_id: uuid.UUID
+    customer: CheckoutCustomerIn | None = None
+
+
+class PlatformCheckoutOut(BaseModel):
+    """What the browser needs to open the provider's checkout, and what it will charge.
+    `amount_minor` and `currency` are the invoice's own charge's. `client_action` is provider-shaped
+    and tagged by `type`: `{"type": "razorpay_checkout", "key_id", "order_id", "openable"}` (the
+    **public** key id and the Order id — never the secret) or `{"type": "cashfree_checkout",
+    "payment_session_id", "mode", "openable"}`. `openable` is False on a stub provider: the Order
+    is a local stand-in no real checkout would accept. The session token is never stored;
+    reopening fetches it again."""
+
+    charge_id: uuid.UUID
+    provider: str
+    client_action: dict[str, Any]
+    amount_minor: int
+    currency: str
+    expires_at: datetime
+
+
+class PlatformCheckoutStatusOut(BaseModel):
+    """The state of one checkout, as the server knows it. `paid` is true only for a **captured**
+    payment — one the provider reported, by a status check or a signed webhook; never because a
+    browser said so. `provider_checked` is false when the provider could not be asked this time
+    (the state shown is then the last one recorded). A failed checkout with `failure_reason`
+    `checkout_expired` is one nobody paid before it expired."""
+
+    charge_id: uuid.UUID
+    provider: str
+    state: Literal["created", "authorized", "captured", "failed"]
+    paid: bool
+    amount_minor: int
+    currency: str
+    expires_at: datetime | None
+    failure_reason: str | None = None
+    provider_checked: bool = True
+
+
+class CheckoutConfirmIn(BaseModel):
+    """`POST /payment/checkouts/{charge_id}/confirm` (Razorpay) — the three fields Checkout's
+    callback hands the browser. **Proof of nothing**: the server checks the signature as a
+    precondition, then asks Razorpay what happened. Missing or blank fields are a 400."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    razorpay_payment_id: str | None = Field(default=None, max_length=64)
+    razorpay_order_id: str | None = Field(default=None, max_length=64)
+    razorpay_signature: str | None = Field(default=None, max_length=128)

@@ -84,9 +84,32 @@ def is_terminal(state: str) -> bool:
 #: exactly these (`services._reconcile_charge`) and nothing else (D3).
 FAILURE_ATTEMPTS_EXHAUSTED = "attempts_exhausted"
 FAILURE_LOOKUP_UNAVAILABLE = "lookup_unavailable"
+#: A checkout nobody paid before it expired (ADR-0029). The platform stopped waiting, but the
+#: provider's Order may still be payable (Razorpay Orders do not expire on their own), so a capture
+#: that lands afterwards is still recorded: the money moved.
+FAILURE_CHECKOUT_EXPIRED = "checkout_expired"
 LOCAL_FAILURE_REASONS: frozenset[str] = frozenset(
-    {FAILURE_ATTEMPTS_EXHAUSTED, FAILURE_LOOKUP_UNAVAILABLE}
+    {FAILURE_ATTEMPTS_EXHAUSTED, FAILURE_LOOKUP_UNAVAILABLE, FAILURE_CHECKOUT_EXPIRED}
 )
+
+#: Reasons a charge is failed **before any provider call** (`services.debit_refusal`, ADR-0005 Q4):
+#: nothing was sent, so there is no payment a late webhook could capture — deliberately not in
+#: `LOCAL_FAILURE_REASONS`.
+FAILURE_NO_MANDATE = "no_mandate"
+FAILURE_UNSUPPORTED_CURRENCY = "unsupported_currency"
+FAILURE_AMOUNT_BELOW_MINIMUM = "amount_below_minimum"
+#: A provider answered a create with a refusal that provably created nothing: this prefix and the
+#: provider's stable error code.
+FAILURE_PROVIDER_REJECTED_PREFIX = "provider_rejected:"
+
+#: The neutral `PaymentSnapshot.status` vocabulary (every adapter maps its own words into it) →
+#: the charge outcome it asserts. `created` (an attempt in progress) asserts none.
+SNAPSHOT_OUTCOMES: dict[str, str] = {
+    "captured": CHARGE_CAPTURED,
+    "refunded": CHARGE_CAPTURED,
+    "authorized": CHARGE_AUTHORIZED,
+    "failed": CHARGE_FAILED,
+}
 
 
 #: The first wait between two provider calls for one stuck charge, doubling per attempt to
@@ -172,6 +195,7 @@ REASON_ILLEGAL_TRANSITION = "illegal_transition"
 REASON_AMOUNT_MISMATCH = "amount_mismatch"
 REASON_CURRENCY_MISMATCH = "currency_mismatch"
 REASON_PROVIDER_ID_CONFLICT = "provider_id_conflict"
+REASON_ORDER_ID_CONFLICT = "order_id_conflict"
 
 
 class WebhookNotApplied(Exception):
@@ -213,6 +237,21 @@ def provider_id_conflict(held_payment_id: str, asserted_payment_id: str) -> Webh
         {
             "charge_provider_payment_id": held_payment_id,
             "asserted_provider_payment_id": asserted_payment_id,
+        },
+    )
+
+
+def order_id_conflict(held_order_id: str, asserted_order_id: str) -> WebhookNotApplied:
+    """An event about a payment on a *different* Order than the charge's own. A charge's payments
+    are made against its Order and no other: one that names another Order is somebody else's
+    payment (or a client-stamped `notes` pointing at a charge it does not belong to), and must not
+    drive this charge's state."""
+    return WebhookNotApplied(
+        INBOX_CONFLICT,
+        REASON_ORDER_ID_CONFLICT,
+        {
+            "charge_provider_order_id": held_order_id,
+            "asserted_provider_order_id": asserted_order_id,
         },
     )
 

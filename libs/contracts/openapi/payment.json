@@ -1,6 +1,94 @@
 {
   "components": {
     "schemas": {
+      "CheckoutConfirmIn": {
+        "additionalProperties": false,
+        "description": "`POST /payment/checkouts/{charge_id}/confirm` (Razorpay) \u2014 the three fields Checkout's\ncallback hands the browser. **Proof of nothing**: the server checks the signature as a\nprecondition, then asks Razorpay what happened. Missing or blank fields are a 400.",
+        "properties": {
+          "razorpay_order_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Razorpay Order Id"
+          },
+          "razorpay_payment_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Razorpay Payment Id"
+          },
+          "razorpay_signature": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Razorpay Signature"
+          }
+        },
+        "title": "CheckoutConfirmIn",
+        "type": "object"
+      },
+      "CheckoutCustomerIn": {
+        "additionalProperties": false,
+        "description": "Who is paying, as the provider's checkout needs it (Cashfree requires a phone on every\nOrder). **Passed through to the provider and nowhere else** \u2014 never stored, logged, audited or\nput in an event. A phone is 10 digits, or `+` and 8-15 digits.",
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "maxLength": 16,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          }
+        },
+        "title": "CheckoutCustomerIn",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -194,6 +282,149 @@
           "wire"
         ],
         "title": "MerchantAccountOut",
+        "type": "object"
+      },
+      "PlatformCheckoutIn": {
+        "additionalProperties": false,
+        "description": "`POST /payment/checkouts` \u2014 open (or reopen) the checkout for one invoice.",
+        "properties": {
+          "customer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CheckoutCustomerIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "invoice_id": {
+            "format": "uuid",
+            "title": "Invoice Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "invoice_id"
+        ],
+        "title": "PlatformCheckoutIn",
+        "type": "object"
+      },
+      "PlatformCheckoutOut": {
+        "description": "What the browser needs to open the provider's checkout, and what it will charge.\n`amount_minor` and `currency` are the invoice's own charge's. `client_action` is provider-shaped\nand tagged by `type`: `{\"type\": \"razorpay_checkout\", \"key_id\", \"order_id\", \"openable\"}` (the\n**public** key id and the Order id \u2014 never the secret) or `{\"type\": \"cashfree_checkout\",\n\"payment_session_id\", \"mode\", \"openable\"}`. `openable` is False on a stub provider: the Order\nis a local stand-in no real checkout would accept. The session token is never stored;\nreopening fetches it again.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "charge_id": {
+            "format": "uuid",
+            "title": "Charge Id",
+            "type": "string"
+          },
+          "client_action": {
+            "additionalProperties": true,
+            "title": "Client Action",
+            "type": "object"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "charge_id",
+          "provider",
+          "client_action",
+          "amount_minor",
+          "currency",
+          "expires_at"
+        ],
+        "title": "PlatformCheckoutOut",
+        "type": "object"
+      },
+      "PlatformCheckoutStatusOut": {
+        "description": "The state of one checkout, as the server knows it. `paid` is true only for a **captured**\npayment \u2014 one the provider reported, by a status check or a signed webhook; never because a\nbrowser said so. `provider_checked` is false when the provider could not be asked this time\n(the state shown is then the last one recorded). A failed checkout with `failure_reason`\n`checkout_expired` is one nobody paid before it expired.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "charge_id": {
+            "format": "uuid",
+            "title": "Charge Id",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "paid": {
+            "title": "Paid",
+            "type": "boolean"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_checked": {
+            "default": true,
+            "title": "Provider Checked",
+            "type": "boolean"
+          },
+          "state": {
+            "enum": [
+              "created",
+              "authorized",
+              "captured",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "charge_id",
+          "provider",
+          "state",
+          "paid",
+          "amount_minor",
+          "currency",
+          "expires_at"
+        ],
+        "title": "PlatformCheckoutStatusOut",
         "type": "object"
       },
       "ReconciliationOut": {
@@ -449,6 +680,146 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/payment/checkouts": {
+      "post": {
+        "description": "Open the provider's hosted checkout for one invoice. The amount is the invoice's own\ncharge's, never the body's; a second request for an invoice with an open checkout returns that\ncheckout (at the provider it was created under). **404** if the organization has no charge for\nthe invoice, **409** if it is already paid, **422** for what could never be paid online.",
+        "operationId": "open_checkout_api_v1_payment_checkouts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformCheckoutIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformCheckoutOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open (or reopen) the checkout for an invoice",
+        "tags": [
+          "checkout"
+        ]
+      }
+    },
+    "/api/v1/payment/checkouts/{charge_id}": {
+      "get": {
+        "description": "Read-through status: while the checkout is open the provider is asked, server to server, what\nhappened to its Order, and the answer reconciled like a signed webhook's. What the return page\npolls. `paid` is true only for a captured payment.",
+        "operationId": "get_checkout_api_v1_payment_checkouts__charge_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "charge_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Charge Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformCheckoutStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The state of one checkout (asks the provider while it is open)",
+        "tags": [
+          "checkout"
+        ]
+      }
+    },
+    "/api/v1/payment/checkouts/{charge_id}/confirm": {
+      "post": {
+        "description": "Razorpay's Checkout hands the browser `{payment_id, order_id, signature}`. This checks the\nsignature \u2014 `HMAC-SHA256(order_id|payment_id)` under the key secret, in constant time \u2014 and that\nthe Order is this checkout's; a missing field, a mismatch or a signature that is not the digest\nis a **400 and nothing is marked paid**. Only then does it ask Razorpay (`order_payments`) and\nreconcile the answer. The callback proves nothing: `paid` is true only if that answer shows a\ncaptured payment.",
+        "operationId": "confirm_checkout_api_v1_payment_checkouts__charge_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "charge_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Charge Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutConfirmIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformCheckoutStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Razorpay: verify Checkout's callback signature, then ask Razorpay what happened",
+        "tags": [
+          "checkout"
+        ]
+      }
+    },
     "/api/v1/payment/collections/merchant-account": {
       "delete": {
         "operationId": "delete_merchant_account_api_v1_payment_collections_merchant_account_delete",
@@ -561,6 +932,28 @@
         "summary": "What this service is",
         "tags": [
           "payment"
+        ]
+      }
+    },
+    "/api/v1/webhooks/cashfree": {
+      "post": {
+        "description": "Ingest one Cashfree PG webhook. The body is read raw \u2014 the signature is\n`base64(HMAC-SHA256(secret, timestamp + body))` over exactly these bytes and the\n`x-webhook-timestamp` header \u2014 and capped before it is touched. A missing secret, header or\nmatch is a 400 with nothing recorded (fail closed).",
+        "operationId": "cashfree_webhook_api_v1_webhooks_cashfree_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookAck"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Cashfree webhook \u2014 signature-verified, idempotent, reconciling (404 unless enabled)",
+        "tags": [
+          "webhooks"
         ]
       }
     },

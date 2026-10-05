@@ -5,12 +5,14 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app import consumers
+from app.api.checkout import router as checkout_router
 from app.api.collections import router as collections_router
 from app.api.collections import webhook_router as collections_webhook_router
 from app.api.collections_internal import router as collections_internal_router
 from app.api.internal import router as internal_router
 from app.api.routes import router
 from app.api.webhooks import router as webhooks_router
+from app.checkout.cron import build_poller
 from app.collections.cron import build_expiry_sweep
 from app.config import settings
 from app.cron import build_sweep
@@ -61,6 +63,7 @@ async def _start_background_worker(app: FastAPI) -> None:
         consumers.use_session_scope(bulkhead_scope(engine))
         sweep = build_sweep(work_scope=bulkhead_scope(engine))
         expiry = build_expiry_sweep(work_scope=bulkhead_scope(engine))
+        poller = build_poller(work_scope=bulkhead_scope(engine))
     except Exception:
         log.exception("payment.worker.not_started")
         return
@@ -71,6 +74,7 @@ async def _start_background_worker(app: FastAPI) -> None:
                 "consumer": consumers.consumer.run(),
                 "stuck_charge": sweep.run(),
                 "collection_expiry": expiry.run(),
+                "charge_poller": poller.run(),
             },
             name="payment.worker",
         ),
@@ -96,7 +100,13 @@ app = create_app(
     ),
     # The customer info route and the signature-guarded provider webhook are the public surface;
     # the webhook is authenticated by its provider signature, not a token.
-    routers=[router, webhooks_router, collections_router, collections_webhook_router],
+    routers=[
+        router,
+        checkout_router,
+        webhooks_router,
+        collections_router,
+        collections_webhook_router,
+    ],
     # A stalled relay is silent. `/health/outbox` counts through the outbox engine so it is not
     # blind to the rows the app role cannot see.
     outbox_model=OutboxEvent,

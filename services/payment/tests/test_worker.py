@@ -1,6 +1,7 @@
-"""`payment-worker` runs the charge consumers and the stuck-charge sweep together, supervised (D3
-round 3). The sweep had no container of its own, so it ran nowhere; it now runs in the worker, and
-these tests pin the three properties that make that safe:
+"""`payment-worker` runs the charge consumers, the stuck-charge sweep and the charge poller
+together, supervised (D3 round 3; the poller is Phase A, ADR-0029). The sweep had no container of
+its own, so it ran nowhere; it now runs in the worker, and these tests pin the three properties
+that make that safe:
 
 * `app.worker.main` starts **both** loops;
 * either loop **returning** ends the process (non-zero, so the orchestrator restarts it);
@@ -19,6 +20,7 @@ from typing import Any
 import pytest
 
 import app.worker as worker
+from app.checkout.cron import ChargePoller
 from app.collections.cron import CollectionExpirySweep
 from app.cron import StuckChargeSweep
 from app.supervise import LoopExited, run_supervised
@@ -45,6 +47,12 @@ def _idle_expiry_sweep(**over: Any) -> CollectionExpirySweep:
     return CollectionExpirySweep(**kwargs)
 
 
+def _idle_poller(**over: Any) -> ChargePoller:
+    kwargs: dict[str, Any] = {"discovery_factory": None, "work_scope": None}
+    kwargs.update(over)
+    return ChargePoller(**kwargs)
+
+
 @pytest.fixture
 def _no_database(monkeypatch: pytest.MonkeyPatch) -> None:
     """`main` asserts the app and outbox roles against a live database before it starts anything;
@@ -60,6 +68,7 @@ def _no_database(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker, "assert_outbox_role", _ok)
     monkeypatch.setattr(worker, "build_sweep", _idle_sweep)
     monkeypatch.setattr(worker, "build_expiry_sweep", _idle_expiry_sweep)
+    monkeypatch.setattr(worker, "build_poller", _idle_poller)
 
 
 @pytest.mark.usefixtures("_no_database")
@@ -69,6 +78,7 @@ async def test_the_worker_runs_the_consumers_and_the_stuck_charge_sweep(
     consumer_started = asyncio.Event()
     sweep_started = asyncio.Event()
     expiry_started = asyncio.Event()
+    poller_started = asyncio.Event()
 
     async def _consume() -> None:
         consumer_started.set()
@@ -82,13 +92,24 @@ async def test_the_worker_runs_the_consumers_and_the_stuck_charge_sweep(
         expiry_started.set()
         await asyncio.Event().wait()
 
+    async def _poll(self: ChargePoller) -> None:
+        poller_started.set()
+        await asyncio.Event().wait()
+
     monkeypatch.setattr(worker.consumers.consumer, "run", _consume)
     monkeypatch.setattr(StuckChargeSweep, "run", _sweep)
     monkeypatch.setattr(CollectionExpirySweep, "run", _expiry)
+    monkeypatch.setattr(ChargePoller, "run", _poll)
 
     task = asyncio.create_task(worker.main())
     await asyncio.wait_for(
-        asyncio.gather(consumer_started.wait(), sweep_started.wait(), expiry_started.wait()), 5
+        asyncio.gather(
+            consumer_started.wait(),
+            sweep_started.wait(),
+            expiry_started.wait(),
+            poller_started.wait(),
+        ),
+        5,
     )
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -111,9 +132,13 @@ async def test_a_consumer_that_returns_ends_the_process(monkeypatch: pytest.Monk
     async def _expiry(self: CollectionExpirySweep) -> None:
         await asyncio.Event().wait()
 
+    async def _poll(self: ChargePoller) -> None:
+        await asyncio.Event().wait()
+
     monkeypatch.setattr(worker.consumers.consumer, "run", _consume)
     monkeypatch.setattr(StuckChargeSweep, "run", _sweep)
     monkeypatch.setattr(CollectionExpirySweep, "run", _expiry)
+    monkeypatch.setattr(ChargePoller, "run", _poll)
 
     with pytest.raises(LoopExited, match="consumer"):
         await asyncio.wait_for(worker.main(), timeout=5)

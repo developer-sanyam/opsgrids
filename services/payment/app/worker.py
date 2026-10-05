@@ -1,4 +1,5 @@
-"""The worker process: the charge consumers and the stuck-charge sweep, side by side.
+"""The worker process: the charge consumers, the stuck-charge sweep and the charge poller, side by
+side.
 
 The stuck-charge sweep (`app/cron.py`) is what resumes a charge whose process died between
 calling the provider and recording what it said (D3). The consumers mark their event processed
@@ -21,6 +22,7 @@ from __future__ import annotations
 import asyncio
 
 from app import consumers
+from app.checkout.cron import build_poller
 from app.collections.cron import build_expiry_sweep
 from app.config import settings
 from app.cron import build_sweep
@@ -50,15 +52,17 @@ async def main() -> None:
 
     sweep = build_sweep()
     expiry = build_expiry_sweep()
+    poller = build_poller()
     log.info(
         "payment.worker.starting",
         queue="payment.events",
-        sweeps=["stuck_charge", "collection_expiry"],
+        sweeps=["stuck_charge", "collection_expiry", "charge_poller"],
     )
     await run_supervised(
         consumer=consumers.consumer.run(),
         stuck_charge=sweep.run(),
         collection_expiry=expiry.run(),
+        charge_poller=poller.run(),
     )
 
 

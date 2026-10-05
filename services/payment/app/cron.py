@@ -62,7 +62,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import selectors, services
 from app.config import settings
-from app.deps import get_provider
+from app.deps import get_provider, resolve_provider
 from app.models import Charge
 from app.providers.base import PaymentProvider
 from platform_core.db import (
@@ -94,12 +94,17 @@ class SweepReport:
     considered: int = 0
     resumed: int = 0
     exhausted: int = 0
+    #: Charges the provider refused outright (nothing created): failed `provider_rejected:<code>`.
+    rejected: int = 0
+    #: Charges whose attempt was given back because the platform's own credentials were refused —
+    #: not failed, not announced; an operator was paged (`services.CallOutcome`).
+    misconfigured: int = 0
     skipped: int = 0
     failed: int = 0
 
     @property
     def acted(self) -> int:
-        return self.resumed + self.exhausted
+        return self.resumed + self.exhausted + self.rejected
 
 
 class StuckChargeSweep:
@@ -111,6 +116,7 @@ class StuckChargeSweep:
         discovery_factory: async_sessionmaker[AsyncSession],
         work_scope: WorkScope,
         provider_factory: Callable[[], PaymentProvider] = get_provider,
+        provider_resolver: Callable[[str], PaymentProvider] | None = None,
         reclaim_after: timedelta = DEFAULT_RECLAIM_AFTER,
         batch_size: int = 100,
         poll_interval: float = 60.0,
@@ -119,6 +125,7 @@ class StuckChargeSweep:
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
         self._provider_factory = provider_factory
+        self._provider_resolver = provider_resolver
         self._reclaim_after = reclaim_after
         self._batch_size = batch_size
         self._poll_interval = poll_interval
@@ -161,6 +168,8 @@ class StuckChargeSweep:
                     considered=report.considered,
                     resumed=report.resumed,
                     exhausted=report.exhausted,
+                    rejected=report.rejected,
+                    misconfigured=report.misconfigured,
                     skipped=report.skipped,
                     failed=report.failed,
                 )
@@ -169,6 +178,20 @@ class StuckChargeSweep:
     async def _sleep(self, seconds: float) -> None:
         with suppress(TimeoutError):
             await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
+
+    def _provider_for(self, charge: Charge) -> PaymentProvider:
+        """The adapter that finishes **this charge**: the one it was created under
+        (`charges.provider`), whatever the configured default is now. A Razorpay charge left
+        `created` is looked up and resumed through Razorpay while the default is Cashfree — Cashfree
+        cannot find Razorpay's Order, and "creating" it there is a second debit (ADR-0029). The
+        zero-argument `provider_factory` stays the answer when it names that provider, so an adapter
+        a test (or a wiring) built keeps its own state."""
+        if self._provider_resolver is not None:
+            return self._provider_resolver(charge.provider)
+        default = self._provider_factory()
+        if getattr(default, "name", None) == charge.provider:
+            return default
+        return resolve_provider(charge.provider)
 
     async def tick(self, now: datetime | None = None) -> SweepReport:
         """One pass: discover actionable stuck charges, then resume each under its own tenant
@@ -204,7 +227,6 @@ class StuckChargeSweep:
         could not be made leaves the charge for the next tick, until the final-lookup budget is
         spent too (`exhausted`, `lookup_unavailable`)."""
         try:
-            provider = self._provider_factory()
             async with self._work_scope(organization_id) as session:
                 step, charge = await services.claim_stuck_charge(
                     session, charge_id, organization_id=organization_id, now=now
@@ -212,22 +234,28 @@ class StuckChargeSweep:
             if step == "exhausted":
                 report.exhausted += 1
                 return
-            if step == "final_lookup" and charge is not None:
-                await self._final_lookup(organization_id, charge, provider, report)
-                return
-            if step != "call" or charge is None:
+            if step not in ("call", "final_lookup") or charge is None:
                 report.skipped += 1
                 return
+            provider = self._provider_for(charge)
+            if step == "final_lookup":
+                await self._final_lookup(organization_id, charge, provider, report)
+                return
 
-            result = await services.call_provider_charge_off_loop(provider, charge)
-            if result is None:
-                report.failed += 1  # timed out; the lease lapses and a later tick resumes it
+            outcome = await services.attempt_provider_charge(provider, charge)
+            if not outcome.needs_record:
+                report.failed += 1  # no answer; the lease lapses and a later tick resumes it
                 return
             async with self._work_scope(organization_id) as session:
-                await services.finalize_charge(
-                    session, charge_id, result, organization_id=organization_id
+                await services.record_charge_outcome(
+                    session, charge_id, outcome, organization_id=organization_id
                 )
-            report.resumed += 1
+            if outcome.kind == services.OUTCOME_RESULT:
+                report.resumed += 1
+            elif outcome.kind == services.OUTCOME_REJECTED:
+                report.rejected += 1
+            else:
+                report.misconfigured += 1
         except Exception:
             log.exception(
                 "payment.stuck_charge.sweep.resume_failed",

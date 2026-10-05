@@ -125,9 +125,17 @@ async def test_the_consumer_and_sweep_both_run_inside_one_supervised_group(
         expiry_built.append(sweep)
         return sweep
 
+    poller_built: list[_FakeSweep] = []
+
+    def fake_build_poller(*, work_scope: Any) -> _FakeSweep:
+        poller = _FakeSweep(work_scope=work_scope)
+        poller_built.append(poller)
+        return poller
+
     monkeypatch.setattr(main.consumers.consumer, "run", fake_consumer_run)
     monkeypatch.setattr(main, "build_sweep", fake_build_sweep)
     monkeypatch.setattr(main, "build_expiry_sweep", fake_build_expiry_sweep)
+    monkeypatch.setattr(main, "build_poller", fake_build_poller)
 
     app = FastAPI()
     await main._start_background_worker(app)
@@ -139,6 +147,11 @@ async def test_the_consumer_and_sweep_both_run_inside_one_supervised_group(
     assert len(expiry_built) == 1
     assert expiry_built[0].work_scope == ("bulkhead", engines[0])
     await asyncio.wait_for(expiry_built[0].ran.wait(), timeout=1)
+    # So does the charge poller (ADR-0029): the only thing that learns a platform charge's outcome
+    # while the provider webhooks are private, on the same bulkhead.
+    assert len(poller_built) == 1
+    assert poller_built[0].work_scope == ("bulkhead", engines[0])
+    await asyncio.wait_for(poller_built[0].ran.wait(), timeout=1)
     for _ in range(50):
         if "consumer" in ran:
             break

@@ -143,11 +143,15 @@ async def charge_on_invoice_finalized(envelope: dict[str, Any]) -> None:
         # No transaction open here: this redelivery is already marked processed, so a crash
         # between this line and the finalize below is resumed by app/cron.py's stuck-charge
         # sweep, never by the queue.
-        result = await services.call_provider_charge_off_loop(provider, charge)
-        if result is not None:  # None: timed out — the lease lapses into the sweep
+        outcome = await services.attempt_provider_charge(
+            services.provider_for_charge(provider, charge), charge
+        )
+        if (
+            outcome.needs_record
+        ):  # an unknown outcome records nothing: the lease lapses into the sweep
             async with _session_scope(organization_id) as session:
-                await services.finalize_charge(
-                    session, charge.id, result, organization_id=organization_id
+                await services.record_charge_outcome(
+                    session, charge.id, outcome, organization_id=organization_id
                 )
 
     log.info(
@@ -244,11 +248,15 @@ async def charge_on_dunning_retry(envelope: dict[str, Any]) -> None:
     if needs_call and charge is not None:
         # No transaction open here — see charge_on_invoice_finalized above for why, and why a
         # crash after this point is the stuck-charge sweep's job, not a queue retry.
-        result = await services.call_provider_charge_off_loop(provider, charge)
-        if result is not None:  # None: timed out — the lease lapses into the sweep
+        outcome = await services.attempt_provider_charge(
+            services.provider_for_charge(provider, charge), charge
+        )
+        if (
+            outcome.needs_record
+        ):  # an unknown outcome records nothing: the lease lapses into the sweep
             async with _session_scope(organization_id) as session:
-                await services.finalize_charge(
-                    session, charge.id, result, organization_id=organization_id
+                await services.record_charge_outcome(
+                    session, charge.id, outcome, organization_id=organization_id
                 )
 
     log.info(

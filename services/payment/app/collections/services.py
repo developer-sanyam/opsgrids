@@ -75,8 +75,8 @@ from app.providers.base import (
     PaymentSnapshot,
     ProviderCallError,
     RefundResult,
+    best_attempt,
 )
-from app.providers.razorpay import best_attempt
 from app.schemas import WebhookAck
 from platform_core import pii
 from platform_core.audit import record_audit
@@ -1439,7 +1439,7 @@ async def _insert_inbox_once(
         return event
     derived = charge_domain.derive_event_id(event)
     existing = await charge_selectors.get_provider_event(
-        session, organization_id, event.provider_event_id
+        session, organization_id, event.provider_event_id, provider=event.provider
     )
     if (
         derived is None
