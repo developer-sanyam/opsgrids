@@ -1180,6 +1180,54 @@ in force for that date; insert the rate (a new row, never an edit) or unset the 
 **Tax.** `BILLING_TAX_CODE` / `BILLING_TAX_JURISDICTION` in `.env` choose the `tax_rates` row;
 empty (the default) writes no tax line. Insert the rate row **before** setting the code.
 
+### Staff plan switching (ADR-0029): the billing run must be on, and what to check first
+
+The console's **Change plan** control (`/api/v1/admin/organizations/{id}/plan-options`,
+`.../subscriptions/{product_key}/plan-change:preview` and `.../plan-change`; owner and billing_ops) lets
+staff move a subscription to another plan. A **trial** switches immediately. A **paying** subscription
+switches at its **next billing period**, and an **equal-price** change applies at once — staff cannot force
+"now, prorated"; for goodwill sooner, use *Grant credit*.
+
+**"Next billing period" only happens while the billing run is running.** The change is stored as a
+pending change and applied when the run claims the next period. So, before the first staff switch on the
+box, confirm from the section above that:
+
+```bash
+# Expect `True`, then the cutover instant, then `None`. `BILLING_RUN_ENABLED` defaults to false.
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T subscription-worker \
+  python -c 'from app.config import settings; s = settings(); print(s.billing_run_enabled, s.billing_run_not_before, s.billing_run_not_before_invalid)'
+```
+
+* `BILLING_RUN_ENABLED=true` and a valid `BILLING_RUN_NOT_BEFORE`. With the run **off**, a scheduled change
+  waits indefinitely, and a change on any subscription whose period is already due is refused with
+  **409 `billing_catching_up`** — which is indefinite then, not "try again shortly".
+* `/health/billing-run` is not climbing (`overdue`, `failing_permanent`). A permanently failing claim also
+  freezes that subscription's plan changes until a person fixes the claim.
+
+Deploy order: **catalog and subscription first, then console** (it runs the migration for
+`console.idempotency_keys`) **and the `opsgrids-internal` frontend**. The admin-gateway is not recreated.
+Rollback is the console and frontend images; the other changes are additive and written rows stay.
+
+What to read when an operator reports a problem:
+
+```sql
+-- console: the claim and its outcome for one staff action (the Idempotency-Key the operator's browser sent)
+SELECT key, status, response, created_at, updated_at FROM console.idempotency_keys
+WHERE organization_id = :org ORDER BY created_at DESC LIMIT 20;
+-- console: every attempt leaves an intent row, then exactly one outcome row
+SELECT at, action, reason, acting_as, after FROM console.audit_logs
+WHERE organization_id = :org AND action LIKE 'subscription.plan_change%' ORDER BY at DESC;
+-- subscription: the scheduled change itself, and its operator
+SELECT id, state, plan_version_id, pending_plan_version_id, pending_change
+FROM subscription.subscriptions WHERE organization_id = :org;
+```
+
+A claim stuck `in_progress` is a request that died mid-call: after 60 seconds a retry with the same key
+reconciles it from a live read. `unknown` means the answer was lost; the operator sees **503
+`outcome_unknown`**, and repeating the same request is safe. A scheduled change emits **no event**, so the
+account list does not show it — the Change plan card (the live pricing read) does. Product access follows a
+change that has taken effect within about **15 minutes**.
+
 ### Operator MFA: mandatory rollout, the MFA reseal, and the one-off codes
 
 The security review of the operator-MFA slice made a second factor mandatory for every staff
