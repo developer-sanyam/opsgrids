@@ -1017,6 +1017,55 @@ class TestAddProductOutcomeUnknown:
         (claim,) = await _claims(admin_session, org_id)
         assert claim.status == "succeeded"
 
+    async def test_a_late_landing_whose_re_read_fails_stays_unknown_and_reconciles_later(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        """The retry's call answers `already_subscribed`, and the look that would tell "the lost
+        attempt landed late" from "some other row is there" fails. Neither is known, so the key
+        stays `unknown` — never a permanent `refused` replayed for an add that may have been
+        made — and the next retry with the same key reconciles from the live read."""
+        self._fail(upstreams, None)
+        body = _add_body(world["crm_version"])
+        assert (await _post(client, _urls(org_id)["add"], body)).status_code == 503
+
+        reads = {"n": 0}
+        landed = _opened(world["new_sub"], product_key="crm", plan_version_id=world["crm_version"])
+
+        def _listing(_request: httpx.Request) -> httpx.Response:
+            reads["n"] += 1
+            if reads["n"] == 2:
+                return httpx.Response(503, json={"detail": "still flaky"})
+            return httpx.Response(200, json=[] if reads["n"] == 1 else [landed])
+
+        upstreams.on("GET", f"/internal/v1/organizations/{org_id}/subscriptions", _listing)
+        upstreams.json(
+            "POST",
+            SUBSCRIBE_PATH,
+            {"detail": "exists", "errors": [{"code": "already_subscribed", "message": "x"}]},
+            409,
+        )
+        retry = await _post(client, _urls(org_id)["add"], body)
+        assert retry.status_code == 503 and _code(retry) == "outcome_unknown", retry.text
+        (claim,) = await _claims(admin_session, org_id)
+        assert claim.status == "unknown" and claim.response is None
+        outcome = (await _audits(admin_session, org_id))[-1]
+        assert outcome.action == "subscription.add_product.outcome_unknown"
+        assert outcome.after["code"] == "already_subscribed"
+        assert outcome.after["reread_failed"] is True
+
+        third = await _post(client, _urls(org_id)["add"], body)
+        assert third.status_code == 201, third.text
+        assert third.json()["replayed"] is True
+        assert third.json()["subscription_id"] == str(world["new_sub"])
+        assert len(_posts(upstreams, SUBSCRIBE_PATH)) == 2, "the third reconciles, never calls"
+        (claim,) = await _claims(admin_session, org_id)
+        assert claim.status == "succeeded"
+
     @pytest.mark.parametrize("status", [401, 403])
     async def test_a_refused_service_credential_is_never_a_401_to_the_operator(
         self,
@@ -1275,6 +1324,56 @@ class TestExtendTrialOutcomeUnknown:
         (claim,) = await _claims(admin_session, org_id)
         assert claim.status == "succeeded"
         assert (await _audits(admin_session, org_id))[-1].after["reconciled"] is True
+
+    async def test_a_late_landing_whose_re_read_fails_stays_unknown_and_reconciles_later(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        """The retry's call answers `state_changed`, and the look that would tell "the lost
+        extension landed late" from "someone else moved it" fails. Neither is known, so the key
+        stays `unknown` rather than replaying "it changed" forever, and the next retry with the
+        same key reconciles from the live read."""
+        self._fail(upstreams, world)
+        assert (await _post(client, _urls(org_id)["extend"], _extend_body())).status_code == 503
+
+        reads = {"n": 0}
+        old = _trialling(world["sub"], world["pin"], trial_ends_at=TRIAL_END)
+        new = _trialling(
+            world["sub"], world["pin"], trial_ends_at=NEW_END.astimezone(UTC).isoformat()
+        )
+
+        def _listing(_request: httpx.Request) -> httpx.Response:
+            reads["n"] += 1
+            if reads["n"] == 2:
+                return httpx.Response(503, json={"detail": "still flaky"})
+            return httpx.Response(200, json=[old if reads["n"] == 1 else new])
+
+        upstreams.on("GET", f"/internal/v1/organizations/{org_id}/subscriptions", _listing)
+        upstreams.json(
+            "POST",
+            _extend_path(world["sub"]),
+            {"detail": "moved", "errors": [{"code": "state_changed", "message": "moved"}]},
+            409,
+        )
+        retry = await _post(client, _urls(org_id)["extend"], _extend_body())
+        assert retry.status_code == 503 and _code(retry) == "outcome_unknown", retry.text
+        (claim,) = await _claims(admin_session, org_id)
+        assert claim.status == "unknown" and claim.response is None
+        outcome = (await _audits(admin_session, org_id))[-1]
+        assert outcome.action == "subscription.trial_extension.outcome_unknown"
+        assert outcome.after["code"] == "state_changed"
+        assert outcome.after["reread_failed"] is True
+
+        third = await _post(client, _urls(org_id)["extend"], _extend_body())
+        assert third.status_code == 200, third.text
+        assert third.json()["replayed"] is True
+        assert len(_posts(upstreams, _extend_path(world["sub"]))) == 2, "reconciled, not called"
+        (claim,) = await _claims(admin_session, org_id)
+        assert claim.status == "succeeded"
 
     async def test_a_retry_that_finds_the_old_end_makes_the_call(
         self,

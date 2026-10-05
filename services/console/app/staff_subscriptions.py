@@ -390,17 +390,20 @@ async def add_product(
             client=client,
         )
     except SubscriptionChangeError as exc:
+        reread_failed = False
         if reconciling and exc.status_code == 409 and exc.code == "already_subscribed":
             # The attempt whose answer was lost may only have been late: it can commit between the
             # live read above and this call, which then finds the row it made. Look again before
             # calling that a refusal, or the key would replay "already has it" for this very add.
+            # A look that fails tells neither apart, so the outcome stays unknown (the plan
+            # switch's own rule) and the next retry with the key reconciles.
             try:
                 late = await _landed_now()
             except UpstreamUnavailableProblem:
-                late = None
+                late, reread_failed = None, True
             if late is not None:
                 return await _record_reconciled(late)
-        await _record_failure(
+        raise await _record_failure(
             app_session,
             exc,
             organization_id=organization_id,
@@ -411,8 +414,8 @@ async def add_product(
             unknown_action=ADD_UNKNOWN,
             reason=payload.reason,
             request=request,
-        )
-        raise plan_change.problem_for(exc) from exc
+            reread_failed=reread_failed,
+        ) from exc
 
     out = _added_out(opened)
     await _record(
@@ -550,19 +553,22 @@ async def extend_trial(
             client=client,
         )
     except SubscriptionChangeError as exc:
+        reread_failed = False
         if reconciling and exc.status_code == 409 and exc.code == "state_changed":
             # A late first attempt can commit between the live read above and this call, which
             # then finds the trial end moved — by that very extension. Look again before calling it
-            # a refusal, or the key would replay "it changed" for the change that was made.
+            # a refusal, or the key would replay "it changed" for the change that was made. A look
+            # that fails tells neither apart, so the outcome stays unknown (the plan switch's own
+            # rule) and the next retry with the key reconciles.
             try:
                 live = await _subscription_for(
                     settings, organization_id, product_key, client=client
                 )
             except ProblemError:
-                live = None
+                live, reread_failed = None, True
             if live is not None and _extended_to_target(live):
                 return await _record_reconciled(live)
-        await _record_failure(
+        raise await _record_failure(
             app_session,
             exc,
             organization_id=organization_id,
@@ -573,8 +579,8 @@ async def extend_trial(
             unknown_action=EXTEND_UNKNOWN,
             reason=payload.reason,
             request=request,
-        )
-        raise plan_change.problem_for(exc) from exc
+            reread_failed=reread_failed,
+        ) from exc
 
     out = _extended_out(extended, product_key, previous=expected)
     await _record(
@@ -628,18 +634,32 @@ async def _record_failure(
     unknown_action: str,
     reason: str,
     request: Request | None,
-) -> None:
-    """A definitive refusal (404/409/422) is recorded `refused` with its replayable problem; any
-    other failure leaves the outcome `unknown`, which a retry with the same key reconciles."""
-    problem = plan_change.problem_for(exc)
-    definitive = exc.status_code in plan_change.DEFINITIVE_REFUSALS
+    reread_failed: bool = False,
+) -> ProblemError:
+    """Record the failure and return the problem to raise.
+
+    A definitive refusal (404/409/422) is recorded `refused` with its replayable problem; any other
+    failure leaves the outcome `unknown`, which a retry with the same key reconciles. So does a
+    reconcile's 409 whose confirming re-read failed (`reread_failed`): that 409 may be the lost
+    attempt's own late landing, so it is not definitive — `plan_change.switch_plan`'s rule."""
+    definitive = exc.status_code in plan_change.DEFINITIVE_REFUSALS and not reread_failed
+    problem = plan_change.problem_for(
+        SubscriptionChangeError("re-read failed") if reread_failed else exc
+    )
     log.warning(
         "staff_subscription.not_applied" if definitive else "staff_subscription.outcome_unknown",
         organization_id=str(organization_id),
         action=refused_action,
         status=exc.status_code,
         code=exc.code,
+        reread_failed=reread_failed,
     )
+    after: dict[str, Any] = {
+        "status": exc.status_code,
+        "code": exc.code or _problem_dump(problem)["code"],
+    }
+    if reread_failed:
+        after["reread_failed"] = True
     await _record(
         session,
         organization_id=organization_id,
@@ -649,10 +669,11 @@ async def _record_failure(
         operator=operator,
         entity_id=entity_id,
         action=refused_action if definitive else unknown_action,
-        after={"status": exc.status_code, "code": exc.code or _problem_dump(problem)["code"]},
+        after=after,
         reason=reason,
         request=request,
     )
+    return problem
 
 
 async def _record(

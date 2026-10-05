@@ -10,7 +10,8 @@ Builds on [ADR-0029](0029-staff-plan-control.md), whose shared path this reuses 
 `console.idempotency_keys` claim written before the downstream call, the coded-refusal vocabulary,
 `outcome_unknown` with a live-read reconcile (including its review fix: a retry's call refused
 because a *late* first attempt just landed is recognised as that attempt, not replayed as a
-refusal), the operator's reason as a note on the audit row only — never the transition's machine
+refusal — and when the second look fails, the outcome stays unknown for the next retry to
+reconcile), the operator's reason as a note on the audit row only — never the transition's machine
 reason and never on the event, which a customer org's notification templates can render — the
 `RESERVED_REASONS` guard, the "only what catalog offers now" re-read (`not_offerable`), and
 `operator:<sub>`. Also builds on ADR-0004 §4 (a

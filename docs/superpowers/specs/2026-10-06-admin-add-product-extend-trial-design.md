@@ -93,7 +93,9 @@ catalog's offerable set for the product before the claim and, after the replay b
 other version with 422 `not_offerable` — recorded and replayed like any refusal, subscription never
 called. **A late first attempt** (also the plan switch's): a reconciling retry whose call is refused
 `already_subscribed` (add) or `state_changed` (extend) looks at the live subscription again and, if the
-lost attempt is what landed, records the success instead of replaying a refusal.
+lost attempt is what landed, records the success instead of replaying a refusal. When that second look
+fails, the 409 cannot be told from a real refusal, so it is recorded `outcome_unknown` (503) — never a
+permanent `refused` — and the next retry with the same key reconciles.
 
 ## 5. Frontend — `opsgrids-internal`
 
