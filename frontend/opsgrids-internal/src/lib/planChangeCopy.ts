@@ -67,6 +67,11 @@ export function previewSentence({
     return `${organizationName} stays on ${fromPlan} until ${when}, then moves to ${toPlan} (${kind}). Nothing changes, and nothing is charged, before then.`;
   }
   if (preview.direction === "equal") {
+    if (preview.usage_closed_now) {
+      // The pin moves now, so subscription closes the usage metered so far on the current plan
+      // and the billing run invoices it at that plan's rates — "nothing is charged" would be false.
+      return `${organizationName} moves from ${fromPlan} to ${toPlan} now (${kind}). No proration is charged, but usage metered so far this period is invoiced at ${fromPlan}'s usage rates; usage from now on is billed at ${toPlan}'s.`;
+    }
     return `${organizationName} moves from ${fromPlan} to ${toPlan} now (${kind}). Nothing is charged.`;
   }
   return `${organizationName} moves from ${fromPlan} to ${toPlan} now (${kind}). They are on a trial, so nothing is charged.`;
@@ -84,6 +89,8 @@ export function refusalGuidance(code: string | null): string | null {
       return "A subscription keeps one currency.";
     case "already_pinned":
       return "Choose a different plan.";
+    case "not_offerable":
+      return "The catalogue has moved on since this list was loaded. The list now shows only the plans on offer — choose again.";
     case "billing_catching_up":
       return "Billing has not processed a period that is due on this subscription. While the billing run is paused this does not clear by itself — ask engineering before retrying.";
     case "state_changed":
@@ -102,10 +109,17 @@ export type FailureKind =
   /** The outcome is not known: stay put, refresh to look, retry with the *same* key. */
   | "unknown"
   /** Another request holds this key right now. */
-  | "in_flight";
+  | "in_flight"
+  /** The server says this request changed nothing (a dependency was down, or console's own
+   *  credentials were refused): stay put, nothing to check — but no "may or may not". */
+  | "not_made";
+
+/** 5xx codes whose answer is "nothing was changed by this request", not "outcome unknown". */
+const NOT_MADE_CODES = new Set(["upstream_refused", "catalog_unavailable", "preview_unavailable"]);
 
 export function failureKind(status: number | null, code: string | null): FailureKind {
   if (code === "request_in_progress") return "in_flight";
+  if (code !== null && NOT_MADE_CODES.has(code)) return "not_made";
   // No status at all is a network failure after the request left; 5xx is an upstream failing.
   if (status === null || status >= 500) return "unknown";
   return "refused";
@@ -113,6 +127,15 @@ export function failureKind(status: number | null, code: string | null): Failure
 
 export function unknownOutcomeGuidance(): string {
   return "The change may or may not have been made. Refresh this account to check before doing anything else — pressing Try again repeats the same request, which is safe.";
+}
+
+/** The next step when the server says nothing was changed. A refused service credential does not
+ *  clear by retrying; a dependency that was down usually does. */
+export function notMadeGuidance(code: string | null): string {
+  if (code === "upstream_refused") {
+    return "Nothing was changed. Console's own service credentials were refused, which retrying will not fix — send engineering the reference.";
+  }
+  return "Nothing was changed. Try again in a moment.";
 }
 
 export function resultTitle(result: PlanChangeResult): string {

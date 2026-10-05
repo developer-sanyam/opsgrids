@@ -22,6 +22,7 @@ import {
   ENTITLEMENT_LAG_COPY,
   ROLE_HINT,
   failureKind,
+  notMadeGuidance,
   previewSentence,
   refusalGuidance,
   resultSentence,
@@ -67,6 +68,19 @@ function failureOf(error: unknown): { failure: Failure; status: number | null; c
   // not known, which `failureKind` reads from the missing status.
   const message = error instanceof Error ? error.message : "The request did not complete.";
   return { failure: { message, reference: undefined, guidance: null }, status: null, code: null };
+}
+
+/**
+ * A plan version's name, from the dialog's **own fresh reads** — never the card's snapshot, which
+ * reloads only after the card's own actions and can be minutes old (a customer's own upgrade, or
+ * the billing run applying a scheduled change, moves the subscription without telling it).
+ */
+function planNameFor(id: string | null, options: PlanOptions | null): string | null {
+  if (id === null || options === null) return null;
+  const sub = options.subscription;
+  if (sub.plan_version_id === id && sub.plan_name) return sub.plan_name;
+  if (sub.pending_plan_version_id === id && sub.pending_plan_name) return sub.pending_plan_name;
+  return options.options.find((o) => o.plan_version_id === id)?.plan_name ?? null;
 }
 
 function intervalWord(interval: string): string {
@@ -151,7 +165,6 @@ const MAX_REASON = 500;
  * replays or reconciles — never a second change.
  */
 function PlanChangeFlow({ org, product, onClose, onRefresh, onDone }: FlowProps) {
-  const subscription = product.subscription;
   const groupName = useId();
 
   const [options, setOptions] = useState<OptionsState>({ status: "loading" });
@@ -239,6 +252,11 @@ function PlanChangeFlow({ org, product, onClose, onRefresh, onDone }: FlowProps)
           reference: undefined,
           guidance: refusalGuidance(answer.refusal_code),
         });
+        if (answer.refusal_code === "not_offerable") {
+          // The list is stale: show what is on offer now, and drop the choice it no longer has.
+          setSelected(null);
+          loadOptions();
+        }
         return;
       }
       keyRef.current = crypto.randomUUID();
@@ -246,7 +264,11 @@ function PlanChangeFlow({ org, product, onClose, onRefresh, onDone }: FlowProps)
       setPreview(answer);
       setPhase("confirm");
     } catch (err) {
-      setFormFailure(failureOf(err).failure);
+      const { failure, status, code } = failureOf(err);
+      // A preview is a read: when it fails, nothing was changed, and the copy says so.
+      setFormFailure(
+        failureKind(status, code) === "not_made" ? { ...failure, guidance: notMadeGuidance(code) } : failure,
+      );
     } finally {
       setChecking(false);
     }
@@ -274,12 +296,18 @@ function PlanChangeFlow({ org, product, onClose, onRefresh, onDone }: FlowProps)
         keyRef.current = null;
         setPhase("form");
         setFormFailure(failure);
+        if (code === "not_offerable") setSelected(null);
         loadOptions();
         onRefresh();
       } else {
         setConfirmFailure({
           ...failure,
-          guidance: kind === "unknown" ? unknownOutcomeGuidance() : failure.guidance,
+          guidance:
+            kind === "unknown"
+              ? unknownOutcomeGuidance()
+              : kind === "not_made"
+                ? notMadeGuidance(code)
+                : failure.guidance,
         });
         // The change may have landed: show the live state behind the dialog.
         if (kind === "unknown") onRefresh();
@@ -290,7 +318,13 @@ function PlanChangeFlow({ org, product, onClose, onRefresh, onDone }: FlowProps)
     }
   }
 
-  const fromPlan = subscription?.plan_name ?? "their current plan";
+  const freshOptions = options.status === "ready" ? options.data : null;
+  // "Now on …" from the plan-options read made when this dialog opened; the confirm sentence from
+  // the pins the preview was computed against — the state the confirm will be checked against.
+  const fromPlan = freshOptions?.subscription.plan_name ?? "their current plan";
+  const previewFromPlan =
+    (preview && planNameFor(preview.expected.plan_version_id, freshOptions)) ?? "their current plan";
+  const previewPendingPlan = preview ? planNameFor(preview.expected.pending_plan_version_id, freshOptions) : null;
   const dirty = selected !== null || reasonTrimmed.length > 0;
 
   return (
@@ -371,7 +405,7 @@ function PlanChangeFlow({ org, product, onClose, onRefresh, onDone }: FlowProps)
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               onBlur={() => setTouched(true)}
-              helper="Recorded on the audit trail and the subscription's event. Not shown to the customer."
+              helper="Recorded on the staff audit trail only. Not sent to the customer."
               {...(reasonError ? { error: reasonError } : {})}
             />
           </>
@@ -388,10 +422,10 @@ function PlanChangeFlow({ org, product, onClose, onRefresh, onDone }: FlowProps)
           preview
             ? previewSentence({
                 organizationName: org.name,
-                fromPlan,
+                fromPlan: previewFromPlan,
                 toPlan: target?.plan_name ?? "the new plan",
                 preview,
-                pendingPlan: subscription?.pending_plan_name ?? null,
+                pendingPlan: previewPendingPlan,
               })
             : ""
         }
@@ -451,10 +485,17 @@ function ConfirmDetails({
         {preview.entitled_removed.length > 0 ? (
           <li>Removes access to: {preview.entitled_removed.join(", ")}.</li>
         ) : null}
-        {preview.usage_priced ? (
+        {preview.usage_closed_now ? (
+          <li>
+            A usage-based price is involved. The comparison covers the recurring price only. Usage
+            metered so far this period is invoiced at the current plan&apos;s usage rates when the plan
+            changes; from then on, usage is billed at the new plan&apos;s.
+          </li>
+        ) : preview.usage_priced ? (
           <li>
             A usage-based price is involved. The comparison covers the recurring price only; metered
-            usage is billed on top as it is today.
+            usage is billed on top — at the current plan&apos;s rates until the change takes effect,
+            and at the new plan&apos;s after.
           </li>
         ) : null}
         {target?.is_bespoke ? <li>This is a price negotiated for this organization.</li> : null}

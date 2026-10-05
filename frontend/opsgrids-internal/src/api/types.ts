@@ -461,7 +461,12 @@ export interface PlanChangePreview {
   entitled_removed: string[];
   /** A usage-priced component is involved; direction compares the recurring part only. */
   usage_priced: boolean;
-  /** Set when the confirm would be refused. */
+  /** Applying now closes the usage metered so far at the **current** plan's usage rates, as its
+   *  own invoice the billing run raises; usage from then on is priced on the new plan. When set,
+   *  an equal-price switch is "no proration", never "nothing is charged". */
+  usage_closed_now: boolean;
+  /** Set when the confirm would be refused (`not_offerable`: the catalogue no longer offers this
+   *  version to this organization — superseded by a newer one, or its plan retired). */
   refusal_code: string | null;
   refusal_detail: string | null;
 }
@@ -471,7 +476,8 @@ export interface PlanChangePreview {
 export interface PlanChangeRequest {
   plan_version_id: string;
   timing: PlanChangeTiming;
-  /** Why — required, 1-500 characters, kept on the audit trail and the subscription's event. */
+  /** Why — required, 1-500 characters, kept on the audit trail only (never on the subscription's
+   *  event, which the customer org's own notification templates can render). */
   reason: string;
   expected: ExpectedState;
 }

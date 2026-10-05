@@ -4,6 +4,7 @@ import type { PlanChangePreview, PlanChangeResult } from "@/api/types";
 import {
   directionPhrase,
   failureKind,
+  notMadeGuidance,
   previewSentence,
   refusalGuidance,
   resultSentence,
@@ -21,6 +22,7 @@ function preview(overrides: Partial<PlanChangePreview> = {}): PlanChangePreview 
     entitled_added: [],
     entitled_removed: [],
     usage_priced: false,
+    usage_closed_now: false,
     refusal_code: null,
     refusal_detail: null,
     ...overrides,
@@ -44,6 +46,16 @@ describe("previewSentence", () => {
     [
       "an equal-price change applies now and charges nothing",
       preview({ direction: "equal", effective: "now", effective_at: null }),
+      "Zenith Polymers moves from Growth to Scale now (the same price). Nothing is charged.",
+    ],
+    [
+      "an equal-price change on a paying, metered subscription says the usage so far is invoiced",
+      preview({ direction: "equal", effective: "now", effective_at: null, usage_priced: true, usage_closed_now: true }),
+      "Zenith Polymers moves from Growth to Scale now (the same price). No proration is charged, but usage metered so far this period is invoiced at Growth's usage rates; usage from now on is billed at Scale's.",
+    ],
+    [
+      "an equal-price change where only the new plan meters still charges nothing now",
+      preview({ direction: "equal", effective: "now", effective_at: null, usage_priced: true, usage_closed_now: false }),
       "Zenith Polymers moves from Growth to Scale now (the same price). Nothing is charged.",
     ],
     [
@@ -78,7 +90,16 @@ describe("directionPhrase", () => {
 });
 
 describe("refusalGuidance", () => {
-  it.each(["state", "cadence", "currency", "already_pinned", "billing_catching_up", "state_changed", "reserved_reason"])(
+  it.each([
+    "state",
+    "cadence",
+    "currency",
+    "already_pinned",
+    "not_offerable",
+    "billing_catching_up",
+    "state_changed",
+    "reserved_reason",
+  ])(
     "has guidance for %s",
     (code) => {
       expect(refusalGuidance(code)).toBeTruthy();
@@ -105,11 +126,29 @@ describe("failureKind", () => {
     [404, "not_found", "refused"],
     [409, "request_in_progress", "in_flight"],
     [503, "outcome_unknown", "unknown"],
+    [503, "upstream_refused", "not_made"],
+    [503, "catalog_unavailable", "not_made"],
+    [503, "preview_unavailable", "not_made"],
     [502, null, "unknown"],
     [500, null, "unknown"],
     [null, null, "unknown"],
   ] as const)("%s %s is %s", (status, code, kind) => {
     expect(failureKind(status, code)).toBe(kind);
+  });
+});
+
+describe("notMadeGuidance", () => {
+  it("never says 'may or may not' — the server said nothing was changed", () => {
+    for (const code of ["upstream_refused", "catalog_unavailable", "preview_unavailable", null]) {
+      const text = notMadeGuidance(code);
+      expect(text).toMatch(/^Nothing was changed\./);
+      expect(text).not.toMatch(/may or may not/);
+    }
+  });
+
+  it("does not suggest retrying a refused service credential", () => {
+    expect(notMadeGuidance("upstream_refused")).toMatch(/engineering/);
+    expect(notMadeGuidance("upstream_refused")).not.toMatch(/try again/i);
   });
 });
 

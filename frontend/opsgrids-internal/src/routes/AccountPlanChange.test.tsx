@@ -134,6 +134,7 @@ function preview(overrides: Partial<PlanChangePreview> = {}): PlanChangePreview 
     entitled_added: [],
     entitled_removed: [],
     usage_priced: false,
+    usage_closed_now: false,
     refusal_code: null,
     refusal_detail: null,
     ...overrides,
@@ -313,6 +314,9 @@ describe("the form", () => {
     expect(within(dialog).getByRole("group", { name: "Move to" })).toBeTruthy();
     expect(within(dialog).getByRole("textbox", { name: /Reason/ })).toBeTruthy();
     expect(within(dialog).getByText(/A trial switches now; a paying subscription switches at its next billing period/)).toBeTruthy();
+    // The reason stays with staff: it is not on the customer org's event, and the helper says so.
+    expect(within(dialog).getByText("Recorded on the staff audit trail only. Not sent to the customer.")).toBeTruthy();
+    expect(dialog.textContent).not.toMatch(/subscription's event/);
   });
 
   it("refuses to continue without a plan and a reason, naming each, and calls nothing", async () => {
@@ -447,15 +451,91 @@ describe("the preview and the confirm", () => {
     expect(w.changeSpy).not.toHaveBeenCalled();
   });
 
-  it("a failed preview is shown on the form with its reference", async () => {
+  it("a failed preview is shown on the form with its reference, and says nothing was changed", async () => {
     const w = wire();
-    w.previewSpy.mockRejectedValue(problem(503, null, "subscription is unavailable"));
+    // What console actually sends when subscription cannot answer a preview (preview_problem_for).
+    const detail = "could not ask subscription what this change would do; nothing was changed. Try again shortly.";
+    w.previewSpy.mockRejectedValue(problem(503, "preview_unavailable", detail));
     render(<PlanChangeCard org={ORG} />);
     const { dialog } = await openDialog();
     await fillForm(dialog);
     await userEvent.click(within(dialog).getByRole("button", { name: "Review change" }));
-    expect(await within(dialog).findByText("subscription is unavailable")).toBeTruthy();
+    expect(await within(dialog).findByText(detail)).toBeTruthy();
     expect(within(dialog).getByText(/Reference: req-1234/)).toBeTruthy();
+    expect(within(dialog).getByText("Nothing was changed. Try again in a moment.")).toBeTruthy();
+    expect(dialog.textContent).not.toMatch(/may or may not|Idempotency-Key/);
+  });
+
+  it("a version the catalogue no longer offers is refused, and the list reloads without it", async () => {
+    const w = wire();
+    w.previewSpy.mockResolvedValue(
+      preview({
+        direction: null,
+        effective: null,
+        effective_at: null,
+        refusal_code: "not_offerable",
+        refusal_detail: "that plan version is no longer on offer for this organization",
+      }),
+    );
+    const withoutScale = options();
+    withoutScale.options = withoutScale.options.filter((o) => o.plan_version_id !== "pv_scale");
+    w.getOptions.mockResolvedValueOnce(options()).mockResolvedValueOnce(withoutScale);
+    render(<PlanChangeCard org={ORG} />);
+    const { dialog } = await openDialog();
+    await fillForm(dialog);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Review change" }));
+    expect(await within(dialog).findByText("that plan version is no longer on offer for this organization")).toBeTruthy();
+    expect(within(dialog).getByText(/The catalogue has moved on/)).toBeTruthy();
+    await waitFor(() => expect(w.getOptions).toHaveBeenCalledTimes(2));
+    await within(dialog).findByRole("radio", { name: /Starter/ });
+    expect(within(dialog).queryByRole("radio", { name: /Scale/ })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Confirm plan change" })).toBeNull();
+    expect(w.changeSpy).not.toHaveBeenCalled();
+  });
+
+  it("names the current plan from the dialog's fresh reads, not the card's stale snapshot", async () => {
+    // The card loaded on Growth; since then the customer upgraded themselves to Scale.
+    const w = wire();
+    const fresh = options({
+      subscription: { ...options().subscription, plan_version_id: "pv_scale", plan_name: "Scale" },
+      options: options().options.map((o) => ({ ...o, is_current: o.plan_version_id === "pv_scale" })),
+    });
+    w.getOptions.mockResolvedValue(fresh);
+    w.previewSpy.mockResolvedValue(
+      preview({
+        expected: { state: "active", plan_version_id: "pv_scale", pending_plan_version_id: null },
+        direction: "downgrade",
+      }),
+    );
+    render(<PlanChangeCard org={ORG} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Change plan for OpsGrids HR" }));
+    const dialog = await screen.findByRole("dialog", { name: /Change plan — OpsGrids HR/ });
+    await within(dialog).findByRole("radio", { name: /Starter/ });
+    expect(within(dialog).getByText((_, el) => el?.tagName === "P" && el.textContent === "Now on Scale.")).toBeTruthy();
+    await fillForm(dialog, /Starter/);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Review change" }));
+    const confirm = await screen.findByRole("dialog", { name: "Confirm plan change" });
+    expect(
+      within(confirm).getByText(
+        "Zenith Polymers stays on Scale until 01 Nov 2026 (UTC), then moves to Starter (a price decrease). Nothing changes, and nothing is charged, before then.",
+      ),
+    ).toBeTruthy();
+    expect(confirm.textContent).not.toMatch(/Growth/);
+  });
+
+  it("an equal-price switch on a metered paying subscription does not say nothing is charged", async () => {
+    const w = wire();
+    w.previewSpy.mockResolvedValue(
+      preview({ direction: "equal", effective: "now", effective_at: null, usage_priced: true, usage_closed_now: true }),
+    );
+    render(<PlanChangeCard org={ORG} />);
+    const { dialog } = await openDialog();
+    await fillForm(dialog);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Review change" }));
+    const confirm = await screen.findByRole("dialog", { name: "Confirm plan change" });
+    expect(within(confirm).getByText(/usage metered so far this period is invoiced at Growth's usage rates/)).toBeTruthy();
+    expect(within(confirm).getByText(/invoiced at the current plan's usage rates when the plan changes/)).toBeTruthy();
+    expect(confirm.textContent).not.toMatch(/Nothing is charged|as it is today/);
   });
 });
 
@@ -614,6 +694,20 @@ describe("a failed confirm", () => {
     expect(w.changeSpy.mock.calls[0]?.[3]).toBe(w.changeSpy.mock.calls[1]?.[3]);
   });
 
+  it("a refused service credential says nothing was changed, not that the outcome is unknown", async () => {
+    const { w, confirm } = await toConfirm();
+    w.changeSpy.mockRejectedValue(
+      problem(503, "upstream_refused", "subscription refused console's own service credentials; the change was not made"),
+    );
+    await userEvent.click(within(confirm).getByRole("button", { name: "Confirm change" }));
+    expect(await within(confirm).findByText(/the change was not made/)).toBeTruthy();
+    expect(within(confirm).getByText(/send engineering the reference/)).toBeTruthy();
+    expect(confirm.textContent).not.toMatch(/may or may not/);
+    expect(screen.getByRole("dialog", { name: "Confirm plan change" })).toBeTruthy();
+    // Nothing landed, so there is nothing to refresh behind the dialog.
+    expect(w.getPricing).toHaveBeenCalledTimes(1);
+  });
+
   it("a request already in flight is reported, and does not mint a new key", async () => {
     const { w, confirm } = await toConfirm();
     w.changeSpy.mockRejectedValue(problem(409, "request_in_progress", "this request is already being processed"));
@@ -626,17 +720,32 @@ describe("a failed confirm", () => {
 /* --------------------------------------------------------------------------- reloads */
 
 describe("reloading", () => {
-  it("a reload while the dialog is open does not unmount it or what was typed", async () => {
+  it("a reload while the dialog is open does not unmount it, what was typed, or the trigger", async () => {
     const w = wire();
     render(<PlanChangeCard org={ORG} />);
-    const { dialog } = await openDialog();
+    const { dialog, trigger } = await openDialog();
     await fillForm(dialog);
-    // The card reloads its live read (as an unknown outcome elsewhere would trigger).
-    w.previewSpy.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     await userEvent.click(within(dialog).getByRole("button", { name: "Review change" }));
-    expect(screen.getByRole("dialog", { name: /Change plan — OpsGrids HR/ })).toBeTruthy();
-    expect((within(dialog).getByRole("textbox", { name: /Reason/ }) as HTMLTextAreaElement).value).toBe(
-      "Agreed on the renewal call",
-    );
+    const confirm = await screen.findByRole("dialog", { name: "Confirm plan change" });
+
+    // An unknown outcome reloads the card's live read behind the dialogs. Hold that reload open,
+    // so what is on screen is checked *while* the card is refreshing, and again after.
+    let finish: (value: OrganizationPricing) => void = () => undefined;
+    w.getPricing.mockImplementationOnce(() => new Promise<OrganizationPricing>((resolve) => (finish = resolve)));
+    w.changeSpy.mockRejectedValueOnce(problem(503, "outcome_unknown", "subscription did not answer"));
+    await userEvent.click(within(confirm).getByRole("button", { name: "Confirm change" }));
+    await waitFor(() => expect(w.getPricing).toHaveBeenCalledTimes(2));
+
+    const unchanged = () => {
+      expect(dialog.isConnected).toBe(true);
+      expect(confirm.isConnected).toBe(true);
+      expect(trigger.isConnected).toBe(true);
+      expect(dialog.querySelector("textarea")?.value).toBe("Agreed on the renewal call");
+    };
+    unchanged();
+    finish(pricing(product()));
+    await waitFor(() => expect(screen.getByText(/Refresh this account to check/)).toBeTruthy());
+    unchanged();
+    expect(screen.getAllByRole("button", { name: "Change plan for OpsGrids HR", hidden: true })[0]).toBe(trigger);
   });
 });

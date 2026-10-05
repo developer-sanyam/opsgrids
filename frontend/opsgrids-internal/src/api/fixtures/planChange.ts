@@ -154,9 +154,14 @@ function refused(expected: ExpectedState, code: string, detail: string): PlanCha
     entitled_added: [],
     entitled_removed: [],
     usage_priced: false,
+    usage_closed_now: false,
     refusal_code: code,
     refusal_detail: detail,
   };
+}
+
+function hasUsagePrice(version: FixturePlanVersion | undefined): boolean {
+  return version?.prices.some((p) => p.kind === "usage") ?? false;
 }
 
 /** `POST .../plan-change:preview` in fixtures mode. */
@@ -202,6 +207,15 @@ export function previewFixturePlanChange(
   if (interval !== null && contractInterval(target) !== interval) {
     return refused(expected, "cadence", `cannot change from a ${interval} plan to a ${contractInterval(target)} one mid-subscription`);
   }
+  // The live console re-reads what catalog offers this organization and refuses anything else.
+  const offered = planOptionsForOrg(organizationId, productKey).options;
+  if (!offered.some((o) => o.plan_version_id === target.plan_version_id)) {
+    return refused(
+      expected,
+      "not_offerable",
+      "that plan version is no longer on offer for this organization: a newer version has replaced it, or its plan was retired. Choose again from the plans on offer now.",
+    );
+  }
 
   const current = planVersionById(sub.plan_version_id);
   const currentMinor = current ? recurringMinor(current) : (product.current_price?.amount_minor ?? 0);
@@ -222,7 +236,9 @@ export function previewFixturePlanChange(
     would_clear_pending: sub.pending_plan_version_id !== null,
     entitled_added: members.filter((m) => !sub.entitled_products.includes(m)),
     entitled_removed: sub.entitled_products.filter((m) => !members.includes(m)),
-    usage_priced: [target, current].some((v) => v?.prices.some((p) => p.kind === "usage") ?? false),
+    usage_priced: hasUsagePrice(target) || hasUsagePrice(current),
+    // Applying now on a paying subscription closes the usage so far at the current plan's rates.
+    usage_closed_now: !deferred && paying && hasUsagePrice(current),
     refusal_code: null,
     refusal_detail: null,
   };
