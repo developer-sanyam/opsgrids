@@ -237,11 +237,26 @@ async def verify_merchant_account(
     summary="Disconnect the organization's payment-provider account",
 )
 async def delete_merchant_account(
-    ctx: AccountWrite, session: TenantSessionDep, request: Request
+    ctx: AccountWrite,
+    session: TenantSessionDep,
+    request: Request,
+    force: Annotated[
+        bool,
+        Query(
+            description="Disconnect even though payments or refunds on the account have not "
+            "settled. Audited with what was outstanding."
+        ),
+    ] = False,
 ) -> Response:
-    """Refused (409, with the count) while any online payment taken into the account is open."""
+    """Refused (409 `disconnect-blocked`, saying what is outstanding) while the provider may still
+    move money for the account — an open payment, a cancelled or expired one its provider can
+    still take, a pending refund — unless `force` is set."""
     await services.remove_merchant_account(
-        session, organization_id=ctx.organization_id, actor_id=ctx.principal.sub, request=request
+        session,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        force=force,
+        request=request,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

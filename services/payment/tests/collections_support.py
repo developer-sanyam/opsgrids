@@ -62,6 +62,9 @@ class MerchantProviders:
     cashfree_wires: dict[str, CashfreeFakeWire] = field(default_factory=dict)
     #: `(provider, mode)` of every adapter built, in order.
     built: list[tuple[str, str]] = field(default_factory=list)
+    #: Build Cashfree adapters as the live wire would (`is_live`), still over the fake: their
+    #: Orders are recorded as made live (`order_wire = live`), i.e. ones a customer could pay.
+    cashfree_live: bool = False
 
     def __call__(
         self,
@@ -77,7 +80,10 @@ class MerchantProviders:
         self.built.append((provider, mode))
         if provider == "cashfree":
             wire = self.cashfree_wires.setdefault(key_id, CashfreeFakeWire())
-            return CashfreeCollectionsProvider(wire=wire, secret_key=key_secret, mode="stub")
+            live = "production" if mode == "live" else "sandbox"
+            return CashfreeCollectionsProvider(
+                wire=wire, secret_key=key_secret, mode=live if self.cashfree_live else "stub"
+            )
         adapter = self.adapters.get((key_id, webhook_secret))
         if adapter is None:
             # Share the stub's account state across adapters for one key id — the same Razorpay

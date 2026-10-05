@@ -939,11 +939,35 @@
     },
     "/api/v1/payment/collections/merchant-account": {
       "delete": {
-        "description": "Refused (409, with the count) while any online payment taken into the account is open.",
+        "description": "Refused (409 `disconnect-blocked`, saying what is outstanding) while the provider may still\nmove money for the account \u2014 an open payment, a cancelled or expired one its provider can\nstill take, a pending refund \u2014 unless `force` is set.",
         "operationId": "delete_merchant_account_api_v1_payment_collections_merchant_account_delete",
+        "parameters": [
+          {
+            "description": "Disconnect even though payments or refunds on the account have not settled. Audited with what was outstanding.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Disconnect even though payments or refunds on the account have not settled. Audited with what was outstanding.",
+              "title": "Force",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Disconnect the organization's payment-provider account",

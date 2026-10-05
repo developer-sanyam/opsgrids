@@ -57,6 +57,8 @@ from app.models import (
     INBOX_PROCESSED,
     MERCHANT_ACCOUNT_ACTIVE,
     MERCHANT_ACCOUNT_REMOVED,
+    ORDER_WIRE_LIVE,
+    ORDER_WIRE_STUB,
     PAYEE_MERCHANT,
     REFUND_CREATED,
     REFUND_FAILED,
@@ -152,11 +154,13 @@ class VerificationUnavailableProblem(ConflictProblem):
 
 
 class DisconnectBlockedProblem(ConflictProblem):
-    """The account still has online payments a customer could pay; disconnecting would leave them
-    unverifiable (no keys to ask with, no secret to check a webhook against)."""
+    """The account's provider may still move money for it — an open payment, a closed one whose
+    provider Order can still be paid, a refund still pending — and disconnecting would leave that
+    unverifiable (no keys to ask with, no secret to check a webhook against). The same request
+    with `force` disconnects anyway, audited with what was outstanding."""
 
     problem_type = "disconnect-blocked"
-    title = "Online payments are still open on this account"
+    title = "Payments on this account have not settled yet"
 
 
 def _now() -> datetime:
@@ -323,11 +327,48 @@ async def set_merchant_account(
     return account
 
 
+def _counted(count: int, one: str, many: str) -> str:
+    return f"{count} {one if count == 1 else many}"
+
+
+def _blocked_detail(blockers: selectors.DisconnectBlockers, provider_name: str) -> str:
+    """What is still outstanding, in a sentence an operator can act on — never "cancel them and
+    you are done": cancelling here does not close the provider's Order."""
+    parts: list[str] = []
+    if blockers.open_collections:
+        parts.append(
+            _counted(blockers.open_collections, "online payment is", "online payments are")
+            + " still open"
+        )
+    if blockers.closed_payable and blockers.payable_until is not None:
+        parts.append(
+            _counted(
+                blockers.closed_payable,
+                "cancelled or expired payment",
+                "cancelled or expired payments",
+            )
+            + f" can still be paid at {provider_name} until "
+            + blockers.payable_until.astimezone(UTC).strftime("%d %b %Y %H:%M UTC")
+        )
+    if blockers.pending_refunds:
+        parts.append(
+            _counted(blockers.pending_refunds, "refund is", "refunds are")
+            + f" still pending at {provider_name}"
+        )
+    return (
+        "; ".join(parts)
+        + ". Disconnecting now would leave what happens to them unrecorded here. Cancel open "
+        "payments from their orders and wait for the rest to settle, or disconnect anyway and "
+        f"settle them in {provider_name}'s own dashboard."
+    )
+
+
 async def remove_merchant_account(
     session: AsyncSession,
     *,
     organization_id: uuid.UUID,
     actor_id: uuid.UUID | None,
+    force: bool = False,
     request: Request | None = None,
 ) -> None:
     """Disconnect: the sealed secrets are wiped (not kept "just in case"), the row is
@@ -335,23 +376,40 @@ async def remove_merchant_account(
     verifies, and no status check or refund can be made with it — a later account is a new row
     with a new webhook URL (switching provider is exactly this, then connect).
 
-    **Refused (409, with the count) while any collection taken into it is still open** — created,
-    authorized or failed-and-retryable: a customer can still pay it, and with the keys gone that
-    payment could be neither asked about nor verified. Cancel them (that needs no account), or let
-    them finish or expire, first. A refund of a payment taken into a removed account is made in the
-    provider's own dashboard."""
+    **Refused (409 `disconnect-blocked`, saying what is outstanding) while the provider may still
+    move money for it** (`selectors.disconnect_blockers`): an open collection a customer can still
+    pay; a cancelled or expired one whose provider Order can still take a payment (cancelling here
+    does not close a Cashfree Order, and a UPI request can be approved late); a refund still
+    pending, whose outcome only the provider's webhook brings. With the keys gone, none of that
+    could be asked about or verified. Cancel the open ones (that needs no account), let the rest
+    settle, or — `force`, an explicit choice in the UI — disconnect anyway: the audit row records
+    exactly what was outstanding, and those are then settled in the provider's own dashboard. A
+    refund of a payment taken into a removed account is made there too."""
     account = await selectors.lock_live_merchant_account(session, organization_id)
     if account is None:
         raise NotFoundProblem("No payment provider account is connected")
-    still_open = await selectors.count_open_collections(session, organization_id, account.id)
-    if still_open:
-        raise DisconnectBlockedProblem(
-            f"{still_open} online "
-            f"{'payment is' if still_open == 1 else 'payments are'} still open on this account. "
-            "Cancel them from their orders, or wait for them to be paid or to expire, then "
-            "disconnect."
-        )
     now = _now()
+    blockers = await selectors.disconnect_blockers(
+        session,
+        organization_id,
+        account.id,
+        provider=account.provider,
+        now=now,
+        checkout_ttl=timedelta(seconds=settings().collection_checkout_ttl_seconds),
+    )
+    if blockers and not force:
+        raise DisconnectBlockedProblem(
+            _blocked_detail(blockers, domain.spec_for(account.provider).display_name)
+        )
+    if blockers:
+        log.warning(
+            "payment.merchant_account.removed_with_outstanding",
+            organization_id=str(organization_id),
+            account_id=str(account.id),
+            open_collections=blockers.open_collections,
+            closed_payable=blockers.closed_payable,
+            pending_refunds=blockers.pending_refunds,
+        )
     account.key_secret_enc = None
     account.webhook_secret_enc = None
     account.key_secret_masked = ""
@@ -370,6 +428,19 @@ async def remove_merchant_account(
         entity="merchant_account",
         entity_id=account.id,
         before={"provider": account.provider, "key_id": account.key_id, "mode": account.mode},
+        after=(
+            {
+                "forced": True,
+                "open_collections": blockers.open_collections,
+                "closed_payable": blockers.closed_payable,
+                "payable_until": (
+                    blockers.payable_until.isoformat() if blockers.payable_until else None
+                ),
+                "pending_refunds": blockers.pending_refunds,
+            }
+            if blockers
+            else None
+        ),
         request=request,
     )
 
@@ -837,6 +908,9 @@ class ProviderTicket:
     payer: CheckoutCustomer | None = None
     expires_at: datetime | None = None
     notify_url: str | None = None
+    #: Which wire made the collection's Order (`Charge.order_wire`); None when it has none yet,
+    #: or was recorded before this was kept.
+    order_wire: str | None = None
 
     def build(self, factory: CollectionsProviderFactory) -> CollectionsProvider:
         return factory(
@@ -892,6 +966,7 @@ def _ticket(
         payer=payer,
         expires_at=_order_expiry(charge),
         notify_url=_notify_url(account),
+        order_wire=charge.order_wire,
     )
 
 
@@ -940,20 +1015,59 @@ def _order_payments(provider: CollectionsProvider, order_id: str) -> list[Paymen
     return provider.order_payments(order_id=order_id)
 
 
+def wire_now(provider: str) -> str:
+    """`stub` or `live`: whether `provider`'s collections wire reaches the provider right now."""
+    return settings().collections_wire_for(provider)
+
+
+def order_wire_of(provider: CollectionsProvider) -> str:
+    """Which wire an adapter makes Orders on. An adapter that does not say is taken to be live —
+    the reading that never lets a real Order be treated as a stand-in's."""
+    return ORDER_WIRE_LIVE if getattr(provider, "is_live", True) else ORDER_WIRE_STUB
+
+
+async def _stub_order_payments(
+    ticket: ProviderTicket, ask: Callable[[], list[PaymentSnapshot]], *, what: str
+) -> list[PaymentSnapshot] | None:
+    """The payments of an Order **the stub made** (`order_wire = stub`), or None when the Order
+    was made live (or is not known to have been made on the stub) and is asked about the ordinary
+    way.
+
+    Nothing can ever have been paid into a stub Order, and no real provider holds one. So once
+    the wire is live it is not asked about at all (the provider would answer "no such Order", a
+    refusal that would wedge the collection), and while the wire is still the stub, a stub that
+    cannot answer for it — a fresh adapter, another process, a restart — is "no payments" rather
+    than an error. That is what lets a stub test checkout be cancelled and expired, and an
+    account be disconnected after it."""
+    if ticket.order_wire != ORDER_WIRE_STUB:
+        return None
+    if wire_now(ticket.provider) == "live":
+        return []
+    try:
+        return await _off_loop(ask, what=what, organization_id=ticket.organization_id)
+    except (ProviderRefusedProblem, ProviderUnreachableProblem):
+        log.info(
+            "payment.collection.stub_order_unknown",
+            organization_id=str(ticket.organization_id),
+            charge_id=str(ticket.charge_id),
+        )
+        return []
+
+
 async def fetch_order_payments(
     factory: CollectionsProviderFactory, ticket: ProviderTicket
 ) -> list[PaymentSnapshot]:
     """The server-to-server status check: every attempt on the collection's provider Order, as
-    the provider reports it now. No session — the middle act."""
+    the provider reports it now. No session — the middle act. An Order the stub made is answered
+    by `_stub_order_payments`."""
     if ticket.provider_order_id is None:
         return []
     provider = ticket.build(factory)
-    order_id = ticket.provider_order_id
-    return await _off_loop(
-        partial(_order_payments, provider, order_id),
-        what="order_payments",
-        organization_id=ticket.organization_id,
-    )
+    ask = partial(_order_payments, provider, ticket.provider_order_id)
+    stub = await _stub_order_payments(ticket, ask, what="order_payments")
+    if stub is not None:
+        return stub
+    return await _off_loop(ask, what="order_payments", organization_id=ticket.organization_id)
 
 
 # ============================================================================ checkout
@@ -1101,6 +1215,13 @@ async def claim_checkout(
         )
     customer = _checkout_customer(required, charge.id)
     if charge.provider_order_id is not None:
+        if charge.order_wire == ORDER_WIRE_STUB and wire_now(account.provider) == "live":
+            # Its Order was the stand-in's: the provider has never heard of it, and asking it to
+            # "reopen" that Order would quietly make a new, real one nobody recorded.
+            raise ConflictProblem(
+                "This online payment was opened before online payments went live, so it can "
+                "never be paid; cancel it and start a new one"
+            )
         if spec.reopen_asks_provider and charge.state in domain.CANCELLABLE_STATES:
             # The browser's handle is not ours to keep (Cashfree's `payment_session_id`): ask the
             # provider for the Order again. A lookup — the Order exists, by its receipt — so no
@@ -1199,15 +1320,17 @@ def _ensure_order(provider: CollectionsProvider, ticket: ProviderTicket) -> Orde
 
 async def create_provider_order(
     factory: CollectionsProviderFactory, ticket: ProviderTicket
-) -> OrderResult:
+) -> tuple[OrderResult, str]:
     """The call act: the provider Order the customer will pay, looked up by receipt before one
-    is created — so a repeat after a lost answer lands on the same Order."""
+    is created — so a repeat after a lost answer lands on the same Order — and which wire made it
+    (`order_wire_of`), for the record act to keep."""
     provider = ticket.build(factory)
-    return await _off_loop(
+    order = await _off_loop(
         partial(_ensure_order, provider, ticket),
         what="ensure_order",
         organization_id=ticket.organization_id,
     )
+    return order, order_wire_of(provider)
 
 
 async def record_checkout(
@@ -1216,21 +1339,24 @@ async def record_checkout(
     organization_id: uuid.UUID,
     charge_id: uuid.UUID,
     provider_order_id: str,
+    order_wire: str = ORDER_WIRE_LIVE,
     request: Request | None = None,
 ) -> Charge:
     """The record act: bind the provider Order (only if none is bound — a different one already
-    bound is an inconsistency, logged and audited, never overwritten) and release the lease."""
+    bound is an inconsistency, logged and audited, never overwritten), with the wire that made it,
+    and release the lease."""
     charge = await selectors.lock_collection(session, organization_id, charge_id)
     if charge is None:  # pragma: no cover - staged in an earlier committed transaction
         raise NotFoundProblem("No such online payment")
     if charge.provider_order_id is None:
         charge.provider_order_id = provider_order_id
+        charge.order_wire = order_wire
         _audit(
             session,
             charge,
             "payment.collection.checkout_opened",
             acting_as="operations",
-            after={"provider_order_id": provider_order_id},
+            after={"provider_order_id": provider_order_id, "order_wire": order_wire},
             request=request,
         )
     elif charge.provider_order_id != provider_order_id:
@@ -2054,11 +2180,11 @@ async def expiry_lookup(
         order_id = found.provider_order_id if found is not None else None
     if order_id is None:
         return None, []
-    payments = await _off_loop(
-        partial(_order_payments, provider, order_id),
-        what="order_payments",
-        organization_id=ticket.organization_id,
-    )
+    ask = partial(_order_payments, provider, order_id)
+    stub = await _stub_order_payments(ticket, ask, what="order_payments")
+    if stub is not None:
+        return order_id, stub
+    payments = await _off_loop(ask, what="order_payments", organization_id=ticket.organization_id)
     return order_id, payments
 
 

@@ -23,6 +23,7 @@ pytestmark = pytest.mark.integration
 
 REVISION = "d9e0f1a2b3c4"  # pragma: allowlist secret
 PREVIOUS = "c7d8e9f0a1b2"  # pragma: allowlist secret
+ORDER_WIRE_REVISION = "e2f3a4b5c6d7"  # pragma: allowlist secret
 
 
 async def _insert(
@@ -132,4 +133,38 @@ def test_the_revision_chains_from_the_previous_head() -> None:
         for match in [re.search(r"down_revision[^=]*=\s*['\"]([0-9a-f]+)['\"]", p.read_text())]
         if match is not None
     }
-    assert revisions - pointed_at == {REVISION}, "this revision must be the only head"
+    assert REVISION in revisions
+    heads = revisions - pointed_at
+    assert len(heads) == 1, f"the payment migrations must have exactly one head, not {heads}"
+
+
+class TestTheOrderWireColumn:
+    """`e2f3a4b5c6d7`: which wire made a merchant collection's Order — nullable, and only ever
+    `stub` / `live` on a merchant charge."""
+
+    async def test_the_column_and_its_check_are_there(self, admin_session: AsyncSession) -> None:
+        (column,) = await rows(
+            admin_session,
+            "SELECT is_nullable, character_maximum_length AS width FROM "
+            "information_schema.columns WHERE table_schema = 'payment' AND "
+            "table_name = 'charges' AND column_name = 'order_wire'",
+        )
+        assert column == {"is_nullable": "YES", "width": 8}
+        (check,) = await rows(
+            admin_session,
+            "SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint "
+            "WHERE conname = 'ck_charges_order_wire'",
+        )
+        definition = check["definition"]
+        assert "order_wire IS NULL" in definition and "'merchant'" in definition
+        assert "'stub'" in definition and "'live'" in definition
+
+
+def test_the_order_wire_revision_is_the_head_after_merchant_connect() -> None:
+    versions = Path(__file__).resolve().parents[1] / "migrations" / "versions"
+    (path,) = versions.glob(f"{ORDER_WIRE_REVISION}_*.py")
+    spec = importlib.util.spec_from_file_location("collection_order_wire_revision", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == ORDER_WIRE_REVISION and module.down_revision == REVISION

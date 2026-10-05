@@ -122,6 +122,11 @@ PAYEE_PLATFORM = "platform"
 PAYEE_MERCHANT = "merchant"
 PAYEES = (PAYEE_PLATFORM, PAYEE_MERCHANT)
 
+#: Which wire made a merchant collection's provider Order (`Charge.order_wire`): the in-process
+#: stand-in, or the provider itself.
+ORDER_WIRE_STUB = "stub"
+ORDER_WIRE_LIVE = "live"
+
 # --- merchant account states -----------------------------------------------------------
 MERCHANT_ACCOUNT_ACTIVE = "active"
 #: Soft-removed: the sealed secrets are wiped, `deleted_at` is set, and nothing can verify a
@@ -401,6 +406,14 @@ class Charge(Base, TenantBase):
     #: the Order's own expiry at Cashfree). The poller closes a checkout past it that nothing paid.
     checkout_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    #: Which wire made a merchant collection's provider Order, recorded with the Order:
+    #: `stub` — the in-process stand-in, so no customer can ever pay it and no real provider holds
+    #: it — or `live`. Null on a platform charge, and on a collection recorded before this was
+    #: kept, which is treated as possibly real. What lets a stub test checkout be cancelled,
+    #: expired and disconnected from once the wire is live, without asking a provider that has
+    #: never heard of it (ADR-0030 §8).
+    order_wire: Mapped[str | None] = mapped_column(String(8))
+
     refunds: Mapped[list[Refund]] = relationship(back_populates="charge")
 
     __table_args__ = (
@@ -417,6 +430,10 @@ class Charge(Base, TenantBase):
         ),
         CheckConstraint("payee in ('platform', 'merchant')", name="payee"),
         CheckConstraint("flow in ('debit', 'checkout')", name="flow"),
+        CheckConstraint(
+            "order_wire IS NULL OR (payee = 'merchant' AND order_wire in ('stub', 'live'))",
+            name="order_wire",
+        ),
         # A checkout is a platform charge with an expiry; nothing else is a checkout.
         CheckConstraint(
             "flow = 'debit' OR (payee = 'platform' AND checkout_expires_at IS NOT NULL)",

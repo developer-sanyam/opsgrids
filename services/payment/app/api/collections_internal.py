@@ -28,6 +28,7 @@ from starlette.requests import Request
 from app.collections import domain, selectors, services
 from app.config import settings
 from app.deps import CollectionsProviderFactory, get_collections_provider_factory
+from app.models import ORDER_WIRE_LIVE
 from app.providers.base import OrderResult
 from app.schemas import (
     CashfreeCheckoutSessionOut,
@@ -137,9 +138,10 @@ async def open_checkout(
         )
 
     order: OrderResult | None = None
+    order_wire = ORDER_WIRE_LIVE
     if claim.ticket is not None:
         try:
-            order = await services.create_provider_order(factory, claim.ticket)
+            order, order_wire = await services.create_provider_order(factory, claim.ticket)
         except services.ProviderRefusedProblem:
             # Refused: nothing was created there. Release the right to call so a fix (new keys)
             # can be retried at once; a timeout keeps it, so a retry cannot race a late create.
@@ -164,6 +166,7 @@ async def open_checkout(
                     organization_id=organization_id,
                     charge_id=claim.charge_id,
                     provider_order_id=order.provider_order_id,
+                    order_wire=order_wire,
                     request=request,
                 )
 

@@ -19,16 +19,22 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.collections import domain
 from app.models import (
+    CHARGE_CANCELLED,
     CHARGE_CAPTURED,
     CHARGE_CREATED,
+    CHARGE_EXPIRED,
     CHARGE_FAILED,
+    ORDER_WIRE_STUB,
     PAYEE_MERCHANT,
+    REFUND_CREATED,
     REFUND_FAILED,
     Charge,
     MerchantAccount,
@@ -97,7 +103,7 @@ async def count_open_collections(
     session: AsyncSession, organization_id: uuid.UUID, account_id: uuid.UUID
 ) -> int:
     """How many collections taken into this account a customer could still pay — `created`,
-    `authorized` or `failed` (a failed attempt's Order takes a retry). What blocks a disconnect."""
+    `authorized` or `failed` (a failed attempt's Order takes a retry)."""
     stmt = select(func.count()).where(
         Charge.organization_id == organization_id,
         Charge.payee == PAYEE_MERCHANT,
@@ -105,6 +111,93 @@ async def count_open_collections(
         Charge.state.in_(("created", "authorized", "failed")),
     )
     return int((await session.execute(stmt)).scalar_one())
+
+
+@dataclass(frozen=True, slots=True)
+class DisconnectBlockers:
+    """What a merchant account could still be told about by its provider — money that may still
+    move — and so what removing its keys would leave unrecorded (ADR-0030 §8)."""
+
+    #: `created`, `authorized` or `failed` collections: a customer can still pay them.
+    open_collections: int = 0
+    #: Collections this platform cancelled or expired whose provider Order can still take a
+    #: payment (`domain.payable_until`), and the latest moment one of them can.
+    closed_payable: int = 0
+    payable_until: datetime | None = None
+    #: Refunds still pending at the provider: only its webhook says whether the customer got the
+    #: money back, and a failed one gives the order its paid fact back.
+    pending_refunds: int = 0
+
+    def __bool__(self) -> bool:
+        return bool(self.open_collections or self.closed_payable or self.pending_refunds)
+
+
+async def disconnect_blockers(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    account_id: uuid.UUID,
+    *,
+    provider: str,
+    now: datetime,
+    checkout_ttl: timedelta,
+) -> DisconnectBlockers:
+    """Everything that blocks disconnecting this account. A collection whose Order **the stub**
+    made (`order_wire = stub`) can never be paid or refunded for real, so once closed it blocks
+    nothing; an open one still counts until it is cancelled (which, for a stub Order, needs no
+    provider). A collection recorded before the wire was kept counts as possibly real."""
+    open_count = await count_open_collections(session, organization_id, account_id)
+    spec = domain.spec_for(provider)
+    real = or_(Charge.order_wire.is_(None), Charge.order_wire != ORDER_WIRE_STUB)
+    horizon = now - max(checkout_ttl, domain.LATE_PAYMENT_GRACE)
+    closed = (
+        await session.execute(
+            select(Charge.created_at, Charge.updated_at).where(
+                Charge.organization_id == organization_id,
+                Charge.payee == PAYEE_MERCHANT,
+                Charge.merchant_account_id == account_id,
+                Charge.state.in_((CHARGE_CANCELLED, CHARGE_EXPIRED)),
+                Charge.provider_order_id.is_not(None),
+                real,
+                or_(Charge.created_at > horizon, Charge.updated_at > horizon),
+            )
+        )
+    ).all()
+    payable = [
+        until
+        for until in (
+            domain.payable_until(
+                spec, created_at=created_at, closed_at=closed_at, checkout_ttl=checkout_ttl
+            )
+            for created_at, closed_at in closed
+        )
+        if until > now
+    ]
+    pending = list(
+        (
+            await session.execute(
+                select(Refund).where(
+                    Refund.organization_id == organization_id,
+                    Refund.payee == PAYEE_MERCHANT,
+                    Refund.state == REFUND_CREATED,
+                    Refund.charge_id.in_(
+                        select(Charge.id).where(
+                            Charge.organization_id == organization_id,
+                            Charge.payee == PAYEE_MERCHANT,
+                            Charge.merchant_account_id == account_id,
+                            real,
+                        )
+                    ),
+                )
+            )
+        ).scalars()
+    )
+    states = await effective_refund_states(session, organization_id, pending)
+    return DisconnectBlockers(
+        open_collections=open_count,
+        closed_payable=len(payable),
+        payable_until=max(payable) if payable else None,
+        pending_refunds=sum(1 for refund in pending if states[refund.id] == REFUND_CREATED),
+    )
 
 
 async def last_webhook_at(

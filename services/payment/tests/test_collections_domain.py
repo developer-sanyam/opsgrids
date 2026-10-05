@@ -4,6 +4,7 @@ shape, webhook redaction and the reconciliation comparison. No database."""
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -188,3 +189,32 @@ def test_the_deciding_attempt_is_money_first_then_most_recent() -> None:
     )
     assert only_failures is not None and only_failures.provider_payment_id == "b"
     assert best_attempt([]) is None
+
+
+class TestPayableUntil:
+    """How long a closed collection's provider Order may still take a payment — what holds up a
+    disconnect (ADR-0030 §8). Known answers, written down first."""
+
+    CREATED = datetime(2026, 10, 6, 10, 0, tzinfo=UTC)
+    TTL = timedelta(hours=24)
+
+    def test_a_cashfree_order_takes_payment_until_its_own_expiry(self) -> None:
+        closed = datetime(2026, 10, 6, 10, 5, tzinfo=UTC)
+        until = domain.payable_until(
+            domain.CASHFREE, created_at=self.CREATED, closed_at=closed, checkout_ttl=self.TTL
+        )
+        assert until == datetime(2026, 10, 7, 10, 0, tzinfo=UTC)
+
+    def test_closed_near_the_end_the_late_payment_grace_still_runs(self) -> None:
+        closed = datetime(2026, 10, 7, 9, 55, tzinfo=UTC)
+        until = domain.payable_until(
+            domain.CASHFREE, created_at=self.CREATED, closed_at=closed, checkout_ttl=self.TTL
+        )
+        assert until == datetime(2026, 10, 7, 10, 15, tzinfo=UTC)
+
+    def test_a_razorpay_order_only_finishes_an_attempt_already_started(self) -> None:
+        closed = datetime(2026, 10, 6, 10, 5, tzinfo=UTC)
+        until = domain.payable_until(
+            domain.RAZORPAY, created_at=self.CREATED, closed_at=closed, checkout_ttl=self.TTL
+        )
+        assert until == datetime(2026, 10, 6, 10, 25, tzinfo=UTC)

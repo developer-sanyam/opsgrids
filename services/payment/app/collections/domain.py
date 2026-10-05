@@ -30,6 +30,7 @@ import hashlib
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from app.domain import WebhookNotApplied, illegal_transition, provider_id_conflict
 from app.models import (
@@ -97,6 +98,10 @@ class ProviderSpec:
     #: is (re)opened (Cashfree's `payment_session_id`, never stored) rather than the Order id the
     #: platform keeps (Razorpay).
     reopen_asks_provider: bool
+    #: The provider Order is created with the checkout's own expiry and takes payment until then
+    #: (Cashfree's `order_expiry_time`), whatever this platform decides meanwhile. A Razorpay Order
+    #: has no expiry; it can only be paid through a Checkout this platform opens.
+    order_outlives_cancel: bool
     #: What the merchant subscribes to on the webhook it registers.
     webhook_events: tuple[str, ...]
     #: The provider's refund key for a refund whose identity hashes to a hex digest.
@@ -115,6 +120,7 @@ RAZORPAY = ProviderSpec(
     has_webhook_secret=True,
     requires_payer=False,
     reopen_asks_provider=False,
+    order_outlives_cancel=False,
     webhook_events=razorpay.WEBHOOK_EVENTS,
     refund_key=razorpay.refund_key,
     signature_header=razorpay.SIGNATURE_HEADER,
@@ -126,6 +132,7 @@ CASHFREE = ProviderSpec(
     has_webhook_secret=False,
     requires_payer=True,
     reopen_asks_provider=True,
+    order_outlives_cancel=True,
     webhook_events=cashfree.WEBHOOK_EVENTS,
     refund_key=cashfree.refund_key,
     signature_header=cashfree.SIGNATURE_HEADER,
@@ -316,6 +323,27 @@ OPEN_STATES: frozenset[str] = frozenset({CHARGE_CREATED, CHARGE_AUTHORIZED, CHAR
 LOCALLY_CLOSED_STATES: frozenset[str] = frozenset({CHARGE_CANCELLED, CHARGE_EXPIRED})
 #: The states an operator may cancel from: nothing is authorised or captured.
 CANCELLABLE_STATES: frozenset[str] = frozenset({CHARGE_CREATED, CHARGE_FAILED})
+
+#: How long after this platform closes a checkout (cancels or expires it) a payment the customer
+#: had already started can still complete at the provider — a UPI collect request approved late on
+#: the customer's phone. Also no shorter than the least lifetime a Cashfree Order is (re)created
+#: with (`services._MIN_ORDER_LIFETIME`), so an Order made just before the close is covered.
+LATE_PAYMENT_GRACE = timedelta(minutes=20)
+
+
+def payable_until(
+    spec: ProviderSpec, *, created_at: datetime, closed_at: datetime, checkout_ttl: timedelta
+) -> datetime:
+    """Until when a collection this platform has closed (`cancelled`, `expired`) may still be paid
+    at its provider: the late-payment grace after the close, and — for a provider whose Order
+    keeps its own expiry (Cashfree) — the Order's lifetime from the collection's creation. Closing
+    a checkout here does not close the provider's Order; until this moment a payment can still
+    land, and only a connected account can verify the webhook that says so."""
+    until = closed_at + LATE_PAYMENT_GRACE
+    if spec.order_outlives_cancel:
+        until = max(until, created_at + checkout_ttl)
+    return until
+
 
 REASON_CANCELLED_BY_OPERATOR = "cancelled_by_operator"
 REASON_CHECKOUT_EXPIRED = "checkout_expired"
