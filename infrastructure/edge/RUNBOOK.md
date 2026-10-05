@@ -1047,11 +1047,15 @@ the box ever holds is a live one**, and the first checkout it takes is real mone
 
    ```bash
    # from the repository root, on your laptop. `uv run`, NOT `make` (make re-exports the root .env).
-   export RAZORPAY_KEY_ID=rzp_test_…      RAZORPAY_KEY_SECRET=…      # test mode only
+   # Paste each value at the silent prompt `read -rs` gives: it is not echoed and, unlike a typed
+   # `export NAME=value`, it never lands in the shell history.
+   read -rs RAZORPAY_KEY_ID && export RAZORPAY_KEY_ID              # rzp_test_… only (test mode)
+   read -rs RAZORPAY_KEY_SECRET && export RAZORPAY_KEY_SECRET
    uv run python tools/payments_smoke_razorpay.py plan                # prints what it would do; calls nothing
    uv run python tools/payments_smoke_razorpay.py probe --confirm
 
-   export CASHFREE_APP_ID=TEST…           CASHFREE_SECRET_KEY=…       # sandbox only
+   read -rs CASHFREE_APP_ID && export CASHFREE_APP_ID              # sandbox only (TEST…)
+   read -rs CASHFREE_SECRET_KEY && export CASHFREE_SECRET_KEY
    uv run python tools/payments_smoke_cashfree.py probe --confirm
    ```
 
@@ -1088,8 +1092,11 @@ no `ops-monitor` check, so someone has to look for the first week:
 |---|---|---|
 | `payment.provider.credentials_rejected` | error | The platform's own key was refused. **No charge is failed and no attempt is consumed** until a call succeeds again, and the latch holds for 15 minutes. Check the keys and the switches, then restart `payment`. Further refusals inside the window log `…_again` at warning, so one outage is one line. |
 | `payment.charge.poll_unavailable`, `payment.charge.poll_timeout` | warning | The provider could not be asked. Nothing changes; the next tick asks again. Many in a row means the provider (or the box's egress) is down. |
-| `payment.charge.checkout_expired` | info | A checkout nobody paid inside its day closed (`failure_reason = checkout_expired`). No `commerce.payment.failed` is emitted and dunning is not involved. |
-| `payment.charge.captured_after_local_failure` | error | A payment arrived for a checkout the platform had already closed (it expired). It is recorded and the invoice is paid; read the audit row of the same name. |
+| `payment.charge.checkout_expired` | info | A checkout nobody paid inside its day closed (`failure_reason = checkout_expired`). No `commerce.payment.failed` is emitted and dunning is not involved. It is still asked about every 10 minutes for five days (`CHECKOUT_LATE_CAPTURE_WINDOW_SECONDS`), because the customer can still pay its Order. `order=false` means no Order was ever made for it (every open failed at the provider); nothing can have been paid on it. |
+| `payment.checkout.expiry_deferred` | info | A checkout past its expiry was kept open because the provider reports a payment still in progress on it. It closes once that payment resolves, or an hour later (`CHECKOUT_INFLIGHT_GRACE_SECONDS`). |
+| `payment.checkout.expired_with_attempt_in_flight` | warning | The hour passed and the provider still reported an unresolved attempt (or a capture that could not be applied: look for `payment.charge.sync_not_applied`). Closed, and still asked about for five days. |
+| `payment.charge.captured_after_local_failure` | error | A payment arrived for a checkout the platform had already closed (it expired). The poller, the status page or the customer's confirm found it; it is recorded and the invoice is paid. Read the audit row of the same name, and check `payment.invoice.collected_twice`: the customer may have paid a second checkout too. |
+| `payment.charge.uncollectable` | error | An invoice's charge can never be collected online: its currency is not INR, or it is below the provider's minimum (Rs 1, e.g. a small proration). It is recorded `failed`, but **no `commerce.payment.failed` is sent**, so the subscription is not put into dunning over it. Settle the invoice by hand (write it off, or carry it to the next invoice). |
 | `payment.invoice.collected_twice` | error | The existing double-collection alarm (see "Payments: an invoice collected twice"); it applies to checkouts too. |
 
 ```sql
@@ -1113,7 +1120,9 @@ docker compose -f compose.prod.yml --env-file .env up -d payment payment-worker
 Existing rows keep their provider; new invoices stop being offered a live checkout (`openable` is false on
 a stub). **A checkout still open at the real provider stays payable there**, and while the wire is the stub
 nothing here can tell whether it was paid: the stub says it cannot answer for an Order it never made, the
-poller records "could not be asked", and **no checkout is expired on that**. Prefer to let open checkouts
+poller records "could not be asked", and **no checkout is expired on that**. A customer who clicks "Pay"
+on such a checkout in the window gets a 503: the stub refuses to make a stand-in Order for a checkout that
+already has a real one. Prefer to let open checkouts
 resolve (`CHECKOUT_TTL_SECONDS`, a day) before turning the wire off, and check the provider's dashboard for
 money taken in the window. Turning the wire back on reconciles them. Switching only `PAYMENT_PROVIDER` is
 the gentler rollback when the other provider is healthy: open checkouts keep being polled through the

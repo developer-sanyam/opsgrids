@@ -7,8 +7,9 @@ process environment only, sandbox keys only, prints only ids / statuses / codes 
 shared by every smoke tool and are the reason this is safe to run at all.
 
     # from the repository root, on your own machine. `uv run`, NOT `make` (make re-exports `.env`).
-    export CASHFREE_APP_ID=TEST...              # a sandbox App ID; anything else is refused
-    export CASHFREE_SECRET_KEY=...              # a sandbox secret; a production one is refused
+    # `read -rs` types the value without echoing it and keeps it out of the shell history.
+    read -rs CASHFREE_APP_ID && export CASHFREE_APP_ID            # a sandbox App ID (TEST...) only
+    read -rs CASHFREE_SECRET_KEY && export CASHFREE_SECRET_KEY    # a sandbox secret only
     uv run python tools/payments_smoke_cashfree.py plan
     uv run python tools/payments_smoke_cashfree.py probe --confirm
     uv run python tools/payments_smoke_cashfree.py payments <order_id> --confirm   # after paying it
