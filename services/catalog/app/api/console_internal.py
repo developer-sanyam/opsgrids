@@ -22,13 +22,23 @@ console rather than straight from a browser that found this port.
    too, because a bespoke price is exactly the "commercial catalogue" write that role gate exists
    for.
 
-**Idempotent by content, not by a client-supplied key.** A version of this plan already
-restricted to this organization at exactly this price (`selectors.find_bespoke_version`) is
-reused — published if it was left in draft, returned unchanged if it was already published —
-instead of minting a new one. That is what gives console's own claim/call/record a safe recovery
-path (docs/io-outside-transactions.md): a retried request, or a resumed one after a crash between
-this call and console's record of it, cannot create two versions selling the same organization the
-same price under different ids.
+**Idempotent by content, not by a client-supplied key.** A *published* version of this plan
+already restricted to this organization with exactly this one flat price
+(`selectors.find_bespoke_version`) is returned unchanged instead of minting a new one. That is what
+gives console's own claim/call/record a safe recovery path (docs/io-outside-transactions.md): a
+retried request, or a resumed one after a crash between this call and console's record of it,
+cannot create two versions selling the same organization the same price under different ids.
+
+**It never publishes a draft it did not just write.** This route drafts and publishes in one
+transaction, so it never leaves a draft behind; a matching draft can only be someone else's — an
+owner's negotiated sheet still under review on the Plans page. Publishing that here would let
+`billing_ops` freeze an owner's draft without the owner-only publish gate, its reason or its review
+(ADR-0030 §1), so such a draft is left alone and this request writes its own version.
+
+**The product registry is read before the transaction opens** (D3,
+docs/io-outside-transactions.md #10), for the same reason the operator routes read it: publish
+must know whether the product is a bundle, and a bundle version that names no members entitles a
+key that routes nowhere (ADR-0030 §3).
 """
 
 from __future__ import annotations
@@ -43,7 +53,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import selectors, services
+from app.api.admin import RegistryDep
 from app.models import PLATFORM_ORG
+from app.registry import ProductSnapshot, take_snapshot
 from app.schemas import BespokePriceIn, FeatureIn, PlanVersionOut, PriceIn, VersionCreateIn
 from platform_core.auth import Principal, require_operator, require_service_token
 from platform_core.config import ServiceSettings
@@ -122,6 +134,18 @@ async def get_operator_session(
 SessionDep = Annotated[AsyncSession, Depends(get_operator_session, scope="function")]
 
 
+async def get_product_snapshot(
+    _caller: ConsoleCallerDep, _operator: OperatorDep, registry: RegistryDep
+) -> ProductSnapshot:
+    """The product registry, read before the request's transaction opens and only after both
+    credentials have been checked, so a refused caller never reaches product-service. A failed
+    read is kept, not raised: publishing fails on it (503), since it cannot tell a bundle apart."""
+    return await take_snapshot(registry)
+
+
+ProductsDep = Annotated[ProductSnapshot, Depends(get_product_snapshot)]
+
+
 @router.post(
     "/organizations/{organization_id}/products/{product_key}/bespoke-price",
     response_model=PlanVersionOut,
@@ -131,6 +155,7 @@ async def ensure_bespoke_price(
     organization_id: uuid.UUID,
     product_key: Annotated[str, Path(pattern=_PRODUCT_KEY_PATTERN)],
     payload: BespokePriceIn,
+    products: ProductsDep,
     session: SessionDep,
     operator: OperatorDep,
     request: Request,
@@ -153,12 +178,9 @@ async def ensure_bespoke_price(
         amount_minor=payload.amount_minor,
         billing_interval=payload.billing_interval,
     )
-    if existing is not None and existing.state == "published":
+    if existing is not None:
+        # Published, and exactly this one flat price: the version an earlier call already made.
         version = existing
-    elif existing is not None:
-        # A draft left over from a crashed attempt (call succeeded, console's record did not) —
-        # finish it rather than mint a rival with the same content.
-        version = await services.publish_version(session, operator, existing, request=request)
     else:
         draft_payload = VersionCreateIn(
             billing_interval=payload.billing_interval,
@@ -206,13 +228,15 @@ async def ensure_bespoke_price(
                     "a concurrent change to this plan's versions conflicted with this request; "
                     "retry it"
                 ) from exc
-            version = (
-                winner
-                if winner.state == "published"
-                else await services.publish_version(session, operator, winner, request=request)
-            )
+            # The winner committed its draft and its publish together, so it is published.
+            version = winner
         else:
-            version = await services.publish_version(session, operator, drafted, request=request)
+            # Drafted without the registry (`products` stays out of `create_version`), so a
+            # version that declares a bundle is still refused here as before; the snapshot goes
+            # to publish, which needs it to tell whether this product is a bundle at all.
+            version = await services.publish_version(
+                session, operator, drafted, request=request, products=products
+            )
 
     fresh = await selectors.get_version(session, version.id)
     assert fresh is not None  # just written or just resolved in this same transaction

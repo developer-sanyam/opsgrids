@@ -26,16 +26,31 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import services
+from app import selectors, services
+from app.api.admin import get_product_registry
 from app.config import settings
+from app.domain import RegisteredProduct
 from app.main import app
 from app.models import PlanVersion
-from app.schemas import FeatureIn, PlanCreateIn, PriceIn, VersionCreateIn
+from app.schemas import FeatureIn, PlanCreateIn, PriceIn, SeatClassIn, VersionCreateIn
 from platform_core.auth import Principal, get_principal
+from platform_core.errors import UpstreamUnavailableProblem
 from platform_core.internal_auth import mint_service_token
-from tests.helpers import operator_principal
+from tests.helpers import FakeRegistry, operator_principal
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def product_registry() -> Iterator[FakeRegistry]:
+    """The route reads product-service's registry before its transaction (publish needs it to
+    tell a bundle apart); every test here gets the seeded fake unless it installs its own."""
+    registry = FakeRegistry.default()
+    app.dependency_overrides[get_product_registry] = lambda: registry
+    try:
+        yield registry
+    finally:
+        app.dependency_overrides.pop(get_product_registry, None)
 
 
 @contextlib.contextmanager
@@ -356,3 +371,171 @@ class TestBespokePriceAuthoring:
             )
         ).scalar_one()
         assert count == 2, "immutable versions: a different price is a new row, never an edit"
+
+
+async def _owner_sheet(
+    session: AsyncSession, org: uuid.UUID, *, extra_per_seat: bool, publish: bool = False
+) -> uuid.UUID:
+    """An owner's bespoke sheet for `org` at the flat amount the console tests ask for — with a
+    per-seat component and a seat class on top when `extra_per_seat`."""
+    candidate = await selectors.get_public_flat_plan(session, "hrms")
+    assert candidate is not None
+    plan, _source = candidate
+    prices = [PriceIn(kind="flat", amount_minor=50000, currency="INR")]
+    seat_classes: list[SeatClassIn] = []
+    if extra_per_seat:
+        prices.append(PriceIn(kind="per_seat", amount_minor=500, currency="INR", unit="seat"))
+        seat_classes = [SeatClassIn(code="member", name="Member", price_index=1)]
+    version = await services.create_version(
+        session,
+        operator_principal(),
+        plan,
+        VersionCreateIn(
+            billing_interval="month",
+            currency="INR",
+            restricted_to_org_id=org,
+            prices=prices,
+            features=[FeatureIn(feature_key="trial_days", value=14)],
+            seat_classes=seat_classes,
+        ),
+        request=None,
+    )
+    if publish:
+        await services.publish_version(session, operator_principal(), version, request=None)
+    return version.id
+
+
+async def _state_and_prices(
+    session: AsyncSession, version_id: uuid.UUID
+) -> tuple[str, list[tuple[str, int | None]]]:
+    async with session.begin():
+        fresh = await selectors.get_version(session, version_id)
+        assert fresh is not None
+        return fresh.state, sorted((p.kind, p.amount_minor) for p in fresh.prices)
+
+
+BESPOKE_50K = {"amount_minor": 50000, "currency": "INR", "billing_interval": "month"}
+
+
+class TestBespokePriceNeverPublishesSomeoneElsesDraft:
+    """The console path admits `billing_ops`; publishing a draft is `owner`-only and takes a reason
+    (ADR-0030 §1). A draft that happens to carry the requested flat amount is an owner's sheet
+    under review — never a leftover of this route, which drafts and publishes in one transaction —
+    so the route leaves it alone and writes its own version."""
+
+    @pytest.mark.parametrize(
+        "extra_per_seat", [True, False], ids=["extra-components", "same-shape"]
+    )
+    async def test_billing_ops_cannot_publish_an_owner_draft(
+        self, client, platform_session: AsyncSession, extra_per_seat: bool
+    ) -> None:
+        org = uuid.uuid4()
+        async with platform_session.begin():
+            await _seed_public_flat_plan(platform_session, product_key="hrms")
+            owner_draft = await _owner_sheet(platform_session, org, extra_per_seat=extra_per_seat)
+
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            resp = await client.post(
+                _url(org, product_key="hrms"),
+                json=BESPOKE_50K,
+                headers={"X-Internal-Token": _console_token()},
+            )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["id"] != str(owner_draft), "the owner's draft must not be the answer"
+        assert body["state"] == "published"
+        assert [(p["kind"], p["amount_minor"]) for p in body["prices"]] == [("flat", 50000)]
+        # The owner's draft is untouched: still a draft, every component still there.
+        state, prices = await _state_and_prices(platform_session, owner_draft)
+        assert state == "draft"
+        expected = [("flat", 50000), ("per_seat", 500)] if extra_per_seat else [("flat", 50000)]
+        assert prices == expected
+
+    async def test_a_published_sheet_with_more_than_the_flat_price_is_not_reused(
+        self, client, platform_session: AsyncSession
+    ) -> None:
+        org = uuid.uuid4()
+        async with platform_session.begin():
+            await _seed_public_flat_plan(platform_session, product_key="hrms")
+            richer = await _owner_sheet(platform_session, org, extra_per_seat=True, publish=True)
+
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            resp = await client.post(
+                _url(org, product_key="hrms"),
+                json=BESPOKE_50K,
+                headers={"X-Internal-Token": _console_token()},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["id"] != str(richer)
+        assert [(p["kind"], p["amount_minor"]) for p in resp.json()["prices"]] == [("flat", 50000)]
+
+
+class TestBespokePriceReadsTheRegistryFirst:
+    """Publish needs the registry (is this product a bundle?), so the route reads it in a
+    dependency ahead of its session (D3 #10), after both credentials are checked."""
+
+    async def test_the_registry_is_read_with_no_transaction_open(
+        self, client, platform_session: AsyncSession
+    ) -> None:
+        seen: list[bool] = []
+
+        class Recording(FakeRegistry):
+            async def products(self) -> dict[str, RegisteredProduct]:
+                seen.append(platform_session.in_transaction())
+                return await super().products()
+
+        async with platform_session.begin():
+            await _seed_public_flat_plan(platform_session, product_key="hrms")
+        recording = Recording(FakeRegistry.default()._entries.values())
+        app.dependency_overrides[get_product_registry] = lambda: recording
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            resp = await client.post(
+                _url(uuid.uuid4(), product_key="hrms"),
+                json=BESPOKE_50K,
+                headers={"X-Internal-Token": _console_token()},
+            )
+        assert resp.status_code == 200, resp.text
+        assert seen == [False]
+
+    async def test_a_refused_caller_never_reaches_the_registry(
+        self, client, product_registry: FakeRegistry
+    ) -> None:
+        with as_principal(operator_principal(roles=["support"])):
+            resp = await client.post(
+                _url(uuid.uuid4(), product_key="hrms"),
+                json=BESPOKE_50K,
+                headers={"X-Internal-Token": _console_token()},
+            )
+        assert resp.status_code == 403
+        assert product_registry.calls == 0
+
+    async def test_with_the_registry_down_nothing_is_published(
+        self, client, platform_session: AsyncSession
+    ) -> None:
+        """Without the registry publish cannot tell whether the product is a bundle, so the
+        request fails closed (503) and the draft it wrote rolls back with it."""
+
+        class Down(FakeRegistry):
+            async def products(self) -> dict[str, RegisteredProduct]:
+                raise UpstreamUnavailableProblem("product-service is unavailable")
+
+        org = uuid.uuid4()
+        async with platform_session.begin():
+            await _seed_public_flat_plan(platform_session, product_key="hrms")
+        down = Down([])
+        app.dependency_overrides[get_product_registry] = lambda: down
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            resp = await client.post(
+                _url(org, product_key="hrms"),
+                json=BESPOKE_50K,
+                headers={"X-Internal-Token": _console_token()},
+            )
+        assert resp.status_code == 503, resp.text
+        count = (
+            await platform_session.execute(
+                select(func.count())
+                .select_from(PlanVersion)
+                .where(PlanVersion.restricted_to_org_id == org)
+            )
+        ).scalar_one()
+        assert count == 0

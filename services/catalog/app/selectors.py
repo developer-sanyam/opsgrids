@@ -16,19 +16,19 @@ from typing import Any
 
 from sqlalchemy import Select, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from app.models import (
     PLAN_ACTIVE,
     PLATFORM_ORG,
     PRICE_FLAT,
-    VERSION_DRAFT,
     VERSION_PUBLISHED,
     Feature,
     IdempotencyKey,
     Plan,
     PlanVersion,
     Price,
+    SeatClass,
 )
 from platform_core.errors import ValidationProblem
 
@@ -304,24 +304,43 @@ async def find_bespoke_version(
     amount_minor: int,
     billing_interval: str,
 ) -> PlanVersion | None:
-    """A version of this plan already restricted to this organization, at exactly this flat
-    price — draft or published. This is what makes authoring a bespoke price idempotent by its
-    own content (docs/io-outside-transactions.md): a retried request, or a crash between the
-    catalog call and console's own record of it, finds the version it already made instead of
-    minting a second one.
+    """A **published** version of this plan, restricted to this organization, whose sheet is the
+    exact shape console authors: one price, `flat`, at this amount and currency, and no seat
+    classes. This is what makes authoring a bespoke price idempotent by its own content
+    (docs/io-outside-transactions.md): a retried request, or a crash between the catalog call and
+    console's own record of it, finds the version it already made instead of minting a second.
+
+    **Published only, and only that shape.** Console drafts and publishes in one transaction, so
+    it never leaves a draft behind; a matching *draft* can only be someone else's, such as an
+    owner's negotiated sheet under review on the Plans page. Reusing it would let the console
+    path, which `billing_ops` may call, publish an owner's draft without the owner-only gate, the
+    reason or the review (ADR-0030 §1). For the same reason a published version with any other
+    component (a per-seat price, a usage rate, a seat class) is not "the same price" and is not
+    returned: the caller asked for one flat amount and nothing else.
     """
+    any_price = aliased(Price)
     version_id = (
         await session.execute(
             select(PlanVersion.id)
-            .join(Price, Price.plan_version_id == PlanVersion.id)
             .where(
                 PlanVersion.plan_id == plan_id,
                 PlanVersion.restricted_to_org_id == organization_id,
                 PlanVersion.currency == currency,
                 PlanVersion.billing_interval == billing_interval,
-                PlanVersion.state.in_((VERSION_DRAFT, VERSION_PUBLISHED)),
-                Price.kind == PRICE_FLAT,
-                Price.amount_minor == amount_minor,
+                PlanVersion.state == VERSION_PUBLISHED,
+                select(Price.id)
+                .where(
+                    Price.plan_version_id == PlanVersion.id,
+                    Price.kind == PRICE_FLAT,
+                    Price.amount_minor == amount_minor,
+                    Price.currency == currency,
+                )
+                .exists(),
+                select(func.count(any_price.id))
+                .where(any_price.plan_version_id == PlanVersion.id)
+                .scalar_subquery()
+                == 1,
+                ~select(SeatClass.id).where(SeatClass.plan_version_id == PlanVersion.id).exists(),
             )
             .order_by(PlanVersion.version_no.desc())
             .limit(1)
