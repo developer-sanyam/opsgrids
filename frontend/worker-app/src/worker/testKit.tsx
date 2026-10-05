@@ -18,6 +18,9 @@ import type {
   PackageOut,
   PickTaskLineOut,
   PickTaskOut,
+  PutawayOut,
+  PutawaySuggestion,
+  StockRowOut,
   WorkerOut,
 } from "@/api/types";
 import { WorkerContext } from "@/worker/context";
@@ -42,6 +45,8 @@ export interface Call {
   key: string;
   search: URLSearchParams;
   body: unknown;
+  /** The request headers, names lower-cased — what a test reads an `Idempotency-Key` from. */
+  headers: Record<string, string>;
 }
 
 export type Answer = (call: Call) => Response | Promise<Response>;
@@ -59,6 +64,7 @@ export function stubGateway(routes: Record<string, Answer>): { calls: Call[] } {
         key,
         search: url.searchParams,
         body: typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined,
+        headers: Object.fromEntries(new Headers(init?.headers).entries()),
       };
       calls.push(call);
       const route = routes[key];
@@ -67,6 +73,21 @@ export function stubGateway(routes: Record<string, Answer>): { calls: Call[] } {
     }),
   );
   return { calls };
+}
+
+export type GeoSuccess = (position: { coords: { latitude: number; longitude: number; accuracy: number } }) => void;
+export type GeoFailure = (error: { code: number }) => void;
+
+/** Gives jsdom a `navigator.geolocation` (it has none) that behaves as the test says. Undo with
+ *  `removeGeolocation()` — `test-setup.ts` does not, because most suites never touch it. */
+export function stubGeolocation(behave: (ok: GeoSuccess, fail: GeoFailure, options: PositionOptions) => void) {
+  const getCurrentPosition = vi.fn(behave);
+  Object.defineProperty(window.navigator, "geolocation", { configurable: true, value: { getCurrentPosition } });
+  return getCurrentPosition;
+}
+
+export function removeGeolocation(): void {
+  Reflect.deleteProperty(window.navigator, "geolocation");
 }
 
 export const NOW = "2026-09-29T09:00:00.000Z";
@@ -148,6 +169,53 @@ export function makePackage(overrides: Partial<PackageOut> = {}): PackageOut {
     weight_grams: null,
     lines: [],
     created_at: NOW,
+    ...overrides,
+  };
+}
+
+export function makeStockRow(overrides: Partial<StockRowOut> = {}): StockRowOut {
+  return {
+    id: "bucket-1",
+    inventory_item_id: "item-1",
+    sku: "SKU-100",
+    item_name: "Cotton roll",
+    uom: "m",
+    warehouse_id: "warehouse-1",
+    warehouse_code: "WH1",
+    location_id: "loc-rcv-1",
+    location_code: "RCV-01",
+    status: "AVAILABLE",
+    lot_id: null,
+    lot_no: null,
+    roll_id: null,
+    roll_no: null,
+    on_hand_qty: "20",
+    reserved_qty: "0",
+    available_qty: "20",
+    ...overrides,
+  };
+}
+
+export function makeSuggestion(overrides: Partial<PutawaySuggestion> = {}): PutawaySuggestion {
+  return {
+    location_id: "loc-bin-1",
+    code: "A-01-03",
+    name: "Rack A, bay 1, level 3",
+    path: "WH1 / Zone A / Rack 1",
+    reason: "holds_item",
+    ...overrides,
+  };
+}
+
+export function makePutawayOut(overrides: Partial<PutawayOut> = {}): PutawayOut {
+  return {
+    move_id: "move-1",
+    replayed: false,
+    from_location: { id: "loc-rcv-1", code: "RCV-01", name: "Receiving 1" },
+    to_location: { id: "loc-bin-1", code: "A-01-03", name: "Rack A, bay 1, level 3", kind: "bin" },
+    matched_suggestion: true,
+    geo_recorded: true,
+    warnings: [],
     ...overrides,
   };
 }

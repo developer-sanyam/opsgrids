@@ -45,6 +45,9 @@ const CountSessionLinesPage = lazy(() =>
 const CountLineEntryPage = lazy(() =>
   import("./routes/CountLineEntry").then((m) => ({ default: m.CountLineEntryPage })),
 );
+// Storage put-away is the same story as counting: a picker never opens it on a normal shift, and it
+// is where the camera scanner, the geolocation call and the stock picker get pulled in.
+const PutawayPage = lazy(() => import("./routes/Putaway").then((m) => ({ default: m.PutawayPage })));
 
 const router = createBrowserRouter([
   {
@@ -95,6 +98,14 @@ const router = createBrowserRouter([
             element: (
               <Suspense fallback={<RouteFallback />}>
                 <CountLineEntryPage />
+              </Suspense>
+            ),
+          },
+          {
+            path: "putaway",
+            element: (
+              <Suspense fallback={<RouteFallback />}>
+                <PutawayPage />
               </Suspense>
             ),
           },

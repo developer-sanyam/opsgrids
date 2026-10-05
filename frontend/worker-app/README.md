@@ -52,6 +52,36 @@ No offline-queue primitive exists yet anywhere in `@opsgrids/client` or `@opsgri
 before starting this slice). The scan screen's local-queue-and-replay-on-reconnect requirement
 (`docs/fulfilment/plan.md` F3) is real F3 scope, not scaffolding, and is left for that build.
 
+## Storage put-away
+
+`/putaway` (`src/routes/Putaway.tsx`) moves stock from a **receiving or staging** bin into its
+storage bin, recorded by scanning the destination bin's label. It is not ADR-0025's "putaway task"
+(the order-cancel reversal). Gated on `operations.inventory.stock.transfer:ORG`, which
+`OPERATIONS_WORKER` holds; the screen reads stock with `stock.read`, which it also holds, and a
+worker needs no `location.read` because the server resolves the scanned label.
+
+- **The bin is the location of record.** The worker's GPS fix is audit evidence only. One
+  `getCurrentPosition` request (high accuracy, 5 s) is made when they confirm; denied, timed out,
+  unsupported, offline or unusable all post without it and say so. It is sent as integer
+  micro-degrees (`Math.round(degrees * 1e6)`) in the request body and nowhere else — never logged,
+  never rendered, never stored beyond the queue entry that has not synced yet.
+- **Its own queue** (`src/lib/putawayQueue.ts`, not `scanQueue`, which is for `scan_events` only).
+  Confirming freezes the request — body, a random `Idempotency-Key`, `captured_at`, a UTC
+  `occurred_on` — into `localStorage` *before* sending, and every resend is that same request. A
+  network failure or 5xx (and 408/429) retries under the same key; any other 4xx is parked on the
+  Put away screen with the server's reason and a Discard, and the queue carries on. The drainer
+  (`PutawayQueueProvider`, mounted in `App.tsx`'s `AppShell`) runs on mount, on reconnect, by hand
+  and on a backing-off timer, one pass at a time. Entries belong to the signed-in user and
+  organization and replay only for them; signing out purges the queue (asking first if put-aways
+  would be lost). With `localStorage` unavailable the queue lives in memory for the session and the
+  screen says closing the app would lose what is waiting.
+- **This is not offline-first.** There is no service worker: the app has to be open and loaded for
+  anything to sync, and a phone that loses signal before first load cannot open it at all.
+- A suggested bin comes from `GET /putaway/suggest`. It carries the bin's code, not its barcode, so
+  the amber "different bin" confirmation compares the scanned label with the code; a bin whose
+  barcode differs from its code asks for one confirmation it did not strictly need. The server's own
+  `matched_suggestion` is what is recorded.
+
 ## Auth
 
 Sign-in lives in [`src/auth/`](src/auth) and reuses `@opsgrids/client` exactly like every other
