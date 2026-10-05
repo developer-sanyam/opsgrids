@@ -12,7 +12,7 @@ import heapq
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from fractions import Fraction
 from typing import Protocol
@@ -1172,3 +1172,138 @@ def merge_facts(rolls: Sequence[RollFacts]) -> RollFacts:
         secondary_milli=sum(r.secondary_milli or 0 for r in rolls) if weighed else None,
         secondary_uom=first.secondary_uom if weighed else None,
     )
+
+
+# ------------------------------------------------------------------ storage put-away and maps
+
+#: Where stock may be put away *to*: a bin or a shelf. Every other kind is somewhere stock passes
+#: through (receiving, staging, a dock, a pack station) or is held apart (quarantine, returns), or
+#: is a container of places rather than a place (zone, aisle, rack).
+STORABLE_KINDS: tuple[str, ...] = ("bin", "shelf")
+#: Where a storage put-away may take stock *from* (owner decision D1, 2026-10-05): the places stock
+#: waits to be stored. A put-away from a rack bin is a plain bin-to-bin transfer, which stays what
+#: it is today.
+PUTAWAY_SOURCE_KINDS: tuple[str, ...] = ("receiving", "staging")
+
+#: Coordinates are integer micro-degrees (10^-6), never a float (ADR-0000 §8).
+LAT_MICRO_LIMIT = 90_000_000
+LNG_MICRO_LIMIT = 180_000_000
+#: The `accuracy_m` column is a 32-bit integer; a larger claim is not a measurement.
+ACCURACY_M_LIMIT = 2_147_483_647
+
+#: A device clock that runs ahead of ours by more than this is not believed...
+CAPTURE_MAX_FUTURE = timedelta(minutes=5)
+#: ...and neither is a fix older than this: an offline queue replays within hours, not weeks.
+CAPTURE_MAX_AGE = timedelta(days=7)
+
+#: How many candidates per category the suggestion query loads. The rule below only ever picks the
+#: first of each, so this is a bound on the query, not a limit on the answer.
+SUGGEST_CANDIDATE_CAP = 25
+
+
+@dataclass(frozen=True, slots=True)
+class GeoFix:
+    """A validated position: paired, in range, accuracy (when given) non-negative."""
+
+    lat_micro: int
+    lng_micro: int
+    accuracy_m: int | None
+
+
+def site_coordinate_errors(lat_micro: int | None, lng_micro: int | None) -> list[tuple[str, str]]:
+    """What is wrong with a warehouse's coordinates, as `(field, message)` pairs — empty when they
+    are fine. Both set or both null, each inside its range. The one rule the schema, the PATCH
+    (which checks the *merged* state) and the database CHECKs all state."""
+    if (lat_micro is None) != (lng_micro is None):
+        missing = "lng_micro" if lng_micro is None else "lat_micro"
+        return [(missing, "latitude and longitude must be given together")]
+    errors: list[tuple[str, str]] = []
+    if lat_micro is not None and abs(lat_micro) > LAT_MICRO_LIMIT:
+        errors.append(("lat_micro", "latitude must be between -90 and 90 degrees"))
+    if lng_micro is not None and abs(lng_micro) > LNG_MICRO_LIMIT:
+        errors.append(("lng_micro", "longitude must be between -180 and 180 degrees"))
+    return errors
+
+
+def validate_geo(
+    lat_micro: int | None, lng_micro: int | None, accuracy_m: int | None
+) -> tuple[GeoFix | None, str | None]:
+    """A worker device's fix -> `(fix, None)`, or `(None, reason)` when it must be dropped, or
+    `(None, None)` when none was given. Never raises: a bad fix must not block a stock move, so the
+    caller records the move and says why the fix was not kept (`geo_dropped:<reason>`).
+
+    Validated here, in Python, **before** the move posts — a database CHECK that fired after
+    `post_move` would roll the stock move back for the sake of a proof-of-work detail."""
+    if lat_micro is None and lng_micro is None:
+        return None, None
+    if lat_micro is None or lng_micro is None:
+        return None, "unpaired"
+    if abs(lat_micro) > LAT_MICRO_LIMIT:
+        return None, "lat_out_of_range"
+    if abs(lng_micro) > LNG_MICRO_LIMIT:
+        return None, "lng_out_of_range"
+    if accuracy_m is not None and not 0 <= accuracy_m <= ACCURACY_M_LIMIT:
+        return None, "accuracy_invalid"
+    return GeoFix(lat_micro, lng_micro, accuracy_m), None
+
+
+def resolve_captured_at(claimed: datetime | None, now: datetime) -> tuple[datetime, bool]:
+    """The time to record for a capture: `(value, adjusted)`. The client's claim is kept unless it
+    is naive (no zone, so no instant), more than `CAPTURE_MAX_FUTURE` ahead of `now` or older than
+    `CAPTURE_MAX_AGE` — then it is replaced by `now` and `adjusted` says so. A missing claim is the
+    receipt time, and not an adjustment."""
+    if claimed is None:
+        return now, False
+    if (
+        claimed.tzinfo is None
+        or claimed > now + CAPTURE_MAX_FUTURE
+        or claimed < now - CAPTURE_MAX_AGE
+    ):
+        return now, True
+    return claimed, False
+
+
+@dataclass(frozen=True, slots=True)
+class PutawayBin:
+    """One bin the suggestion rule may pick, reduced to what the rule reads. `holds_item` — it
+    already holds this item (this lot, when one was asked for); `is_empty` — it holds no stock of
+    any item."""
+
+    location_id: uuid.UUID
+    code: str
+    kind: str
+    pick_sequence: int | None
+    holds_item: bool
+    is_empty: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PutawaySuggestion:
+    location_id: uuid.UUID
+    #: `holds_item` | `empty_bin`.
+    reason: str
+
+
+def _walk_order(b: PutawayBin) -> tuple[bool, int, str]:
+    """A picker's walk: pick sequence first (a bin with none sorts last), then code."""
+    return (b.pick_sequence is None, b.pick_sequence or 0, b.code)
+
+
+def suggest_putaway_bin(bins: Sequence[PutawayBin]) -> PutawaySuggestion | None:
+    """Where to store an item, among a warehouse's bins:
+
+    1. a storable bin that already holds the item (the same lot, when one was asked for) — keep
+       like with like; the first in walk order when there are several;
+    2. else the empty storable bin first in walk order (lowest pick sequence, then code);
+    3. else nothing.
+
+    There is no capacity logic: `locations.max_weight_grams` / `max_volume_milli` are not read
+    anywhere yet, so a rule that pretended to honour them would be guessing."""
+    storable = [b for b in bins if b.kind in STORABLE_KINDS]
+    holding = sorted((b for b in storable if b.holds_item), key=_walk_order)
+    if holding:
+        return PutawaySuggestion(holding[0].location_id, "holds_item")
+    empty = sorted((b for b in storable if b.is_empty), key=_walk_order)
+    if empty:
+        return PutawaySuggestion(empty[0].location_id, "empty_bin")
+    return None

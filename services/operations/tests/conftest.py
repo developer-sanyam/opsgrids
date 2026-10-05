@@ -42,6 +42,7 @@ from platform_core.db import TENANT_GUC, get_session
 from tests.helpers import ctx_for
 
 TENANT_TABLES = (
+    "putaway_captures",
     "channel_sync_logs",
     "channel_order_imports",
     "channel_sku_mappings",

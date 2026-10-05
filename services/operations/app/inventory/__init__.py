@@ -5,4 +5,7 @@
   balances or reservations.
 * `reconcile` — ledger ↔ balance verification. Detects and records drift; never repairs it.
 * `selectors` / `services` — inventory and warehouse reads and writes, built on `ledger`.
+* `putaway_schemas` / `putaway_selectors` / `putaway_services` — storage put-away's proof, the
+  suggestion, find-stock (`locate`) and the audited reveal of a worker's GPS fix. The put-away
+  write itself is `stock_ops.putaway_stock`, beside the other relocations.
 """

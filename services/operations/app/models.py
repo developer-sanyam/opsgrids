@@ -27,6 +27,9 @@ The procurement tables, then the inventory ones (ADR-0014):
 * **inventory_moves** + **inventory_ledger** — the append-only record of every stock change: a
   header per posting and one signed row per bucket it touched. `UPDATE`/`DELETE` are revoked
   from the app role (like `audit_logs`); a wrong move is corrected by an opposite one.
+* **putaway_captures** — the append-only proof of a storage put-away (scanned bin, suggestion,
+  worker and, when the device gave one, a GPS fix). The bin is the location of record; the fix is
+  audit evidence behind its own permission.
 * **inventory_balances** — the current quantity per bucket (item, location, status, lot, roll),
   a projection of the ledger written only in the same transaction as the ledger row.
 * **inventory_reservations** — stock promised to a demand without moving it.
@@ -153,8 +156,21 @@ class Warehouse(Base, TenantBase):
     code: Mapped[str] = mapped_column(String(40), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     location: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    #: The site's position on a map, integer micro-degrees (10^-6; never a float — ADR-0000 §8's
+    #: no-float rule covers any stored measurement). Both set or both NULL; NULL until someone
+    #: places the site. These are *site* coordinates — a business address, not a person's
+    #: position (`PutawayCapture` holds those, behind their own permission and an audit row).
+    lat_micro: Mapped[int | None] = mapped_column(BigInteger)
+    lng_micro: Mapped[int | None] = mapped_column(BigInteger)
 
     __table_args__ = (
+        CheckConstraint("(lat_micro IS NULL) = (lng_micro IS NULL)", name="coords_paired"),
+        CheckConstraint(
+            "lat_micro IS NULL OR lat_micro BETWEEN -90000000 AND 90000000", name="lat_in_range"
+        ),
+        CheckConstraint(
+            "lng_micro IS NULL OR lng_micro BETWEEN -180000000 AND 180000000", name="lng_in_range"
+        ),
         # Partial — a soft-deleted warehouse's code can be reused.
         Index(
             "uq_warehouses_org_code",
@@ -1027,6 +1043,69 @@ class InventoryMove(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
         ),
         Index("ix_inventory_moves_org_reference", "organization_id", "reference_id"),
         Index("ix_inventory_moves_org_occurred", "organization_id", text("occurred_on DESC")),
+    )
+
+
+class PutawayCapture(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """The proof that goes with a storage put-away: which bin was scanned, what the app suggested,
+    who did it, and — when the device gave one — where the worker stood. One row per put-away
+    move, written in the same transaction as the move and **append-only** (`UPDATE`/`DELETE`
+    revoked from the app role, re-applied in `migrations/env.py`; the 30-day purge is an
+    admin-run procedure, `tools/purge_putaway_captures.py`).
+
+    **The bin is the location of record; the GPS fix is never used to say where stock is.** The
+    coordinates are audit evidence only. They are integer micro-degrees (no float), plaintext
+    behind a dedicated permission (`operations.inventory.putaway.location_read`) whose every
+    successful use writes an audit row, and they appear in no other response, audit `after`,
+    event payload or log line.
+
+    `worker_id` is nullable: a manager with no worker row can still put stock away. `created_by`
+    is the actor's directory id and is always set. `captured_at` is the client's claimed time of
+    the fix (clamped by the service); `created_at` is the server's.
+    """
+
+    __tablename__ = "putaway_captures"
+
+    move_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_moves.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: The scanned destination bin.
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.locations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    suggested_location_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
+    )
+    worker_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.workers.id", ondelete="RESTRICT")
+    )
+    created_by: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    lat_micro: Mapped[int | None] = mapped_column(BigInteger)
+    lng_micro: Mapped[int | None] = mapped_column(BigInteger)
+    accuracy_m: Mapped[int | None] = mapped_column(Integer)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    #: Whether the scanned bin was the one the server's own rule suggests — computed server-side
+    #: from `domain.suggest_putaway_bin`, never taken from the client. NULL when it suggested none.
+    matched_suggestion: Mapped[bool | None] = mapped_column(Boolean)
+
+    __table_args__ = (
+        CheckConstraint("(lat_micro IS NULL) = (lng_micro IS NULL)", name="coords_paired"),
+        CheckConstraint(
+            "lat_micro IS NULL OR lat_micro BETWEEN -90000000 AND 90000000", name="lat_in_range"
+        ),
+        CheckConstraint(
+            "lng_micro IS NULL OR lng_micro BETWEEN -180000000 AND 180000000", name="lng_in_range"
+        ),
+        CheckConstraint("accuracy_m IS NULL OR accuracy_m >= 0", name="accuracy_non_negative"),
+        Index("uq_putaway_captures_org_move", "organization_id", "move_id", unique=True),
+        Index("ix_putaway_captures_org_location", "organization_id", "location_id"),
     )
 
 

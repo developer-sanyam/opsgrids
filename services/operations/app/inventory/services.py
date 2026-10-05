@@ -21,6 +21,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
+from app import domain
 from app.inventory import ledger, quantity
 from app.inventory import selectors as inv_selectors
 from app.inventory.ledger import MoveLine
@@ -96,6 +97,17 @@ def _duplicate(field: str, message: str) -> ConflictProblem:
     return ConflictProblem(
         message, errors=[{"field": field, "code": "duplicate", "message": message}]
     )
+
+
+def _check_site_coordinates(lat_micro: int | None, lng_micro: int | None) -> None:
+    """A warehouse's coordinates, as they will be stored: both set or both null, each in range. The
+    HTTP schema checks a create body; a PATCH is checked here against the *merged* state, and so is
+    any caller that does not come through the schema."""
+    if errors := domain.site_coordinate_errors(lat_micro, lng_micro):
+        raise ValidationProblem(
+            errors[0][1],
+            errors=[{"field": f, "code": "invalid_coordinates", "message": m} for f, m in errors],
+        )
 
 
 async def _home_for(session: AsyncSession, org_id: uuid.UUID, warehouse_name: str) -> Location:
@@ -225,11 +237,15 @@ async def create_warehouse(
     code: str,
     name: str,
     location: str = "",
+    lat_micro: int | None = None,
+    lng_micro: int | None = None,
     request: Request | None = None,
 ) -> Warehouse:
     """Create a warehouse (stocking location) and its default bin. `name` is a unique join key too
     — it is what `inventory_items.warehouse` and `purchase_orders.warehouse` carry — so a
-    duplicate name is refused exactly like a duplicate code."""
+    duplicate name is refused exactly like a duplicate code. `lat_micro`/`lng_micro` place the
+    site on a map (micro-degrees, both or neither)."""
+    _check_site_coordinates(lat_micro, lng_micro)
     if await inv_selectors.get_warehouse_by_code(session, ctx.organization_id, code):
         raise _duplicate("code", f"A warehouse coded {code!r} already exists")
     if await inv_selectors.get_warehouse_by_name(session, ctx.organization_id, name):
@@ -241,6 +257,8 @@ async def create_warehouse(
         code=code,
         name=name,
         location=location,
+        lat_micro=lat_micro,
+        lng_micro=lng_micro,
     )
     session.add(warehouse)
     await session.flush()
@@ -293,11 +311,20 @@ async def update_warehouse(
     *,
     request: Request | None = None,
 ) -> Warehouse:
-    """Patch `name`/`location`. `code` is immutable — `WarehousePatch` carries no such field.
-    A rename cascades to the denormalised `warehouse` string on every live purchase order and
-    inventory item in the same transaction, or every existing row keeps the stale name. Stock is
-    unaffected: it sits at locations, which a rename does not touch."""
+    """Patch `name`/`location`/the site's coordinates. `code` is immutable — `WarehousePatch`
+    carries no such field. A rename cascades to the denormalised `warehouse` string on every live
+    purchase order and inventory item in the same transaction, or every existing row keeps the
+    stale name. Stock is unaffected: it sits at locations, which a rename does not touch.
+
+    Coordinates are validated against the **merged** state: a patch that sets only the latitude is
+    checked against the longitude already stored, so a lone half can never be persisted; an
+    explicit `null` for both clears the site's position."""
     changes = payload.model_dump(exclude_unset=True)
+    if "lat_micro" in changes or "lng_micro" in changes:
+        _check_site_coordinates(
+            changes.get("lat_micro", warehouse.lat_micro),
+            changes.get("lng_micro", warehouse.lng_micro),
+        )
     if "name" in changes and changes["name"] != warehouse.name:
         existing = await inv_selectors.get_warehouse_by_name(
             session, ctx.organization_id, changes["name"]

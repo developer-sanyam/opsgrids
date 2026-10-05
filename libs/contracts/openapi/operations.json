@@ -3094,6 +3094,241 @@
         "title": "LedgerRowOut",
         "type": "object"
       },
+      "LocateOut": {
+        "description": "`GET /inventory/locate`. An empty `results` is a valid answer. `truncated` is true when\nmore bins matched than are returned (the cap is far above a real warehouse's spread of one\nitem; it exists to bound the query).",
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/LocateRowOut"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "title": "LocateOut",
+        "type": "object"
+      },
+      "LocatePlacementOut": {
+        "description": "Where a bin sits on a floor's published layout, in integer millimetres. `source` is `own`\nwhen the bin itself is placed, `ancestor` when it is not and this is the nearest placed\ncontainer above it (a rack standing for its bins).",
+        "properties": {
+          "ancestor_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ancestor Location Id"
+          },
+          "depth_mm": {
+            "title": "Depth Mm",
+            "type": "integer"
+          },
+          "height_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height Mm"
+          },
+          "layout_version_id": {
+            "title": "Layout Version Id",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "own",
+              "ancestor"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "width_mm": {
+            "title": "Width Mm",
+            "type": "integer"
+          },
+          "x_mm": {
+            "title": "X Mm",
+            "type": "integer"
+          },
+          "y_mm": {
+            "title": "Y Mm",
+            "type": "integer"
+          },
+          "z_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Z Mm"
+          }
+        },
+        "required": [
+          "layout_version_id",
+          "x_mm",
+          "y_mm",
+          "z_mm",
+          "width_mm",
+          "depth_mm",
+          "height_mm",
+          "source",
+          "ancestor_location_id"
+        ],
+        "title": "LocatePlacementOut",
+        "type": "object"
+      },
+      "LocateRowOut": {
+        "description": "One bin holding stock of the item, in one status (`quantity` sums its lots and rolls).\n\n`placement` is `null` with a `placement_reason`: `unplaced` (the warehouse has a published\nlayout and this bin, nor any container above it, is on it), `no_published_layout` (the\nwarehouse has none), or `no_permission` (the caller may read stock but not layouts, so no\ngeometry \u2014 and no floor \u2014 is returned).",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "floor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Floor Id"
+          },
+          "floor_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Floor Name"
+          },
+          "kind": {
+            "enum": [
+              "zone",
+              "aisle",
+              "rack",
+              "shelf",
+              "bin",
+              "staging",
+              "pack_station",
+              "dock",
+              "receiving",
+              "returns",
+              "quarantine"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "placement": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocatePlacementOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "placement_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unplaced",
+                  "no_published_layout",
+                  "no_permission"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Placement Reason"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD",
+              "QUARANTINE",
+              "DAMAGED",
+              "REJECTED",
+              "WIP",
+              "IN_TRANSIT",
+              "AT_JOB_WORKER",
+              "BLOCKED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          },
+          "warehouse_name": {
+            "title": "Warehouse Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "warehouse_id",
+          "warehouse_name",
+          "floor_id",
+          "floor_name",
+          "location_id",
+          "code",
+          "name",
+          "kind",
+          "path",
+          "quantity",
+          "status",
+          "placement",
+          "placement_reason"
+        ],
+        "title": "LocateRowOut",
+        "type": "object"
+      },
       "LocationIn": {
         "additionalProperties": false,
         "description": "`POST /warehouses/{warehouse_id}/locations`. `parent_id`, when given, must name an\nexisting location in the same warehouse. `barcode`, when given, must be unique across every\nlive location in the organization.",
@@ -6771,6 +7006,153 @@
         "title": "PoLineItem",
         "type": "object"
       },
+      "PublishedLayoutOut": {
+        "description": "`GET /floors/{floor_id}/published-layout` \u2014 what is live on a floor, never a draft.\n`published` is false (with no placements) when the floor has no published layout.",
+        "properties": {
+          "floor_id": {
+            "title": "Floor Id",
+            "type": "string"
+          },
+          "floor_name": {
+            "title": "Floor Name",
+            "type": "string"
+          },
+          "layout_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layout Version Id"
+          },
+          "placements": {
+            "items": {
+              "$ref": "#/components/schemas/PublishedPlacementOut"
+            },
+            "title": "Placements",
+            "type": "array"
+          },
+          "published": {
+            "title": "Published",
+            "type": "boolean"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "floor_id",
+          "warehouse_id",
+          "floor_name",
+          "published",
+          "layout_version_id",
+          "placements"
+        ],
+        "title": "PublishedLayoutOut",
+        "type": "object"
+      },
+      "PublishedPlacementOut": {
+        "description": "One location on a floor's *published* layout, with the identity a map needs \u2014 so a viewer\nnever has to fetch the location tree beside it. Integer millimetres throughout.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "depth_mm": {
+            "title": "Depth Mm",
+            "type": "integer"
+          },
+          "height_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height Mm"
+          },
+          "kind": {
+            "enum": [
+              "zone",
+              "aisle",
+              "rack",
+              "shelf",
+              "bin",
+              "staging",
+              "pack_station",
+              "dock",
+              "receiving",
+              "returns",
+              "quarantine"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "width_mm": {
+            "title": "Width Mm",
+            "type": "integer"
+          },
+          "x_mm": {
+            "title": "X Mm",
+            "type": "integer"
+          },
+          "y_mm": {
+            "title": "Y Mm",
+            "type": "integer"
+          },
+          "z_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Z Mm"
+          }
+        },
+        "required": [
+          "location_id",
+          "code",
+          "name",
+          "kind",
+          "parent_id",
+          "x_mm",
+          "y_mm",
+          "z_mm",
+          "width_mm",
+          "depth_mm",
+          "height_mm"
+        ],
+        "title": "PublishedPlacementOut",
+        "type": "object"
+      },
       "PurchaseOrderIn": {
         "additionalProperties": false,
         "description": "`POST /purchase-orders`. `status`, `number`, `received_date` and `received_qty` are\nserver-owned and never accepted here: the number is assigned by `services.next_po_number`,\nstatus always starts `draft`, and receiving is its own endpoint. `raised_by_id` is always\n`ctx.subject_ref` \u2014 never the client's word for who is calling.",
@@ -7158,6 +7540,414 @@
           "notes"
         ],
         "title": "PurchaseOrderReceiptOut",
+        "type": "object"
+      },
+      "PutawayDetailOut": {
+        "description": "`GET /inventory/putaway/{move_id}` \u2014 what is recorded about a put-away. `has_location`\nsays a fix exists; the fix itself is only ever returned by the audited reveal.",
+        "properties": {
+          "captured_at": {
+            "format": "date-time",
+            "title": "Captured At",
+            "type": "string"
+          },
+          "has_location": {
+            "title": "Has Location",
+            "type": "boolean"
+          },
+          "matched_suggestion": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Suggestion"
+          },
+          "move_id": {
+            "title": "Move Id",
+            "type": "string"
+          },
+          "to_location": {
+            "$ref": "#/components/schemas/PutawayToOut"
+          },
+          "worker_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worker Id"
+          }
+        },
+        "required": [
+          "move_id",
+          "to_location",
+          "worker_id",
+          "captured_at",
+          "matched_suggestion",
+          "has_location"
+        ],
+        "title": "PutawayDetailOut",
+        "type": "object"
+      },
+      "PutawayFromOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name"
+        ],
+        "title": "PutawayFromOut",
+        "type": "object"
+      },
+      "PutawayIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/putaway` \u2014 store stock from a receiving or staging bin into the bin whose\nbarcode the worker scanned.\n\n`to_barcode` takes the shape a location's barcode is stored in (printable ASCII, no space, no\n`/`, 1-64 characters): a scanner's trailing CR/LF is a 422 here \u2014 the apps trim it. The server\nresolves it to a bin (a worker holds no `location.read`). `suggested_location_id` is only what\nthe device *showed*; whether the scan matched the server's own rule is computed server-side.\n\nThe GPS fix is audit evidence, never a location of record, and it never blocks the move: a fix\nthe server cannot use (unpaired, out of range, negative accuracy) is dropped with a warning in\nthe response, and the stock still moves. `captured_at` is the device's claim of when the fix\nwas taken; it is replaced by the receipt time when absurd. None of the geo is part of the\nidempotency hash \u2014 a retry that differs only in geo replays the original.",
+        "properties": {
+          "accuracy_m": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accuracy M"
+          },
+          "captured_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Captured At"
+          },
+          "from_location_id": {
+            "format": "uuid",
+            "title": "From Location Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "lat_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lat Micro"
+          },
+          "lng_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lng Micro"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "occurred_on": {
+            "format": "date",
+            "title": "Occurred On",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "suggested_location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Location Id"
+          },
+          "to_barcode": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[!-.0-~]+$",
+            "title": "To Barcode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "from_location_id",
+          "to_barcode",
+          "quantity"
+        ],
+        "title": "PutawayIn",
+        "type": "object"
+      },
+      "PutawayLocationOut": {
+        "description": "`POST /inventory/putaway/{move_id}/location:reveal` \u2014 the one response that carries a\nworker's coordinates. Nulls when the capture holds no fix. Sent `Cache-Control: no-store`;\nevery successful call writes an audit row.",
+        "properties": {
+          "accuracy_m": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accuracy M"
+          },
+          "captured_at": {
+            "format": "date-time",
+            "title": "Captured At",
+            "type": "string"
+          },
+          "lat_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lat Micro"
+          },
+          "lng_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lng Micro"
+          }
+        },
+        "required": [
+          "lat_micro",
+          "lng_micro",
+          "accuracy_m",
+          "captured_at"
+        ],
+        "title": "PutawayLocationOut",
+        "type": "object"
+      },
+      "PutawayOut": {
+        "description": "The put-away's receipt: the move, the two bins, whether the scan matched the server's\nsuggestion (`null` when it had none) and whether a fix was kept. **No coordinates.**\n\n`warnings` says what was adjusted without failing the request: `geo_dropped:<reason>`,\n`captured_at_adjusted`, `geo_not_recorded` (the capture row could not be written; the move\nstands).",
+        "properties": {
+          "from_location": {
+            "$ref": "#/components/schemas/PutawayFromOut"
+          },
+          "geo_recorded": {
+            "title": "Geo Recorded",
+            "type": "boolean"
+          },
+          "matched_suggestion": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Suggestion"
+          },
+          "move_id": {
+            "title": "Move Id",
+            "type": "string"
+          },
+          "replayed": {
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "to_location": {
+            "$ref": "#/components/schemas/PutawayToOut"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "move_id",
+          "replayed",
+          "from_location",
+          "to_location",
+          "matched_suggestion",
+          "geo_recorded",
+          "warnings"
+        ],
+        "title": "PutawayOut",
+        "type": "object"
+      },
+      "PutawaySuggestOut": {
+        "description": "`GET /inventory/putaway/suggest` \u2014 `null` when the warehouse has no storable bin to offer.",
+        "properties": {
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PutawaySuggestionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "suggestion"
+        ],
+        "title": "PutawaySuggestOut",
+        "type": "object"
+      },
+      "PutawaySuggestionOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "holds_item",
+              "empty_bin"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "location_id",
+          "code",
+          "name",
+          "path",
+          "reason"
+        ],
+        "title": "PutawaySuggestionOut",
+        "type": "object"
+      },
+      "PutawayToOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "zone",
+              "aisle",
+              "rack",
+              "shelf",
+              "bin",
+              "staging",
+              "pack_station",
+              "dock",
+              "receiving",
+              "returns",
+              "quarantine"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "kind"
+        ],
+        "title": "PutawayToOut",
         "type": "object"
       },
       "QuoteIn": {
@@ -10099,7 +10889,7 @@
       },
       "WarehouseIn": {
         "additionalProperties": false,
-        "description": "`POST /warehouses`. `code` is immutable once created \u2014 it never appears on\n`WarehousePatch`.",
+        "description": "`POST /warehouses`. `code` is immutable once created \u2014 it never appears on\n`WarehousePatch`. `lat_micro`/`lng_micro` place the site on a map: integers (never floats),\ngiven together or not at all, latitude within +-90 degrees and longitude within +-180.",
         "properties": {
           "code": {
             "maxLength": 40,
@@ -10107,6 +10897,28 @@
             "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Code",
             "type": "string"
+          },
+          "lat_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lat Micro"
+          },
+          "lng_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lng Micro"
           },
           "location": {
             "default": "",
@@ -10128,8 +10940,81 @@
         "title": "WarehouseIn",
         "type": "object"
       },
-      "WarehouseOut": {
-        "description": "A stocking location. Reference data behind the warehouse names the POs and inventory\nrows carry.",
+      "WarehouseMapOut": {
+        "properties": {
+          "sites": {
+            "items": {
+              "$ref": "#/components/schemas/WarehouseMapSiteOut"
+            },
+            "title": "Sites",
+            "type": "array"
+          },
+          "without_coordinates": {
+            "items": {
+              "$ref": "#/components/schemas/WarehouseMapUnplacedOut"
+            },
+            "title": "Without Coordinates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sites",
+          "without_coordinates"
+        ],
+        "title": "WarehouseMapOut",
+        "type": "object"
+      },
+      "WarehouseMapSiteOut": {
+        "description": "One placed site on the warehouses map \u2014 `GET /warehouses/map`. These are *site*\ncoordinates (a business address), not a worker's position.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "floor_count": {
+            "title": "Floor Count",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lat_micro": {
+            "title": "Lat Micro",
+            "type": "integer"
+          },
+          "lng_micro": {
+            "title": "Lng Micro",
+            "type": "integer"
+          },
+          "location": {
+            "title": "Location",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "stocked_location_count": {
+            "title": "Stocked Location Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "location",
+          "lat_micro",
+          "lng_micro",
+          "floor_count",
+          "stocked_location_count"
+        ],
+        "title": "WarehouseMapSiteOut",
+        "type": "object"
+      },
+      "WarehouseMapUnplacedOut": {
+        "description": "A warehouse with no coordinates yet \u2014 listed beside the map so it can be placed.",
         "properties": {
           "code": {
             "title": "Code",
@@ -10154,13 +11039,86 @@
           "name",
           "location"
         ],
+        "title": "WarehouseMapUnplacedOut",
+        "type": "object"
+      },
+      "WarehouseOut": {
+        "description": "A stocking location. Reference data behind the warehouse names the POs and inventory\nrows carry. `lat_micro`/`lng_micro` are the *site's* position on a map in integer\nmicro-degrees (10^-6), both set or both null.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lat_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lat Micro"
+          },
+          "lng_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lng Micro"
+          },
+          "location": {
+            "title": "Location",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "location"
+        ],
         "title": "WarehouseOut",
         "type": "object"
       },
       "WarehousePatch": {
         "additionalProperties": false,
-        "description": "`PATCH /warehouses/{id}`. A rename cascades to `purchase_orders.warehouse` and\n`inventory_items.warehouse` in the same transaction \u2014 those columns are denormalised copies\nof `name`, not a join.",
+        "description": "`PATCH /warehouses/{id}`. A rename cascades to `purchase_orders.warehouse` and\n`inventory_items.warehouse` in the same transaction \u2014 those columns are denormalised copies\nof `name`, not a join.\n\n`lat_micro`/`lng_micro` are checked against the **merged** state (a patch that sets only the\nlatitude is checked against the persisted longitude \u2014 `app.inventory.services\n.update_warehouse`); an explicit `null` for both clears the site's position.",
         "properties": {
+          "lat_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lat Micro"
+          },
+          "lng_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lng Micro"
+          },
           "location": {
             "anyOf": [
               {
@@ -12316,6 +13274,49 @@
           }
         },
         "summary": "Record a shipment returned to the business (reason required)",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/floors/{floor_id}/published-layout": {
+      "get": {
+        "operationId": "read_published_layout_api_v1_operations_floors__floor_id__published_layout_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "floor_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Floor Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishedLayoutOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What is live on a floor: the published layout's placements with their locations",
         "tags": [
           "operations"
         ]
@@ -14507,6 +15508,100 @@
         ]
       }
     },
+    "/api/v1/operations/inventory/locate": {
+      "get": {
+        "operationId": "locate_stock_api_v1_operations_inventory_locate_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "inventory_item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Inventory Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lot_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lot Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "roll_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Roll Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "warehouse_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warehouse Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Where is this item (lot, roll)? Bins holding it, with their place on the floor plan",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
     "/api/v1/operations/inventory/lots": {
       "get": {
         "operationId": "list_lots_api_v1_operations_inventory_lots_get",
@@ -14942,6 +16037,218 @@
           }
         },
         "summary": "Backward and forward trace of a lot through the genealogy",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/putaway": {
+      "post": {
+        "operationId": "putaway_stock_api_v1_operations_inventory_putaway_post",
+        "parameters": [
+          {
+            "description": "Required. Retrying with the same key replays the first result instead of putting stock away again; reusing it for a different request is a 409. The server namespaces it, so it is at most 120 characters.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required. Retrying with the same key replays the first result instead of putting stock away again; reusing it for a different request is a 409. The server namespaces it, so it is at most 120 characters.",
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutawayIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutawayOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Store stock from a receiving or staging bin into the bin whose barcode was scanned",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/putaway/suggest": {
+      "get": {
+        "operationId": "suggest_putaway_api_v1_operations_inventory_putaway_suggest_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "inventory_item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Inventory Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "warehouse_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Warehouse Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lot_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lot Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutawaySuggestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Where to store an item: a bin already holding it, else the first empty one",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/putaway/{move_id}": {
+      "get": {
+        "operationId": "read_putaway_api_v1_operations_inventory_putaway__move_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "move_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Move Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutawayDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What is recorded about a put-away (never the GPS fix)",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/putaway/{move_id}/location:reveal": {
+      "post": {
+        "operationId": "reveal_putaway_location_api_v1_operations_inventory_putaway__move_id__location_reveal_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "move_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Move Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutawayLocationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reveal the GPS fix recorded with a put-away (audited every time)",
         "tags": [
           "inventory"
         ]
@@ -19084,6 +20391,27 @@
           }
         },
         "summary": "Add a warehouse",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/warehouses/map": {
+      "get": {
+        "operationId": "warehouses_map_api_v1_operations_warehouses_map_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarehouseMapOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The org's warehouses for a map: placed sites and the ones with no coordinates yet",
         "tags": [
           "operations"
         ]

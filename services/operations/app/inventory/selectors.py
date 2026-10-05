@@ -17,6 +17,7 @@ from sqlalchemy.orm import contains_eager
 
 from app.inventory.quantity import QTY_SCALE, format_qty, whole_units
 from app.models import (
+    OFF_SITE_STATUSES,
     InventoryBalance,
     InventoryDiscrepancy,
     InventoryItem,
@@ -30,6 +31,7 @@ from app.models import (
     PurchaseOrder,
     Uom,
     Warehouse,
+    WarehouseFloor,
 )
 from app.schemas import (
     InventoryDiscrepancyOut,
@@ -42,6 +44,9 @@ from app.schemas import (
     StockBalanceOut,
     StockMovementOut,
     UomOut,
+    WarehouseMapOut,
+    WarehouseMapSiteOut,
+    WarehouseMapUnplacedOut,
     WarehouseOut,
 )
 from platform_core.auth import ScopeContext
@@ -846,7 +851,58 @@ def warehouse_out(warehouse: Warehouse) -> WarehouseOut:
         code=warehouse.code,
         name=warehouse.name,
         location=warehouse.location,
+        lat_micro=warehouse.lat_micro,
+        lng_micro=warehouse.lng_micro,
     )
+
+
+async def warehouse_map(session: AsyncSession, org_id: uuid.UUID) -> WarehouseMapOut:
+    """The org's warehouses split for a map: the placed ones with two counts a marker popup shows
+    (live floors; locations holding stock now), and the ones with no coordinates yet. Three queries
+    however many sites there are — the counts are grouped, never per warehouse. Site coordinates
+    only: nothing here is a person's position."""
+    warehouses = (await session.execute(warehouses_stmt(org_id))).scalars().all()
+    floor_rows = await session.execute(
+        select(WarehouseFloor.warehouse_id, func.count())
+        .where(WarehouseFloor.organization_id == org_id, WarehouseFloor.deleted_at.is_(None))
+        .group_by(WarehouseFloor.warehouse_id)
+    )
+    floor_counts: dict[uuid.UUID, int] = {row[0]: row[1] for row in floor_rows.all()}
+    stocked_rows = await session.execute(
+        select(Location.warehouse_id, func.count(func.distinct(Location.id)))
+        .select_from(InventoryBalance)
+        .join(Location, Location.id == InventoryBalance.location_id)
+        .where(
+            InventoryBalance.organization_id == org_id,
+            Location.organization_id == org_id,
+            Location.deleted_at.is_(None),
+            InventoryBalance.quantity_milli > 0,
+            InventoryBalance.status.notin_(OFF_SITE_STATUSES),
+        )
+        .group_by(Location.warehouse_id)
+    )
+    stocked_counts: dict[uuid.UUID, int] = {row[0]: row[1] for row in stocked_rows.all()}
+    sites: list[WarehouseMapSiteOut] = []
+    without: list[WarehouseMapUnplacedOut] = []
+    for w in warehouses:
+        if w.lat_micro is None or w.lng_micro is None:
+            without.append(
+                WarehouseMapUnplacedOut(id=str(w.id), code=w.code, name=w.name, location=w.location)
+            )
+            continue
+        sites.append(
+            WarehouseMapSiteOut(
+                id=str(w.id),
+                code=w.code,
+                name=w.name,
+                location=w.location,
+                lat_micro=w.lat_micro,
+                lng_micro=w.lng_micro,
+                floor_count=floor_counts.get(w.id, 0),
+                stocked_location_count=stocked_counts.get(w.id, 0),
+            )
+        )
+    return WarehouseMapOut(sites=sites, without_coordinates=without)
 
 
 def location_out(location: Location) -> LocationOut:

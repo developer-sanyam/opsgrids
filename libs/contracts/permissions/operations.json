@@ -245,6 +245,15 @@
       "resource": "lot"
     },
     {
+      "action": "location_read",
+      "default_scope": "ORG",
+      "description": "See the GPS position a worker's device reported when they put stock away \u2014 every reveal is audited",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "putaway"
+    },
+    {
       "action": "write",
       "default_scope": "ORG",
       "description": "Register and re-measure rolls, and split or merge them",
@@ -619,6 +628,10 @@
         },
         {
           "code": "operations.inventory.lot.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.putaway.location_read",
           "scope": "ORG"
         },
         {
