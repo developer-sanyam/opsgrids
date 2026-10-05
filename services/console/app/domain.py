@@ -23,7 +23,7 @@ import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 # Subscription routing keys this service folds. Bound by the consumer; listed here so the set is
@@ -149,6 +149,50 @@ def plan_change_fingerprint(
                 "plan_version_id": expected_plan_version_id,
                 "pending_plan_version_id": expected_pending_plan_version_id,
             },
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def add_product_fingerprint(
+    *, organization_id: str, product_key: str, plan_version_id: str, trial: bool
+) -> str:
+    """A stable digest of what an Add product request *decided* (ADR-0030): where, which product,
+    which version, and whether it starts as a trial. Not in it: the reason (rephrasing on a retry
+    is still a replay) and the paid-add acknowledgement (a precondition, not a decision)."""
+    material = json.dumps(
+        {
+            "action": "add_product",
+            "organization_id": organization_id,
+            "product_key": product_key,
+            "plan_version_id": plan_version_id,
+            "trial": trial,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def extend_trial_fingerprint(
+    *,
+    organization_id: str,
+    product_key: str,
+    subscription_id: str,
+    new_trial_ends_at: datetime,
+    expected_trial_ends_at: datetime,
+) -> str:
+    """A stable digest of an Extend trial request (ADR-0030): which subscription, the absolute new
+    end, and the end the operator saw. Instants are normalised to UTC first, so the same moment
+    written in IST and in UTC is the same request. The reason is excluded, as everywhere."""
+    material = json.dumps(
+        {
+            "action": "extend_trial",
+            "organization_id": organization_id,
+            "product_key": product_key,
+            "subscription_id": subscription_id,
+            "new_trial_ends_at": new_trial_ends_at.astimezone(UTC).isoformat(),
+            "expected_trial_ends_at": expected_trial_ends_at.astimezone(UTC).isoformat(),
         },
         sort_keys=True,
     )
