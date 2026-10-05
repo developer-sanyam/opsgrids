@@ -78,6 +78,10 @@ export async function openRazorpayCheckout(
   session: OrderCheckoutSessionOut,
   { businessName }: { businessName: string },
 ): Promise<CheckoutClosed> {
+  if (session.provider !== "razorpay") {
+    // The card dispatches on `session.provider`; a Cashfree session here is a wiring mistake.
+    throw new Error("A Razorpay checkout was asked to open another provider's session.");
+  }
   const Razorpay = await loadRazorpay();
   return new Promise<CheckoutClosed>((resolve) => {
     let settled = false;

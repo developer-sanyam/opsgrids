@@ -7,11 +7,15 @@ import {
   startOrderCheckout,
   syncOrderPayment,
 } from "@/api/client";
-import type { OrderCollectionOut, OrderOut } from "@/api/types";
+import type { OrderCheckoutSessionOut, OrderCollectionOut, OrderOut } from "@/api/types";
+import { usePaymentStatusPoll } from "@/forms/usePaymentStatusPoll";
+import type { PollOutcome } from "@/forms/usePaymentStatusPoll";
+import { openCashfreeCheckout } from "@/lib/cashfreeCheckout";
 import { formatDate, formatMoney } from "@/lib/format";
 import { minorToInput, parseMinor } from "@/lib/money";
+import { providerName } from "@/lib/paymentProviders";
 import { openRazorpayCheckout } from "@/lib/razorpayCheckout";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { Can, problemMessage, useAsync, useAuth, useCan, useMutation } from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -45,18 +49,46 @@ function refundable(c: OrderCollectionOut): number {
   return c.state === "captured" ? Math.max(c.amount_minor - c.refunded_minor, 0) : 0;
 }
 
+/** Open the provider's own checkout for `session` and resolve when it closes — with nothing but
+ *  that it closed. Dispatched on the provider the server named, never guessed. */
+function openCheckout(session: OrderCheckoutSessionOut, businessName: string) {
+  return session.provider === "cashfree"
+    ? openCashfreeCheckout(session)
+    : openRazorpayCheckout(session, { businessName });
+}
+
 /**
- * The order's payment (ADR-0024 A4, Fulfilment F10): whether it is paid, every online payment
- * attempt, and — when the order can be paid online — "Collect online payment", which opens
- * Razorpay's own hosted Checkout. This screen never marks an order paid: when Checkout closes it
- * asks the server to check with Razorpay, and the order is paid only when Razorpay says so (that
- * check, or Razorpay's signed webhook). The Checkout callback's own payment data is never used.
+ * The order's payment (ADR-0024 A4, Fulfilment F10, ADR-0030): whether it is paid, every online
+ * payment attempt, and — when the order can be paid online — "Collect online payment", which opens
+ * the connected provider's own hosted checkout (Razorpay's, or Cashfree's in a modal). This screen
+ * never marks an order paid: when the checkout closes it asks the server to check with the
+ * provider, and the order is paid only when the provider says so (that check, or its signed
+ * webhook). Whatever the checkout's own callback reports is never used. A payment still pending
+ * after that is asked about again, every few seconds for about a minute, with a standing "don't
+ * take payment again" until it settles.
  */
 export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; onOrderChanged: () => void }) {
   const toast = useToast();
+  const { user } = useAuth();
+  const businessName =
+    user?.organizations.find((org) => org.organization_id === user.organization_id)?.name || "Order payment";
   const canRefund = useCan("operations.orders.payment.refund", "ORG");
   const state = useAsync(() => getOrderPayments(order.id), [order.id, order.version]);
   const [notice, setNotice] = useState<string | null>(null);
+  const [pendingProvider, setPendingProvider] = useState<string | null>(null);
+  const poll = usePaymentStatusPoll(
+    (chargeId) => syncOrderPayment(order.id, chargeId),
+    (outcome: PollOutcome) => {
+      if (outcome.kind === "settled" && outcome.collection.state === "captured") {
+        toast.success("Payment received — confirmed with the provider.");
+      } else if (outcome.kind === "gave_up") {
+        setNotice(
+          `Still pending with ${providerName(pendingProvider)}. Use "Check status" in a little while — and don't take payment again until it settles.`,
+        );
+      }
+      refreshEverything();
+    },
+  );
   const [refunding, setRefunding] = useState<OrderCollectionOut | null>(null);
   const [refundAmount, setRefundAmount] = useState("");
   const [refundReason, setRefundReason] = useState("");
@@ -82,11 +114,15 @@ export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; o
         );
         return opened;
       }
-      await openRazorpayCheckout(opened.checkout, { businessName: "Order payment" });
-      // However Checkout closed, ask the provider (through the server) what really happened.
+      await openCheckout(opened.checkout, businessName);
+      // However the checkout closed, ask the provider (through the server) what really happened.
       const checked = await syncOrderPayment(order.id, opened.collection.id);
       if (checked.state === "captured") toast.success("Payment received — confirmed with the provider.");
       else if (checked.state === "authorized") toast.success("Payment authorized — waiting for the provider to capture it.");
+      if (checked.state === "created" || checked.state === "authorized") {
+        setPendingProvider(opened.checkout.provider);
+        poll.start(checked.id);
+      }
       return opened;
     },
     { onSuccess: () => refreshEverything(), onError: () => refreshEverything() },
@@ -192,6 +228,13 @@ export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; o
       ) : null}
 
       {notice ? <InlineAlert tone="warning" title={notice} /> : null}
+      <div aria-live="polite">
+        {poll.watching !== null ? (
+          <InlineAlert tone="info" live="off" title="Payment pending — don't take payment again">
+            Waiting for {providerName(pendingProvider)} to confirm it. This updates by itself.
+          </InlineAlert>
+        ) : null}
+      </div>
       {mutationError ? <InlineAlert tone="danger" title={problemMessage(mutationError)} /> : null}
 
       {payments.can_collect ? (

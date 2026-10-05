@@ -2373,13 +2373,14 @@ export async function insightDiscrepancyTrend(days = 30): Promise<DiscrepancyTre
 
 /* ------------------------------------ online payment (ADR-0024 A4, Fulfilment F10) ------------------------------------ */
 /**
- * An order's online payment, and the organization's own Razorpay connection. No fixture-mode
- * branch (the dispatch section's precedent): every function calls the real endpoint.
+ * An order's online payment, and the organization's own payment-provider connection (Razorpay or
+ * Cashfree, ADR-0030). No fixture-mode branch (the dispatch section's precedent): every function
+ * calls the real endpoint.
  *
- * Nothing here can mark an order paid. `startOrderCheckout` returns what Razorpay's hosted
- * Checkout needs (a public key id and an Order id); whether the customer then paid is asked of
- * the provider server-side by `syncOrderPayment`, which sends no body at all — the Checkout
- * callback's payment id and signature are never sent anywhere.
+ * Nothing here can mark an order paid. `startOrderCheckout` returns what the provider's hosted
+ * checkout needs (Razorpay: a public key id and an Order id; Cashfree: a payment session id);
+ * whether the customer then paid is asked of the provider server-side by `syncOrderPayment`,
+ * which sends no body at all — whatever the checkout's callback says is never sent anywhere.
  */
 
 /** `GET /operations/orders/{id}/payments` — `operations.orders.order.read`. */
@@ -2438,9 +2439,17 @@ export async function saveMerchantAccount(input: MerchantAccountIn): Promise<Mer
   return apiRequest<MerchantAccountOut>("/payment/collections/merchant-account", { method: "PUT", body: input });
 }
 
-/** `DELETE /payment/collections/merchant-account` — `operations.payments.merchant_account.write:ORG`. */
+/** `DELETE /payment/collections/merchant-account` — `operations.payments.merchant_account.write:ORG`
+ *  and a one-time-code session. Refused (409, with the count) while an online payment is open. */
 export async function removeMerchantAccount(): Promise<void> {
   await apiRequest<undefined>("/payment/collections/merchant-account", { method: "DELETE" });
+}
+
+/** `POST /payment/collections/merchant-account/verify` — the server asks the provider, with the
+ *  account's own keys, whether they work, and records the answer. A 422 `credentials-rejected`
+ *  means the provider refused them (recorded too); a 503 that it could not be asked. */
+export async function verifyMerchantAccount(): Promise<MerchantAccountOut> {
+  return apiRequest<MerchantAccountOut>("/payment/collections/merchant-account/verify", { method: "POST" });
 }
 
 /** `GET /payment/collections/reconciliation` — `operations.payments.reconciliation.read:ORG`.
