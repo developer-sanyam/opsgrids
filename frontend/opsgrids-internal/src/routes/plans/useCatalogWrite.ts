@@ -42,12 +42,16 @@ export function useCatalogWrite(): CatalogWrite {
     } catch (err) {
       setFieldErrors(problemErrors(err));
       setReference(problemReference(err));
+      // A 5xx, or no answer at all (a dropped connection rejects `fetch` with a TypeError, an
+      // abort with an AbortError — neither is an ApiError), may have committed on the server.
+      // Retrying from this dialog reuses its Idempotency-Key and is safe; closing it and starting
+      // again mints a new key and could make the change twice.
+      const unknown = !(err instanceof ApiError) || err.status >= 500;
+      const message = err instanceof Error ? err.message : "The change did not go through.";
       setError(
-        err instanceof ApiError && err.status >= 500
-          ? `${err.message} The outcome is unknown — reload the plan before trying again.`
-          : err instanceof Error
-            ? err.message
-            : "The change did not go through.",
+        unknown
+          ? `${message} The outcome is unknown — retry from this dialog (it is safe), or reload the plan to check first.`
+          : message,
       );
       return undefined;
     } finally {

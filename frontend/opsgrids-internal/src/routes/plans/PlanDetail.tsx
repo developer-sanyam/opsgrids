@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   Button,
@@ -16,6 +16,7 @@ import {
   deleteDraftVersion,
   getPlan,
   getVersion,
+  problemReference,
   publishVersion,
   reactivatePlan,
   retirePlan,
@@ -47,6 +48,13 @@ type Dialog =
 
 type SheetState = { status: "loading" } | { status: "ready"; version: PlanVersionOut } | { status: "error"; message: string };
 
+/** The header's "New draft" fetching the version it copies. A failed fetch never opens the editor
+ *  on an empty sheet: that would silently drop every feature, seat class and bundle member. */
+type CopyState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "error"; versionNo: number; message: string; reference: string | undefined };
+
 interface PlanDetailProps {
   planId: string;
   canWrite: boolean;
@@ -74,9 +82,19 @@ export function PlanDetail({ planId, canWrite, onBack, onResult }: PlanDetailPro
   const [reloadToken, setReloadToken] = useState(0);
   const [open, setOpen] = useState<Record<string, SheetState>>({});
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [copy, setCopy] = useState<CopyState>({ status: "idle" });
+  /** Which audience `versions` belongs to: until the new tab's first page lands, the old list is
+   *  not shown under the new label, and the header cannot copy from it. */
+  const [loadedAudience, setLoadedAudience] = useState<Audience | null>(null);
+  /** Bumped by every first-page load, so a "Load more" that started before it is dropped. */
+  const generation = useRef(0);
+  const copying = useRef(false);
+  const focusAfterWrite = useRef(false);
+  const versionsHeading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     let active = true;
+    generation.current += 1;
     setLoadError(null);
     getPlan(planId, { audience })
       .then((detail) => {
@@ -84,6 +102,7 @@ export function PlanDetail({ planId, canWrite, onBack, onResult }: PlanDetailPro
         setPlan(detail);
         setVersions(detail.versions);
         setNextCursor(detail.next_cursor);
+        setLoadedAudience(audience);
       })
       .catch((err: unknown) => {
         if (active) setLoadError(err instanceof Error ? err.message : "The plan could not be loaded.");
@@ -119,23 +138,72 @@ export function PlanDetail({ planId, canWrite, onBack, onResult }: PlanDetailPro
 
   async function loadMore() {
     if (nextCursor === null) return;
+    const started = generation.current;
     setLoadingMore(true);
     try {
       const page = await getPlan(planId, { audience, cursor: nextCursor });
+      // The audience changed, or a write reloaded the first page, while this was in flight: its
+      // rows and cursor belong to a list that is no longer on screen.
+      if (started !== generation.current) return;
       setVersions((current) => [...current, ...page.versions]);
       setNextCursor(page.next_cursor);
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : "More versions could not be loaded.");
+      if (started === generation.current) {
+        setLoadError(err instanceof Error ? err.message : "More versions could not be loaded.");
+      }
     } finally {
       setLoadingMore(false);
     }
   }
 
+  // After a write the control that opened the dialog may be gone (its sheet reloads, or the
+  // draft was deleted), so focus would fall to <body>. Land it on the Versions heading instead.
+  useEffect(() => {
+    if (dialog === null && focusAfterWrite.current) {
+      focusAfterWrite.current = false;
+      versionsHeading.current?.focus();
+    }
+  }, [dialog]);
+
   function finished(message: string, versionId?: string) {
+    focusAfterWrite.current = true;
     setDialog(null);
     onResult(message);
     if (versionId !== undefined) loadSheet(versionId);
     setReloadToken((token) => token + 1);
+  }
+
+  /** The header's New draft: a copy of the version on sale for this audience (or the newest one),
+   *  fetched whole first. A plan with no versions here starts from an empty sheet; a failed fetch
+   *  opens nothing and says so. */
+  async function startDraft(from: VersionSummaryOut | undefined) {
+    if (copying.current) return;
+    if (from === undefined) {
+      setDialog({ kind: "draft", source: null });
+      return;
+    }
+    const sheet = open[from.id];
+    if (sheet?.status === "ready") {
+      setCopy({ status: "idle" });
+      setDialog({ kind: "draft", source: sheet.version });
+      return;
+    }
+    copying.current = true;
+    setCopy({ status: "loading" });
+    try {
+      const source = await getVersion(from.id);
+      setCopy({ status: "idle" });
+      setDialog({ kind: "draft", source });
+    } catch (err) {
+      setCopy({
+        status: "error",
+        versionNo: from.version_no,
+        message: err instanceof Error ? err.message : "It could not be loaded.",
+        reference: problemReference(err),
+      });
+    } finally {
+      copying.current = false;
+    }
   }
 
   if (loadError !== null && plan === null) {
@@ -160,7 +228,8 @@ export function PlanDetail({ planId, canWrite, onBack, onResult }: PlanDetailPro
     );
   }
 
-  const newest = versions[0];
+  const listStale = loadedAudience !== audience;
+  const copyFrom = versions.find((v) => v.state === "published") ?? versions[0];
 
   return (
     <div className="flex flex-col gap-6">
@@ -188,16 +257,9 @@ export function PlanDetail({ planId, canWrite, onBack, onResult }: PlanDetailPro
           <div className="flex flex-wrap gap-2">
             <Button
               variant="primary"
-              onClick={() => {
-                const sheet = newest ? open[newest.id] : undefined;
-                if (newest && sheet?.status !== "ready") {
-                  getVersion(newest.id)
-                    .then((source) => setDialog({ kind: "draft", source }))
-                    .catch(() => setDialog({ kind: "draft", source: null }));
-                  return;
-                }
-                setDialog({ kind: "draft", source: sheet?.status === "ready" ? sheet.version : null });
-              }}
+              loading={copy.status === "loading"}
+              disabled={listStale}
+              onClick={() => void startDraft(copyFrom)}
             >
               New draft
             </Button>
@@ -214,16 +276,27 @@ export function PlanDetail({ planId, canWrite, onBack, onResult }: PlanDetailPro
         ) : (
           <p className="text-sm text-muted">Read-only: changing the catalogue needs the owner role.</p>
         )}
+        {canWrite && copy.status === "error" ? (
+          <InlineAlert
+            tone="danger"
+            title={`Could not load v${copy.versionNo} to copy — try New draft again.`}
+            reference={copy.reference}
+          >
+            {copy.message} Nothing was opened: starting from an empty sheet would drop v{copy.versionNo}&apos;s
+            features, seat classes and bundle members.
+          </InlineAlert>
+        ) : null}
       </Card>
 
       <section aria-labelledby="versions-heading" className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
-          <h3 id="versions-heading" className="text-base font-semibold text-ink">
+          <h3 id="versions-heading" ref={versionsHeading} tabIndex={-1} className="text-base font-semibold text-ink">
             Versions
           </h3>
           <Tabs
             label="Audience"
             variant="segmented"
+            activation="manual"
             items={AUDIENCE_TABS}
             value={audience}
             onChange={(id) => setAudience(id as Audience)}
@@ -232,7 +305,14 @@ export function PlanDetail({ planId, canWrite, onBack, onResult }: PlanDetailPro
 
         {loadError !== null ? <InlineAlert tone="danger" title={loadError} /> : null}
 
-        {versions.length === 0 ? (
+        {listStale ? (
+          loadError === null ? (
+            <div className="flex flex-col gap-3" aria-busy="true">
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-16 w-full" />
+            </div>
+          ) : null
+        ) : versions.length === 0 ? (
           <EmptyState
             title="No versions for this audience"
             description={
@@ -291,7 +371,7 @@ export function PlanDetail({ planId, canWrite, onBack, onResult }: PlanDetailPro
           </ul>
         )}
 
-        {nextCursor !== null ? (
+        {nextCursor !== null && !listStale ? (
           <div>
             <Button variant="secondary" loading={loadingMore} onClick={() => void loadMore()}>
               Load more versions
@@ -302,6 +382,7 @@ export function PlanDetail({ planId, canWrite, onBack, onResult }: PlanDetailPro
 
       {dialog?.kind === "draft" ? (
         <DraftVersionDialog
+          key={dialog.source?.id ?? "empty"}
           planId={plan.id}
           planName={plan.name}
           source={dialog.source}
@@ -320,8 +401,12 @@ export function PlanDetail({ planId, canWrite, onBack, onResult }: PlanDetailPro
       {dialog?.kind === "withdraw" ? (
         <ReasonDialog
           title={`Withdraw v${dialog.version.version_no}?`}
-          description={`Customers already on v${dialog.version.version_no} keep it and keep being billed for it. Nobody new can choose it, and it cannot be put back on sale.`}
-          warning={{ tone: "warning", title: "Withdrawing cannot be undone." }}
+          description={`Customers already on v${dialog.version.version_no} keep it and keep being billed for it. No new subscription and no new plan change can choose it, and it cannot be put back on sale.`}
+          warning={{
+            tone: "warning",
+            title: "Withdrawing cannot be undone, and it does not cancel a change already scheduled onto this version.",
+            body: `A downgrade a customer scheduled onto v${dialog.version.version_no} before now still lands at their renewal. Find those subscriptions first (the runbook has the query).`,
+          }}
           submitLabel={`Withdraw v${dialog.version.version_no}`}
           pendingLabel="Withdrawing…"
           onClose={() => setDialog(null)}
@@ -350,7 +435,12 @@ export function PlanDetail({ planId, canWrite, onBack, onResult }: PlanDetailPro
       {dialog?.kind === "retire" ? (
         <ReasonDialog
           title={`Retire ${plan.name}?`}
-          description="Customers can no longer choose this plan. Existing subscriptions keep their version and keep billing. You can reactivate it later."
+          description="The plan is hidden from the customer plan list. Existing subscriptions keep their version and keep billing. You can reactivate it later."
+          warning={{
+            tone: "warning",
+            title: "Retiring does not stop a version being chosen by id.",
+            body: "Until subscriptions check plan state, a published version of a retired plan can still be subscribed to or switched onto by its id. Withdraw each published version too if it must stop selling now.",
+          }}
           submitLabel="Retire plan"
           pendingLabel="Retiring…"
           onClose={() => setDialog(null)}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button, Card, DataTable, EmptyState, ErrorState, FilterBar, StatusBadge } from "@opsgrids/ui";
 import type { Column, FilterSelect } from "@opsgrids/ui";
@@ -72,6 +72,8 @@ export function PlanList({ filters, onFiltersChange, onOpen, reloadToken }: Plan
   const [error, setError] = useState<string>("");
   const [loadingMore, setLoadingMore] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  /** Bumped by every first-page load, so a "Load more" that started before it is dropped. */
+  const generation = useRef(0);
 
   const query = {
     productKey: filters.productKey || undefined,
@@ -82,6 +84,7 @@ export function PlanList({ filters, onFiltersChange, onOpen, reloadToken }: Plan
 
   useEffect(() => {
     let active = true;
+    generation.current += 1;
     setStatus("loading");
     listPlans(query)
       .then((page) => {
@@ -104,12 +107,17 @@ export function PlanList({ filters, onFiltersChange, onOpen, reloadToken }: Plan
 
   async function loadMore() {
     if (cursor === null) return;
+    const started = generation.current;
     setLoadingMore(true);
     try {
       const page = await listPlans({ ...query, cursor });
+      // The filters changed (or the list reloaded) while this was in flight: this page and its
+      // cursor belong to a different list, and appending them would mix two filters.
+      if (started !== generation.current) return;
       setRows((current) => [...current, ...page.items]);
       setCursor(page.next_cursor);
     } catch (err) {
+      if (started !== generation.current) return;
       setError(err instanceof Error ? err.message : "More plans could not be loaded.");
       setStatus("error");
     } finally {

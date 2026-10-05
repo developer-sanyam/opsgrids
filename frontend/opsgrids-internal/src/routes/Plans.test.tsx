@@ -322,6 +322,147 @@ describe("owner writes", () => {
     expect(withdraw).toHaveBeenCalledWith("v2", "Superseded by v3", expect.any(String));
   });
 
+  it("publishes a deliberate zero only when the switch is turned on", async () => {
+    mockAuth(["owner"]);
+    vi.spyOn(catalog, "getPlan").mockResolvedValue(detail());
+    const free = version({
+      prices: [{ id: "p1", kind: "flat", amount_minor: 0, currency: "INR", unit: null, unit_price_micros: null, meter_key: null }],
+    });
+    vi.spyOn(catalog, "getVersion").mockResolvedValue(free);
+    const publish = vi.spyOn(catalog, "publishVersion").mockResolvedValue({ ...free, state: "published" });
+    renderPage("/plans?plan=plan-1");
+    await userEvent.click(await screen.findByRole("button", { name: /Show sheet/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Publish v3" }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.type(within(dialog).getByLabelText(/Reason/), "Free tier");
+    await userEvent.click(within(dialog).getByRole("switch", { name: /deliberately prices something at zero/ }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Publish v3 permanently" }));
+    await screen.findByText("v3 of Growth is published.");
+    expect(publish.mock.calls[0]?.[1]).toEqual({ reason: "Free tier", allow_zero_amounts: true });
+  });
+
+  it("says a lost connection leaves the outcome unknown and keeps the key for the retry", async () => {
+    await openDraftSheet();
+    const publish = vi
+      .spyOn(catalog, "publishVersion")
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(version({ state: "published" }));
+    await userEvent.click(screen.getByRole("button", { name: "Publish v3" }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.type(within(dialog).getByLabelText(/Reason/), "Launch pricing");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Publish v3 permanently" }));
+    await within(dialog).findByText(/Failed to fetch The outcome is unknown — retry from this dialog/);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Publish v3 permanently" }));
+    await screen.findByText("v3 of Growth is published.");
+    expect(publish.mock.calls[1]?.[2]).toBe(publish.mock.calls[0]?.[2]);
+  });
+
+  it("deletes a draft with a reason and a key", async () => {
+    await openDraftSheet();
+    const remove = vi
+      .spyOn(catalog, "deleteDraftVersion")
+      .mockResolvedValue({ id: "v3", plan_id: "plan-1", version_no: 3, deleted: true });
+    await userEvent.click(screen.getByRole("button", { name: "Delete draft" }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.type(within(dialog).getByLabelText(/Reason/), "Typo sheet");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete draft" }));
+    await screen.findByText("Draft v3 of Growth deleted.");
+    expect(remove).toHaveBeenCalledWith("v3", "Typo sheet", expect.any(String));
+  });
+
+  it("retire says it does not stop a pin by id, then reactivate sends its own reason", async () => {
+    mockAuth(["owner"]);
+    vi.spyOn(catalog, "getPlan")
+      .mockResolvedValueOnce(detail())
+      .mockResolvedValue(detail({ state: "retired" }));
+    const retire = vi.spyOn(catalog, "retirePlan").mockResolvedValue(row({ state: "retired" }));
+    const reactivate = vi.spyOn(catalog, "reactivatePlan").mockResolvedValue(row());
+    renderPage("/plans?plan=plan-1");
+    await userEvent.click(await screen.findByRole("button", { name: "Retire plan" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByText(/can no longer choose/)).toBeNull();
+    expect(within(dialog).getByText("Retiring does not stop a version being chosen by id.")).toBeTruthy();
+    expect(within(dialog).getByText(/Withdraw each published version too/)).toBeTruthy();
+    await userEvent.type(within(dialog).getByLabelText(/Reason/), "Stop selling");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Retire plan" }));
+    await screen.findByText("Growth is retired.");
+    expect(retire).toHaveBeenCalledWith("plan-1", "Stop selling", expect.any(String));
+
+    await userEvent.click(await screen.findByRole("button", { name: "Reactivate plan" }));
+    const again = await screen.findByRole("dialog");
+    await userEvent.type(within(again).getByLabelText(/Reason/), "Selling again");
+    await userEvent.click(within(again).getByRole("button", { name: "Reactivate plan" }));
+    await screen.findByText("Growth is active again.");
+    expect(reactivate).toHaveBeenCalledWith("plan-1", "Selling again", expect.any(String));
+    expect(reactivate.mock.calls[0]?.[2]).not.toBe(retire.mock.calls[0]?.[2]);
+  });
+
+  it("withdraw warns that a scheduled change still lands on the version", async () => {
+    mockAuth(["owner"]);
+    vi.spyOn(catalog, "getPlan").mockResolvedValue(
+      detail({ versions: [{ ...detail().versions[0]!, id: "v2", version_no: 2, state: "published" }] }),
+    );
+    vi.spyOn(catalog, "getVersion").mockResolvedValue(version({ id: "v2", version_no: 2, state: "published" }));
+    renderPage("/plans?plan=plan-1");
+    await userEvent.click(await screen.findByRole("button", { name: /Show sheet/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Withdraw v2" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByText(/Nobody new can choose it/)).toBeNull();
+    expect(within(dialog).getByText(/does not cancel a change already scheduled onto this version/)).toBeTruthy();
+  });
+
+  describe("the header's New draft", () => {
+    const published = {
+      ...detail().versions[0]!,
+      id: "v2",
+      version_no: 2,
+      state: "published" as const,
+      published_at: "2026-09-02T00:00:00Z",
+    };
+    const sheet = version({
+      id: "v2",
+      version_no: 2,
+      state: "published",
+      features: [
+        { feature_key: "bundled_products", value: ["hrms", "crm"] },
+        { feature_key: "trial_days", value: 30 },
+      ],
+    });
+
+    it("copies the version on sale, whole, even when a newer draft exists", async () => {
+      mockAuth(["owner"]);
+      vi.spyOn(catalog, "getPlan").mockResolvedValue(detail({ versions: [detail().versions[0]!, published] }));
+      const get = vi.spyOn(catalog, "getVersion").mockResolvedValue(sheet);
+      renderPage("/plans?plan=plan-1");
+      await screen.findByText("v2");
+      await userEvent.click(screen.getByRole("button", { name: "New draft" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(get).toHaveBeenCalledWith("v2");
+      expect(within(dialog).getByText(/Starts as a copy of version 2/)).toBeTruthy();
+      expect((within(dialog).getByLabelText(/Trial length/) as HTMLInputElement).value).toBe("30");
+      expect((within(dialog).getByLabelText(/Bundled products/) as HTMLInputElement).value).toBe("hrms, crm");
+    });
+
+    it("opens nothing when the copy cannot be loaded, and says so", async () => {
+      mockAuth(["owner"]);
+      vi.spyOn(catalog, "getPlan").mockResolvedValue(detail({ versions: [published] }));
+      vi.spyOn(catalog, "getVersion")
+        .mockRejectedValueOnce(new ApiError(502, "Bad gateway", { detail: "Bad gateway", request_id: "req-502" } as never))
+        .mockResolvedValueOnce(sheet);
+      renderPage("/plans?plan=plan-1");
+      await screen.findByText("v2");
+      await userEvent.click(screen.getByRole("button", { name: "New draft" }));
+      await screen.findByText("Could not load v2 to copy — try New draft again.");
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.getByText(/req-502/)).toBeTruthy();
+
+      await userEvent.click(screen.getByRole("button", { name: "New draft" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText(/Starts as a copy of version 2/)).toBeTruthy();
+      expect((within(dialog).getByLabelText(/Trial length/) as HTMLInputElement).value).toBe("30");
+    });
+  });
+
   it("creates a plan and announces it", async () => {
     mockAuth(["owner"]);
     vi.spyOn(catalog, "listPlans").mockResolvedValue(page([]));
