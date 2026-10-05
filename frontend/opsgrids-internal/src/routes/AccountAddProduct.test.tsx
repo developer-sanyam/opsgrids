@@ -250,6 +250,35 @@ describe("the form", () => {
     expect(request.acknowledge_immediate_charge).toBe(true);
   });
 
+  it.each([
+    ["product", async (dialog: HTMLElement) => {
+      await userEvent.selectOptions(within(dialog).getByRole("combobox", { name: /Product/ }), "suite");
+      await userEvent.click(within(dialog).getByRole("radio", { name: /Suite Duo/ }));
+    }],
+    ["plan", async (dialog: HTMLElement) => {
+      await userEvent.click(within(dialog).getByRole("radio", { name: /Starter/ }));
+      await userEvent.click(within(dialog).getByRole("radio", { name: /Growth/ }));
+    }],
+  ] as const)("changing the %s drops a paid start and its acknowledgement back to a trial", async (_what, change) => {
+    const w = wire();
+    render(<AddProductCard org={ORG} />);
+    const { dialog } = await openDialog();
+    await fill(dialog);
+    await userEvent.click(within(dialog).getByRole("radio", { name: /Paid from today/ }));
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: /billing starts now/ }));
+
+    await change(dialog);
+    expect((within(dialog).getByRole("radio", { name: /^Trial/ }) as HTMLInputElement).checked).toBe(true);
+    expect(within(dialog).queryByRole("checkbox")).toBeNull();
+
+    // Back to paid: the consent given for the other choice is not carried over.
+    await userEvent.click(within(dialog).getByRole("radio", { name: /Paid from today/ }));
+    expect((within(dialog).getByRole("checkbox", { name: /billing starts now/ }) as HTMLInputElement).checked).toBe(false);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Review" }));
+    expect(await within(dialog).findByText("Confirm that billing starts now.")).toBeTruthy();
+    expect(w.addSpy).not.toHaveBeenCalled();
+  });
+
   it("a plan that sells no trial cannot be started as one", async () => {
     wire();
     render(<AddProductCard org={ORG} />);

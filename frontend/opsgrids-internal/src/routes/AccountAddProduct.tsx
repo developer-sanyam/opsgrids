@@ -143,9 +143,22 @@ function AddProductFlow({ org, onClose, onDone }: FlowProps) {
     },
   ];
 
+  /** A new product or plan is a new decision: back to the default trial, and any consent to an
+   *  immediate charge — given for the previous choice — is withdrawn. */
+  function resetStart() {
+    setStart("trial");
+    setAcknowledged([]);
+  }
+
   function chooseProduct(key: string) {
     setProductKey(key);
     setVersionId(null);
+    resetStart();
+  }
+
+  function chooseVersion(id: string) {
+    if (id !== versionId) resetStart();
+    setVersionId(id);
   }
 
   function review() {
@@ -267,7 +280,7 @@ function AddProductFlow({ org, onClose, onDone }: FlowProps) {
                 legend="Plan"
                 name={planGroup}
                 value={versionId}
-                onChange={setVersionId}
+                onChange={chooseVersion}
                 options={versionOptions}
                 helper="Plans this organization cannot take are listed with the reason."
                 {...(versionError ? { error: versionError } : {})}
