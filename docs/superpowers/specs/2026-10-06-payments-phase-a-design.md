@@ -159,10 +159,15 @@ organization; RLS is the net).
 the customer pays, exactly the shape the stuck-charge sweep resumes, so the sweep **filters
 `flow='debit'`**. One open checkout per invoice (a partial unique index plus the service check).
 A failed **attempt** never moves a checkout (the customer may try another card); only `captured`
-does. An unpaid checkout past `checkout_expires_at`, whose provider was successfully asked, closes
-as `failed` with `checkout_expired`, a local reason (no `commerce.payment.failed`: nobody was
-debited and dunning has no business with it); a capture that arrives after that still lands
-(`captured_after_local_failure`).
+does. An unpaid checkout past `checkout_expires_at`, whose provider was successfully asked and
+reports no attempt still in flight, closes as `failed` with `checkout_expired`, a local reason (no
+`commerce.payment.failed`: nobody was debited and dunning has no business with it). An attempt in
+flight keeps it open for `checkout_inflight_grace_seconds` past its expiry. A closed checkout is
+still asked about for `checkout_late_capture_window_seconds` — the poller (at
+`checkout_late_capture_poll_interval_seconds`), the status read-through and a verified confirm — so a
+capture that arrives after that lands (`captured_after_local_failure`), and it is asked about again
+before a new checkout is opened for the same invoice. A stale checkout that never recorded an Order
+is closed by the next open; a reopen of one that did is a lookup only, never a create.
 
 ### The poller
 
@@ -247,7 +252,9 @@ mirrors the validators (names only), and the stub warning now says what to do. T
    both. Rows keep their provider. A checkout still open at the real provider **stays payable there**,
    and while the wire is the stub nothing can tell whether it was paid: the stub answers "I hold no
    such Order" for an Order it never minted (`ProviderTransient`, `stub_holds_no_such_order`), the
-   poller records "could not be asked", and **no checkout is expired on that**. It is reconciled when
+   poller records "could not be asked", and **no checkout is expired on that**. A customer reopening
+   it meanwhile is refused (503, `recorded_order_not_found`) rather than handed a stand-in Order the
+   stub would mint under the same id (Cashfree's `order_id` is the receipt). It is reconciled when
    the wire comes back. Money taken in that window is not lost, but the invoice stays unpaid until the
    wire is back or the owner reconciles at the provider's dashboard: prefer letting open checkouts
    resolve (a day at most, `CHECKOUT_TTL_SECONDS`) before turning the wire off.

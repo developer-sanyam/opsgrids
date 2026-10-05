@@ -724,7 +724,7 @@
     },
     "/api/v1/payment/checkouts/{charge_id}": {
       "get": {
-        "description": "Read-through status: while the checkout is open the provider is asked, server to server, what\nhappened to its Order, and the answer reconciled like a signed webhook's. What the return page\npolls. `paid` is true only for a captured payment.",
+        "description": "Read-through status: while the checkout is open the provider is asked, server to server, what\nhappened to its Order, and the answer reconciled like a signed webhook's. What the return page\npolls. `paid` is true only for a captured payment. A checkout closed as `checkout_expired` is\nstill asked about inside its late-capture window: a payment made on its Order after it closed is\nrecorded, and the answer is `paid: true`.",
         "operationId": "get_checkout_api_v1_payment_checkouts__charge_id__get",
         "parameters": [
           {

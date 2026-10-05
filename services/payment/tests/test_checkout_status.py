@@ -12,6 +12,7 @@ never moves it.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -21,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.providers.wire import CREDENTIALS
 from tests import checkout_support as cs
-from tests.helpers import audit_rows, emitted, rows
+from tests.helpers import audit_rows, emitted, force_charge, rows
 
 pytestmark = pytest.mark.integration
 
@@ -342,6 +343,78 @@ class TestConfirm:
         calls = len(provider.fake.requests)
         again = await cs.confirm_checkout(client, org_id, out["charge_id"], body)
         assert again.status_code == 200 and again.json()["paid"] is True
+        assert len(provider.fake.requests) == calls
+
+
+class TestACheckoutPaidAfterItClosed:
+    """The checkout closed as `checkout_expired`, and the customer — page still open, a Razorpay
+    Order never expires — paid it anyway. With the webhooks private, the return page's read and the
+    signature-verified confirm are how that is learnt at once: both still ask the provider inside
+    the late-capture window, and the money moved is recorded."""
+
+    async def _closed(
+        self, client: AsyncClient, admin: AsyncSession, org_id: uuid.UUID
+    ) -> tuple[Any, dict[str, Any]]:
+        provider, _, out = await _open(client, org_id)
+        await force_charge(
+            admin,
+            out["charge_id"],
+            checkout_expires_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+        closed = await cs.get_checkout(client, org_id, out["charge_id"])
+        assert closed.json()["state"] == "failed", closed.text
+        assert closed.json()["failure_reason"] == "checkout_expired"
+        return provider, out
+
+    async def test_the_read_through_finds_the_payment_and_records_it(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        provider, out = await self._closed(client, admin_session, org_id)
+        paid = cs.razorpay_pay(provider, out["client_action"]["order_id"], status="captured")
+
+        response = await cs.get_checkout(client, org_id, out["charge_id"])
+
+        assert response.status_code == 200
+        body = response.json()
+        assert (body["paid"], body["state"], body["provider_checked"]) == (True, "captured", True)
+        row = await _row(admin_session, out["charge_id"])
+        assert row["provider_payment_id"] == paid and row["failure_reason"] is None
+        assert len(await _captured_events(admin_session, org_id)) == 1
+        actions = [a["action"] for a in await audit_rows(admin_session, org_id)]
+        assert "payment.charge.captured_after_local_failure" in actions
+
+    async def test_a_verified_confirm_asks_and_records_it(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        provider, out = await self._closed(client, admin_session, org_id)
+        order_id = out["client_action"]["order_id"]
+        paid = cs.razorpay_pay(provider, order_id, status="captured")
+        body = {
+            "razorpay_order_id": order_id,
+            "razorpay_payment_id": paid,
+            "razorpay_signature": provider.sign_checkout(order_id, paid),
+        }
+
+        response = await cs.confirm_checkout(client, org_id, out["charge_id"], body)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["paid"] is True and response.json()["state"] == "captured"
+        assert len(await _captured_events(admin_session, org_id)) == 1
+
+    async def test_past_its_window_a_closed_checkout_is_not_asked_about(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        provider, out = await self._closed(client, admin_session, org_id)
+        await force_charge(
+            admin_session,
+            out["charge_id"],
+            checkout_expires_at=datetime.now(UTC) - timedelta(days=6),
+        )
+        cs.razorpay_pay(provider, out["client_action"]["order_id"], status="captured")
+        calls = len(provider.fake.requests)
+        response = await cs.get_checkout(client, org_id, out["charge_id"])
+        assert response.json()["state"] == "failed"
+        assert response.json()["provider_checked"] is False
         assert len(provider.fake.requests) == calls
 
 

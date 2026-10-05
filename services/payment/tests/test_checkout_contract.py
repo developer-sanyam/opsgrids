@@ -215,6 +215,14 @@ class _CreatesPerCall(_BrokenRazorpay):
         return OrderResult(provider="razorpay", provider_order_id=created["id"], receipt=receipt)
 
 
+class _RemintsARecordedOrder(_BrokenRazorpay):
+    """Ignores the Order the charge already records: after a rollback the stub would mint a
+    stand-in under it and become the authority on a payment it cannot see."""
+
+    def ensure_checkout(self, request: CheckoutRequest) -> CheckoutSession:
+        return super().ensure_checkout(replace(request, recorded_order_id=None))
+
+
 class _FindThatCreates(_BrokenRazorpay):
     """`find_order` makes the Order on a miss: every look leaves a phantom Order behind."""
 
@@ -310,6 +318,7 @@ class _BrokenContract(TestTheLiveRazorpayAdapter):
         (_CreatesPerCall, "test_ensure_checkout_is_idempotent_by_receipt"),
         (_CreatesPerCall, "test_a_fresh_process_resumes_the_order_it_did_not_make"),
         (_FindThatCreates, "test_find_order_never_creates"),
+        (_RemintsARecordedOrder, "test_an_order_the_charge_already_records_is_never_made_again"),
         (_ReusesAnyOrder, "test_reopening_a_receipt_for_another_amount_is_refused_not_reused"),
         (_LeaksTheCustomer, "test_the_customer_never_appears_in_the_session_or_an_error"),
         (_HandsOutTheSecret, "test_the_browser_is_never_handed_a_secret"),
@@ -345,6 +354,7 @@ def test_a_correct_adapter_passes_the_checks_the_negatives_run() -> None:
     for check in (
         "test_ensure_checkout_is_idempotent_by_receipt",
         "test_find_order_never_creates",
+        "test_an_order_the_charge_already_records_is_never_made_again",
         "test_reopening_a_receipt_for_another_amount_is_refused_not_reused",
         "test_the_customer_never_appears_in_the_session_or_an_error",
         "test_the_browser_is_never_handed_a_secret",

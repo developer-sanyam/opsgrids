@@ -418,6 +418,21 @@ class RazorpayProvider:
         The stub answers the lookup from the state the create left behind. A create refused with a
         `400` is looked up once more — Razorpay refuses a duplicate receipt that way — and the
         Order found then is the answer; none found, the refusal stands."""
+        return self._ensure_order(
+            receipt=receipt, amount_minor=amount_minor, currency=currency, notes=notes
+        )
+
+    def _ensure_order(
+        self,
+        *,
+        receipt: str,
+        amount_minor: int,
+        currency: str,
+        notes: dict[str, str],
+        may_create: bool = True,
+    ) -> OrderResult:
+        """`ensure_order`; with `may_create=False` the lookup alone, and an Order that is not found
+        is `recorded_order_not_found` (`CheckoutRequest.recorded_order_id`) instead of a create."""
         # First, before a single request: an order Razorpay would refuse is not worth a lookup.
         self._require_platform_money(amount_minor, currency)
         entity = self._find_entity(receipt)
@@ -427,6 +442,8 @@ class RazorpayProvider:
         else:
             found = self.find_order(receipt=receipt) if self._wire is None else None
             existing = found.provider_order_id if found is not None else None
+        if existing is None and not may_create:
+            raise ProviderTransient(PROVIDER, 0, "recorded_order_not_found")
         if existing is None and self._wire is not None:
             body: dict[str, Any] = {
                 "amount": amount_minor,
@@ -523,12 +540,17 @@ class RazorpayProvider:
             items = found.get("items")
             snapshots = [_snapshot(item) for item in (items if isinstance(items, list) else [])]
             return [s for s in snapshots if s is not None]
-        if not self._stub_knows(order_id):
-            # The stub keeps its Orders in this process only. An Order it never minted — one made
-            # by a live wire before the switch was turned back to `stub`, or by this process
-            # before a restart — is not "an Order with no payments": the stub cannot tell. Saying
-            # `[]` would let the poller expire a checkout a customer may have paid at the real
-            # provider. Not being able to ask is the honest answer, and it changes nothing.
+        if self._platform_billing and not self._stub_knows(order_id):
+            # The platform's stub keeps its Orders in this process only. An Order it never minted
+            # — one made by a live wire before the switch was turned back to `stub`, or by this
+            # process before a restart — is not "an Order with no payments": the stub cannot tell.
+            # Saying `[]` would let the poller expire a checkout a customer may have paid at the
+            # real provider. Not being able to ask is the honest answer, and it changes nothing.
+            #
+            # **The platform adapter only.** A merchant's collections adapter is built afresh for
+            # every call (`deps._collections_provider`, never cached), so its stub never holds the
+            # Order it is asked about; it keeps the "no payments" answer it has always given, or
+            # every stub-wire sync, cancel and expiry of a collection would fail.
             raise ProviderTransient(PROVIDER, 0, "stub_holds_no_such_order")
         recorded = list(self._stub_order_payments.get(order_id, []))
         made = self._payments_by_order.get(order_id)
@@ -593,13 +615,25 @@ class RazorpayProvider:
         its receipt before one is made — and what `checkout.js` is opened with: the **public** key
         id and the Order id. Nothing a browser must not have, and nothing about the customer (the
         customer is not sent to Razorpay here at all). `openable` is False on the stub: its Order
-        id is a local stand-in no real Checkout would accept."""
-        order = self.ensure_order(
-            receipt=request.receipt,
-            amount_minor=request.amount_minor,
-            currency=request.currency,
-            notes=request.notes,
-        )
+        id is a local stand-in no real Checkout would accept.
+
+        A charge that already records an Order (`request.recorded_order_id`) is only ever looked
+        up: an adapter that cannot find it is not the account that made it, and never mints one."""
+        if request.recorded_order_id is None:
+            order = self.ensure_order(
+                receipt=request.receipt,
+                amount_minor=request.amount_minor,
+                currency=request.currency,
+                notes=request.notes,
+            )
+        else:
+            order = self._ensure_order(
+                receipt=request.receipt,
+                amount_minor=request.amount_minor,
+                currency=request.currency,
+                notes=request.notes,
+                may_create=False,
+            )
         return CheckoutSession(
             order=order,
             client_action={

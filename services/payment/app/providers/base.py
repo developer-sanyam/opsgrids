@@ -445,6 +445,13 @@ class CheckoutRequest:
     customer: CheckoutCustomer | None = None
     #: Where the provider sends the browser back to (Cashfree). Never evidence of payment.
     return_url: str | None = None
+    #: The Order id the charge **already records**, when it does (a reopened checkout). The adapter
+    #: then returns that Order or refuses (`ProviderTransient`, `recorded_order_not_found`) — it
+    #: never creates another. An adapter that cannot find an Order this charge already recorded is
+    #: not looking at the account that made it (the stub after a rollback from a live wire, another
+    #: environment's keys), and a fresh Order minted there under the same receipt would make that
+    #: adapter the authority on a payment it cannot see.
+    recorded_order_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

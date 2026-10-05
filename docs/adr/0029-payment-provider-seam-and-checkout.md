@@ -93,9 +93,20 @@ stored the provider's body verbatim (a payer's email, phone and UPI id in an app
    until the customer pays, which is precisely the shape the stuck-charge sweep resumes and eventually
    fails. So the flow is a column and the sweep filters on it. One open checkout per invoice (a partial
    unique index). A failed *attempt* never moves a checkout (the customer may try another card); only
-   `captured` does. An unpaid checkout past its expiry whose provider was **successfully asked** closes
-   as `failed` / `checkout_expired`, a local reason that emits no `commerce.payment.failed`; a capture
-   that arrives afterwards is still recorded.
+   `captured` does. An unpaid checkout past its expiry whose provider was **successfully asked**, and
+   reports no attempt still in flight, closes as `failed` / `checkout_expired`, a local reason that
+   emits no `commerce.payment.failed`. An attempt in flight (a payment in progress, an authorization
+   whose auto-capture has not run, a capture that could not be applied) keeps it open for
+   `CHECKOUT_INFLIGHT_GRACE_SECONDS` (an hour) past its expiry. A closed checkout is **still asked
+   about** for `CHECKOUT_LATE_CAPTURE_WINDOW_SECONDS` (five days; a Razorpay Order never expires) — by
+   the poller at a longer gap, by the status read-through and by a signature-verified confirm — so a
+   capture that arrives afterwards is recorded (`captured_after_local_failure`); and before a new
+   checkout is opened beside it, it is asked about first (paid meanwhile: "already paid"; a payment
+   still in flight: a 409). A checkout past its expiry that **never recorded an Order** (every open
+   of it failed at the provider) is closed on the next open: no Order id reached a browser, so nothing
+   can have been paid on it. A reopened checkout that already records an Order is only ever looked up
+   at the provider, never re-created, so a stub after a rollback cannot mint a stand-in Order under the
+   live one's id.
 
 8. **The platform learns outcomes by polling, because the webhooks stay private.** `app/checkout/cron.py`
    asks the provider about every platform charge with an Order and no terminal state, with the same

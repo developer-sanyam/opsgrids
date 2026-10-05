@@ -8,7 +8,8 @@ adapters of Phase A. The invariants are the same ones, reworded for it:
 1. **Lookup before create.** `ensure_checkout` finds the Order by its receipt before it creates
    one —
    twice with one adapter, or once each with two adapters over the same provider account (a fresh
-   process resuming after a crash), it is **one** Order; `find_order` never creates.
+   process resuming after a crash), it is **one** Order; `find_order` never creates; and an Order
+   the charge already records (`recorded_order_id`) is only ever looked up, never made again.
 2. **A found Order is the charge's.** Reopening a receipt for another amount is refused, never
    reused.
 3. **Nothing leaves that must not.** A customer's details go to the provider and nowhere else: not
@@ -32,6 +33,7 @@ from __future__ import annotations
 
 import math
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, cast
 
@@ -45,7 +47,7 @@ from app.providers.base import (
     MalformedWebhook,
     PaymentProvider,
 )
-from app.providers.wire import ProviderRejected
+from app.providers.wire import ProviderRejected, ProviderTransient
 
 PHONE = "9876543210"
 EMAIL = "contract.customer@example.com"
@@ -133,6 +135,27 @@ class CheckoutContract:
         resumed = _checkout(self.fresh(adapter)).ensure_checkout(request)
         assert made.order.provider_order_id == resumed.order.provider_order_id
         assert self.create_count(adapter) == 1
+
+    def test_an_order_the_charge_already_records_is_never_made_again(
+        self, adapter: PaymentProvider
+    ) -> None:
+        """A reopened checkout names the Order its charge recorded (`recorded_order_id`). An adapter
+        that holds it returns it; one that does not — the stub after a rollback from the live wire,
+        another environment's keys — refuses as "could not be asked" and creates **nothing**: a
+        stand-in Order under the same receipt would make it the authority on a payment it cannot
+        see, and the poller would expire a checkout the customer paid."""
+        request = checkout_request()
+        made = _checkout(adapter).ensure_checkout(request)
+        recorded = replace(request, recorded_order_id=made.order.provider_order_id)
+        again = _checkout(adapter).ensure_checkout(recorded)
+        assert again.order.provider_order_id == made.order.provider_order_id
+        assert self.create_count(adapter) == 1
+
+        orphan = checkout_request()
+        with pytest.raises(ProviderTransient):
+            _checkout(adapter).ensure_checkout(replace(orphan, recorded_order_id="order_elsewhere"))
+        assert self.create_count(adapter) == 1, "an Order recorded elsewhere was made again here"
+        assert adapter.find_order(receipt=orphan.receipt) is None
 
     def test_a_different_receipt_is_a_different_order(self, adapter: PaymentProvider) -> None:
         a = _checkout(adapter).ensure_checkout(checkout_request())

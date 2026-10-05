@@ -58,6 +58,7 @@ from app.providers.wire import (
     CASHFREE_REQUESTS_PER_CHARGE,
     WIRE_REQUEST_TIMEOUT_SECONDS,
     ProviderRejected,
+    ProviderTransient,
     ProviderWire,
 )
 from platform_core.logging import get_logger
@@ -189,13 +190,22 @@ class CashfreeProvider:
         A found Order whose amount or currency is not the charge's is refused — it is somebody's
         mistake, and reusing it would collect the wrong amount. A found Order that can no longer be
         paid is refused. The create carries an `x-idempotency-key`, and a `409` is treated as
-        "it exists": fetched, compared, used."""
+        "it exists": fetched, compared, used.
+
+        **A charge that already records an Order is never given a new one**
+        (`request.recorded_order_id`). Cashfree's `order_id` *is* the receipt, so an adapter that
+        cannot find it — the stub after a rollback from the live wire, or another environment's
+        keys — would otherwise mint an Order under the very id the live one has, and from then on
+        answer "no payments" for it: the poller would expire a checkout the customer paid at the
+        real Cashfree. Refused as `recorded_order_not_found` (could not be asked), nothing made."""
         self._require_money(request.amount_minor, request.currency)
         customer = request.customer
         if customer is None or not valid_phone(customer.phone):
             raise ProviderRejected(PROVIDER, 0, "customer_phone_required")
 
         order = self._existing(request)
+        if order is None and request.recorded_order_id is not None:
+            raise ProviderTransient(PROVIDER, 0, "recorded_order_not_found")
         if order is None:
             body: dict[str, Any] = {
                 "order_id": request.receipt,

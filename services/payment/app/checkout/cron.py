@@ -7,7 +7,10 @@ local debugging.
 (`selectors.due_pollable_charges`): a **checkout** the customer may have paid, and a **debit** the
 provider authorised and has not yet reported captured. The stuck-charge sweep never looks at either
 — a checkout is `created` with no payment by design, and an `authorized` debit is not stuck, merely
-unfinished — so without this nothing would ever move them.
+unfinished — so without this nothing would ever move them. And a checkout it **closed** as
+`checkout_expired`, at a much longer gap, for `checkout_late_capture_window_seconds`: a Razorpay
+Order never expires, so a customer with the page still open can pay one after this stopped
+waiting, and with the webhooks private nothing else would ever learn of it.
 
 **Claim → call → record**, like every provider call in this service: a short transaction locks the
 charge and stamps the poll gap (`claim_poll`); the provider is asked on a worker thread under an
@@ -181,6 +184,7 @@ class ChargePoller:
                 report.captured += 1
             elif (
                 charge is not None
+                and not ticket.late
                 and charge.state == CHARGE_FAILED
                 and charge.failure_reason == domain.FAILURE_CHECKOUT_EXPIRED
             ):

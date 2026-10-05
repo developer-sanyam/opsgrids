@@ -132,6 +132,66 @@ def _lease() -> timedelta:
     return timedelta(seconds=settings().charge_reclaim_after_seconds)
 
 
+def _inflight_grace() -> timedelta:
+    return timedelta(seconds=settings().checkout_inflight_grace_seconds)
+
+
+def _late_window() -> timedelta:
+    return timedelta(seconds=settings().checkout_late_capture_window_seconds)
+
+
+def _late_gap() -> timedelta:
+    return timedelta(seconds=settings().checkout_late_capture_poll_interval_seconds)
+
+
+def _is_past_expiry(charge: Charge, now: datetime) -> bool:
+    return charge.checkout_expires_at is not None and charge.checkout_expires_at <= now
+
+
+def late_checkable(charge: Charge, *, now: datetime) -> bool:
+    """Whether a **closed** checkout is still asked about: closed as `checkout_expired` (this
+    platform stopped waiting; nobody's payment failed), on an Order the customer may still hold
+    open, with no payment recorded, and inside `checkout_late_capture_window_seconds` of its
+    expiry. A capture found then is recorded (`captured_after_local_failure`): the money moved.
+    The poller, the status read-through and a signature-verified confirm all ask about such a
+    checkout; nothing else about it can change."""
+    return (
+        charge.flow == FLOW_CHECKOUT
+        and charge.payee == PAYEE_PLATFORM
+        and charge.deleted_at is None
+        and charge.state == CHARGE_FAILED
+        and charge.failure_reason == domain.FAILURE_CHECKOUT_EXPIRED
+        and charge.provider_order_id is not None
+        and charge.provider_payment_id is None
+        and charge.checkout_expires_at is not None
+        and now < charge.checkout_expires_at + _late_window()
+    )
+
+
+def attempt_in_flight(snapshots: list[PaymentSnapshot]) -> bool:
+    """Whether the provider reports any attempt on the Order that has not failed: one in progress
+    (`created` — Cashfree `PENDING` among them — or `authorized`, an auto-capture still to run), or
+    a capture this platform could not apply (`sync_not_applied`: a person must look). Only an Order
+    whose every attempt failed, or that has none, is one nobody is paying."""
+    return any(snapshot.status != "failed" for snapshot in snapshots)
+
+
+def payment_in_flight(
+    charge: Charge, snapshots: list[PaymentSnapshot] | None, *, now: datetime
+) -> bool:
+    """Whether a checkout must be treated as still being paid: the provider was asked, reported an
+    attempt that has not failed (`attempt_in_flight`), and the checkout is inside
+    `checkout_inflight_grace_seconds` of its expiry. Bounded, so an attempt the provider never
+    resolves cannot hold the invoice for ever; past it, the late-capture window still records a
+    capture that lands."""
+    return (
+        snapshots is not None
+        and attempt_in_flight(snapshots)
+        and charge.checkout_expires_at is not None
+        and now < charge.checkout_expires_at + _inflight_grace()
+    )
+
+
 # --------------------------------------------------------------------------- opening a checkout
 
 
@@ -150,6 +210,10 @@ class CheckoutClaim:
     currency: str = ""
     expires_at: datetime | None = None
     stale_charge_id: uuid.UUID | None = None
+    #: Closed checkouts of the invoice still inside their late-capture window, to be asked about
+    #: before a new checkout is opened beside them (`claim_platform_checkout`). Set instead of a
+    #: request; nothing was inserted.
+    recheck_charge_ids: tuple[uuid.UUID, ...] = ()
     reused: bool = False
     opened: dict[str, Any] = field(default_factory=dict)
 
@@ -201,6 +265,7 @@ def _build_claim(
             expires_at=charge.checkout_expires_at,
             customer=customer,
             return_url=_return_url(charge.id),
+            recorded_order_id=charge.provider_order_id,
         ),
         amount_minor=charge.amount_minor,
         currency=charge.currency,
@@ -232,6 +297,81 @@ async def claim_checkout_lease(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def close_orderless_checkout(
+    session: AsyncSession,
+    charge: Charge,
+    *,
+    now: datetime,
+    request: Request | None = None,
+) -> bool:
+    """Close, as `checkout_expired`, an open checkout past its expiry that **never recorded an
+    Order** — every attempt to open it failed at the provider (a timeout, a refusal, a tripped
+    credentials latch) and the customer did not come back inside its day.
+
+    No Order id and no checkout session was ever handed to a browser for it (the route answers only
+    after `record_checkout`), so nothing can have been paid on it — even an Order whose create
+    landed with its answer lost cannot be paid by anybody who never learnt its id. There is also
+    nothing to ask a provider about, so the poller and `_settle` can never close it, and the open-
+    checkout index would answer every later "Pay now" for the invoice with a 409 for good.
+
+    One conditional `UPDATE … RETURNING`, and only while **no call holds the lease**: a call still
+    out may yet record an Order and hand it to a browser, so that checkout waits (the caller's
+    stale answer is a 409 "try again shortly" until the call ends). True when closed."""
+    # Read before the statement: `populate_existing` refreshes this very object from the row.
+    before = charge.state
+    stmt = (
+        update(Charge)
+        .where(
+            Charge.organization_id == charge.organization_id,
+            Charge.id == charge.id,
+            Charge.payee == PAYEE_PLATFORM,
+            Charge.flow == FLOW_CHECKOUT,
+            Charge.state.in_((CHARGE_CREATED, CHARGE_AUTHORIZED)),
+            Charge.provider_order_id.is_(None),
+            Charge.provider_payment_id.is_(None),
+            Charge.checkout_expires_at <= now,
+            or_(Charge.lease_until.is_(None), Charge.lease_until <= now),
+        )
+        .values(
+            state=CHARGE_FAILED,
+            failure_reason=domain.FAILURE_CHECKOUT_EXPIRED,
+            lease_until=None,
+            next_attempt_at=None,
+            updated_at=now,
+        )
+        .returning(Charge)
+        .execution_options(populate_existing=True, synchronize_session=False)
+    )
+    closed = (await session.execute(stmt)).scalar_one_or_none()
+    if closed is None:
+        return False
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=closed.organization_id,
+        actor_id=None,
+        acting_as="checkout",
+        action="payment.charge.checkout_expired",
+        entity="charge",
+        entity_id=closed.id,
+        before={"state": before},
+        after={
+            "state": closed.state,
+            "failure_reason": closed.failure_reason,
+            "provider_order_id": None,
+        },
+        request=request,
+    )
+    log.info(
+        "payment.charge.checkout_expired",
+        charge_id=str(closed.id),
+        organization_id=str(closed.organization_id),
+        order=False,
+    )
+    await session.flush()
+    return True
+
+
 async def claim_platform_checkout(
     session: AsyncSession,
     *,
@@ -243,6 +383,7 @@ async def claim_platform_checkout(
     actor_id: uuid.UUID | None,
     now: datetime | None = None,
     request: Request | None = None,
+    rechecked: frozenset[uuid.UUID] = frozenset(),
 ) -> CheckoutClaim:
     """The first act: decide whether a checkout may be opened for this invoice, and take the right
     to call the provider for it. In the caller's tenant-bound transaction.
@@ -257,6 +398,13 @@ async def claim_platform_checkout(
       (`provider_for(charge.provider)`, whatever the default is now), with a fresh lease — a
       double-click, or a customer coming back — and an open one past its expiry is reported `stale`
       to be settled first (`CheckoutClaim.stale_charge_id`);
+    * an open one past its expiry that **never got an Order** is closed here, in this transaction
+      (`close_orderless_checkout`): no Order id or session was ever handed to a browser, so nothing
+      can have been paid on it, and there is nothing to ask a provider about — left open, it would
+      answer every later "Pay now" with a 409 for good;
+    * closed checkouts of the invoice still inside their late-capture window, and not in
+      `rechecked`, are reported to be asked about first (`CheckoutClaim.recheck_charge_ids`): the
+      customer may have paid one of them after it closed, or be paying it now;
     * otherwise a new `checkout` charge is inserted holding the lease, on the default provider
       (`default_name`), its amount, currency, subscription and product copied from the invoice's
       own charge.
@@ -273,6 +421,13 @@ async def claim_platform_checkout(
     existing_checkout = next(
         (c for c in checkouts if c.state in (CHARGE_CREATED, CHARGE_AUTHORIZED)), None
     )
+    if (
+        existing_checkout is not None
+        and existing_checkout.provider_order_id is None
+        and _is_past_expiry(existing_checkout, now)
+        and await close_orderless_checkout(session, existing_checkout, now=now, request=request)
+    ):
+        existing_checkout = None
 
     provider_name = existing_checkout.provider if existing_checkout is not None else default_name
     capabilities = capabilities_for(provider_name)
@@ -295,10 +450,7 @@ async def claim_platform_checkout(
         raise ValidationProblem(_REQUEST_CODES["amount_below_minimum"])
 
     if existing_checkout is not None:
-        if (
-            existing_checkout.checkout_expires_at is not None
-            and existing_checkout.checkout_expires_at <= now
-        ):
+        if _is_past_expiry(existing_checkout, now):
             return CheckoutClaim(
                 organization_id=organization_id,
                 charge_id=existing_checkout.id,
@@ -312,6 +464,16 @@ async def claim_platform_checkout(
                 "This invoice's checkout is being prepared; try again in a moment"
             )
         return _build_claim(claimed, customer=customer_value, reused=True)
+
+    recheck = tuple(c.id for c in checkouts if c.id not in rechecked and late_checkable(c, now=now))
+    if recheck:
+        return CheckoutClaim(
+            organization_id=organization_id,
+            charge_id=recheck[0],
+            provider=provider_name,
+            request=None,
+            recheck_charge_ids=recheck,
+        )
 
     return await _insert_checkout(
         session,
@@ -552,12 +714,14 @@ def _poll_gap() -> timedelta:
 
 @dataclass(frozen=True, slots=True)
 class PollTicket:
-    """What a poll claim hands the call: which charge, at which provider, about which Order."""
+    """What a poll claim hands the call: which charge, at which provider, about which Order — and
+    whether it is a **late** check of a checkout already closed as `checkout_expired`."""
 
     organization_id: uuid.UUID
     charge_id: uuid.UUID
     provider: str
     order_id: str
+    late: bool = False
 
 
 async def claim_poll(
@@ -569,28 +733,43 @@ async def claim_poll(
     respect_gap: bool,
 ) -> PollTicket | None:
     """The first act of a status check: lock the charge (skipping one somebody else holds), confirm
-    it is still pollable — a platform charge with an Order and no terminal state, and either a
-    checkout or an authorized debit — stamp the poll gap, and hand back the ticket. None when there
-    is nothing to ask. `respect_gap` is the poller's: a customer's own read-through (`False`)
-    always asks."""
+    it is still pollable — a platform charge with an Order and either no terminal state (a checkout,
+    or an authorized debit) or a closed checkout still inside its late-capture window
+    (`late_checkable`) — stamp the poll gap (the longer late one for a closed checkout), and hand
+    back the ticket. None when there is nothing to ask. `respect_gap` is the poller's: a customer's
+    own read-through (`False`) always asks.
+
+    A closed checkout past its window is **retired** here: its `next_attempt_at` is cleared, which
+    is what takes it out of the poller's discovery for good."""
     charge = await selectors.lock_charge(session, organization_id, charge_id, skip_locked=True)
     if (
         charge is None
         or charge.payee != PAYEE_PLATFORM
         or charge.deleted_at is not None
         or charge.provider_order_id is None
-        or charge.state not in (CHARGE_CREATED, CHARGE_AUTHORIZED)
-        or (charge.flow == FLOW_DEBIT and charge.state != CHARGE_AUTHORIZED)
-        or (respect_gap and charge.next_attempt_at is not None and charge.next_attempt_at > now)
     ):
         return None
-    charge.next_attempt_at = now + _poll_gap()
+    late = charge.state == CHARGE_FAILED
+    if late:
+        if not late_checkable(charge, now=now):
+            if charge.flow == FLOW_CHECKOUT and charge.next_attempt_at is not None:
+                charge.next_attempt_at = None
+                await session.flush()
+            return None
+    elif charge.state not in (CHARGE_CREATED, CHARGE_AUTHORIZED) or (
+        charge.flow == FLOW_DEBIT and charge.state != CHARGE_AUTHORIZED
+    ):
+        return None
+    if respect_gap and charge.next_attempt_at is not None and charge.next_attempt_at > now:
+        return None
+    charge.next_attempt_at = now + (_late_gap() if late else _poll_gap())
     await session.flush()
     return PollTicket(
         organization_id=charge.organization_id,
         charge_id=charge.id,
         provider=charge.provider,
         order_id=charge.provider_order_id,
+        late=late,
     )
 
 
@@ -636,8 +815,13 @@ async def expire_checkout_charge(session: AsyncSession, charge: Charge, *, now: 
     """Close a checkout nobody paid: `failed` with the reason `checkout_expired`, audited — and **no
     `commerce.payment.failed`**. An unpaid checkout is not a failed collection: the customer simply
     did not pay yet, the subscription's own dunning decides what that means, and a checkout that
-    announced its own expiry would suspend somebody who had not been asked to pay twice. A capture
-    that still lands afterwards is recorded (`checkout_expired` is a local failure reason)."""
+    announced its own expiry would suspend somebody who had not been asked to pay twice.
+
+    **Closed, not forgotten.** The Order may still be payable (a Razorpay Order never expires), so
+    the charge's `next_attempt_at` is set one late gap out: the poller keeps asking about it for
+    `checkout_late_capture_window_seconds` (`claim_poll`, `late_checkable`), and a capture found
+    then is recorded — `checkout_expired` is a local failure reason, so `failed -> captured` is
+    allowed (`captured_after_local_failure`)."""
     if (
         charge.flow != FLOW_CHECKOUT
         or charge.state not in (CHARGE_CREATED, CHARGE_AUTHORIZED)
@@ -649,6 +833,7 @@ async def expire_checkout_charge(session: AsyncSession, charge: Charge, *, now: 
     charge.state = CHARGE_FAILED
     charge.failure_reason = domain.FAILURE_CHECKOUT_EXPIRED
     charge.lease_until = None
+    charge.next_attempt_at = now + _late_gap() if charge.provider_order_id is not None else None
     charge.updated_at = now
     record_audit(
         session,
@@ -683,16 +868,52 @@ async def record_poll(
     row lock (a webhook may have moved it while the call was out), reconcile the attempt that says
     what happened (`services.apply_payment_snapshot` — the path a signed webhook takes), and, if
     that left a checkout unpaid past its expiry and the provider **was** asked, close it
-    (`expire_checkout_charge`). `snapshots=None` (the provider could not be asked) changes
-    nothing."""
+    (`expire_checkout_charge`) — **unless an attempt is still in flight** (`payment_in_flight`: a
+    payment in progress, an authorization whose capture has not run, a capture that could not be
+    applied), which keeps it open for up to `checkout_inflight_grace_seconds` past its expiry. A
+    closed checkout inside its late-capture window (`late_checkable`) is moved by a capture and by
+    nothing else. `snapshots=None` (the provider could not be asked) changes nothing."""
     charge = await selectors.lock_charge(session, ticket.organization_id, ticket.charge_id)
-    if charge is None or charge.payee != PAYEE_PLATFORM:
-        return None
-    if charge.state not in (CHARGE_CREATED, CHARGE_AUTHORIZED) or snapshots is None:
+    if charge is None or charge.payee != PAYEE_PLATFORM or snapshots is None:
         return charge
     best = best_attempt(snapshots)
-    if best is not None:
-        await charge_services.apply_payment_snapshot(session, charge, best, request=request)
     if charge.state in (CHARGE_CREATED, CHARGE_AUTHORIZED):
-        await expire_checkout_charge(session, charge, now=now)
+        if best is not None:
+            await charge_services.apply_payment_snapshot(session, charge, best, request=request)
+            # A permanent condition rolls a SAVEPOINT back inside it, which expires the row; read
+            # it again (still under this transaction's lock) before deciding anything from it.
+            charge = (
+                await selectors.lock_charge(session, ticket.organization_id, ticket.charge_id)
+                or charge
+            )
+        if (
+            charge.state in (CHARGE_CREATED, CHARGE_AUTHORIZED)
+            and charge.flow == FLOW_CHECKOUT
+            and _is_past_expiry(charge, now)
+        ):
+            if payment_in_flight(charge, snapshots, now=now):
+                log.info(
+                    "payment.checkout.expiry_deferred",
+                    charge_id=str(charge.id),
+                    organization_id=str(charge.organization_id),
+                    attempt_status=best.status if best is not None else None,
+                )
+            else:
+                if snapshots and attempt_in_flight(snapshots):
+                    # Past the grace with an attempt the provider never resolved (or a capture that
+                    # could not be applied): closed, and still asked about for the late window.
+                    log.warning(
+                        "payment.checkout.expired_with_attempt_in_flight",
+                        charge_id=str(charge.id),
+                        organization_id=str(charge.organization_id),
+                        attempt_status=best.status if best is not None else None,
+                    )
+                await expire_checkout_charge(session, charge, now=now)
+        return charge
+    if late_checkable(charge, now=now) and best is not None and best.status in _MONEY_MOVED:
+        await charge_services.apply_payment_snapshot(session, charge, best, request=request)
     return charge
+
+
+#: The neutral attempt statuses that mean money moved — the only ones that reopen a closed checkout.
+_MONEY_MOVED = frozenset({"captured", "refunded"})

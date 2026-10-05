@@ -77,6 +77,7 @@ from app.providers.base import (
     RefundResult,
     best_attempt,
 )
+from app.providers.wire import ProviderTransient
 from app.schemas import WebhookAck
 from platform_core import pii
 from platform_core.audit import record_audit
@@ -535,7 +536,14 @@ async def apply_observation(
 async def _off_loop[T](fn: Callable[[], T], *, what: str, organization_id: uuid.UUID) -> T:
     """Run one provider call on a worker thread, bounded by `collections_call_timeout_seconds`.
     A timeout or a transport failure is `ProviderUnreachableProblem` (unknown outcome; safe to
-    repeat); a provider refusal is `ProviderRefusedProblem` with its stable code only."""
+    repeat); a provider refusal is `ProviderRefusedProblem` with its stable code only.
+
+    **The live wire raises its transport failures already classified** (`HttpWire.request`: a
+    timeout, a connect error, a `5xx`, a `429` are all `ProviderTransient`), not as the
+    `httpx.HTTPError` they started as — so `ProviderTransient` is caught *before* the generic
+    `ProviderCallError`. Reported as a refusal instead, a create whose answer was merely lost would
+    release the call lease (`api/collections_internal.open_checkout`), and a retry could race the
+    create still landing."""
     timeout = settings().collections_call_timeout_seconds
     try:
         return await asyncio.wait_for(asyncio.to_thread(fn), timeout=timeout)
@@ -549,6 +557,15 @@ async def _off_loop[T](fn: Callable[[], T], *, what: str, organization_id: uuid.
         raise ProviderUnreachableProblem(
             "The payment provider did not answer in time; try again"
         ) from None
+    except ProviderTransient as exc:
+        log.warning(
+            "payment.collection.provider_unreachable",
+            call=what,
+            organization_id=str(organization_id),
+            error=type(exc).__name__,
+            code=exc.code,
+        )
+        raise ProviderUnreachableProblem("The payment provider could not be reached") from None
     except httpx.HTTPError as exc:
         log.warning(
             "payment.collection.provider_unreachable",

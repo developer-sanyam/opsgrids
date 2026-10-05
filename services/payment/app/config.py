@@ -78,6 +78,22 @@ class Settings(ServiceSettings):
     #: the provider too). A day: long enough to come back to it, short enough that a stale
     #: checkout is not left open.
     checkout_ttl_seconds: int = 86_400
+    #: How long past its expiry a checkout is kept open while the provider still reports an attempt
+    #: in progress on its Order (Razorpay `created` / `authorized`, Cashfree `PENDING`) — a UPI
+    #: collect being approved, an auto-capture not yet run. Closing it then would label a payment
+    #: in flight "nobody paid" and let the customer open, and pay, a second checkout. Bounded, so an
+    #: attempt the provider never resolves cannot keep the invoice's checkout open for ever.
+    checkout_inflight_grace_seconds: int = 3_600
+    #: How long after its expiry a checkout closed as `checkout_expired` is still asked about. A
+    #: Razorpay Order never expires on its own, so a customer with the page still open can pay a
+    #: checkout this platform has closed; the poller, the status read-through and a confirm keep
+    #: asking for this long, so such a capture is recorded (`captured_after_local_failure`) and the
+    #: invoice is paid. Five days: longer than an authorised payment is held before the provider
+    #: refunds it uncaptured (three days at Razorpay).
+    checkout_late_capture_window_seconds: int = 432_000
+    #: How often the poller asks about one closed checkout inside that window — far less often than
+    #: an open one, because nobody is expected to pay it.
+    checkout_late_capture_poll_interval_seconds: float = 600.0
     #: How often the poller (`app/checkout/cron.py`) asks the provider about a charge that has an
     #: Order and no terminal state — the only way a platform charge learns an outcome while the
     #: webhook is private. Both the sweep's own tick and the minimum gap between two such
