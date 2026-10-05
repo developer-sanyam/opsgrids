@@ -1443,6 +1443,29 @@ class TestExtendTrialOutcomeUnknown:
         assert claim.status == "succeeded"
 
 
+# ============================================================================== the contract
+
+
+class TestContractKeepsTheReasonOffTheEvent:
+    """The published contract must not say the operator's reason rides the subscription's event:
+    it never does (a customer org's notification templates render the whole payload), and a
+    contract that says so invites someone to "fix" the code to match it."""
+
+    @pytest.mark.parametrize("suffix", ["/subscriptions", "/extend-trial"])
+    def test_the_route_says_audit_trail_only(self, suffix: str) -> None:
+        paths = app.openapi()["paths"]
+        (path,) = [
+            p
+            for p, operations in paths.items()
+            if p.startswith("/api/v1/admin/organizations/")
+            and p.endswith(suffix)
+            and "post" in operations
+        ]
+        description = paths[path]["post"]["description"]
+        assert "never on the subscription's event" in description
+        assert "and the subscription's event" not in description
+
+
 # ============================================================================ fingerprints
 
 

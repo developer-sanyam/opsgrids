@@ -850,7 +850,8 @@ async def add_product(
     (`trial: false`) starts billing at once — its first period is claimed for payment in the same
     transaction and no payment mandate is checked — so it is refused with 422
     `charge_not_acknowledged` unless `acknowledge_immediate_charge` is true. `reason` (1-500) is
-    required and recorded on the audit trail and the subscription's event.
+    required and recorded on the audit trail — never on the subscription's event, which the
+    customer org's own notification templates can render.
 
     Errors carry a stable `errors[0].code`: 404 `not_found`; 409 `already_subscribed` (a row for
     the product in any state, cancelled included), `request_in_progress`,
@@ -895,7 +896,8 @@ async def extend_trial(
     Absolute, never "add N days": `expected_trial_ends_at` is the end the operator saw (send it
     back verbatim from the read), compared under subscription's row lock, so a repeat can never
     add the time twice. The total trial is capped at subscription's `MAX_TOTAL_TRIAL_DAYS` from
-    its start (the read's `trial_max_ends_at`). `reason` (1-500) is required.
+    its start (the read's `trial_max_ends_at`). `reason` (1-500) is required and recorded on the
+    audit trail — never on the subscription's event.
 
     Errors carry a stable `errors[0].code`: 404 `no_subscription`; 409 `state_changed`,
     `request_in_progress`, `idempotency_key_reused`; 422 `not_trial`, `claim_in_flight`,

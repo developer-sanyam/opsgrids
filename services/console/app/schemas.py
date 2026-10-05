@@ -651,7 +651,8 @@ class AddProductIn(BaseModel):
     plan_version_id: uuid.UUID
     trial: bool = True
     acknowledge_immediate_charge: bool = False
-    #: Why — required, 1-500 characters; the audit row's reason and the subscription event's note.
+    #: Why — required, 1-500 characters; the audit row's reason only, never on the subscription's
+    #: event (a customer org's notification templates render the whole payload).
     reason: str = Field(min_length=1, max_length=500)
 
     @field_validator("reason")
@@ -695,6 +696,8 @@ class ExtendTrialIn(BaseModel):
 
     new_trial_ends_at: AwareDatetime
     expected_trial_ends_at: AwareDatetime
+    #: Why — required, 1-500 characters; the audit row's reason only, never on the subscription's
+    #: event.
     reason: str = Field(min_length=1, max_length=500)
 
     @field_validator("reason")

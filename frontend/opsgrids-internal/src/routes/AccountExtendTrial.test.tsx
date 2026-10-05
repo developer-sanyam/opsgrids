@@ -186,6 +186,14 @@ describe("the form", () => {
     expect(within(dialog).getByText(/23:59 IST \(UTC\+05:30\)/)).toBeTruthy();
   });
 
+  it("says the reason stays with staff, never on the customer org's event", async () => {
+    wire();
+    render(<ExtendTrialCard org={ORG} now={NOW} />);
+    const { dialog } = await openDialog();
+    expect(within(dialog).getByText("Recorded on the staff audit trail only. Not sent to the customer.")).toBeTruthy();
+    expect(dialog.textContent).not.toMatch(/subscription's event/);
+  });
+
   it("refuses to continue without a day and a reason, or with a day out of range, and calls nothing", async () => {
     const w = wire();
     render(<ExtendTrialCard org={ORG} now={NOW} />);

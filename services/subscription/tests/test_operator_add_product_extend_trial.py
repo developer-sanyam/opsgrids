@@ -13,7 +13,7 @@ What is pinned:
   target guarded by the end the operator saw, so a replay adds nothing; refused unless trialling,
   while the run holds a claim, past the 90-day total cap, or when it is not an extension; one
   `trial -> trial` transition typed `trial_extended` (never `trial_started`), with the note on the
-  audit row and the event and `previous_trial_ends_at` on the event.
+  audit row only — never on the event — and `previous_trial_ends_at` on the event.
 * **Cross-tenant**: another organization's name on this organization's subscription id is a 404
   that writes nothing.
 """

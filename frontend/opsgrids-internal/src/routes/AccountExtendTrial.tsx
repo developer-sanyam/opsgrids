@@ -187,7 +187,7 @@ function ExtendTrialFlow({ org, product, now, onClose, onRefresh, onDone }: Flow
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           onBlur={() => setTouched(true)}
-          helper="Recorded on the audit trail and the subscription's event. Not shown to the customer."
+          helper="Recorded on the staff audit trail only. Not sent to the customer."
           {...(reasonError ? { error: reasonError } : {})}
         />
       </FormDialog>

@@ -20,7 +20,8 @@ class ServiceInfo(BaseModel):
 
 
 #: The longest operator note: a reason, not an essay. The transition's own `reason` column is 60
-#: characters of machine code; the words live in `audit_logs.reason` (text) and on the event.
+#: characters of machine code; the words live in `audit_logs.reason` (text) only — never on the
+#: event, which a customer org's notification templates render whole.
 NOTE_MAX_LENGTH = 500
 
 

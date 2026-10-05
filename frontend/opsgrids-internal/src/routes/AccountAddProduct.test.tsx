@@ -202,6 +202,14 @@ describe("the form", () => {
     expect(within(dialog).getByText(/₹999\.00 per month · 21-day trial/)).toBeTruthy();
   });
 
+  it("says the reason stays with staff, never on the customer org's event", async () => {
+    wire();
+    render(<AddProductCard org={ORG} />);
+    const { dialog } = await openDialog();
+    expect(within(dialog).getByText("Recorded on the staff audit trail only. Not sent to the customer.")).toBeTruthy();
+    expect(dialog.textContent).not.toMatch(/subscription's event/);
+  });
+
   it("starts as a trial by default", async () => {
     wire();
     render(<AddProductCard org={ORG} />);
