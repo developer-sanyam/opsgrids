@@ -56,11 +56,34 @@ that only worked because there had been one:
 6. **Saving is database-only; verifying is separate.** `PUT` validates shape and seals; the account is
    `unverified` until `POST …/merchant-account/verify` claims, probes the provider off the event loop within
    `collections_call_timeout_seconds` with no transaction open, and records `verified_at` or `last_error_code`
-   under the row lock (refusing to record a verdict about keys that changed meanwhile), audited.
+   under the row lock (refusing to record a verdict about keys that changed meanwhile), audited. **Verification
+   is refused (409 `verification-unavailable`, nothing opened, recorded or audited) while the account's provider
+   runs on the stub wire**: the stub holds no credentials and accepts any, so a "verified" recorded there would
+   claim — and audit — that the provider accepted keys it never saw, and would outlive the switch to live.
 7. **Changing where money goes needs a one-time-code session.** `PUT`, `DELETE` and `verify` require
    `amr ∋ otp` (the put-away reveal's rule; not the `stepup` marker, which the Operations app cannot obtain yet).
-8. **Disconnect is refused (409, with the count) while a collection taken into the account is open**
-   (`created`, `authorized`, or `failed` — a failed attempt's Order still takes a retry).
+8. **Disconnect is refused (409 `disconnect-blocked`, saying what is outstanding) while the provider may still
+   move money for the account** — once the keys are wiped, nothing it reports can be asked about or verified:
+   - a collection that is **open** (`created`, `authorized`, or `failed` — a failed attempt's Order still takes
+     a retry);
+   - a collection this platform **cancelled or expired whose provider Order may still be paid**: cancelling here
+     does not close the provider's Order. A Cashfree Order takes payment until its own expiry (the checkout's
+     lifetime from creation); any provider can complete an attempt already in flight (a UPI request approved
+     late) for `LATE_PAYMENT_GRACE` (20 minutes) after the close (`domain.payable_until`);
+   - a **refund still pending** at the provider: only its webhook says whether the customer got the money back,
+     and a failed one gives the order its paid fact back.
+
+   `DELETE …?force=true` (same permission and one-time-code rule) disconnects anyway — an explicit choice in the
+   UI, which states the consequence — and the audit row records exactly what was outstanding; those are then
+   settled in the provider's own dashboard. Without it, an `authorized` payment nothing captures, or a refund
+   whose webhook never arrives, would lock the account to its provider for good.
+
+   **Each collection records which wire made its Order** (`charges.order_wire`: `stub` | `live`, NULL before it
+   was kept — treated as possibly real). An Order the stub made can never be paid, so: it is never asked about
+   once the wire is live (the provider would refuse a lookup of an Order it never made), a stub that no longer
+   remembers it (merchant adapters are built per call; another process; a restart) is "no payments", it is never
+   reopened against a live provider (that would quietly mint a real Order nobody recorded), and once closed it
+   blocks nothing. That is what keeps a stub test checkout from wedging an account on the default wire.
 9. **The payer travels only when the provider asks.** Operations opens a checkout with no customer; a provider
    that needs one answers 422 `payer-required` before anything is written, and operations asks again with the
    order's name and phone. Payment passes the phone to the provider and nowhere else (a pseudonymous
@@ -76,6 +99,13 @@ that only worked because there had been one:
   adapter from Cashfree keys); the migration's downgrade refuses while one exists.
 - The P0 test that pinned "no second provider value" is superseded; the test that disconnected an account with a
   checkout open now cancels it first.
+- A Cashfree checkout cancelled the same day holds up a disconnect until its Order expires (up to the checkout
+  lifetime, 24 hours by default), unless the operator forces it. Terminating the Order at Cashfree on cancel
+  (`PATCH /pg/orders/{id}`) would shorten that; it is not built, because nothing here can verify that call
+  against a live account yet.
+- Inbox storage keeps only the platform's own `order_tags` (`organization_id`, `charge_id`, `subscription_id`,
+  `reference_id` as UUIDs; `reference_type`, `product_key`, `flow` as slugs): the account-wide dashboard webhook
+  delivers the merchant's other integrations' Orders too, whose tags are free-form and can carry their buyers.
 
 ## Alternatives rejected
 

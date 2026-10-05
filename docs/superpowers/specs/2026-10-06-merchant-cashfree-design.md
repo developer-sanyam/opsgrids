@@ -14,7 +14,13 @@ list a live sandbox must settle is at the end.
 
 - **v1 is staff-opened checkout inside Operations only.** No payment links, no storefront buyer checkout.
 - **One live account per organization**, its provider chosen in the connect form. Switching is disconnect, then
-  connect. Disconnect is refused (409, with the count) while a payment taken into the account is open.
+  connect. Disconnect is refused (409 `disconnect-blocked`, saying what is outstanding) while the provider may
+  still move money for the account — an open payment, a cancelled or expired one whose provider Order can still
+  be paid, a pending refund — unless the operator chooses "Disconnect anyway" (`force`, audited with the
+  counts). A collection records which wire made its Order (`charges.order_wire`); a stub Order is never asked
+  about at a live provider, never reopened there, and once closed blocks nothing (ADR-0030 §8).
+- **"Check connection" asks the provider, so it is refused on the stub wire** (409
+  `verification-unavailable`, nothing recorded): a stub accepts any keys.
 - **Connecting, replacing, checking and disconnecting need a one-time-code session** (`amr ∋ otp`), with a
   sentence in the UI that says how to get one.
 - **Cashfree starts Sandbox-only**; Production stays behind `COLLECTIONS_ALLOW_LIVE_KEYS`.
@@ -74,11 +80,16 @@ ID, Secret Key (password) and Environment (Sandbox / Production, Production disa
 replacing); "Check connection" with a state badge and a provider-worded hint; a webhook panel with the shared
 `CopyField` (new in `@opsgrids/ui`), provider-specific steps (Cashfree: version 2025-01-01 or later, no webhook
 secret, Production domain whitelisting) and "last webhook received"; provider-aware reconciliation wording; the
-one-time-code 403 and the disconnect 409 as sentences. Order payment card: dispatch on `session.provider`
+one-time-code 403 and the disconnect 409 as sentences ("Check connection" disabled on the stub wire; a blocked
+disconnect offers "Disconnect anyway" with its consequence, never a "Try again" into it). Order payment card:
+dispatch on `session.provider`
 (`lib/cashfreeCheckout.ts` loads `https://sdk.cashfree.com/js/v3/cashfree.js`, opens
 `Cashfree({mode}).checkout({paymentSessionId, redirectTarget: "_modal"})`, discards the result), then
 `syncOrderPayment`; a pending payment is polled every 3 s for about a minute (paused on a hidden tab, stopped on
-a settled state or a 4xx) under an `aria-live` "Payment pending — don't take payment again".
+a settled state or a 4xx) under an `aria-live` "Payment pending — don't take payment again". The order page
+refreshes the order **in the background** (`useAsync`'s `refresh`) when the card reports a change, never with a
+reload that swaps the page for a skeleton: that would unmount the card and cancel the poll, the warning and
+any error with it.
 
 ## Tests (offline only)
 
