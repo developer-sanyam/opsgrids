@@ -97,6 +97,10 @@ DATA_DELETION_STATUS = "/api/v1/webhooks/whatsapp/data-deletion-status"
 #: A tenant's own Razorpay webhook (tenant payment collection, ADR-0024 §8) — payment-service,
 #: not notification. The platform's own `/api/v1/webhooks/razorpay` stays routed-but-not-public.
 RAZORPAY_COLLECTIONS = "/api/v1/webhooks/razorpay/collections"
+#: The provider-neutral path of the same tenant webhook (ADR-0030): Cashfree merchants register
+#: it, a Cashfree Order names it as `notify_url`, and payment takes the provider from the account
+#: row, so the Razorpay path above stays as an alias of it forever.
+COLLECTIONS = "/api/v1/webhooks/collections"
 WEBHOOK_PREFIX = "/api/v1/webhooks/"
 
 #: Meta documents WhatsApp Business Platform webhook payloads up to 3 MB. Above the gateway's
@@ -120,6 +124,7 @@ EXPECTED_WEBHOOK_PATHS: dict[str, list[str]] = {
     DATA_DELETION: ["POST"],
     DATA_DELETION_STATUS: ["GET"],
     RAZORPAY_COLLECTIONS: ["POST"],
+    COLLECTIONS: ["POST"],
 }
 #: The body cap every public webhook route above must carry, in both route tables.
 EXPECTED_BODY_CAPS: dict[str, int] = {
@@ -128,6 +133,7 @@ EXPECTED_BODY_CAPS: dict[str, int] = {
     DATA_DELETION: META_PRIVACY_BODY_CAP,
     DATA_DELETION_STATUS: META_PRIVACY_BODY_CAP,
     RAZORPAY_COLLECTIONS: RAZORPAY_COLLECTIONS_BODY_CAP,
+    COLLECTIONS: RAZORPAY_COLLECTIONS_BODY_CAP,
 }
 #: Which service serves each public webhook — the upstream both tables must route it to, named by
 #: another prefix of the same service in that table (a host/port a hand-edit could get wrong).
@@ -137,6 +143,7 @@ WEBHOOK_SERVICE_PREFIX: dict[str, str] = {
     DATA_DELETION: "/api/v1/notifications",
     DATA_DELETION_STATUS: "/api/v1/notifications",
     RAZORPAY_COLLECTIONS: "/api/v1/payment",
+    COLLECTIONS: "/api/v1/payment",
 }
 NOTIFICATION_WEBHOOKS = [p for p, prefix in WEBHOOK_SERVICE_PREFIX.items() if "notifications" in prefix]
 #: Routed in the production table but deliberately NOT public in app-gateway: Razorpay's callback,
@@ -230,7 +237,11 @@ async def main() -> dict:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://probe"
     ) as client:
-        paths = ("/api/v1/webhooks/razorpay/collections", "/api/v1/nowhere")
+        paths = (
+            "/api/v1/webhooks/razorpay/collections",
+            "/api/v1/webhooks/collections",
+            "/api/v1/nowhere",
+        )
         status = {path: (await client.request("PUT", path)).status_code for path in paths}
     return {"max_webhook_body_bytes": MAX_COLLECTION_WEBHOOK_BODY_BYTES, "put_status": status}
 
@@ -372,4 +383,5 @@ def test_payment_serves_the_collections_webhook_and_buffers_what_the_gateway_all
     payment = _payment()
     assert payment["put_status"]["/api/v1/nowhere"] == 404
     assert payment["put_status"][RAZORPAY_COLLECTIONS] == 405
+    assert payment["put_status"][COLLECTIONS] == 405, "the neutral path is not mounted (ADR-0030)"
     assert payment["max_webhook_body_bytes"] == RAZORPAY_COLLECTIONS_BODY_CAP

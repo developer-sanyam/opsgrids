@@ -44,7 +44,9 @@
     "`/api/v1/payment` is payment-service's tenant surface (the organization's own Razorpay",
     "connection and the collections reconciliation report, ADR-0024 §8) and",
     "`/api/v1/webhooks/razorpay/collections` is a tenant's own Razorpay webhook — public in",
-    "`WEBHOOK_PUBLIC_PATHS` (POST only), authenticated by that merchant's HMAC, 256 KiB cap."
+    "`WEBHOOK_PUBLIC_PATHS` (POST only), authenticated by that merchant's HMAC, 256 KiB cap.",
+    "`/api/v1/webhooks/collections` is the provider-neutral path for the same handler (ADR-0030,",
+    "Cashfree merchants register it): public for POST only, same cap, provider from the account row."
   ],
   "routes": [
     { "prefix": "/api/v1/auth/operator", "upstream": "http://localhost:8110", "blocked": true },
@@ -100,6 +102,7 @@
     { "prefix": "/api/v1/usage", "upstream": "http://localhost:8162" },
     { "prefix": "/api/v1/payment", "upstream": "http://localhost:8163" },
     { "prefix": "/api/v1/webhooks/razorpay/collections", "upstream": "http://localhost:8163", "max_body_bytes": 262144 },
+    { "prefix": "/api/v1/webhooks/collections", "upstream": "http://localhost:8163", "max_body_bytes": 262144 },
 
     { "prefix": "/api/v1/plans", "upstream": "http://localhost:8164" },
     { "prefix": "/api/v1/catalog", "upstream": "http://localhost:8164" },
