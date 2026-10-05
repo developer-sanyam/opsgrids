@@ -89,6 +89,33 @@
         "title": "CheckoutCustomerIn",
         "type": "object"
       },
+      "CollectionWiresOut": {
+        "description": "Per provider, whether a merchant's adapter talks to the provider for real (`live`) or runs\non the in-process stub (`stub`: a checkout cannot be paid for real).",
+        "properties": {
+          "cashfree": {
+            "enum": [
+              "stub",
+              "live"
+            ],
+            "title": "Cashfree",
+            "type": "string"
+          },
+          "razorpay": {
+            "enum": [
+              "stub",
+              "live"
+            ],
+            "title": "Razorpay",
+            "type": "string"
+          }
+        },
+        "required": [
+          "razorpay",
+          "cashfree"
+        ],
+        "title": "CollectionWiresOut",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -104,7 +131,7 @@
       },
       "MerchantAccountIn": {
         "additionalProperties": false,
-        "description": "`PUT /payment/collections/merchant-account` \u2014 connect the organization's Razorpay account,\nor rotate its credentials in place. The key id is public (the browser gets it); the key secret\nand webhook secret are sealed on arrival and never returned \u2014 only a masked hint of each.",
+        "description": "`PUT /payment/collections/merchant-account` \u2014 connect the organization's payment-provider\naccount, or rotate its credentials in place (same provider and mode only: switching is\ndisconnect, then connect). Needs a session that signed in with a one-time code.\n\n* **Razorpay**: `key_id` (`rzp_test_\u2026` / `rzp_live_\u2026`, public \u2014 Checkout is opened with it; the\n  mode is read from it, so `mode` is not sent), `key_secret`, `webhook_secret` (the one set on\n  the webhook in Razorpay's dashboard).\n* **Cashfree**: `key_id` is the App ID, `key_secret` the Secret Key (it also signs webhooks, so\n  there is no `webhook_secret`), and `mode` is `sandbox` or `production` \u2014 an App ID does not\n  say which.\n\nSecrets are sealed on arrival and never returned \u2014 only a masked hint of each.",
         "properties": {
           "key_id": {
             "maxLength": 64,
@@ -120,35 +147,75 @@
             "type": "string",
             "writeOnly": true
           },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sandbox",
+                  "production"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
           "provider": {
-            "const": "razorpay",
             "default": "razorpay",
+            "enum": [
+              "razorpay",
+              "cashfree"
+            ],
             "title": "Provider",
             "type": "string"
           },
           "webhook_secret": {
-            "format": "password",
-            "maxLength": 128,
-            "minLength": 8,
-            "title": "Webhook Secret",
-            "type": "string",
-            "writeOnly": true
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 128,
+                "minLength": 8,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Secret"
           }
         },
         "required": [
           "key_id",
-          "key_secret",
-          "webhook_secret"
+          "key_secret"
         ],
         "title": "MerchantAccountIn",
         "type": "object"
       },
       "MerchantAccountOut": {
-        "description": "The organization's payment-provider connection as an admin may see it: masked secrets\nonly, and the webhook URL path to register at the provider (`?account=` names this account).",
+        "description": "The organization's payment-provider connection as an admin may see it: masked secrets\nonly, the webhook URL to register at the provider (`?account=` names this account), whether\nthe credentials have been verified, and when a webhook last arrived.",
         "properties": {
           "configured": {
             "title": "Configured",
             "type": "boolean"
+          },
+          "connection_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unverified",
+                  "verified",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection State"
           },
           "created_at": {
             "anyOf": [
@@ -196,6 +263,29 @@
             ],
             "title": "Key Secret Masked"
           },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "last_webhook_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Webhook At"
+          },
           "live_keys_allowed": {
             "title": "Live Keys Allowed",
             "type": "boolean"
@@ -238,6 +328,18 @@
             ],
             "title": "Rotated At"
           },
+          "verified_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified At"
+          },
           "webhook_events": {
             "items": {
               "type": "string"
@@ -267,6 +369,17 @@
             ],
             "title": "Webhook Secret Masked"
           },
+          "webhook_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Url"
+          },
           "wire": {
             "enum": [
               "stub",
@@ -274,12 +387,16 @@
             ],
             "title": "Wire",
             "type": "string"
+          },
+          "wires": {
+            "$ref": "#/components/schemas/CollectionWiresOut"
           }
         },
         "required": [
           "configured",
           "live_keys_allowed",
-          "wire"
+          "wire",
+          "wires"
         ],
         "title": "MerchantAccountOut",
         "type": "object"
@@ -822,6 +939,7 @@
     },
     "/api/v1/payment/collections/merchant-account": {
       "delete": {
+        "description": "Refused (409, with the count) while any online payment taken into the account is open.",
         "operationId": "delete_merchant_account_api_v1_payment_collections_merchant_account_delete",
         "responses": {
           "204": {
@@ -853,6 +971,7 @@
         ]
       },
       "put": {
+        "description": "Database only: the credentials are checked for shape and sealed, and the account is\n`unverified` until `POST \u2026/merchant-account/verify` asks the provider.",
         "operationId": "put_merchant_account_api_v1_payment_collections_merchant_account_put",
         "requestBody": {
           "content": {
@@ -886,7 +1005,29 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Connect the organization's Razorpay account, or rotate its credentials",
+        "summary": "Connect the organization's Razorpay or Cashfree account, or rotate its credentials",
+        "tags": [
+          "collections"
+        ]
+      }
+    },
+    "/api/v1/payment/collections/merchant-account/verify": {
+      "post": {
+        "description": "Claim (open the key secret, in a short transaction), probe (one authenticated, read-only\nrequest to the provider, with no transaction open, within `collections_call_timeout_seconds`),\nrecord (`verified_at` or `last_error_code`, re-checked under the row lock, audited). A provider\nthat refuses the credentials is recorded and then answered 422 `credentials-rejected`; one\nthat cannot be reached records nothing and is a 503.",
+        "operationId": "verify_merchant_account_api_v1_payment_collections_merchant_account_verify_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MerchantAccountOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ask the provider whether the connected account's credentials work",
         "tags": [
           "collections"
         ]
@@ -957,6 +1098,51 @@
         ]
       }
     },
+    "/api/v1/webhooks/collections": {
+      "post": {
+        "description": "One merchant's webhook, from whichever provider **the account row** names (Razorpay or\nCashfree) \u2014 never from this path or the body. The body is read raw \u2014 the signature is over\nexactly these bytes. An unknown or removed account, a bad signature and an unparseable\naccount id all answer the same 400, so a prober learns nothing about which accounts exist.",
+        "operationId": "collections_webhook_api_v1_webhooks_collections_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Account",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookAck"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A tenant's payment-provider webhook \u2014 per-merchant signature, idempotent, reconciling",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    },
     "/api/v1/webhooks/razorpay": {
       "post": {
         "description": "Ingest one Razorpay webhook. The body is read raw \u2014 the signature is over exactly these\nbytes, so it must not be re-serialized before verification.",
@@ -981,7 +1167,7 @@
     },
     "/api/v1/webhooks/razorpay/collections": {
       "post": {
-        "description": "One merchant's Razorpay webhook. The body is read raw \u2014 the signature is over exactly\nthese bytes. An unknown or removed account, a bad signature and an unparseable account id all\nanswer the same 400, so a prober learns nothing about which accounts exist.",
+        "description": "Kept forever: every Razorpay merchant registered this path. The same handler as\n`/webhooks/collections`; the provider is the account row's, so a delivery here for a Cashfree\naccount is verified as Cashfree's.",
         "operationId": "merchant_webhook_api_v1_webhooks_razorpay_collections_post",
         "parameters": [
           {
@@ -1018,7 +1204,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "A tenant's Razorpay webhook \u2014 per-merchant signature, idempotent, reconciling",
+        "summary": "The original path of a tenant's webhook \u2014 an alias of /webhooks/collections",
         "tags": [
           "webhooks"
         ]
