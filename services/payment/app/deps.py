@@ -20,7 +20,9 @@ dependencies so a test overrides them the same way it overrides a session.
 
 from __future__ import annotations
 
+import hashlib
 import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from functools import cache, lru_cache
 from typing import Annotated, Any, Literal, Protocol
@@ -119,19 +121,43 @@ def _collections_wire_live(cfg: Any, provider: str) -> bool:
     return bool(getattr(cfg, "collections_wire", "stub") == provider)
 
 
-#: The in-process Cashfree a merchant's stub adapter runs on, one per App ID, so what one call
-#: created is still there on the next (a status check finds the Order a checkout made) — as a real
-#: account would be. It holds no credential (a fake wire takes none), only stub Orders, and exists
-#: only while `COLLECTIONS_CASHFREE_WIRE=stub`.
-_CASHFREE_STUB_WIRES: dict[str, CashfreeFakeWire] = {}
+class _StubCashfreeWire(CashfreeFakeWire):
+    """The fake, as a long-lived process object: its request log (kept for tests' assertions) is
+    trimmed to the most recent `_STUB_LOG_MAX` entries, so a stub left running for weeks — status
+    polls, checkouts, cancels — does not grow without bound."""
+
+    def request(self, method: str, path: str, **kwargs: Any) -> Any:
+        try:
+            return super().request(method, path, **kwargs)
+        finally:
+            excess = len(self.requests) - _STUB_LOG_MAX
+            if excess > 0:
+                del self.requests[:excess]
+
+
+#: The in-process Cashfree a merchant's stub adapter runs on, so what one call created is still
+#: there on the next (a status check finds the Order a checkout made) — as a real account would
+#: be. Keyed by the App ID **and a digest of the Secret Key**, never the App ID alone: an App ID is
+#: whatever a tenant typed, and two organizations typing the same one must not share an account.
+#: It holds no credential (the digest is not one), only stub Orders, at most `_STUB_WIRES_MAX` of
+#: them (least recently used dropped first — a dropped stub Order is "no payments" to collections,
+#: `services._stub_order_payments`), and exists only while `COLLECTIONS_CASHFREE_WIRE=stub`.
+_CASHFREE_STUB_WIRES: OrderedDict[tuple[str, str], CashfreeFakeWire] = OrderedDict()
 _CASHFREE_STUB_LOCK = threading.Lock()
+_STUB_WIRES_MAX = 256
+_STUB_LOG_MAX = 200
 
 
-def _cashfree_stub_wire(app_id: str) -> CashfreeFakeWire:
+def _cashfree_stub_wire(app_id: str, secret_key: str) -> CashfreeFakeWire:
+    key = (app_id, hashlib.sha256(secret_key.encode()).hexdigest())
     with _CASHFREE_STUB_LOCK:
-        wire = _CASHFREE_STUB_WIRES.get(app_id)
+        wire = _CASHFREE_STUB_WIRES.get(key)
         if wire is None:
-            wire = _CASHFREE_STUB_WIRES[app_id] = CashfreeFakeWire()
+            wire = _CASHFREE_STUB_WIRES[key] = _StubCashfreeWire()
+            while len(_CASHFREE_STUB_WIRES) > _STUB_WIRES_MAX:
+                _CASHFREE_STUB_WIRES.popitem(last=False)
+        else:
+            _CASHFREE_STUB_WIRES.move_to_end(key)
         return wire
 
 
@@ -167,7 +193,7 @@ def _collections_provider(
                 mode=env,
             )
         return CashfreeCollectionsProvider(
-            wire=_cashfree_stub_wire(key_id), secret_key=key_secret, mode="stub"
+            wire=_cashfree_stub_wire(key_id, key_secret), secret_key=key_secret, mode="stub"
         )
     raise ValueError(f"{provider!r} is not a collections provider")
 
