@@ -25,6 +25,8 @@ CF_TEST_APP = "TESTdev-only-app"  # pragma: allowlist secret
 CF_TEST_SECRET = "cfsk_ma_test_dev-only-0001"  # pragma: allowlist secret
 CF_PROD_APP = "dev-only-prod-app"  # pragma: allowlist secret
 CF_PROD_SECRET = "cfsk_ma_prod_dev-only-0001"  # pragma: allowlist secret
+#: A recognisable tail for the values a refusal must never print.
+_MARKER = "SECRETMARKERabcdef0123"  # pragma: allowlist secret
 
 
 #: What a production-environment `Settings` needs of its own: real (not `dev-only-`) platform
@@ -33,6 +35,28 @@ _PRODUCTION_SECRETS: dict[str, Any] = {
     "internal_service_token": SecretStr("a" * 48),
     "pii_encryption_key": SecretStr("b" * 48),
 }
+
+
+#: What a developer's root `.env` may hold and `make test` exports into the process (`include .env`
+#: + `export`). `_env_file=None` ignores the file but not the environment, so without this a
+#: developer's sandbox keys would decide which branch of a validator these tests exercise.
+_FROM_A_DEVELOPERS_ENV = (
+    "RAZORPAY_KEY_ID",
+    "RAZORPAY_KEY_SECRET",
+    "RAZORPAY_WEBHOOK_SECRET",
+    "CASHFREE_APP_ID",
+    "CASHFREE_SECRET_KEY",
+    "PAYMENT_ALLOW_LIVE_KEYS",
+    "ENVIRONMENT",
+    "PII_ENCRYPTION_KEY",
+    "INTERNAL_SERVICE_TOKEN",
+)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in _FROM_A_DEVELOPERS_ENV:
+        monkeypatch.delenv(name, raising=False)
 
 
 def build(**kwargs: Any) -> Settings:
@@ -291,3 +315,46 @@ class TestNoSecretEverEscapes:
         with pytest.raises(ValidationError) as raised:
             build(cashfree_env="production", cashfree_secret_key=SecretStr(CF_TEST_SECRET))
         assert CF_TEST_SECRET not in str(raised.value)
+
+    @pytest.mark.parametrize(
+        ("env", "match"),
+        [
+            # A half-set Razorpay pair: the secret is the last field set, so it was the tail of the
+            # input pydantic used to print.
+            ({"RAZORPAY_KEY_SECRET": f"dev-only-{_MARKER}"}, "must be set together"),
+            (
+                {"RAZORPAY_KEY_ID": RZP_LIVE_ID, "RAZORPAY_KEY_SECRET": f"dev-only-{_MARKER}"},
+                "PAYMENT_ALLOW_LIVE_KEYS",
+            ),
+            (
+                {"CASHFREE_APP_ID": CF_PROD_APP, "CASHFREE_SECRET_KEY": f"cfsk_ma_prod_-{_MARKER}"},
+                "PAYMENT_ALLOW_LIVE_KEYS",
+            ),
+            ({"CASHFREE_SECRET_KEY": f"dev-only-{_MARKER}"}, "must be set together"),
+            # The base class's own refusal (a short PII key on production) with a provider pair
+            # set: the same input, printed by a different validator.
+            (
+                {
+                    "ENVIRONMENT": "production",
+                    "INTERNAL_SERVICE_TOKEN": "a" * 48,
+                    "PII_ENCRYPTION_KEY": "short",
+                    "RAZORPAY_KEY_ID": RZP_TEST_ID,
+                    "RAZORPAY_KEY_SECRET": f"dev-only-{_MARKER}",
+                },
+                "pii_encryption_key",
+            ),
+        ],
+    )
+    def test_a_refusal_read_from_the_environment_never_prints_a_value(
+        self, monkeypatch: pytest.MonkeyPatch, env: dict[str, str], match: str
+    ) -> None:
+        """The real path: compose (or `make`'s exported `.env`) hands pydantic **plain strings**,
+        not `SecretStr`s, so a test that passes `SecretStr(...)` cannot see what a crash at start-up
+        prints. Every refusal names its variable; none prints the input it was given."""
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        with pytest.raises(ValidationError, match=match) as raised:
+            Settings(_env_file=None)  # type: ignore[call-arg]
+        text = str(raised.value)
+        assert _MARKER not in text
+        assert "input_value" not in text
