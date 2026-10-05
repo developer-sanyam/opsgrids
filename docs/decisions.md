@@ -6,8 +6,8 @@ themselves are the authority — this page exists so you can find the right one 
 **Every question an ADR left open is decided or recorded as waiting on demand** in
 [adr/open-questions-register.md](adr/open-questions-register.md). That page links each question
 to the ADR section that decides it and to the backlog item that builds it. Numbers are allocated in
-order and never reused. The next free number is **0030** (0027 is allocated to the inventory Phase 9
-work, which has not merged). This table was last brought up to date at 0019, apart from 0028 and 0029 below;
+order and never reused. The next free number is **0031** (0027 is allocated to the inventory Phase 9
+work, which has not merged). This table was last brought up to date at 0019, apart from 0028, 0029 and 0030 below;
 [`adr/`](adr/) is the complete list.
 
 | ADR | Title | Header status | What exists today |
@@ -34,6 +34,7 @@ work, which has not merged). This table was last brought up to date at 0019, apa
 | [0019](adr/0019-statutory-portal-credentials.md) | Statutory portal credentials live in finance | Accepted 2026-09-24 | Not built; B5 (5b) |
 | [0028](adr/0028-putaway-gps-captures.md) | Storage put-away: GPS captures are audit evidence, kept 30 days | Accepted 2026-10-05 | Built on `feat/warehouse-map-putaway`, not deployed; the admin-run purge is `tools/purge_putaway_captures.py`. The reveal's one-time-code requirement was added in review and is an open owner decision (keep or revert) |
 | [0029](adr/0029-payment-provider-seam-and-checkout.md) | Payment provider seam: Razorpay and Cashfree, one customer-present checkout, no mandate debit yet | Accepted 2026-10-06 | Built on `feat/payments-phase-a`, not merged or deployed: every switch defaults to the stub (`PAYMENT_PROVIDER`, `PAYMENT_WIRE`, `CASHFREE_ENV`), webhooks stay private and the platform polls; amends the ADR-0004 §6 addendum. Nothing is verified against a provider until the owner runs `tools/payments_smoke_*.py` |
+| [0030](adr/0030-merchant-connect-collections-seam.md) | Merchant connect: a standalone collections seam, and Cashfree as a second provider | Proposed 2026-10-06 | Built on `feat/merchant-cashfree` (stacked on `feat/payments-phase-a`), not deployed; Cashfree's wire stays `stub` until the owner's sandbox run |
 
 Several header status lines (0002, 0004, 0006, 0007, 0009, 0010, 0012) were written before the
 work they describe shipped. The "What exists today" column is the current fact. Correcting the
