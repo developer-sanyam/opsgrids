@@ -11,6 +11,14 @@ import { getAccessToken, notifyUnauthorized } from "@/auth/session";
 /** Same-origin base. The Vite dev proxy forwards this to `http://localhost:8110` (admin-gateway). */
 export const API_BASE = "/api/v1";
 
+/** One entry of a problem's `errors[]` — a field-level validation message, or (on a business
+ *  refusal) the stable machine `code` the screen switches on instead of matching prose. */
+export interface ProblemError {
+  field?: string;
+  code?: string;
+  message?: string;
+}
+
 /** The RFC 7807 body the gateway returns on an error. */
 export interface ProblemJson {
   type?: string;
@@ -19,6 +27,7 @@ export interface ProblemJson {
   detail?: string;
   instance?: string;
   request_id?: string;
+  errors?: ProblemError[];
 }
 
 /** A failed request, carrying the HTTP status and the parsed problem document when there is one. */
@@ -31,6 +40,18 @@ export class ApiError extends Error {
     this.name = "ApiError";
     this.status = status;
     this.problem = problem;
+  }
+
+  /** The stable machine code on a coded refusal (`errors[0].code`), when the server gave one.
+   *  A screen switches on this; the `message` is the server's sentence and is shown verbatim. */
+  get code(): string | null {
+    const code = this.problem?.errors?.[0]?.code;
+    return typeof code === "string" && code.length > 0 ? code : null;
+  }
+
+  /** `problem.request_id` — the thread a support conversation can pull. */
+  get requestId(): string | null {
+    return this.problem?.request_id ?? null;
   }
 }
 

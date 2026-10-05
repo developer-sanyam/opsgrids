@@ -103,6 +103,36 @@ async def visible_plans(
     return [(p, by_plan.get(p.id, [])) for p in plans]
 
 
+async def offerable_versions(
+    session: AsyncSession, *, product_key: str, org_id: uuid.UUID
+) -> list[tuple[Plan, PlanVersion]]:
+    """The versions staff may switch this organization onto, for one product.
+
+    Reuses `visible_plans` and so `_audience_ok`: an active plan, a published version, public or
+    negotiated for exactly this organization — another organization's bespoke price is never
+    returned. On top of that, **superseded versions are dropped**: publishing a newer version of a
+    plan does not grandfather the older one (nothing flips its state, ADR-0004 §2), so an old
+    public version stays published and pinnable by id. Offering it beside its successor would let a
+    switch land a customer on a price the catalogue has already moved past. A version is superseded
+    when a higher-numbered published version of the same plan has the same audience, cadence and
+    currency — those are the things a customer cannot cross (one currency and one cadence per
+    subscription), so a monthly version is not superseded by a yearly one.
+    """
+    offered: list[tuple[Plan, PlanVersion]] = []
+    for plan, versions in await visible_plans(session, product_key=product_key, org_id=org_id):
+        newest: dict[tuple[uuid.UUID | None, str, str], int] = {}
+        for version in versions:
+            key = (version.restricted_to_org_id, version.billing_interval, version.currency)
+            newest[key] = max(newest.get(key, 0), version.version_no)
+        offered.extend(
+            (plan, version)
+            for version in versions
+            if version.version_no
+            == newest[(version.restricted_to_org_id, version.billing_interval, version.currency)]
+        )
+    return offered
+
+
 async def get_visible_plan(
     session: AsyncSession, plan_id: uuid.UUID, *, org_id: uuid.UUID
 ) -> tuple[Plan, list[PlanVersion]] | None:
@@ -612,6 +642,7 @@ __all__ = [
     "latest_version_no",
     "latest_version_numbers",
     "list_plans_page",
+    "offerable_versions",
     "product_has_any_plan",
     "version_counts",
     "version_summaries_page",

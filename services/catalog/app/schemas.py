@@ -246,6 +246,36 @@ class InternalPlanVersionOut(BaseModel):
     seat_classes: list[SeatClassOut] = Field(default_factory=list)
 
 
+class OfferableVersionOut(BaseModel):
+    """One plan version an organization may be switched onto, with everything a staff picker needs
+    in one row — the plan's identity beside the version's, which `PlanVersionOut` lacks.
+
+    Carries amounts, so it is for the service-token internal read behind console's own role gate
+    and for nothing else: the tenant read (`TenantPlanVersionOut`) is amount-free on purpose and
+    is never reused for this.
+    """
+
+    plan_id: uuid.UUID
+    plan_code: str
+    plan_name: str
+    product_key: str
+    plan_version_id: uuid.UUID
+    version_no: int
+    state: str
+    billing_interval: str
+    currency: str
+    #: NULL for a public version; this organization's id for one negotiated for it (never another
+    #: organization's — those are not returned at all).
+    restricted_to_org_id: uuid.UUID | None = None
+    published_at: datetime | None = None
+    prices: list[InternalPriceOut] = Field(default_factory=list)
+    features: list[FeatureOut] = Field(default_factory=list)
+
+
+class OfferableVersionsOut(BaseModel):
+    versions: list[OfferableVersionOut] = Field(default_factory=list)
+
+
 class InternalPlanVersionNameOut(BaseModel):
     """One plan version's display names — `GET /internal/v1/plan-versions` (batch)."""
 

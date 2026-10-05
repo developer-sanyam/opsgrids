@@ -273,6 +273,14 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "D3 #17, routed to the subscription slice: the operator-console path to the same "
         "change-plan/pin call, same instance."
     ),
+    ("services/subscription/app/api/internal.py", "preview_change_plan_as_operator"): (
+        "D3 #17 (ADR-0029): the read-only plan-change preview evaluates the same change as "
+        "change_plan_as_operator, so it reads the new and the current pin from catalog (and, for "
+        "a bundle, the product registry) over HTTP inside a tenant-bound transaction. Unlike the "
+        "write it takes no row lock and writes nothing, so the connection is held, not a lock. "
+        "Same fix as #17: resolve the versions before the transaction opens and evaluate against "
+        "them."
+    ),
 }
 
 

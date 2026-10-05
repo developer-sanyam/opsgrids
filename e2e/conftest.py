@@ -761,11 +761,14 @@ def operator_call(platform: Platform) -> Any:
     )
 
     def _post(service: str, path: str, body: dict[str, Any]) -> httpx.Response:
-        token = mint_service_token(caller, audience=service)
+        # Subscription's operator routes take console's token only (`ConsoleCallerDep`), and this
+        # harness stands in for console, so the token is issued as console — the token's `iss`
+        # is what the route checks, not the header.
+        token = mint_service_token(caller, audience=service, caller="console")
         return httpx.post(
             f"{platform.url(service)}{path}",
             json=body,
-            headers={"X-Internal-Token": token, "X-Calling-Service": "e2e-operator"},
+            headers={"X-Internal-Token": token, "X-Calling-Service": "console"},
             timeout=15.0,
         )
 
