@@ -16,6 +16,7 @@
 
 import type { CashfreeOrderCheckoutSessionOut } from "@/api/types";
 import type { CheckoutClosed } from "@/lib/razorpayCheckout";
+import { CheckoutLoadError } from "@/lib/checkoutErrors";
 
 export const CASHFREE_SDK_SRC = "https://sdk.cashfree.com/js/v3/cashfree.js";
 
@@ -51,12 +52,12 @@ export function loadCashfree(): Promise<CashfreeFactory> {
       if (window.Cashfree) resolve(window.Cashfree);
       else {
         loading = null;
-        reject(new Error("Cashfree's checkout did not load."));
+        reject(new CheckoutLoadError("Cashfree's checkout did not load."));
       }
     };
     script.onerror = () => {
       loading = null;
-      reject(new Error("Cashfree's checkout could not be loaded. Check the connection, or an ad blocker, and try again."));
+      reject(new CheckoutLoadError("Cashfree's checkout could not be loaded. Check the connection, or an ad blocker, and try again."));
     };
     document.head.appendChild(script);
   });

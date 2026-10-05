@@ -371,8 +371,11 @@ export function OrderDetailPage() {
             </dl>
           </Card>
 
-          {/* Online payment (ADR-0024 A4): once the order is priced there is a total to pay. */}
-          {order.status !== "DRAFT" ? <OrderPaymentCard order={order} onOrderChanged={state.reload} /> : null}
+          {/* Online payment (ADR-0024 A4): once the order is priced there is a total to pay. It
+              refreshes the order in the background, never by a reload: a reload swaps the page for
+              a skeleton, which unmounts the card — and its pending-payment poll, its "don't take
+              payment again" and any error it is showing go with it. */}
+          {order.status !== "DRAFT" ? <OrderPaymentCard order={order} onOrderChanged={state.refresh} /> : null}
 
           {showQuote ? (
             <Card className="p-6 flex flex-col gap-4">

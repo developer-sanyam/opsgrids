@@ -11,6 +11,7 @@ import type { OrderCheckoutSessionOut, OrderCollectionOut, OrderOut } from "@/ap
 import { usePaymentStatusPoll } from "@/forms/usePaymentStatusPoll";
 import type { PollOutcome } from "@/forms/usePaymentStatusPoll";
 import { openCashfreeCheckout } from "@/lib/cashfreeCheckout";
+import { checkoutErrorMessage } from "@/lib/checkoutErrors";
 import { formatDate, formatMoney } from "@/lib/format";
 import { minorToInput, parseMinor } from "@/lib/money";
 import { providerName } from "@/lib/paymentProviders";
@@ -66,6 +67,11 @@ function openCheckout(session: OrderCheckoutSessionOut, businessName: string) {
  * webhook). Whatever the checkout's own callback reports is never used. A payment still pending
  * after that is asked about again, every few seconds for about a minute, with a standing "don't
  * take payment again" until it settles.
+ *
+ * Its own state — the poll, that warning, a notice, the last error — must outlive every refresh:
+ * `onOrderChanged` is expected to refresh the order **in the background** (the order page passes
+ * `useAsync`'s `refresh`, never `reload`, which would unmount this card), and those messages are
+ * shown while the card's own list reloads too.
  */
 export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; onOrderChanged: () => void }) {
   const toast = useToast();
@@ -83,7 +89,7 @@ export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; o
         toast.success("Payment received — confirmed with the provider.");
       } else if (outcome.kind === "gave_up") {
         setNotice(
-          `Still pending with ${providerName(pendingProvider)}. Use "Check status" in a little while — and don't take payment again until it settles.`,
+          `Still pending with ${providerName(pendingProvider)}. Use "Check status" in a little while. Don't take payment another way until it settles — or cancel this online payment first.`,
         );
       }
       refreshEverything();
@@ -95,8 +101,9 @@ export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; o
   const [refundKey, setRefundKey] = useState("");
   const [refundError, setRefundError] = useState<string | undefined>(undefined);
 
+  /** Both refreshes keep what is on screen until the new answer arrives (see the doc above). */
   function refreshEverything() {
-    state.reload();
+    state.refresh();
     onOrderChanged();
   }
 
@@ -184,10 +191,27 @@ export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; o
     void refund.mutate({ chargeId: refunding.id, amount: parsed.minor, reason: refundReason.trim(), key: refundKey });
   }
 
+  const mutationError = collect.error ?? check.error ?? cancel.error;
+  // Shown whatever the list below is doing: a reload of it must never hide them.
+  const messages = (
+    <>
+      {notice ? <InlineAlert tone="warning" title={notice} /> : null}
+      <div aria-live="polite">
+        {poll.watching !== null ? (
+          <InlineAlert tone="info" live="off" title="Payment pending — don't take payment again">
+            Waiting for {providerName(pendingProvider)} to confirm it. This updates by itself.
+          </InlineAlert>
+        ) : null}
+      </div>
+      {mutationError ? <InlineAlert tone="danger" title={checkoutErrorMessage(mutationError)} /> : null}
+    </>
+  );
+
   if (state.status === "loading") {
     return (
       <Card className="p-6 flex flex-col gap-4">
         <SectionHeader title="Payment" />
+        {messages}
         <Skeleton className="h-20 w-full rounded-tile" />
       </Card>
     );
@@ -196,6 +220,7 @@ export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; o
     return (
       <Card className="p-6 flex flex-col gap-4">
         <SectionHeader title="Payment" />
+        {messages}
         <ErrorState message={problemMessage(state.error)} onRetry={state.reload} />
       </Card>
     );
@@ -203,7 +228,6 @@ export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; o
 
   const payments = state.data;
   const paidOnline = payments.paid_at !== null && payments.paid_via_charge_id !== null;
-  const mutationError = collect.error ?? check.error ?? cancel.error;
 
   return (
     <Card className="p-6 flex flex-col gap-4">
@@ -227,15 +251,7 @@ export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; o
         </div>
       ) : null}
 
-      {notice ? <InlineAlert tone="warning" title={notice} /> : null}
-      <div aria-live="polite">
-        {poll.watching !== null ? (
-          <InlineAlert tone="info" live="off" title="Payment pending — don't take payment again">
-            Waiting for {providerName(pendingProvider)} to confirm it. This updates by itself.
-          </InlineAlert>
-        ) : null}
-      </div>
-      {mutationError ? <InlineAlert tone="danger" title={problemMessage(mutationError)} /> : null}
+      {messages}
 
       {payments.can_collect ? (
         <Can permission="operations.orders.payment.collect" scope="ORG">

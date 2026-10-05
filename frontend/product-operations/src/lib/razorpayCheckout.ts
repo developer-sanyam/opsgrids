@@ -14,6 +14,7 @@
  */
 
 import type { OrderCheckoutSessionOut } from "@/api/types";
+import { CheckoutLoadError } from "@/lib/checkoutErrors";
 
 export const RAZORPAY_CHECKOUT_SRC = "https://checkout.razorpay.com/v1/checkout.js";
 
@@ -54,11 +55,11 @@ export function loadRazorpay(): Promise<RazorpayConstructor> {
     script.async = true;
     script.onload = () => {
       if (window.Razorpay) resolve(window.Razorpay);
-      else reject(new Error("Razorpay Checkout did not load."));
+      else reject(new CheckoutLoadError("Razorpay Checkout did not load."));
     };
     script.onerror = () => {
       loading = null;
-      reject(new Error("Razorpay Checkout could not be loaded. Check the connection and try again."));
+      reject(new CheckoutLoadError("Razorpay Checkout could not be loaded. Check the connection and try again."));
     };
     document.head.appendChild(script);
   });
