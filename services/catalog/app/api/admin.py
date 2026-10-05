@@ -40,7 +40,7 @@ from starlette.requests import Request
 
 from app import domain, selectors, services
 from app.models import PLATFORM_ORG, Plan
-from app.registry import ProductRegistry
+from app.registry import ProductRegistry, ProductSnapshot, take_snapshot
 from app.schemas import (
     PRODUCT_KEY_PATTERN,
     AdminPlanCreateIn,
@@ -139,6 +139,22 @@ def get_product_registry(request: Request) -> ProductRegistry:
 
 
 RegistryDep = Annotated[ProductRegistry, Depends(get_product_registry)]
+
+
+async def get_product_snapshot(_operator: OperatorDep, registry: RegistryDep) -> ProductSnapshot:
+    """The product registry, read **before** the request's transaction opens (D3,
+    docs/io-outside-transactions.md #10 — fixed by this).
+
+    Each write route that needs it declares this dependency ahead of its session dependency, and
+    FastAPI resolves a route's dependencies in declaration order, so the HTTP call to
+    product-service runs with no catalog connection held. It depends on the owner gate first, so
+    a refused caller never reaches product-service. A failed read is kept, not raised: only a
+    check that needs the registry fails on it (`ProductSnapshot.require`).
+    """
+    return await take_snapshot(registry)
+
+
+ProductsDep = Annotated[ProductSnapshot, Depends(get_product_snapshot)]
 
 ProductKeyQuery = Annotated[str | None, Query(pattern=PRODUCT_KEY_PATTERN)]
 CursorQuery = Annotated[str | None, Query(max_length=512)]
@@ -297,15 +313,15 @@ async def get_version(
 )
 async def create_plan(
     payload: AdminPlanCreateIn,
+    products: ProductsDep,
     session: SessionDep,
     operator: OperatorDep,
-    registry: RegistryDep,
     idempotency_key: IdempotencyKeyHeader,
     request: Request,
 ) -> Any:
     async def work() -> PlanListItemOut:
         plan = await services.create_plan(
-            session, operator, payload, request=request, reason=payload.reason, registry=registry
+            session, operator, payload, request=request, reason=payload.reason, products=products
         )
         return await _plan_row(session, plan)
 
@@ -426,9 +442,9 @@ async def reactivate_plan(
 async def create_version(
     plan_id: uuid.UUID,
     payload: AdminVersionCreateIn,
+    products: ProductsDep,
     session: SessionDep,
     operator: OperatorDep,
-    registry: RegistryDep,
     idempotency_key: IdempotencyKeyHeader,
     request: Request,
 ) -> Any:
@@ -440,7 +456,7 @@ async def create_version(
             plan,
             payload,
             request=request,
-            registry=registry,
+            products=products,
             reason=payload.reason,
         )
         return await _version_out(session, version.id)
@@ -465,9 +481,9 @@ async def create_version(
 async def publish_version(
     version_id: uuid.UUID,
     payload: PublishIn,
+    products: ProductsDep,
     session: SessionDep,
     operator: OperatorDep,
-    registry: RegistryDep,
     idempotency_key: IdempotencyKeyHeader,
     request: Request,
 ) -> Any:
@@ -479,7 +495,7 @@ async def publish_version(
             version,
             request=request,
             reason=payload.reason,
-            registry=registry,
+            products=products,
             allow_zero_amounts=payload.allow_zero_amounts,
         )
         return await _version_out(session, version.id)

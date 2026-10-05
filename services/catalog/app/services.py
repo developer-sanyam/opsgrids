@@ -44,7 +44,7 @@ from app.models import (
     Price,
     SeatClass,
 )
-from app.registry import ProductRegistry
+from app.registry import ProductSnapshot
 from app.schemas import PlanCreateIn, PlanPatchIn, SeatClassIn, VersionCreateIn
 from platform_core.audit import record_audit
 from platform_core.auth import Principal
@@ -91,13 +91,14 @@ async def create_plan(
     *,
     request: Request | None,
     reason: str | None = None,
-    registry: ProductRegistry | None = None,
+    products: ProductSnapshot | None = None,
 ) -> Plan:
-    """A new, version-less plan under a product. With a `registry` (the operator route always
-    passes one) the product key must be one product-service has registered and not a platform
-    product every customer already has — a typo here would be a plan nobody can ever buy."""
-    if registry is not None:
-        await _require_sellable_product(payload.product_key, registry)
+    """A new, version-less plan under a product. With a registry snapshot (the operator route
+    always takes one, before its transaction opens) the product key must be one product-service
+    has registered and not a platform product every customer already has — a typo here would be a
+    plan nobody can ever buy."""
+    if products is not None:
+        _require_sellable_product(payload.product_key, products)
     plan = Plan(
         product_key=payload.product_key,
         code=payload.code,
@@ -128,9 +129,8 @@ async def create_plan(
     return plan
 
 
-async def _require_sellable_product(product_key: str, registry: ProductRegistry) -> None:
-    products = await registry.products()
-    entry = products.get(product_key)
+def _require_sellable_product(product_key: str, snapshot: ProductSnapshot) -> None:
+    entry = snapshot.require("checking a plan's product").get(product_key)
     if entry is None:
         message = f"{product_key!r} is not a registered product"
         raise BusinessRuleProblem(
@@ -273,7 +273,7 @@ async def create_version(
     payload: VersionCreateIn,
     *,
     request: Request | None,
-    registry: ProductRegistry | None = None,
+    products: ProductSnapshot | None = None,
     reason: str | None = None,
 ) -> PlanVersion:
     """Clone the plan's latest version into a new **draft**, never mutating a published one.
@@ -307,7 +307,7 @@ async def create_version(
         if supplied
         else [(f.feature_key, f.value) for f in (source.features if source else [])]
     )
-    await _validate_bundle(plan, declared, registry)
+    _validate_bundle(plan, declared, products)
 
     version = PlanVersion(
         plan_id=plan.id,
@@ -383,7 +383,7 @@ async def draft_version(
     payload: VersionCreateIn,
     *,
     request: Request | None,
-    registry: ProductRegistry | None,
+    products: ProductSnapshot | None,
     reason: str | None,
 ) -> PlanVersion:
     """`create_version` for the operator route, safe against a concurrent draft on the same plan.
@@ -403,7 +403,7 @@ async def draft_version(
                     plan,
                     payload,
                     request=request,
-                    registry=registry,
+                    products=products,
                     reason=reason,
                 )
         except IntegrityError as exc:
@@ -431,13 +431,15 @@ def _validate_trial_days(value: Any) -> None:
         raise BusinessRuleProblem(message)
 
 
-async def _validate_bundle(
-    plan: Plan, declared: list[tuple[str, Any]], registry: ProductRegistry | None
+def _validate_bundle(
+    plan: Plan, declared: list[tuple[str, Any]], snapshot: ProductSnapshot | None
 ) -> None:
     """Refuse a `bundled_products` declaration product-service's registry cannot vouch for.
 
-    Only a version that declares one pays for the registry read; every other version authors
-    exactly as before. With no registry to ask, a bundle is refused rather than trusted.
+    Judged against a snapshot read before the transaction opened (D3 #10): only a version that
+    declares a bundle needs it, so an unreachable registry fails only such a version (503). With
+    no snapshot at all — a service-level caller that never consulted the registry — a bundle is
+    refused rather than trusted.
     """
     # Presence of the key, not truthiness of its value: an explicit `"bundled_products": null`
     # is a malformed bundle declaration, and must be refused rather than read as "not a bundle".
@@ -447,11 +449,11 @@ async def _validate_bundle(
     if FEATURE_BUNDLED_PRODUCTS not in features:
         return
     members = features[FEATURE_BUNDLED_PRODUCTS]
-    if registry is None:
+    if snapshot is None:
         raise BusinessRuleProblem(
             "a bundle cannot be authored without the product registry to check its members"
         )
-    products = await registry.products()
+    products = snapshot.require("authoring a bundle")
     problems = domain.bundle_member_problems(
         products.get(plan.product_key), plan.product_key, members, products
     )
@@ -561,7 +563,7 @@ async def publish_version(
     *,
     request: Request | None,
     reason: str | None = None,
-    registry: ProductRegistry | None = None,
+    products: ProductSnapshot | None = None,
     allow_zero_amounts: bool = False,
 ) -> PlanVersion:
     """Freeze a draft. From here the row is immutable (trigger + `_ensure_draft`), and
@@ -572,7 +574,7 @@ async def publish_version(
     once as the problem document's `errors[]`, so an operator fixes the draft in one pass.
     """
     _ensure_draft(version)
-    await _ensure_publishable(session, version, registry, allow_zero_amounts=allow_zero_amounts)
+    await _ensure_publishable(session, version, products, allow_zero_amounts=allow_zero_amounts)
 
     version.state = VERSION_PUBLISHED
     version.published_at = datetime.now(UTC)
@@ -626,7 +628,7 @@ async def publish_version(
 async def _ensure_publishable(
     session: AsyncSession,
     version: PlanVersion,
-    registry: ProductRegistry | None,
+    snapshot: ProductSnapshot | None,
     *,
     allow_zero_amounts: bool,
 ) -> None:
@@ -653,7 +655,7 @@ async def _ensure_publishable(
     if FEATURE_BUNDLED_PRODUCTS in features:
         # Re-checked at publish, not only at draft: the registry may have moved on since the
         # draft was written, and once frozen a wrong member list is a customer's problem.
-        if registry is None:
+        if snapshot is None:
             problems.append(
                 domain.PublishProblem(
                     "features.bundled_products",
@@ -662,7 +664,7 @@ async def _ensure_publishable(
                 )
             )
         else:
-            products = await registry.products()
+            products = snapshot.require("publishing a bundle")
             plan = fresh.plan
             for message in domain.bundle_member_problems(
                 products.get(plan.product_key),

@@ -21,6 +21,7 @@ from app import domain, services
 from app.api.admin import get_product_registry
 from app.domain import RegisteredProduct
 from app.main import app
+from app.registry import ProductSnapshot
 from app.schemas import FeatureIn, PlanCreateIn, PriceIn, VersionCreateIn
 from platform_core.auth import Principal, get_principal
 from platform_core.errors import BusinessRuleProblem, UpstreamUnavailableProblem
@@ -142,7 +143,7 @@ class TestAuthoring:
                 plan,
                 _bundle(["hrms", "crm", "finance"]),
                 request=None,
-                registry=REGISTRY,
+                products=REGISTRY.snapshot(),
             )
         assert version.state == "draft"
 
@@ -161,7 +162,7 @@ class TestAuthoring:
                     plan,
                     _bundle(["hrms", "crm", "fnance"]),
                     request=None,
-                    registry=REGISTRY,
+                    products=REGISTRY.snapshot(),
                 )
 
     async def test_a_clone_of_a_bundle_is_revalidated(self, platform_session: AsyncSession) -> None:
@@ -175,7 +176,7 @@ class TestAuthoring:
                 plan,
                 _bundle(["hrms", "crm", "finance"]),
                 request=None,
-                registry=REGISTRY,
+                products=REGISTRY.snapshot(),
             )
         shrunk = FakeRegistry([e for e in REGISTRY._entries.values() if e.key != "finance"])
         with pytest.raises(BusinessRuleProblem, match="'finance' is not a registered product"):
@@ -187,13 +188,16 @@ class TestAuthoring:
                     plan,
                     VersionCreateIn(currency="INR"),
                     request=None,
-                    registry=shrunk,
+                    products=shrunk.snapshot(),
                 )
 
-    async def test_a_plain_plan_never_asks_the_registry(
+    async def test_a_plain_plan_authors_while_the_registry_is_down(
         self, platform_session: AsyncSession
     ) -> None:
-        registry = FakeRegistry.default()
+        """The operator route reads the registry before its transaction opens (D3 #10) and keeps
+        a failed read rather than raising it: only a bundle needs the registry, so a plain
+        version still authors while product-service is unreachable."""
+        down = ProductSnapshot(products=None, failure=UpstreamUnavailableProblem("down"))
         async with platform_session.begin():
             plan = await services.create_plan(
                 platform_session,
@@ -211,9 +215,8 @@ class TestAuthoring:
                     features=[FeatureIn(feature_key="seats", value=10)],
                 ),
                 request=None,
-                registry=registry,
+                products=down,
             )
-        assert registry.calls == 0
 
 
 @contextlib.contextmanager
@@ -346,7 +349,7 @@ class TestTrialLength:
                         features=[FeatureIn(feature_key="trial_days", value=value)],
                     ),
                     request=None,
-                    registry=REGISTRY,
+                    products=REGISTRY.snapshot(),
                 )
 
     async def test_a_valid_trial_length_authors(self, platform_session: AsyncSession) -> None:
@@ -367,7 +370,7 @@ class TestTrialLength:
                     features=[FeatureIn(feature_key="trial_days", value=0)],
                 ),
                 request=None,
-                registry=REGISTRY,
+                products=REGISTRY.snapshot(),
             )
         assert version.state == "draft"
 
@@ -385,10 +388,15 @@ class TestTheDeployAudit:
         )
         plan = await _suite_plan(session, code)
         version = await services.create_version(
-            session, operator_principal(), plan, _bundle(members), request=None, registry=permissive
+            session,
+            operator_principal(),
+            plan,
+            _bundle(members),
+            request=None,
+            products=permissive.snapshot(),
         )
         await services.publish_version(
-            session, operator_principal(), version, request=None, registry=permissive
+            session, operator_principal(), version, request=None, products=permissive.snapshot()
         )
         if retire:
             await services.retire_plan(session, operator_principal(), plan, request=None)

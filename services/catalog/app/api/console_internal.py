@@ -185,7 +185,7 @@ async def ensure_bespoke_price(
         try:
             async with session.begin_nested():
                 drafted = await services.create_version(
-                    session, operator, plan, draft_payload, request=request, registry=None
+                    session, operator, plan, draft_payload, request=request
                 )
         except IntegrityError as exc:
             if _integrity_error_constraint(exc) != "uq_plan_versions_plan_version":

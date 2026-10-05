@@ -35,10 +35,11 @@ from app.config import settings
 from app.domain import RegisteredProduct
 from app.main import app
 from app.models import PLATFORM_ORG, SCHEMA, AuditLog, IdempotencyKey, OutboxEvent, Plan
+from app.registry import ProductSnapshot
 from app.schemas import FeatureIn, PlanCreateIn, PriceIn, SeatClassIn, VersionCreateIn
 from platform_core.auth import Principal, get_principal
 from platform_core.db import TENANT_GUC
-from platform_core.errors import BusinessRuleProblem, ConflictProblem
+from platform_core.errors import BusinessRuleProblem, ConflictProblem, UpstreamUnavailableProblem
 from tests.helpers import FakeRegistry, operator_principal
 
 pytestmark = pytest.mark.integration
@@ -87,7 +88,7 @@ async def _draft(
     seat_classes: list[SeatClassIn] | None = None,
     currency: str = "INR",
     org: uuid.UUID | None = None,
-    registry: Any = None,
+    products: ProductSnapshot | None = None,
 ):
     return await services.create_version(
         session,
@@ -103,14 +104,14 @@ async def _draft(
             seat_classes=seat_classes or [],
         ),
         request=None,
-        registry=registry,
+        products=products,
     )
 
 
 async def _published(session: AsyncSession, plan: Plan, **kwargs: Any):
     version = await _draft(session, plan, **kwargs)
     return await services.publish_version(
-        session, OWNER, version, request=None, registry=kwargs.get("registry")
+        session, OWNER, version, request=None, products=kwargs.get("products")
     )
 
 
@@ -384,7 +385,6 @@ class TestIdempotency:
         assert second.json() == first.json()
         assert second.headers.get("Idempotent-Replayed") == "true"
         assert "Idempotent-Replayed" not in first.headers
-        assert registry.calls == 1, "the replay must not run the change again"
         async with admin_session.begin():
             assert await _count(admin_session, Plan) == 1
             assert (
@@ -698,17 +698,25 @@ class TestPublishValidation:
                 platform_session,
                 plan,
                 features=[FeatureIn(feature_key="bundled_products", value=["hrms", "gone"])],
-                registry=then,
+                products=then.snapshot(),
             )
             version_id = version.id
-        for registry, code in ((now, "bundle_member"), (None, "bundle_unverifiable")):
+        for snapshot, code in ((now.snapshot(), "bundle_member"), (None, "bundle_unverifiable")):
             with pytest.raises(BusinessRuleProblem) as caught:
                 async with platform_session.begin():
                     fresh = await services.require_version_for_update(platform_session, version_id)
                     await services.publish_version(
-                        platform_session, OWNER, fresh, request=None, registry=registry
+                        platform_session, OWNER, fresh, request=None, products=snapshot
                     )
             assert {e["code"] for e in caught.value.errors or []} == {code}
+        # An unreachable registry is a 503 for a bundle — retry later — not a business rule.
+        down = ProductSnapshot(products=None, failure=UpstreamUnavailableProblem("down"))
+        with pytest.raises(UpstreamUnavailableProblem):
+            async with platform_session.begin():
+                fresh = await services.require_version_for_update(platform_session, version_id)
+                await services.publish_version(
+                    platform_session, OWNER, fresh, request=None, products=down
+                )
 
     async def test_over_http_the_problems_arrive_as_errors(
         self, client: AsyncClient, platform_session: AsyncSession
@@ -1015,7 +1023,7 @@ class TestDraftRace:
                 plan,
                 VersionCreateIn(currency="INR", prices=[_price(kind="flat", amount_minor=1_000)]),
                 request=None,
-                registry=None,
+                products=None,
                 reason=REASON,
             )
         assert version.version_no == 2
@@ -1041,6 +1049,46 @@ class TestDraftRace:
                         currency="INR", prices=[_price(kind="flat", amount_minor=1_000)]
                     ),
                     request=None,
-                    registry=None,
+                    products=None,
                     reason=REASON,
                 )
+
+
+class TestTheRegistryIsReadOutsideTheTransaction:
+    """D3 (docs/io-outside-transactions.md #10): the HTTP call to product-service happens before
+    the request's transaction opens, never while a catalog connection is held."""
+
+    async def test_every_registry_reading_route_reads_it_with_no_transaction_open(
+        self, client: AsyncClient, platform_session: AsyncSession
+    ) -> None:
+        seen: list[bool] = []
+
+        class Recording(FakeRegistry):
+            async def products(self) -> dict[str, RegisteredProduct]:
+                seen.append(platform_session.in_transaction())
+                return await super().products()
+
+        registry = Recording(FakeRegistry.default()._entries.values())
+        with acting(OWNER, registry):
+            plan = await client.post(
+                f"{BASE}/plans",
+                json={"product_key": "hrms", "code": "d3", "name": "D3", "reason": REASON},
+                headers=key(),
+            )
+            plan_id = plan.json()["id"]
+            draft = await client.post(
+                f"{BASE}/plans/{plan_id}/versions",
+                json={
+                    "currency": "INR",
+                    "prices": [{"kind": "flat", "amount_minor": 100, "currency": "INR"}],
+                    "reason": REASON,
+                },
+                headers=key(),
+            )
+            published = await client.post(
+                f"{BASE}/versions/{draft.json()['id']}/publish",
+                json={"reason": REASON},
+                headers=key(),
+            )
+        assert (plan.status_code, draft.status_code, published.status_code) == (201, 201, 200)
+        assert seen == [False, False, False]

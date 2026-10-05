@@ -130,10 +130,10 @@ async def _publish(
             seat_classes=seat_classes or [],
         ),
         request=None,
-        registry=registry,
+        products=registry.snapshot(),
     )
     published = await services.publish_version(
-        session, op, version, request=None, registry=registry
+        session, op, version, request=None, products=registry.snapshot()
     )
     fresh = await selectors.get_version(session, published.id)
     assert fresh is not None
