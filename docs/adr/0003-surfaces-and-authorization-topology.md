@@ -243,12 +243,12 @@ permission grammar (ADR-0000 §5) — these never touch `pv` or a membership's g
 | Subscriptions, usage rollups | ✅ | ✅ | |
 | Overrides (suspend, comp credit) | ✅ | ✅ | |
 | Credit ledger (billing's staff route) | ✅ | ✅ | |
-| Catalog reads (`GET /admin/catalog/plans`, `/plans/{id}`, `/versions/{id}`; ADR-0029) | ✅ | ✅ | |
-| Catalog writes (plans, versions, publish, withdraw, delete draft, retire, reactivate; reason + `Idempotency-Key`, ADR-0029) | ✅ | | |
+| Catalog reads (`GET /admin/catalog/plans`, `/plans/{id}`, `/versions/{id}`; ADR-0030) | ✅ | ✅ | |
+| Catalog writes (plans, versions, publish, withdraw, delete draft, retire, reactivate; reason + `Idempotency-Key`, ADR-0030) | ✅ | | |
 | `GET /auth/operator/me` | ✅ | ✅ | ✅ |
 | Issue a staff account's enrolment code (`POST /auth/operator/enrollment-codes`) | ✅ | | |
 
-The staff *catalog read* row was added (2026-10-06, ADR-0029) before the routes shipped, as this
+The staff *catalog read* row was added (2026-10-06, ADR-0030) before the routes shipped, as this
 table requires — per MINOR 9 of the 2026-09-24 security review that found this table describing
 capabilities the code did not actually enforce (metrics overview had drifted to look
 support-readable here when the route was `owner`/`billing_ops`-only in code). `support` is left out

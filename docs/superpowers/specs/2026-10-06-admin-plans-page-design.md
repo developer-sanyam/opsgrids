@@ -1,6 +1,6 @@
 # Admin Plans & prices page — design
 
-**Date:** 2026-10-06 · **Branch:** `feat/admin-plans-page` · **Decision record:** [ADR-0029](../../adr/0029-catalog-operator-writes.md)
+**Date:** 2026-10-06 · **Branch:** `feat/admin-plans-page` · **Decision record:** [ADR-0030](../../adr/0030-catalog-operator-writes.md)
 **Source:** admin plan-control critique, slices 2 (read-only) and 3 (writes), findings H2, H3, H5, B6.
 
 ## Goal
@@ -25,9 +25,9 @@ Staff can see what every customer can buy, and the owner can change it safely, f
 | `POST /admin/catalog/plans` | owner | `{product_key, code, name, sort_order, reason}`; product must be registered and not a platform product. 201. |
 | `PATCH /admin/catalog/plans/{id}` | owner | `{name?, sort_order?, reason}`. |
 | `POST /admin/catalog/plans/{id}/retire` · `/reactivate` | owner | `{reason}`. Retire emits `catalog.plan.retired`, reactivate `catalog.plan.reactivated`. |
-| `POST /admin/catalog/plans/{id}/versions` | owner | The **full** sheet + `reason`; `extra="forbid"`. Savepoint retry on the version-number race. 201. |
-| `POST /admin/catalog/versions/{id}/publish` | owner | `{reason, allow_zero_amounts=false}`; validated first, every problem in `errors[]`. |
-| `POST /admin/catalog/versions/{id}/withdraw` | owner | `{reason}`; `published -> grandfathered`; audit + `catalog.plan_version.grandfathered`. |
+| `POST /admin/catalog/plans/{id}/versions` | owner | The sheet + `reason`; `extra="forbid"`. **Completeness is the client's job, not enforced**: any non-empty `prices`, `features` or `seat_classes` turns cloning off for all three, so a body with prices only drops every feature (admin_synth H5). The console always sends the full sheet (`draftSheet.ts`). Savepoint retry on the version-number race. 201. |
+| `POST /admin/catalog/versions/{id}/publish` | owner | `{reason, allow_zero_amounts=false}`; validated first, every problem in `errors[]` (prices numbered in read order). A bundle product's version must declare `bundled_products`; publishing reads the registry for every version (503 while it is down). |
+| `POST /admin/catalog/versions/{id}/withdraw` | owner | `{reason}`; `published -> grandfathered`; audit + `catalog.plan_version.grandfathered`. No new subscription or plan change can choose it; a change already scheduled onto it still applies at renewal. |
 | `DELETE /admin/catalog/versions/{id}` | owner | `{reason}`; drafts only (children deleted first; `seat_classes.price_id` is RESTRICT). |
 
 All writes: `Idempotency-Key` 8–128 chars. Replay → recorded status and body + `Idempotent-Replayed: true`.
@@ -95,6 +95,9 @@ before the session one, so no HTTP call runs inside the transaction (D3 #10, fix
 
 ## Not in this slice
 
-- Subscription refusing new pins on a retired plan (`_validate_new_pin`) — needs a subscription change.
+- Subscription refusing new pins on a retired plan (`_validate_new_pin`) — needs a subscription change **and** a
+  catalog one: the internal version read (`InternalPlanVersionOut`) must carry `plan_state` first.
+- Subscription re-validating a scheduled change's pin in `apply_pending_change`, so a withdrawn version stops
+  receiving deferred downgrades (until then the RUNBOOK's pre-withdraw query finds them).
 - A visual-harness entry for the page and its dialogs.
 - Editing other feature values in the draft editor (they are carried over or removed, not edited).

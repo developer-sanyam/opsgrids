@@ -22,7 +22,7 @@ routes). This module is defence in depth behind that gate:
   definitional tables are un-policied and do not need it; catalog's `audit_logs`, `outbox` and
   `idempotency_keys` do, and this is the tenant those platform-level rows belong to (ADR-0002 §6).
 
-Spec: docs/superpowers/specs/2026-10-06-admin-plans-page-design.md; decision: ADR-0029.
+Spec: docs/superpowers/specs/2026-10-06-admin-plans-page-design.md; decision: ADR-0030.
 """
 
 from __future__ import annotations

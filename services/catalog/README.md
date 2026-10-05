@@ -46,7 +46,9 @@ replay), policied the same way.
 - **`catalog.plan_version.published`** — a version is now frozen and offerable. Payload carries
   the plan, product, version, currency, interval, `restricted_to_org_id`, and `published_at`.
 - **`catalog.plan_version.grandfathered`** — a published version was withdrawn: existing pins keep
-  it, nothing new may pin it. Same payload shape plus `withdrawn_at`.
+  it, and no new subscription or new plan change can choose it. A change already *scheduled* onto it
+  still applies at renewal (subscription re-pins without re-reading catalog; ADR-0030 §4). Same
+  payload shape plus `withdrawn_at`.
 - **`catalog.plan.retired`** — a plan is no longer offered (its pinned versions stay
   reconstructable).
 - **`catalog.plan.reactivated`** — a retired plan is offered again.
@@ -72,19 +74,22 @@ non-bundle product and refuses the draft otherwise (503 if the registry cannot b
 
 - **Customer** (product gateway): `GET /api/v1/plans?product_key=`, `GET /api/v1/catalog/plans/{id}`
   — published versions the caller may see, behind `core.product.catalogue.read`.
-- **Operator** (operator gateway, `staff_only`, ADR-0029). Reads, `owner` and `billing_ops` (not
+- **Operator** (operator gateway, `staff_only`, ADR-0030). Reads, `owner` and `billing_ops` (not
   `support` — bespoke prices are negotiated prices): `GET /api/v1/admin/catalog/plans`
   (`product_key`, `audience=public|restricted|all` default `public`, `state`, keyset `cursor`,
   `limit`), `GET .../plans/{id}` (version summaries, paged), `GET .../versions/{id}` (the full
   sheet, prices in a deterministic order, with ids). Writes, `owner` only, each with a `reason`
   and a **required** `Idempotency-Key`: `POST`/`PATCH .../plans` (product key checked against the
-  registry), `POST .../plans/{id}/retire`, `.../reactivate`, `POST .../plans/{id}/versions` (a full
-  sheet; bespoke when `restricted_to_org_id` is set; a lost version-number race retries in a
+  registry), `POST .../plans/{id}/retire`, `.../reactivate`, `POST .../plans/{id}/versions` (the sheet
+  as sent — a non-empty `prices`, `features` or `seat_classes` turns cloning off for all three, so
+  completeness is the client's job; the console always sends the whole sheet; bespoke when `restricted_to_org_id` is set; a lost version-number race retries in a
   savepoint), `POST .../versions/{id}/publish` (validated first — see below; `allow_zero_amounts`
   to publish a deliberate zero), `POST .../versions/{id}/withdraw`, `DELETE .../versions/{id}`
   (drafts only). Refused with 404, not 403, to any non-operator token.
 
 Publishing refuses, all at once as `errors[]`: no prices; a currency outside
 `domain.SELLABLE_CURRENCIES`; a usage price with no `meter_key` or rate; a per-seat price with no
-unit; a zero amount without `allow_zero_amounts`; an invalid `trial_days`; and bundle members
-today's registry no longer vouches for.
+unit; a zero amount without `allow_zero_amounts`; an invalid `trial_days`; bundle members
+today's registry no longer vouches for; and a version of a bundle product that declares no
+`bundled_products` (`bundle_members_missing`). Publishing therefore needs the registry for every
+version (503 while product-service is down); drafting a plain version does not.
