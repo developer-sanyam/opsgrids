@@ -8,7 +8,9 @@ themselves are the authority — this page exists so you can find the right one 
 to the ADR section that decides it and to the backlog item that builds it. Numbers are allocated in
 order and never reused. The next free number is **0031** (0027 is allocated to the inventory Phase 9
 work, which has not merged). This table was last brought up to date at 0019, apart from 0028, 0029 and 0030 below;
-[`adr/`](adr/) is the complete list.
+[`adr/`](adr/) is the complete list. **Two records carry 0029 on this branch:** staff plan control took it
+on `main`, and the payment provider seam (with 0030 after it) was numbered on `feat/payments-phase-a` /
+`feat/merchant-cashfree` before that; their numbers are reassigned against `main` when they merge.
 
 | ADR | Title | Header status | What exists today |
 |---|---|---|---|
@@ -33,6 +35,7 @@ work, which has not merged). This table was last brought up to date at 0019, apa
 | [0018](adr/0018-domain-verification-lifecycle.md) | Email-domain verification lifecycle | Accepted | Built (P1) |
 | [0019](adr/0019-statutory-portal-credentials.md) | Statutory portal credentials live in finance | Accepted 2026-09-24 | Not built; B5 (5b) |
 | [0028](adr/0028-putaway-gps-captures.md) | Storage put-away: GPS captures are audit evidence, kept 30 days | Accepted 2026-10-05 | Built on `feat/warehouse-map-putaway`, not deployed; the admin-run purge is `tools/purge_putaway_captures.py`. The reveal's one-time-code requirement was added in review and is an open owner decision (keep or revert) |
+| [0029](adr/0029-staff-plan-control.md) | Staff plan control: what staff may change, and what every change is made of | Accepted 2026-10-06 | Built on `feat/admin-plan-switch` (hardening and plan switching), not deployed; cancel, add-product, extend-trial and the Plans page are later releases. Amends ADR-0005 addendum §4 (a deferred change's event is labelled by direction) |
 | [0029](adr/0029-payment-provider-seam-and-checkout.md) | Payment provider seam: Razorpay and Cashfree, one customer-present checkout, no mandate debit yet | Accepted 2026-10-06 | Built on `feat/payments-phase-a`, not merged or deployed: every switch defaults to the stub (`PAYMENT_PROVIDER`, `PAYMENT_WIRE`, `CASHFREE_ENV`), webhooks stay private and the platform polls; amends the ADR-0004 §6 addendum. Nothing is verified against a provider until the owner runs `tools/payments_smoke_*.py` |
 | [0030](adr/0030-merchant-connect-collections-seam.md) | Merchant connect: a standalone collections seam, and Cashfree as a second provider | Proposed 2026-10-06 | Built on `feat/merchant-cashfree` (stacked on `feat/payments-phase-a`), not deployed; Cashfree's wire stays `stub` until the owner's sandbox run |
 

@@ -242,6 +242,7 @@ permission grammar (ADR-0000 §5) — these never touch `pv` or a membership's g
 | Audit trail (`/admin/audit`) | ✅ | | ✅ |
 | Subscriptions, usage rollups | ✅ | ✅ | |
 | Overrides (suspend, comp credit) | ✅ | ✅ | |
+| Plan switching — the picker, its preview and the confirm (`GET /admin/organizations/{id}/plan-options`, `POST /admin/organizations/{id}/subscriptions/{product_key}/plan-change:preview` and `.../plan-change`; ADR-0029) | ✅ | ✅ | |
 | Credit ledger (billing's staff route) | ✅ | ✅ | |
 | Catalog writes (plans, versions, publish) | ✅ | | |
 | `GET /auth/operator/me` | ✅ | ✅ | ✅ |
