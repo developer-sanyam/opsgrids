@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
 import { PermissionProvider } from "@opsgrids/client";
@@ -100,5 +101,53 @@ describe("SubscriptionsPage — change plan", () => {
     expect(screen.queryByText(/₹4,999\.00/)).toBeNull();
     expect(screen.queryByText(/per month/)).toBeNull();
     expect(screen.queryByText(/flat/)).toBeNull();
+  });
+});
+
+describe("SubscriptionsPage — overdue", () => {
+  const overdue = {
+    ...base,
+    id: "s1",
+    product_key: "operations",
+    state: "past_due",
+    entitled_products: ["operations"],
+    dunning: {
+      cycle_id: "cy1",
+      opened_at: "2026-10-01T00:00:00Z",
+      grace_ends_at: "2026-10-15T00:00:00Z",
+      next_attempt_at: null,
+      attempts_made: 1,
+      max_attempts: 4,
+      amount_minor: 499900,
+      currency: "INR",
+    },
+  };
+
+  it("sends whoever can subscribe to Invoices to pay", async () => {
+    vi.mocked(api.listProducts).mockResolvedValue([{ key: "operations", name: "OpsGrids Inventory", is_bundle: false }] as never);
+    vi.mocked(api.listSubscriptions).mockResolvedValue([overdue] as never);
+    render(
+      <MemoryRouter>
+        <PermissionProvider grants={["core.product.activation.write:ORG"]}>
+          <SubscriptionsPage />
+        </PermissionProvider>
+      </MemoryRouter>,
+    );
+    const link = await screen.findByRole("link", { name: "Pay now for Inventory" });
+    expect(link.getAttribute("href")).toBe("/invoices");
+  });
+
+  it("offers no pay link without the subscribe permission", async () => {
+    vi.mocked(api.listProducts).mockResolvedValue([{ key: "operations", name: "OpsGrids Inventory", is_bundle: false }] as never);
+    vi.mocked(api.listSubscriptions).mockResolvedValue([overdue] as never);
+    render(
+      <MemoryRouter>
+        <PermissionProvider grants={["core.product.activation.read:ORG"]}>
+          <SubscriptionsPage />
+        </PermissionProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(/Payment overdue/)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /Pay now/ })).toBeNull();
   });
 });

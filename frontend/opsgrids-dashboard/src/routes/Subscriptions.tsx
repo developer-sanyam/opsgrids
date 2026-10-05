@@ -25,6 +25,7 @@ import { bundlesIncluding, joinNames, productNames } from "@/lib/bundles";
 import { downloadCsv } from "@/lib/csv";
 import { daysUntil, formatDate } from "@/lib/money";
 import { PageHeader } from "@/ui";
+import { PayOverdueLink } from "@/ui/billing/PayOverdueLink";
 import { shortProductName } from "../lib/productName";
 
 const WRITE_PERMISSION = "core.product.activation.write";
@@ -131,6 +132,7 @@ export function SubscriptionsPage() {
               <p className="text-xs font-medium text-late">
                 Payment overdue — access ends {formatDate(s.dunning.grace_ends_at)}
                 {s.dunning.next_attempt_at ? ` · Next attempt ${formatDate(s.dunning.next_attempt_at)}.` : ""}
+                {canWrite ? <PayOverdueLink product={row.name} /> : null}
               </p>
             ) : null}
           </div>
