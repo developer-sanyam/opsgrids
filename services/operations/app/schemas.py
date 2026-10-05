@@ -1857,8 +1857,6 @@ class ShipmentRefusalIn(BaseModel):
         return _reject_blank_or_control(value, field_name="reason")
 
 
-
-
 # ------------------------------------------------------------------ counting (ADR-0026;
 # `docs/fulfilment/plan.md` F8)
 
@@ -1972,6 +1970,7 @@ class CountLineReviewIn(BaseModel):
     decision: Literal["approve", "reject"]
     note: str = Field(default="", max_length=500)
 
+
 # ------------------------------------------------------------------ online payment (ADR-0024 A4;
 # Fulfilment F10). Mirrors `services/payment`'s collection shapes — operations relays them, it
 # holds no payment state of its own beyond the order's `paid_at` fact. No card, bank or UPI
@@ -2032,8 +2031,13 @@ class OrderPaymentsOut(BaseModel):
     collect_blocked_reason: str | None
     online_payments_configured: bool
     mode: Literal["test", "live"] | None
-    #: `stub` when no provider call leaves the platform — a checkout cannot be paid for real.
+    #: `stub` when no Razorpay call leaves the platform — kept as it always was.
     wire: Literal["stub", "razorpay"]
+    #: The connected account's provider (`razorpay` / `cashfree`), and whether a checkout with it
+    #: can be paid for real (`live`) or only on the platform's stub (`stub`). None when no account
+    #: is connected.
+    provider: str | None = None
+    provider_wire: Literal["stub", "live"] | None = None
     collections: list[OrderCollectionOut]
 
 
@@ -2042,11 +2046,11 @@ class CheckoutPrefillOut(BaseModel):
     contact: str
 
 
-class OrderCheckoutSessionOut(BaseModel):
-    """Exactly what the browser needs to open the provider's hosted Checkout — the **public** key
-    id and the provider Order id — plus the prefill it may show. Never a secret."""
+class RazorpayOrderCheckoutSessionOut(BaseModel):
+    """Exactly what the browser needs to open Razorpay's hosted Checkout — the **public** key id
+    and the provider Order id — plus the prefill it may show. Never a secret."""
 
-    provider: str
+    provider: Literal["razorpay"]
     key_id: str
     provider_order_id: str
     amount_minor: int
@@ -2055,6 +2059,30 @@ class OrderCheckoutSessionOut(BaseModel):
     openable: bool
     order_number: str
     prefill: CheckoutPrefillOut
+
+
+class CashfreeOrderCheckoutSessionOut(BaseModel):
+    """What the browser's `Cashfree({mode}).checkout({paymentSessionId})` needs (ADR-0030). The
+    session id is fetched from Cashfree for this response by payment and never stored anywhere;
+    reopening the checkout fetches it again. No credential, and no customer detail: the phone
+    Cashfree requires went to it server to server."""
+
+    provider: Literal["cashfree"]
+    payment_session_id: str
+    #: The SDK's own word for the environment.
+    mode: Literal["sandbox", "production"]
+    provider_order_id: str
+    amount_minor: int
+    currency: str
+    openable: bool
+    order_number: str
+
+
+#: The browser's handle, by provider.
+OrderCheckoutSessionOut = Annotated[
+    RazorpayOrderCheckoutSessionOut | CashfreeOrderCheckoutSessionOut,
+    Field(discriminator="provider"),
+]
 
 
 class OrderCheckoutOut(BaseModel):
@@ -2079,7 +2107,6 @@ class OrderRefundIn(BaseModel):
 
     amount_minor: int = Field(gt=0, le=MAX_ABS_MILLI)
     reason: str = Field(min_length=1, max_length=200)
-
 
 
 # ------------------------------------------------------------------ channels (Fulfilment plan F11)
