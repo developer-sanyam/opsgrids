@@ -1032,6 +1032,11 @@
             ],
             "title": "Refusal Detail"
           },
+          "usage_closed_now": {
+            "default": false,
+            "title": "Usage Closed Now",
+            "type": "boolean"
+          },
           "usage_priced": {
             "default": false,
             "title": "Usage Priced",
@@ -2380,7 +2385,7 @@
     },
     "/api/v1/admin/organizations/{organization_id}/subscriptions/{product_key}/plan-change": {
       "post": {
-        "description": "Switch the organization's subscription for `product_key` to `plan_version_id`.\n\n**When it takes effect is decided by the server, never asked for** (ADR-0029): a trial switches\nnow and free; a paying subscription switches at its **next billing period** (`effective:\n\"next_period\"`, landing at `effective_at`); an equal-price change applies now at no charge. For\na customer who should get a new plan sooner, grant comp credit instead.\n\n`reason` (1-500 characters) is required and recorded on the audit trail and the event;\n`expected` is the state the preview returned, compared under subscription's lock (409\n`state_changed`).\nErrors carry a stable `errors[0].code`: 404 `no_subscription` / `not_found`; 409\n`state_changed`, `billing_catching_up`, `request_in_progress`, `idempotency_key_reused`; 422\n`state`, `cadence`, `currency`, `already_pinned`, `product_mismatch`, `not_published`,\n`reserved_reason`, `bundle`; 503 `outcome_unknown` \u2014 the change may or may not have been made:\nrefresh, or repeat the same request, which reconciles.",
+        "description": "Switch the organization's subscription for `product_key` to `plan_version_id`.\n\n**When it takes effect is decided by the server, never asked for** (ADR-0029): a trial switches\nnow and free; a paying subscription switches at its **next billing period** (`effective:\n\"next_period\"`, landing at `effective_at`); an equal-price change applies now at no charge. For\na customer who should get a new plan sooner, grant comp credit instead.\n\n`reason` (1-500 characters) is required and recorded on the audit trail \u2014 never on the\nsubscription's event, which the customer org's own notification templates can render;\n`expected` is the state the preview returned, compared under subscription's lock (409\n`state_changed`). The target must be one catalog offers this organization *now* (the picker's\nset, re-read here): a version superseded by a newer one, or of a retired plan, is 422\n`not_offerable` \u2014 except a withdrawal back to the pin the subscription is on.\nErrors carry a stable `errors[0].code`: 404 `no_subscription` / `not_found`; 409\n`state_changed`, `billing_catching_up`, `request_in_progress`, `idempotency_key_reused`; 422\n`state`, `cadence`, `currency`, `already_pinned`, `product_mismatch`, `not_published`,\n`not_offerable`, `reserved_reason`, `bundle`; 503 `catalog_unavailable` \u2014 this request changed\nnothing; 503 `outcome_unknown` \u2014 the change may or may not have been made: refresh, or repeat\nthe same request, which reconciles.",
         "operationId": "change_plan_api_v1_admin_organizations__organization_id__subscriptions__product_key__plan_change_post",
         "parameters": [
           {
@@ -2457,7 +2462,7 @@
     },
     "/api/v1/admin/organizations/{organization_id}/subscriptions/{product_key}/plan-change:preview": {
       "post": {
-        "description": "The confirm screen's server-computed preview: direction, when it lands, what it replaces,\nthe products it adds or removes \u2014 and the `expected` state to send back on the confirm. A\nrefusal (a past_due subscription, a different currency or cadence) is part of the answer.\nNothing is written, claimed or locked.",
+        "description": "The confirm screen's server-computed preview: direction, when it lands, what it replaces,\nthe products it adds or removes \u2014 and the `expected` state to send back on the confirm. A\nrefusal (a past_due subscription, a different currency or cadence, a version catalog no longer\noffers this organization \u2014 `not_offerable`) is part of the answer. Nothing is written, claimed\nor locked; a failure says so (503 `preview_unavailable`, never `outcome_unknown`).",
         "operationId": "preview_plan_change_api_v1_admin_organizations__organization_id__subscriptions__product_key__plan_change_preview_post",
         "parameters": [
           {

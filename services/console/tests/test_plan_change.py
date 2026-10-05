@@ -119,6 +119,38 @@ def _stub_subscription(
     )
 
 
+def _offerable_path(org: uuid.UUID) -> str:
+    return f"/internal/v1/organizations/{org}/offerable-versions"
+
+
+def _offered(version_id: uuid.UUID, **overrides: Any) -> dict[str, Any]:
+    """One row of catalog's offerable-versions read, as the picker and the re-check consume it."""
+    return {
+        "plan_id": str(uuid.uuid4()),
+        "plan_code": "growth",
+        "plan_name": overrides.pop("plan_name", "Growth"),
+        "product_key": PRODUCT,
+        "plan_version_id": str(version_id),
+        "version_no": overrides.pop("version_no", 1),
+        "state": "published",
+        "billing_interval": overrides.pop("billing_interval", "month"),
+        "currency": overrides.pop("currency", "INR"),
+        "restricted_to_org_id": overrides.pop("restricted_to_org_id", None),
+        "published_at": None,
+        "prices": overrides.pop(
+            "prices",
+            [{"id": str(uuid.uuid4()), "kind": "flat", "amount_minor": 100000, "currency": "INR"}],
+        ),
+        "features": overrides.pop("features", []),
+        **overrides,
+    }
+
+
+def _stub_offerable(upstreams: FakeUpstreams, org: uuid.UUID, *version_ids: uuid.UUID) -> None:
+    """What catalog offers `org` now — the set the preview and the confirm re-check against."""
+    upstreams.json("GET", _offerable_path(org), {"versions": [_offered(v) for v in version_ids]})
+
+
 def _change_path(subscription_id: uuid.UUID) -> str:
     return f"/internal/v1/subscriptions/{subscription_id}/change-plan"
 
@@ -193,7 +225,8 @@ def _code(response: httpx.Response) -> str | None:
 
 @pytest.fixture
 def world(upstreams: FakeUpstreams, org_id: uuid.UUID) -> dict[str, uuid.UUID]:
-    """A live paying subscription on `current`, with `target` a dearer version, all stubbed."""
+    """A live paying subscription on `current`, with `target` a dearer version catalog offers this
+    organization, all stubbed."""
     ids = {
         "sub": uuid.uuid4(),
         "current": uuid.uuid4(),
@@ -201,6 +234,7 @@ def world(upstreams: FakeUpstreams, org_id: uuid.UUID) -> dict[str, uuid.UUID]:
     }
     _stub_directory(upstreams, org_id)
     _stub_subscription(upstreams, org_id, subscription_id=ids["sub"], current=ids["current"])
+    _stub_offerable(upstreams, org_id, ids["current"], ids["target"])
     upstreams.json(
         "POST",
         _change_path(ids["sub"]),
@@ -277,9 +311,6 @@ class TestAuthorization:
         world: dict[str, uuid.UUID],
         roles: list[str],
     ) -> None:
-        upstreams.json(
-            "GET", f"/internal/v1/organizations/{org_id}/offerable-versions", {"versions": []}
-        )
         _stub_plan_version(
             upstreams, world["current"], _version_doc(world["current"], amount_minor=1000)
         )
@@ -510,6 +541,8 @@ class TestPreview:
             "entitled_added": [],
             "entitled_removed": [],
             "usage_priced": True,
+            # Passed on as subscription said it: the copy's "is anything charged now" rests on it.
+            "usage_closed_now": True,
             "refusal_code": None,
             "refusal_detail": None,
         }
@@ -569,6 +602,155 @@ class TestPreview:
                 _urls(org_id)["preview"], json={"plan_version_id": str(uuid.uuid4())}
             )
         assert response.status_code == 404 and _code(response) == "not_found"
+
+    @pytest.mark.parametrize(
+        "why", ["superseded-by-a-newer-version", "plan-retired", "never-offered-to-this-org"]
+    )
+    async def test_a_version_catalog_no_longer_offers_is_refused_as_an_answer(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+        why: str,
+    ) -> None:
+        """Subscription would accept it (it is published and this organization's to see), but the
+        catalogue has moved on: a newer version superseded it, or its plan was retired — either
+        way it is absent from what catalog offers now. The picker the operator opened earlier may
+        still list it; the preview refuses it from a fresh read."""
+        stale = world["target"]
+        newer = uuid.uuid4()
+        offered = {
+            "superseded-by-a-newer-version": [world["current"], newer],
+            "plan-retired": [world["current"]],
+            "never-offered-to-this-org": [world["current"], newer],
+        }[why]
+        _stub_offerable(upstreams, org_id, *offered)
+        upstreams.json(
+            "POST",
+            _preview_path(world["sub"]),
+            {
+                "expected": _expected(world["current"]),
+                "action": "switch",
+                "direction": "upgrade",
+                "effective": "next_period",
+                "effective_at": "2026-02-01T00:00:00+00:00",
+            },
+        )
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            response = await client.post(
+                _urls(org_id)["preview"], json={"plan_version_id": str(stale)}
+            )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["refusal_code"] == "not_offerable" and body["refusal_detail"]
+        assert body["direction"] is None and body["effective"] is None
+        assert body["expected"] == _expected(world["current"])
+        assert upstreams.calls("GET", _offerable_path(org_id)) == 1
+        assert await _claims(admin_session, org_id) == []
+
+    async def test_subscriptions_own_refusal_wins_and_needs_no_catalog_read(
+        self,
+        client: AsyncClient,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        _stub_offerable(upstreams, org_id, world["current"])  # the target is not on offer either
+        upstreams.json(
+            "POST",
+            _preview_path(world["sub"]),
+            {
+                "expected": _expected(world["current"], state="past_due"),
+                "refusal_code": "state",
+                "refusal_detail": "a past_due subscription cannot change plan",
+            },
+        )
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            response = await client.post(
+                _urls(org_id)["preview"], json={"plan_version_id": str(world["target"])}
+            )
+        assert response.json()["refusal_code"] == "state"
+        assert upstreams.calls("GET", _offerable_path(org_id)) == 0
+
+    async def test_withdrawing_back_to_a_superseded_current_pin_is_not_refused(
+        self,
+        client: AsyncClient,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        """The pin the subscription is on is often a version the catalogue has since superseded;
+        moving back to it (withdrawing the waiting change) is never a new price."""
+        _stub_subscription(
+            upstreams,
+            org_id,
+            subscription_id=world["sub"],
+            current=world["current"],
+            pending=world["target"],
+        )
+        _stub_offerable(upstreams, org_id, world["target"])  # the current pin is superseded
+        answer = {
+            "expected": _expected(world["current"], pending=world["target"]),
+            "action": "withdraw_scheduled",
+            "effective": "now",
+            "would_clear_pending": True,
+        }
+        upstreams.json("POST", _preview_path(world["sub"]), answer)
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            response = await client.post(
+                _urls(org_id)["preview"], json={"plan_version_id": str(world["current"])}
+            )
+        assert response.status_code == 200, response.text
+        assert response.json()["refusal_code"] is None
+        assert response.json()["action"] == "withdraw_scheduled"
+
+    @pytest.mark.parametrize("status", [None, 500, 502, 503])
+    async def test_a_failed_preview_says_nothing_was_changed_not_outcome_unknown(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+        status: int | None,
+    ) -> None:
+        """A preview is a read with no Idempotency-Key: "may or may not have been made" and
+        "repeat with the same key" would send an operator chasing a change nobody attempted."""
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if status is None:
+                raise httpx.ReadTimeout("timed out", request=request)
+            return httpx.Response(status, json={"detail": "boom"})
+
+        upstreams.on("POST", _preview_path(world["sub"]), _handler)
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            response = await client.post(
+                _urls(org_id)["preview"], json={"plan_version_id": str(world["target"])}
+            )
+        assert response.status_code == 503 and _code(response) == "preview_unavailable"
+        detail = response.json()["detail"]
+        assert "nothing was changed" in detail
+        assert "may or may not" not in detail and "Idempotency-Key" not in detail
+        assert await _claims(admin_session, org_id) == []
+
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_a_refused_credential_on_a_preview_says_nothing_was_changed(
+        self,
+        client: AsyncClient,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+        status: int,
+    ) -> None:
+        upstreams.json("POST", _preview_path(world["sub"]), {"detail": "no"}, status)
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            response = await client.post(
+                _urls(org_id)["preview"], json={"plan_version_id": str(world["target"])}
+            )
+        assert response.status_code == 503 and _code(response) == "upstream_refused"
+        assert "nothing was changed" in response.json()["detail"]
 
     async def test_there_is_no_way_to_ask_for_an_immediate_change(
         self,
@@ -792,6 +974,7 @@ class TestIdempotency:
         sub_b, current_b = uuid.uuid4(), uuid.uuid4()
         _stub_directory(upstreams, org_b)
         _stub_subscription(upstreams, org_b, subscription_id=sub_b, current=current_b)
+        _stub_offerable(upstreams, org_b, current_b, world["target"])
         upstreams.json(
             "POST",
             _change_path(sub_b),
@@ -963,6 +1146,118 @@ class TestDefinitiveRefusals:
         ).status_code == 200
 
 
+class TestOnlyWhatIsOnOffer:
+    """The confirm re-reads what catalog offers this organization now. A UI gate hides a control;
+    it does not protect data — a picker loaded before a newer version was published or the plan
+    retired, or a direct API call with any published id, must not pin a withdrawn price."""
+
+    async def test_a_target_not_on_offer_is_refused_recorded_and_replayed_without_a_call(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        # Since the picker loaded, a newer version superseded the target (or its plan retired).
+        _stub_offerable(upstreams, org_id, world["current"], uuid.uuid4())
+        body = _body(world["target"], world["current"])
+        first = await _post_change(client, org_id, body)
+        assert first.status_code == 422, first.text
+        assert _code(first) == "not_offerable" and first.json()["detail"]
+        assert upstreams.calls("POST", _change_path(world["sub"])) == 0
+
+        (claim,) = await _claims(admin_session, org_id)
+        assert claim.status == "refused"
+        requested, refused = await _audits(admin_session, org_id)
+        assert requested.action == "subscription.plan_change.requested"
+        assert refused.action == "subscription.plan_change.refused"
+        assert refused.after["status"] == 422 and refused.after["code"] == "not_offerable"
+
+        again = await _post_change(client, org_id, body)
+        assert (again.status_code, _code(again)) == (422, "not_offerable")
+        assert upstreams.calls("POST", _change_path(world["sub"])) == 0
+        assert len(await _audits(admin_session, org_id)) == 2, "a replay writes no new audit rows"
+
+    async def test_withdrawing_back_to_a_superseded_current_pin_still_reaches_subscription(
+        self,
+        client: AsyncClient,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        _stub_subscription(
+            upstreams,
+            org_id,
+            subscription_id=world["sub"],
+            current=world["current"],
+            pending=world["target"],
+        )
+        _stub_offerable(upstreams, org_id, world["target"])  # the current pin is superseded
+        upstreams.json(
+            "POST", _change_path(world["sub"]), _changed(world["sub"], current=world["current"])
+        )
+        body = {
+            "plan_version_id": str(world["current"]),
+            "reason": "Customer changed their mind",
+            "expected": _expected(world["current"], pending=world["target"]),
+        }
+        response = await _post_change(client, org_id, body)
+        assert response.status_code == 200, response.text
+        assert response.json()["pending_plan_version_id"] is None
+        assert upstreams.calls("POST", _change_path(world["sub"])) == 1
+
+    async def test_a_recorded_success_still_replays_after_the_catalogue_moves_on(
+        self,
+        client: AsyncClient,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        body = _body(world["target"], world["current"])
+        assert (await _post_change(client, org_id, body)).status_code == 200
+        _stub_offerable(upstreams, org_id, world["current"], uuid.uuid4())
+        again = await _post_change(client, org_id, body)
+        assert again.status_code == 200 and again.json()["replayed"] is True
+        assert upstreams.calls("POST", _change_path(world["sub"])) == 1
+
+    async def test_a_catalogue_outage_claims_nothing_and_calls_nothing(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        upstreams.json("GET", _offerable_path(org_id), {"detail": "down"}, 503)
+        response = await _post_change(client, org_id, _body(world["target"], world["current"]))
+        assert response.status_code == 503 and _code(response) == "catalog_unavailable"
+        assert "changed nothing" in response.json()["detail"]
+        assert upstreams.calls("POST", _change_path(world["sub"])) == 0
+        assert await _claims(admin_session, org_id) == []
+        assert await _audits(admin_session, org_id, "%") == []
+
+    async def test_a_retry_after_an_unknown_outcome_is_refused_if_the_target_left_the_offer(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+    ) -> None:
+        """The first attempt's answer was lost and it did not land; meanwhile the catalogue moved
+        on. The retry reconciles, finds nothing landed, and refuses rather than pinning it."""
+        upstreams.json("POST", _change_path(world["sub"]), {"detail": "boom"}, 502)
+        body = _body(world["target"], world["current"])
+        assert (await _post_change(client, org_id, body)).status_code == 503
+        _stub_offerable(upstreams, org_id, world["current"], uuid.uuid4())
+        retry = await _post_change(client, org_id, body)
+        assert (retry.status_code, _code(retry)) == (422, "not_offerable")
+        assert upstreams.calls("POST", _change_path(world["sub"])) == 1
+        (claim,) = await _claims(admin_session, org_id)
+        assert claim.status == "refused"
+
+
 class TestOutcomeUnknown:
     def _fail(self, upstreams: FakeUpstreams, world: dict[str, uuid.UUID], status: int | None):
         def _handler(request: httpx.Request) -> httpx.Response:
@@ -1047,6 +1342,65 @@ class TestOutcomeUnknown:
         assert upstreams.calls("POST", _change_path(world["sub"])) == 2
         (claim,) = await _claims(admin_session, org_id)
         assert claim.status == "succeeded"
+
+    @pytest.mark.parametrize("landed", [True, False], ids=["late-first-attempt", "someone-else"])
+    async def test_a_reconciling_retry_that_meets_state_changed_looks_again_before_refusing(
+        self,
+        client: AsyncClient,
+        admin_session: AsyncSession,
+        upstreams: FakeUpstreams,
+        org_id: uuid.UUID,
+        world: dict[str, uuid.UUID],
+        landed: bool,
+    ) -> None:
+        """The first attempt timed out at console but was only slow (waiting on the row lock).
+        The retry's live read still shows the old state, so it calls again — and loses the race:
+        the first attempt commits, and this call is told `state_changed`. That is the change
+        landing, not a refusal; recording it as refused would replay "it changed since you
+        looked" for the key forever. When something *else* moved it, it is still a refusal."""
+        self._fail(upstreams, world, None)
+        body = _body(world["target"], world["current"])
+        assert (await _post_change(client, org_id, body)).status_code == 503
+
+        moved = {"yes": False}
+        other = uuid.uuid4()
+
+        def _subscriptions(_request: httpx.Request) -> httpx.Response:
+            pending = (world["target"] if landed else other) if moved["yes"] else None
+            return httpx.Response(
+                200,
+                json=[
+                    _subscription(
+                        subscription_id=world["sub"],
+                        plan_version_id=world["current"],
+                        pending_plan_version_id=pending,
+                    )
+                ],
+            )
+
+        def _lost_the_race(_request: httpx.Request) -> httpx.Response:
+            moved["yes"] = True
+            detail = "this subscription changed since you looked at it"
+            return httpx.Response(
+                409,
+                json={"detail": detail, "errors": [{"code": "state_changed", "message": detail}]},
+            )
+
+        upstreams.on("GET", f"/internal/v1/organizations/{org_id}/subscriptions", _subscriptions)
+        upstreams.on("POST", _change_path(world["sub"]), _lost_the_race)
+        retry = await _post_change(client, org_id, body)
+        (claim,) = await _claims(admin_session, org_id)
+        outcome = (await _audits(admin_session, org_id))[-1]
+        if landed:
+            assert retry.status_code == 200, retry.text
+            assert retry.json()["effective"] == "next_period" and retry.json()["replayed"] is True
+            assert claim.status == "succeeded"
+            assert outcome.action == "subscription.plan_change.applied"
+            assert outcome.after["reconciled"] is True
+        else:
+            assert (retry.status_code, _code(retry)) == (409, "state_changed")
+            assert claim.status == "refused"
+            assert outcome.action == "subscription.plan_change.refused"
 
     async def test_a_crashed_request_is_reconciled_after_its_lease(
         self,

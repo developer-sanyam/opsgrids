@@ -40,9 +40,17 @@ the target is already pinned or scheduled it records and returns that result; if
 call (the expected-state guard keeps a late first attempt from applying twice).
 
 **Reason, not the transition's reason.** The operator's words are stored as the subscription
-audit row's `reason` and on the event as `note`; the transition's own `reason` stays a short
-machine code. The reason is excluded from the idempotency fingerprint, so rephrasing it on a retry
-is still a replay.
+audit row's `reason` (subscription's `note`) and never on the event — the event is the customer
+org's, and its own notification templates can render any payload key. The transition's own
+`reason` stays a short machine code. The reason is excluded from the idempotency fingerprint, so
+rephrasing it on a retry is still a replay.
+
+**Only what is on offer.** The picker lists what catalog offers this organization now; the preview
+and the confirm re-read that set and refuse any other target (`not_offerable`) — a picker loaded
+before a newer version was published or the plan was retired, or a direct call with any published
+id of the product, must not pin a price the catalogue has withdrawn (a UI gate hides a control; it
+does not protect data). The one exception is a withdrawal, which moves back to the pin the
+subscription is already on.
 """
 
 from __future__ import annotations
@@ -109,6 +117,15 @@ DEFINITIVE_REFUSALS = frozenset({404, 409, 422})
 #: uses it only to say so up front — subscription's preview and write are the authority).
 CHANGEABLE_STATES = frozenset({"trial", "active"})
 
+#: The target is not in the set catalog offers this organization now: a newer version of its plan
+#: superseded it, or the plan was retired. Subscription cannot tell (its pin lookup sees only that
+#: the version is published and whose it is), so console applies the picker's own filter again.
+CODE_NOT_OFFERABLE = "not_offerable"
+NOT_OFFERABLE_DETAIL = (
+    "that plan version is no longer on offer for this organization: a newer version has replaced "
+    "it, or its plan was retired. Choose again from the plans on offer now."
+)
+
 
 def operator_label(operator: Principal) -> str:
     """The one format for an operator on a staff action: `operator:<sub>`. (The suspend/reactivate
@@ -147,6 +164,29 @@ def problem_for(exc: SubscriptionChangeError) -> ProblemError:
         "subscription did not answer, so the change may or may not have been made. Refresh this "
         "account to see where it stands; repeating the same request (same Idempotency-Key) "
         "is safe.",
+    )
+
+
+def preview_problem_for(exc: SubscriptionChangeError) -> ProblemError:
+    """subscription's failure to *preview* as console's problem. Not `problem_for`: a preview is a
+    read with no Idempotency-Key, so "the change may or may not have been made" would send an
+    operator checking for a change nobody attempted. 404 and a coded 409/422 pass through; anything
+    else says plainly that nothing was changed."""
+    status = exc.status_code
+    if status in (404, 409, 422):
+        return problem_for(exc)
+    if status in (401, 403):
+        return _problem(
+            UpstreamUnavailableProblem,
+            "upstream_refused",
+            "subscription refused console's own service credentials, so this change could not be "
+            "previewed; nothing was changed",
+        )
+    return _problem(
+        UpstreamUnavailableProblem,
+        "preview_unavailable",
+        "could not ask subscription what this change would do; nothing was changed. Try again "
+        "shortly.",
     )
 
 
@@ -189,6 +229,26 @@ async def _subscription_for(
             f"This organization has no subscription for {product_key!r}",
         )
     return sub
+
+
+async def _offerable_ids(
+    settings: Settings, organization_id: uuid.UUID, product_key: str, *, client: httpx.AsyncClient
+) -> frozenset[str]:
+    """The version ids catalog offers this organization for `product_key` right now — the
+    picker's own set (audience, active plan, newest version per audience, cadence and currency),
+    re-read for every preview and confirm rather than trusted from a picker loaded earlier."""
+    try:
+        offered = await _get_offerable_versions(
+            settings, organization_id, product_key, client=client
+        )
+    except CatalogError as exc:
+        raise _problem(
+            UpstreamUnavailableProblem,
+            "catalog_unavailable",
+            "could not check this plan against the catalogue, so this request changed nothing. "
+            "Try again shortly.",
+        ) from exc
+    return frozenset(str(v["plan_version_id"]) for v in offered)
 
 
 # --------------------------------------------------------------------------------- the picker
@@ -308,7 +368,11 @@ async def preview(
 ) -> PlanChangePreviewOut:
     """What the change would do, as subscription itself computes it. Read-only: no claim, no audit
     row, nothing written anywhere. A refusal is part of the answer (`refusal_code`); only a missing
-    subscription or version (404) and an unreachable upstream (503) are errors."""
+    subscription or version (404) and an unreachable upstream (503) are errors.
+
+    Subscription's own refusals come first (a past_due subscription cannot change at all, whatever
+    the target); a target it would accept but catalog no longer offers this organization is then
+    refused as `not_offerable` — the same rule the confirm enforces."""
     sub = await _subscription_for(settings, organization_id, product_key, client=client)
     try:
         answer = await _preview_change_plan(
@@ -319,8 +383,17 @@ async def preview(
             client=client,
         )
     except SubscriptionChangeError as exc:
-        raise problem_for(exc) from exc
-    return PlanChangePreviewOut.model_validate(answer)
+        raise preview_problem_for(exc) from exc
+    out = PlanChangePreviewOut.model_validate(answer)
+    if out.refusal_code is None and out.action != "withdraw_scheduled":
+        offered = await _offerable_ids(settings, organization_id, product_key, client=client)
+        if str(payload.plan_version_id) not in offered:
+            return PlanChangePreviewOut(
+                expected=out.expected,
+                refusal_code=CODE_NOT_OFFERABLE,
+                refusal_detail=NOT_OFFERABLE_DETAIL,
+            )
+    return out
 
 
 # ---------------------------------------------------------------------------------- the confirm
@@ -382,6 +455,17 @@ async def switch_plan(
     label = operator_label(operator)
     expected = payload.expected
     target = payload.plan_version_id
+    # A withdrawal moves back to the pin the subscription is on — often a superseded version, and
+    # never a new price — so it is the one target that need not be on offer. Everything else must
+    # be in catalog's offerable set *now*. Read before the claim, so a catalogue outage claims
+    # nothing; enforced after the replay branches, so a request that already succeeded still
+    # replays as a success after the catalogue moves on.
+    withdrawing = str(target) in {str(expected.plan_version_id), str(sub["plan_version_id"])}
+    offered = (
+        None
+        if withdrawing
+        else await _offerable_ids(settings, organization_id, product_key, client=client)
+    )
 
     fingerprint = domain.plan_change_fingerprint(
         organization_id=str(organization_id),
@@ -425,25 +509,30 @@ async def switch_plan(
             "request_in_progress",
             "this request is already being processed; wait a moment and refresh the account",
         )
-    if claim.outcome == "reconcile":
+
+    async def _record_reconciled(landed: dict[str, Any]) -> PlanChangeOut:
+        out = _out_from(landed, target, replayed=True)
+        await _record(
+            app_session,
+            organization_id=organization_id,
+            key=idempotency_key,
+            status=IDEMPOTENCY_SUCCEEDED,
+            response=out.model_dump(mode="json", exclude={"replayed"}),
+            operator=operator,
+            subscription_id=subscription_id,
+            action=AUDIT_APPLIED,
+            after={**out.model_dump(mode="json", exclude={"replayed"}), "reconciled": True},
+            reason=payload.reason,
+            request=request,
+        )
+        return out
+
+    reconciling = claim.outcome == "reconcile"
+    if reconciling:
         assert claim.seen_updated_at is not None
         landed = _landed(sub, target, expected)
         if landed is not None:
-            out = _out_from(landed, target, replayed=True)
-            await _record(
-                app_session,
-                organization_id=organization_id,
-                key=idempotency_key,
-                status=IDEMPOTENCY_SUCCEEDED,
-                response=out.model_dump(mode="json", exclude={"replayed"}),
-                operator=operator,
-                subscription_id=subscription_id,
-                action=AUDIT_APPLIED,
-                after={**out.model_dump(mode="json", exclude={"replayed"}), "reconciled": True},
-                reason=payload.reason,
-                request=request,
-            )
-            return out
+            return await _record_reconciled(landed)
         if not await services.retake_idempotency_key(
             app_session,
             organization_id=organization_id,
@@ -455,6 +544,31 @@ async def switch_plan(
                 "request_in_progress",
                 "this request is already being processed; wait a moment and refresh the account",
             )
+
+    if offered is not None and str(target) not in offered:
+        # Definitive, and recorded like any other refusal: the claim replays it, and the trail
+        # reads requested, then refused with the code that says why. Subscription is never called.
+        problem = _problem(BusinessRuleProblem, CODE_NOT_OFFERABLE, NOT_OFFERABLE_DETAIL)
+        log.warning(
+            "plan_change.not_offerable",
+            organization_id=str(organization_id),
+            subscription_id=str(subscription_id),
+            plan_version_id=str(target),
+        )
+        await _record(
+            app_session,
+            organization_id=organization_id,
+            key=idempotency_key,
+            status=IDEMPOTENCY_REFUSED,
+            response=_problem_dump(problem),
+            operator=operator,
+            subscription_id=subscription_id,
+            action=AUDIT_REFUSED,
+            after={"status": problem.status_code, "code": CODE_NOT_OFFERABLE},
+            reason=payload.reason,
+            request=request,
+        )
+        raise problem
 
     try:
         changed = await _change_plan(
@@ -472,6 +586,21 @@ async def switch_plan(
     except SubscriptionChangeError as exc:
         problem = problem_for(exc)
         definitive = exc.status_code in DEFINITIVE_REFUSALS
+        if reconciling and exc.status_code == 409 and exc.code == "state_changed":
+            # The attempt whose answer was lost may only have been late: it can commit between the
+            # live read above and this call, which then finds the subscription moved — by that
+            # very change. Look again before calling it a refusal, or the key would replay
+            # "it changed since you looked" for a change that was made.
+            try:
+                live = await _subscription_for(
+                    settings, organization_id, product_key, client=client
+                )
+            except ProblemError:
+                live = None
+            if live is None:
+                definitive, problem = False, problem_for(SubscriptionChangeError("re-read failed"))
+            elif (landed := _landed(live, target, expected)) is not None:
+                return await _record_reconciled(landed)
         log.warning(
             "plan_change.not_applied" if definitive else "plan_change.outcome_unknown",
             organization_id=str(organization_id),

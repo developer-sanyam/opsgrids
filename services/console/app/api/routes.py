@@ -703,8 +703,9 @@ async def preview_plan_change(
 ) -> PlanChangePreviewOut:
     """The confirm screen's server-computed preview: direction, when it lands, what it replaces,
     the products it adds or removes — and the `expected` state to send back on the confirm. A
-    refusal (a past_due subscription, a different currency or cadence) is part of the answer.
-    Nothing is written, claimed or locked."""
+    refusal (a past_due subscription, a different currency or cadence, a version catalog no longer
+    offers this organization — `not_offerable`) is part of the answer. Nothing is written, claimed
+    or locked; a failure says so (503 `preview_unavailable`, never `outcome_unknown`)."""
     await _require_organization(organization_id, request, client)
     return await plan_change.preview(
         settings(),
@@ -750,14 +751,18 @@ async def change_plan(
     "next_period"`, landing at `effective_at`); an equal-price change applies now at no charge. For
     a customer who should get a new plan sooner, grant comp credit instead.
 
-    `reason` (1-500 characters) is required and recorded on the audit trail and the event;
+    `reason` (1-500 characters) is required and recorded on the audit trail — never on the
+    subscription's event, which the customer org's own notification templates can render;
     `expected` is the state the preview returned, compared under subscription's lock (409
-    `state_changed`).
+    `state_changed`). The target must be one catalog offers this organization *now* (the picker's
+    set, re-read here): a version superseded by a newer one, or of a retired plan, is 422
+    `not_offerable` — except a withdrawal back to the pin the subscription is on.
     Errors carry a stable `errors[0].code`: 404 `no_subscription` / `not_found`; 409
     `state_changed`, `billing_catching_up`, `request_in_progress`, `idempotency_key_reused`; 422
     `state`, `cadence`, `currency`, `already_pinned`, `product_mismatch`, `not_published`,
-    `reserved_reason`, `bundle`; 503 `outcome_unknown` — the change may or may not have been made:
-    refresh, or repeat the same request, which reconciles.
+    `not_offerable`, `reserved_reason`, `bundle`; 503 `catalog_unavailable` — this request changed
+    nothing; 503 `outcome_unknown` — the change may or may not have been made: refresh, or repeat
+    the same request, which reconciles.
     """
     await _require_organization(organization_id, request, client)
     return await plan_change.switch_plan(

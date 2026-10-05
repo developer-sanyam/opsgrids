@@ -445,10 +445,15 @@ class PlanChangePreviewOut(BaseModel):
     entitled_removed: list[str] = Field(default_factory=list)
     #: Either version carries a usage-priced component; direction compares the recurring part only.
     usage_priced: bool = False
+    #: Applying now closes the usage metered so far at the **current** plan's usage rates, as its
+    #: own invoice the billing run raises; usage from then on is priced on the new plan. So an
+    #: equal-price switch is "no proration", not "nothing charged", whenever this is set.
+    usage_closed_now: bool = False
     #: Set (with `refusal_detail`) when the confirm would be refused — a past_due subscription, a
-    #: different currency or cadence, a version that is not published. Stable codes: `state`,
-    #: `cadence`, `currency`, `already_pinned`, `product_mismatch`, `not_published`,
-    #: `billing_catching_up`, `bundle`.
+    #: different currency or cadence, a version that is not published, or one the catalogue no
+    #: longer offers this organization (superseded by a newer version, or its plan retired).
+    #: Stable codes: `state`, `cadence`, `currency`, `already_pinned`, `product_mismatch`,
+    #: `not_published`, `not_offerable`, `billing_catching_up`, `bundle`.
     refusal_code: str | None = None
     refusal_detail: str | None = None
 
