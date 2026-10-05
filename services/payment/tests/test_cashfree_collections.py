@@ -581,7 +581,7 @@ class TestCredentials:
             ({"webhook_secret": "x" * 12}, "webhook_secret is not set for Cashfree"),
             ({"key_id": "has spaces"}, "Cashfree App ID"),
             ({"mode": "production"}, "Production is not enabled"),
-            ({"key_secret": "cfsk_ma_prod_0123456789abcdef"}, "look like Production keys"),
+            ({"key_secret": "cfsk_ma_prod_dev-only-0001"}, "look like Production keys"),
         ],
     )
     def test_cashfree_credentials_are_checked_for_shape_only(

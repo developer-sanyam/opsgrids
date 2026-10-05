@@ -43,7 +43,7 @@ const CASHFREE: MerchantAccountOut = {
   configured: true,
   id: "acct-cf",
   provider: "cashfree",
-  key_id: "TEST1234567890",
+  key_id: "TESTdevonlyapp01",
   mode: "test",
   key_secret_masked: "••••9f3a",
   webhook_secret_masked: null,
@@ -88,14 +88,14 @@ describe("PaymentSettingsPage — Cashfree", () => {
     expect(secret.getAttribute("type")).toBe("password");
     // Production is not enabled here: it cannot even be chosen.
     expect((screen.getByRole("radio", { name: /Production/ }) as HTMLInputElement).disabled).toBe(true);
-    await user.type(screen.getByLabelText("App ID"), "TEST1234567890");
+    await user.type(screen.getByLabelText("App ID"), "TESTdevonlyapp01");
     await user.type(secret, "typed-cashfree-secret");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
       expect(saveMerchantAccount).toHaveBeenCalledWith({
         provider: "cashfree",
-        key_id: "TEST1234567890",
+        key_id: "TESTdevonlyapp01",
         key_secret: "typed-cashfree-secret",
         mode: "sandbox",
       }),
@@ -107,7 +107,7 @@ describe("PaymentSettingsPage — Cashfree", () => {
   it("shows a connected Cashfree account read-only by provider, with its environment and state", async () => {
     getMerchantAccount.mockResolvedValue(CASHFREE);
     renderScreen(<PaymentSettingsPage />, [READ]);
-    expect(await screen.findByText("TEST1234567890")).toBeDefined();
+    expect(await screen.findByText("TESTdevonlyapp01")).toBeDefined();
     expect(screen.getByText("Sandbox")).toBeDefined();
     expect(screen.getByText("••••9f3a")).toBeDefined();
     expect(screen.queryByText("Webhook secret")).toBeNull();
