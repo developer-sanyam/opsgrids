@@ -49,7 +49,7 @@ from tests.helpers import audit_rows, emitted, inbox_rows, rows
 
 pytestmark = pytest.mark.integration
 
-APP_ID = "TESTdevonlymerchant01"  # pragma: allowlist secret
+APP_ID = "TESTdevonlymerch01"  # pragma: allowlist secret
 SECRET = "dev-only-cashfree-merchant-secret-0001"  # pragma: allowlist secret
 PHONE = "9876501234"
 VERIFY = f"{ACCOUNT}/verify"

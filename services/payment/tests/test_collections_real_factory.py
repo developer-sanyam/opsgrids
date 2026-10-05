@@ -31,7 +31,10 @@ from app.collections import services as collection_services
 from app.collections.cron import CollectionExpirySweep
 from app.main import app
 from app.models import Charge
-from app.providers.razorpay import RazorpayProvider
+from app.providers.razorpay_collections import (
+    RazorpayCollectionsProvider,
+    build_collections_provider,
+)
 from app.providers.razorpay_wire import RazorpayHttpWire
 from platform_core.db import get_outbox_sessionmaker, session_scope
 from tests.collections_support import (
@@ -118,11 +121,19 @@ def _timing_out_factory(error: Exception) -> Any:
             return httpx.Response(200, json={"entity": "collection", "count": 0, "items": []})
         raise error
 
-    def factory(key_id: str, key_secret: str, webhook_secret: str) -> RazorpayProvider:
+    def factory(
+        key_id: str,
+        key_secret: str,
+        webhook_secret: str,
+        *,
+        provider: str = "razorpay",
+        mode: str = "test",
+    ) -> RazorpayCollectionsProvider:
+        assert provider == "razorpay"
         wire = RazorpayHttpWire(
             key_id=key_id, key_secret=key_secret, transport=httpx.MockTransport(handle)
         )
-        return RazorpayProvider(
+        return build_collections_provider(
             key_id=key_id, key_secret=key_secret, webhook_secret=webhook_secret, wire=wire
         )
 
