@@ -19,7 +19,7 @@
 > 5. **`COMPOSE_PROFILES=*` is valid** (expanded by preflight and `remote.sh`).
 > 6. **Only preflight guards `RAZORPAY_WEBHOOK_SECRET`**: the payment service itself does not refuse the public dev default.
 > 7. **`BILLING_TAX_JURISDICTION` is optional** and matched exactly (empty matches only NULL-jurisdiction rows), not "both or none".
-> 8. **Inert settings:** `SENTRY_DSN`, `JWT_KID`, `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` are read by nothing that acts on them.
+> 8. **Inert settings:** `SENTRY_DSN` and `JWT_KID` are read by nothing that acts on them. (`RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` were on this list while the payment wire was a stub; since ADR-0029 they are used when `PAYMENT_WIRE=live`, and still do nothing by themselves: keys never switch a network call on.)
 > 9. **The provider webhooks probably do not reach their services** through the edge (matrix section 9.1); settle it with the two
 >    unauthenticated probes before configuring a callback URL.
 > 10. **The RUNBOOK's key counts** ("19 new keys", "20 (18)") were corrected by `0ff2954` to 22 new keys, 20 of which must be present.
@@ -142,7 +142,7 @@ What else it checks (FAIL = exit 1 at the end, warn/info never affect the exit s
 | `EDGE_RESERVED_IP` in an RFC 5737 range | WARN | `INT:109-116` |
 | memory: post-deploy price vs box `MemTotal` (>= hard line, no ceiling) | FAIL | `MH:preflight.sh:244-300` |
 | `EDGE_BUDGET_ACCEPTED_MB` not a whole number | FAIL | `MH:preflight.sh:261` |
-| `EMAIL_TRANSPORT` unset/`log`; `RAZORPAY_KEY_ID` empty; `BILLING_RUN_ENABLED` not `true` | WARN | `INT:223-`, `BR` |
+| `EMAIL_TRANSPORT` unset/`log`; both payment wires on the stub (no provider is called); `BILLING_RUN_ENABLED` not `true` | WARN | `INT:223-`, `BR` |
 | `BILLING_RUN_ENABLED=true` with `BILLING_RUN_NOT_BEFORE` empty / not ISO-with-offset | FAIL | `BR:preflight.sh` (07ea4e2) |
 | `OPS_ALERT_EMAIL` or `SMTP_HOST` empty | WARN | `INT:239-244` |
 | `ENGAGE_PUBLIC_API_BASE` not https, or containing `localhost` / `127.0.0.1` | FAIL | `INT:273-` |
@@ -244,9 +244,15 @@ column) is the slice or release that introduced the key.
 ### 4.5 Payments and billing
 | Variable | Required / optional | Secret | Exact format | Source | Generate? | Accepted values | Default | Consumer service (since) | Exists in repo / deploy config? | Depends on |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `RAZORPAY_KEY_ID` | optional-empty (empty = payments inert) | no | Razorpay key id string. | EXTERNAL (Razorpay dashboard) | no | any string or empty | empty | payment, payment-worker (since: main) | no - placeholder only | RAZORPAY_KEY_SECRET |
-| `RAZORPAY_KEY_SECRET` | optional-empty (set together with the key id) | YES | Razorpay key secret string. | EXTERNAL (Razorpay dashboard) | no | any string or empty | empty | payment, payment-worker (since: main) | no - placeholder only | RAZORPAY_KEY_ID |
+| `RAZORPAY_KEY_ID` | optional-empty (empty = the stub; used only when `PAYMENT_WIRE=live`) | no | a Razorpay key id: `rzp_test_...` or `rzp_live_...`; both-or-neither with the secret. | EXTERNAL (Razorpay dashboard) | no | any string or empty | empty | payment, payment-worker (since: main) | no - placeholder only | RAZORPAY_KEY_SECRET |
+| `RAZORPAY_KEY_SECRET` | optional-empty (set together with the key id; used only when `PAYMENT_WIRE=live`) | YES | Razorpay key secret string (a `SecretStr`; never logged). | EXTERNAL (Razorpay dashboard) | no | any string or empty | empty | payment, payment-worker (since: main) | no - placeholder only | RAZORPAY_KEY_ID |
 | `RAZORPAY_WEBHOOK_SECRET` | required | YES | any string; production refuses the development default. | GENERATE on the box, then paste the same value into Razorpay's webhook settings | YES: `openssl rand -hex 32` | any non-placeholder string | none (placeholder `CHANGE_ME_generate_openssl_rand_hex_32__razorpay_webhook_secret` in the example) | payment, payment-worker (since: main) | no - placeholder only | Razorpay webhook settings |
+| `PAYMENT_PROVIDER` | optional; COMMENTED in the example (not a required key) | no | `razorpay` or `cashfree`; an unknown value stops `payment` starting. The provider NEW platform charges and checkouts go to; existing rows keep theirs. | OWNER DECISION | no | `razorpay`, `cashfree` | `razorpay` | payment, payment-worker (since: ADR-0029) | no - placeholder only | `PAYMENT_WIRE`, `CASHFREE_ENV` |
+| `PAYMENT_WIRE` | optional; COMMENTED in the example | no | `stub` or `live`. `live` = customer-present checkout against Razorpay; needs both Razorpay keys; `rzp_test_` keys are refused on this production box. | OWNER DECISION | no | `stub`, `live` | `stub` | payment, payment-worker (since: ADR-0029) | no - placeholder only | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` |
+| `PAYMENT_ALLOW_LIVE_KEYS` | optional; COMMENTED in the example | no | `true` or `false`. `true` lets `rzp_live_` keys and `CASHFREE_ENV=production` start. | OWNER DECISION | no | `true`, `false` | `false` | payment, payment-worker (since: ADR-0029) | no - placeholder only | `PAYMENT_WIRE`, `CASHFREE_ENV` |
+| `CASHFREE_ENV` | optional; COMMENTED in the example | no | `stub`, `sandbox` or `production`. `stub` = in-process fake, no network, whatever keys are present. `sandbox` is refused on this production box. | OWNER DECISION | no | `stub`, `sandbox`, `production` | `stub` | payment, payment-worker (since: ADR-0029) | no - placeholder only | `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY` |
+| `CASHFREE_APP_ID` | optional-empty; COMMENTED in the example | YES (held as a SecretStr) | Cashfree's App ID (`x-client-id`); both-or-neither with the secret. A sandbox App ID starts with `TEST`. | EXTERNAL (Cashfree dashboard) | no | any string or empty | empty | payment, payment-worker (since: ADR-0029) | no - placeholder only | `CASHFREE_SECRET_KEY` |
+| `CASHFREE_SECRET_KEY` | optional-empty; COMMENTED in the example | YES | Cashfree's Secret Key. It also SIGNS Cashfree's webhooks (no separate webhook secret): rotating it is a flag day for the API calls and the deliveries together. | EXTERNAL (Cashfree dashboard) | no | any string or empty | empty | payment, payment-worker (since: ADR-0029) | no - placeholder only | `CASHFREE_APP_ID` |
 | `BILLING_TAX_CODE` | optional-empty (line must exist) | no | the `code` of an existing billing.tax_rates row, e.g. gst. Set without a rate row in force and the run refuses to invoice. Empty = no tax line. | CHOOSE (only once the deployment is tax-registered) | no | empty or an existing billing.tax_rates code | empty | billing (since: slice/billing-run) | no - placeholder only | BILLING_TAX_JURISDICTION; a tax_rates row in Postgres |
 | `BILLING_TAX_JURISDICTION` | optional-empty (line must exist) | no | free string, e.g. IN. Both empty or both set. | CHOOSE (set together with BILLING_TAX_CODE) | no | empty or a jurisdiction string | empty | billing (since: slice/billing-run) | no - placeholder only | BILLING_TAX_CODE |
 
@@ -581,7 +587,9 @@ and not localhost (`INT:preflight.sh:273`, `INT:.../services.py:2832`). Five mor
 | `SMTP_HOST`, `SMTP_USERNAME`, `EMAIL_FROM` | confirm with the provider that the mailbox may send as `EMAIL_FROM` | committed defaults `smtp.gmail.com` / `info@opsgrids.com` |
 | `BACKUP_S3_BUCKET`, `BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION` | an off-box S3-compatible bucket you provide | the committed bucket name `opsgrids-backups` is a placeholder; the repo does not prove it exists |
 | `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY` | the backup provider | both or neither. Design tension: the example asks for a write-only key but the restore drill (`RUNBOOK`) downloads with the same pair |
-| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | Razorpay dashboard | empty = payments inert |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | Razorpay dashboard | empty = the stub; keys alone change nothing (`PAYMENT_WIRE=live` does) |
+| `PAYMENT_PROVIDER`, `PAYMENT_WIRE`, `PAYMENT_ALLOW_LIVE_KEYS`, `CASHFREE_ENV` | the owner (commented in the example; defaults are the safe side) | RUNBOOK 'Payments: turning a provider on' |
+| `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY` | Cashfree dashboard | optional-empty; the secret also signs Cashfree's webhooks |
 | `WHATSAPP_APP_SECRET`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_ACCESS_TOKEN` | Meta | only if you enable WhatsApp |
 | `EDGE_RESERVED_IP` | the cloud provider's reserved IP for the VM | empty is valid; never a documentation range |
 | `SENTRY_DSN` | a Sentry project | optional |

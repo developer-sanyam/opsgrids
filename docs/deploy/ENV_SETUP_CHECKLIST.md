@@ -285,10 +285,10 @@ a value with `$`, a backtick or a backslash goes in **single** quotes (Appendix 
   `[STRUCTURAL]` preflight checks the pair is consistent. **`[LIVE: owner]` verify it after the deploy** with `make edge-backup HOST=deploy@20.219.18.84 CONFIRM=edge.opsgrids.com`: it really uploads (creates objects in the bucket) and prints
   `uploaded database + certificates to s3://...`; only then does it write the marker ops-monitor's `backup` check reads. Then do the RUNBOOK's restore drill once (INT:rb:1557). Result: `_____`
 - [ ] **4.3 Razorpay** (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`; `RAZORPAY_WEBHOOK_SECRET` was generated in 3.3). **[OWNER]**
-  **Important:** in this release the payment adapter's only outbound call is a stub that never opens a socket; the key id and secret are stored and used by nothing (INT:services/payment/app/providers/razorpay.py:103).
-  So there is **nothing the platform can verify** about the key pair, and filling it in does not enable live charges. Recommended: leave both **empty** (payments inert; preflight prints a warning).
-  If you store them anyway: Razorpay Dashboard -> Account & Settings -> API Keys (provider-side, not verified in repo); paste into `.env`. **`[LIVE: owner]`** the only proof is an authenticated request you make directly to Razorpay
-  (provider-side; outside this repo); the platform's own behaviour will not change either way.
+  **Important (ADR-0029):** the key pair is no longer used by nothing, but it still **does nothing by itself**. The platform's Razorpay wire is the in-process stub unless `PAYMENT_WIRE=live`; keys sitting in `.env` change nothing,
+  and preflight says so (`payment runs on its in-process stub`). Leave both **empty** until you are ready to run a test-mode checkout, then follow RUNBOOK.md, 'Payments: turning a provider on' (the order, the owner steps, the smoke tool and the rollback).
+  Razorpay Dashboard -> Account & Settings -> API Keys (provider-side, not verified in repo); paste into `.env` (mode 600), never into chat. **`[LIVE: owner]`** the platform's own proof is the owner-run `tools/payments_smoke_razorpay.py`
+  (test keys, a laptop, never the box); a real invoice paid in test mode locally is the end-to-end proof. `rzp_test_` keys are **refused on this production box** on a live wire; `rzp_live_` keys need `PAYMENT_ALLOW_LIVE_KEYS=true`.
   **Webhook secret:** do **not** paste `RAZORPAY_WEBHOOK_SECRET` into Razorpay's dashboard (Webhooks) until step 9.7 shows the route is reachable; by static reading it is not (matrix section 9.1). Rotating it later means changing it in `.env` and in Razorpay's Webhooks page together (provider-side, not verified in repo).
   When 9.7 shows the route is reachable and you paste the secret into Razorpay, move it from the box to your clipboard **without printing it** (`[laptop]`; the one sanctioned exception to "never print a `.env` value": nothing reaches a terminal), then clear the clipboard:
 
@@ -538,7 +538,7 @@ Nothing in the "live" column has been run. **A green preflight never appears in 
 |---|---|---|---|---|
 | `SMTP_PASSWORD` (+ username, host, port) | line present; empty allowed; not a placeholder | the SMTP login probe (4.1); then ops-monitor `/status` `last_send_at` after a real alert or the digest | owner | the probe sends no mail; a real alert sends mail to `OPS_ALERT_EMAIL` |
 | `BACKUP_S3_*` | pair both-or-neither | `make edge-backup` (9.6) and the RUNBOOK restore drill | owner | uploads objects to the bucket (creates data) |
-| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | empty allowed; presence prints an `ok` | **none exists in the platform** (the adapter is a stub); only a direct request to Razorpay | owner (provider-side) | n/a |
+| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | empty allowed; both-or-neither; shape checked when `PAYMENT_WIRE=live` (`lib/payment-switches.sh`) | the owner-run `tools/payments_smoke_razorpay.py` with TEST keys on a laptop (never on the box, never in CI) | owner (provider-side) | creates one test-mode Order with a unique receipt; no money moves |
 | `RAZORPAY_WEBHOOK_SECRET` | present, not `dev-only-*` | a Razorpay-signed delivery accepted by the service, after step 9.7 shows the route is reachable | owner | Razorpay would deliver a test event |
 | `WHATSAPP_ACCESS_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID` | empty allowed | the read-only Graph `GET /{id}?fields=id` (4.4) | owner | read-only call to Meta |
 | `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` | empty allowed | Meta's subscribe handshake and a genuine signed delivery, after 9.7 | owner | Meta calls our endpoint |
