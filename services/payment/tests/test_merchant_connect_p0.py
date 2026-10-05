@@ -45,7 +45,7 @@ from tests.helpers import audit_rows, rows
 
 pytestmark = pytest.mark.integration
 
-LIVE_KEY_ID = "rzp_live_MerchantLive01"
+LIVE_KEY_ID = "rzp_live_MerchantLive001"
 REPO = Path(__file__).resolve().parents[3]
 
 
