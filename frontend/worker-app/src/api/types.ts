@@ -277,6 +277,21 @@ export type StockStatus =
   | "AT_JOB_WORKER"
   | "BLOCKED";
 
+/** Mirrors the server's `LocationKind` — what a location is for. Only `receiving` and `staging` are
+ *  places storage put-away may start from (spec decision D1). */
+export type LocationKind =
+  | "zone"
+  | "aisle"
+  | "rack"
+  | "shelf"
+  | "bin"
+  | "staging"
+  | "pack_station"
+  | "dock"
+  | "receiving"
+  | "returns"
+  | "quarantine";
+
 /** Mirrors `StockRowOut` — one bucket of stock: an item at a location, in a status, optionally in
  *  a lot / on a roll. `GET /operations/inventory/stock`, `operations.inventory.stock.read`. */
 export interface StockRowOut {
@@ -289,6 +304,9 @@ export interface StockRowOut {
   warehouse_code: string;
   location_id: string;
   location_code: string;
+  /** The kind of `location_id`. Absent or `null` from a server that predates it, so nothing may
+   *  assume it is there: see `canPutAwayFrom`. */
+  location_kind?: LocationKind | null | undefined;
   status: StockStatus;
   lot_id: string | null;
   lot_no: string | null;

@@ -20,6 +20,7 @@ const updateWarehouse = vi.fn();
 const sitesMapProps = vi.fn();
 const sitesMapMounts = vi.fn();
 let sitesMapThrows = false;
+let sitesMapChunkFailures = 0;
 
 vi.mock("@/api/client", () => ({
   getWarehousesMap: (...args: unknown[]) => getWarehousesMap(...args),
@@ -28,39 +29,46 @@ vi.mock("@/api/client", () => ({
 }));
 
 // Stands in for the Google map: the real one cannot render in a DOM. It exposes what the page gave
-// it and lets a test make it fail the ways Google can.
-vi.mock("@/maps/SitesMap", () => ({
-  default: (props: {
-    sites: { id: string; name: string }[];
-    selectedId: string | null;
-    onSelect: (id: string | null) => void;
-    onOpenFloors: (id: string) => void;
-    onFailure: (reason: "script_error" | "auth_failure") => void;
-  }) => {
-    if (sitesMapThrows) throw new Error("render error inside the map");
-    sitesMapMounts();
-    sitesMapProps(props);
-    return (
-      <div data-testid="sites-map-stub">
-        <p>map selected: {props.selectedId ?? "none"}</p>
-        {props.sites.map((s) => (
-          <button key={s.id} type="button" onClick={() => props.onSelect(s.id)}>
-            pin {s.name}
+// it and lets a test make it fail the ways Google can. The factory throwing is the chunk failing to
+// download: the dynamic import rejects, exactly as a network error rejects the real one.
+vi.mock("@/maps/SitesMap", () => {
+  if (sitesMapChunkFailures > 0) {
+    sitesMapChunkFailures -= 1;
+    throw new Error("Failed to fetch dynamically imported module");
+  }
+  return {
+    default: (props: {
+      sites: { id: string; name: string }[];
+      selectedId: string | null;
+      onSelect: (id: string | null) => void;
+      onOpenFloors: (id: string) => void;
+      onFailure: (reason: "script_error" | "auth_failure") => void;
+    }) => {
+      if (sitesMapThrows) throw new Error("render error inside the map");
+      sitesMapMounts();
+      sitesMapProps(props);
+      return (
+        <div data-testid="sites-map-stub">
+          <p>map selected: {props.selectedId ?? "none"}</p>
+          {props.sites.map((s) => (
+            <button key={s.id} type="button" onClick={() => props.onSelect(s.id)}>
+              pin {s.name}
+            </button>
+          ))}
+          <button type="button" onClick={() => props.onFailure("auth_failure")}>
+            google refuses the key
           </button>
-        ))}
-        <button type="button" onClick={() => props.onFailure("auth_failure")}>
-          google refuses the key
-        </button>
-        <button type="button" onClick={() => props.onFailure("script_error")}>
-          script fails
-        </button>
-        <button type="button" onClick={() => props.sites[0] && props.onOpenFloors(props.sites[0].id)}>
-          popup open floors
-        </button>
-      </div>
-    );
-  },
-}));
+          <button type="button" onClick={() => props.onFailure("script_error")}>
+            script fails
+          </button>
+          <button type="button" onClick={() => props.sites[0] && props.onOpenFloors(props.sites[0].id)}>
+            popup open floors
+          </button>
+        </div>
+      );
+    },
+  };
+});
 
 vi.mock("@/maps/PlacesLookup", () => ({ default: () => <p>places lookup stub</p> }));
 
@@ -100,6 +108,7 @@ describe("WarehousesMapPage", () => {
   beforeEach(() => {
     resetReports();
     sitesMapThrows = false;
+    sitesMapChunkFailures = 0;
     getWarehousesMap.mockReset().mockResolvedValue(data());
     updateWarehouse.mockReset();
     sitesMapProps.mockReset();
@@ -161,11 +170,30 @@ describe("WarehousesMapPage", () => {
       vi.stubEnv("VITE_GOOGLE_MAPS_API_KEY", "test-key");
     });
 
+    // First on purpose: the map's lazy component is module state, as it is in the app, and once a
+    // test has loaded it a later one cannot make the chunk fail. The check that the failure was
+    // used up keeps this from passing vacuously if another test is ever put above it.
+    it("downloads the map's chunk again on 'Try the map again' when the chunk itself failed to download", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      sitesMapChunkFailures = 1;
+      const user = userEvent.setup();
+      renderMap();
+
+      expect(await screen.findByText("The map couldn't load, so your warehouses are listed instead")).toBeDefined();
+      expect(sitesMapChunkFailures).toBe(0);
+      expect(screen.queryByTestId("sites-map-stub")).toBeNull();
+      expect(screen.getByRole("table", { name: "Warehouses with a location" })).toBeDefined();
+
+      await user.click(screen.getByRole("button", { name: "Try the map again" }));
+      expect(await screen.findByTestId("sites-map-stub")).toBeDefined();
+      expect(screen.queryByText("The map couldn't load, so your warehouses are listed instead")).toBeNull();
+    });
+
     it("draws the map with the sites that have a position, beside the same list", async () => {
       renderMap();
       expect(await screen.findByTestId("sites-map-stub")).toBeDefined();
       expect(sitesMapProps.mock.calls.at(-1)?.[0]).toMatchObject({
-        apiKey: "test-key",
+        apiKey: "test-key", // pragma: allowlist secret — a test fixture, not a Maps key
         sites: [expect.objectContaining({ id: "wh-1" }), expect.objectContaining({ id: "wh-2" })],
         selectedId: null,
       });

@@ -202,6 +202,8 @@ class TestSiteCoordinateErrors:
 
 # ------------------------------------------------------------------ suggest_putaway_bin
 
+_LABELLED = "<derived from the code>"
+
 
 def _bin(
     code: str,
@@ -210,11 +212,15 @@ def _bin(
     kind: str = "bin",
     holds: bool = False,
     empty: bool = True,
+    barcode: str | None = _LABELLED,
 ) -> domain.PutawayBin:
+    """A bin carrying a barcode derived from its code, unless `barcode=` says otherwise (`None` or
+    `""` for a bin with no usable label)."""
     return domain.PutawayBin(
         location_id=uuid.uuid5(uuid.NAMESPACE_URL, code),
         code=code,
         kind=kind,
+        barcode=f"{code}-BC" if barcode == _LABELLED else barcode,
         pick_sequence=seq,
         holds_item=holds,
         is_empty=empty and not holds,
@@ -287,3 +293,73 @@ class TestSuggestPutawayBin:
         expected = domain.suggest_putaway_bin(bins)
         assert domain.suggest_putaway_bin(list(reversed(bins))) == expected
         assert domain.suggest_putaway_bin(bins[5:] + bins[:5]) == expected
+
+
+class TestABinWithNoBarcodeIsNeverSuggested:
+    """A put-away resolves its destination by barcode alone, so a bin without one cannot be stored
+    into. `None` and the empty string are the same: no label."""
+
+    @pytest.mark.parametrize("barcode", [None, ""])
+    def test_it_is_not_chosen_however_good_its_walk_position(self, barcode: str | None) -> None:
+        bins = [_bin("A-01", seq=1, barcode=barcode), _bin("B-02", seq=9)]
+        assert domain.suggest_putaway_bin(bins) == domain.PutawaySuggestion(
+            _id("B-02"), "empty_bin"
+        )
+
+    @pytest.mark.parametrize("barcode", [None, ""])
+    def test_it_does_not_win_the_holding_rule_either(self, barcode: str | None) -> None:
+        bins = [_bin("HELD", seq=1, holds=True, barcode=barcode), _bin("FREE", seq=5)]
+        assert domain.suggest_putaway_bin(bins) == domain.PutawaySuggestion(
+            _id("FREE"), "empty_bin"
+        )
+
+    def test_a_barcoded_bin_that_holds_the_item_still_beats_an_empty_one(self) -> None:
+        bins = [_bin("FREE", seq=1), _bin("HELD", seq=9, holds=True)]
+        assert domain.suggest_putaway_bin(bins) == domain.PutawaySuggestion(
+            _id("HELD"), "holds_item"
+        )
+
+    @pytest.mark.parametrize("barcode", [None, ""])
+    def test_when_every_storable_bin_lacks_one_there_is_no_suggestion(
+        self, barcode: str | None
+    ) -> None:
+        bins = [
+            _bin("A", barcode=barcode),
+            _bin("B", seq=1, holds=True, barcode=barcode),
+            _bin("S", kind="shelf", barcode=barcode),
+        ]
+        assert domain.suggest_putaway_bin(bins) is None
+
+
+class TestTheWalkOrderIsCodePointOrder:
+    """The same total order the selector asks the database for with `COLLATE "C"`: the cap on the
+    query's candidate list is only harmless because the two agree."""
+
+    @staticmethod
+    def _first(*codes: str, seq: int | None = None) -> str:
+        bins = [_bin(c, seq=seq) for c in codes]
+        picked = domain.suggest_putaway_bin(bins)
+        assert picked is not None
+        return next(b.code for b in bins if b.location_id == picked.location_id)
+
+    def test_upper_case_sorts_before_lower_case(self) -> None:
+        assert self._first("a01", "A-FIRST", "b01") == "A-FIRST"
+
+    def test_punctuation_is_not_ignored(self) -> None:
+        # A locale collation skips the hyphen and would put R1B01 first; code points do not.
+        assert self._first("R1B01", "R1-B02") == "R1-B02"
+
+    def test_digits_sort_before_letters_and_the_underscore_after_the_capitals(self) -> None:
+        assert self._first("A_1", "A1", "AA") == "A1"
+        assert self._first("A_1", "AA") == "AA"
+
+    def test_a_shorter_code_sorts_before_the_longer_one_it_prefixes(self) -> None:
+        assert self._first("B-10", "B-1") == "B-1"
+
+    def test_the_pick_sequence_still_decides_before_the_code(self) -> None:
+        bins = [_bin("A", seq=3), _bin("Z", seq=0), _bin("M", seq=None)]
+        assert domain.suggest_putaway_bin(bins) == domain.PutawaySuggestion(_id("Z"), "empty_bin")
+
+    def test_no_pick_sequence_sorts_after_every_sequence_including_zero(self) -> None:
+        bins = [_bin("A", seq=None), _bin("Z", seq=0)]
+        assert domain.suggest_putaway_bin(bins) == domain.PutawaySuggestion(_id("Z"), "empty_bin")

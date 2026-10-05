@@ -320,6 +320,25 @@ describe("Warehouse3DPage", () => {
       expect((await screen.findByTestId("scene-stub")).getAttribute("data-highlight")).toBe("loc-bin");
     });
 
+    it("does not claim there is no floor plan when a search sends an unplaced bin here: the warehouse has one, and the bin is not on it", async () => {
+      getWarehouseById.mockResolvedValue(WAREHOUSE);
+      listLocations.mockResolvedValue([ZONE, BIN]);
+      renderPage("/warehouses/wh-1/3d?highlight=loc-bin&why=unplaced", GRANTS);
+
+      expect(
+        await screen.findByText("Layout is auto-arranged — this location isn't on the warehouse's published floor plan"),
+      ).toBeDefined();
+      expect(screen.queryByText(/no floor plan has been configured/)).toBeNull();
+      expect((await screen.findByTestId("scene-stub")).getAttribute("data-highlight")).toBe("loc-bin");
+    });
+
+    it("keeps the no-floor-plan wording for a warehouse that really has none", async () => {
+      getWarehouseById.mockResolvedValue(WAREHOUSE);
+      listLocations.mockResolvedValue([ZONE, BIN]);
+      renderPage("/warehouses/wh-1/3d?highlight=loc-bin", GRANTS);
+      expect(await screen.findByText(/Layout is auto-arranged — no floor plan has been configured/)).toBeDefined();
+    });
+
     it("fails on its own when the floor list will not load, and the auto-arranged view keeps working", async () => {
       const user = userEvent.setup();
       listWarehouseFloors.mockRejectedValueOnce(new Error("floors down"));

@@ -1,8 +1,8 @@
 /**
  * The storekeeper's whole journey, across the real screens: pick an item on the Stock page, ask
  * where it is, follow "Show on floor" and land on the floor plan with exactly those bins marked and
- * announced; or follow "Show on map" and land on the warehouse list with the site selected. Only the
- * network and the WebGL canvas are stand-ins.
+ * announced; or, for a bin that is on no plan, follow "Show in 3-D" and land on a view that says
+ * why. Only the network and the WebGL canvas are stand-ins.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
@@ -14,13 +14,13 @@ import { renderRoutes } from "@/test-utils/renderRoutes";
 import { item, stockRow } from "@/test-utils/tracking";
 import { FloorViewPage } from "./FloorView";
 import { InventoryStockPage } from "./InventoryStock";
-import { WarehousesMapPage } from "./WarehousesMap";
+import { Warehouse3DPage } from "./Warehouse3D";
 
 const listStock = vi.fn();
 const locateStock = vi.fn();
 const getInventoryItem = vi.fn();
 const getPublishedLayout = vi.fn();
-const getWarehousesMap = vi.fn();
+const listLocations = vi.fn();
 
 vi.mock("@/api/tracking", () => ({
   listStock: (...args: unknown[]) => listStock(...args),
@@ -32,11 +32,10 @@ vi.mock("@/api/client", () => ({
   FULL_PAGE: 200,
   getInventoryItem: (...args: unknown[]) => getInventoryItem(...args),
   getPublishedLayout: (...args: unknown[]) => getPublishedLayout(...args),
-  getWarehousesMap: (...args: unknown[]) => getWarehousesMap(...args),
   getWarehouseById: () => Promise.resolve({ id: "wh-1", code: "BHW", name: "Bhiwandi DC", location: "" }),
   listWarehouseFloors: () => Promise.resolve([]),
   listWarehouses: () => Promise.resolve({ items: [], total: 0, page: 1, size: 200, pages: 0 }),
-  listLocations: () => Promise.resolve([]),
+  listLocations: (...args: unknown[]) => listLocations(...args),
   searchInventory: () => Promise.resolve([]),
   updateWarehouse: () => Promise.reject(new Error("not used")),
   createWarehouse: () => Promise.reject(new Error("not used")),
@@ -101,7 +100,7 @@ function renderJourney() {
     [
       { path: "/inventory/stock", element: <InventoryStockPage /> },
       { path: "/warehouses/:id/floors/:floorId/view", element: <FloorViewPage /> },
-      { path: "/warehouses/map", element: <WarehousesMapPage /> },
+      { path: "/warehouses/:id/3d", element: <Warehouse3DPage /> },
     ],
     "/inventory/stock?item=item-1",
     GRANTS,
@@ -114,16 +113,16 @@ describe("search to highlight", () => {
     listStock.mockReset().mockResolvedValue({ items: [stockRow({ location_id: "bin-a", sku: "FAB-100", on_hand_qty: "40" })], next_cursor: null });
     getInventoryItem.mockReset().mockResolvedValue(item({ id: "item-1", sku: "FAB-100", uom: "m" }));
     getPublishedLayout.mockReset().mockResolvedValue(LAYOUT);
-    getWarehousesMap.mockReset().mockResolvedValue({
-      sites: [{ id: "wh-1", code: "BHW", name: "Bhiwandi DC", location: "Bhiwandi", lat_micro: 19_300_000, lng_micro: 73_060_000, floor_count: 1, stocked_location_count: 2 }],
-      without_coordinates: [],
-    });
+    listLocations.mockReset().mockResolvedValue([
+      { id: "bin-z", warehouse_id: "wh-1", parent_id: null, kind: "bin", code: "Z-99", name: "Bin Z-99", is_default: false, barcode: null, pick_sequence: 1, max_weight_grams: null, max_volume_milli: null, storage_type: null },
+    ]);
     locateStock.mockReset().mockResolvedValue({
       results: [
         located({}),
         located({ location_id: "bin-b", code: "A-02", name: "Bin A-02", quantity: "12" }),
         located({ location_id: "bin-z", code: "Z-99", name: "Bin Z-99", placement: null, placement_reason: "unplaced" }),
       ],
+      truncated: false,
     });
     return () => vi.unstubAllEnvs();
   });
@@ -170,18 +169,18 @@ describe("search to highlight", () => {
     expect(listStock).toHaveBeenLastCalledWith(expect.objectContaining({ location_id: "bin-b" }));
   });
 
-  it("goes from a search result to the warehouse on the map page, selected", async () => {
+  it("sends a bin that is on no plan to the auto-arranged 3-D view, which says why and marks the bin", async () => {
     const user = userEvent.setup();
     const { where } = renderJourney();
     await user.click(await screen.findByRole("button", { name: "Find where it is" }));
-    await user.click(await screen.findByRole("link", { name: "Show on map" }));
+    await user.click(await screen.findByRole("link", { name: "Show in 3-D for Z-99" }));
 
-    await waitFor(() => expect(where().pathname).toBe("/warehouses/map"));
-    expect(where().search).toBe("?focus=wh-1");
-    const row = (await screen.findByText("Bhiwandi DC")).closest("tr");
-    expect(row?.textContent).toContain("Selected");
-    // No key in this build: the page is the list, and it says so.
-    expect(screen.getByText("The map isn't set up here, so your warehouses are listed instead")).toBeDefined();
+    await waitFor(() => expect(where().pathname).toBe("/warehouses/wh-1/3d"));
+    expect(where().search).toBe("?highlight=bin-z&why=unplaced");
+    expect(await screen.findByTestId("scene-stub")).toBeDefined();
+    // The warehouse has a published layout; the bin is not on it. The view must not say otherwise.
+    expect(screen.getByText("Layout is auto-arranged — this location isn't on the warehouse's published floor plan")).toBeDefined();
+    expect(screen.queryByText(/no floor plan has been configured/)).toBeNull();
   });
 
   it("says plainly on the floor when what was searched for is not on that floor's plan", async () => {

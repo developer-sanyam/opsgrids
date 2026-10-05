@@ -221,6 +221,8 @@ export interface StockRowOut {
   warehouse_code: string;
   location_id: string;
   location_code: string;
+  /** The kind of `location_id`. Typed nullable as the contract has it; the server always sets it. */
+  location_kind: LocationKind | null;
   status: StockStatus;
   lot_id: string | null;
   lot_no: string | null;
@@ -313,7 +315,7 @@ export interface LocatePlacementOut {
   ancestor_location_id: string | null;
 }
 
-/** One bin holding a positive balance of what was searched for. */
+/** One bin holding a positive balance of what was searched for, in one status. */
 export interface LocateResultOut {
   warehouse_id: string;
   warehouse_name: string;
@@ -334,7 +336,11 @@ export interface LocateResultOut {
 /** `GET /operations/inventory/locate` — `operations.inventory.stock.read`. An empty `results` is a
  *  valid answer: nothing is stocked. Geometry is only present for a caller who may read layouts. */
 export interface LocateOut {
+  /** One row per bin *and status*: a bin holding stock in two statuses appears twice. */
   results: LocateResultOut[];
+  /** `true` when more rows matched than the server returns (it caps one answer; the cap is far
+   *  above how widely one item spreads, and exists to bound the query). */
+  truncated: boolean;
 }
 
 /* -------------------------------- storage put-away ------------------------------- */

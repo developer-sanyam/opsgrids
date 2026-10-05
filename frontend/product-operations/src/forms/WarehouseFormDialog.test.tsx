@@ -75,7 +75,54 @@ describe("WarehouseFormDialog — site position", () => {
     vi.unstubAllEnvs();
   });
 
+  describe("the coordinate fields", () => {
+    it("use the text keyboard, not the decimal keypad, because iOS's decimal keypad has no minus sign", () => {
+      renderDialog(null);
+      for (const field of [screen.getByLabelText(/Latitude/), screen.getByLabelText(/Longitude/)]) {
+        expect(field.getAttribute("inputmode")).toBe("text");
+        expect(field.getAttribute("autocorrect")).toBe("off");
+        expect(field.getAttribute("autocapitalize")).toBe("off");
+        expect(field.getAttribute("spellcheck")).toBe("false");
+      }
+    });
+
+    it("carry a pattern that matches exactly what the form accepts, and is valid in the strict v mode", () => {
+      renderDialog(null);
+      const pattern = screen.getByLabelText(/Latitude/).getAttribute("pattern") ?? "";
+      expect(screen.getByLabelText(/Longitude/).getAttribute("pattern")).toBe(pattern);
+      const whole = new RegExp(`^(?:${pattern})$`, "v");
+      for (const ok of ["19", "19.", "-19.076090", "+5", ".5", "-.5", "−33.8688"]) expect(whole.test(ok), ok).toBe(true);
+      for (const bad of ["", "-", "abc", "1e3", "19,07", "19.0.1", "--5", "- 5"]) expect(whole.test(bad), bad).toBe(false);
+    });
+
+    it("say which way is negative", () => {
+      renderDialog(null);
+      expect(screen.getByText("Degrees, between -90 and 90. Use a minus sign for south.")).toBeDefined();
+      expect(screen.getByText("Degrees, between -180 and 180. Use a minus sign for west.")).toBeDefined();
+    });
+  });
+
   describe("create", () => {
+    it("sends a site south and west of 0, which the decimal keypad could not type", async () => {
+      const user = userEvent.setup();
+      renderDialog(null);
+      await user.type(screen.getByLabelText(/^Code/), "SYD");
+      await user.type(screen.getByLabelText(/^Name/), "Sydney DC");
+      await user.type(screen.getByLabelText(/Latitude/), "-33.8688");
+      await user.type(screen.getByLabelText(/Longitude/), "−151.2093");
+      await user.click(screen.getByRole("button", { name: "Create warehouse" }));
+
+      await waitFor(() =>
+        expect(createWarehouse).toHaveBeenCalledWith({
+          code: "SYD",
+          name: "Sydney DC",
+          location: "",
+          lat_micro: -33_868_800,
+          lng_micro: -151_209_300,
+        }),
+      );
+    });
+
     it("sends degrees as integer micro-degrees, together", async () => {
       const user = userEvent.setup();
       renderDialog(null);

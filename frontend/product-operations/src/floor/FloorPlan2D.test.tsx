@@ -158,6 +158,149 @@ describe("FloorPlan2D", () => {
     expect(viewBox()).toEqual(before);
   });
 
+  describe("dragging the plan", () => {
+    const MOUSE = { pointerId: 1, pointerType: "mouse", button: 0 };
+
+    function stubPlanSize() {
+      vi.spyOn(SVGSVGElement.prototype, "getBoundingClientRect").mockReturnValue({
+        x: 0,
+        y: 0,
+        left: 0,
+        top: 0,
+        right: 800,
+        bottom: 600,
+        width: 800,
+        height: 600,
+        toJSON: () => ({}),
+      });
+    }
+
+    /**
+     * jsdom implements no `PointerEvent`, and Testing Library's fallback drops `clientX` and
+     * `button`. A `MouseEvent` carries both, and React maps it to `onPointerDown` and the rest by
+     * type, as it does a browser's own.
+     */
+    function pointer(target: Element, type: "pointerdown" | "pointermove" | "pointerup", x: number, y: number, init: typeof MOUSE) {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: init.button });
+      Object.defineProperty(event, "pointerId", { value: init.pointerId });
+      Object.defineProperty(event, "pointerType", { value: init.pointerType });
+      fireEvent(target, event);
+    }
+
+    /** A press on `target`, a move of (dx, dy) screen pixels, and the release. */
+    function press(target: Element, dx: number, dy: number, init = MOUSE) {
+      pointer(target, "pointerdown", 100, 100, init);
+      pointer(target, "pointermove", 100 + dx, 100 + dy, init);
+      pointer(target, "pointerup", 100 + dx, 100 + dy, init);
+    }
+
+    it("pans when the drag starts on the background", () => {
+      stubPlanSize();
+      renderPlan();
+      const before = viewBox();
+      press(screen.getByRole("group", { name: "Floor plan of Ground" }), -80, 0);
+      expect(viewBox()[0]).toBeGreaterThan(before[0] ?? 0);
+      expect(viewBox()[2]).toBe(before[2]);
+    });
+
+    it("pans when the drag starts on a location, as it must once the plan is zoomed in and locations fill it", () => {
+      stubPlanSize();
+      const { onSelect } = renderPlan();
+      const before = viewBox();
+      press(screen.getByRole("button", { name: "A-01, Bin" }), -80, 40);
+      expect(viewBox()[0]).toBeGreaterThan(before[0] ?? 0);
+      expect(viewBox()[1]).toBeLessThan(before[1] ?? 0);
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it("does not open the location a drag began on when the browser still sends the click, and the next click works", () => {
+      stubPlanSize();
+      const { onSelect } = renderPlan();
+      const bin = screen.getByRole("button", { name: "A-01, Bin" });
+      press(bin, -80, 0);
+      fireEvent.click(bin);
+      expect(onSelect).not.toHaveBeenCalled();
+
+      press(bin, 0, 0);
+      fireEvent.click(bin);
+      expect(onSelect).toHaveBeenCalledTimes(1);
+      expect(onSelect).toHaveBeenCalledWith("bin-a");
+    });
+
+    it("does not let a drag that ended elsewhere swallow the next plain click on a location", () => {
+      stubPlanSize();
+      const { onSelect } = renderPlan();
+      const bin = screen.getByRole("button", { name: "A-02, Bin" });
+      press(bin, -80, 0);
+      // No click arrived for it (the browser sent it to the captured plan). A fresh press resets.
+      press(bin, 0, 0);
+      fireEvent.click(bin);
+      expect(onSelect).toHaveBeenCalledWith("bin-b");
+    });
+
+    it("treats a press that moves only a few pixels as a click, and does not pan", () => {
+      stubPlanSize();
+      const { onSelect } = renderPlan();
+      const before = viewBox();
+      const bin = screen.getByRole("button", { name: "A-01, Bin" });
+      press(bin, 3, 2);
+      fireEvent.click(bin);
+      expect(onSelect).toHaveBeenCalledWith("bin-a");
+      expect(viewBox()).toEqual(before);
+    });
+
+    it("ignores a drag with the right mouse button", () => {
+      stubPlanSize();
+      renderPlan();
+      const before = viewBox();
+      press(screen.getByRole("group", { name: "Floor plan of Ground" }), -80, 0, { ...MOUSE, button: 2 });
+      expect(viewBox()).toEqual(before);
+    });
+
+    it("keeps every location reachable and selectable from the keyboard", async () => {
+      const user = userEvent.setup();
+      const { onSelect } = renderPlan();
+      screen.getByRole("button", { name: "A-01, Bin" }).focus();
+      await user.keyboard("{Enter}");
+      expect(onSelect).toHaveBeenLastCalledWith("bin-a");
+      expect(screen.getByRole("button", { name: "A-01, Bin" }).getAttribute("tabindex")).toBe("0");
+    });
+  });
+
+  describe("skipping the plan", () => {
+    it("offers a skip link ahead of the plan's tab stops", () => {
+      renderPlan();
+      const skip = screen.getByRole("link", { name: "Skip the floor plan" });
+      const plan = screen.getByRole("group", { name: "Floor plan of Ground" });
+      const first = screen.getByRole("button", { name: "RACK-1, Rack" });
+      expect(skip.compareDocumentPosition(plan) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(skip.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("moves focus past every location to a note that says the plan has ended, without changing the address", async () => {
+      const user = userEvent.setup();
+      renderPlan();
+      const hash = window.location.hash;
+      await user.click(screen.getByRole("link", { name: "Skip the floor plan" }));
+      expect(document.activeElement?.textContent).toBe("End of the floor plan · 3 locations");
+      expect(document.activeElement?.closest("svg")).toBeNull();
+      expect(window.location.hash).toBe(hash);
+    });
+
+    it("is reached by Tab after the zoom controls and before the plan", async () => {
+      const user = userEvent.setup();
+      renderPlan();
+      await user.tab();
+      expect(document.activeElement?.getAttribute("aria-label")).toBe("Zoom in");
+      await user.tab();
+      await user.tab();
+      await user.tab();
+      expect(document.activeElement?.textContent).toBe("Skip the floor plan");
+      await user.tab();
+      expect(document.activeElement?.getAttribute("aria-label")).toBe("Floor plan of Ground");
+    });
+  });
+
   it("zooms with Ctrl and the wheel but leaves a plain wheel to the page", () => {
     renderPlan();
     const plan = screen.getByRole("group", { name: "Floor plan of Ground" });

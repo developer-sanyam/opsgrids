@@ -1,4 +1,4 @@
-import { Button, InlineAlert, Skeleton } from "@opsgrids/ui";
+import { Button, InlineAlert } from "@opsgrids/ui";
 
 import type { PutawaySuggestion, PutawaySuggestionReason } from "@/api/types";
 
@@ -16,9 +16,18 @@ interface PutawaySuggestedBinProps {
 /**
  * Where the system would put this stock. A suggestion is help, never a gate: if it can't be loaded
  * or there isn't one, the worker is told so and carries on by scanning whichever bin they chose.
+ * The one thing it does hold up is confirming while it is still being found (`PutawayForm`), so
+ * that the check against it is never skipped by being faster than the request.
  */
 export function PutawaySuggestedBin({ status, suggestion, onRetry }: PutawaySuggestedBinProps) {
-  if (status === "loading") return <Skeleton className="h-20 w-full rounded-tile" />;
+  if (status === "loading") {
+    // The same footprint the suggestion takes, so it doesn't push the bin field down when it lands.
+    return (
+      <div role="status" className="flex h-20 items-center rounded-tile bg-ground p-3 text-sm text-muted">
+        Finding a suggested bin…
+      </div>
+    );
+  }
 
   if (status === "error") {
     return (

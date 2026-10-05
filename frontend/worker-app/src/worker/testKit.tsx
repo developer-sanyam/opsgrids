@@ -184,6 +184,7 @@ export function makeStockRow(overrides: Partial<StockRowOut> = {}): StockRowOut 
     warehouse_code: "WH1",
     location_id: "loc-rcv-1",
     location_code: "RCV-01",
+    location_kind: "receiving",
     status: "AVAILABLE",
     lot_id: null,
     lot_no: null,

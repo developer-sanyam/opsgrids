@@ -1160,7 +1160,7 @@ export interface LayoutGeometryOut {
   walk_edges: WalkEdgeOut[];
 }
 
-/** One location on a floor's *published* layout (`GET /warehouse-floors/{id}/published-layout`).
+/** One location on a floor's *published* layout (`GET /operations/floors/{floor_id}/published-layout`).
  *  Millimetres throughout. `z_mm` / `height_mm` are `null` when the layout never set them. */
 export interface PublishedPlacementOut {
   location_id: string;

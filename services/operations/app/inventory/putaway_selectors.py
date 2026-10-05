@@ -136,7 +136,11 @@ def path_of(chain: Sequence[ChainNode]) -> str:
 
 
 def _walk_order() -> tuple[Any, ...]:
-    return (Location.pick_sequence.asc().nulls_last(), Location.code.asc())
+    """Pick sequence ascending with none last, then code. The code is ordered `COLLATE "C"` (plain
+    byte order, which for UTF-8 is code-point order) because `domain.suggest_putaway_bin` compares
+    codes as Python strings: under the database's locale collation the head of this query's
+    capped list would not be the head of the rule's order, and the cap would change the answer."""
+    return (Location.pick_sequence.asc().nulls_last(), Location.code.collate("C").asc())
 
 
 async def suggest_candidates(
@@ -150,7 +154,11 @@ async def suggest_candidates(
     """The bins `domain.suggest_putaway_bin` chooses among: up to `SUGGEST_CANDIDATE_CAP` storable
     bins already holding the item (this lot, when given) and as many empty ones, each in walk order.
     Two bounded queries rather than every bin in the warehouse — the rule only ever picks the first
-    of each category, so the cap bounds the work without changing the answer."""
+    of each category, so the cap bounds the work without changing the answer.
+
+    Only bins with a barcode are loaded, **in the query** and so before the cap: a put-away
+    resolves its destination by barcode alone, and filtering afterwards would let barcode-less bins
+    at the head of the walk fill the cap and hide every usable one."""
     holding_balance = (
         select(1)
         .select_from(InventoryBalance)
@@ -173,11 +181,15 @@ async def suggest_candidates(
             InventoryBalance.quantity_milli > 0,
         )
     )
-    base = select(Location.id, Location.code, Location.kind, Location.pick_sequence).where(
+    base = select(
+        Location.id, Location.code, Location.kind, Location.barcode, Location.pick_sequence
+    ).where(
         Location.organization_id == org_id,
         Location.warehouse_id == warehouse_id,
         Location.deleted_at.is_(None),
         Location.kind.in_(domain.STORABLE_KINDS),
+        Location.barcode.is_not(None),
+        Location.barcode != "",
     )
     holding = (
         await session.execute(
@@ -200,6 +212,7 @@ async def suggest_candidates(
                 location_id=row.id,
                 code=row.code,
                 kind=row.kind,
+                barcode=row.barcode,
                 pick_sequence=row.pick_sequence,
                 holds_item=is_holding,
                 is_empty=not is_holding,

@@ -5,7 +5,7 @@ import type { WarehouseIn, WarehouseOut, WarehousePatch } from "@/api/types";
 import { useMutation } from "@opsgrids/client";
 import { reportOnce } from "@/lib/clientReport";
 import { formDialogError } from "@/lib/formError";
-import { microToFieldText, parsePosition, positionOf } from "@/lib/geo";
+import { DEGREES_INPUT_PATTERN, microToFieldText, parsePosition, positionOf } from "@/lib/geo";
 import { getMapsApiKey } from "@/lib/mapsConfig";
 import type { PlaceSelection } from "@/maps/places";
 import { FormDialog, Skeleton, TextField } from "@/ui";
@@ -16,6 +16,18 @@ import { PanelBoundary } from "@/ui/PanelBoundary";
 const PlacesLookup = lazy(() => import("@/maps/PlacesLookup"));
 
 const CODE_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+// Not `inputMode="decimal"`: iOS's decimal keypad has no minus sign, and a site south of the
+// equator or west of the prime meridian cannot be typed on it. The text keyboard has one;
+// `parsePosition` is what checks what was typed.
+const DEGREES_INPUT = {
+  inputMode: "text",
+  pattern: DEGREES_INPUT_PATTERN,
+  autoComplete: "off",
+  autoCapitalize: "off",
+  autoCorrect: "off",
+  spellCheck: false,
+} as const;
 
 interface WarehouseFormDialogProps {
   /** `null` creates. */
@@ -185,10 +197,9 @@ export function WarehouseFormDialog({ warehouse, onClose, onSaved }: WarehouseFo
             label="Latitude"
             value={latText}
             onChange={(e) => setLatText(e.target.value)}
-            inputMode="decimal"
-            autoComplete="off"
+            {...DEGREES_INPUT}
             optional
-            helper="Degrees, between -90 and 90."
+            helper="Degrees, between -90 and 90. Use a minus sign for south."
             {...((latError ?? save.fieldErrors.lat_micro) !== undefined
               ? { error: latError ?? save.fieldErrors.lat_micro }
               : {})}
@@ -197,10 +208,9 @@ export function WarehouseFormDialog({ warehouse, onClose, onSaved }: WarehouseFo
             label="Longitude"
             value={lngText}
             onChange={(e) => setLngText(e.target.value)}
-            inputMode="decimal"
-            autoComplete="off"
+            {...DEGREES_INPUT}
             optional
-            helper="Degrees, between -180 and 180."
+            helper="Degrees, between -180 and 180. Use a minus sign for west."
             {...((lngError ?? save.fieldErrors.lng_micro) !== undefined
               ? { error: lngError ?? save.fieldErrors.lng_micro }
               : {})}

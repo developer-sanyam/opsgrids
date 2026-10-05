@@ -213,6 +213,56 @@ describe("putawayQueue", () => {
       expect(isPutawayQueuePersistent()).toBe(false);
     });
 
+    it("a write that fails does not leave the older copy behind to bring a synced entry back after a reload", () => {
+      const synced = enqueue();
+      const waiting = enqueue({ quantity: "6" });
+      expect(localStorage.getItem(STORAGE_KEY)).toContain(synced.idempotencyKey);
+      vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new DOMException("quota", "QuotaExceededError");
+      });
+
+      removePutaway(synced.idempotencyKey);
+
+      // The memory copy is the truth now, and it is right...
+      expect(getPutawayQueue()).toEqual([waiting]);
+      expect(isPutawayQueuePersistent()).toBe(false);
+      // ...while what is on disk is the queue from before the entry synced.
+      expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+    });
+
+    it("nor does it keep the GPS fix of an entry that was parked, or one that is gone, alive on disk", () => {
+      const parked = enqueue();
+      enqueue({ quantity: "6" });
+      vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new DOMException("quota", "QuotaExceededError");
+      });
+
+      parkPutaway(parked.idempotencyKey, { httpStatus: 409, message: "Reserved stock can't be moved." });
+
+      expect(getPutawayQueue()[0]?.body).not.toHaveProperty("lat_micro");
+      expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+    });
+
+    it("tries again to clear it on every later change, when removing it failed too", () => {
+      const first = enqueue();
+      const second = enqueue({ quantity: "6" });
+      const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new DOMException("quota", "QuotaExceededError");
+      });
+      const removeItem = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+        throw new DOMException("denied", "SecurityError");
+      });
+      removePutaway(first.idempotencyKey);
+      expect(localStorage.getItem(STORAGE_KEY)).toContain("12971599");
+
+      removeItem.mockRestore();
+      removePutaway(second.idempotencyKey);
+
+      expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+      expect(getPutawayQueue()).toEqual([]);
+      expect(setItem).toHaveBeenCalledTimes(1);
+    });
+
     it("purge clears memory and works again once storage does", () => {
       vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
         throw new Error("denied");

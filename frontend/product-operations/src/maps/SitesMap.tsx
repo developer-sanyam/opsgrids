@@ -24,9 +24,14 @@ interface Pin {
   position: { lat: number; lng: number };
 }
 
-/** A zoom that frames one warehouse's neighbourhood, for a map with a single pin. */
+/** A zoom that frames one warehouse's neighbourhood, for a map with a single pin or pins that sit
+ *  on top of each other. */
 const SINGLE_SITE_ZOOM = 13;
 const FRAME_PADDING_PX = 64;
+/** Sites closer than this on both axes (about a kilometre) are framed as one place. A bounds fit
+ *  around them would zoom in to street level, and around identical coordinates, which have no extent
+ *  at all, to a rooftop. */
+const NEARBY_SPAN_MICRO = 10_000;
 
 /**
  * The warehouses on a Google map, one pin each, with a popup of what the Operations team asks of a
@@ -56,14 +61,21 @@ export default function SitesMap({ apiKey, sites, selectedId, onSelect, onOpenFl
   const frame = useMemo(() => {
     if (pins.length === 0) return null;
     if (pins.length === 1) return { defaultCenter: pins[0]?.position ?? { lat: 0, lng: 0 }, defaultZoom: SINGLE_SITE_ZOOM };
-    const lats = pins.map((p) => p.position.lat);
-    const lngs = pins.map((p) => p.position.lng);
+    const lats = pins.map((p) => p.site.lat_micro);
+    const lngs = pins.map((p) => p.site.lng_micro);
+    const [north, south, east, west] = [Math.max(...lats), Math.min(...lats), Math.max(...lngs), Math.min(...lngs)];
+    if (north - south <= NEARBY_SPAN_MICRO && east - west <= NEARBY_SPAN_MICRO) {
+      return {
+        defaultCenter: { lat: microToDegrees((north + south) / 2), lng: microToDegrees((east + west) / 2) },
+        defaultZoom: SINGLE_SITE_ZOOM,
+      };
+    }
     return {
       defaultBounds: {
-        north: Math.max(...lats),
-        south: Math.min(...lats),
-        east: Math.max(...lngs),
-        west: Math.min(...lngs),
+        north: microToDegrees(north),
+        south: microToDegrees(south),
+        east: microToDegrees(east),
+        west: microToDegrees(west),
         padding: FRAME_PADDING_PX,
       },
     };

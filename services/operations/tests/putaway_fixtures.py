@@ -327,6 +327,7 @@ async def make_location(
     barcode: str | None = None,
     warehouse: uuid.UUID | None = None,
     parent_id: uuid.UUID | None = None,
+    pick_sequence: int | None = None,
 ) -> uuid.UUID:
     """Another location through the real service, in WH-WEAVE unless `warehouse` says otherwise."""
     async with session.begin():
@@ -347,6 +348,7 @@ async def make_location(
             name=code.title(),
             barcode=barcode,
             parent_id=str(parent_id) if parent_id else None,
+            pick_sequence=pick_sequence,
         )
         return loc.id
 

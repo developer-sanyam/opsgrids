@@ -45,6 +45,19 @@ export function hasAvailableStock(row: StockRowOut): boolean {
   return QTY_RE.test(row.available_qty) && qtyToMilli(row.available_qty) > 0;
 }
 
+/** Where storage put-away may start from (spec decision D1); the server refuses any other source. */
+const PUTAWAY_SOURCE_KINDS: ReadonlySet<string> = new Set(["receiving", "staging"]);
+
+/**
+ * Whether a bucket sits where a put-away can begin: a receiving or a staging bin, by the kind the
+ * server sent with the row — never a guess from what the bin's code looks like. A row with no kind
+ * (a server that predates the field) is not ruled out, because the app cannot tell: it is offered,
+ * and the server's own refusal is what enforces the rule.
+ */
+export function canPutAwayFrom(row: StockRowOut): boolean {
+  return row.location_kind == null || PUTAWAY_SOURCE_KINDS.has(row.location_kind);
+}
+
 export function stockLabel(row: StockRowOut): string {
   return `${row.sku} · ${row.item_name}`;
 }
@@ -191,7 +204,9 @@ export function warningNotice(warning: string): string | null {
     return "The server couldn't use your location reading, so it wasn't recorded.";
   }
   if (warning === "captured_at_adjusted") {
-    return "Your phone's clock looks off, so the server recorded its own time for this put-away.";
+    // Not the phone's fault by assumption: the server also replaces a time over a week old, which is
+    // what a put-away that sat in the queue that long arrives with.
+    return "The time was adjusted by the server, so it recorded its own time for this put-away.";
   }
   if (warning === "geo_not_recorded") {
     return "Your location couldn't be saved. The put-away itself is recorded.";

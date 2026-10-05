@@ -4,7 +4,9 @@ import type { PublishedPlacementOut } from "@/api/types";
 import {
   DEFAULT_HEIGHT_MM,
   PLAN_MARGIN_MM,
+  MAX_HIGHLIGHT_IDS,
   normalizePlacements,
+  parseHighlight,
   parseHighlightIds,
   placementsToSceneNodes,
   planBox,
@@ -146,6 +148,21 @@ describe("parseHighlightIds", () => {
   it("caps an absurd list rather than carrying it", () => {
     const many = Array.from({ length: 500 }, (_, i) => `id-${i}`).join(",");
     expect(parseHighlightIds(many)).toHaveLength(100);
+  });
+});
+
+describe("parseHighlight", () => {
+  it("keeps the first ids and reports how many the link carried, so a cap is never silent", () => {
+    const many = Array.from({ length: 250 }, (_, i) => `id-${i}`).join(",");
+    const parsed = parseHighlight(`${many},id-0, id-1`);
+    expect(parsed.ids).toHaveLength(MAX_HIGHLIGHT_IDS);
+    expect(parsed.ids[0]).toBe("id-0");
+    expect(parsed.total).toBe(250);
+  });
+
+  it("reports the plain count when nothing is dropped", () => {
+    expect(parseHighlight(" a, b ,a,, c ")).toEqual({ ids: ["a", "b", "c"], total: 3 });
+    expect(parseHighlight(null)).toEqual({ ids: [], total: 0 });
   });
 });
 

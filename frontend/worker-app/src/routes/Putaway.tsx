@@ -112,6 +112,10 @@ function PutawayForm({ stock, onDone }: { stock: AvailableStock; onDone: (comple
   );
   const suggestion = suggestionState.status === "success" ? (suggestionState.data?.suggestion ?? null) : null;
   const differsFromSuggestion = suggestion !== null && bin !== null && !matchesSuggestion(bin, suggestion);
+  // A put-away goes out with the suggestion it was checked against, so it waits for the request to
+  // settle — loaded, or failed (then it goes without one, and the worker has been told so). Without
+  // this a scan that beats a slow suggestion confirms with no amber check and no `suggested_location_id`.
+  const waitingForSuggestion = suggestionState.status === "loading";
 
   function select(row: StockRowOut) {
     setSelected(row);
@@ -122,7 +126,7 @@ function PutawayForm({ stock, onDone }: { stock: AvailableStock; onDone: (comple
   }
 
   async function confirm() {
-    if (!selected || bin === null || busy.current) return;
+    if (!selected || bin === null || busy.current || waitingForSuggestion) return;
     const problem = quantityProblem(quantity, selected.available_qty, selected.uom);
     if (problem) {
       setQuantityError(problem);
@@ -230,14 +234,16 @@ function PutawayForm({ stock, onDone }: { stock: AvailableStock; onDone: (comple
             {failure ? <InlineAlert tone="danger" title={failure} /> : null}
 
             {bin !== null ? (
-              <Button onClick={() => void confirm()} loading={phase !== "idle"}>
+              <Button onClick={() => void confirm()} loading={phase !== "idle" || waitingForSuggestion}>
                 {phase === "locating"
                   ? "Getting your location…"
                   : phase === "saving"
                     ? "Saving…"
-                    : differsFromSuggestion
-                      ? "Put away here anyway"
-                      : "Put away"}
+                    : waitingForSuggestion
+                      ? "Waiting for the suggested bin…"
+                      : differsFromSuggestion
+                        ? "Put away here anyway"
+                        : "Put away"}
               </Button>
             ) : null}
           </Card>

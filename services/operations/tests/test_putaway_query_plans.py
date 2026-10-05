@@ -270,6 +270,82 @@ async def test_the_warehouse_map_count_probes_each_bin_and_neither_scans_nor_sor
     assert "Sort" not in node_types(nodes), node_types(nodes)
 
 
+async def explain_as_admin(sql: str) -> list[dict[str, Any]]:
+    """The plan's nodes as the **owner** role the purge tool runs as: BYPASSRLS, no tenant bound,
+    so — unlike `explain` — no RLS qual in the query. The purge is cross-tenant by design."""
+    engine = create_async_engine(settings().admin_dsn, connect_args=_connect_args())
+    try:
+        async with engine.begin() as conn:
+            raw = (await conn.execute(text(f"EXPLAIN (FORMAT JSON) {sql}"))).scalar_one()
+    finally:
+        await engine.dispose()
+    return _walk(raw if isinstance(raw, list) else json.loads(raw))
+
+
+@pytest.fixture
+async def with_expired_captures(at_scale):  # type: ignore[no-untyped-def]
+    """`at_scale` plus 2% of its captures aged past the 30-day retention (as the owner role: the
+    app role cannot `UPDATE` the append-only table) — what a purge finds in production, a small
+    expired tail on a table that is otherwise live. `ANALYZE`d so the planner knows."""
+    admin = create_async_engine(settings().admin_dsn, connect_args=_connect_args())
+    try:
+        async with admin.begin() as conn:
+            await conn.execute(
+                text(
+                    f"UPDATE {SCHEMA}.putaway_captures SET created_at = now() - interval '45 days' "
+                    f"WHERE id IN (SELECT id FROM {SCHEMA}.putaway_captures LIMIT {CAPTURES // 50})"
+                )
+            )
+            await conn.execute(text(f"ANALYZE {SCHEMA}.putaway_captures"))
+    finally:
+        await admin.dispose()
+    return at_scale
+
+
+async def test_the_retention_purge_finds_expired_captures_through_the_creation_time_index(
+    with_expired_captures,
+) -> None:
+    """`tools/purge_putaway_captures.py`'s statements, as that tool issues them: the dry run's
+    per-organization count and an `--apply` batch's selection of ids (`ORDER BY created_at, id
+    LIMIT`), both cut on `created_at` and both cross-tenant. Neither may read the whole table: the
+    dry run would otherwise be a full scan on every look, and each batch of a long backlog another.
+
+    The batch's `DELETE ... WHERE id IN (<that selection>)` is checked for the index too, but not
+    for a sequential scan: at this table size the planner joins the selection to the whole target
+    table by hash, which is the planner's call about the *outer* statement, not something an index
+    on `created_at` governs."""
+    cutoff = "now() - interval '30 days'"
+    dry_run = (
+        f"SELECT organization_id, count(*), count(*) FILTER (WHERE lat_micro IS NOT NULL) "
+        f"FROM {SCHEMA}.putaway_captures WHERE created_at < {cutoff} GROUP BY organization_id"
+    )
+    selection = (
+        f"SELECT id FROM {SCHEMA}.putaway_captures WHERE created_at < {cutoff} "
+        f"ORDER BY created_at, id LIMIT 5000"
+    )
+    batch = (
+        f"DELETE FROM {SCHEMA}.putaway_captures WHERE id IN ({selection}) RETURNING organization_id"
+    )
+    for sql in (dry_run, selection, batch):
+        nodes = await explain_as_admin(sql)
+        shape = [(n["Node Type"], n.get("Relation Name"), n.get("Index Name")) for n in nodes]
+        assert "ix_putaway_captures_created_at" in indexes_used(nodes), (sql, shape)
+        if sql is not batch:
+            assert "putaway_captures" not in seq_scans(nodes), (sql, shape)
+
+
+async def test_without_a_creation_time_index_the_purge_statements_scan_the_table(
+    at_scale,
+) -> None:
+    """The control for the test above: a statement the tenant-leading indexes cannot serve — the
+    same cut on a column nothing indexes — is reported as the sequential scan it is."""
+    nodes = await explain_as_admin(
+        f"SELECT count(*) FROM {SCHEMA}.putaway_captures "
+        "WHERE captured_at < now() - interval '30 days'"
+    )
+    assert "putaway_captures" in seq_scans(nodes), seq_scans(nodes)
+
+
 async def test_the_count_distinct_shape_the_map_replaced_trips_those_guards(at_scale) -> None:
     """The control for the test above: the old statement is a sequential scan of every balance and
     a sort, so the guard would have caught it."""

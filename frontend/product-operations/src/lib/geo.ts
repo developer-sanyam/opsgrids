@@ -56,6 +56,16 @@ export function positionOf(source: {
 }
 
 const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
+/** The minus sign a coordinate carries when it is copied from a web page rather than typed. */
+const TYPOGRAPHIC_MINUS = "\u2212";
+
+/**
+ * The `pattern` for a degrees field: an optional sign, then digits with an optional fraction. It
+ * says what `parseCoordinate` accepts, for assistive technology and for the page's own `:invalid`
+ * styling; the dialog is `noValidate`, so the sentence on the field comes from `parseCoordinate`.
+ * Escaped `\-` and no bare class edge, so it is also valid in the browsers' `v`-flag mode.
+ */
+export const DEGREES_INPUT_PATTERN = `[+\\-${TYPOGRAPHIC_MINUS}]?(?:\\d+\\.?\\d*|\\.\\d+)`;
 
 export type ParsedCoordinate =
   | { kind: "empty" }
@@ -64,7 +74,7 @@ export type ParsedCoordinate =
 
 /** One coordinate field's text: blank, a valid value, or the sentence to put on the field. */
 export function parseCoordinate(text: string, axis: Axis): ParsedCoordinate {
-  const trimmed = text.trim();
+  const trimmed = text.trim().replace(TYPOGRAPHIC_MINUS, "-");
   if (trimmed === "") return { kind: "empty" };
   if (!DECIMAL.test(trimmed)) {
     return {

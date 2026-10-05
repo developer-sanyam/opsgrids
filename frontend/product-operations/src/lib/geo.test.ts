@@ -78,6 +78,11 @@ describe("parseCoordinate", () => {
     expect(parseCoordinate(".5", "lat")).toEqual({ kind: "value", micro: 500_000 });
   });
 
+  it("reads the typographic minus sign a coordinate carries when it is copied from a web page", () => {
+    expect(parseCoordinate("−33.8688", "lat")).toEqual({ kind: "value", micro: -33_868_800 });
+    expect(parseCoordinate("−−5", "lat").kind).toBe("error");
+  });
+
   it("refuses text that is not a plain decimal", () => {
     for (const text of ["abc", "1e3", "19,07", "19.0.1", "NaN", "Infinity", "--5"]) {
       expect(parseCoordinate(text, "lat").kind).toBe("error");

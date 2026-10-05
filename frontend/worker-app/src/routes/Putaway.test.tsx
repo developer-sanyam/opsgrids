@@ -59,7 +59,7 @@ function gateway(overrides: Record<string, Answer> = {}) {
 const posts = (calls: Call[]) => calls.filter((call) => call.key === PUTAWAY);
 
 async function pickStock(user: UserEvent) {
-  await user.click(await screen.findByRole("radio", { name: /SKU-100/ }));
+  await user.click(await screen.findByRole("button", { name: /SKU-100/ }));
 }
 
 async function enterBin(user: UserEvent, label: string) {
@@ -138,7 +138,7 @@ describe("PutawayPage", () => {
       const { calls } = gateway();
       renderPutaway();
 
-      await screen.findByRole("radio", { name: /SKU-100/ });
+      await screen.findByRole("button", { name: /SKU-100/ });
 
       const stock = calls.find((call) => call.key === STOCK);
       expect(stock?.search.get("status")).toBe("AVAILABLE");
@@ -210,7 +210,7 @@ describe("PutawayPage", () => {
       await confirm(user);
       await user.click(await screen.findByRole("button", { name: "Put away more" }));
 
-      expect(await screen.findByRole("radio", { name: /SKU-100/ })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: /SKU-100/ })).toBeTruthy();
       expect(calls.filter((call) => call.key === STOCK)).toHaveLength(2);
     });
 
@@ -405,6 +405,90 @@ describe("PutawayPage", () => {
       expect(await screen.findByText("Suggested bin")).toBeTruthy();
       expect(screen.getByText("A-01-03")).toBeTruthy();
     });
+
+    describe("a put-away waits for the suggestion to settle", () => {
+      /** A suggestion request that stays open until the test answers it. */
+      function slowSuggestion() {
+        let answer: ((response: Response) => void) | undefined;
+        const answered = new Promise<Response>((resolve) => {
+          answer = resolve;
+        });
+        return { answered, answer: (response: Response) => answer?.(response) };
+      }
+
+      it("cannot be confirmed while the suggestion is still being found, and says why", async () => {
+        const slow = slowSuggestion();
+        const { calls } = gateway({ [SUGGEST]: () => slow.answered });
+        const user = userEvent.setup();
+        renderPutaway();
+        await pickStock(user);
+        await enterBin(user, "B-02-01");
+
+        expect(screen.getByText("Finding a suggested bin…")).toBeTruthy();
+        const held = await screen.findByRole("button", { name: "Waiting for the suggested bin…" });
+        expect((held as HTMLButtonElement).disabled).toBe(true);
+        await user.click(held);
+        expect(posts(calls)).toHaveLength(0);
+        expect(screen.queryByRole("button", { name: "Put away" })).toBeNull();
+
+        slow.answer(json({ suggestion: makeSuggestion() }));
+
+        // The amber check is not skipped: the bin differs and the worker is asked to confirm it.
+        expect(await screen.findByText("That isn't the suggested bin")).toBeTruthy();
+        expect(screen.queryByText("Finding a suggested bin…")).toBeNull();
+        await confirm(user, "Put away here anyway");
+        await screen.findByText("Put away recorded");
+        expect(posts(calls)[0]?.body).toMatchObject({ to_barcode: "B-02-01", suggested_location_id: "loc-bin-1" });
+      });
+
+      it("is released, with no suggestion sent, when the suggestion fails", async () => {
+        const slow = slowSuggestion();
+        const { calls } = gateway({ [SUGGEST]: () => slow.answered });
+        const user = userEvent.setup();
+        renderPutaway();
+        await pickStock(user);
+        await enterBin(user, "B-02-01");
+        expect(await screen.findByRole("button", { name: "Waiting for the suggested bin…" })).toBeTruthy();
+
+        slow.answer(problem(500, "Suggestions are down"));
+
+        expect(await screen.findByText("Couldn't load a bin suggestion")).toBeTruthy();
+        await confirm(user);
+        await screen.findByText("Put away recorded");
+        expect(posts(calls)[0]?.body).not.toHaveProperty("suggested_location_id");
+      });
+
+      it("is held again while Try again looks for the suggestion a second time", async () => {
+        let attempts = 0;
+        const second = slowSuggestion();
+        gateway({
+          [SUGGEST]: () => {
+            attempts += 1;
+            return attempts === 1 ? problem(500, "down") : second.answered;
+          },
+        });
+        const user = userEvent.setup();
+        renderPutaway();
+        await pickStock(user);
+        await enterBin(user, "A-01-03");
+        await user.click(await screen.findByRole("button", { name: "Try again" }));
+
+        expect(await screen.findByRole("button", { name: "Waiting for the suggested bin…" })).toBeTruthy();
+        second.answer(json({ suggestion: makeSuggestion() }));
+        expect(await screen.findByRole("button", { name: "Put away" })).toBeTruthy();
+      });
+
+      it("a worker who scanned nothing yet sees the same plain note, and no put-away button", async () => {
+        const slow = slowSuggestion();
+        gateway({ [SUGGEST]: () => slow.answered });
+        const user = userEvent.setup();
+        renderPutaway();
+        await pickStock(user);
+
+        expect(await screen.findByText("Finding a suggested bin…")).toBeTruthy();
+        expect(screen.queryByRole("button", { name: /Put away|Waiting for the suggested bin/ })).toBeNull();
+      });
+    });
   });
 
   describe("quantity", () => {
@@ -512,7 +596,8 @@ describe("PutawayPage", () => {
       await confirm(user);
 
       expect(await screen.findByText(/couldn't use your location reading/)).toBeTruthy();
-      expect(screen.getByText(/phone's clock looks off/)).toBeTruthy();
+      expect(screen.getByText(/time was adjusted by the server/)).toBeTruthy();
+      expect(screen.queryByText(/phone's clock/)).toBeNull();
       expect(screen.getByText(/location couldn't be saved/)).toBeTruthy();
       expect(screen.queryByText(/a_future_code/)).toBeNull();
       expect(screen.getByText("Put away recorded")).toBeTruthy();
@@ -616,7 +701,7 @@ describe("PutawayPage", () => {
 
       await user.click(screen.getByRole("button", { name: "Put away more" }));
 
-      expect(await screen.findByRole("radio", { name: /SKU-100/ })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: /SKU-100/ })).toBeTruthy();
       expect(screen.getByText(/15 m available/)).toBeTruthy();
       expect(screen.queryByText("Couldn't load stock")).toBeNull();
       expect(calls.filter((call) => call.key === STOCK)).toHaveLength(1);
@@ -640,13 +725,13 @@ describe("PutawayPage", () => {
       await user.click(screen.getByRole("button", { name: "Put away more" }));
 
       expect(await screen.findByText("Couldn't refresh the stock list")).toBeTruthy();
-      expect(screen.getByRole("radio", { name: /SKU-100/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /SKU-100/ })).toBeTruthy();
       expect(screen.getByText(/15 m available/)).toBeTruthy();
 
       await user.click(screen.getByRole("button", { name: "Refresh" }));
 
       await waitFor(() => expect(screen.queryByText("Couldn't refresh the stock list")).toBeNull());
-      expect(screen.getByRole("radio", { name: /SKU-100/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /SKU-100/ })).toBeTruthy();
     });
 
     it("stock already waiting to sync is not offered at full quantity again, even when the list loads fine", async () => {
@@ -718,7 +803,7 @@ describe("PutawayPage", () => {
       const { calls } = gateway();
       renderPutaway();
 
-      await screen.findByRole("radio", { name: /SKU-100/ });
+      await screen.findByRole("button", { name: /SKU-100/ });
 
       expect(posts(calls)).toHaveLength(0);
       expect(screen.queryByText(/waiting to sync/)).toBeNull();
@@ -840,6 +925,51 @@ describe("PutawayPage", () => {
       expect(await screen.findByText(detail)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Put away" })).toBeTruthy();
       expect(getPutawayQueue()).toEqual([]);
+    });
+  });
+
+  describe("a 422 from the schema, not from a rule", () => {
+    function schemaRefusal(errors: { field: string; code: string; message: string }[]): Response {
+      return json(
+        {
+          type: "https://errors.opsgrids.dev/validation",
+          title: "Validation failed",
+          status: 422,
+          detail: "Request payload failed validation",
+          errors,
+        },
+        422,
+      );
+    }
+
+    it("shows what the server said was wrong with the field, not 'Request payload failed validation'", async () => {
+      gateway({
+        [PUTAWAY]: () =>
+          schemaRefusal([{ field: "quantity", code: "decimal_max_places", message: "Decimal input should have no more than 3 decimal places" }]),
+      });
+      const user = userEvent.setup();
+      renderPutaway();
+      await pickStock(user);
+      await enterBin(user, "A-01-03");
+      await confirm(user);
+
+      expect(await screen.findByText("Quantity: Decimal input should have no more than 3 decimal places")).toBeTruthy();
+      expect(screen.queryByText(/Request payload failed validation/)).toBeNull();
+      expect(getPutawayQueue()).toEqual([]);
+    });
+
+    it("still tells a worker whose phone is a day ahead about the phone's date", async () => {
+      gateway({
+        [PUTAWAY]: () =>
+          schemaRefusal([{ field: "occurred_on", code: "value_error", message: "Value error, occurred_on cannot be in the future" }]),
+      });
+      const user = userEvent.setup();
+      renderPutaway();
+      await pickStock(user);
+      await enterBin(user, "A-01-03");
+      await confirm(user);
+
+      expect(await screen.findByText(/The date on this phone is ahead of the server's/)).toBeTruthy();
     });
   });
 
@@ -1007,18 +1137,18 @@ describe("PutawayPage", () => {
       const user = userEvent.setup();
       renderPutaway();
 
-      await screen.findByRole("radio", { name: /SKU-100/ });
+      await screen.findByRole("button", { name: /SKU-100/ });
       await user.type(screen.getByLabelText("Find stock"), "r-55");
 
-      expect(screen.queryByRole("radio", { name: /SKU-100/ })).toBeNull();
-      expect(screen.getByRole("radio", { name: /SKU-200/ })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /SKU-100/ })).toBeNull();
+      expect(screen.getByRole("button", { name: /SKU-200/ })).toBeTruthy();
     });
 
     it("says so when nothing matches", async () => {
       gateway();
       const user = userEvent.setup();
       renderPutaway();
-      await screen.findByRole("radio", { name: /SKU-100/ });
+      await screen.findByRole("button", { name: /SKU-100/ });
       await user.type(screen.getByLabelText("Find stock"), "zzz");
 
       expect(screen.getByText(/Nothing matches that/)).toBeTruthy();
@@ -1037,8 +1167,163 @@ describe("PutawayPage", () => {
       });
       renderPutaway();
 
-      await screen.findByRole("radio", { name: /SKU-100/ });
-      expect(screen.queryByRole("radio", { name: /SKU-RESERVED/ })).toBeNull();
+      await screen.findByRole("button", { name: /SKU-100/ });
+      expect(screen.queryByRole("button", { name: /SKU-RESERVED/ })).toBeNull();
+    });
+
+    describe("only stock in a receiving or staging bin", () => {
+      const stockOf = (...rows: ReturnType<typeof makeStockRow>[]) => ({
+        [STOCK]: () => json({ items: rows, next_cursor: null }),
+      });
+
+      it("offers a receiving bin's stock and a staging bin's, and leaves out stock sitting anywhere else", async () => {
+        gateway(
+          stockOf(
+            makeStockRow({ id: "r", sku: "SKU-RCV", location_kind: "receiving" }),
+            makeStockRow({ id: "s", sku: "SKU-STG", location_kind: "staging" }),
+            makeStockRow({ id: "b", sku: "SKU-BIN", location_kind: "bin" }),
+            makeStockRow({ id: "h", sku: "SKU-SHELF", location_kind: "shelf" }),
+            makeStockRow({ id: "q", sku: "SKU-QUAR", location_kind: "quarantine" }),
+          ),
+        );
+        renderPutaway();
+
+        await screen.findByRole("button", { name: /SKU-RCV/ });
+        expect(screen.getByRole("button", { name: /SKU-STG/ })).toBeTruthy();
+        expect(screen.queryByRole("button", { name: /SKU-BIN/ })).toBeNull();
+        expect(screen.queryByRole("button", { name: /SKU-SHELF/ })).toBeNull();
+        expect(screen.queryByRole("button", { name: /SKU-QUAR/ })).toBeNull();
+      });
+
+      it("goes by the kind, not by what the bin's code looks like", async () => {
+        gateway(
+          stockOf(
+            makeStockRow({ id: "a", sku: "SKU-LOOKS-RCV", location_code: "RCV-77", location_kind: "bin" }),
+            makeStockRow({ id: "b", sku: "SKU-PLAIN", location_code: "A-01-03", location_kind: "receiving" }),
+          ),
+        );
+        renderPutaway();
+
+        await screen.findByRole("button", { name: /SKU-PLAIN/ });
+        expect(screen.queryByRole("button", { name: /SKU-LOOKS-RCV/ })).toBeNull();
+      });
+
+      it("stock that is all somewhere else is an empty state that says where put-away starts and what moves it instead", async () => {
+        gateway(stockOf(makeStockRow({ sku: "SKU-BIN", location_kind: "bin" })));
+        renderPutaway();
+
+        expect(await screen.findByText("No stock in receiving or staging")).toBeTruthy();
+        expect(screen.getByText(/Put-away starts from receiving or staging bins/)).toBeTruthy();
+        expect(screen.getByText(/moved with a bin transfer/)).toBeTruthy();
+        expect(screen.queryByRole("button", { name: /SKU-BIN/ })).toBeNull();
+        // It is not the empty state for a warehouse with no stock at all.
+        expect(screen.queryByText("No stock to put away")).toBeNull();
+      });
+
+      it("an empty list keeps its own, different, empty state", async () => {
+        gateway(stockOf());
+        renderPutaway();
+
+        expect(await screen.findByText("No stock to put away")).toBeTruthy();
+        expect(screen.queryByText("No stock in receiving or staging")).toBeNull();
+      });
+
+      it("a row with no kind (a server that predates it) is still offered, and the server's 422 still has the last word", async () => {
+        const { calls } = gateway({
+          ...stockOf(
+            makeStockRow({ id: "n", sku: "SKU-NULL", location_kind: null }),
+            makeStockRow({ id: "u", sku: "SKU-ABSENT", location_kind: undefined }),
+          ),
+          [PUTAWAY]: () => problem(422, "Storage put-away takes stock from a receiving or staging bin"),
+        });
+        const user = userEvent.setup();
+        renderPutaway();
+
+        await screen.findByRole("button", { name: /SKU-ABSENT/ });
+        await user.click(screen.getByRole("button", { name: /SKU-NULL/ }));
+        await enterBin(user, "A-01-03");
+        await confirm(user);
+
+        expect(await screen.findByText("Storage put-away takes stock from a receiving or staging bin")).toBeTruthy();
+        expect(posts(calls)).toHaveLength(1);
+      });
+
+      it("while more stock can be loaded, a first page with nothing eligible does not claim there is none", async () => {
+        gateway({
+          [STOCK]: (call) =>
+            call.search.get("cursor") === "next-page"
+              ? json({ items: [makeStockRow({ id: "r", sku: "SKU-RCV" })], next_cursor: null })
+              : json({ items: [makeStockRow({ id: "b", sku: "SKU-BIN", location_kind: "bin" })], next_cursor: "next-page" }),
+        });
+        const user = userEvent.setup();
+        renderPutaway();
+
+        expect(await screen.findByText(/Nothing in the stock loaded so far is in a receiving or staging bin/)).toBeTruthy();
+        expect(screen.queryByText("No stock in receiving or staging")).toBeNull();
+
+        await user.click(screen.getByRole("button", { name: "Load more stock" }));
+
+        expect(await screen.findByRole("button", { name: /SKU-RCV/ })).toBeTruthy();
+      });
+    });
+
+    describe("by keyboard", () => {
+      const TWO_ROWS = {
+        [STOCK]: () =>
+          json({
+            items: [
+              makeStockRow({ id: "a", sku: "SKU-100", item_name: "Cotton roll" }),
+              makeStockRow({ id: "b", sku: "SKU-200", item_name: "Denim" }),
+            ],
+            next_cursor: null,
+          }),
+      };
+
+      it("the arrow keys browse the list without choosing anything", async () => {
+        gateway(TWO_ROWS);
+        const user = userEvent.setup();
+        renderPutaway();
+        const first = await screen.findByRole("button", { name: /SKU-100/ });
+        first.focus();
+
+        await user.keyboard("{ArrowDown}{ArrowDown}{ArrowUp}{ArrowRight}{ArrowLeft}");
+
+        expect(screen.queryByLabelText(/Quantity to put away/)).toBeNull();
+        expect(screen.getByLabelText("Find stock")).toBeTruthy();
+        expect(screen.getByRole("button", { name: /SKU-200/ })).toBeTruthy();
+      });
+
+      it("Tab moves through the rows, and nothing is chosen until Enter", async () => {
+        gateway(TWO_ROWS);
+        const user = userEvent.setup();
+        renderPutaway();
+        await screen.findByRole("button", { name: /SKU-100/ });
+
+        await user.tab(); // the search field
+        await user.tab(); // the first row
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: /SKU-100/ }));
+        await user.tab(); // the second
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: /SKU-200/ }));
+        expect(screen.queryByLabelText(/Quantity to put away/)).toBeNull();
+
+        await user.keyboard("{Enter}");
+
+        expect(await screen.findByLabelText(/Quantity to put away/)).toBeTruthy();
+        expect(screen.getByText("SKU-200 · Denim")).toBeTruthy();
+      });
+
+      it("Space chooses the row that has focus, too", async () => {
+        gateway(TWO_ROWS);
+        const user = userEvent.setup();
+        renderPutaway();
+        const second = await screen.findByRole("button", { name: /SKU-200/ });
+        second.focus();
+
+        await user.keyboard(" ");
+
+        expect(await screen.findByLabelText(/Quantity to put away/)).toBeTruthy();
+        expect(screen.getByText("SKU-200 · Denim")).toBeTruthy();
+      });
     });
 
     it("pages on with the server's cursor, appending, and only while there is more", async () => {
@@ -1051,11 +1336,11 @@ describe("PutawayPage", () => {
       const user = userEvent.setup();
       renderPutaway();
 
-      await screen.findByRole("radio", { name: /SKU-100/ });
+      await screen.findByRole("button", { name: /SKU-100/ });
       await user.click(screen.getByRole("button", { name: "Load more stock" }));
 
-      expect(await screen.findByRole("radio", { name: /SKU-200/ })).toBeTruthy();
-      expect(screen.getByRole("radio", { name: /SKU-100/ })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: /SKU-200/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /SKU-100/ })).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Load more stock" })).toBeNull();
       expect(calls.filter((call) => call.key === STOCK).map((call) => call.search.get("cursor"))).toEqual([null, "next-page"]);
     });
@@ -1082,7 +1367,7 @@ describe("PutawayPage", () => {
       expect(screen.getByText("Stock is unavailable right now.")).toBeTruthy();
       await user.click(screen.getByRole("button", { name: "Try again" }));
 
-      expect(await screen.findByRole("radio", { name: /SKU-100/ })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: /SKU-100/ })).toBeTruthy();
     });
 
     it("Change goes back to the list", async () => {
@@ -1093,7 +1378,7 @@ describe("PutawayPage", () => {
 
       await user.click(await screen.findByRole("button", { name: "Change stock" }));
 
-      expect(await screen.findByRole("radio", { name: /SKU-100/ })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: /SKU-100/ })).toBeTruthy();
     });
   });
 
@@ -1147,7 +1432,7 @@ describe("PutawayPage", () => {
       gateway();
       renderPutaway();
 
-      await screen.findByRole("radio", { name: /SKU-100/ });
+      await screen.findByRole("button", { name: /SKU-100/ });
 
       expect(document.activeElement).toBe(document.body);
     });

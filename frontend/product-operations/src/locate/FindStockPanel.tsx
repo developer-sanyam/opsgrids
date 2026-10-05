@@ -1,16 +1,17 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { locateStock } from "@/api/tracking";
 import type { LocateOut, LocateResultOut } from "@/api/trackingTypes";
 import { LOCATION_KIND_LABEL } from "@/data/locationKinds";
 import { formatNumber } from "@/lib/format";
-import { autoArrangedHref, floorViewHref, groupLocateResults, highlightIdFor, mapHref, placementNote } from "@/lib/locate";
+import { autoArrangedHref, countBins, floorViewHref, groupLocateResults, highlightIdsFor, placementNote } from "@/lib/locate";
 import type { FloorGroup, WarehouseGroup } from "@/lib/locate";
+import { mapsEnabled } from "@/lib/mapsConfig";
 import { formatQty } from "@/lib/quantity";
 import { STOCK_STATUS_LABEL } from "@/lib/trackingLabels";
 import { problemMessage, useAsync } from "@opsgrids/client";
-import { Button, Card, EmptyState, ErrorState, SectionHeader, Skeleton, Tag } from "@/ui";
+import { Button, Card, EmptyState, ErrorState, InlineAlert, SectionHeader, Skeleton, Tag } from "@/ui";
 import { PanelBoundary } from "@/ui/PanelBoundary";
 import { useSlowLoad } from "@/lib/useSlowLoad";
 import { SlowLoadNotice } from "@/ui/SlowLoadNotice";
@@ -31,7 +32,9 @@ interface FindStockPanelProps {
 
 /**
  * "Where is it?" — which bins hold this item, lot or roll right now, grouped by warehouse and
- * floor, with a way to see each on its floor plan or its warehouse on the map.
+ * floor, with a way to see each on its floor plan. A bin is a row per status it holds stock in, and
+ * the counts here are of bins. The results do not say whether a warehouse has a position on the
+ * map, so in a build with a map "Show on map" is shown disabled, with that reason beside it.
  *
  * It looks only when asked, so a screen that mounts it pays nothing until someone clicks. It owns
  * its own request, its own error with a retry and its own slow-load note, and sits inside a boundary
@@ -59,13 +62,14 @@ function FindStock({ itemId, lotId, rollId, subject, uom }: FindStockPanelProps)
   const slow = useSlowLoad(searches > 0 && found.status === "loading");
   const ready = found.status === "success" ? found.data : null;
   const groups = ready ? groupLocateResults(ready.results) : [];
+  // The server answers one row per bin and status; people count bins.
+  const bins = ready ? countBins(ready.results) : 0;
 
   const announcement = (() => {
     if (searches === 0) return "";
     if (found.status === "loading") return "Looking for where it is stored…";
     if (!ready) return "";
     if (ready.results.length === 0) return "Nothing is stored anywhere right now.";
-    const bins = ready.results.length;
     return `Found in ${bins} location${bins === 1 ? "" : "s"} across ${groups.length} warehouse${groups.length === 1 ? "" : "s"}.`;
   })();
 
@@ -120,6 +124,11 @@ function FindStock({ itemId, lotId, rollId, subject, uom }: FindStockPanelProps)
       {ready && ready.results.length > 0 ? (
         <PanelBoundary title="The results">
           <div className="flex flex-col gap-6">
+            {ready.truncated ? (
+              <InlineAlert tone="warning" title={`Showing the first ${formatNumber(bins)} bins — narrow the search`}>
+                More bins hold this than can be listed at once. Open a single lot or roll to see where that part is held.
+              </InlineAlert>
+            ) : null}
             {groups.map((group) => (
               <WarehouseResults key={group.warehouseId} group={group} uom={uom} />
             ))}
@@ -131,6 +140,8 @@ function FindStock({ itemId, lotId, rollId, subject, uom }: FindStockPanelProps)
 }
 
 function WarehouseResults({ group, uom }: { group: WarehouseGroup; uom: string | undefined }) {
+  const hintId = useId();
+  const mapInBuild = mapsEnabled();
   return (
     <section aria-label={`Stock in ${group.warehouseName}`} className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -140,10 +151,17 @@ function WarehouseResults({ group, uom }: { group: WarehouseGroup; uom: string |
             · {formatNumber(group.resultCount)} location{group.resultCount === 1 ? "" : "s"}
           </span>
         </h3>
-        <Link to={mapHref(group.warehouseId)} className={`text-sm ${LINK}`}>
-          Show on map
-        </Link>
+        {mapInBuild ? (
+          <Button size="sm" variant="ghost" disabled aria-describedby={hintId}>
+            Show on map
+          </Button>
+        ) : null}
       </div>
+      {mapInBuild ? (
+        <p id={hintId} className="text-xs text-muted">
+          Not available from here: these results don&apos;t say whether {group.warehouseName} has a position on the map.
+        </p>
+      ) : null}
       {group.floors.map((floor) => (
         <FloorResults key={floor.floorId ?? "no-floor"} warehouseId={group.warehouseId} floor={floor} uom={uom} />
       ))}
@@ -153,7 +171,7 @@ function WarehouseResults({ group, uom }: { group: WarehouseGroup; uom: string |
 
 function FloorResults({ warehouseId, floor, uom }: { warehouseId: string; floor: FloorGroup; uom: string | undefined }) {
   const allOnFloor = floorViewHref(warehouseId, floor.floorId, floor.results);
-  const placedCount = floor.results.filter((r) => highlightIdFor(r) !== null).length;
+  const placedCount = highlightIdsFor(floor.results).length;
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -166,7 +184,8 @@ function FloorResults({ warehouseId, floor, uom }: { warehouseId: string; floor:
       </div>
       <ul className="flex flex-col gap-2">
         {floor.results.map((result) => (
-          <ResultRow key={result.location_id} warehouseId={warehouseId} result={result} uom={uom} />
+          // One row per bin and status, so the bin alone is not a unique key.
+          <ResultRow key={`${result.location_id}:${result.status}`} warehouseId={warehouseId} result={result} uom={uom} />
         ))}
       </ul>
     </div>

@@ -25,7 +25,7 @@
  *   is untouched and the pass stops; it syncs when the same person signs back in.
  */
 
-import { ApiError, fieldError, problemMessage } from "@opsgrids/client";
+import { ApiError, fieldError, fieldErrors, problemMessage } from "@opsgrids/client";
 
 import { postPutaway } from "@/api/client";
 import type { PutawayOut } from "@/api/types";
@@ -75,13 +75,34 @@ export interface DrainOptions {
   signal?: AbortSignal | undefined;
 }
 
-/** What to tell the worker about a refusal: the server's own sentence, except for a date after its
- *  own today. Only a phone whose clock is ahead can send one, and neither "occurred_on cannot be in
- *  the future" nor the generic "payload failed validation" the same response carries as its
- *  `detail` means anything to the person holding the phone. */
+/** The `detail` the platform gives a request that failed its schema before any rule ran
+ *  (`platform_core.errors`' `RequestValidationError` handler). A rule's own refusal carries a
+ *  sentence of its own there, so this is how the two are told apart: both are 422 and both are
+ *  `type: validation`. */
+const SCHEMA_REFUSAL_DETAIL = "Request payload failed validation";
+
+/** What a worker calls the fields they can get wrong. One with no entry is shown as the server
+ *  worded it. */
+const FIELD_LABELS: Record<string, string> = { quantity: "Quantity", to_barcode: "Bin label" };
+
+/** What to tell the worker about a refusal: the server's own sentence — except for a date after its
+ *  own today, which only a phone whose clock is ahead can send and which the server words for its
+ *  own developers, and a schema-level 422, whose generic `detail` says nothing about what to fix:
+ *  there the server's message for each field that failed is what is shown. */
 function refusalMessage(error: ApiError): string {
-  if (error.status === 422 && fieldError(error.problem, "occurred_on") !== undefined) {
-    return "The date on this phone is ahead of the server's. Fix the phone's date and time settings, then put it away again.";
+  if (error.status === 422) {
+    if (fieldError(error.problem, "occurred_on") !== undefined) {
+      return "The date on this phone is ahead of the server's. Fix the phone's date and time settings, then put it away again.";
+    }
+    if (error.problem?.detail === SCHEMA_REFUSAL_DETAIL) {
+      const messages = new Set(
+        fieldErrors(error.problem).map(({ field, message }) => {
+          const label = FIELD_LABELS[field];
+          return label === undefined ? message : `${label}: ${message}`;
+        }),
+      );
+      if (messages.size > 0) return [...messages].join("; ");
+    }
   }
   return problemMessage(error);
 }

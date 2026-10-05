@@ -43,6 +43,8 @@ pytestmark = pytest.mark.integration
 SERVICE_DIR = Path(__file__).resolve().parent.parent
 REV = "d7a3c9e5b184"  # pragma: allowlist secret
 ALLOW = {"OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE": "1"}
+#: The retention purge's index (`tools/purge_putaway_captures.py` filters on `created_at`).
+PURGE_INDEX = "ix_putaway_captures_created_at"
 #: What a TRUNCATE ... CASCADE needs named to empty everything the seeds below touch.
 TRUNCATE = (
     "putaway_captures",
@@ -337,6 +339,45 @@ class TestStructureAtHead:
             )
         assert columns in definition and ("UNIQUE" in definition) is unique, definition
 
+    async def test_the_retention_purge_has_an_index_on_the_creation_time(self, admin) -> None:
+        """`tools/purge_putaway_captures.py` counts and deletes `created_at < cutoff` across every
+        tenant, in batches ordered `created_at, id`. Every other index leads with the tenant and
+        none of them can serve that, so without this one each dry run and each batch of a long
+        backlog scans the whole table. It is deliberately not tenant-leading, and is the only
+        secondary index here that is not."""
+        async with admin.begin() as conn:
+            definition = await scalar(
+                conn,
+                "SELECT indexdef FROM pg_indexes WHERE schemaname = :s "
+                "AND tablename = 'putaway_captures' AND indexname = :i",
+                s=SCHEMA,
+                i=PURGE_INDEX,
+            )
+        assert "(created_at)" in definition and "UNIQUE" not in definition, definition
+
+    async def test_these_are_all_the_indexes_and_only_the_purge_one_is_not_tenant_leading(
+        self, admin
+    ) -> None:
+        async with admin.begin() as conn:
+            rows = (
+                await conn.execute(
+                    text(
+                        "SELECT indexname, indexdef FROM pg_indexes "
+                        "WHERE schemaname = :s AND tablename = 'putaway_captures'"
+                    ),
+                    {"s": SCHEMA},
+                )
+            ).all()
+        assert {r[0] for r in rows} == {
+            "pk_putaway_captures",
+            "ix_operations_putaway_captures_organization_id",
+            "uq_putaway_captures_org_move",
+            "ix_putaway_captures_org_location",
+            PURGE_INDEX,
+        }
+        not_tenant_leading = {r[0] for r in rows if "(organization_id" not in r[1]}
+        assert not_tenant_leading == {"pk_putaway_captures", PURGE_INDEX}
+
     async def test_row_level_security_is_enabled_and_forced_with_one_tenant_policy(
         self, admin
     ) -> None:
@@ -602,10 +643,16 @@ class TestDowngrade:
                 s=SCHEMA,
             )
             assert leftovers == 0
+            assert await scalar(conn, "SELECT to_regclass(:i)", i=f"{SCHEMA}.{PURGE_INDEX}") is None
         up = alembic("upgrade", "head")
         assert up.returncode == 0, up.stderr[-1500:]
         async with admin.begin() as conn:
             assert await current_revision(conn) == _script().get_current_head()
+            # The index comes back with the table it belongs to.
+            assert (
+                await scalar(conn, "SELECT to_regclass(:i)", i=f"{SCHEMA}.{PURGE_INDEX}")
+                is not None
+            )
 
     async def test_unplaced_warehouses_do_not_block_a_downgrade(self, admin) -> None:
         async with admin.begin() as conn:

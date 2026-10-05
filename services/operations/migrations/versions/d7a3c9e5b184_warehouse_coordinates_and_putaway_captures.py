@@ -12,7 +12,9 @@ The data half of "warehouse map, find-stock and storage put-away" (spec
    location of record; the fix is audit evidence behind its own permission and an audit row.
    `UPDATE`/`DELETE` are revoked from the app role (and re-revoked in `migrations/env.py` after
    every grant re-application); the 30-day purge is an admin-run procedure
-   (`tools/purge_putaway_captures.py`), not an in-app job.
+   (`tools/purge_putaway_captures.py`), not an in-app job, and `ix_putaway_captures_created_at`
+   keeps its dry run and its delete batches from scanning the table. It is the one secondary index
+   here that does not lead with `organization_id`: the purge is cross-tenant by design.
 
 `inventory_moves` is unchanged — its `reference_type` is a free `String(30)` with no CHECK, so
 `putaway` needs no DDL. In-schema foreign keys only (ADR-0000 §10: no cross-schema FKs), single
@@ -187,6 +189,15 @@ def upgrade() -> None:
         "ix_putaway_captures_org_location",
         "putaway_captures",
         ["organization_id", "location_id"],
+        schema=SCHEMA,
+    )
+    # The one secondary index that does not lead with the tenant: the 30-day purge
+    # (`tools/purge_putaway_captures.py`) counts and deletes `created_at < cutoff` across every
+    # organization at once, in batches ordered `created_at, id`. Nothing above can serve that.
+    op.create_index(
+        "ix_putaway_captures_created_at",
+        "putaway_captures",
+        ["created_at"],
         schema=SCHEMA,
     )
     _rls("putaway_captures")

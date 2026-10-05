@@ -34,6 +34,9 @@ export function Warehouse3DPage() {
   const [params, setParams] = useSearchParams();
   const floorId = params.get("floor") ?? "";
   const highlightSet = useMemo(() => new Set(parseHighlightIds(params.get("highlight"))), [params]);
+  // Find stock sends `why=unplaced` for a bin the server says is not on the published layout, so
+  // the auto-arranged banner can give that reason and not "no floor plan".
+  const highlightUnplaced = params.get("why") === "unplaced";
   const [bin, setBin] = useState<BinSummary | null>(null);
 
   const warehouseState = useAsync(() => getWarehouseById(id), [id]);
@@ -115,6 +118,7 @@ export function Warehouse3DPage() {
             floorId={floorId === "" ? null : floorId}
             published={published.status === "success" ? published.data : null}
             highlightIds={highlightSet}
+            highlightUnplaced={highlightUnplaced}
             selectedId={bin?.id ?? null}
             onSelect={setBin}
             unavailableAction={toList}

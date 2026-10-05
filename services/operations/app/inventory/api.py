@@ -122,6 +122,12 @@ PutawayIdempotencyKey = Annotated[
 ]
 
 
+#: The one `Cache-Control` value the reveal sends, shared with the `headers` its OpenAPI response
+#: documents so the contract cannot drift from the behaviour. A worker's position must not sit in a
+#: browser or proxy cache.
+NO_STORE = "no-store"
+
+
 def _was_explicit(payload: object) -> bool:
     """Whether the client sent `occurred_on`, or it is the parse-time default (kept out of the
     idempotency hash so a retry across midnight is still the same request)."""
@@ -562,6 +568,19 @@ async def change_stock_status(
     response_model=PutawayOut,
     status_code=status.HTTP_201_CREATED,
     summary="Store stock from a receiving or staging bin into the bin whose barcode was scanned",
+    responses={
+        200: {
+            "model": PutawayOut,
+            "description": (
+                "Replay: this `Idempotency-Key` already stored this put-away. The body is the "
+                "original receipt with `replayed: true` and no warnings, and nothing is stored "
+                "again: no second move, capture, audit row or event. The GPS fix, `captured_at` "
+                "and `suggested_location_id` are not part of what the key is compared on, so a "
+                "retry that differs only there is answered with the original; any other "
+                "difference is a 409."
+            ),
+        }
+    },
     dependencies=[Entitled],
 )
 async def putaway_stock(
@@ -605,6 +624,10 @@ async def suggest_putaway(
     warehouse_id: Annotated[uuid.UUID, Query()],
     lot_id: Annotated[uuid.UUID | None, Query()] = None,
 ) -> PutawaySuggestOut:
+    """A bin already holding the item (this lot, when given), else the first empty one, in a
+    picker's walk order (pick sequence, then code). Only bins with a barcode are offered, because a
+    put-away resolves its destination by barcode alone; when none qualifies the suggestion is
+    `null`."""
     org_id = ctx.organization_id
     await stock_ops.load_items(session, org_id, [inventory_item_id])
     if await inv_selectors.get_warehouse(session, org_id, warehouse_id) is None:
@@ -638,6 +661,20 @@ async def read_putaway(move_id: uuid.UUID, session: SessionDep, ctx: StockRead) 
     "/operations/inventory/putaway/{move_id}/location:reveal",
     response_model=PutawayLocationOut,
     summary="Reveal the GPS fix recorded with a put-away (audited every time)",
+    responses={
+        200: {
+            "description": (
+                "The fix recorded with the put-away (nulls when the device gave none). Every "
+                "successful call writes an audit row, and the response is never cacheable."
+            ),
+            "headers": {
+                "Cache-Control": {
+                    "description": "A worker's position must not sit in a browser or proxy cache.",
+                    "schema": {"type": "string", "enum": [NO_STORE]},
+                }
+            },
+        }
+    },
     dependencies=[Entitled],
 )
 async def reveal_putaway_location(
@@ -650,8 +687,7 @@ async def reveal_putaway_location(
     revealed = await putaway_services.reveal_putaway_location(
         session, ctx, move_id, request=request
     )
-    # A worker's position must not sit in a browser or proxy cache.
-    response.headers["Cache-Control"] = "no-store"
+    response.headers["Cache-Control"] = NO_STORE
     return revealed
 
 

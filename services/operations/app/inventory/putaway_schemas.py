@@ -120,9 +120,11 @@ class PutawayLocationOut(BaseModel):
 
 
 class PutawaySuggestionOut(BaseModel):
-    """The bin the server would store the item in. `barcode` is that bin's own scannable label
-    (`null` when it has none): a worker holds no `location.read`, so this is how the device
-    compares a scanned label with the suggestion; the caller already holds `stock.transfer`."""
+    """The bin the server would store the item in. `barcode` is that bin's own scannable label: a
+    worker holds no `location.read`, so this is how the device compares a scanned label with the
+    suggestion; the caller already holds `stock.transfer`. A bin with no barcode is never offered
+    (a put-away resolves its destination by barcode alone), so it is always set; the type stays
+    nullable for clients built against the earlier contract."""
 
     location_id: str
     code: str
@@ -133,7 +135,8 @@ class PutawaySuggestionOut(BaseModel):
 
 
 class PutawaySuggestOut(BaseModel):
-    """`GET /inventory/putaway/suggest` — `null` when the warehouse has no storable bin to offer."""
+    """`GET /inventory/putaway/suggest` — `null` when the warehouse has no storable bin to offer:
+    none is free, or none carries a barcode (a bin a scan cannot resolve is never suggested)."""
 
     suggestion: PutawaySuggestionOut | None
 

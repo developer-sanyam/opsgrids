@@ -220,7 +220,7 @@ data (multi-warehouse textile org).
 | `inventory.location.write`, `inventory.lot.write`, `inventory.roll.write` | |
 | `inventory.stock.read`, `inventory.stock.transfer`, `inventory.stock.receive`, `inventory.stock.issue`, `inventory.stock.reserve` | |
 | `inventory.stock.adjust`, `inventory.stocktake.approve`, `inventory.stock.negative_override` | ✔ |
-| `inventory.putaway.location_read` (a worker's GPS fix at put-away; ADMIN only; every reveal audited, ADR-0028) | ✔ |
+| `inventory.putaway.location_read` (a worker's GPS fix at put-away; ADMIN only; the route also needs a one-time-code session; every reveal audited, ADR-0028) | ✔ |
 | `inventory.data.import`, `inventory.data.export` | import ✔ |
 | `manufacturing.bom.read/write/publish`, `manufacturing.production_order.read/write/approve/issue/complete` | |
 | `quality.inspection.read/inspect/approve/reject` | |

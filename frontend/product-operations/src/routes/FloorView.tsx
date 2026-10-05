@@ -11,7 +11,7 @@ import { FloorSelect } from "@/floor/FloorSelect";
 import { SkippedPlacements } from "@/floor/SkippedPlacements";
 import { usePublishedLayout } from "@/floor/usePublishedLayout";
 import { reportOnce } from "@/lib/clientReport";
-import { normalizePlacements, parseHighlightIds, summarizeHighlight } from "@/lib/floorGeometry";
+import { MAX_HIGHLIGHT_IDS, normalizePlacements, parseHighlight, summarizeHighlight } from "@/lib/floorGeometry";
 import { Can, problemMessage, RequirePermission, useAsync } from "@opsgrids/client";
 import { Button, Card, EmptyState, ErrorState, PageHeader, Skeleton, Tabs } from "@/ui";
 import { PanelBoundary } from "@/ui/PanelBoundary";
@@ -24,7 +24,7 @@ type View = "2d" | "3d";
 
 /**
  * One floor, as it is published: a flat 2-D plan (the default, no WebGL needed) and a 3-D view, both
- * drawn from the same `GET /floors/{id}/published-layout` response. Only published geometry ever
+ * drawn from the same `GET /operations/floors/{floor_id}/published-layout` response. Only published geometry ever
  * appears — a draft someone is still editing is not on this screen.
  *
  * This is where "Show on floor" from Find stock lands: `?highlight=` carries the location ids a
@@ -48,7 +48,7 @@ function FloorViewScreen() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const view: View = params.get("view") === "3d" ? "3d" : "2d";
-  const highlightIds = useMemo(() => parseHighlightIds(params.get("highlight")), [params]);
+  const { ids: highlightIds, total: highlightTotal } = useMemo(() => parseHighlight(params.get("highlight")), [params]);
   const highlightSet = useMemo(() => new Set(highlightIds), [highlightIds]);
 
   const published = usePublishedLayout(floorId);
@@ -86,15 +86,20 @@ function FloorViewScreen() {
 
   const highlightStatus = (() => {
     if (highlightIds.length === 0 || layout === null) return "";
+    // A link can carry more ids than a view marks. Say so, or "Highlighting 100" reads as everything.
+    const cap =
+      highlightTotal > MAX_HIGHLIGHT_IDS
+        ? ` Only the first ${MAX_HIGHLIGHT_IDS} of the ${highlightTotal} locations in this link are marked.`
+        : "";
     if (!layout.published) {
-      return `${highlightIds.length} location${highlightIds.length === 1 ? "" : "s"} to highlight. This floor has no published plan, so they are marked in the auto-arranged 3-D view.`;
+      return `${highlightIds.length} location${highlightIds.length === 1 ? "" : "s"} to highlight. This floor has no published plan, so they are marked in the auto-arranged 3-D view.${cap}`;
     }
     const { found, missing } = summarizeHighlight(normalized.drawable, highlightIds);
     const foundText =
       found.length > 0 ? `Highlighting ${found.length} location${found.length === 1 ? "" : "s"} on this floor: ${found.join(", ")}.` : "";
     const missingText =
       missing > 0 ? ` ${missing} of the locations you searched for ${missing === 1 ? "is" : "are"} not on this floor's plan.` : "";
-    return `${foundText}${missingText}`.trim();
+    return `${foundText}${missingText}${cap}`.trim();
   })();
 
   return (

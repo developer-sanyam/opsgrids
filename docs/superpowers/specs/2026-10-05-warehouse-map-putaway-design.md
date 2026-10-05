@@ -1,7 +1,9 @@
 # Warehouse map, find-stock and storage put-away — design
 
-Status: approved by the owner section by section (2026-10-05); this file is the implementation
-contract. Base: `main` @ `fab648e3`, single Alembic head `c4a8e1f6d273` (operations).
+Status: **implemented on branch, pending owner review** (`feat/warehouse-map-putaway`; not
+deployed). Approved by the owner section by section (2026-10-05); this file is the implementation
+contract, and the amendments marked below record where review changed what was built. Base: `main` @
+`fab648e3`, single Alembic head `c4a8e1f6d273` (operations).
 
 ## 1. Goal
 
@@ -20,17 +22,17 @@ Let a storekeeper find where stock is without asking anyone:
 |---|---|
 | D1 | Storage put-away is allowed **only from `receiving` or `staging` bins** (422 otherwise). Limitation (c) is documented: the order engine reserves only at `item.home_location_id` (`orders/services.py` accept), so stock moved to a rack bin is invisible to order accept until multi-location allocation exists. |
 | D2 | No CSP change on `ops`/`worker`. Google Cloud project, billing, spend cap and the key in the box `.env` are handled by the owner separately. **The map must be fully disabled — never broken — when `VITE_GOOGLE_MAPS_API_KEY` is absent.** |
-| D3 | Only **ADMIN** may reveal worker coordinates. Captures are kept **30 days**, then purged by an admin-run retention/erasure procedure (not an in-app job). |
+| D3 | Only **ADMIN** may reveal worker coordinates. Captures are kept **30 days**, then purged by an admin-run retention/erasure procedure (not an in-app job). Review added a one-time-code requirement to the reveal beyond this text: §4.5, **OWNER DECISION**. |
 | D4 | Terminology "storage put-away" is approved; amend ADR-0014 §12 (move reference vocabulary) to add `putaway`. ADR-0025's "putaway task" (order-cancel reversal) is left untouched. |
 
 Standing constraints: no production deploy without explicit approval; `bin_transfer` behaviour and
 the `operations.inventory.stock.transferred` event stay byte-for-byte backward-compatible;
 coordinates appear **nowhere** except the audited reveal response (and the inbound POST body).
 
-## 3. Data model (one Alembic revision, `down_revision = "c4a8e1f6d273"`)
+## 3. Data model (one Alembic revision on top of head `c4a8e1f6d273`)
 
-Carry a `# RE-PARENT HERE` comment (two unmerged inventory stacks share this head; whichever merges
-second re-parents). Follow `c4a8e1f6d273` / `b7d41e92c05a` conventions: `SET LOCAL lock_timeout`,
+Its `down_revision` is that head. Carry a `# RE-PARENT HERE` comment (two unmerged inventory stacks
+share this head; whichever merges second re-parents). Follow `c4a8e1f6d273` / `b7d41e92c05a` conventions: `SET LOCAL lock_timeout`,
 named CHECKs, local `_rls()` helper (ENABLE + FORCE + `tenant_isolation`), explicit grants.
 
 - `warehouses`: add nullable `lat_micro BIGINT`, `lng_micro BIGINT`. CHECKs: both NULL or both set;
@@ -116,19 +118,34 @@ matched_suggestion: bool|null, geo_recorded: bool, warnings: [str]}` — **no co
 
 ### 4.3 `GET /operations/inventory/putaway/suggest` — perm `…stock.transfer`
 Query `inventory_item_id`, `warehouse_id`, `lot_id?`. Pure rule in `domain.py`
-(`suggest_putaway_bin`): (1) a storable bin in that warehouse already holding the item (same lot if
-lot given); (2) else the empty storable bin with lowest `pick_sequence` then code; (3) else null.
-No capacity logic (capacity fields are unused today). Response
-`{suggestion: {location_id, code, barcode: string|null, name, path, reason: "holds_item"|"empty_bin"} | null}`.
+(`suggest_putaway_bin`), over the storable bins that have a barcode (first amendment below): (1) a
+bin in that warehouse already holding the item (same lot if lot given); (2) else the empty bin with
+lowest `pick_sequence` then code; (3) else null. No capacity logic (capacity fields are unused
+today). Response
+`{suggestion: {location_id, code, barcode: string, name, path, reason: "holds_item"|"empty_bin"} | null}`.
 
-> **Amendment 2026-10-05 (review) — the suggestion carries the bin's own `barcode`.** Added as a
-> required-but-nullable field (`null` when the bin has no barcode; the key is always present). Workers
-> hold `stock.transfer` but not `location.read`, so they cannot resolve a bin's barcode themselves;
-> the suggestion is how the worker app learns the label it is asking the worker to scan. The caller
-> already holds the permission this route requires, and a bin's barcode is a printed label, not a
-> secret. The worker app's amber "different bin" check now matches the scanned label against the
-> suggestion's `barcode` **or** `code`, case-insensitively (a bin with no barcode matches on code
-> alone); the server's `matched_suggestion` remains the recorded verdict. No coordinates are involved.
+> **Amendment 2026-10-05 (review) — the suggestion carries the bin's own `barcode`, and a bin with no
+> barcode is never suggested.** `suggestion` gains `barcode`, the bin's own scannable label. Workers
+> hold `stock.transfer` but not `location.read`, so they cannot resolve a bin's barcode themselves; the
+> suggestion is how the worker app learns the label it is asking the worker to scan. The caller already
+> holds the permission this route requires, and a bin's barcode is a printed label, not a secret. The
+> server resolves a scanned label by a bin's barcode **and by nothing else**, so a bin with no barcode
+> is a suggestion nobody could act on: **neither rule offers one**, so a warehouse whose storable bins
+> have no barcodes gets `suggestion: null`, and every suggestion the server returns carries a barcode
+> (the OpenAPI type stays `string | null` for clients built against the earlier contract). The worker
+> app's amber "different bin" check matches the scanned label against the suggestion's `barcode`
+> **only**, case-insensitively. **A bin's `code` is not a label:** typing it sends a barcode the server
+> cannot resolve, or one that resolves to some other bin whose barcode happens to read the same, so a
+> code never counts as a match. The server's `matched_suggestion` remains the recorded verdict. No
+> coordinates are involved.
+
+> **Amendment 2026-10-05 (review, second round) — stock rows carry `location_kind`; the worker picker
+> uses it (D1).** `StockRowOut` (`GET /operations/inventory/stock`) gains a nullable `location_kind`
+> (string, one of the existing `LocationKind` values): the kind of the row's location. Workers already
+> hold `stock.read`, so this exposes nothing new. The worker app's source-stock picker offers only rows
+> whose `location_kind` is `receiving` or `staging`, so a worker is not shown stock the server would
+> refuse at submit (422 `source_not_receiving_or_staging`, D1). The filter is a convenience, not a
+> control: the rule in §4.2 stays the authority.
 
 ### 4.4 `GET /operations/inventory/putaway/{move_id}` — perm `…stock.read`
 `{move_id, to_location:{id,code,name,kind}, worker_id|null, captured_at, matched_suggestion,
@@ -142,17 +159,48 @@ successful call, field names only**, also when the capture has no geo (returns n
 nothing. No GET variant, no other code path returns coordinates. Response
 `{lat_micro, lng_micro, accuracy_m, captured_at}` (nullable geo).
 
+> **Amendment 2026-10-05 (review) — the reveal also needs a session that gave a one-time code. OWNER
+> DECISION: keep it, or revert to permission + audit only.** This is a security hardening added during
+> review **beyond the owner's literal D3 text**, which is the permission (ADMIN role only) plus an audit
+> row on every call. The route is `require("operations.inventory.putaway.location_read",
+> minimum=Scope.ORG, amr={"otp"})` (`PutawayLocationRead`, `app/inventory/api.py`), the pairing the
+> platform's other reveal routes use (ADR-0023): the permission says the role may; `otp` says this token
+> went through a second factor. Without it a stolen or unattended administrator token is a standing
+> route to every worker's position in the 30-day window, and the audit row records that pull rather
+> than stopping it. A token with no `otp` in its `amr` is answered **403** (`Additional authentication
+> required: otp`) before the capture is looked up, so it also confirms nothing about which move ids hold
+> a fix, and it writes no audit row. **The cost:** an administrator who has not enrolled an
+> authenticator, whose session opened before they did, or who signed in through single sign-on or a
+> social login (those sessions carry `sso` / `oauth`, never `otp`) gets that 403 and cannot reveal until
+> they sign in with a code. It is `otp` alone, **not** the `{otp, stepup}` pair the CRM reveal routes
+> take, because the operations SPA has no step-up UI (ADR-0023 risk 5) and the pair would leave the
+> button unusable; wiring a step-up flow into the SPA, then adding the marker, is a follow-up
+> (ADR-0028). **To revert** to the literal D3: delete `amr={"otp"}` from `PutawayLocationRead` in
+> `services/operations/app/inventory/api.py` (one line) and flip the assertions in
+> `services/operations/tests/test_putaway_authz.py::TestTheRevealNeedsASessionThatGaveAOneTimeCode`;
+> the sentences that mention the code in the catalogue and service comments, ADR-0028 (3) and the RUNBOOK
+> then go with it.
+
 ### 4.6 `GET /operations/inventory/locate` — perm `…stock.read`
 Query `inventory_item_id` (required), `lot_id?`, `roll_id?`, `warehouse_id?`. Returns bins holding
 positive balances: `{results:[{warehouse_id, warehouse_name, floor_id|null, floor_name|null,
 location_id, code, name, kind, path, quantity (decimal str), status, placement|null,
-placement_reason: null|"unplaced"|"no_published_layout"|"no_permission"}]}`. `placement =
+placement_reason: null|"unplaced"|"no_published_layout"|"no_permission"}], truncated: bool}`.
+`placement =
 {layout_version_id, x_mm,y_mm,z_mm|null,width_mm,depth_mm,height_mm|null, source:"own"|"ancestor",
 ancestor_location_id|null}`. Join `LocationPlacement`→`LayoutVersion` with `status='published'`
 (**not** `Location.floor_id`, which is never cleared); dedupe multiple published placements; fall
 back to the nearest placed **ancestor** (new upward recursive CTE; only a downward one exists).
 Geometry is returned only if the caller also holds `operations.warehouse.layout.read`, else null with
 `placement_reason="no_permission"`. Empty `results` is valid.
+
+> **Amendment 2026-10-05 (review) — `locate` is bounded: at most 500 bins, and it says when it cut.**
+> One query returns at most `LOCATE_MAX_ROWS = 500` bins (`putaway_selectors.py`). It fetches one more
+> than that to learn whether the cap bit, and answers `truncated: true` when it did (`false` otherwise,
+> and always present). Rows are ordered warehouse name, bin code, status, so what is cut is the tail of
+> a stable order, not an arbitrary subset. 500 is far above how widely one item spreads in a real
+> warehouse; the cap bounds the query, not the answer, and a caller that sees `truncated` narrows by
+> `warehouse_id`, `lot_id` or `roll_id`.
 
 ### 4.7 `GET /operations/floors/{floor_id}/published-layout` — perm `operations.warehouse.layout.read`
 `{floor_id, warehouse_id, floor_name, published: bool, layout_version_id|null,
@@ -203,8 +251,10 @@ Hand-mirror new types in `src/api/types.ts` + `client.ts`; new fields on `Wareho
    `aria-live`) and "Show on map"; unplaced bins tagged "not on floor plan".
 5. **Put-away detail** on move detail: bin, worker, time, matched suggestion; "Show worker
    location" visible only with `operations.inventory.putaway.location_read`; on click POSTs the
-   reveal and shows a pin + accuracy circle (disabled-map fallback: plain coordinates text).
-   Add `putaway` to `RELOCATION_LABEL` (`trackingLabels.ts`).
+   reveal and shows the coordinates as text, plus (when the map is enabled) a pin + accuracy circle.
+   With the map on, loading it sends the viewport's position to Google Maps (ADR-0028 says so); with
+   the map disabled (no key) the reveal is text only and nothing but the reveal response carries the
+   position. Add `putaway` to `RELOCATION_LABEL` (`trackingLabels.ts`).
 6. Every failure in Maps / 3-D / locate / balances is local to its panel (error boundary + retry);
    slow loads show skeletons and a "taking longer than usual" note after 8 s; nothing else in
    Operations may break.
@@ -214,17 +264,39 @@ Hand-mirror new types in `src/api/types.ts` + `client.ts`; new fields on `Wareho
 New "Put away" screen (route + nav in both `useNavGroups.ts` and `App.tsx` `bottomNavExtra`; gate
 `RequireGrant permission="operations.inventory.stock.transfer" scope="ORG"`).
 Flow: pick item/lot/roll and source stock (via `GET /operations/inventory/stock`, which workers
-hold) → quantity → suggested bin shown → scan bin label (existing `useBarcodeScanner`; manual entry
-fallback; trim CR/LF) → amber warning + confirm if different from suggestion → submit. One
+hold; only rows whose `location_kind` is `receiving` or `staging` are offered, §4.3) → quantity →
+suggested bin shown → scan bin label (existing `useBarcodeScanner`; manual entry fallback; trim
+CR/LF) → amber warning + confirm if different from suggestion → submit. One
 `navigator.geolocation.getCurrentPosition` (high accuracy, 5 s timeout) at submit; denied /
 timeout / unsupported / offline ⇒ post without geo and show a non-blocking notice. Convert to
 `Math.round(deg*1e6)`; omit non-finite values.
 **New `putawayQueue`** (the existing `scanQueue` is for `scan_events` only and must not be reused):
-persisted entries `{ownerSub, idempotencyKey (random UUID at enqueue), frozen body, captured_at,
-occurred_on (UTC date), status}`; network/5xx ⇒ retry with the same key; 4xx ⇒ park as "needs
-attention" with the server message, offer discard, **continue the queue**; app-level drainer mounted
-in `AppShell`; replays only for the matching signed-in user; purge on logout; coordinates kept only
-until success. Do not advertise PWA/offline-first (no service worker exists).
+persisted entries `{ownerSub, organizationId, idempotencyKey (random UUID at enqueue), frozen body,
+captured_at, occurred_on?, status}`; network/5xx/408/429 ⇒ retry with the same key; any other 4xx ⇒
+park as "needs attention" with the server message, offer discard, **continue the queue**; app-level
+drainer mounted in `AppShell`; replays only for the matching signed-in user **and organization**; purge
+on logout; coordinates kept only until success (and stripped from an entry that is parked). Do not
+advertise PWA/offline-first (no service worker exists).
+
+> **Amendment 2026-10-05 (review) — what the queue and the request actually do.**
+> - **`occurred_on` is sent only when the put-away is confirmed offline.** The server refuses an
+>   `occurred_on` after its own today, and a phone's clock can be a day ahead, so while the phone
+>   believes it is online the field is left out and the server dates the put-away itself (a day-ahead
+>   phone is never refused; a server-supplied date stays out of the idempotency hash, so a retry is
+>   still the same request). Confirmed offline, there is no server to ask: the UTC date of the confirm
+>   is frozen into the entry, so a replay days later still names the day the stock moved.
+> - **A queue entry carries `organizationId` beside `ownerSub`.** An entry belongs to a person *in an
+>   organization*: another account on the phone, or the same person signed in to another organization,
+>   neither replays nor sees it.
+> - **408 and 429 are retried, not parked.** They are the server asking for another go, so they take
+>   the 5xx path (same key, later). A network failure ends a drain pass; a 5xx/408/429 moves on to the
+>   next entry so one entry the server chokes on cannot hold the rest behind it. Every attempt is cut
+>   off after 30 s and retried under the same key.
+> - **Foreground refusal when the screen is gone is parked.** The entry the worker has just confirmed
+>   gets its refusal (a 4xx) handed straight back to the screen so the bin can be rescanned, and leaves
+>   the queue. That holds only while the screen is still there to show it; a request can take half a
+>   minute on a weak signal, and a worker who has walked away would otherwise lose the refusal with the
+>   entry. Then it is parked like any other and the attention banner tells them.
 
 ## 7. Infrastructure and docs
 
@@ -274,7 +346,7 @@ OAUTH_AMR, frontend `Warehouse3D` x2 and `PurchaseOrderForm` date fixtures x2.
 
 Backend PR → review/merge (squash) → owner-approved manual deploy (migrate is additive; old code
 ignores the new columns/table) → verify (`alembic current`, privileges, synthetic put-away + audited
-reveal) → permission reconcile dry-run then `APPLY=1` (new routes 403 until it runs) →
+reveal, from a session that gave a one-time code, §4.5) → permission reconcile dry-run then `APPLY=1` (new routes 403 until it runs) →
 `make edge-web APP=operations` then `APP=worker`. Rollback triggers: failed migration, put-away
 error rate above baseline, any coordinate found in audit/outbox/logs, a reveal without an audit
 row. (A *site's* position is approved data and legitimately appears in `warehouse.updated` audit
@@ -289,7 +361,8 @@ code-only; bundles by symlink swap; Maps off by rebuilding without the key.
 - [ ] Put-away by bin scan from receiving/staging creates a `relocation` move (`reference_type
       putaway`) and one capture; replay creates nothing extra; `bin_transfer` unchanged.
 - [ ] Bad GPS never blocks the move; offline put-aways replay safely under their own key.
-- [ ] Reveal is POST-only, ADMIN-only, audited on every successful call; coordinates nowhere else.
+- [ ] Reveal is POST-only, ADMIN-only, needs a one-time-code session (§4.5, owner to confirm), audited
+      on every successful call; coordinates nowhere else.
 - [ ] Tenant isolation + negative-authz for every endpoint; migration round-trip, contracts,
       typecheck, lint, build and existing suites green.
 - [ ] 30-day purge procedure + RUNBOOK + ADR amendment delivered; limitation (c) documented.

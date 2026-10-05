@@ -22,8 +22,9 @@ export const DEFAULT_HEIGHT_MM = 1000;
 export const PLAN_MARGIN_MM = 1000;
 /** The plan never zooms in tighter than this, however small the floor. */
 const MIN_PLAN_SPAN_MM = 4000;
-/** More ids than this in an address is a mistake, not a search result. */
-const MAX_HIGHLIGHT_IDS = 100;
+/** More ids than this in an address is a mistake, not a search result: a view marks this many and
+ *  says so when a link carried more. */
+export const MAX_HIGHLIGHT_IDS = 100;
 
 export interface FloorRect {
   locationId: string;
@@ -137,16 +138,27 @@ export function placementsToSceneNodes(rects: readonly FloorRect[]): WarehouseLa
   });
 }
 
+export interface ParsedHighlight {
+  /** The ids to mark: trimmed, de-duplicated, and no more than `MAX_HIGHLIGHT_IDS`. */
+  ids: string[];
+  /** How many distinct ids the link carried, so a screen can say when it marks fewer than that. */
+  total: number;
+}
+
 /** `?highlight=a,b,c` as ids: trimmed, de-duplicated, capped. Blank or absent is no highlight. */
-export function parseHighlightIds(param: string | null): string[] {
-  if (param === null) return [];
-  const ids = new Set<string>();
+export function parseHighlight(param: string | null): ParsedHighlight {
+  if (param === null) return { ids: [], total: 0 };
+  const all = new Set<string>();
   for (const part of param.split(",")) {
     const id = part.trim();
-    if (id !== "") ids.add(id);
-    if (ids.size >= MAX_HIGHLIGHT_IDS) break;
+    if (id !== "") all.add(id);
   }
-  return Array.from(ids);
+  return { ids: Array.from(all).slice(0, MAX_HIGHLIGHT_IDS), total: all.size };
+}
+
+/** The ids `parseHighlight` keeps, for a screen that has no use for how many it dropped. */
+export function parseHighlightIds(param: string | null): string[] {
+  return parseHighlight(param).ids;
 }
 
 export interface HighlightSummary {

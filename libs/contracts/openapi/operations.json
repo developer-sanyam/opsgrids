@@ -7853,7 +7853,7 @@
         "type": "object"
       },
       "PutawaySuggestOut": {
-        "description": "`GET /inventory/putaway/suggest` \u2014 `null` when the warehouse has no storable bin to offer.",
+        "description": "`GET /inventory/putaway/suggest` \u2014 `null` when the warehouse has no storable bin to offer:\nnone is free, or none carries a barcode (a bin a scan cannot resolve is never suggested).",
         "properties": {
           "suggestion": {
             "anyOf": [
@@ -7873,7 +7873,7 @@
         "type": "object"
       },
       "PutawaySuggestionOut": {
-        "description": "The bin the server would store the item in. `barcode` is that bin's own scannable label\n(`null` when it has none): a worker holds no `location.read`, so this is how the device\ncompares a scanned label with the suggestion; the caller already holds `stock.transfer`.",
+        "description": "The bin the server would store the item in. `barcode` is that bin's own scannable label: a\nworker holds no `location.read`, so this is how the device compares a scanned label with the\nsuggestion; the caller already holds `stock.transfer`. A bin with no barcode is never offered\n(a put-away resolves its destination by barcode alone), so it is always set; the type stays\nnullable for clients built against the earlier contract.",
         "properties": {
           "barcode": {
             "anyOf": [
@@ -9757,6 +9757,30 @@
             "title": "Location Id",
             "type": "string"
           },
+          "location_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "zone",
+                  "aisle",
+                  "rack",
+                  "shelf",
+                  "bin",
+                  "staging",
+                  "pack_station",
+                  "dock",
+                  "receiving",
+                  "returns",
+                  "quarantine"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Kind"
+          },
           "lot_id": {
             "anyOf": [
               {
@@ -9859,6 +9883,7 @@
           "warehouse_code",
           "location_id",
           "location_code",
+          "location_kind",
           "status",
           "lot_id",
           "lot_no",
@@ -16083,6 +16108,16 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutawayOut"
+                }
+              }
+            },
+            "description": "Replay: this `Idempotency-Key` already stored this put-away. The body is the original receipt with `replayed: true` and no warnings, and nothing is stored again: no second move, capture, audit row or event. The GPS fix, `captured_at` and `suggested_location_id` are not part of what the key is compared on, so a retry that differs only there is answered with the original; any other difference is a 409."
+          },
           "201": {
             "content": {
               "application/json": {
@@ -16112,6 +16147,7 @@
     },
     "/api/v1/operations/inventory/putaway/suggest": {
       "get": {
+        "description": "A bin already holding the item (this lot, when given), else the first empty one, in a\npicker's walk order (pick sequence, then code). Only bins with a barcode are offered, because a\nput-away resolves its destination by barcode alone; when none qualifies the suggestion is\n`null`.",
         "operationId": "suggest_putaway_api_v1_operations_inventory_putaway_suggest_get",
         "parameters": [
           {
@@ -16247,7 +16283,18 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "The fix recorded with the put-away (nulls when the device gave none). Every successful call writes an audit row, and the response is never cacheable.",
+            "headers": {
+              "Cache-Control": {
+                "description": "A worker's position must not sit in a browser or proxy cache.",
+                "schema": {
+                  "enum": [
+                    "no-store"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {

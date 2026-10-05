@@ -1,5 +1,5 @@
-import { Suspense, lazy, useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import type { ComponentProps, ReactNode } from "react";
 
 import { listLocations } from "@/api/client";
 import type { LocationKind, PublishedLayoutOut } from "@/api/types";
@@ -12,6 +12,7 @@ import { hasWebGLSupport } from "@/lib/webgl";
 import { problemMessage, useAsync } from "@opsgrids/client";
 import { Card, EmptyState, ErrorState, InlineAlert, Skeleton } from "@/ui";
 import { PanelBoundary } from "@/ui/PanelBoundary";
+import { retryableLazy } from "@/ui/retryableLazy";
 import { useSlowLoad } from "@/lib/useSlowLoad";
 import { SlowLoadNotice } from "@/ui/SlowLoadNotice";
 import { BoxIcon } from "@opsgrids/ui";
@@ -20,10 +21,13 @@ import { SceneLegend } from "./SceneLegend";
 
 // `three`, `@react-three/fiber` and `@react-three/drei` arrive only once WebGL is confirmed and
 // this panel is on screen — a browser without WebGL, or a user who never opens a 3-D view, never
-// downloads them.
-const Warehouse3DScene = lazy(() =>
+// downloads them. Retryable, because a chunk that fails to download must be asked for again when
+// the user presses "Try again", not remembered as failed.
+type SceneProps = ComponentProps<typeof import("@/routes/Warehouse3DScene").Warehouse3DScene>;
+const scene = retryableLazy<SceneProps>(() =>
   import("@/routes/Warehouse3DScene").then((m) => ({ default: m.Warehouse3DScene })),
 );
+const Warehouse3DScene = scene.Panel;
 
 interface Floor3DPanelProps {
   warehouseId: string;
@@ -32,6 +36,9 @@ interface Floor3DPanelProps {
   /** That floor's published layout, once loaded; `null` while there is no floor or nothing to show. */
   published: PublishedLayoutOut | null;
   highlightIds: ReadonlySet<string>;
+  /** The highlighted location is known to be missing from a published layout that exists. It only
+   *  changes what the auto-arranged banner says, so the banner never claims there is no floor plan. */
+  highlightUnplaced?: boolean | undefined;
   selectedId: string | null;
   onSelect: (bin: BinSummary) => void;
   /** What to offer when the 3-D view cannot be shown here: a way to the 2-D view or the list. */
@@ -55,6 +62,7 @@ export function Floor3DPanel({
   floorId,
   published,
   highlightIds,
+  highlightUnplaced = false,
   selectedId,
   onSelect,
   unavailableAction,
@@ -85,6 +93,7 @@ export function Floor3DPanel({
       warehouseId={warehouseId}
       floorId={floorId}
       highlightIds={highlightIds}
+      highlightUnplaced={highlightUnplaced}
       selectedId={selectedId}
       onSelect={onSelect}
       unavailableAction={unavailableAction}
@@ -145,12 +154,21 @@ interface AutoArrangedSceneProps {
   warehouseId: string;
   floorId: string | null;
   highlightIds: ReadonlySet<string>;
+  highlightUnplaced: boolean;
   selectedId: string | null;
   onSelect: (bin: BinSummary) => void;
   unavailableAction: ReactNode;
 }
 
-function AutoArrangedScene({ warehouseId, floorId, highlightIds, selectedId, onSelect, unavailableAction }: AutoArrangedSceneProps) {
+function AutoArrangedScene({
+  warehouseId,
+  floorId,
+  highlightIds,
+  highlightUnplaced,
+  selectedId,
+  onSelect,
+  unavailableAction,
+}: AutoArrangedSceneProps) {
   const locations = useAsync(() => listLocations(warehouseId), [warehouseId]);
   const slow = useSlowLoad(locations.status === "loading");
   const layout = useMemo(
@@ -163,9 +181,11 @@ function AutoArrangedScene({ warehouseId, floorId, highlightIds, selectedId, onS
       <InlineAlert
         tone="warning"
         title={
-          floorId === null
-            ? "Layout is auto-arranged — no floor plan has been configured for this warehouse yet"
-            : "Layout is auto-arranged — this floor has no published floor plan yet"
+          floorId !== null
+            ? "Layout is auto-arranged — this floor has no published floor plan yet"
+            : highlightUnplaced
+              ? "Layout is auto-arranged — this location isn't on the warehouse's published floor plan"
+              : "Layout is auto-arranged — no floor plan has been configured for this warehouse yet"
         }
         live="off"
       >
@@ -234,8 +254,11 @@ function SceneFrame({ layout, source, highlightIds, selectedId, onSelectNode, un
       <Card className="h-120 flex-1 overflow-hidden p-0">
         <PanelBoundary
           title="The 3-D view"
-          onFail={() => reportOnce("floor_render_failed", "render_error")}
-          fallback={() => <SceneUnavailable action={unavailableAction} />}
+          onFail={() => {
+            reportOnce("floor_render_failed", "render_error");
+            scene.reset();
+          }}
+          fallback={(retry) => <SceneFailed onRetry={retry} action={unavailableAction} />}
         >
           <Suspense fallback={<CanvasLoading />}>
             <Warehouse3DScene layout={layout} selectedId={selectedId} highlightIds={highlightIds} onSelect={onSelectNode} />
@@ -258,8 +281,8 @@ function CanvasLoading() {
   );
 }
 
-/** The one fallback both the no-WebGL and the render-error paths share: the 3-D view genuinely
- *  cannot show anything here, so it says so plainly and hands off to a view that can. */
+/** This browser has no WebGL, which a retry cannot change: it says so plainly and hands off to a
+ *  view that can show the locations. */
 function SceneUnavailable({ action }: { action: ReactNode }) {
   return (
     <Card className="p-6">
@@ -267,6 +290,22 @@ function SceneUnavailable({ action }: { action: ReactNode }) {
         tone="neutral"
         title="This browser can't show the 3D view"
         message="WebGL isn't available here — it may be disabled, or this device doesn't support it. The same locations are in the 2D / list view."
+        action={action}
+      />
+    </Card>
+  );
+}
+
+/** WebGL is there but the scene did not make it onto the screen: its code failed to download, or it
+ *  threw while drawing. Both can pass, so this offers a retry as well as the view that does not
+ *  need the scene. */
+function SceneFailed({ onRetry, action }: { onRetry: () => void; action: ReactNode }) {
+  return (
+    <Card className="p-6">
+      <ErrorState
+        title="The 3D view couldn't be drawn"
+        message="The 3-D scene failed to load or to draw. A dropped connection can cause this, as can this device's graphics. Try again; if it keeps happening, reload the page or use the 2D / list view."
+        onRetry={onRetry}
         action={action}
       />
     </Card>

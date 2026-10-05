@@ -1267,11 +1267,12 @@ def resolve_captured_at(claimed: datetime | None, now: datetime) -> tuple[dateti
 class PutawayBin:
     """One bin the suggestion rule may pick, reduced to what the rule reads. `holds_item` — it
     already holds this item (this lot, when one was asked for); `is_empty` — it holds no stock of
-    any item."""
+    any item; `barcode` — its scannable label, `None` or empty when it has none."""
 
     location_id: uuid.UUID
     code: str
     kind: str
+    barcode: str | None
     pick_sequence: int | None
     holds_item: bool
     is_empty: bool
@@ -1285,7 +1286,11 @@ class PutawaySuggestion:
 
 
 def _walk_order(b: PutawayBin) -> tuple[bool, int, str]:
-    """A picker's walk: pick sequence first (a bin with none sorts last), then code."""
+    """A picker's walk: pick sequence first (a bin with none sorts last), then code.
+
+    The code is compared as plain code points, which is what `COLLATE "C"` does to the same
+    column in `putaway_selectors._walk_order` — the query's cap keeps only the head of *its*
+    order, so the two orders must be one order or the cap would change the answer."""
     return (b.pick_sequence is None, b.pick_sequence or 0, b.code)
 
 
@@ -1297,9 +1302,13 @@ def suggest_putaway_bin(bins: Sequence[PutawayBin]) -> PutawaySuggestion | None:
     2. else the empty storable bin first in walk order (lowest pick sequence, then code);
     3. else nothing.
 
+    A bin with no barcode (`None` or empty) is never a candidate: a put-away resolves its
+    destination by barcode alone, so a bin without one cannot be stored into. When every storable
+    bin lacks one the answer is nothing, the same as when none is free.
+
     There is no capacity logic: `locations.max_weight_grams` / `max_volume_milli` are not read
     anywhere yet, so a rule that pretended to honour them would be guessing."""
-    storable = [b for b in bins if b.kind in STORABLE_KINDS]
+    storable = [b for b in bins if b.kind in STORABLE_KINDS and b.barcode]
     holding = sorted((b for b in storable if b.holds_item), key=_walk_order)
     if holding:
         return PutawaySuggestion(holding[0].location_id, "holds_item")

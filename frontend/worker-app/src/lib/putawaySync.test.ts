@@ -312,6 +312,75 @@ describe("drainPutawayQueue", () => {
     expect(parked?.attention?.message).not.toMatch(/payload/i);
   });
 
+  describe("a schema-level 422, whose detail is the generic 'Request payload failed validation'", () => {
+    function schemaRefusal(errors: { field: string; code: string; message: string }[]): ApiError {
+      return new ApiError(422, "Request payload failed validation", {
+        type: "https://errors.opsgrids.dev/validation",
+        title: "Validation failed",
+        status: 422,
+        detail: "Request payload failed validation",
+        errors,
+      });
+    }
+
+    async function parkedMessage(error: ApiError): Promise<string | undefined> {
+      const entry = enqueue("1");
+      post.mockRejectedValueOnce(error);
+      await drainPutawayQueue(ME);
+      return getPutawayQueue().find((e) => e.idempotencyKey === entry.idempotencyKey)?.attention?.message;
+    }
+
+    it("says what the server said was wrong with the field, not the generic sentence", async () => {
+      const message = await parkedMessage(
+        schemaRefusal([{ field: "quantity", code: "decimal_max_places", message: "Decimal input should have no more than 3 decimal places" }]),
+      );
+
+      expect(message).toBe("Quantity: Decimal input should have no more than 3 decimal places");
+    });
+
+    it("gives every field that failed, once each, and a field it has no name for just as the server worded it", async () => {
+      const message = await parkedMessage(
+        schemaRefusal([
+          { field: "to_barcode", code: "string_pattern_mismatch", message: "String should match pattern" },
+          { field: "to_barcode", code: "string_pattern_mismatch", message: "String should match pattern" },
+          { field: "note", code: "string_too_long", message: "String should have at most 500 characters" },
+        ]),
+      );
+
+      expect(message).toBe("Bin label: String should match pattern; String should have at most 500 characters");
+    });
+
+    it("falls back to the server's detail when it named no field", async () => {
+      expect(await parkedMessage(schemaRefusal([]))).toBe("Request payload failed validation");
+    });
+
+    it("the date refusal keeps its own message even when other fields failed too", async () => {
+      const message = await parkedMessage(
+        schemaRefusal([
+          { field: "quantity", code: "decimal_parsing", message: "Input should be a valid decimal" },
+          { field: "occurred_on", code: "value_error", message: "Value error, occurred_on cannot be in the future" },
+        ]),
+      );
+
+      expect(message).toMatch(/date on this phone/i);
+    });
+
+    it("reaches the screen too, for the entry the worker is watching", async () => {
+      const entry = enqueue("1");
+      post.mockRejectedValueOnce(
+        schemaRefusal([{ field: "quantity", code: "decimal_parsing", message: "Input should be a valid decimal" }]),
+      );
+
+      const result = await drainPutawayQueue(ME, { foregroundKey: entry.idempotencyKey });
+
+      expect(result.outcomes.get(entry.idempotencyKey)).toEqual({
+        kind: "rejected",
+        status: 422,
+        message: "Quantity: Input should be a valid decimal",
+      });
+    });
+  });
+
   it("any other 422 keeps the server's own sentence", async () => {
     const entry = enqueue("1");
     post.mockRejectedValueOnce(

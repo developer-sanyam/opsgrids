@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState } from "react";
+import { Suspense, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { getWarehousesMap } from "@/api/client";
@@ -13,11 +13,14 @@ import { problemMessage, useAsync, useCan } from "@opsgrids/client";
 import { Button, Card, DataTable, EmptyState, ErrorState, InlineAlert, PageHeader, RowActions, SectionHeader, Skeleton, Tag } from "@/ui";
 import type { Column } from "@/ui";
 import { PanelBoundary } from "@/ui/PanelBoundary";
+import { retryableLazy } from "@/ui/retryableLazy";
 import { useSlowLoad } from "@/lib/useSlowLoad";
 import { SlowLoadNotice } from "@/ui/SlowLoadNotice";
 import { MapPinIcon, useToast, WarehouseIcon } from "@opsgrids/ui";
 
-const SitesMap = lazy(() => import("@/maps/SitesMap"));
+// Retryable: "Try the map again" has to download the chunk again if that is what failed.
+const sitesMap = retryableLazy(() => import("@/maps/SitesMap"));
+const SitesMap = sitesMap.Panel;
 
 type MapFailure = Extract<ReportReason, "script_error" | "auth_failure">;
 
@@ -223,7 +226,10 @@ export function WarehousesMapPage() {
                 <PanelBoundary
                   key={mapAttempt}
                   title="The map"
-                  onFail={() => mapFailed("script_error")}
+                  onFail={() => {
+                    sitesMap.reset();
+                    mapFailed("script_error");
+                  }}
                   fallback={() => null}
                 >
                   <Suspense fallback={<MapLoading />}>

@@ -3,10 +3,11 @@ import { describe, expect, it } from "vitest";
 import type { LocateResultOut } from "@/api/trackingTypes";
 import {
   autoArrangedHref,
+  countBins,
   floorViewHref,
   groupLocateResults,
   highlightIdFor,
-  mapHref,
+  highlightIdsFor,
   placementNote,
 } from "./locate";
 
@@ -60,6 +61,29 @@ describe("groupLocateResults", () => {
   it("is empty for no results", () => {
     expect(groupLocateResults([])).toEqual([]);
   });
+
+  it("counts a bin once when it holds stock in two statuses, since the server answers one row per bin and status", () => {
+    const rows = [
+      result({ location_id: "1", code: "A-01", status: "AVAILABLE" }),
+      result({ location_id: "1", code: "A-01", status: "QUALITY_HOLD" }),
+      result({ location_id: "2", code: "A-02" }),
+    ];
+    expect(groupLocateResults(rows)[0]?.resultCount).toBe(2);
+    expect(countBins(rows)).toBe(2);
+    expect(countBins([])).toBe(0);
+  });
+});
+
+describe("highlightIdsFor", () => {
+  it("lists each highlighted location once, however many rows it came from", () => {
+    expect(
+      highlightIdsFor([
+        result({ location_id: "a", status: "AVAILABLE" }),
+        result({ location_id: "a", status: "QUALITY_HOLD" }),
+        result({ location_id: "b", placement: null, placement_reason: "unplaced" }),
+      ]),
+    ).toEqual(["a"]);
+  });
 });
 
 describe("highlightIdFor", () => {
@@ -96,9 +120,24 @@ describe("floorViewHref", () => {
 });
 
 describe("other links", () => {
-  it("points a bin that is on no plan at the auto-arranged 3-D view, and a warehouse at the map", () => {
-    expect(autoArrangedHref(result({ location_id: "loc-7" }))).toBe("/warehouses/wh-1/3d?highlight=loc-7");
-    expect(mapHref("wh-1")).toBe("/warehouses/map?focus=wh-1");
+  it("points a bin that is on no plan at the auto-arranged 3-D view", () => {
+    expect(autoArrangedHref(result({ location_id: "loc-7", placement: null, placement_reason: "no_published_layout" }))).toBe(
+      "/warehouses/wh-1/3d?highlight=loc-7",
+    );
+  });
+
+  it("tells the 3-D view when the warehouse has a published layout and this bin is simply not on it", () => {
+    expect(autoArrangedHref(result({ location_id: "loc-7", placement: null, placement_reason: "unplaced" }))).toBe(
+      "/warehouses/wh-1/3d?highlight=loc-7&why=unplaced",
+    );
+  });
+
+  it("does not repeat a floor's link for a bin's second status", () => {
+    const href = floorViewHref("wh-1", "floor-1", [
+      result({ location_id: "a", status: "AVAILABLE" }),
+      result({ location_id: "a", status: "QUALITY_HOLD" }),
+    ]);
+    expect(href).toBe("/warehouses/wh-1/floors/floor-1/view?highlight=a");
   });
 });
 

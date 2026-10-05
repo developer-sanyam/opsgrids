@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select, update
 
+from app import domain
 from app.inventory import stock_ops
 from app.inventory import tracking_services as tracking
 from app.inventory.tracking_schemas import LotIn
@@ -29,6 +30,7 @@ from tests.putaway_fixtures import (
     build_putaway_world,
     call,
     line,
+    make_location,
     opening,
     put,
     putaway_body,
@@ -65,6 +67,28 @@ async def stock(session, pw: PutawayWorld, item: uuid.UUID, *where: uuid.UUID, *
         )
 
 
+async def label(session, pw: PutawayWorld, code: str, barcode: str | None) -> None:
+    """Set (or clear) the barcode of the live location `code` in WH-WEAVE."""
+    async with session.begin():
+        await session.execute(
+            update(Location)
+            .where(
+                Location.organization_id == pw.org_id,
+                Location.warehouse_id == pw.warehouse,
+                Location.code == code,
+                Location.deleted_at.is_(None),
+            )
+            .values(barcode=barcode)
+        )
+
+
+async def retire(session, *ids: uuid.UUID) -> None:
+    async with session.begin():
+        await session.execute(
+            update(Location).where(Location.id.in_(ids)).values(deleted_at=datetime.now(UTC))
+        )
+
+
 class TestTheSuggestion:
     async def test_an_empty_bin_with_the_lowest_pick_sequence_is_offered_with_its_path(
         self, client, pw
@@ -94,18 +118,17 @@ class TestTheSuggestion:
         assert scanned.json()["to_location"]["id"] == body["location_id"]
         assert scanned.json()["matched_suggestion"] is True
 
-    async def test_a_suggested_bin_with_no_barcode_carries_null_not_an_absent_key(
+    async def test_a_bin_with_no_barcode_is_never_offered_so_the_suggestion_always_has_one(
         self, client, session, pw
     ) -> None:
-        async with session.begin():
-            await session.execute(
-                update(Location)
-                .where(Location.id.in_([pw.rack_bin, pw.rack_bin2, pw.shelf, pw.w.bin_b]))
-                .values(deleted_at=datetime.now(UTC))
-            )
-        body = (await suggest(client, pw)).json()["suggestion"]
-        assert body["code"] == "DEFAULT"
-        assert "barcode" in body and body["barcode"] is None
+        """A put-away resolves its destination by barcode alone: a bin with no label cannot be
+        scanned, so offering it would send the worker to a bin the app then cannot store into.
+        With every barcoded bin gone, DEFAULT (no barcode) is the only storable bin left — and the
+        answer is no suggestion, not DEFAULT."""
+        await retire(session, pw.rack_bin, pw.rack_bin2, pw.shelf)
+        resp = await suggest(client, pw)
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"suggestion": None}
 
     async def test_a_bin_already_holding_the_item_is_preferred_to_an_emptier_walk_position(
         self, client, session, pw
@@ -138,6 +161,8 @@ class TestTheSuggestion:
     async def test_the_walk_order_is_pick_sequence_then_code(self, client, session, pw) -> None:
         # Take both sequenced bins out of play; what is left has no sequence, so code decides.
         await stock(session, pw, pw.w.t.buttons, pw.rack_bin, pw.rack_bin2)
+        await label(session, pw, "DEFAULT", "DEFAULT-BC")  # a bin with no label is never offered
+        await label(session, pw, "BIN-B", "BIN-B-BC")
         body = (await suggest(client, pw)).json()["suggestion"]
         # Candidates left: DEFAULT (the warehouse's default bin), BIN-B, SHELF-1 — all unsequenced.
         assert body["code"] == "BIN-B" and body["reason"] == "empty_bin"
@@ -155,8 +180,8 @@ class TestTheSuggestion:
 
     async def test_only_the_asked_warehouse_is_searched(self, client, session, pw) -> None:
         in_finishing = await suggest(client, pw, warehouse_id=str(await _finishing(session, pw)))
-        assert in_finishing.json()["suggestion"]["code"] in {"DEFAULT", "FIN-B01"}
-        assert in_finishing.json()["suggestion"]["code"] != "R1-B01"
+        # WH-FIN's other storable bin, DEFAULT, has no barcode and so is never offered.
+        assert in_finishing.json()["suggestion"]["code"] == "FIN-B01"
 
     async def test_a_soft_deleted_bin_is_never_offered(self, client, session, pw) -> None:
         async with session.begin():
@@ -177,6 +202,7 @@ class TestTheSuggestion:
                 .values(deleted_at=datetime.now(UTC))
             )
         # Left alive in WH-WEAVE: RCV-1, STG-1 (stocked and not storable), RACK-1, the default bin.
+        await label(session, pw, "DEFAULT", "DEFAULT-BC")
         body = (await suggest(client, pw)).json()["suggestion"]
         assert body["code"] == "DEFAULT"  # the one storable bin left
 
@@ -191,6 +217,148 @@ class TestTheSuggestion:
         assert matched.json()["matched_suggestion"] is True
         other = await put(client, pw, putaway_body(pw, to_barcode="SHELF-1-BC"), key="other")
         assert other.json()["matched_suggestion"] is False
+
+
+class TestOnlyABinAScanCanResolveIsOffered:
+    """`POST /putaway` resolves the destination by `to_barcode` and nothing else, so a bin with a
+    NULL or empty barcode can never be stored into. It is filtered out *in the query*, before the
+    candidate cap: a post-filter would let barcode-less bins at the head of the walk crowd every
+    usable one out of the capped list."""
+
+    @pytest.mark.parametrize("barcode", [None, ""])
+    async def test_a_bin_with_a_null_or_empty_barcode_is_not_offered_even_first_in_the_walk(
+        self, client, session, pw, barcode
+    ) -> None:
+        await label(session, pw, "R1-B01", barcode)  # pick sequence 1: the best walk position
+        body = (await suggest(client, pw)).json()["suggestion"]
+        assert (body["code"], body["reason"]) == ("R1-B02", "empty_bin")
+        assert body["barcode"] == "RACK-1-B02"
+
+    @pytest.mark.parametrize("barcode", [None, ""])
+    async def test_a_barcode_less_bin_already_holding_the_item_does_not_win_the_holding_rule(
+        self, client, session, pw, barcode
+    ) -> None:
+        await label(session, pw, "SHELF-1", barcode)
+        await stock(session, pw, pw.dye, pw.shelf)
+        body = (await suggest(client, pw)).json()["suggestion"]
+        assert (body["code"], body["reason"]) == ("R1-B01", "empty_bin")
+
+    async def test_when_every_storable_bin_lacks_a_barcode_there_is_no_suggestion(
+        self, client, session, pw
+    ) -> None:
+        """Documented outcome: `{"suggestion": null}`, the same answer as "no free bin". The
+        warehouse is not an error; there is simply no bin a scan could confirm."""
+        for code in ("R1-B01", "R1-B02", "SHELF-1"):
+            await label(session, pw, code, None)
+        resp = await suggest(client, pw)
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"suggestion": None}
+
+    async def test_barcode_less_bins_beyond_the_cap_do_not_hide_the_barcoded_one(
+        self, client, session, pw
+    ) -> None:
+        """More barcode-less bins than the per-category cap, every one ahead of the barcoded bin
+        in the walk (pick sequence 0, against its 1). Were the barcode filtered after the cap, the
+        candidate list would hold only unusable bins and the answer would be null."""
+        for i in range(domain.SUGGEST_CANDIDATE_CAP + 1):
+            await make_location(session, pw, kind="bin", code=f"NB-{i:02d}", pick_sequence=0)
+        await retire(session, pw.rack_bin2, pw.shelf)
+        body = (await suggest(client, pw)).json()["suggestion"]
+        assert body is not None
+        assert body["code"] == "R1-B01"
+
+    async def test_the_barcode_offered_is_always_one_a_scan_resolves(
+        self, client, session, pw
+    ) -> None:
+        for n in range(3):  # take whichever bin is offered out of play, then ask again
+            body = (await suggest(client, pw)).json()["suggestion"]
+            assert body is not None
+            assert body["barcode"]
+            scanned = await put(
+                client, pw, putaway_body(pw, to_barcode=body["barcode"]), key=f"scan-{n}"
+            )
+            assert scanned.status_code == 201, scanned.text
+            assert scanned.json()["to_location"]["id"] == body["location_id"]
+            await stock(session, pw, pw.w.t.buttons, uuid.UUID(body["location_id"]))
+
+
+class TestTheCapCannotChangeTheAnswer:
+    """The query loads at most `SUGGEST_CANDIDATE_CAP` bins per category and the rule picks the
+    first of each, so the SQL order and `domain`'s order must be one total order or the cap changes
+    the answer: pick sequence ascending with none last, then the code as plain code points
+    (`COLLATE "C"` in SQL, `str` comparison in Python). A locale collation (this test database is
+    `en_US.utf8`) puts `a01` before `A-FIRST` and ignores the hyphen in `R1-B02` against `R1B01`;
+    code points do neither."""
+
+    async def _crowd(self, session, pw: PutawayWorld, *, stocked: bool) -> None:
+        """30 lower-case bins that a locale sorts first, and `A-FIRST`, which code points do. The
+        sequenced rack bins are retired so the walk position is decided by the code alone."""
+        await retire(session, pw.rack_bin, pw.rack_bin2)
+        made = [
+            await make_location(session, pw, kind="bin", code=f"a{i:02d}", barcode=f"LC-{i:02d}")
+            for i in range(1, 31)
+        ]
+        made.append(await make_location(session, pw, kind="bin", code="A-FIRST", barcode="UC-1"))
+        for code in ("DEFAULT", "BIN-B"):
+            await label(session, pw, code, f"{code}-BC")
+        if stocked:
+            await stock(session, pw, pw.dye, *made)
+
+    @pytest.mark.parametrize("cap", [1, 2, 5, 25, 1000])
+    async def test_an_empty_bin_choice_is_the_same_at_every_cap(
+        self, client, session, pw, monkeypatch, cap
+    ) -> None:
+        await self._crowd(session, pw, stocked=False)
+        monkeypatch.setattr(domain, "SUGGEST_CANDIDATE_CAP", cap)
+        body = (await suggest(client, pw)).json()["suggestion"]
+        # Code points: "A-FIRST" < "BIN-B" < "DEFAULT" < "SHELF-1" < "a01" ...
+        assert (body["code"], body["reason"]) == ("A-FIRST", "empty_bin")
+
+    @pytest.mark.parametrize("cap", [1, 2, 5, 25, 1000])
+    async def test_a_holding_bin_choice_is_the_same_at_every_cap(
+        self, client, session, pw, monkeypatch, cap
+    ) -> None:
+        await self._crowd(session, pw, stocked=True)
+        monkeypatch.setattr(domain, "SUGGEST_CANDIDATE_CAP", cap)
+        body = (await suggest(client, pw)).json()["suggestion"]
+        assert (body["code"], body["reason"]) == ("A-FIRST", "holds_item")
+
+    async def test_the_route_agrees_with_the_pure_rule_over_every_bin_of_the_warehouse(
+        self, client, session, pw
+    ) -> None:
+        """What the route answers (capped, ordered in SQL) is what `domain.suggest_putaway_bin`
+        answers over **every** storable barcoded bin of the warehouse, uncapped."""
+        await self._crowd(session, pw, stocked=False)
+        async with session.begin():
+            rows = (
+                await session.execute(
+                    select(Location.id, Location.code, Location.kind, Location.pick_sequence).where(
+                        Location.organization_id == pw.org_id,
+                        Location.warehouse_id == pw.warehouse,
+                        Location.deleted_at.is_(None),
+                        Location.kind.in_(domain.STORABLE_KINDS),
+                        Location.barcode.is_not(None),
+                    )
+                )
+            ).all()
+        assert len(rows) > domain.SUGGEST_CANDIDATE_CAP
+        expected = domain.suggest_putaway_bin(
+            [
+                domain.PutawayBin(
+                    location_id=r.id,
+                    code=r.code,
+                    kind=r.kind,
+                    barcode="x",
+                    pick_sequence=r.pick_sequence,
+                    holds_item=False,
+                    is_empty=True,
+                )
+                for r in rows
+            ]
+        )
+        assert expected is not None
+        body = (await suggest(client, pw)).json()["suggestion"]
+        assert body["location_id"] == str(expected.location_id)
 
 
 async def _finishing(session, pw: PutawayWorld) -> uuid.UUID:

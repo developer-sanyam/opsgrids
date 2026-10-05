@@ -10,6 +10,7 @@ import { AuthProvider } from "./auth/AuthProvider";
 import { RequireAuth } from "./auth/RequireAuth";
 import { HomePage } from "./routes/Home";
 import { LoginPage } from "./routes/Login";
+import { lazyScreen } from "./routes/lazyScreen";
 import { NotFoundPage } from "./routes/NotFound";
 import { RouteFallback } from "./routes/RouteFallback";
 import { LogoMark } from "./ui/LogoMark";
@@ -46,8 +47,12 @@ const CountLineEntryPage = lazy(() =>
   import("./routes/CountLineEntry").then((m) => ({ default: m.CountLineEntryPage })),
 );
 // Storage put-away is the same story as counting: a picker never opens it on a normal shift, and it
-// is where the camera scanner, the geolocation call and the stock picker get pulled in.
-const PutawayPage = lazy(() => import("./routes/Putaway").then((m) => ({ default: m.PutawayPage })));
+// is where the camera scanner, the geolocation call and the stock picker get pulled in. It is also
+// the screen a worker opens from a basement with no signal, having never opened it since the app
+// loaded — so it alone says when its chunk would not download, and can try again (`lazyScreen`).
+const PutawayPage = lazyScreen("Put away", () =>
+  import("./routes/Putaway").then((m) => ({ default: m.PutawayPage })),
+);
 
 const router = createBrowserRouter([
   {
@@ -101,14 +106,7 @@ const router = createBrowserRouter([
               </Suspense>
             ),
           },
-          {
-            path: "putaway",
-            element: (
-              <Suspense fallback={<RouteFallback />}>
-                <PutawayPage />
-              </Suspense>
-            ),
-          },
+          { path: "putaway", element: <PutawayPage /> },
           {
             path: "profile",
             element: (

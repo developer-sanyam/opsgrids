@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { listWorkers } from "@/api/client";
@@ -7,7 +7,7 @@ import type { PutawayDetailOut, PutawayRevealOut } from "@/api/trackingTypes";
 import { LOCATION_KIND_LABEL } from "@/data/locationKinds";
 import { reportOnce } from "@/lib/clientReport";
 import { formatDateTime } from "@/lib/format";
-import { formatCoordinates, isValidMicroPair, microToDegrees } from "@/lib/geo";
+import { formatCoordinates, isValidMicroPair, microToDegrees, positionOf } from "@/lib/geo";
 import { getMapsApiKey } from "@/lib/mapsConfig";
 import { ApiError, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import { Button, Drawer, EmptyState, ErrorState, InlineAlert, Skeleton } from "@/ui";
@@ -120,11 +120,46 @@ function useWorkerName(workerId: string | null): string {
   return workers.data.items.find((w) => w.id === workerId)?.display_name || "A warehouse worker";
 }
 
+/**
+ * The reveal route needs a session that signed in with a one-time code: the server answers a
+ * password-only or single-sign-on session with a 403 whose detail is `Additional authentication
+ * required: otp` (`require(..., amr={"otp"})` in `platform_core/auth.py`). That problem's `type` is the
+ * generic `forbidden`, so the detail is the only thing that tells it apart from a plain missing
+ * permission; every other 403 keeps the server's own sentence.
+ */
+function needsOneTimeCodeSession(error: unknown): boolean {
+  if (!(error instanceof ApiError) || error.status !== 403) return false;
+  const detail = error.problem?.detail ?? "";
+  return detail.startsWith("Additional authentication required:") && /\botp\b/.test(detail);
+}
+
+const ONE_TIME_CODE_MESSAGE =
+  "Revealing a worker's location needs a session signed in with a one-time code. Sign in again with your authenticator code, or ask an admin who has MFA enabled.";
+
 function RevealSection({ moveId, hasLocation }: { moveId: string; hasLocation: boolean }) {
   const [revealed, setRevealed] = useState<PutawayRevealOut | null>(null);
+  const [announcement, setAnnouncement] = useState("");
   const reveal = useMutation<void, PutawayRevealOut>(() => revealPutawayLocation(moveId), {
-    onSuccess: (result) => setRevealed(result),
+    onSuccess: (result) => {
+      setRevealed(result);
+      const position = positionOf(result);
+      setAnnouncement(
+        position
+          ? `Worker location shown: ${formatCoordinates(position.lat_micro, position.lng_micro, result.accuracy_m)}.`
+          : "Worker location shown: no usable position was recorded.",
+      );
+    },
   });
+
+  // One button toggles Show and Hide, so it is never removed from under the keyboard. It is
+  // disabled while the request is in flight, and a browser takes focus off a control that becomes
+  // disabled, so focus is put back on it when the request settles, whether it succeeded or failed.
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const wasPending = useRef(false);
+  useEffect(() => {
+    if (wasPending.current && !reveal.pending) toggleRef.current?.focus();
+    wasPending.current = reveal.pending;
+  }, [reveal.pending]);
 
   if (!hasLocation) {
     return (
@@ -136,55 +171,66 @@ function RevealSection({ moveId, hasLocation }: { moveId: string; hasLocation: b
 
   const error = reveal.error;
   const expired = error instanceof ApiError && error.status === 404;
+  const needsCode = needsOneTimeCodeSession(error);
   return (
     <section aria-labelledby="reveal-heading" className="flex flex-col gap-3">
       <h3 id="reveal-heading" className="text-sm font-bold text-ink">
         Worker location
       </h3>
       {revealed === null ? (
-        <>
-          <p className="text-sm text-muted">
-            This is personal location data. Showing it is recorded in the audit log, every time.
-          </p>
-          <Button
-            variant="secondary"
-            leadingIcon={<EyeIcon className="size-4" />}
-            loading={reveal.pending}
-            onClick={() => void reveal.mutate()}
-            className="w-fit"
-          >
-            Show worker location
-          </Button>
-        </>
+        <p className="text-sm text-muted">
+          This is personal location data. Showing it is recorded in the audit log, every time.
+        </p>
       ) : (
-        <RevealedPosition revealed={revealed} onHide={() => setRevealed(null)} />
+        <RevealedPosition revealed={revealed} />
       )}
+      <Button
+        ref={toggleRef}
+        variant="secondary"
+        size={revealed === null ? "md" : "sm"}
+        leadingIcon={revealed === null ? <EyeIcon className="size-4" /> : <EyeOffIcon className="size-4" />}
+        loading={reveal.pending}
+        onClick={() => {
+          if (revealed === null) {
+            void reveal.mutate();
+          } else {
+            setRevealed(null);
+            setAnnouncement("Worker location hidden.");
+          }
+        }}
+        className="w-fit"
+      >
+        {revealed === null ? "Show worker location" : "Hide location"}
+      </Button>
+      <p className="sr-only" role="status" aria-live="polite">
+        {announcement}
+      </p>
       {error ? (
-        <InlineAlert tone="danger" title={expired ? "Capture expired" : "Couldn't show the location"}>
+        <InlineAlert
+          tone="danger"
+          title={expired ? "Capture expired" : needsCode ? "A one-time-code sign-in is needed" : "Couldn't show the location"}
+        >
           {expired
             ? "This capture is older than its 30-day retention window and has been removed."
-            : problemMessage(error)}
+            : needsCode
+              ? ONE_TIME_CODE_MESSAGE
+              : problemMessage(error)}
         </InlineAlert>
       ) : null}
     </section>
   );
 }
 
-function RevealedPosition({ revealed, onHide }: { revealed: PutawayRevealOut; onHide: () => void }) {
+function RevealedPosition({ revealed }: { revealed: PutawayRevealOut }) {
   const { lat_micro: lat, lng_micro: lng, accuracy_m: accuracy } = revealed;
   const [mapFailed, setMapFailed] = useState(false);
   const apiKey = getMapsApiKey();
   const hasPosition = lat !== null && lng !== null && isValidMicroPair(lat, lng);
   if (!hasPosition) {
     return (
-      <div className="flex flex-col gap-3">
-        <InlineAlert tone="info" title="No position was captured" live="off">
-          The record holds no usable position for this put-away.
-        </InlineAlert>
-        <Button variant="secondary" size="sm" className="w-fit" onClick={onHide}>
-          Close
-        </Button>
-      </div>
+      <InlineAlert tone="info" title="No position was captured" live="off">
+        The record holds no usable position for this put-away.
+      </InlineAlert>
     );
   }
 
@@ -223,9 +269,6 @@ function RevealedPosition({ revealed, onHide }: { revealed: PutawayRevealOut; on
           ? "The circle is the device's reported accuracy. The bin the stock was scanned into is the location of record."
           : "The map isn't available, so the position is shown as coordinates. The bin the stock was scanned into is the location of record."}
       </p>
-      <Button variant="secondary" size="sm" className="w-fit" leadingIcon={<EyeOffIcon className="size-4" />} onClick={onHide}>
-        Hide location
-      </Button>
     </div>
   );
 }

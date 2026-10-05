@@ -7,6 +7,7 @@ import { makeStockRow, makeSuggestion } from "@/worker/testKit";
 import {
   barcodeProblem,
   buildPutawayBody,
+  canPutAwayFrom,
   cleanBarcode,
   deductQueued,
   filterStock,
@@ -88,6 +89,30 @@ describe("stock helpers", () => {
     expect(filterStock(rows, "r-55").map((r) => r.id)).toEqual(["b"]);
     expect(filterStock(rows, "wh1").map((r) => r.id)).toEqual(["a", "b"]);
     expect(filterStock(rows, "nothing like this")).toEqual([]);
+  });
+
+  it.each(["receiving", "staging"] as const)("put-away may start from a %s bin", (kind) => {
+    expect(canPutAwayFrom(makeStockRow({ location_kind: kind }))).toBe(true);
+  });
+
+  it.each(["bin", "shelf", "rack", "aisle", "zone", "dock", "pack_station", "returns", "quarantine"] as const)(
+    "put-away may not start from a %s",
+    (kind) => {
+      expect(canPutAwayFrom(makeStockRow({ location_kind: kind }))).toBe(false);
+    },
+  );
+
+  it("goes by the kind the server sent, never by what the bin's code looks like", () => {
+    expect(canPutAwayFrom(makeStockRow({ location_code: "RCV-09", location_kind: "bin" }))).toBe(false);
+    expect(canPutAwayFrom(makeStockRow({ location_code: "A-01-03", location_kind: "receiving" }))).toBe(true);
+  });
+
+  it("a kind that is missing or null (a server that predates it) cannot rule a row out: the server still decides", () => {
+    expect(canPutAwayFrom(makeStockRow({ location_kind: null }))).toBe(true);
+    const withoutKind = makeStockRow();
+    delete withoutKind.location_kind;
+    expect(withoutKind).not.toHaveProperty("location_kind");
+    expect(canPutAwayFrom(withoutKind)).toBe(true);
   });
 
   it("describes a bucket the way its shelf label reads", () => {
@@ -320,9 +345,13 @@ describe("deductQueued", () => {
 describe("notices", () => {
   it("has a sentence for every server warning, and none for one it doesn't know", () => {
     expect(warningNotice("geo_dropped:out_of_range")).toMatch(/location/i);
-    expect(warningNotice("captured_at_adjusted")).toMatch(/clock/i);
+    expect(warningNotice("captured_at_adjusted")).toMatch(/time was adjusted by the server/i);
     expect(warningNotice("geo_not_recorded")).toMatch(/location/i);
     expect(warningNotice("something_new")).toBeNull();
+  });
+
+  it("does not blame the phone's clock for an adjusted time: the server also adjusts one that is over a week old", () => {
+    expect(warningNotice("captured_at_adjusted")).not.toMatch(/phone|clock/i);
   });
 
   it("says nothing about a suggestion the server ignored: the move stands and the worker can't act on it", () => {

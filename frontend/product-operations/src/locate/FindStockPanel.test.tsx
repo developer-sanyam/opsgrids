@@ -49,7 +49,7 @@ function result(overrides: Partial<LocateResultOut> = {}): LocateResultOut {
 }
 
 function found(...results: LocateResultOut[]): LocateOut {
-  return { results };
+  return { results, truncated: false };
 }
 
 const READ = "operations.inventory.stock.read:ORG";
@@ -61,9 +61,11 @@ function renderPanel(props: Partial<Parameters<typeof FindStockPanel>[0]> = {}) 
 describe("FindStockPanel", () => {
   beforeEach(() => {
     locateStock.mockReset();
+    vi.stubEnv("VITE_GOOGLE_MAPS_API_KEY", "");
   });
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   it("asks nothing until it is asked, and says what it will do", () => {
@@ -127,7 +129,7 @@ describe("FindStockPanel", () => {
     expect(region?.getAttribute("aria-live")).toBe("polite");
   });
 
-  it("links 'Show on floor' to the floor view with that bin highlighted, and the warehouse to the map", async () => {
+  it("links 'Show on floor' to the floor view with that bin highlighted", async () => {
     const user = userEvent.setup();
     locateStock.mockResolvedValue(found(result()));
     renderPanel();
@@ -135,7 +137,33 @@ describe("FindStockPanel", () => {
 
     const onFloor = await screen.findByRole("link", { name: "Show on floor for A-01" });
     expect(onFloor.getAttribute("href")).toBe("/warehouses/wh-1/floors/floor-1/view?highlight=loc-1");
-    expect(screen.getByRole("link", { name: "Show on map" }).getAttribute("href")).toBe("/warehouses/map?focus=wh-1");
+  });
+
+  describe("'Show on map'", () => {
+    it("is not offered at all in a build with no map", async () => {
+      const user = userEvent.setup();
+      locateStock.mockResolvedValue(found(result()));
+      renderPanel();
+      await user.click(screen.getByRole("button", { name: "Find where it is" }));
+      await screen.findByRole("region", { name: "Stock in Bhiwandi DC" });
+      expect(screen.queryByText("Show on map")).toBeNull();
+      expect(screen.queryByText(/position on the map/)).toBeNull();
+    });
+
+    it("is disabled, with the reason beside it, when the map exists but the results do not say where the warehouse is", async () => {
+      vi.stubEnv("VITE_GOOGLE_MAPS_API_KEY", "a-maps-key");
+      const user = userEvent.setup();
+      locateStock.mockResolvedValue(found(result()));
+      renderPanel();
+      await user.click(screen.getByRole("button", { name: "Find where it is" }));
+      await screen.findByRole("region", { name: "Stock in Bhiwandi DC" });
+
+      expect(screen.queryByRole("link", { name: "Show on map" })).toBeNull();
+      const button = screen.getByRole("button", { name: "Show on map" }) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      const hint = document.getElementById(button.getAttribute("aria-describedby") ?? "");
+      expect(hint?.textContent).toBe("Not available from here: these results don't say whether Bhiwandi DC has a position on the map.");
+    });
   });
 
   it("offers one link that highlights every placed bin on a floor, with several ids", async () => {
@@ -168,7 +196,7 @@ describe("FindStockPanel", () => {
     expect(await screen.findByText("Not on floor plan")).toBeDefined();
     expect(screen.queryByRole("link", { name: /Show on floor/ })).toBeNull();
     expect(screen.getByRole("link", { name: "Show in 3-D for A-01" }).getAttribute("href")).toBe(
-      "/warehouses/wh-1/3d?highlight=loc-1",
+      "/warehouses/wh-1/3d?highlight=loc-1&why=unplaced",
     );
   });
 
@@ -178,7 +206,9 @@ describe("FindStockPanel", () => {
     renderPanel();
     await user.click(screen.getByRole("button", { name: "Find where it is" }));
     expect(await screen.findByText("Floor has no published layout")).toBeDefined();
-    expect(screen.getByRole("link", { name: "Show in 3-D for A-01" })).toBeDefined();
+    expect(screen.getByRole("link", { name: "Show in 3-D for A-01" }).getAttribute("href")).toBe(
+      "/warehouses/wh-1/3d?highlight=loc-1",
+    );
   });
 
   it("says the floor plan is hidden from a caller who cannot read layouts, and offers no link into it", async () => {
@@ -188,6 +218,66 @@ describe("FindStockPanel", () => {
     await user.click(screen.getByRole("button", { name: "Find where it is" }));
     expect(await screen.findByText(/Floor plan hidden/)).toBeDefined();
     expect(screen.queryByRole("link", { name: /Show on floor|Show in 3-D/ })).toBeNull();
+  });
+
+  describe("a bin that holds stock in two statuses (one row per bin and status)", () => {
+    const TWO_STATUSES = () =>
+      found(
+        result({ status: "AVAILABLE", quantity: "40" }),
+        result({ status: "QUALITY_HOLD", quantity: "5" }),
+        result({ location_id: "loc-2", code: "B-02", name: "Bin B-02" }),
+      );
+
+    it("lists both rows without a duplicate-key error", async () => {
+      const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const user = userEvent.setup();
+      locateStock.mockResolvedValue(TWO_STATUSES());
+      renderPanel();
+      await user.click(screen.getByRole("button", { name: "Find where it is" }));
+
+      const region = await screen.findByRole("region", { name: "Stock in Bhiwandi DC" });
+      expect(within(region).getAllByText("A-01")).toHaveLength(2);
+      expect(within(region).getByText(/Quality hold/)).toBeDefined();
+      const keyWarnings = errors.mock.calls.filter((call) => String(call[0]).includes("same key"));
+      expect(keyWarnings).toEqual([]);
+    });
+
+    it("counts bins, not rows, in the heading and the announcement, and in 'Show all'", async () => {
+      const user = userEvent.setup();
+      locateStock.mockResolvedValue(TWO_STATUSES());
+      renderPanel();
+      await user.click(screen.getByRole("button", { name: "Find where it is" }));
+
+      const region = await screen.findByRole("region", { name: "Stock in Bhiwandi DC" });
+      expect(within(region).getByRole("heading", { level: 3 }).textContent).toContain("2 locations");
+      expect(screen.getAllByRole("status").some((s) => s.textContent === "Found in 2 locations across 1 warehouse.")).toBe(true);
+      expect(within(region).getByRole("link", { name: "Show all 2 on floor" }).getAttribute("href")).toBe(
+        "/warehouses/wh-1/floors/floor-1/view?highlight=loc-1,loc-2",
+      );
+    });
+  });
+
+  describe("when the server cut the answer short", () => {
+    it("says it is showing the first bins and to narrow the search", async () => {
+      const user = userEvent.setup();
+      locateStock.mockResolvedValue({
+        results: [result(), result({ location_id: "loc-2", code: "B-02" }), result({ location_id: "loc-2", code: "B-02", status: "QUALITY_HOLD" })],
+        truncated: true,
+      });
+      renderPanel();
+      await user.click(screen.getByRole("button", { name: "Find where it is" }));
+
+      expect(await screen.findByText("Showing the first 2 bins — narrow the search")).toBeDefined();
+    });
+
+    it("says nothing about it for a complete answer", async () => {
+      const user = userEvent.setup();
+      locateStock.mockResolvedValue(found(result()));
+      renderPanel();
+      await user.click(screen.getByRole("button", { name: "Find where it is" }));
+      await screen.findByRole("region", { name: "Stock in Bhiwandi DC" });
+      expect(screen.queryByText(/narrow the search/)).toBeNull();
+    });
   });
 
   it("handles an empty answer: nothing is stored anywhere", async () => {

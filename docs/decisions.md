@@ -32,7 +32,7 @@ work, which has not merged). This table was last brought up to date at 0019, apa
 | [0017](adr/0017-crm-lead-service-and-pipeline-scaffold-removal.md) | CRM: `lead` joins `crm`; `pipeline` and `activity` removed | Accepted | Built (Q3, merged 2026-09-24) |
 | [0018](adr/0018-domain-verification-lifecycle.md) | Email-domain verification lifecycle | Accepted | Built (P1) |
 | [0019](adr/0019-statutory-portal-credentials.md) | Statutory portal credentials live in finance | Accepted 2026-09-24 | Not built; B5 (5b) |
-| [0028](adr/0028-putaway-gps-captures.md) | Storage put-away: GPS captures are audit evidence, kept 30 days | Accepted 2026-10-05 | Built on `feat/warehouse-map-putaway`, not deployed; the admin-run purge is `tools/purge_putaway_captures.py` |
+| [0028](adr/0028-putaway-gps-captures.md) | Storage put-away: GPS captures are audit evidence, kept 30 days | Accepted 2026-10-05 | Built on `feat/warehouse-map-putaway`, not deployed; the admin-run purge is `tools/purge_putaway_captures.py`. The reveal's one-time-code requirement was added in review and is an open owner decision (keep or revert) |
 
 Several header status lines (0002, 0004, 0006, 0007, 0009, 0010, 0012) were written before the
 work they describe shipped. The "What exists today" column is the current fact. Correcting the

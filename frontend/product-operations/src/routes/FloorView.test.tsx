@@ -223,6 +223,31 @@ describe("FloorViewPage", () => {
       expect(document.querySelector("[data-highlighted='true']")).toBeNull();
     });
 
+    it("says when the link carried more locations than a view marks, instead of reporting only the first 100", async () => {
+      const ghosts = Array.from({ length: 128 }, (_, i) => `ghost-${i}`).join(",");
+      renderFloor(`/warehouses/wh-1/floors/floor-1/view?highlight=bin-a,bin-b,${ghosts}`);
+      await screen.findByRole("group", { name: "Floor plan of Ground floor" });
+      const status = screen
+        .getAllByRole("status")
+        .map((s) => s.textContent)
+        .find((text) => text?.includes("Highlighting"));
+      expect(status).toBe(
+        "Highlighting 2 locations on this floor: A-01, A-02. 98 of the locations you searched for are not on this floor's plan. Only the first 100 of the 130 locations in this link are marked.",
+      );
+    });
+
+    it("says it too on a floor with no published plan", async () => {
+      getPublishedLayout.mockResolvedValue(layout({ published: false, layout_version_id: null, placements: [] }));
+      const ids = Array.from({ length: 130 }, (_, i) => `loc-${i}`).join(",");
+      renderFloor(`/warehouses/wh-1/floors/floor-1/view?highlight=${ids}`);
+      await screen.findByText("This floor has no published layout yet");
+      expect(
+        screen
+          .getAllByRole("status")
+          .some((s) => s.textContent?.includes("100 locations to highlight") && s.textContent.includes("Only the first 100 of the 130 locations in this link are marked.")),
+      ).toBe(true);
+    });
+
     it("has no highlight and no status without the parameter", async () => {
       renderFloor();
       await screen.findByRole("group", { name: "Floor plan of Ground floor" });
@@ -295,11 +320,14 @@ describe("FloorViewPage", () => {
       expect(await screen.findByRole("group", { name: "Floor plan of Ground floor" })).toBeDefined();
     });
 
-    it("falls back the same way when the scene throws, and the rest of the page stays", async () => {
+    it("says the view could not be drawn, not that the browser lacks WebGL, when the scene throws, and the rest of the page stays", async () => {
       vi.spyOn(console, "error").mockImplementation(() => undefined);
       sceneThrows = true;
       renderFloor("/warehouses/wh-1/floors/floor-1/view?view=3d");
-      expect(await screen.findByText("This browser can't show the 3D view")).toBeDefined();
+      expect(await screen.findByText("The 3D view couldn't be drawn")).toBeDefined();
+      expect(screen.queryByText("This browser can't show the 3D view")).toBeNull();
+      expect(screen.getByRole("button", { name: "Try again" })).toBeDefined();
+      expect(screen.getByRole("button", { name: "Show the 2-D plan" })).toBeDefined();
       expect(screen.getByRole("heading", { name: "Ground floor" })).toBeDefined();
       expect(screen.getByRole("tab", { name: "2-D plan" })).toBeDefined();
       expect(console.warn).toHaveBeenCalledWith("[operations] floor_render_failed (render_error)");

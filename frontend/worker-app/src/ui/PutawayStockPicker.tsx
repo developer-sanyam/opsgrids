@@ -1,14 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { problemMessage } from "@opsgrids/client";
-import { Button, Card, EmptyState, ErrorState, InlineAlert, RadioGroup, Skeleton, TextField, WarehouseIcon } from "@opsgrids/ui";
-import type { RadioOption } from "@opsgrids/ui";
+import { Button, Card, EmptyState, ErrorState, InlineAlert, Skeleton, TextField, WarehouseIcon } from "@opsgrids/ui";
 
 import type { StockRowOut } from "@/api/types";
-import { filterStock, stockDetail, stockLabel } from "@/lib/putawayForm";
+import { canPutAwayFrom, filterStock, stockDetail, stockLabel } from "@/lib/putawayForm";
 import type { AvailableStock } from "@/lib/useAvailableStock";
 
-/** More than this on a phone is a wall of radios; the filter is how a worker gets to the rest. */
+/** More than this on a phone is a wall of rows; the filter is how a worker gets to the rest. */
 const MAX_SHOWN = 30;
 
 /** The list on screen is the last one that loaded, because asking again failed — shown rather than
@@ -41,10 +40,19 @@ interface PutawayStockPickerProps {
  * Step one: which stock is being put away. Searchable over what has loaded (SKU, item name, lot,
  * roll, bin), with its own loading, empty and error states — a worker holding a pallet is waiting
  * on this list, so it never shows a blank card.
+ *
+ * Only stock in a receiving or staging bin is offered (`canPutAwayFrom`): that is the one place a
+ * put-away can start, so a row from anywhere else would only ever end in the server's refusal.
+ *
+ * Each row is a button, not a radio. Choosing stock is what moves the worker on to the next step,
+ * so the choice has to be a deliberate press: a radio group selects on the arrow keys, which would
+ * commit the first row a keyboard or switch user merely moved past. Tab walks the rows; Enter or
+ * Space chooses.
  */
 export function PutawayStockPicker({ stock, onSelect, focusSearch = false }: PutawayStockPickerProps) {
   const [filter, setFilter] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const listId = useId();
   const searchVisible = stock.status === "success";
   useEffect(() => {
     if (focusSearch && searchVisible) searchRef.current?.focus();
@@ -86,12 +94,23 @@ export function PutawayStockPicker({ stock, onSelect, focusSearch = false }: Put
     );
   }
 
-  const matches = filterStock(stock.rows, filter);
-  const options: RadioOption[] = matches.slice(0, MAX_SHOWN).map((row) => ({
-    value: row.id,
-    label: stockLabel(row),
-    description: stockDetail(row),
-  }));
+  const eligible = stock.rows.filter(canPutAwayFrom);
+
+  if (eligible.length === 0 && !stock.hasMore) {
+    return (
+      <Card className="p-2">
+        {stock.stale ? <StaleNotice onRefresh={stock.reload} /> : null}
+        <EmptyState
+          icon={<WarehouseIcon className="size-6" aria-hidden />}
+          title="No stock in receiving or staging"
+          description="Put-away starts from receiving or staging bins. Stock in any other bin is moved with a bin transfer."
+        />
+      </Card>
+    );
+  }
+
+  const matches = filterStock(eligible, filter);
+  const shown = matches.slice(0, MAX_SHOWN);
 
   return (
     <Card className="flex flex-col gap-4 p-4">
@@ -109,22 +128,33 @@ export function PutawayStockPicker({ stock, onSelect, focusSearch = false }: Put
         helper="Pick the stock you are carrying. It must be in a receiving or staging bin."
       />
 
-      {options.length > 0 ? (
-        <RadioGroup
-          legend="Stock to put away"
-          name="putaway-stock"
-          value={null}
-          onChange={(id) => {
-            const row = matches.find((candidate) => candidate.id === id);
-            if (row) onSelect(row);
-          }}
-          options={options}
-        />
+      {shown.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          <p id={listId} className="text-sm font-semibold text-ink-soft">
+            Stock to put away
+          </p>
+          <ul aria-labelledby={listId} className="m-0 flex list-none flex-col gap-2 p-0">
+            {shown.map((row) => (
+              <li key={row.id}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(row)}
+                  className="w-full rounded-tile border border-line p-3 text-left transition-colors hover:bg-ground active:bg-sunken"
+                >
+                  <span className="block text-sm font-bold text-ink">{stockLabel(row)}</span>
+                  <span className="block text-xs text-muted">{stockDetail(row)}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : (
         <p className="text-sm text-muted" role="status">
-          {stock.hasMore
-            ? "Nothing in the stock loaded so far matches. Load more to keep looking."
-            : "Nothing matches that. Check the spelling, or clear the search."}
+          {eligible.length === 0
+            ? "Nothing in the stock loaded so far is in a receiving or staging bin. Load more to keep looking."
+            : stock.hasMore
+              ? "Nothing in the stock loaded so far matches. Load more to keep looking."
+              : "Nothing matches that. Check the spelling, or clear the search."}
         </p>
       )}
 

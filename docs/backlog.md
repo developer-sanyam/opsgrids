@@ -17,30 +17,60 @@ Phased plan: [inventory/plan.md](inventory/plan.md), decisions in
 quantities, posting kernel, reconciler — [inventory/ledger.md](inventory/ledger.md)).
 **Next: Phase 1** — item master, UOMs, lots, rolls, locations (scope and exit criteria in the plan).
 
-### Warehouse map & storage put-away — built on branch, not deployed
+### Warehouse map & storage put-away — implemented on branch, pending owner review, not deployed
 
 Branch `feat/warehouse-map-putaway` (design: [the spec](superpowers/specs/2026-10-05-warehouse-map-putaway-design.md);
 decisions: [ADR-0028](adr/0028-putaway-gps-captures.md) and the amendment to ADR-0014 §12; migration `d7a3c9e5b184`;
-rollout, rollback and the purge: RUNBOOK, "Warehouse map and storage put-away"). A site map and 2-D/3-D floor view
-over the published layout, a find-stock search, and a worker-app **Put away** screen: scan the destination bin, with
-the device's GPS fix kept 30 days as audit evidence. **Nothing is deployed**; merging deploys nothing, and the owner
-approves any deploy. Open items:
+rollout, rollback and the purge: RUNBOOK, "Warehouse map and storage put-away"). **Built:** a site map and 2-D/3-D
+floor view over the published layout, a find-stock search (`locate`: at most 500 bins, says when it cut), and a
+worker-app **Put away** screen: scan the destination bin (the suggestion carries the bin's barcode, and only bins that
+have one are suggested; the picker offers only stock in `receiving`/`staging` bins, from the new `location_kind` on
+stock rows), with the device's GPS fix kept 30 days as audit evidence and revealed only through an audited,
+ADMIN-only, one-time-code route. The review rounds are folded into the spec as marked amendments. **Nothing is
+deployed**; merging deploys nothing, and the owner approves any deploy. Open items, owner decisions first:
 
-- **D1 against the warehouse's reality.** Put-away is allowed only from `receiving` or `staging` bins, and the order
-  engine reserves only at an item's home bin (limitation (c)), so stock put away elsewhere is invisible to order
-  accept. On `main` a goods receipt lands in the item's home bin (kind `bin`), so stock reaches a receiving/staging bin
-  only by opening stock posted there, an explicit bin transfer, or Phase 2 receipts (not merged). Decide whether the
-  warehouse sets up receiving/staging bins first, and schedule multi-location allocation, which lifts (c).
-- **The Maps key (owner).** The Google Cloud project, billing, spend cap, the referrer and API restrictions, and the
-  `VITE_GOOGLE_MAPS_API_KEY` line in the box's `.env`. The release does not wait for it: without the key the operations
-  bundle publishes map-less with a loud warning. Adding it later is a `make edge-web ... APP=operations` republish.
+- **Owner decision: keep the one-time code on the reveal, or revert.** The reveal needs a session that gave a one-time
+  code (`amr={"otp"}`), which was added in review **beyond the owner's literal D3** (permission plus audit). Keeping it
+  means an administrator with no authenticator, or on a single-sign-on or social-login session, gets a 403. Reverting is
+  one line plus flipping `test_putaway_authz.py::TestTheRevealNeedsASessionThatGaveAOneTimeCode` (ADR-0028, "Owner
+  decision"). Follow-up if kept: a step-up prompt in the operations SPA and then the `stepup` marker on the route
+  (ADR-0023 risk 5), so a code is proved *for this reveal*.
+- **Owner: Google Cloud setup (the Maps key).** The Google Cloud project, billing, spend cap, the referrer and API
+  restrictions, and the `VITE_GOOGLE_MAPS_API_KEY` line in the box's `.env`. The release does not wait for it: without
+  the key the operations bundle publishes map-less with a loud warning, and the reveal is text only. Adding it later is
+  a `make edge-web ... APP=operations` republish. Know that with a key the reveal's map discloses the viewport position
+  to Google (ADR-0028); there is no per-click text-only choice today.
 - **Permission reconcile after the API deploy.** `make edge-reconcile ... PRODUCTS=operations` (dry run, then
   `APPLY=1`) so `OPERATIONS_ADMIN` gains `operations.inventory.putaway.location_read`; the reveal answers 403 in
   existing organizations until it runs.
 - **Two-stack re-parent.** Two unmerged inventory stacks share head `c4a8e1f6d273`; whichever merges second re-points
   `d7a3c9e5b184`'s `down_revision` (marked `# RE-PARENT HERE`) and confirms a single `alembic heads`.
+- **D1 against the warehouse's reality.** Put-away is allowed only from `receiving` or `staging` bins, and the order
+  engine reserves only at an item's home bin (limitation (c)), so stock put away elsewhere is invisible to order
+  accept. On `main` a goods receipt lands in the item's home bin (kind `bin`), so stock reaches a receiving/staging bin
+  only by opening stock posted there, an explicit bin transfer, or Phase 2 receipts (not merged). Decide whether the
+  warehouse sets up receiving/staging bins first, and schedule multi-location allocation, which lifts (c).
 - **The weekly purge (owner).** `tools/purge_putaway_captures.py` is run by hand, weekly, dry run first; nothing runs it
   for you. The purge writes no audit row of its own: revisit if an auditor wants a tamper-evident erasure log.
+- **A swallowed capture failure has no alert.** A put-away whose capture row cannot be written still answers 201
+  (`geo_not_recorded`) and logs `putaway.capture_failed`; `ops-monitor` has no log-based check, so the RUNBOOK gives a
+  manual log count and a durable SQL check to run after the deploy and daily for the first week. Wiring the log line
+  (or that query) to an alert is open.
+- **Server `occurred_on` has zero clock tolerance.** `PutawayIn` refuses an `occurred_on` after the API process's own
+  `date.today()`, with no tolerance. The apps now send it only for a put-away confirmed offline (the UTC date of the
+  confirm; online the server dates it), so only an offline confirm can be refused (a phone clock ahead of the
+  server's, or an API container whose local date is behind UTC), and it is parked with a message to fix the phone's
+  date. A day of tolerance on the server, or ignoring the client's date, would remove it.
+- **The foreground put-away is not persisted before the geolocation wait.** Confirming waits for the position (5 s, plus
+  a 1 s guard) *before* the entry is saved to the queue, so a page closed or killed in those seconds loses the
+  put-away it just confirmed. Saving the entry first and attaching the fix after is not done.
+- **The 2-D floor plan makes every bin a tab stop.** Each placement is a focusable `role="button"`, so a floor with
+  thousands of bins is thousands of tab stops and a heavy DOM. A roving tabindex (one stop, arrow keys inside) and
+  windowing the rectangles are the fix; it has not been measured at a real floor's size.
+- **The put-away 422 messages tell a worker about a bin they cannot read.** A worker holds no `location.read`, yet a
+  refused scan says what the barcode resolved to: "…not a {kind}" (`destination_not_storable`) and "A put-away stays
+  inside one warehouse" (`different_warehouse`). Low severity (a barcode is a printed label), but it is a probe of bin
+  kind and warehouse by a role that cannot list locations; a message that does not distinguish the cases would close it.
 - **CSP hardening (separate release).** `ops` and `worker` send no `Content-Security-Policy` today; when one is
   added it must allow the Google Maps origins.
 

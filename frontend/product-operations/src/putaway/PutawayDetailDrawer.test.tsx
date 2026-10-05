@@ -235,7 +235,7 @@ describe("PutawayDetailDrawer", () => {
 
       expect(await screen.findByTestId("pin-map-stub")).toBeDefined();
       expect(pinMapProps.mock.calls.at(-1)?.[0]).toMatchObject({
-        apiKey: "test-key",
+        apiKey: "test-key", // pragma: allowlist secret — a test fixture, not a Maps key
         lat: 19.301234,
         lng: 73.061234,
         accuracyM: 12,
@@ -352,6 +352,83 @@ describe("PutawayDetailDrawer", () => {
 
       await user.click(screen.getByRole("button", { name: "Show worker location" }));
       expect(await screen.findByText(`${LAT_TEXT}, ${LNG_TEXT} (within 12 m)`)).toBeDefined();
+    });
+
+    it("explains in plain words that a session without a one-time code cannot reveal, instead of the server's sentence", async () => {
+      revealPutawayLocation.mockRejectedValue(
+        new ApiError(403, "Additional authentication required: otp", {
+          type: "https://errors.opsgrids.dev/forbidden",
+          title: "Not permitted",
+          status: 403,
+          detail: "Additional authentication required: otp",
+        }),
+      );
+      const user = userEvent.setup();
+      renderDrawer();
+      await user.click(await screen.findByRole("button", { name: "Show worker location" }));
+
+      const alert = await screen.findByRole("alert");
+      expect(within(alert).getByText("A one-time-code sign-in is needed")).toBeDefined();
+      expect(alert.textContent).toContain(
+        "Revealing a worker's location needs a session signed in with a one-time code. Sign in again with your authenticator code, or ask an admin who has MFA enabled.",
+      );
+      expect(document.body.textContent).not.toContain("Additional authentication required");
+      expect(document.body.textContent).not.toContain(LAT_TEXT);
+      expect(screen.getByRole("button", { name: "Show worker location" })).toBeDefined();
+    });
+
+    it("recognises the same refusal when the server names more than the code", async () => {
+      revealPutawayLocation.mockRejectedValue(
+        new ApiError(403, "x", { detail: "Additional authentication required: otp, stepup" }),
+      );
+      const user = userEvent.setup();
+      renderDrawer();
+      await user.click(await screen.findByRole("button", { name: "Show worker location" }));
+      expect(await screen.findByText("A one-time-code sign-in is needed")).toBeDefined();
+    });
+
+    it("leaves every other 403 in the server's own words, including a different missing factor", async () => {
+      revealPutawayLocation.mockRejectedValue(
+        new ApiError(403, "Additional authentication required: stepup", {
+          detail: "Additional authentication required: stepup",
+        }),
+      );
+      const user = userEvent.setup();
+      renderDrawer();
+      await user.click(await screen.findByRole("button", { name: "Show worker location" }));
+      expect(await screen.findByText("Couldn't show the location")).toBeDefined();
+      expect(screen.getByText("Additional authentication required: stepup")).toBeDefined();
+      expect(screen.queryByText("A one-time-code sign-in is needed")).toBeNull();
+    });
+
+    it("keeps the same button, and focus on it, from Show through Hide and back, and says what happened", async () => {
+      const user = userEvent.setup();
+      renderDrawer();
+      const live = () => screen.getAllByRole("status").find((s) => s.className.includes("sr-only") && /Worker location/.test(s.textContent ?? ""));
+
+      const show = await screen.findByRole("button", { name: "Show worker location" });
+      await user.click(show);
+      const hide = await screen.findByRole("button", { name: "Hide location" });
+      expect(hide).toBe(show);
+      expect(document.activeElement).toBe(hide);
+      expect(live()?.getAttribute("aria-live")).toBe("polite");
+      expect(live()?.textContent).toBe(`Worker location shown: ${LAT_TEXT}, ${LNG_TEXT} (within 12 m).`);
+
+      await user.click(hide);
+      const again = await screen.findByRole("button", { name: "Show worker location" });
+      expect(again).toBe(show);
+      expect(document.activeElement).toBe(again);
+      expect(live()?.textContent).toBe("Worker location hidden.");
+      expect(document.body.textContent).not.toContain(LAT_TEXT);
+    });
+
+    it("puts focus back on the button when a reveal fails, so a retry is one key away", async () => {
+      revealPutawayLocation.mockRejectedValueOnce(new ApiError(500, "Ledger unavailable", { detail: "Ledger unavailable" }));
+      const user = userEvent.setup();
+      renderDrawer();
+      await user.click(await screen.findByRole("button", { name: "Show worker location" }));
+      expect(await screen.findByText("Ledger unavailable")).toBeDefined();
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Show worker location" }));
     });
 
     it("never writes the position to the console, storage or the address", async () => {

@@ -225,7 +225,7 @@ describe("SitesMap", () => {
     const onFailure = vi.fn();
     render(
       <SitesMap
-        apiKey="test-key"
+        apiKey="test-key" // pragma: allowlist secret — a test fixture, not a Maps key
         sites={[SITE, SITE_2]}
         selectedId={null}
         {...overrides}
@@ -250,6 +250,33 @@ describe("SitesMap", () => {
     renderSites();
     const bounds = JSON.parse(screen.getByTestId("map").getAttribute("data-bounds") ?? "null");
     expect(bounds).toMatchObject({ north: 19.3, south: 18.52, east: 73.856, west: 73.06 });
+  });
+
+  describe("two sites at the same place or almost", () => {
+    const center = () => JSON.parse(screen.getByTestId("map").getAttribute("data-center") ?? "null");
+    const bounds = () => JSON.parse(screen.getByTestId("map").getAttribute("data-bounds") ?? "null");
+    const zoom = () => screen.getByTestId("map").getAttribute("data-zoom");
+
+    it("does not fit the bounds of two sites at identical coordinates, which would zoom to a rooftop", () => {
+      renderSites({ sites: [SITE, { ...SITE_2, lat_micro: SITE.lat_micro, lng_micro: SITE.lng_micro }] });
+      expect(bounds()).toBeNull();
+      expect(center()).toEqual({ lat: 19.3, lng: 73.06 });
+      expect(zoom()).toBe("13");
+      expect(screen.getAllByTestId("marker")).toHaveLength(2);
+    });
+
+    it("keeps to the neighbourhood zoom, centred between them, for sites a few hundred metres apart", () => {
+      renderSites({ sites: [SITE, { ...SITE_2, lat_micro: SITE.lat_micro + 3_000, lng_micro: SITE.lng_micro + 2_000 }] });
+      expect(bounds()).toBeNull();
+      expect(center()).toEqual({ lat: 19.3015, lng: 73.061 });
+      expect(zoom()).toBe("13");
+    });
+
+    it("still fits the bounds once the sites are far enough apart for a fit to be useful", () => {
+      renderSites({ sites: [SITE, { ...SITE_2, lat_micro: SITE.lat_micro + 50_000 }] });
+      expect(bounds()).toMatchObject({ north: 19.35, south: 19.3 });
+      expect(zoom()).toBe("");
+    });
   });
 
   it("centres a lone site at a neighbourhood zoom", () => {
@@ -372,7 +399,15 @@ describe("SitesMap", () => {
 
 describe("LocationPinMap", () => {
   it("pins the position and draws the fix's accuracy as a circle", () => {
-    render(<LocationPinMap apiKey="test-key" lat={19.3012} lng={73.0612} accuracyM={25} onFailure={vi.fn()} />);
+    render(
+      <LocationPinMap
+        apiKey="test-key" // pragma: allowlist secret — a test fixture, not a Maps key
+        lat={19.3012}
+        lng={73.0612}
+        accuracyM={25}
+        onFailure={vi.fn()}
+      />,
+    );
     const marker = screen.getByTestId("marker");
     expect(marker.getAttribute("data-lat")).toBe("19.3012");
     expect(marker.getAttribute("data-lng")).toBe("73.0612");

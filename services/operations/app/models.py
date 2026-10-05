@@ -1106,6 +1106,10 @@ class PutawayCapture(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
         CheckConstraint("accuracy_m IS NULL OR accuracy_m >= 0", name="accuracy_non_negative"),
         Index("uq_putaway_captures_org_move", "organization_id", "move_id", unique=True),
         Index("ix_putaway_captures_org_location", "organization_id", "location_id"),
+        # Not tenant-leading, on purpose: the 30-day purge (`tools/purge_putaway_captures.py`)
+        # filters `created_at < cutoff` and batches `ORDER BY created_at, id` across every
+        # organization, and no tenant-leading index can serve that.
+        Index("ix_putaway_captures_created_at", "created_at"),
     )
 
 

@@ -1,6 +1,6 @@
 /**
  * Shaping `GET /inventory/locate` for the screen: results grouped warehouse then floor, and the
- * address each "Show on floor" / "Show on map" link points at.
+ * address each "Show on floor" / "Show in 3-D" link points at.
  *
  * The server does the finding; nothing here re-filters or re-sorts what it decided beyond putting
  * the groups in reading order. Coordinates play no part: a result carries floor-plan geometry in
@@ -19,7 +19,13 @@ export interface WarehouseGroup {
   warehouseId: string;
   warehouseName: string;
   floors: FloorGroup[];
+  /** Distinct bins. The server answers one row per bin and status, so this is not `results.length`. */
   resultCount: number;
+}
+
+/** How many distinct bins `results` covers: a bin holding stock in two statuses is one bin. */
+export function countBins(results: readonly LocateResultOut[]): number {
+  return new Set(results.map((r) => r.location_id)).size;
 }
 
 /** Warehouses by name, floors by name with the floorless last, bins by code. */
@@ -37,7 +43,6 @@ export function groupLocateResults(results: readonly LocateResultOut[]): Warehou
       group.floors.push(floor);
     }
     floor.results.push(result);
-    group.resultCount += 1;
   }
   const byCode = (a: LocateResultOut, b: LocateResultOut) => a.code.localeCompare(b.code);
   const groups = Array.from(warehouses.values()).sort((a, b) => a.warehouseName.localeCompare(b.warehouseName));
@@ -49,6 +54,7 @@ export function groupLocateResults(results: readonly LocateResultOut[]): Warehou
       return a.floorName.localeCompare(b.floorName);
     });
     for (const floor of group.floors) floor.results.sort(byCode);
+    group.resultCount = countBins(group.floors.flatMap((f) => f.results));
   }
   return groups;
 }
@@ -64,25 +70,27 @@ export function highlightIdFor(result: LocateResultOut): string | null {
   return result.location_id;
 }
 
+/** The distinct location ids to highlight for `results`: a bin in two statuses, or two bins in one
+ *  rack, are each marked once. */
+export function highlightIdsFor(results: readonly LocateResultOut[]): string[] {
+  return Array.from(new Set(results.map(highlightIdFor).filter((id): id is string => id !== null)));
+}
+
 /** The floor view for `results` on one floor, with every placed result highlighted. `null` when
  *  the floor is unknown or nothing there has a placement. */
 export function floorViewHref(warehouseId: string, floorId: string | null, results: readonly LocateResultOut[]): string | null {
   if (floorId === null) return null;
-  const ids = Array.from(
-    new Set(results.map(highlightIdFor).filter((id): id is string => id !== null)),
-  );
+  const ids = highlightIdsFor(results);
   if (ids.length === 0) return null;
   return `/warehouses/${encodeURIComponent(warehouseId)}/floors/${encodeURIComponent(floorId)}/view?highlight=${ids.map(encodeURIComponent).join(",")}`;
 }
 
-/** The auto-arranged 3-D view with this bin marked — for a bin that is on no published plan. */
+/** The auto-arranged 3-D view with this bin marked — for a bin that is on no published plan.
+ *  `why=unplaced` carries the one reason that page cannot work out for itself: the warehouse *has*
+ *  a published layout and this bin is not on it, so the view must not say there is no floor plan. */
 export function autoArrangedHref(result: LocateResultOut): string {
-  return `/warehouses/${encodeURIComponent(result.warehouse_id)}/3d?highlight=${encodeURIComponent(result.location_id)}`;
-}
-
-/** The sites map with this warehouse selected. */
-export function mapHref(warehouseId: string): string {
-  return `/warehouses/map?focus=${encodeURIComponent(warehouseId)}`;
+  const why = result.placement_reason === "unplaced" ? "&why=unplaced" : "";
+  return `/warehouses/${encodeURIComponent(result.warehouse_id)}/3d?highlight=${encodeURIComponent(result.location_id)}${why}`;
 }
 
 const REASON_LABEL: Record<PlacementReason, string> = {

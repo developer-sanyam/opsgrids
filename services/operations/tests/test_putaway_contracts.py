@@ -228,6 +228,61 @@ class TestOpenApi:
             "$ref": "#/components/schemas/PutawayIn"
         }
 
+    def test_the_put_away_post_documents_its_200_replay_beside_the_201(self) -> None:
+        """A retry under the same `Idempotency-Key` answers 200 with the original receipt; a first
+        put-away answers 201. A generated client must know both are the same `PutawayOut`."""
+        responses = LIVE["paths"][f"{P}/inventory/putaway"]["post"]["responses"]
+        assert {"200", "201"} <= set(responses)
+        for code in ("200", "201"):
+            assert responses[code]["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/PutawayOut"
+            }, code
+        replay = responses["200"]["description"].lower()
+        assert "replay" in replay and "idempotency-key" in replay
+        # Geo is outside the request hash: a retry that differs only there replays the original.
+        assert "geo" in replay or "gps" in replay
+        assert "nothing is stored again" in replay
+
+    def test_the_reveal_documents_the_no_store_header_it_sends(self) -> None:
+        ok = LIVE["paths"][f"{P}/inventory/putaway/{{move_id}}/location:reveal"]["post"][
+            "responses"
+        ]["200"]
+        assert ok["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/PutawayLocationOut"
+        }
+        header = ok["headers"]["Cache-Control"]
+        assert header["schema"] == {"type": "string", "enum": ["no-store"]}
+        assert "cache" in header["description"].lower()
+
+    def test_the_reveal_is_the_only_operation_that_documents_a_cache_control_header(self) -> None:
+        """Documented where it is sent: no other put-away route sets one (a put-away's receipt
+        carries no coordinates, and a POST is not stored by a cache that follows the spec)."""
+        documenting = {
+            (method, path)
+            for method, path, op in _operations()
+            for response in op.get("responses", {}).values()
+            if "Cache-Control" in response.get("headers", {})
+        }
+        assert documenting == {("post", f"{P}/inventory/putaway/{{move_id}}/location:reveal")}
+
+    def test_the_stock_row_declares_the_kind_of_its_location_as_a_nullable_location_kind(
+        self,
+    ) -> None:
+        """The worker app lists stock waiting at receiving and staging off this: a worker holds
+        `stock.read` but not `location.read`. Required key, nullable value, the one vocabulary
+        every other location-bearing model uses."""
+        row = LIVE["components"]["schemas"]["StockRowOut"]
+        assert "location_kind" in row["required"]
+        kinds = LIVE["components"]["schemas"]["LocationOut"]["properties"]["kind"]["enum"]
+        branches = row["properties"]["location_kind"]["anyOf"]
+        assert {"type": "null"} in branches
+        [named] = [b for b in branches if b != {"type": "null"}]
+        assert named == {"type": "string", "enum": kinds}
+        assert (
+            COMMITTED["components"]["schemas"]["StockRowOut"]
+            == LIVE["components"]["schemas"]["StockRowOut"]
+        )
+
     def test_the_receipt_declares_its_warnings(self) -> None:
         out = LIVE["components"]["schemas"]["PutawayOut"]
         assert out["properties"]["warnings"] == {
@@ -246,11 +301,12 @@ class TestOpenApi:
             "warnings",
         }
 
-    def test_the_suggestion_declares_the_bins_own_barcode_as_a_required_nullable_string(
+    def test_the_suggestion_declares_the_bins_own_barcode_as_a_required_string(
         self,
     ) -> None:
         """A worker holds no `location.read`: the suggestion's `barcode` is how the device matches
-        a scanned label. Required (the key is always present) and nullable (a bin may have none)."""
+        a scanned label. The key is always present. It stays typed nullable for the clients built
+        against the earlier contract, but the server no longer offers a bin without one."""
         suggestion = LIVE["components"]["schemas"]["PutawaySuggestionOut"]
         assert suggestion["properties"]["barcode"]["anyOf"] == [
             {"type": "string"},

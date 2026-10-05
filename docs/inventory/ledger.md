@@ -330,12 +330,17 @@ event are unchanged; a put-away stages `operations.inventory.putaway.recorded` i
 | Route | Permission | Notes |
 |---|---|---|
 | `POST /operations/inventory/putaway` | `inventory.stock.transfer` (ORG) | `Idempotency-Key` required (stored `putaway:<key>`); source must be `receiving`/`staging` (422 `source_not_receiving_or_staging`); unknown, foreign or deleted barcode is one identical 404; bad geo is dropped with a warning, never blocks the move; geo is not in the request hash, so a retry with different geo replays the original |
-| `GET /operations/inventory/putaway/suggest` | `inventory.stock.transfer` | the bin already holding the item, else the empty storable bin with the lowest `pick_sequence`; no capacity logic |
+| `GET /operations/inventory/putaway/suggest` | `inventory.stock.transfer` | the bin already holding the item, else the empty storable bin with the lowest `pick_sequence`; no capacity logic. A bin with no barcode is never suggested, and the suggestion carries the bin's own `barcode` (a worker holds no `location.read`, so this is how the device learns the label to scan; a bin's `code` is not a label) |
 | `GET /operations/inventory/putaway/{move_id}` | `inventory.stock.read` | bin, worker, time, `matched_suggestion`, `has_location`; **never coordinates**; 404 once the capture is purged |
-| `POST /operations/inventory/putaway/{move_id}/location:reveal` | `inventory.putaway.location_read` (ORG, ADMIN only) | the only response that carries coordinates; POST only, `Cache-Control: no-store`; one `entity.sensitive_read` audit row per successful call |
-| `GET /operations/inventory/locate` | `inventory.stock.read` | bins holding an item/lot/roll with their placement on the *published* layout (own or nearest placed ancestor); geometry only with `warehouse.layout.read` |
+| `POST /operations/inventory/putaway/{move_id}/location:reveal` | `inventory.putaway.location_read` (ORG, ADMIN only) **and a session that gave a one-time code** (`amr` includes `otp`) | the only response that carries coordinates; POST only, `Cache-Control: no-store`; one `entity.sensitive_read` audit row per successful call. A session without `otp` (an administrator with no authenticator, or a single-sign-on or social-login session) is a 403 and writes nothing. The code requirement was added in review beyond the owner's D3 text and is an open owner decision (ADR-0028) |
+| `GET /operations/inventory/locate` | `inventory.stock.read` | bins holding an item/lot/roll with their placement on the *published* layout (own or nearest placed ancestor); geometry only with `warehouse.layout.read`; at most 500 bins, `truncated: true` when more matched |
 | `GET /operations/floors/{floor_id}/published-layout` | `warehouse.layout.read` | published placements only; draft data never appears |
 | `GET /operations/warehouses/map` | `inventory.warehouse.read` (as the warehouse list) | sites with coordinates, and those without |
+
+**Stock rows say where they are.** `GET /operations/inventory/stock` rows carry a nullable `location_kind` (one of the
+`LocationKind` values): the kind of the row's location. Workers already hold `stock.read`, so this exposes nothing new;
+the worker app's put-away picker uses it to offer only stock in `receiving` or `staging` bins, the only sources the
+server accepts (D1).
 
 **Retention.** Captures are kept 30 days from `created_at`, then erased by the admin-run
 `tools/purge_putaway_captures.py` (dry run unless `--apply`; counts only). It is not an in-app job: the app role

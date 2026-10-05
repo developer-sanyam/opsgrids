@@ -17,7 +17,9 @@
  * `localStorage` is the home, but it is allowed to be unavailable (private browsing, a locked-down
  * WebView, a full quota). Then the queue lives in memory for the session: the put-away still
  * syncs if the connection returns before the app is closed, and `isPutawayQueuePersistent` lets
- * the screen say plainly that closing it would lose what is waiting.
+ * the screen say plainly that closing it would lose what is waiting. The copy storage still holds
+ * from before the failure is cleared rather than left to go stale — it would bring back entries
+ * that have synced and keep GPS fixes that have been stripped — so the memory queue is the only one.
  *
  * A module-level store with a subscription rather than component state, so the app-level drainer,
  * the put-away screen and the sign-out purge — none of which share a parent that could own it —
@@ -153,18 +155,37 @@ export function subscribePutawayQueue(listener: () => void): () => void {
   };
 }
 
+/**
+ * Take the stored queue away, as well as it can be done. Once a write has failed what is in storage
+ * is the queue as it stood before — entries that have since synced, and the GPS fix of ones since
+ * parked — and a reload would read it back as if it were current: sending what the server already
+ * has and keeping coordinates alive that were meant to be gone. Removing a key often works where
+ * writing one did not (a full quota), and when it does not there is nothing more to be done here.
+ */
+function dropStoredCopy(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Storage will not even let go of it; the in-memory queue stays the truth either way.
+  }
+}
+
 function mutate(change: (current: readonly PutawayQueueEntry[]) => readonly PutawayQueueEntry[]): void {
   const current = getPutawayQueue();
   const next = change(current);
   if (next === current) return;
   const raw = next.length > 0 ? JSON.stringify(next) : null;
-  if (!memoryOnly) {
+  if (memoryOnly) {
+    // Memory is authoritative from here on; keep trying to clear what an earlier failure left.
+    dropStoredCopy();
+  } else {
     try {
       if (raw === null) localStorage.removeItem(STORAGE_KEY);
       else localStorage.setItem(STORAGE_KEY, raw);
       lastRaw = raw;
     } catch {
       memoryOnly = true;
+      dropStoredCopy();
     }
   }
   snapshot = next;
