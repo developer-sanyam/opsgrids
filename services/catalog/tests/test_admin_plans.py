@@ -36,7 +36,14 @@ from app.domain import RegisteredProduct
 from app.main import app
 from app.models import PLATFORM_ORG, SCHEMA, AuditLog, IdempotencyKey, OutboxEvent, Plan
 from app.registry import ProductSnapshot
-from app.schemas import FeatureIn, PlanCreateIn, PriceIn, SeatClassIn, VersionCreateIn
+from app.schemas import (
+    FeatureIn,
+    PlanCreateIn,
+    PlanVersionOut,
+    PriceIn,
+    SeatClassIn,
+    VersionCreateIn,
+)
 from platform_core.auth import Principal, get_principal
 from platform_core.db import TENANT_GUC
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, UpstreamUnavailableProblem
@@ -717,6 +724,35 @@ class TestPublishValidation:
                 await services.publish_version(
                     platform_session, OWNER, fresh, request=None, products=down
                 )
+
+    async def test_a_problem_names_the_price_by_the_order_the_sheet_shows(
+        self, platform_session: AsyncSession
+    ) -> None:
+        """Two flat prices authored in one transaction tie on `created_at`, so the relationship's
+        order falls to uuid; `errors[]` must number them the way every read (and the console's
+        `#` column) does, or the owner corrects the wrong row."""
+        async with platform_session.begin():
+            plan = await _plan(platform_session)
+            version = await _draft(
+                platform_session,
+                plan,
+                prices=[
+                    _price(kind="flat", amount_minor=99_900),
+                    _price(kind="flat", amount_minor=0),
+                ],
+            )
+            version_id = version.id
+        async with platform_session.begin():
+            shown = PlanVersionOut.model_validate(
+                await services.require_version(platform_session, version_id)
+            )
+        zero_at = next(i for i, p in enumerate(shown.prices) if p.amount_minor == 0)
+        with pytest.raises(BusinessRuleProblem) as caught:
+            async with platform_session.begin():
+                fresh = await services.require_version_for_update(platform_session, version_id)
+                await services.publish_version(platform_session, OWNER, fresh, request=None)
+        assert [e["field"] for e in caught.value.errors or []] == [f"prices.{zero_at}.amount_minor"]
+        assert f"#{zero_at + 1}" in (caught.value.errors or [{}])[0]["message"]
 
     async def test_over_http_the_problems_arrive_as_errors(
         self, client: AsyncClient, platform_session: AsyncSession

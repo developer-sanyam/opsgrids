@@ -82,8 +82,10 @@ class ProductSnapshot:
     connection — and a row lock — is held.
 
     `products` is None when the read failed; `failure` then says why, and only a check that
-    actually needs the registry (a plan's product key, a bundle's members) raises it. A plain
-    version publishes even while product-service is down.
+    actually needs the registry (a plan's product key, a bundle's members, whether a product is a
+    bundle at publish) raises it. A plain version still *drafts* while product-service is down;
+    publishing waits for it, because only the registry can say the product is not a bundle that
+    must name its members (ADR-0030 §3).
     """
 
     products: Mapping[str, RegisteredProduct] | None

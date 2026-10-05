@@ -326,6 +326,132 @@ class TestOverHttp:
         assert "'projects' has not launched" in resp.text
 
 
+def _no_members() -> VersionCreateIn:
+    """A suite sheet that names no members: what an empty-prefill draft or a partial body makes."""
+    return VersionCreateIn(
+        currency="INR", prices=[PriceIn(kind="flat", amount_minor=500000, currency="INR")]
+    )
+
+
+class TestABundleMustNameItsMembers:
+    """ADR-0030 §3: a version of a registered bundle product that declares no `bundled_products`
+    would entitle only the bundle's own key, which routes nowhere — refused at draft when the
+    registry answered, and always at publish, which needs the registry for every version."""
+
+    async def test_refused_at_draft_with_the_registry(self, platform_session: AsyncSession) -> None:
+        async with platform_session.begin():
+            plan = await _suite_plan(platform_session, "no-members-draft")
+            plan_id = plan.id
+        with pytest.raises(BusinessRuleProblem) as caught:
+            async with platform_session.begin():
+                plan = await services.require_plan(platform_session, plan_id)
+                await services.create_version(
+                    platform_session,
+                    operator_principal(),
+                    plan,
+                    _no_members(),
+                    request=None,
+                    products=REGISTRY.snapshot(),
+                )
+        assert {e["code"] for e in caught.value.errors or []} == {"bundle_members_missing"}
+
+    async def test_refused_at_publish_and_a_down_registry_is_a_503(
+        self, platform_session: AsyncSession
+    ) -> None:
+        down = ProductSnapshot(products=None, failure=UpstreamUnavailableProblem("down"))
+        async with platform_session.begin():
+            plan = await _suite_plan(platform_session, "no-members-publish")
+            # Drafted while product-service was down: a draft does not need the registry.
+            version = await services.create_version(
+                platform_session,
+                operator_principal(),
+                plan,
+                _no_members(),
+                request=None,
+                products=down,
+            )
+            version_id = version.id
+        with pytest.raises(BusinessRuleProblem) as caught:
+            async with platform_session.begin():
+                fresh = await services.require_version_for_update(platform_session, version_id)
+                await services.publish_version(
+                    platform_session,
+                    operator_principal(),
+                    fresh,
+                    request=None,
+                    products=REGISTRY.snapshot(),
+                )
+        assert {e["code"] for e in caught.value.errors or []} == {"bundle_members_missing"}
+        with pytest.raises(UpstreamUnavailableProblem):
+            async with platform_session.begin():
+                fresh = await services.require_version_for_update(platform_session, version_id)
+                await services.publish_version(
+                    platform_session, operator_principal(), fresh, request=None, products=down
+                )
+
+    async def test_a_plain_version_publishes_with_the_registry_and_waits_without_it(
+        self, platform_session: AsyncSession
+    ) -> None:
+        down = ProductSnapshot(products=None, failure=UpstreamUnavailableProblem("down"))
+        async with platform_session.begin():
+            plan = await services.create_plan(
+                platform_session,
+                operator_principal(),
+                PlanCreateIn(product_key="hrms", code="plain-publish", name="Plain"),
+                request=None,
+            )
+            version = await services.create_version(
+                platform_session,
+                operator_principal(),
+                plan,
+                _no_members(),
+                request=None,
+                products=down,
+            )
+            version_id = version.id
+        with pytest.raises(UpstreamUnavailableProblem):
+            async with platform_session.begin():
+                fresh = await services.require_version_for_update(platform_session, version_id)
+                await services.publish_version(
+                    platform_session, operator_principal(), fresh, request=None, products=down
+                )
+        async with platform_session.begin():
+            fresh = await services.require_version_for_update(platform_session, version_id)
+            published = await services.publish_version(
+                platform_session,
+                operator_principal(),
+                fresh,
+                request=None,
+                products=REGISTRY.snapshot(),
+            )
+        assert published.state == "published"
+
+    async def test_over_http_publish_names_the_problem(
+        self, client: Any, platform_session: AsyncSession
+    ) -> None:
+        async with platform_session.begin():
+            plan = await _suite_plan(platform_session, "no-members-http")
+            version = await services.create_version(
+                platform_session, operator_principal(), plan, _no_members(), request=None
+            )
+            version_id = version.id
+        with _as(operator_principal(), REGISTRY):
+            draft = await client.post(
+                f"/api/v1/admin/catalog/plans/{plan.id}/versions",
+                json=_body(_no_members()),
+                headers=_key(),
+            )
+            publish = await client.post(
+                f"/api/v1/admin/catalog/versions/{version_id}/publish",
+                json={"reason": "Bundle authoring over HTTP"},
+                headers=_key(),
+            )
+        assert draft.status_code == 422, draft.text
+        assert publish.status_code == 422, publish.text
+        assert [e["code"] for e in publish.json()["errors"]] == ["bundle_members_missing"]
+        assert publish.json()["errors"][0]["field"] == "features.bundled_products"
+
+
 class TestTrialLength:
     @pytest.mark.parametrize("value", [-1, 366, "14", 1.5, True, None])
     async def test_a_malformed_trial_length_is_refused(
@@ -421,6 +547,37 @@ class TestTheDeployAudit:
         assert [f.plan for f in report.errors] == ["suite/audit-bad"]
         assert report.errors[0].problems == ["'retired-one' is not a registered product"]
         assert [f.plan for f in report.warnings] == ["suite/audit-old"]
+
+    async def test_a_bundle_version_with_no_members_is_an_error(
+        self, platform_session: AsyncSession
+    ) -> None:
+        """Frozen before publish refused it (ADR-0030 §3): a `suite` version that declares no
+        `bundled_products` entitles only `suite`, which routes nowhere."""
+        from app.bundle_audit import audit
+
+        async with platform_session.begin():
+            plan = await _suite_plan(platform_session, "audit-empty")
+            version = await services.create_version(
+                platform_session,
+                operator_principal(),
+                plan,
+                VersionCreateIn(
+                    currency="INR",
+                    prices=[PriceIn(kind="flat", amount_minor=500000, currency="INR")],
+                ),
+                request=None,
+            )
+            # A service-level publish that never consulted the registry, as before the rule.
+            await services.publish_version(
+                platform_session, operator_principal(), version, request=None
+            )
+        async with platform_session.begin():
+            report = await audit(platform_session, REGISTRY)
+        assert not report.ok and report.audited == 1
+        assert [f.plan for f in report.errors] == ["suite/audit-empty"]
+        assert report.errors[0].problems == [
+            "'suite' is a bundle, but this version declares no bundled_products"
+        ]
 
     async def test_a_clean_catalogue_passes(self, platform_session: AsyncSession) -> None:
         from app.bundle_audit import audit

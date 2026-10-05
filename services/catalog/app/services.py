@@ -447,6 +447,24 @@ def _validate_bundle(
     if FEATURE_TRIAL_DAYS in features:
         _validate_trial_days(features[FEATURE_TRIAL_DAYS])
     if FEATURE_BUNDLED_PRODUCTS not in features:
+        # The other direction (ADR-0030 §3): a bundle product's version that names no members
+        # would entitle only the bundle's own key, which routes nowhere. Checked here only when
+        # the registry was read; with it down a plain draft still authors, and publish — which
+        # always needs the registry — refuses the gap there.
+        known = snapshot.products if snapshot is not None else None
+        entry = known.get(plan.product_key) if known is not None else None
+        if entry is not None and entry.is_bundle:
+            message = _bundle_members_missing(plan.product_key)
+            raise BusinessRuleProblem(
+                message,
+                errors=[
+                    {
+                        "field": "features.bundled_products",
+                        "code": "bundle_members_missing",
+                        "message": message,
+                    }
+                ],
+            )
         return
     members = features[FEATURE_BUNDLED_PRODUCTS]
     if snapshot is None:
@@ -459,6 +477,13 @@ def _validate_bundle(
     )
     if problems:
         raise BusinessRuleProblem("bundled_products: " + "; ".join(problems))
+
+
+def _bundle_members_missing(product_key: str) -> str:
+    return (
+        f"{product_key!r} is a bundle, so every version must declare bundled_products; "
+        "without it a subscription is entitled to nothing it can open"
+    )
 
 
 def _clone_children(
@@ -636,6 +661,15 @@ async def _ensure_publishable(
     if fresh is None:  # pragma: no cover - the caller holds the row
         raise NotFoundProblem("No such plan version")
     features = {f.feature_key: f.value for f in fresh.features}
+    # In the order every read returns (`PlanVersionOut` sorts by `domain.price_sort_key`), so a
+    # problem's `prices.{n}` and "price #n" name the row the operator sees as #n — not the
+    # relationship's `created_at, id` order, which ties inside one transaction and falls to uuid.
+    ordered = sorted(
+        fresh.prices,
+        key=lambda p: domain.price_sort_key(
+            p.kind, p.unit, p.meter_key, p.amount_minor, p.unit_price_micros, str(p.id)
+        ),
+    )
     problems = domain.publish_problems(
         currency=fresh.currency,
         prices=[
@@ -647,11 +681,28 @@ async def _ensure_publishable(
                 unit_price_micros=p.unit_price_micros,
                 meter_key=p.meter_key,
             )
-            for p in fresh.prices
+            for p in ordered
         ],
         features=features,
         allow_zero_amounts=allow_zero_amounts,
     )
+    plan = fresh.plan
+    if snapshot is not None and FEATURE_BUNDLED_PRODUCTS not in features:
+        # ADR-0030 §3: whether this product is a bundle is the registry's to say, so publishing
+        # needs it for every version, not only one that declares members. A failed read raises
+        # its 503 here — retry once product-service is back — rather than freezing a bundle
+        # version that names nothing. (`None` is a service-level caller that never consulted the
+        # registry; every HTTP route that publishes passes a snapshot.)
+        registered = snapshot.require(f"checking whether {plan.product_key!r} is a bundle")
+        entry = registered.get(plan.product_key)
+        if entry is not None and entry.is_bundle:
+            problems.append(
+                domain.PublishProblem(
+                    "features.bundled_products",
+                    "bundle_members_missing",
+                    _bundle_members_missing(plan.product_key),
+                )
+            )
     if FEATURE_BUNDLED_PRODUCTS in features:
         # Re-checked at publish, not only at draft: the registry may have moved on since the
         # draft was written, and once frozen a wrong member list is a customer's problem.
@@ -665,7 +716,6 @@ async def _ensure_publishable(
             )
         else:
             products = snapshot.require("publishing a bundle")
-            plan = fresh.plan
             for message in domain.bundle_member_problems(
                 products.get(plan.product_key),
                 plan.product_key,
