@@ -32,7 +32,9 @@ from app import selectors, services
 from app.api.routes import CatalogDep
 from app.registry import ProductRegistry
 from app.schemas import (
+    ChangePlanPreviewOut,
     OperatorChangePlanIn,
+    OperatorChangePlanPreviewIn,
     OperatorSubscribeIn,
     ReactivateIn,
     SubscriptionOperatorOut,
@@ -56,10 +58,11 @@ router = APIRouter(
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
-#: Console is the only caller of the two routes below — a cross-tenant subscription read and a
-#: staff-set bespoke-price re-pin are both narrower than "any service holding a valid token"
-#: should reach, unlike the pin lookup and the bundle-sale routes elsewhere in this file, which
-#: predate this and are left as they were (out of this slice's boundary).
+#: Console is the only caller of every route in this file. Each is a cross-tenant staff read or
+#: write — a subscription listing, an operator suspend, reactivate, subscribe or re-pin — and none
+#: is something "any service holding a valid token" should reach. (Suspend and subscribe predated
+#: the narrower check and took only the router's token check, so any service with a token for
+#: subscription could open or suspend a subscription for any organization; both now take it.)
 TRUSTED_CALLER = "console"
 
 
@@ -82,6 +85,7 @@ ConsoleCallerDep = Annotated[None, Depends(require_console_caller)]
 async def suspend_subscription(
     subscription_id: uuid.UUID,
     payload: SuspendIn,
+    _caller: ConsoleCallerDep,
     session: SessionDep,
     request: Request,
 ) -> SubscriptionOut:
@@ -90,7 +94,9 @@ async def suspend_subscription(
     The transaction is opened here and bound to the named organization as its first statement,
     because a request driven by a service token has no principal to take a chokepoint session
     from. RLS then does the isolation: a subscription id belonging to a different organization is
-    invisible under this binding and resolves to a 404.
+    invisible under this binding and resolves to a 404. Console-only (`ConsoleCallerDep`): a
+    cross-tenant staff write that any service holding a token for subscription could otherwise
+    make against any organization.
     """
     settings: ServiceSettings = request.app.state.settings
     async with session.begin():
@@ -173,14 +179,15 @@ RegistryDep = Annotated[ProductRegistry, Depends(get_product_registry)]
 )
 async def subscribe_as_operator(
     payload: OperatorSubscribeIn,
+    _caller: ConsoleCallerDep,
     session: SessionDep,
     catalog: CatalogDep,
     registry: RegistryDep,
     request: Request,
 ) -> SubscriptionOut:
     """Bundles are sales-led (docs/commerce-packaging.md), so the customer route refuses them and
-    this one — a service token, an organization bound as the first statement, an accountable
-    operator on the audit row — is how an operator surface sells one."""
+    this one — a console service token, an organization bound as the first statement, an
+    accountable operator on the audit row — is how an operator surface sells one."""
     settings: ServiceSettings = request.app.state.settings
     async with session.begin():
         await set_tenant(session, payload.organization_id)
@@ -224,7 +231,46 @@ async def change_plan_as_operator(
             session, catalog, registry, subscription, payload, request=request
         )
         result = SubscriptionOut.model_validate(subscription)
+    log.info(
+        "subscription.plan_change_requested",
+        subscription_id=str(subscription_id),
+        organization_id=str(payload.organization_id),
+        operator_id=payload.operator_id,
+        pending=result.pending_plan_version_id is not None,
+    )
     return result
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/change-plan/preview",
+    response_model=ChangePlanPreviewOut,
+    summary="What a plan change would do to this subscription — read-only, writes nothing",
+)
+async def preview_change_plan_as_operator(
+    subscription_id: uuid.UUID,
+    payload: OperatorChangePlanPreviewIn,
+    _caller: ConsoleCallerDep,
+    session: SessionDep,
+    catalog: CatalogDep,
+    registry: RegistryDep,
+    request: Request,
+) -> ChangePlanPreviewOut:
+    """The confirm screen's server-computed preview: direction, when it lands, what it replaces,
+    which products it adds or removes — and the `expected` state to send back with the write.
+
+    A POST because it carries a body, but a read: no row is written or locked, and no audit or
+    outbox row is staged. Bound to the named organization and isolated by RLS exactly like the
+    write — another organization's subscription id is a 404 and discloses nothing.
+    """
+    settings: ServiceSettings = request.app.state.settings
+    async with session.begin():
+        await set_tenant(session, payload.organization_id)
+        if not settings.is_production:
+            await assert_tenant(session, payload.organization_id)
+        subscription = await services.require_subscription(session, subscription_id)
+        return await services.preview_change_plan_as_operator(
+            session, catalog, registry, subscription, payload
+        )
 
 
 @router.get(

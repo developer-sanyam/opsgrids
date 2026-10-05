@@ -19,6 +19,19 @@ class ServiceInfo(BaseModel):
     schema_name: str
 
 
+#: The longest operator note: a reason, not an essay. The transition's own `reason` column is 60
+#: characters of machine code; the words live in `audit_logs.reason` (text) and on the event.
+NOTE_MAX_LENGTH = 500
+
+
+def _strip_note(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not value.strip():
+        raise ValueError("note must not be blank")
+    return value.strip()
+
+
 # --------------------------------------------------------------------- catalog internal read
 
 
@@ -113,6 +126,29 @@ class OperatorSubscribeIn(BaseModel):
     plan_version_id: uuid.UUID
     trial: bool = False
     operator_id: str = Field(min_length=1, max_length=64)
+    #: The operator's reason, in words (1-500). Stored as the audit row's `reason` and on the
+    #: event payload as `note` — never in the transition's 60-character machine `reason`.
+    note: str | None = Field(default=None, min_length=1, max_length=NOTE_MAX_LENGTH)
+
+    @field_validator("note")
+    @classmethod
+    def _note_is_not_blank(cls, value: str | None) -> str | None:
+        return _strip_note(value)
+
+
+class ExpectedState(BaseModel):
+    """What the caller believes the subscription is, compared under the row lock.
+
+    A preview and the confirm that follows it are two requests; a customer's own change, a period
+    roll or dunning can all move the subscription in between. A mismatch is a 409 `state_changed`
+    — the operator re-reads and decides again, rather than confirming something they never saw.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: str = Field(min_length=1, max_length=20)
+    plan_version_id: uuid.UUID
+    pending_plan_version_id: uuid.UUID | None = None
 
 
 class OperatorChangePlanIn(BaseModel):
@@ -133,6 +169,68 @@ class OperatorChangePlanIn(BaseModel):
     plan_version_id: uuid.UUID
     operator_id: str = Field(min_length=1, max_length=64)
     timing: Literal["next_period"] | None = None
+    #: The operator's reason, in words (1-500) — see `OperatorSubscribeIn.note`. Optional here so
+    #: the callers that predate it (a bundle rung change, console's price change) keep working;
+    #: console's plan-switch always sends one.
+    note: str | None = Field(default=None, min_length=1, max_length=NOTE_MAX_LENGTH)
+    #: Optional expected-state guard (`ExpectedState`): compared under the row lock, before
+    #: anything else is decided. A mismatch is a 409 `state_changed`.
+    expected: ExpectedState | None = None
+
+    @field_validator("note")
+    @classmethod
+    def _note_is_not_blank(cls, value: str | None) -> str | None:
+        return _strip_note(value)
+
+
+class OperatorChangePlanPreviewIn(BaseModel):
+    """The question behind the plan-switch confirm screen: *what would this change do?*
+
+    Read-only — nothing is written, nothing is locked — and answered by the same evaluation the
+    write runs, so the preview cannot say something the write then does differently. There is no
+    `note` and no `expected`: it is the thing that *produces* the `expected` the write carries.
+    """
+
+    organization_id: uuid.UUID
+    plan_version_id: uuid.UUID
+
+
+class ChangePlanPreviewOut(BaseModel):
+    """What a change-plan would do right now, without an amount.
+
+    **No amount, deliberately.** A paid change is priced by the billing run from catalog and the
+    subscription's items when it claims the period; there is no quote to read until then, and
+    inventing one here would be a second pricing implementation that could disagree with the first
+    invoice. What *is* knowable, and what an operator needs to decide, is the direction, when it
+    lands, what it replaces, and which products it adds or removes.
+    """
+
+    #: The live state this answer was computed from — pass it back as `expected` on the write.
+    expected: ExpectedState
+    #: `switch` moves to a different version; `withdraw_scheduled` is a change back to the pin the
+    #: subscription is on, which cancels the change that is waiting (then `direction` is null).
+    action: Literal["switch", "withdraw_scheduled"] = "switch"
+    #: `upgrade`, `downgrade` or `equal`, by the same list-price rule the write uses
+    #: (recurring flat and per-seat components at quantity one; usage ignored — see
+    #: `usage_priced`). `None` when the change is refused before a direction exists.
+    direction: Literal["upgrade", "downgrade", "equal"] | None = None
+    #: `now`: the pin moves in this request (a trial; an equal-price change on a paid
+    #: subscription; withdrawing a scheduled change). `next_period`: it is scheduled for
+    #: `effective_at` and nothing about entitlement or money changes until the billing run
+    #: applies it there.
+    effective: Literal["now", "next_period"] | None = None
+    effective_at: datetime | None = None
+    #: Applying this replaces a change that is already scheduled.
+    would_clear_pending: bool = False
+    entitled_added: list[str] = Field(default_factory=list)
+    entitled_removed: list[str] = Field(default_factory=list)
+    #: Either version carries a usage-priced component. Direction compares the recurring part
+    #: only, so an operator is told when that is not the whole story.
+    usage_priced: bool = False
+    #: Set (with `refusal_detail`) when the write would be refused. The preview still answers 200:
+    #: a refusal is an answer to "what would happen", not a failure of the question.
+    refusal_code: str | None = None
+    refusal_detail: str | None = None
 
 
 class CancelIn(BaseModel):

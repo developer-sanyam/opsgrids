@@ -471,6 +471,24 @@ async def lock_billing_period(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def find_billing_period(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    subscription_id: uuid.UUID,
+    kind: str,
+    period_start: datetime,
+) -> BillingPeriod | None:
+    """`lock_billing_period` without the lock — the read-only plan-change preview asks whether
+    the run has claimed a due period, and must not hold a row to find out."""
+    stmt = select(BillingPeriod).where(
+        BillingPeriod.organization_id == organization_id,
+        BillingPeriod.subscription_id == subscription_id,
+        BillingPeriod.kind == kind,
+        BillingPeriod.period_start == period_start,
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def lock_billing_period_by_id(
     session: AsyncSession,
     organization_id: uuid.UUID,
