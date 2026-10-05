@@ -2,9 +2,10 @@
 
 This module is the OpenAPI surface: a change here is a change to the published contract. Two
 internal surfaces meet payment — the service-to-service charge create (billing calls it after
-finalize) and the provider webhook (Razorpay calls it, signature-guarded). There is deliberately
-**no customer surface**: a person never creates a charge directly, so no `/api/v1/payment/*`
-write exists.
+finalize) and the provider webhooks (signature-guarded, private). The one **customer surface** is
+the platform checkout (ADR-0029): a person who may activate products opens, reads and confirms the
+checkout for one invoice. A person still never creates a charge directly: the amount is always the
+invoice's own charge's, never a request field.
 """
 
 from __future__ import annotations

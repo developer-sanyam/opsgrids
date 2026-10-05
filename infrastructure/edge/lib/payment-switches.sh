@@ -43,8 +43,8 @@ payment_switch_problems() {
 	fi
 	local rzp_mode=""
 	case "$rzp_id" in
-	rzp_test_*) rzp_mode=test ;;
-	rzp_live_*) rzp_mode=live ;;
+	rzp_test_*) rzp_mode="test" ;;
+	rzp_live_*) rzp_mode="live" ;;
 	esac
 	if [ -n "$rzp_id" ] && ! printf '%s' "$rzp_id" | grep -Eq '^rzp_(test|live)_[A-Za-z0-9]{6,40}$'; then
 		rzp_mode=""

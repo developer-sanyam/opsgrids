@@ -969,6 +969,161 @@ record first. A rate of one in a long while is a database blip to read; every pu
 the rollback trigger above. Wiring `putaway.capture_failed` to an alert is a follow-up
 (`docs/backlog.md`).
 
+### Payments: turning a provider on
+
+The payments release (design: `docs/superpowers/specs/2026-10-06-payments-phase-a-design.md`; decisions:
+[ADR-0029](../../docs/adr/0029-payment-provider-seam-and-checkout.md)) lets an organization's owner pay one
+of OpsGrids' own invoices in **Razorpay's or Cashfree's hosted checkout**. It is **Phase A only**: a
+customer-present checkout. **There is no saved mandate and no automatic recurring debit**, and the platform's
+provider webhooks stay **private**, so the platform learns that an invoice was paid by **asking the
+provider** (a poller in `payment`, every 30 s per open checkout), never by being told.
+
+**Deploying this release changes nothing on the box.** Every switch defaults to the in-process stub, no
+key is required, and a box with no key set passes preflight (with the warning that payment runs on its
+stub). Turning a provider on is a separate, deliberate sequence, below.
+
+**What migrates.** One additive revision, `c7d8e9f0a1b2` (payment; it follows `a8c1d2e3f4b5`), part of
+the ordinary `migrate` step: two columns on `charges` (`flow`, default `debit`, and `checkout_expires_at`),
+two CHECKs, a partial index for the poller, a partial unique index that allows one open checkout per
+invoice, and five unique keys **widened** to include `provider` (names kept). No rewrite, no backfill.
+Every existing charge is a `debit`, as it always was. The previous API ignores the new columns. **Its
+downgrade refuses while a checkout charge exists**: the previous code would resume one as a stuck debit and
+suspend a customer who has not yet paid, so a rollback of the *code* after checkouts exist needs the
+checkouts resolved first. Confirm `alembic heads` shows **one** head at release time (another payment
+migration may share the previous head; whichever merges second re-points its `down_revision`), and use the
+revision `alembic current` prints on the box rather than this page's. Verify, changing nothing:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T payment alembic current
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = 'payment' AND table_name = 'charges'
+           AND column_name IN ('flow', 'checkout_expires_at'))         AS new_columns,
+       to_regclass('payment.uq_charges_open_checkout') IS NOT NULL     AS open_checkout_index,
+       (SELECT count(*) FROM payment.charges WHERE flow <> 'debit')    AS checkout_charges;"
+```
+
+`alembic current` must print the revision with `(head)`, and the query `2|t|0` on a first deploy.
+
+**The variables** (all optional; set in the box's `.env`, passed to `payment` and `payment-worker` by
+`compose.prod.yml`; preflight checks the combination and prints **names, never values**):
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PAYMENT_PROVIDER` | `razorpay` | The provider for **new** invoices' charges. An existing charge keeps the provider it was created under, for life. |
+| `PAYMENT_WIRE` | `stub` | `live` lets the **Razorpay** adapter call Razorpay. `stub`: no socket is opened **whatever keys are set**. |
+| `CASHFREE_ENV` | `stub` | `stub`, `sandbox` or `production`. The one switch for Cashfree's network and environment. |
+| `PAYMENT_ALLOW_LIVE_KEYS` | `false` | Without `true`, `rzp_live_` keys and `CASHFREE_ENV=production` are refused at start-up. |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | empty | Both or neither. |
+| `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY` | empty | Both or neither. The secret also verifies Cashfree webhooks. |
+
+`payment` **refuses to start** (and preflight fails first) on: one key of a pair; a live key without
+`PAYMENT_ALLOW_LIVE_KEYS`; `PAYMENT_WIRE=live` or `CASHFREE_ENV=sandbox|production` without both
+credentials; a **`rzp_test_` pair on a live wire when `ENVIRONMENT=production`**; **Cashfree `sandbox` on
+a production box**; `CASHFREE_ENV=production` with test-shaped keys; and `PAYMENT_PROVIDER=cashfree`
+on a production box without `CASHFREE_ENV=production`. The reason is the same each time: a public test
+card paying a real invoice is a free subscription.
+
+**What that means for rehearsal: this box cannot be run against test or sandbox keys.** Test-mode
+checkouts are rehearsed on a developer's machine (the stub, or the smoke tools below); **the first key
+the box ever holds is a live one**, and the first checkout it takes is real money.
+
+**Order of steps** (owner decisions throughout; nothing here is done by the deploy):
+
+1. Merge the PR and `make deploy` (additive migration; the stub is still in force). Verify the
+   migration as above.
+2. **At the provider (the owner).** Complete the account's business verification; generate a **test**
+   key pair and a **live** key pair (Razorpay: Account & Settings → API Keys; Cashfree: Developers →
+   API Keys, a sandbox App ID and a production one). **Do not register any webhook**: the platform's
+   webhooks stay private in this phase and the checkout works without one. Check whether the account
+   restricts which IP addresses may call its API, and if it does, allow the box's public address (the
+   repository cannot know the account's settings).
+3. **Settle the unknowns, on your own machine, with test keys.** The design was written with no
+   keys; `tools/payments_smoke_razorpay.py` and `tools/payments_smoke_cashfree.py` ask each provider what
+   it really does, in test mode / sandbox, and print only statuses, error codes, booleans and field
+   *names*. They are **opt-in** (`--confirm`), refuse to run in CI, under pytest or when `ENVIRONMENT`
+   names a deployed environment, refuse a key that is not provably test/sandbox, read the keys **only
+   from the process environment** (never `.env`, never an argument), and are never run by `make`:
+
+   ```bash
+   # from the repository root, on your laptop. `uv run`, NOT `make` (make re-exports the root .env).
+   export RAZORPAY_KEY_ID=rzp_test_…      RAZORPAY_KEY_SECRET=…      # test mode only
+   uv run python tools/payments_smoke_razorpay.py plan                # prints what it would do; calls nothing
+   uv run python tools/payments_smoke_razorpay.py probe --confirm
+
+   export CASHFREE_APP_ID=TEST…           CASHFREE_SECRET_KEY=…       # sandbox only
+   uv run python tools/payments_smoke_cashfree.py probe --confirm
+   ```
+
+   Compare each printed line with section 12 of the design. `payments <order_id>` (after paying a test
+   Order by hand with the provider's test card or VPA) prints which fields a payment carries, and
+   `refund` / `webhook-listen` settle the refund idempotency and Cashfree's webhook headers. **If any
+   answer differs from what the design assumed, stop and tell engineering before step 4**: the adapters
+   were written to fail safe on each unknown, but a surprise is a reason to look, not to proceed.
+   Unset the variables when done (`unset RAZORPAY_KEY_SECRET CASHFREE_SECRET_KEY`); never paste a key
+   into chat, a ticket or a shell history file.
+4. **Put the live keys on the box.** Edit `.env` on the box (same rules as "5. Secrets": nothing goes
+   through git, chat or CI): the key pair, `PAYMENT_ALLOW_LIVE_KEYS=true`, `PAYMENT_WIRE=live` (Razorpay)
+   or `CASHFREE_ENV=production` (Cashfree), and `PAYMENT_PROVIDER` for the provider new invoices should
+   use. Then `make edge-preflight HOST=… CONFIRM=…` (it must pass without a payment line failing), and
+   recreate `payment` and, when the `split-workers` profile is on, `payment-worker`:
+
+   ```bash
+   docker compose -f compose.prod.yml --env-file .env up -d payment payment-worker
+   ```
+
+   (With the default folded workers the poller runs inside `payment` itself, so recreating `payment`
+   is enough.) Confirm it started: `make edge-logs HOST=… CONFIRM=… SERVICE=payment TAIL=100` shows
+   `payment.charge_poller.started` and **no** `payment.provider.credentials_rejected`.
+5. **One small, real checkout.** From a test organization, owned by someone on the team, open the
+   checkout for its smallest invoice and pay it. Watch it become paid (the status route answers
+   `paid: true`; the invoice's subscription activates). The poller notices within the poll interval
+   even if the browser is closed. Then refund it at the provider's dashboard; there is no refund
+   endpoint for platform charges in this release.
+
+**Watching it.** Everything is in `payment`'s log (`make edge-logs … SERVICE=payment`); this release adds
+no `ops-monitor` check, so someone has to look for the first week:
+
+| Log event | Level | Means |
+|---|---|---|
+| `payment.provider.credentials_rejected` | error | The platform's own key was refused. **No charge is failed and no attempt is consumed** until a call succeeds again, and the latch holds for 15 minutes. Check the keys and the switches, then restart `payment`. Further refusals inside the window log `…_again` at warning, so one outage is one line. |
+| `payment.charge.poll_unavailable`, `payment.charge.poll_timeout` | warning | The provider could not be asked. Nothing changes; the next tick asks again. Many in a row means the provider (or the box's egress) is down. |
+| `payment.charge.checkout_expired` | info | A checkout nobody paid inside its day closed (`failure_reason = checkout_expired`). No `commerce.payment.failed` is emitted and dunning is not involved. |
+| `payment.charge.captured_after_local_failure` | error | A payment arrived for a checkout the platform had already closed (it expired). It is recorded and the invoice is paid; read the audit row of the same name. |
+| `payment.invoice.collected_twice` | error | The existing double-collection alarm (see "Payments: an invoice collected twice"); it applies to checkouts too. |
+
+```sql
+-- the state of every checkout, by provider
+SELECT provider, state, failure_reason, count(*)
+FROM payment.charges WHERE flow = 'checkout' GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+```
+
+**A platform debit with no mandate fails as `no_mandate`, with no provider call.** That is the intended
+Phase A behaviour: invoices are collected by checkout, and dunning's retry of a charge that needs a
+mandate will fail the same way until Phase B. Seeing `failure_reason = 'no_mandate'` on a debit is not an
+incident.
+
+**Rolling back** is two variables and a restart; there is no migration to undo:
+
+```bash
+# in the box's .env:  PAYMENT_PROVIDER=razorpay   PAYMENT_WIRE=stub   CASHFREE_ENV=stub
+docker compose -f compose.prod.yml --env-file .env up -d payment payment-worker
+```
+
+Existing rows keep their provider; new invoices stop being offered a live checkout (`openable` is false on
+a stub). **A checkout still open at the real provider stays payable there**, and while the wire is the stub
+nothing here can tell whether it was paid: the stub says it cannot answer for an Order it never made, the
+poller records "could not be asked", and **no checkout is expired on that**. Prefer to let open checkouts
+resolve (`CHECKOUT_TTL_SECONDS`, a day) before turning the wire off, and check the provider's dashboard for
+money taken in the window. Turning the wire back on reconciles them. Switching only `PAYMENT_PROVIDER` is
+the gentler rollback when the other provider is healthy: open checkouts keep being polled through the
+provider they were created under.
+
+**Tenant collections are separate.** A merchant's own Razorpay keys, and `COLLECTIONS_WIRE` /
+`COLLECTIONS_ALLOW_LIVE_KEYS`, are not changed by any of the above, and `PAYMENT_WIRE` never switches them.
+In this release a merchant account's provider and mode can no longer be changed in place (a `409`): the
+merchant disconnects and reconnects.
+
 ### The billing run: first deploy, watching it, and what to do when it complains
 
 The billing run (ADR-0005's 2026-09-23 addendum and its review fixes) is the loop that converts

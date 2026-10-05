@@ -573,8 +573,11 @@ class ProviderEvent(Base, TenantBase):
     and record nothing. The evidence is kept here, and the conflict is audited and logged for an
     operator.
 
-    Storing the raw `payload` and `signature` makes reconciliation replayable and auditable: if a
-    projection is ever found wrong, the truth is the provider's own bytes, kept here unaltered.
+    Storing the `payload` and `signature` makes reconciliation replayable and auditable. The
+    payload is the provider's body **after redaction** (ADR-0029): the table is append-only, so a
+    payer's name, email, phone, UPI id or card detail must never be written to it. What is kept is
+    an allow-list that still reads back as the provider's envelope (`_meta.webhook_version` records
+    the shape), enough to replay a reconciliation, never enough to identify who paid.
     """
 
     __tablename__ = "provider_events"
