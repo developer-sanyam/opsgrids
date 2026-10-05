@@ -1250,7 +1250,9 @@ Two more console controls on the account page, on the same claim table and the s
   bills at once: subscription claims the first period immediately and **no payment mandate is checked**,
   so a failed charge opens dunning; the operator must tick that, or the API answers 422
   `charge_not_acknowledged`. A `one_time` plan (422 `one_time`) and a currency other than the
-  organization's live subscriptions' (422 `org_currency_mismatch`) are refused.
+  organization's live subscriptions' (422 `org_currency_mismatch`) are refused, and so is a version
+  catalog no longer offers the organization (422 `not_offerable`; a catalogue outage is 503
+  `catalog_unavailable`, which changed nothing).
 * **Extend trial** (`POST .../subscriptions/{product_key}/extend-trial`; **owner only**) moves a trial's end
   to an absolute instant — the operator picks the last day in **IST**. Refused with 409 `state_changed` if
   the trial end moved since it was read (which is also why a repeat never adds the time twice), 422

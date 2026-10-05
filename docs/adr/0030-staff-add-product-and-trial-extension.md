@@ -8,8 +8,12 @@
 
 Builds on [ADR-0029](0029-staff-plan-control.md), whose shared path this reuses unchanged: the
 `console.idempotency_keys` claim written before the downstream call, the coded-refusal vocabulary,
-`outcome_unknown` with a live-read reconcile, the operator's reason as a note (never the transition's
-machine reason), the `RESERVED_REASONS` guard, and `operator:<sub>`. Also builds on ADR-0004 §4 (a
+`outcome_unknown` with a live-read reconcile (including its review fix: a retry's call refused
+because a *late* first attempt just landed is recognised as that attempt, not replayed as a
+refusal), the operator's reason as a note on the audit row only — never the transition's machine
+reason and never on the event, which a customer org's notification templates can render — the
+`RESERVED_REASONS` guard, the "only what catalog offers now" re-read (`not_offerable`), and
+`operator:<sub>`. Also builds on ADR-0004 §4 (a
 trial is a subscription state, one event per accepted move) and ADR-0005's addendum (the billing
 run converts a trial at its stored end and voids a claim whose subscription moved under it).
 
@@ -52,7 +56,10 @@ behind a button:
    * a trial on a version that sells none — 422 `trial_not_offered` (code added to the existing
      refusal).
    The operator subscribe is serialised per organization with a transaction-scoped advisory lock, so
-   two staff adds cannot both pass the currency check.
+   two staff adds cannot both pass the currency check. Console additionally refuses a version catalog
+   no longer offers the organization (422 `not_offerable` — superseded by a newer version, or its plan
+   retired; subscription's pin lookup cannot see either), re-read on every confirm before the claim;
+   a catalogue outage there is 503 `catalog_unavailable` and claims nothing.
 4. **The picker** (`GET .../add-product-options`, `OperatorBilling`) offers every product that publicly
    sells a plan and that the organization has **no row for in any state**, each with catalog's
    offerable versions for it (ADR-0029 §8's audience and supersession rule). A version the organization
@@ -74,7 +81,7 @@ behind a button:
 7. **A new event, `commerce.subscription.trial_extended`.** One `trial -> trial` transition with reason
    `trial_extended` (added to `RESERVED_REASONS`, and accepted by `decide` only on that self-edge),
    carrying the full lifecycle payload — whose `trial_ends_at` is the new end — plus
-   `previous_trial_ends_at` and the operator's `note`. Product binds it and projects the new end (a
+   `previous_trial_ends_at` (the operator's reason is the audit row's, not the event's). Product binds it and projects the new end (a
    customer whose old end had passed is entitled again). Console binds it, folds the new end, and
    records it under its own kind, so it is never counted as a trial start or a conversion.
    Notification lists it in `SUBSCRIBABLE_EVENTS`, so a rule can be written for it deliberately — none

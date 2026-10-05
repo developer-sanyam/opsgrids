@@ -46,7 +46,9 @@ Body `{organization_id, operator_id, new_trial_ends_at, expected_trial_ends_at, 
 
 Then `trial_ends_at = new` (UTC) and one `trial -> trial` transition, reason `trial_extended` (reserved;
 `decide` accepts it only on that self-edge), event `commerce.subscription.trial_extended`: the lifecycle
-payload + `previous_trial_ends_at` + `note`. The audit row's before/after name the two ends.
+payload + `previous_trial_ends_at`. The operator's note is the audit row's reason only — never on
+the event (the plan switch's review fix: a customer org's notification templates render the whole
+payload). The audit row's before/after name the two ends.
 `current_period_end` is not touched — a trial's period end was never its conversion point.
 
 `MAX_TOTAL_TRIAL_DAYS = 90` (owner-adjustable default). The operator listing carries
@@ -83,8 +85,15 @@ when the live trial ends at the target.
 |---|---|
 | 404 | `not_found` (add), `no_subscription` (extend) |
 | 409 | `already_subscribed`, `state_changed`, `request_in_progress`, `idempotency_key_reused` |
-| 422 | `charge_not_acknowledged` (console, before any claim), `one_time`, `org_currency_mismatch`, `trial_not_offered`, `not_published`, `product_mismatch`, `bundle`, `not_trial`, `claim_in_flight`, `trial_cap`, `trial_not_extended`, `reserved_reason`; body validation |
-| 503 | `outcome_unknown`, `upstream_refused` |
+| 422 | `charge_not_acknowledged` (console, before any claim), `not_offerable` (console, recorded), `one_time`, `org_currency_mismatch`, `trial_not_offered`, `not_published`, `product_mismatch`, `bundle`, `not_trial`, `claim_in_flight`, `trial_cap`, `trial_not_extended`, `reserved_reason`; body validation |
+| 503 | `outcome_unknown`, `upstream_refused`, `catalog_unavailable` (add: the offer could not be re-read; nothing was claimed or changed) |
+
+**Only what is on offer** (the plan switch's review fix, applied to the add): the confirm re-reads
+catalog's offerable set for the product before the claim and, after the replay branches, refuses any
+other version with 422 `not_offerable` — recorded and replayed like any refusal, subscription never
+called. **A late first attempt** (also the plan switch's): a reconciling retry whose call is refused
+`already_subscribed` (add) or `state_changed` (extend) looks at the live subscription again and, if the
+lost attempt is what landed, records the success instead of replaying a refusal.
 
 ## 5. Frontend — `opsgrids-internal`
 
