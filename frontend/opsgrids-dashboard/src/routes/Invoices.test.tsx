@@ -1,9 +1,11 @@
 /**
  * "Pay now" on the Invoices page: who sees it, which invoices carry it, and how each answer the
- * server can give — paid, unknown, refused with a code, phone needed — reaches the customer. The
- * provider window is the launcher's (tested on its own); here it is a stand-in.
+ * server can give — paid, busy, unknown, refused with a code, phone needed — reaches the customer.
+ * The refusals are payment-service's own problem bodies (feat/payments-phase-a), not the shapes
+ * this page would like. The provider window is the launcher's (tested on its own); here it is a
+ * stand-in.
  */
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -31,8 +33,10 @@ vi.mock("@/lib/checkout/launch", () => ({ launchCheckout: vi.fn() }));
 
 import * as api from "@/api";
 import * as payment from "@/api/payment";
-import type { CheckoutSession } from "@/api/payment";
+import type { CheckoutSession, CheckoutState } from "@/api/payment";
 import { launchCheckout } from "@/lib/checkout/launch";
+import type { LaunchOutcome } from "@/lib/checkout/launch";
+import { POLL_ATTEMPTS, POLL_INTERVAL_MS } from "@/lib/checkout/poll";
 
 import { InvoicesPage } from "./Invoices";
 
@@ -59,7 +63,7 @@ const INVOICES = [
 
 const dunning = {
   cycle_id: "cy1",
-  opened_at: "2026-10-01T00:00:00Z",
+  opened_at: "2026-10-01T06:00:00Z",
   grace_ends_at: "2026-10-15T00:00:00Z",
   next_attempt_at: null,
   attempts_made: 1,
@@ -77,13 +81,34 @@ const SESSION: CheckoutSession = {
   chargeId: "charge-1",
   provider: "razorpay",
   action: { type: "razorpay_checkout", keyId: "rzp_test_Platform0001", orderId: "order_P1" },
+  openable: true,
   amountMinor: 499900,
   currency: "INR",
   expiresAt: null,
 };
 
-function captured() {
-  return { chargeId: "charge-1", state: "captured" as const, provider: "razorpay" as const, amountMinor: 499900, currency: "INR" };
+function status(state: CheckoutState) {
+  return { chargeId: "charge-1", state, provider: "razorpay" as const, amountMinor: 499900, currency: "INR" };
+}
+
+/** A problem exactly as payment-service's `ProblemError.to_problem` writes it: no `errors` key. */
+function serviceProblem(status: number, slug: string, title: string, detail: string): ApiError {
+  return new ApiError(status, title, {
+    type: `https://errors.opsgrids.dev/${slug}`,
+    title,
+    status,
+    detail,
+    instance: "/payment/checkouts",
+    request_id: "req-1",
+  });
+}
+
+/** The stand-in provider window: opens at once, then ends as the test says. */
+function windowThat(outcome: LaunchOutcome) {
+  return async (_session: CheckoutSession, _label: string, onOpened?: () => void) => {
+    onOpened?.();
+    return outcome;
+  };
 }
 
 function renderPage(grants: string[] = [PAY]) {
@@ -100,17 +125,22 @@ function liveRegion(): HTMLElement {
   return region;
 }
 
+function focusIsOnNotice(): boolean {
+  return document.activeElement?.contains(liveRegion()) === true;
+}
+
 beforeEach(() => {
   vi.mocked(api.listInvoices).mockResolvedValue(INVOICES as never);
   vi.mocked(api.listSubscriptions).mockResolvedValue(SUBSCRIPTIONS as never);
   vi.mocked(api.getOrganization).mockResolvedValue({ currency: "INR" } as never);
   vi.mocked(api.getCreditBalance).mockResolvedValue({ balance_minor: 0, currency: "INR" } as never);
   vi.mocked(payment.createCheckout).mockResolvedValue(SESSION);
-  vi.mocked(payment.getCheckoutStatus).mockResolvedValue(captured());
-  vi.mocked(launchCheckout).mockResolvedValue({ wait: "full" });
+  vi.mocked(payment.getCheckoutStatus).mockResolvedValue(status("captured"));
+  vi.mocked(launchCheckout).mockImplementation(windowThat({ wait: "full" }));
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   delete (window as { matchMedia?: unknown }).matchMedia;
 });
 
@@ -118,6 +148,22 @@ describe("InvoicesPage — who is offered Pay now", () => {
   it("offers it only on the issued, positive invoice of a subscription in dunning", async () => {
     renderPage();
     expect(await screen.findByRole("button", { name: "Pay now invoice INV-0042" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /^Pay now/ })).toHaveLength(1);
+  });
+
+  it("offers it on the one invoice the dunning cycle is collecting, not on every past one", async () => {
+    const months = [
+      { ...invoice, id: "inv-oct", number: "INV-0110", finalized_at: "2026-10-01T00:00:00Z" },
+      { ...invoice, id: "inv-sep", number: "INV-0109", finalized_at: "2026-09-01T00:00:00Z" },
+      { ...invoice, id: "inv-aug", number: "INV-0108", finalized_at: "2026-08-01T00:00:00Z" },
+      // An upgrade's different total, issued before the cycle opened: not what the cycle is owed.
+      { ...invoice, id: "inv-proration", number: "INV-0111", total_minor: 1200, finalized_at: "2026-10-01T03:00:00Z" },
+      // Issued after the cycle opened: not the invoice that failed to collect.
+      { ...invoice, id: "inv-nov", number: "INV-0112", finalized_at: "2026-11-01T00:00:00Z" },
+    ];
+    vi.mocked(api.listInvoices).mockResolvedValue(months as never);
+    renderPage();
+    expect(await screen.findByRole("button", { name: "Pay now invoice INV-0110" })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: /^Pay now/ })).toHaveLength(1);
   });
 
@@ -148,18 +194,35 @@ describe("InvoicesPage — paying", () => {
     expect(await within(region).findByText("Payment received.")).toBeTruthy();
     expect(within(region).getByText("Invoice INV-0042 · ₹4,999.00")).toBeTruthy();
     expect(payment.createCheckout).toHaveBeenCalledExactlyOnceWith("inv-due", undefined);
-    expect(launchCheckout).toHaveBeenCalledExactlyOnceWith(SESSION, "Invoice INV-0042");
+    expect(launchCheckout).toHaveBeenCalledExactlyOnceWith(SESSION, "Invoice INV-0042", expect.any(Function));
     expect(payment.getCheckoutStatus).toHaveBeenCalledWith("charge-1", expect.any(AbortSignal));
-    // Paid on this screen: its button goes away without waiting for dunning to close.
+    // Paid on this screen: its button goes away without waiting for dunning to close — and the
+    // keyboard lands on what happened, not at the top of the page.
     expect(screen.queryByRole("button", { name: /Pay now/ })).toBeNull();
+    expect(focusIsOnNotice()).toBe(true);
+  });
+
+  it("says the window is open only once the provider has opened it", async () => {
+    const user = userEvent.setup();
+    let opened: (() => void) | undefined;
+    vi.mocked(launchCheckout).mockImplementation((_s, _l, onOpened) => {
+      opened = onOpened;
+      return new Promise(() => undefined);
+    });
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+    expect(await within(liveRegion()).findByText("Opening the payment window…")).toBeTruthy();
+    act(() => opened?.());
+    expect(within(liveRegion()).getByText("Finish paying in the payment window.")).toBeTruthy();
   });
 
   it("opens the provider window once for a double click", async () => {
     const user = userEvent.setup();
     let release: (() => void) | undefined;
-    vi.mocked(launchCheckout).mockImplementation(
-      () => new Promise((resolve) => (release = () => resolve({ wait: "full" }))),
-    );
+    vi.mocked(launchCheckout).mockImplementation((_s, _l, onOpened) => {
+      onOpened?.();
+      return new Promise((resolve) => (release = () => resolve({ wait: "full" })));
+    });
     renderPage();
     const button = await screen.findByRole("button", { name: "Pay now invoice INV-0042" });
     await user.dblClick(button);
@@ -170,7 +233,7 @@ describe("InvoicesPage — paying", () => {
     expect(await screen.findByText("Payment received.")).toBeTruthy();
   });
 
-  it("tells the customer not to pay again while the server has not confirmed", async () => {
+  it("tells the customer not to pay again while a finished payment is unconfirmed", async () => {
     const user = userEvent.setup();
     vi.mocked(payment.getCheckoutStatus).mockReturnValue(new Promise(() => undefined));
     renderPage();
@@ -180,25 +243,30 @@ describe("InvoicesPage — paying", () => {
 
   it("says the payment failed when the server says so", async () => {
     const user = userEvent.setup();
-    vi.mocked(payment.getCheckoutStatus).mockResolvedValue({ ...captured(), state: "failed" });
+    vi.mocked(payment.getCheckoutStatus).mockResolvedValue(status("failed"));
     renderPage();
     await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
     expect(await screen.findByText("The payment didn't go through.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Pay now invoice INV-0042" })).toBeTruthy();
   });
 
-  it("glances once after a dismissal and offers a status check", async () => {
+  it("launches nothing on a stub provider's checkout", async () => {
     const user = userEvent.setup();
-    vi.mocked(launchCheckout).mockResolvedValue({ wait: "glance", failed: false });
-    vi.mocked(payment.getCheckoutStatus).mockResolvedValue({ ...captured(), state: "created" });
+    vi.mocked(payment.createCheckout).mockResolvedValue({ ...SESSION, openable: false });
     renderPage();
     await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
-    expect(await screen.findByText("The payment window closed before the payment finished.")).toBeTruthy();
-    expect(payment.getCheckoutStatus).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Online payment isn't available right now.")).toBeTruthy();
+    expect(launchCheckout).not.toHaveBeenCalled();
+    expect(payment.getCheckoutStatus).not.toHaveBeenCalled();
+  });
 
-    vi.mocked(payment.getCheckoutStatus).mockResolvedValue(captured());
-    await user.click(screen.getByRole("button", { name: "Check status" }));
-    expect(await screen.findByText("Payment received.")).toBeTruthy();
+  it("never says nothing was charged when the status read fails after the window", async () => {
+    const user = userEvent.setup();
+    vi.mocked(payment.getCheckoutStatus).mockRejectedValue(new payment.PaymentContractError("status"));
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+    expect(await screen.findByText("We couldn't confirm this payment.")).toBeTruthy();
+    expect(screen.queryByText(/Nothing was charged/)).toBeNull();
   });
 
   it("explains a blocked payment window", async () => {
@@ -210,10 +278,110 @@ describe("InvoicesPage — paying", () => {
   });
 });
 
+describe("InvoicesPage — a window closed before paying", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  function setupUser() {
+    return userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+  }
+
+  it("looks once, a moment later, without saying don't pay again, then offers a check and paying again", async () => {
+    const user = setupUser();
+    vi.mocked(launchCheckout).mockImplementation(windowThat({ wait: "glance", failed: false }));
+    vi.mocked(payment.getCheckoutStatus).mockResolvedValue(status("created"));
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+
+    expect(await within(liveRegion()).findByText("Checking the payment status…")).toBeTruthy();
+    expect(within(liveRegion()).queryByText(/don't pay again/)).toBeNull();
+    expect(payment.getCheckoutStatus).not.toHaveBeenCalled();
+
+    await act(() => vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS));
+    expect(await screen.findByText("The payment window closed before the payment finished.")).toBeTruthy();
+    expect(payment.getCheckoutStatus).toHaveBeenCalledTimes(1);
+
+    // The row the customer is on checks that payment first; it does not offer a second one.
+    expect(screen.queryByRole("button", { name: "Pay now invoice INV-0042" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Check status of invoice INV-0042" })).toBeTruthy();
+
+    vi.mocked(launchCheckout).mockImplementation(windowThat({ wait: "full" }));
+    vi.mocked(payment.getCheckoutStatus).mockResolvedValue(status("captured"));
+    await user.click(screen.getByRole("button", { name: "Pay again" }));
+    expect(await screen.findByText("Payment received.")).toBeTruthy();
+    expect(payment.createCheckout).toHaveBeenCalledTimes(2);
+  });
+
+  it("turns a look that finds an authorized payment into the full wait", async () => {
+    const user = setupUser();
+    vi.mocked(launchCheckout).mockImplementation(windowThat({ wait: "glance", failed: false }));
+    vi.mocked(payment.getCheckoutStatus)
+      .mockResolvedValueOnce(status("authorized"))
+      .mockResolvedValueOnce(status("authorized"))
+      .mockResolvedValue(status("captured"));
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+    await act(() => vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS));
+    expect(await within(liveRegion()).findByText("Payment pending — don't pay again.")).toBeTruthy();
+    await act(() => vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2));
+    expect(await screen.findByText("Payment received.")).toBeTruthy();
+  });
+
+  it("checks status from the row, keeping the check on screen while it runs, and says plainly when nothing was paid", async () => {
+    const user = setupUser();
+    vi.mocked(launchCheckout).mockImplementation(windowThat({ wait: "glance", failed: false }));
+    vi.mocked(payment.getCheckoutStatus).mockResolvedValue(status("created"));
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+    await act(() => vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS));
+    await screen.findByText("The payment window closed before the payment finished.");
+
+    await user.click(screen.getByRole("button", { name: "Check status of invoice INV-0042" }));
+    expect(screen.getByRole("button", { name: "Check status" }).getAttribute("aria-busy")).toBe("true");
+    expect(within(liveRegion()).queryByText(/don't pay again/)).toBeNull();
+
+    await act(() => vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * POLL_ATTEMPTS));
+    expect(await screen.findByText("No payment has been confirmed yet.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Pay again" })).toBeTruthy();
+  });
+
+  it("after a finished payment runs out the wait, says don't pay again and offers no second payment", async () => {
+    const user = setupUser();
+    vi.mocked(payment.getCheckoutStatus).mockResolvedValue(status("created"));
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+    await act(() => vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * POLL_ATTEMPTS));
+    expect(await screen.findByText("Still waiting for confirmation — don't pay again.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Pay again" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pay now invoice INV-0042" })).toBeNull();
+
+    vi.mocked(payment.getCheckoutStatus).mockResolvedValue(status("captured"));
+    await user.click(screen.getByRole("button", { name: "Check again" }));
+    expect(await screen.findByText("Payment received.")).toBeTruthy();
+  });
+});
+
 describe("InvoicesPage — refusals", () => {
-  it("409: says the invoice is already paid and drops its button", async () => {
+  it.each([
+    "This invoice's checkout is being prepared; try again in a moment",
+    "The previous checkout for this invoice could not be closed yet; try again shortly",
+    "Online payment is not available with the configured provider",
+  ])("409 %j: shows the server's reason and keeps the invoice payable — never 'already paid'", async (detail) => {
     const user = userEvent.setup();
-    vi.mocked(payment.createCheckout).mockRejectedValue(new ApiError(409, "Conflict", { status: 409 }));
+    vi.mocked(payment.createCheckout).mockRejectedValue(serviceProblem(409, "conflict", "Conflict", detail));
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+    expect(await screen.findByText(detail)).toBeTruthy();
+    expect(screen.queryByText("This invoice is already paid.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Pay now invoice INV-0042" })).toBeTruthy();
+    expect(launchCheckout).not.toHaveBeenCalled();
+  });
+
+  it("coded already-paid 409: says the invoice is already paid and drops its button", async () => {
+    const user = userEvent.setup();
+    vi.mocked(payment.createCheckout).mockRejectedValue(serviceProblem(409, "invoice-already-paid", "Conflict", "This invoice has already been paid"));
     renderPage();
     await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
     expect(await screen.findByText("This invoice is already paid.")).toBeTruthy();
@@ -230,32 +398,26 @@ describe("InvoicesPage — refusals", () => {
     expect(launchCheckout).not.toHaveBeenCalled();
   });
 
-  it("422 currency_unsupported: says why, in this page's words", async () => {
+  it("422 unsupported currency, as payment-service words it: says why, in this page's words", async () => {
     const user = userEvent.setup();
     vi.mocked(payment.createCheckout).mockRejectedValue(
-      new ApiError(422, "Unprocessable", { status: 422, type: "https://errors.opsgrids.dev/currency_unsupported" }),
+      serviceProblem(422, "validation", "Validation failed", "Only INR invoices can be paid online"),
     );
     renderPage();
     await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
     expect(await screen.findByText("Online payment isn't available for this invoice's currency yet.")).toBeTruthy();
   });
 
-  it("422 phone_required: asks for a number, validates it, and retries with the customer's details", async () => {
+  it("422 phone required, as payment-service sends it for Cashfree: asks for a number and retries with it", async () => {
     const user = userEvent.setup();
-    vi.mocked(payment.createCheckout)
-      .mockRejectedValueOnce(
-        new ApiError(422, "Unprocessable", {
-          status: 422,
-          detail: "A phone number is required.",
-          errors: [{ field: "customer.phone", code: "phone_required", message: "Required." }],
-        }),
-      )
-      .mockResolvedValueOnce(SESSION);
+    const phoneRequired = serviceProblem(422, "validation", "Validation failed", "Add a customer phone number to pay online");
+    vi.mocked(payment.createCheckout).mockRejectedValueOnce(phoneRequired).mockResolvedValueOnce(SESSION);
     renderPage();
     await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
 
     const dialog = await screen.findByRole("dialog", { name: "Add a mobile number" });
     const field = within(dialog).getByLabelText(/Mobile number/);
+    expect(document.activeElement).toBe(field);
     await user.type(field, "12345");
     await user.click(within(dialog).getByRole("button", { name: "Continue to payment" }));
     expect(await within(dialog).findByText("Enter a 10-digit mobile number, like 98200 11122.")).toBeTruthy();
@@ -271,6 +433,44 @@ describe("InvoicesPage — refusals", () => {
       email: "asha@example.com",
       phone: "9820011122",
     });
+  });
+
+  it("keeps the number and the dialog when the provider turns the number down, and clears the reason on edit", async () => {
+    const user = userEvent.setup();
+    const phoneRequired = serviceProblem(422, "validation", "Validation failed", "Add a customer phone number to pay online");
+    let refuse: ((error: unknown) => void) | undefined;
+    vi.mocked(payment.createCheckout)
+      .mockRejectedValueOnce(phoneRequired)
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => (refuse = reject)));
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+    const dialog = await screen.findByRole("dialog", { name: "Add a mobile number" });
+    const field = within(dialog).getByLabelText<HTMLInputElement>(/Mobile number/);
+    await user.type(field, "98200 11122");
+    await user.click(within(dialog).getByRole("button", { name: "Continue to payment" }));
+
+    // Still up, busy, while the number is tried.
+    expect(within(dialog).getByRole("button", { name: "Opening payment…" }).getAttribute("aria-busy")).toBe("true");
+    act(() => refuse?.(phoneRequired));
+
+    expect(await within(dialog).findByText("Add a customer phone number to pay online")).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Add a mobile number" })).toBe(dialog);
+    expect(field.value).toBe("98200 11122");
+    await user.type(field, "3");
+    expect(within(dialog).queryByText("Add a customer phone number to pay online")).toBeNull();
+  });
+
+  it("cancelling the phone prompt puts focus on the notice, not the page body", async () => {
+    const user = userEvent.setup();
+    vi.mocked(payment.createCheckout).mockRejectedValue(
+      serviceProblem(422, "validation", "Validation failed", "Add a customer phone number to pay online"),
+    );
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+    const dialog = await screen.findByRole("dialog", { name: "Add a mobile number" });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
   });
 });
 

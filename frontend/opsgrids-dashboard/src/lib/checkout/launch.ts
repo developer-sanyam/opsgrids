@@ -15,17 +15,24 @@ import { openRazorpay } from "./razorpay";
  * - `wait`: a payment may be under way — poll the server for the full window.
  * - `glance`: the customer closed the window without paying, as far as the browser saw — ask the
  *   server once, in case a UPI app finished the payment out of sight.
+ *
+ * Both providers' own reports are read only for this hint, never as proof of anything.
  */
 export type LaunchOutcome = { wait: "full" } | { wait: "glance"; failed: boolean };
 
-export async function launchCheckout(session: CheckoutSession, description: string): Promise<LaunchOutcome> {
+/** `onOpened` fires once the provider's window is actually up — not while its script is loading. */
+export async function launchCheckout(
+  session: CheckoutSession,
+  description: string,
+  onOpened?: () => void,
+): Promise<LaunchOutcome> {
   const action = session.action;
   if (action.type === "cashfree_checkout") {
-    await openCashfree(action);
-    return { wait: "full" };
+    const outcome = await openCashfree(action, onOpened);
+    return outcome === "completed" ? { wait: "full" } : { wait: "glance", failed: false };
   }
 
-  const outcome = await openRazorpay(session, action, description);
+  const outcome = await openRazorpay(session, action, description, onOpened);
   if (outcome.kind !== "completed") return { wait: "glance", failed: outcome.kind === "failed" };
   if (outcome.fields) {
     try {

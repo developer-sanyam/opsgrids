@@ -80,6 +80,27 @@ describe("pollCheckout", () => {
     expect(payment.getCheckoutStatus).toHaveBeenCalledTimes(1);
   });
 
+  it("waits before the first read when asked to, so a glance is not spent the instant a window closes", async () => {
+    vi.mocked(payment.getCheckoutStatus).mockResolvedValue(status("authorized"));
+    const result = pollCheckout("c1", { signal: new AbortController().signal, attempts: 1, initialDelayMs: POLL_INTERVAL_MS });
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS - 1);
+    expect(payment.getCheckoutStatus).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(result).resolves.toEqual({ kind: "unsettled", last: status("authorized") });
+    expect(payment.getCheckoutStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([429, 408])("ends a %i unsettled, keeping the last state, not as a refusal", async (code) => {
+    vi.mocked(payment.getCheckoutStatus)
+      .mockResolvedValueOnce(status("authorized"))
+      .mockRejectedValueOnce(new ApiError(code, "Busy", { status: code }));
+    const result = pollCheckout("c1", { signal: new AbortController().signal });
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
+    await expect(result).resolves.toEqual({ kind: "unsettled", last: status("authorized") });
+    // Not retried: a 4xx is never asked again by this loop.
+    expect(payment.getCheckoutStatus).toHaveBeenCalledTimes(2);
+  });
+
   it("pauses while the tab is hidden and resumes when it is visible again", async () => {
     vi.mocked(payment.getCheckoutStatus).mockResolvedValueOnce(status("created")).mockResolvedValueOnce(status("captured"));
     const result = pollCheckout("c1", { signal: new AbortController().signal });

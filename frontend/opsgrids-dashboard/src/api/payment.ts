@@ -29,6 +29,11 @@ export interface CheckoutSession {
   chargeId: string;
   provider: CheckoutProvider;
   action: ClientAction;
+  /**
+   * `client_action.openable`: false when the server's provider is a stub, whose Order or session
+   * no real checkout would accept. Nothing is launched on one.
+   */
+  openable: boolean;
   amountMinor: number;
   currency: string;
   expiresAt: string | null;
@@ -101,7 +106,12 @@ export async function confirmRazorpay(chargeId: string, fields: RazorpayHandlerF
 
 type Wire = Record<string, unknown>;
 
-const STATES: readonly CheckoutState[] = ["created", "authorized", "captured", "failed", "expired"];
+/**
+ * The states payment-service sends (`PlatformCheckoutStatusOut.state`). An expiry is not a state on
+ * the wire: it is `failed` with `failure_reason: "checkout_expired"`, mapped to `expired` below.
+ */
+const WIRE_STATES = ["created", "authorized", "captured", "failed"] as const;
+const EXPIRED_REASON = "checkout_expired";
 const PROVIDERS: readonly CheckoutProvider[] = ["razorpay", "cashfree"];
 /** A Razorpay *public* key id. A key secret has no such prefix, so it can never pass this. */
 const RAZORPAY_KEY_ID = /^rzp_(test|live)_[A-Za-z0-9]+$/;
@@ -131,6 +141,17 @@ function minorUnits(source: Wire, what: string): { amountMinor: number; currency
   if (typeof amount !== "number" || !Number.isSafeInteger(amount) || amount < 0) throw new PaymentContractError(what);
   if (typeof currency !== "string" || !ISO_CURRENCY.test(currency)) throw new PaymentContractError(what);
   return { amountMinor: amount, currency };
+}
+
+/** The wire state, with a checkout nobody paid before it expired told apart from a failed payment. */
+function checkoutState(source: Wire, what: string): CheckoutState {
+  const state = oneOf(source, "state", WIRE_STATES, what);
+  return state === "failed" && source.failure_reason === EXPIRED_REASON ? "expired" : state;
+}
+
+function openable(raw: unknown): boolean {
+  if (!isObject(raw) || typeof raw.openable !== "boolean") throw new PaymentContractError("checkout");
+  return raw.openable;
 }
 
 function clientAction(raw: unknown, provider: CheckoutProvider): ClientAction {
@@ -164,11 +185,11 @@ export function fromWire(
   raw: unknown,
 ): CheckoutSession | CheckoutStatus | { state: CheckoutState } {
   if (!isObject(raw)) throw new PaymentContractError(kind === "checkout" ? "checkout" : "status");
-  if (kind === "confirm") return { state: oneOf(raw, "state", STATES, "status") };
+  if (kind === "confirm") return { state: checkoutState(raw, "status") };
   if (kind === "status") {
     return {
       chargeId: text(raw, "charge_id", "status"),
-      state: oneOf(raw, "state", STATES, "status"),
+      state: checkoutState(raw, "status"),
       provider: oneOf(raw, "provider", PROVIDERS, "status"),
       ...minorUnits(raw, "status"),
     };
@@ -179,6 +200,7 @@ export function fromWire(
     chargeId: text(raw, "charge_id", "checkout"),
     provider,
     action: clientAction(raw.client_action, provider),
+    openable: openable(raw.client_action),
     ...minorUnits(raw, "checkout"),
     expiresAt: typeof expires === "string" && expires.length > 0 ? expires : null,
   };
@@ -189,10 +211,48 @@ export function fromWire(
 /** The coded 422 refusals this page has its own words (or its own prompt) for. */
 export type RefusalCode = "phone_required" | "currency_unsupported" | "amount_below_minimum";
 
-const KNOWN_CODES: readonly RefusalCode[] = ["phone_required", "currency_unsupported", "amount_below_minimum"];
+/**
+ * Every spelling of a refusal this page acts on, as a machine code in `errors[].code` or as the
+ * problem `type` slug (hyphens read as underscores). The `customer_*` and `unsupported_currency`
+ * names are payment-service's own (`_REQUEST_CODES`, services/payment/app/checkout/services.py);
+ * `customer_details_required` is the provider asking for contact details, which the phone prompt
+ * collects.
+ */
+const REFUSAL_CODES: ReadonlyMap<string, RefusalCode> = new Map([
+  ["phone_required", "phone_required"],
+  ["customer_phone_required", "phone_required"],
+  ["customer_details_required", "phone_required"],
+  ["currency_unsupported", "currency_unsupported"],
+  ["unsupported_currency", "currency_unsupported"],
+  ["amount_below_minimum", "amount_below_minimum"],
+]);
+
+/**
+ * payment-service raises these refusals as a bare `ValidationProblem(message)` — type `validation`,
+ * no `errors[]`, no code — so today the sentence is the only thing that tells them apart. Each is
+ * matched whole against `_REQUEST_CODES` in services/payment/app/checkout/services.py, and only on
+ * an uncoded `validation` 422. A reworded sentence falls through to the server's own words
+ * (`other`), never to a wrong prompt; once the service attaches a code, `REFUSAL_CODES` wins first.
+ */
+const UNCODED_REFUSALS: ReadonlyMap<string, RefusalCode> = new Map([
+  ["Add a customer phone number to pay online", "phone_required"],
+  ["Add the customer's details to pay online", "phone_required"],
+  ["Only INR invoices can be paid online", "currency_unsupported"],
+  ["The amount is below the minimum that can be paid online (Rs 1)", "amount_below_minimum"],
+]);
+
+/**
+ * The only machine codes that mean "this invoice is already paid". payment-service answers other
+ * 409s from the same route — a checkout another click is preparing, an expired checkout not yet
+ * closed, a provider without checkout — and none of those is a payment. So a 409 is read as paid
+ * only when it says so in a code, never from its status or its sentence.
+ */
+const ALREADY_PAID_CODES: ReadonlySet<string> = new Set(["invoice_already_paid", "already_paid"]);
 
 export type CheckoutRefusal =
   | { kind: "already_paid" }
+  /** A 409 that is not a coded "paid": the server's own sentence, and the invoice stays payable. */
+  | { kind: "conflict"; message: string }
   | { kind: "not_found" }
   | { kind: "forbidden" }
   | { kind: "coded"; code: RefusalCode; message: string }
@@ -200,26 +260,36 @@ export type CheckoutRefusal =
   | { kind: "invalid"; fields: Record<string, string>; message: string }
   | { kind: "other"; message: string };
 
+/** Every machine code a problem carries: its `errors[].code`s, then its `type` slug. */
+function problemCodes(error: ApiError): string[] {
+  const codes = fieldErrors(error.problem).map((entry) => entry.code.replace(/-/g, "_"));
+  const slug = problemSlug(error.problem).replace(/-/g, "_");
+  return slug ? [...codes, slug] : codes;
+}
+
 /**
- * Why the server would not open (or report on) a checkout. The coded refusal is read from the
- * problem's `errors[].code` first and from the problem `type` slug second (`phone-required` and
- * `phone_required` are the same code), so either convention the service settles on lands here.
+ * Why the server would not open (or report on) a checkout. Machine codes decide: `errors[].code`
+ * first, the problem `type` slug second (`phone-required` and `phone_required` are the same code),
+ * so either convention the service settles on lands here. A status alone decides only 403 and 404.
  */
 export function checkoutRefusal(error: unknown): CheckoutRefusal {
   if (!(error instanceof ApiError)) {
     return { kind: "other", message: error instanceof PaymentContractError ? error.message : problemMessage(error) };
   }
-  if (error.status === 409) return { kind: "already_paid" };
   if (error.status === 404) return { kind: "not_found" };
   if (error.status === 403) return { kind: "forbidden" };
   const message = problemMessage(error);
+  const codes = problemCodes(error);
+  if (error.status === 409) {
+    return codes.some((code) => ALREADY_PAID_CODES.has(code)) ? { kind: "already_paid" } : { kind: "conflict", message };
+  }
   if (error.status === 422) {
-    const entries = fieldErrors(error.problem);
-    const fromEntries = entries.map((entry) => entry.code);
-    const fromSlug = problemSlug(error.problem).replace(/-/g, "_");
-    const code = KNOWN_CODES.find((known) => fromEntries.includes(known) || fromSlug === known);
-    if (code) return { kind: "coded", code, message };
-    if (entries.length > 0) return { kind: "invalid", fields: fieldErrorMap(error.problem), message };
+    const coded = codes.map((code) => REFUSAL_CODES.get(code)).find((code) => code !== undefined);
+    if (coded) return { kind: "coded", code: coded, message };
+    if (fieldErrors(error.problem).length > 0) return { kind: "invalid", fields: fieldErrorMap(error.problem), message };
+    const detail = error.problem?.detail;
+    const uncoded = detail && problemSlug(error.problem) === "validation" ? UNCODED_REFUSALS.get(detail) : undefined;
+    if (uncoded) return { kind: "coded", code: uncoded, message };
   }
   return { kind: "other", message };
 }

@@ -123,7 +123,21 @@ describe("SubscriptionsPage — overdue", () => {
     },
   };
 
-  it("sends whoever can subscribe to Invoices to pay", async () => {
+  it("sends whoever can subscribe and read invoices to Invoices to pay", async () => {
+    vi.mocked(api.listProducts).mockResolvedValue([{ key: "operations", name: "OpsGrids Inventory", is_bundle: false }] as never);
+    vi.mocked(api.listSubscriptions).mockResolvedValue([overdue] as never);
+    render(
+      <MemoryRouter>
+        <PermissionProvider grants={["core.product.activation.write:ORG", "core.billing.invoice.read:ORG"]}>
+          <SubscriptionsPage />
+        </PermissionProvider>
+      </MemoryRouter>,
+    );
+    const link = await screen.findByRole("link", { name: "Pay now for Inventory" });
+    expect(link.getAttribute("href")).toBe("/invoices");
+  });
+
+  it("does not link a role that may pay but cannot read invoices to a page it would be refused", async () => {
     vi.mocked(api.listProducts).mockResolvedValue([{ key: "operations", name: "OpsGrids Inventory", is_bundle: false }] as never);
     vi.mocked(api.listSubscriptions).mockResolvedValue([overdue] as never);
     render(
@@ -133,8 +147,8 @@ describe("SubscriptionsPage — overdue", () => {
         </PermissionProvider>
       </MemoryRouter>,
     );
-    const link = await screen.findByRole("link", { name: "Pay now for Inventory" });
-    expect(link.getAttribute("href")).toBe("/invoices");
+    expect(await screen.findByText(/Ask your organisation's owner to pay it/)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /Pay now/ })).toBeNull();
   });
 
   it("offers no pay link without the subscribe permission", async () => {

@@ -9,6 +9,9 @@
  *   is a payment the server will capture, so the poll keeps going.
  * - **Never retries a 4xx.** A 403 or 404 does not fix itself. A 5xx or a dropped connection
  *   spends one attempt and the poll carries on.
+ * - **A 429 or 408 ends the wait unsettled, not refused.** It says nothing about the payment, so
+ *   the screen keeps saying "don't pay again" and offers a later check — it is not retried here,
+ *   and it never reads as a refusal that would put Pay now back.
  */
 import { ApiError } from "@opsgrids/client";
 
@@ -32,7 +35,15 @@ export interface PollOptions {
   /** How many reads to spend. `1` is a single glance. */
   attempts?: number | undefined;
   intervalMs?: number | undefined;
+  /**
+   * Wait this long before the first read. A glance after the window was closed uses one interval,
+   * so a UPI approval finished out of sight has a moment to reach the provider before it is read.
+   */
+  initialDelayMs?: number | undefined;
 }
+
+/** Busy, not refused: neither says anything about the payment, and asking again later may work. */
+const NOT_NOW = new Set([408, 429]);
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -68,11 +79,12 @@ function untilVisible(signal: AbortSignal): Promise<void> {
 }
 
 export async function pollCheckout(chargeId: string, options: PollOptions): Promise<PollOutcome> {
-  const { signal, onStatus, attempts = POLL_ATTEMPTS, intervalMs = POLL_INTERVAL_MS } = options;
+  const { signal, onStatus, attempts = POLL_ATTEMPTS, intervalMs = POLL_INTERVAL_MS, initialDelayMs = 0 } = options;
   let last: CheckoutStatus | null = null;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (attempt > 0) await sleep(intervalMs, signal);
+    const delay = attempt > 0 ? intervalMs : initialDelayMs;
+    if (delay > 0) await sleep(delay, signal);
     await untilVisible(signal);
     if (signal.aborted) return { kind: "aborted" };
     try {
@@ -84,6 +96,7 @@ export async function pollCheckout(chargeId: string, options: PollOptions): Prom
     } catch (error: unknown) {
       if (signal.aborted) return { kind: "aborted" };
       if (error instanceof PaymentContractError) return { kind: "refused", error };
+      if (error instanceof ApiError && NOT_NOW.has(error.status)) return { kind: "unsettled", last };
       if (error instanceof ApiError && error.status >= 400 && error.status < 500) return { kind: "refused", error };
     }
   }

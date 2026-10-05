@@ -6,14 +6,18 @@
  *   state: two clicks inside one frame would both read a stale `idle`.
  * - **Nothing is persisted.** The checkout lives here, in memory, for as long as the screen does;
  *   leaving the screen aborts the wait and forgets it.
+ * - **"Don't pay again" is said only when a payment may exist**: the provider's window reported
+ *   one finishing, or the server said `authorized`. A window closed with nothing seen gets a
+ *   neutral look at the server, and paying again stays one click away.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { checkoutRefusal, createCheckout } from "@/api/payment";
 import type { CheckoutCustomer, CheckoutRefusal, CheckoutSession, CheckoutState } from "@/api/payment";
 import { launchCheckout } from "@/lib/checkout/launch";
-import { pollCheckout, POLL_ATTEMPTS } from "@/lib/checkout/poll";
+import { pollCheckout, POLL_INTERVAL_MS } from "@/lib/checkout/poll";
 
+import { COPY } from "./paymentCopy";
 import type { NoticeCopy } from "./paymentCopy";
 
 export interface PayTarget {
@@ -22,13 +26,26 @@ export interface PayTarget {
   label: string;
 }
 
+/**
+ * - `full`: a payment may be under way (the window reported one finishing) — "don't pay again".
+ * - `check`: a look at a checkout nobody is known to have paid — after a closed window, or a
+ *   re-check. It becomes `full` the moment the server says `authorized`.
+ */
+export type WaitMode = "full" | "check";
+
 export type PayState =
   | { phase: "idle" }
-  | { phase: "starting"; target: PayTarget }
+  /** `withPhone`: this attempt carries the number typed into the phone prompt, which stays up. */
+  | { phase: "starting"; target: PayTarget; withPhone: boolean }
   | { phase: "needs_phone"; target: PayTarget; fieldError?: string | undefined }
   | { phase: "open"; target: PayTarget; session: CheckoutSession }
-  | { phase: "waiting"; target: PayTarget; session: CheckoutSession; state: CheckoutState | null }
-  | { phase: "captured" | "failed" | "expired" | "unconfirmed"; target: PayTarget; session: CheckoutSession }
+  | { phase: "waiting"; target: PayTarget; session: CheckoutSession; state: CheckoutState | null; mode: WaitMode }
+  | { phase: "captured" | "failed" | "expired"; target: PayTarget; session: CheckoutSession }
+  /**
+   * The wait ran out without an answer. `sawPayment`: the window reported a payment finishing, or
+   * the server last said `authorized` — paying again then risks paying twice.
+   */
+  | { phase: "unconfirmed"; target: PayTarget; session: CheckoutSession; sawPayment: boolean }
   | { phase: "closed"; target: PayTarget; session: CheckoutSession; failed: boolean }
   | { phase: "refused"; target: PayTarget; notice: NoticeCopy };
 
@@ -36,11 +53,20 @@ export interface PayInvoice {
   state: PayState;
   /** True while a payment is being opened, is open, or is being waited on. */
   busy: boolean;
-  /** Invoices the server has said, on this screen, are paid — captured here, or a 409. */
+  /** Invoices the server has said, on this screen, are paid — captured here, or a coded 409. */
   paid: ReadonlySet<string>;
+  /**
+   * The invoice whose last checkout should be checked before anything else is done with it — its
+   * row offers "Check status", not "Pay now".
+   */
+  checkingId: string | null;
+  /** Whether "Pay again" is offered: the last checkout closed, or ran out, with no payment seen. */
+  canPayAgain: boolean;
   start: (target: PayTarget, customer?: CheckoutCustomer) => Promise<void>;
   /** Ask the server again — after the window closed early, or the wait ran out. */
   checkAgain: () => Promise<void>;
+  /** Open a new payment window for the invoice whose last one closed without a payment. */
+  payAgain: () => Promise<void>;
   /** Close the phone prompt without paying. */
   cancel: () => void;
 }
@@ -55,6 +81,10 @@ function refusalState(target: PayTarget, refusal: CheckoutRefusal, hadCustomer: 
         target,
         notice: { tone: "success", title: "This invoice is already paid.", detail: "A payment for it has already been received — there is nothing more to pay." },
       };
+    case "conflict":
+      // Not "paid": another click preparing this checkout, an expired one not closed yet, a
+      // provider without checkout. The server's own sentence says which; the button stays.
+      return { phase: "refused", target, notice: { tone: "warning", title: refusal.message } };
     case "not_found":
       return {
         phase: "refused",
@@ -93,6 +123,19 @@ function refusalState(target: PayTarget, refusal: CheckoutRefusal, hadCustomer: 
   }
 }
 
+/** How long a wait is worth, by what the browser saw — and, for a re-check, what was seen before. */
+type Follow = { kind: "full" } | { kind: "glance"; failed: boolean } | { kind: "recheck"; sawPayment: boolean };
+
+function mayPayAgain(state: PayState): boolean {
+  return state.phase === "closed" || (state.phase === "unconfirmed" && !state.sawPayment);
+}
+
+function checkingIdOf(state: PayState): string | null {
+  if (state.phase === "closed" || state.phase === "unconfirmed") return state.target.invoiceId;
+  if (state.phase === "waiting" && state.mode === "check") return state.target.invoiceId;
+  return null;
+}
+
 export function usePayInvoice(): PayInvoice {
   const [state, setState] = useState<PayState>({ phase: "idle" });
   const [paid, setPaid] = useState<ReadonlySet<string>>(new Set());
@@ -120,7 +163,7 @@ export function usePayInvoice(): PayInvoice {
     setPaid((prev) => new Set(prev).add(invoiceId));
   }, []);
 
-  /** Show a refusal; a 409 is the server saying the invoice is paid, so it is remembered as such. */
+  /** Show a refusal; only a coded "already paid" 409 is remembered as paid. */
   const refuse = useCallback(
     (target: PayTarget, refusal: CheckoutRefusal, hadCustomer: boolean) => {
       if (refusal.kind === "already_paid") markPaid(target.invoiceId);
@@ -134,14 +177,24 @@ export function usePayInvoice(): PayInvoice {
     setBusy(false);
   }, []);
 
-  /** Wait on the server. `glance` spends one read; anything still moving then gets the full wait. */
+  /**
+   * Wait on the server. A glance spends one read, one interval after the window closed; a read of
+   * `authorized` on it turns it into the full wait, because a payment now exists.
+   */
   const follow = useCallback(
-    async (target: PayTarget, session: CheckoutSession, signal: AbortSignal, glance: { failed: boolean } | null) => {
-      setState({ phase: "waiting", target, session, state: null });
+    async (target: PayTarget, session: CheckoutSession, signal: AbortSignal, how: Follow) => {
+      let mode: WaitMode = how.kind === "full" ? "full" : "check";
+      let sawPayment = how.kind === "full" || (how.kind === "recheck" && how.sawPayment);
+      setState({ phase: "waiting", target, session, state: null, mode });
       const onStatus = (status: { state: CheckoutState }) =>
-        setState({ phase: "waiting", target, session, state: status.state });
-      let outcome = await pollCheckout(session.chargeId, { signal, onStatus, attempts: glance ? 1 : POLL_ATTEMPTS });
-      if (glance && outcome.kind === "unsettled" && outcome.last?.state === "authorized") {
+        setState({ phase: "waiting", target, session, state: status.state, mode });
+      let outcome =
+        how.kind === "glance"
+          ? await pollCheckout(session.chargeId, { signal, onStatus, attempts: 1, initialDelayMs: POLL_INTERVAL_MS })
+          : await pollCheckout(session.chargeId, { signal, onStatus });
+      if (how.kind === "glance" && outcome.kind === "unsettled" && outcome.last?.state === "authorized") {
+        mode = "full";
+        sawPayment = true;
         outcome = await pollCheckout(session.chargeId, { signal, onStatus });
       }
       if (signal.aborted || outcome.kind === "aborted") return;
@@ -152,12 +205,17 @@ export function usePayInvoice(): PayInvoice {
         return;
       }
       if (outcome.kind === "refused") {
-        refuse(target, checkoutRefusal(outcome.error), false);
+        // After the window, so money may have moved: never the create-time "nothing was charged".
+        setState({ phase: "refused", target, notice: COPY.unreadable });
         return;
       }
-      setState(glance ? { phase: "closed", target, session, failed: glance.failed } : { phase: "unconfirmed", target, session });
+      if (how.kind === "glance" && mode === "check") {
+        setState({ phase: "closed", target, session, failed: how.failed });
+        return;
+      }
+      setState({ phase: "unconfirmed", target, session, sawPayment: sawPayment || outcome.last?.state === "authorized" });
     },
-    [markPaid, refuse],
+    [markPaid],
   );
 
   const start = useCallback(
@@ -166,7 +224,7 @@ export function usePayInvoice(): PayInvoice {
       if (!controller) return;
       const { signal } = controller;
       try {
-        setState({ phase: "starting", target });
+        setState({ phase: "starting", target, withPhone: customer !== undefined });
         let session: CheckoutSession;
         try {
           session = await createCheckout(target.invoiceId, customer);
@@ -175,10 +233,16 @@ export function usePayInvoice(): PayInvoice {
           return;
         }
         if (signal.aborted) return;
-        setState({ phase: "open", target, session });
+        if (!session.openable) {
+          // A stub provider's stand-in Order: no real window would take it.
+          setState({ phase: "refused", target, notice: COPY.unavailable });
+          return;
+        }
         let launched;
         try {
-          launched = await launchCheckout(session, target.label);
+          launched = await launchCheckout(session, target.label, () => {
+            if (!signal.aborted) setState({ phase: "open", target, session });
+          });
         } catch (error: unknown) {
           if (!signal.aborted) {
             const title = error instanceof Error ? error.message : "The payment window could not be opened.";
@@ -187,7 +251,7 @@ export function usePayInvoice(): PayInvoice {
           return;
         }
         if (signal.aborted) return;
-        await follow(target, session, signal, launched.wait === "glance" ? { failed: launched.failed } : null);
+        await follow(target, session, signal, launched.wait === "glance" ? { kind: "glance", failed: launched.failed } : { kind: "full" });
       } finally {
         if (controllerRef.current === controller) release();
       }
@@ -201,15 +265,31 @@ export function usePayInvoice(): PayInvoice {
     const controller = claim();
     if (!controller) return;
     try {
-      await follow(current.target, current.session, controller.signal, null);
+      const sawPayment = current.phase === "unconfirmed" && current.sawPayment;
+      await follow(current.target, current.session, controller.signal, { kind: "recheck", sawPayment });
     } finally {
       if (controllerRef.current === controller) release();
     }
   }, [claim, follow, release]);
 
+  const payAgain = useCallback(async () => {
+    const current = stateRef.current;
+    if ((current.phase === "closed" || current.phase === "unconfirmed") && mayPayAgain(current)) await start(current.target);
+  }, [start]);
+
   const cancel = useCallback(() => {
     if (stateRef.current.phase === "needs_phone") setState({ phase: "idle" });
   }, []);
 
-  return { state, busy, paid, start, checkAgain, cancel };
+  return {
+    state,
+    busy,
+    paid,
+    checkingId: checkingIdOf(state),
+    canPayAgain: mayPayAgain(state),
+    start,
+    checkAgain,
+    payAgain,
+    cancel,
+  };
 }

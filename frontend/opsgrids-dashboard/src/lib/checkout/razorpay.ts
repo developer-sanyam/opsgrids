@@ -65,6 +65,7 @@ export async function openRazorpay(
   session: CheckoutSession,
   action: { keyId: string; orderId: string },
   description: string,
+  onOpened?: () => void,
 ): Promise<RazorpayOutcome> {
   await loadScriptOnce(RAZORPAY_CHECKOUT_SRC, () => razorpayGlobal() !== undefined, "Razorpay");
   const Razorpay = razorpayGlobal();
@@ -94,5 +95,6 @@ export async function openRazorpay(
       sawFailure = true;
     });
     checkout.open();
+    onOpened?.();
   });
 }

@@ -1,7 +1,8 @@
 /**
  * The provider launchers, against fake SDKs. What matters: only public identifiers go in, the
- * Razorpay handler's fields go to `/confirm` and nowhere else, Cashfree's result is thrown away,
- * and a blocked script is a clear refusal rather than a hang.
+ * Razorpay handler's fields go to `/confirm` and nowhere else, either provider's own report sets
+ * only how long to wait (a closed window gets one look, not a minute of "don't pay again"), and a
+ * blocked script is a clear refusal rather than a hang.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -22,6 +23,7 @@ const RZP_SESSION: CheckoutSession = {
   chargeId: "charge-1",
   provider: "razorpay",
   action: { type: "razorpay_checkout", keyId: "rzp_test_Platform0001", orderId: "order_P1" },
+  openable: true,
   amountMinor: 499900,
   currency: "INR",
   expiresAt: null,
@@ -31,6 +33,7 @@ const CF_SESSION: CheckoutSession = {
   chargeId: "charge-2",
   provider: "cashfree",
   action: { type: "cashfree_checkout", paymentSessionId: "session_abc", mode: "sandbox" },
+  openable: true,
   amountMinor: 100,
   currency: "INR",
   expiresAt: null,
@@ -101,6 +104,19 @@ describe("Razorpay", () => {
     expect(payment.confirmRazorpay).not.toHaveBeenCalled();
   });
 
+  it("says the window is open only once Checkout has opened it", async () => {
+    const opened = vi.fn();
+    let dismiss: (() => void) | undefined;
+    stubRazorpay((o) => {
+      expect(opened).not.toHaveBeenCalled();
+      dismiss = o.modal.ondismiss;
+    });
+    const launched = launchCheckout(RZP_SESSION, "Invoice INV-1", opened);
+    await vi.waitFor(() => expect(opened).toHaveBeenCalledTimes(1));
+    dismiss?.();
+    await expect(launched).resolves.toEqual({ wait: "glance", failed: false });
+  });
+
   it("remembers a payment.failed that preceded the dismissal", async () => {
     stubRazorpay((o, emit) => {
       emit("payment.failed");
@@ -120,21 +136,32 @@ describe("Razorpay", () => {
 });
 
 describe("Cashfree", () => {
-  it("opens the modal with the session id and mode, and discards what the SDK reports", async () => {
+  it("opens the modal with the session id and mode, and waits in full once a payment finished", async () => {
     const checkout = vi.fn().mockResolvedValue({ paymentDetails: { paymentMessage: "Payment finished" } });
     const factory = vi.fn().mockReturnValue({ checkout });
     (window as Win).Cashfree = factory;
+    const opened = vi.fn();
 
-    await expect(launchCheckout(CF_SESSION, "Invoice INV-2")).resolves.toEqual({ wait: "full" });
+    await expect(launchCheckout(CF_SESSION, "Invoice INV-2", opened)).resolves.toEqual({ wait: "full" });
 
     expect(factory).toHaveBeenCalledExactlyOnceWith({ mode: "sandbox" });
     expect(checkout).toHaveBeenCalledExactlyOnceWith({ paymentSessionId: "session_abc", redirectTarget: "_modal" });
+    expect(opened).toHaveBeenCalledTimes(1);
     expect(payment.confirmRazorpay).not.toHaveBeenCalled();
   });
 
-  it("waits on the server even when the SDK rejects", async () => {
-    (window as Win).Cashfree = () => ({ checkout: () => Promise.reject(new Error("closed")) });
+  it("waits in full when Cashfree hands off to its redirect page", async () => {
+    (window as Win).Cashfree = () => ({ checkout: () => Promise.resolve({ redirect: true }) });
     await expect(launchCheckout(CF_SESSION, "Invoice INV-2")).resolves.toEqual({ wait: "full" });
+  });
+
+  it.each([
+    ["the customer closed the modal", () => Promise.resolve({ error: { message: "Payment modal closed by user" } })],
+    ["the SDK reported nothing it finished", () => Promise.resolve({})],
+    ["the SDK rejected", () => Promise.reject(new Error("closed"))],
+  ])("treats it as a closed window worth one look when %s", async (_label, checkout) => {
+    (window as Win).Cashfree = () => ({ checkout });
+    await expect(launchCheckout(CF_SESSION, "Invoice INV-2")).resolves.toEqual({ wait: "glance", failed: false });
   });
 
   it("loads the v3 SDK from Cashfree and refuses clearly when the script is blocked", async () => {

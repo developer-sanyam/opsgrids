@@ -105,7 +105,24 @@ export function InvoicesPage() {
             align: "right",
             mobile: "actions",
             render: (inv) =>
-              payable.has(inv.id) ? (
+              !payable.has(inv.id) ? null : pay.checkingId === inv.id ? (
+                // Its last payment window closed, or the wait ran out: this row checks that payment
+                // first, where the person is, instead of offering a second one beside a warning
+                // they may not be able to see.
+                <Button
+                  variant="outline"
+                  size="sm"
+                  loading={payingId === inv.id}
+                  disabled={pay.busy}
+                  onKeyDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void pay.checkAgain();
+                  }}
+                >
+                  Check status<span className="sr-only"> of invoice {inv.number}</span>
+                </Button>
+              ) : (
                 <Button
                   size="sm"
                   loading={payingId === inv.id}
@@ -119,7 +136,7 @@ export function InvoicesPage() {
                 >
                   Pay now<span className="sr-only"> invoice {inv.number}</span>
                 </Button>
-              ) : null,
+              ),
           },
         ]
       : [];
