@@ -47,8 +47,10 @@ behaviour arrives as siblings, so an adapter is held only to what it claims:
   `checkout_confirmation`, `signs_headers`, `max_debit_without_afa_minor`, `wire`). The service layer
   reads it **before** a call. An adapter that declares nothing gets the legacy defaults (no limits),
   which is what the in-process stub and every pre-existing test double are.
-* **`CheckoutProvider`** and its contract (`tests/checkout_contract.py`): `ensure_checkout` is
-  idempotent by the charge's own id, never leaks the customer into the client action, refuses a
+* **`CheckoutProvider`** and its contract (`tests/checkout_contract.py`): `ensure_checkout` fetches an
+  Order the charge records **by its id** (found even when the receipt search cannot see it, and never
+  a duplicate of its receipt), otherwise searches by the charge's own id before it creates (one Order
+  where the provider's search shows it), never leaks the customer into the client action, refuses a
   conflicting amount, and answers the browser a provider-shaped `client_action` (Razorpay: public key
   id and Order id; Cashfree: `payment_session_id`).
 * **`DirectDebitProvider`** and its contract (`tests/direct_debit_contract.py`): the shape a Cashfree
@@ -79,9 +81,15 @@ read checks the deadline and a 1 MiB cap. `provider_call_timeout_seconds` is the
 service's wait and the wire's hard bound; its default rose **30 → 45 s** (a Razorpay charge is up to
 five requests of 2 s + 5 s = 35 s) and a validator refuses anything under 35 s.
 
-Razorpay answers a duplicate `receipt` with a 400. The adapter treats **any** 400 on an Order create
-as "look once more": the Order may exist (a retry after an unknown outcome) and the lookup is what
-decides; only a lookup that finds nothing is a rejection.
+**Razorpay accepts a duplicate `receipt`, and its receipt search can miss a fresh Order** (the sandbox,
+2026-10-06; ADR-0029 "Sandbox facts"). The design first assumed a duplicate was a 400. So the receipt
+is not an idempotency key: a checkout's Order id is recorded before any browser sees it, a reopen
+fetches that Order by its id (`GET /orders/{id}`), and only the recorded id is ever handed to a
+browser. The receipt search runs only when no id is recorded, as a best-effort recovery of a create
+whose answer was lost; a `429` on it is `ProviderTransient`. The one search after a 400 on an Order
+create is kept as a harmless recovery (an exact, same-money Order found is used; otherwise the 400
+stands). Before the poller closes a checkout, and through its late window, it searches the receipt
+for a stray duplicate and records money that moved on one (section 7).
 
 ## 5. Safety guards before the wire
 
@@ -139,7 +147,13 @@ permission**, so no ADR-0007 fleet rollout).
   `{"type": "cashfree_checkout", payment_session_id, mode, openable}`. `openable` is false on a stub.
   Cashfree needs a customer phone (10 digits, or `+` and 8-15 digits); a request without a usable one
   is a 422 before any call, and a phone is never invented. A Cashfree session token is **never
-  stored**: reopening fetches it again.
+  stored**: reopening fetches it again. **Refusals are coded** in `errors[0].code` (ADR-0029, decision
+  13): 409 `invoice_already_paid` (the only 409 that means paid), `checkout_in_progress`,
+  `previous_checkout_not_closable`, `previous_checkout_payment_in_flight`, `checkout_not_supported`;
+  422 `phone_required` (field `customer.phone`), `customer_details_required`, `currency_unsupported`,
+  `amount_below_minimum`, `nothing_to_pay`. The Order in `client_action` is always the one the charge
+  records; one the call made that the charge does not record is never handed out (a 409
+  `checkout_in_progress`).
 * `GET /payment/checkouts/{charge_id}`: read-through status. While the checkout is open, the
   provider is asked and the answer reconciled through the path a signed webhook takes. Answers
   `{state, paid, failure_reason, provider_checked, …}`. `paid` is true only for a **captured**
@@ -167,7 +181,11 @@ still asked about for `checkout_late_capture_window_seconds` — the poller (at
 `checkout_late_capture_poll_interval_seconds`), the status read-through and a verified confirm — so a
 capture that arrives after that lands (`captured_after_local_failure`), and it is asked about again
 before a new checkout is opened for the same invoice. A stale checkout that never recorded an Order
-is closed by the next open; a reopen of one that did is a lookup only, never a create.
+is closed by the next open; a reopen of one that did fetches that Order by its id, never a create.
+Before a checkout is closed, and on every late check, the receipt is also searched for a **stray**
+Order (a duplicate Razorpay accepted from a retried create): a payment on one that moved money is
+recorded against the charge (audited `payment.checkout.stray_order_payment`), and one in flight holds
+the close. Best-effort: the search can miss a fresh Order, so it never holds a close on its own.
 
 ### The poller
 
@@ -292,10 +310,10 @@ field **names** only:
 
 | Question | Where it is answered |
 |---|---|
-| The real HTTP status and code of a bad key (the classification does not depend on it) | `bad_key` (both) |
-| How Razorpay refuses a duplicate `receipt` | `duplicate_receipt` |
-| Whether `payment_capture: true` is honored and echoed | `order_capture_true` / `order_capture_unset` |
-| Whether the `receipt` filter is "contains" (the adapter matches exactly regardless) | `lookup_exact` / `lookup_prefix` |
+| The real HTTP status and code of a bad key (the classification does not depend on it) | `bad_key` (both). **Razorpay, 2026-10-06: `401`, `BAD_REQUEST_ERROR`.** |
+| How Razorpay refuses a duplicate `receipt` | `duplicate_receipt`. **Razorpay, 2026-10-06: it does not — a second Order is made.** |
+| Whether `payment_capture: true` is honored and echoed | `order_capture_true` / `order_capture_unset`. **Razorpay, 2026-10-06: not echoed.** |
+| Whether the `receipt` filter is "contains" (the adapter matches exactly regardless) | `lookup_exact` / `lookup_prefix`. **Razorpay, 2026-10-06: the search answered `count: 0` for an Order created seconds earlier (and once `429`) — not a reliable guard.** |
 | Cashfree's 404 shape for a missing order | `credentials` (Cashfree) |
 | Whether `2025-01-01` is accepted | `api_version_pinned` / `api_version_bogus` |
 | `order_tags` limit; whether an international phone is accepted | `tags_15` / `tags_16`, `phone_international` |
@@ -317,6 +335,7 @@ fakes (`razorpay_fake.py`, `CashfreeFakeWire`) or `httpx.MockTransport`. New sui
 `test_cashfree_codec` (known answers), `test_cashfree_adapter`, `test_razorpay_live`,
 `test_checkout_contract`, `test_direct_debit_contract`, `test_config_payment`, `test_checkout_api`
 and `test_checkout_status` (each endpoint has a negative-authz and a cross-tenant test),
+`test_checkout_codes` (one test per refusal code),
 `test_charge_poller`, `test_no_mandate_guard`, `test_error_taxonomy`, `test_provider_routing`,
 `test_platform_webhook_phase_a`, `test_merchant_connect_p0`, `test_phase_a_schema` (and the migration
 round trip), `test_refund_key_shape`; in `tests/infra`: `test_payment_env_wiring`,

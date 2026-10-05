@@ -1,7 +1,8 @@
 # ADR-0029 — Payment provider seam: two providers, one checkout, no mandate debit yet
 
 **Status:** Accepted by the owner, 2026-10-06 (decisions D1-D7 of the design) — built on
-`feat/payments-phase-a`, not merged, not deployed ·
+`feat/payments-phase-a`, not merged, not deployed. Decision 13 and "Sandbox facts" were added the
+same day, after the first Razorpay smoke run, and are pending owner review ·
 **Date:** 2026-10-06 · **Service:** `payment` (and the tenant-collections path inside it) ·
 **Design:** [Payments Phase A](../superpowers/specs/2026-10-06-payments-phase-a-design.md)
 
@@ -104,9 +105,10 @@ stored the provider's body verbatim (a payer's email, phone and UPI id in an app
    checkout is opened beside it, it is asked about first (paid meanwhile: "already paid"; a payment
    still in flight: a 409). A checkout past its expiry that **never recorded an Order** (every open
    of it failed at the provider) is closed on the next open: no Order id reached a browser, so nothing
-   can have been paid on it. A reopened checkout that already records an Order is only ever looked up
-   at the provider, never re-created, so a stub after a rollback cannot mint a stand-in Order under the
-   live one's id.
+   can have been paid on it. A reopened checkout that already records an Order is only ever **fetched
+   by that id** at the provider (`GET /orders/{id}`), never searched for by receipt and never
+   re-created, so a stub after a rollback cannot mint a stand-in Order under the live one's id, and a
+   duplicate Order carrying the same receipt is never handed out (see "Sandbox facts").
 
 8. **The platform learns outcomes by polling, because the webhooks stay private.** `app/checkout/cron.py`
    asks the provider about every platform charge with an Order and no terminal state, with the same
@@ -135,12 +137,25 @@ stored the provider's body verbatim (a payer's email, phone and UPI id in an app
     Razorpay live and no second collections provider value; `key_secret`, `webhook_secret` and
     `secret_key` join the audit's `REDACTED_KEYS`.
 
-12. **Nothing here is verified against a provider.** It was built with no keys. Two owner-run tools,
+12. **Built with no keys; verified only by the owner's smoke tools.** Two owner-run tools,
     `tools/payments_smoke_razorpay.py` and `tools/payments_smoke_cashfree.py`, settle what the design
     assumed. They are opt-in (`--confirm`), refuse CI, pytest and any deployed `ENVIRONMENT`, take
     **test or sandbox keys from the process environment only**, address only the provider's test host,
     and print ids, statuses, codes, counts, booleans and field **names**: never a body, a message or a
-    credential. They are never run by `make`, CI or a test.
+    credential. They are never run by `make`, CI or a test. Razorpay's was run on 2026-10-06; what it
+    showed, and what changed because of it, is "Sandbox facts" below.
+
+13. **`POST /payment/checkouts` refuses with stable machine codes** (the contract the dashboard's Pay
+    now, frontend PR #107, branches on). Every 409 and every 422 carries `errors[0].code`, in the shape
+    the rest of the platform uses for a coded problem (`{field?, code, message}`); the problem `type`
+    stays `conflict` / `validation`. 409: `invoice_already_paid` (field `invoice_id` — **the only 409
+    that means paid**), `checkout_in_progress`, `previous_checkout_not_closable`,
+    `previous_checkout_payment_in_flight`, `checkout_not_supported`. 422: `phone_required` (field
+    `customer.phone`), `customer_details_required` (field `customer`), `currency_unsupported`,
+    `amount_below_minimum`, `nothing_to_pay` (field `invoice_id`); a provider's own refusal of the
+    request is mapped to the same codes. The sentences are unchanged, so a client still matching them
+    keeps working while it moves to the codes. Renaming a code is a coordinated change with the
+    frontend.
 
 ## Consequences
 
@@ -156,8 +171,83 @@ stored the provider's body verbatim (a payer's email, phone and UPI id in an app
   is the intended, safe behaviour (nothing reaches a provider), and Phase B is what changes it.
 * The first call to a real provider will find things the docs did not say. They are listed in design
   section 12 with the smoke-tool step that answers each; the adapters were written to **fail safe on
-  each unknown** (classify by status class rather than by an assumed code; re-look-up after any 400;
-  match a receipt exactly rather than trust a filter).
+  each unknown** (classify by status class rather than by an assumed code; search once more after any
+  400; match a receipt exactly rather than trust a filter). The first Razorpay run found four, below.
+
+## Sandbox facts (Razorpay, 2026-10-06) and what changed
+
+Observed by the owner's smoke tool with real **test** keys:
+
+| # | What Razorpay did | What the design had assumed |
+|---|---|---|
+| a | `POST /orders` with a receipt that already exists was **accepted** and made a **second** Order: no `400`, no "unique" message. | A duplicate receipt is refused with a `400` (or "unverified") — the receipt as an idempotency key. |
+| b | `GET /orders?receipt=<the exact receipt of an Order created seconds earlier>` answered `count: 0`; one such call answered `429`. | The receipt search finds an Order that exists: a reliable lookup-before-create guard. |
+| c | `payment_capture` is not echoed on the Order. | Open (the smoke tool printed it). |
+| d | A bad key is `401` with `error.code = BAD_REQUEST_ERROR`. | Open; the classification did not depend on it. |
+
+**The decision.** The receipt is a best-effort handle, never proof; the **recorded Order id** is the
+checkout's identity at the provider.
+
+1. **Claim → create → record, and the recorded id thereafter.** The checkout's Order id is recorded in
+   its own short transaction before any browser sees it (unchanged), and every later reopen fetches
+   *that* Order by its id (`GET /orders/{id}`) — never a receipt search, which (b) can miss and (a) can
+   answer with a duplicate. An id Razorpay does not hold is `recorded_order_not_found` (could not be
+   asked, nothing made); an id that is not an Order id is refused before a request.
+2. **The receipt search runs only when no id is recorded** — an earlier create whose outcome was lost —
+   as a best-effort recovery: it saves a duplicate when it can see the lost Order and proves nothing
+   when it cannot. A `429` on it is `ProviderTransient` and nothing is created. The one re-search after
+   a `400` on a create is kept, but as what it now is: a harmless recovery (a `400` is never "the
+   receipt exists"), which uses an exact, same-money Order if it finds one and otherwise lets the `400`
+   stand; a re-search that cannot be had is an unknown outcome, and no second create is attempted.
+3. **Only the recorded id ever reaches a browser.** The route compares the Order the call returned with
+   the one the charge records and, if they differ, answers 409 `checkout_in_progress` (logged
+   `payment.checkout.unrecorded_order_withheld`) instead of handing the other out; the next request is
+   handed the recorded one. A duplicate an unknown-outcome retry made is therefore never shown beside
+   the first.
+4. **Stray Orders are searched for before a checkout is closed.** A poll of a checkout past its expiry,
+   and every late check of a closed one, also searches the receipt for other Orders carrying it
+   exactly (and whose `notes.charge_id`, when present, is the charge's) and asks for their payments
+   (`RazorpayProvider.stray_order_payments`, at most two Orders). Money that moved on one settles the
+   charge through the ordinary reconciliation, with the Order check replaced by the exact-receipt match
+   (`apply_payment_snapshot(stray_order_id=…)`) and audited `payment.checkout.stray_order_payment`
+   naming both Orders; a capture on one when the charge is already captured by another payment is the
+   invoice collected twice, and is flagged (`payment.charge.sync_not_applied`, naming the stray), never
+   dropped; an attempt still in flight on one holds the close like one on the recorded Order. Not
+   searched while a checkout is simply open: it would be a rate-limited request per poll for a
+   question that only matters at the close.
+5. **`ProviderContract` is byte-identical.** Its "idempotent by receipt" checks hold against the stub,
+   whose receipt index is exact, and that is the only adapter it runs against; no live adapter reaches
+   the order-then-charge debit in Phase A (a platform debit is refused `no_mandate` before any call).
+   What changes is the **requirement it states for Phase B**: a live order-then-charge debit cannot
+   rely on the receipt lookup alone and must record the Order id in its own transaction before it
+   creates the payment, then resume from the recorded id (`services.call_provider_charge` docstring).
+   `CheckoutContract` — the contract the live Razorpay adapter is held to — **is** changed: item 1 now
+   says the receipt lookup is one Order only where the provider's search shows it, and two checks are
+   added (a recorded Order is found when the search cannot see it; the recorded Order is handed out,
+   never a duplicate of its receipt), each with a broken adapter (`_SearchesForTheRecordedOrder`, the
+   old behaviour) that must fail it. The test fake (`tests/razorpay_fake.py`) now answers as the
+   sandbox did: duplicates accepted, a search that can miss an Order, `GET /orders/{id}`, no
+   `payment_capture` echo, a `401 BAD_REQUEST_ERROR` bad key.
+6. **(c) and (d) need no change.** Nothing reads `payment_capture` back; a `401` is
+   `ProviderMisconfigured` by its status whatever the code or description.
+
+**Residual risk.**
+
+* **A stray Order the receipt search never shows.** Discovery of a stray is only as good as (b)
+  allows. It is searched at the close and then every 10 minutes for the five-day late window, so a
+  search that lags by seconds or minutes finds it; one that never shows it, or a payment on it after
+  the window, is not discovered. The exposure is small: a stray's id was never given to a browser (it
+  was never recorded), so paying one needs its id, which only Razorpay holds.
+* **A stray of a checkout that never recorded an Order** (every open failed, one create's answer lost)
+  is not searched for: that checkout is closed on the next open with no provider call
+  (`close_orderless_checkout`) and is never polled. Same exposure: nobody has the stray's id.
+* **More Orders at Razorpay than checkouts.** Each lost-and-retried create can leave an unpayable
+  Order on the account; Razorpay Orders cannot be deleted. Harmless to money, visible on the dashboard.
+* **Merchant collections are not changed.** They share `ensure_order` (whose requests and answers are
+  unchanged) and already record the Order id before the customer sees it and never ask Razorpay again
+  once one is recorded, so a duplicate is never shown; but there is no stray search for a merchant's
+  account. Adding one would be new provider traffic on merchants' keys, not a behaviour-preserving
+  change, and is left for the merchant-connect work.
 
 ## Amendments to ADR-0004
 
@@ -167,8 +257,11 @@ recorded there as a dated block.
 
 1. *"The live adapter's test module subclasses `ProviderContract` and passes it unchanged before it
    can merge."* `ProviderContract` is the contract for an adapter of the **order-then-charge** shape
-   (Razorpay). It is unchanged and Razorpay's live adapter passes it. An adapter of another shape is
-   held to **its own** sibling contract (`CheckoutContract`, `DirectDebitContract`), and a shape-wide
+   (Razorpay). It is unchanged; it runs against the stub, whose receipt index is exact, and a live
+   order-then-charge debit (Phase B) must also record the Order id before the payment create, because
+   Razorpay's receipt lookup alone cannot stop a second Order ("Sandbox facts", 5). The live
+   Razorpay adapter is held to `CheckoutContract`, the contract of what it does in Phase A. An
+   adapter of another shape is held to **its own** sibling contract (`CheckoutContract`, `DirectDebitContract`), and a shape-wide
    rule that every adapter must pass every contract would have forced Cashfree's direct debit to fake
    an Order step it does not have.
 2. *Overall deadline.* The note said a live adapter "needs an overall per-call deadline in addition to
@@ -176,10 +269,12 @@ recorded there as a dated block.
 3. *`payment_capture`.* The platform's Razorpay Orders are created with `payment_capture: true`
    (an authorized-but-uncaptured payment is refunded by Razorpay after three days, and a platform
    charge must be captured when the customer pays). Tenant-collection Orders are unchanged.
-4. *A duplicate `receipt`.* The addendum said Razorpay "does not enforce [receipt] uniqueness". Whether
-   it rejects a duplicate with a 400 is **unverified** (reports disagree); the adapter looks the
-   receipt up once more after **any** 400 on an Order create and uses the Order it finds, and the
-   smoke tool prints what Razorpay does.
+4. *A duplicate `receipt`.* The addendum said Razorpay "does not enforce [receipt] uniqueness". That
+   was right: the sandbox **accepts** a duplicate receipt and makes a second Order (2026-10-06), and
+   its receipt search can miss a fresh Order. So the receipt is not an idempotency key and the search
+   is not proof; a recorded Order is fetched by its id, and only the recorded id is handed out (see
+   "Sandbox facts"). The search once more after any 400 on an Order create is kept as a harmless
+   recovery.
 5. *Timeouts.* "The lease is validated to be at least twice the provider call timeout plus a minute"
    still holds; the call timeout's default is 45 s and a validator keeps it at or above the live
    wires' declared worst case (35 s).
