@@ -1322,8 +1322,12 @@ any scheduled change) and, in **Change plan**, `.../{id}/plan-options` and
 trial moves now and free, a paid **upgrade** moves now with a prorated invoice raised by the billing run, a
 paid **downgrade** waits for the period end (no credit), an equal price moves now. The customer write now
 refuses a version catalog no longer offers (**422 `not_offerable`**) and a stale confirm (**409
-`state_changed`**). Prices shown are only the organization's own negotiated price, to someone who may read
-its invoices — never a list price.
+`state_changed`**, including one that crosses a billing-run roll or claim). While a change **staff
+scheduled** (Set price, the staff plan switch) waits, every customer change answers **422
+`scheduled_by_opsgrids`** and the dashboard tells them to contact OpsGrids — change or withdraw it from
+console. Cancelling clears a waiting change (audit `commerce.subscription.scheduled_change_cancelled`).
+Prices shown are only the organization's own negotiated price, to someone who may read its invoices —
+never a list price.
 
 Deploy order: **catalog before subscription** (catalog must admit `subscription` on
 `/internal/v1/organizations/{id}/offerable-versions`), then the dashboard. If subscription goes first, every

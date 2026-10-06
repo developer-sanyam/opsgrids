@@ -33,7 +33,10 @@ From `services._evaluate_change_plan` with `forced_timing=None`:
 | Active | downgrade | `current_period_end` (or a pending claim's end) | none, no credit |
 | Active | equal price | now | none; usage so far closed at the old pin's rates when it has a usage price |
 | Active or trial with a change waiting | the plan in force | now (withdraws the waiting change) | none |
+| A change the OpsGrids team scheduled is waiting | any | refused `scheduled_by_opsgrids` (ADR-0033 §6) | — |
 | Past due, suspended, cancelled | — | refused `state` | — |
+
+A trial with nothing claimed is answered with `direction: null` (ADR-0033 §5).
 
 Every row is pinned by `tests/test_customer_plan_page.py::TestTimingMatrix`, which asserts the preview's
 answer **and** that the write then does exactly that (pin, pending pin, proration row).
@@ -54,9 +57,11 @@ periods are asserted unchanged).
 
 ### 3.2 `POST /subscriptions/{id}/change-plan` — gains `expected`
 
-Optional `expected {state, plan_version_id, pending_plan_version_id}`, compared under the row lock before
-anything else: 409 `state_changed`. The dashboard always sends the preview's. The bundle refusal stays a
-403 on the write.
+Optional `expected {state, plan_version_id, pending_plan_version_id, current_period_end,
+lifecycle_claim_id}` (`CustomerExpectedState`; the last two required, null included), compared under the
+row lock before anything else: 409 `state_changed`. The period end and the billing run's pending claim
+are what a roll or a claimed conversion moves while state, pin and pending stay put (ADR-0033 §2). The
+dashboard always sends the preview's, unchanged. The bundle refusal stays a 403 on the write.
 
 ### 3.3 Offerable, enforced
 
@@ -68,18 +73,21 @@ of that read (`TRUSTED_CALLERS = {"console", "subscription"}`); every other call
 
 ### 3.4 `GET /subscriptions/{id}/plan-options` — `core.product.activation.write` at ORG
 
-`{subscription_id, product_key, state, change_blocked_code (state|bundle|null), current, pending,
-pending_effective_at, options[]}`. Each option: plan id/name, version id/no, billing interval,
-`negotiated`, `amount_visible`, and — only when visible — `currency`, `recurring_minor`, `prices`; plus
-`is_current`, `is_pending`, `blocked_code` (`current`, `cadence`, `currency`, `bundle`) and a customer
-sentence. The plan in force is first and blocked; when it is no longer offered it is still listed first.
+`{subscription_id, product_key, state, change_blocked_code (bundle|state|scheduled_by_opsgrids|null),
+current, pending, pending_effective_at, pending_scheduled_by (opsgrids|customer|null), options[]}`. Each
+option: plan id/name, version id/no, billing interval, `negotiated`, `amount_visible`, and — only when
+visible — `currency`, `recurring_minor`, `prices`; plus `is_current`, `is_pending`, `blocked_code`
+(`current`, `pending`, `cadence`, `currency`, `bundle`) and a customer sentence. The plan in force is first
+and blocked; when it is no longer offered it is still listed first. The scheduled plan is listed and
+blocked (`pending`).
 
 ### 3.5 `GET /subscriptions/plan-summaries` — `core.product.activation.read` at ORG
 
-One row per subscription `GET /subscriptions` returns (same `ctx.apply` selector): `current`, `pending`,
-`pending_effective_at` (`selectors.scheduled_change_effective_at`: a pending claim's end, else
-`current_period_end` — the boundary the write and the billing run use). Registered before
-`/subscriptions/{subscription_id}`. One catalog lookup per distinct pin.
+One row per subscription `GET /subscriptions` returns (same selector, filtered on the organization):
+`current`, `pending`, `pending_effective_at` (`selectors.scheduled_change_effective_at`: a pending claim's
+end, else `current_period_end` — the boundary the write and the billing run use), `pending_scheduled_by`.
+A cancelled row reports no scheduled change. Registered before `/subscriptions/{subscription_id}`. One
+catalog lookup per distinct pin.
 
 ### 3.6 Which amounts a tenant sees (ADR-0033 §5)
 
@@ -118,14 +126,18 @@ reads stay amount-free (#59 / `33baa3eb`).
 
 Verified supported: the customer `change_plan` to the pin in force with a change waiting takes the
 `withdraw` branch (`_validate_new_pin` accepts the current pin even when no longer published or offered).
-The row action appears only when the plan line shows a waiting change and the subscription can change
-plan; the confirm previews first, proceeds only on `withdraw_scheduled`, and sends `expected`.
+The row action appears only when the plan line shows a waiting change the organization scheduled (not
+one "agreed with OpsGrids", which the server refuses `scheduled_by_opsgrids`) and the subscription can
+change plan; the confirm previews first, proceeds only on `withdraw_scheduled`, and sends `expected`. An
+answer that shows the row is behind closes the dialog, says so and reloads the rows.
 
 ### 5.3 The table
 
 * **Plan** column: plan name; `priceLine` (negotiated price "₹1,800.00 per month · agreed for your
-  organisation", otherwise "Billed monthly"); "Changes to Y on D" when a change waits. "—" when the plan
-  line could not be read (the page loads it separately and survives its failure).
+  organisation", otherwise "Billed monthly"); "Changes to Y on D" when a change waits ("· agreed with
+  OpsGrids" when staff scheduled it; never on a cancelled row, nor in its CSV). When the plan line could
+  not be read the page survives it, says so above the table with Try again, and the cell shows "—" or,
+  from the subscription row itself, "A plan change is scheduled".
 * **Renewal** column (was "Trial ends"), `statusLine`: trial "Trial ends D" + "N days left" ("Trial ended
   D" once past and not yet converted — never "(0 days)"); active "Renews D"; past_due "Awaiting payment"
   (the product cell's dunning line already says "Payment overdue" with the date access ends);
@@ -133,8 +145,9 @@ plan; the confirm previews first, proceeds only on `withdraw_scheduled`, and sen
 * "Current period" stays on desktop and is hidden from phone cards.
 * Subtitle: "Each product your organisation has started: its plan, its state, and when it renews or its
   trial ends."
-* Row actions: Change plan (disabled with the reason for past_due, suspended and bundles; hidden without
-  the write permission or when cancelled), Keep current plan, Cancel.
+* Row actions: Change plan (disabled with the reason for past_due, suspended, bundles and a change staff
+  scheduled; hidden without the write permission or when cancelled), Keep current plan, Cancel — two
+  inline at most, the rest behind "More actions", so the pills never wrap.
 
 ### 5.4 Bulk selection — decision
 
@@ -150,7 +163,9 @@ product (`already_subscribed`). The confirm now says so by state: a trial "ends 
 again from this dashboard"; a paid subscription "Cancellation is immediate and final: access ends now,
 not at the end of the billing period, and there is no automatic refund for the time left. Any usage-based
 charges so far this period are still invoiced." Plus "The scheduled change to Y will not happen." when one
-waits.
+waits (the cancel clears it, with an audit row), or that it takes effect first when its date has already
+passed. Past due says the overdue invoice is still due after cancelling; suspended says access has already
+ended and any overdue invoice is still due.
 
 ## 6. Tests
 
