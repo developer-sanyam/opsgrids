@@ -5,11 +5,16 @@ import { MapPinIcon } from "@opsgrids/ui";
 
 interface LayoutCanvasEmptyStateProps {
   warehouseId: string;
-  /** The warehouse's locations are still loading (render nothing), failed, or loaded. */
-  locations: "loading" | "error" | "success";
-  /** Every location in the warehouse, and how many of them are not on this draft. */
+  /** What is needed to say anything: the warehouse's locations and which of them other floors hold. */
+  status: "loading" | "error" | "success";
+  /** Which of the two loads failed, when `status` is `error`. */
+  problem: "locations" | "floors";
+  /** Every location in the warehouse. */
   totalLocations: number;
+  /** How many are on no floor and not on this draft — what Auto-arrange would place. */
   unplacedCount: number;
+  /** How many more another floor's published layout already holds. */
+  elsewhereCount: number;
   /** An open draft and permission to write to it: the only case that is offered a way forward. */
   canPlace: boolean;
   onArrange: () => void;
@@ -18,25 +23,28 @@ interface LayoutCanvasEmptyStateProps {
 }
 
 /**
- * What the floor canvas says when nothing is on it — drawn over the (empty) canvas, because an
- * empty grey box tells nobody what to do. The overlay lets pointer events through so an empty
- * canvas still takes a click in "Add walk node" mode; only its own controls catch them.
+ * What the floor canvas says when no location is on it — drawn over the (otherwise empty) canvas,
+ * because an empty grey box tells nobody what to do. The overlay lets pointer events through so an
+ * empty canvas still takes a click in "Add walk node" mode; only its own controls catch them.
  *
- * Four cases: the warehouse has no locations at all; there are some and the caller can place them
- * (two ways forward, with the count); there are some and the caller cannot (a read-only
- * published layout, or no write permission); the locations could not be loaded.
+ * Five cases: the warehouse has no locations at all; some are on no floor and the caller can place
+ * them (two ways forward, with the count); every one is already on another floor (nothing to
+ * arrange, one way forward); there are some and the caller cannot place them (a read-only
+ * published layout, or no write permission); the locations or floors could not be loaded.
  */
 export function LayoutCanvasEmptyState({
   warehouseId,
-  locations,
+  status,
+  problem,
   totalLocations,
   unplacedCount,
+  elsewhereCount,
   canPlace,
   onArrange,
   onPlaceOneByOne,
   onRetry,
 }: LayoutCanvasEmptyStateProps) {
-  if (locations === "loading") return null;
+  if (status === "loading") return null;
 
   return (
     <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4">
@@ -44,10 +52,16 @@ export function LayoutCanvasEmptyState({
         <span className="grid size-12 place-items-center rounded-tile bg-surface text-ink-soft">
           <MapPinIcon className="size-6" />
         </span>
-        {locations === "error" ? (
+        {status === "error" ? (
           <>
-            <p className="text-base font-bold text-ink">Couldn't load this warehouse's locations</p>
-            <p className="text-sm text-muted">The floor can't be drawn until they load.</p>
+            <p className="text-base font-bold text-ink">
+              {problem === "floors" ? "Couldn't check the warehouse's other floors" : "Couldn't load this warehouse's locations"}
+            </p>
+            <p className="text-sm text-muted">
+              {problem === "floors"
+                ? "Without them a location that is already on another floor can't be told from one that is on none."
+                : "The floor can't be drawn until they load."}
+            </p>
             <Button size="sm" variant="secondary" onClick={onRetry}>
               Try again
             </Button>
@@ -63,15 +77,20 @@ export function LayoutCanvasEmptyState({
               Go to locations
             </Link>
           </>
-        ) : canPlace ? (
+        ) : canPlace && unplacedCount > 0 ? (
           <>
             <p className="text-base font-bold text-ink">No locations on this floor yet</p>
             <p className="text-sm text-muted">
               <span className="tnum font-semibold text-ink">{unplacedCount}</span> unplaced{" "}
-              {unplacedCount === 1 ? "location" : "locations"} in this warehouse. Auto-arrange puts them on the floor in
-              a tidy grid, or place them one at a time from the list below.
+              {unplacedCount === 1 ? "location" : "locations"} in this warehouse, on no floor yet.{" "}
+              {unplacedCount === 1
+                ? "Auto-arrange puts it on this floor in a tidy grid, or place it from the Unplaced locations list."
+                : "Auto-arrange puts them on this floor in a tidy grid, or place them one at a time from the Unplaced locations list."}
+              {elsewhereCount > 0
+                ? ` ${elsewhereCount} more ${elsewhereCount === 1 ? "is" : "are"} already on another floor and left out.`
+                : ""}
             </p>
-            <div className="flex flex-col items-stretch gap-2 sm:flex-row">
+            <div className="flex flex-col items-stretch gap-2">
               <Button size="sm" onClick={onArrange}>
                 {unplacedCount === 1 ? "Auto-arrange 1 unplaced location" : `Auto-arrange all ${unplacedCount} unplaced locations`}
               </Button>
@@ -79,6 +98,17 @@ export function LayoutCanvasEmptyState({
                 Place one at a time
               </Button>
             </div>
+          </>
+        ) : canPlace && elsewhereCount > 0 ? (
+          <>
+            <p className="text-base font-bold text-ink">No locations on this floor yet</p>
+            <p className="text-sm text-muted">
+              Every location in this warehouse is already on another floor, so there is nothing to auto-arrange. If one
+              belongs on this floor as well, choose it from the Unplaced locations list.
+            </p>
+            <Button size="sm" variant="secondary" onClick={onPlaceOneByOne}>
+              Show locations on other floors
+            </Button>
           </>
         ) : (
           <>
