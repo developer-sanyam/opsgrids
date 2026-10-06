@@ -215,7 +215,9 @@ class TestBespokeVisibility:
                         "currency": "USD",
                         "prices": [{"kind": "flat", "amount_minor": 4200, "currency": "USD"}],
                         "features": [],
+                        "reason": "Operator read carries the price",
                     },
+                    headers={"Idempotency-Key": str(uuid.uuid4())},
                 )
         finally:
             app.dependency_overrides.pop(get_product_registry, None)
@@ -514,11 +516,21 @@ class TestCloneToDraft:
 
 class TestOperatorAudienceBoundary:
     async def test_an_operator_token_may_author(self, client) -> None:
-        with as_principal(operator_principal(staff=True)):
-            resp = await client.post(
-                "/api/v1/admin/catalog/plans",
-                json={"product_key": "hrms", "code": "authored", "name": "Authored"},
-            )
+        app.dependency_overrides[get_product_registry] = lambda: FakeRegistry.default()
+        try:
+            with as_principal(operator_principal(staff=True)):
+                resp = await client.post(
+                    "/api/v1/admin/catalog/plans",
+                    json={
+                        "product_key": "hrms",
+                        "code": "authored",
+                        "name": "Authored",
+                        "reason": "Authoring test",
+                    },
+                    headers={"Idempotency-Key": str(uuid.uuid4())},
+                )
+        finally:
+            app.dependency_overrides.pop(get_product_registry, None)
         assert resp.status_code == 201
         assert resp.json()["code"] == "authored"
 

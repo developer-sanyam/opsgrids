@@ -114,6 +114,41 @@
         "title": "AuditOut",
         "type": "object"
       },
+      "ExpectedStateIn": {
+        "additionalProperties": false,
+        "description": "What the operator saw \u2014 the live state a preview returned, sent back with the confirm.\n\nCompared by subscription under its row lock; anything that moved in between (the customer's own\nchange, a period roll, dunning, another operator) is a 409 `state_changed`.",
+        "properties": {
+          "pending_plan_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Plan Version Id"
+          },
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "state": {
+            "maxLength": 20,
+            "minLength": 1,
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "plan_version_id"
+        ],
+        "title": "ExpectedStateIn",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -784,6 +819,558 @@
         "title": "OverrideOut",
         "type": "object"
       },
+      "PlanChangeIn": {
+        "additionalProperties": false,
+        "description": "Switch one subscription to a different plan version \u2014 the confirm, after a preview.\n\n`extra=\"forbid\"` \u2014 a dangerous write accepts exactly this shape and nothing smuggled in beside\nit (CLAUDE.md). The subscription is resolved server-side from the path's `(organization,\nproduct_key)`; the body never names it.",
+        "properties": {
+          "expected": {
+            "$ref": "#/components/schemas/ExpectedStateIn"
+          },
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "timing": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "next_period"
+            ],
+            "title": "Timing",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_version_id",
+          "reason",
+          "expected"
+        ],
+        "title": "PlanChangeIn",
+        "type": "object"
+      },
+      "PlanChangeOut": {
+        "description": "What the change did, read back off subscription's own response \u2014 never assumed from what\nwas asked for.",
+        "properties": {
+          "effective": {
+            "enum": [
+              "now",
+              "next_period"
+            ],
+            "title": "Effective",
+            "type": "string"
+          },
+          "effective_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective At"
+          },
+          "pending_plan_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Plan Version Id"
+          },
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "replayed": {
+            "default": false,
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "effective",
+          "state",
+          "plan_version_id"
+        ],
+        "title": "PlanChangeOut",
+        "type": "object"
+      },
+      "PlanChangePreviewIn": {
+        "additionalProperties": false,
+        "description": "Ask what a plan change would do. Read-only.",
+        "properties": {
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "timing": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "next_period"
+            ],
+            "title": "Timing",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_version_id"
+        ],
+        "title": "PlanChangePreviewIn",
+        "type": "object"
+      },
+      "PlanChangePreviewOut": {
+        "description": "The confirm screen's server-computed preview \u2014 subscription's own evaluation, passed on.\n\n**No amount.** A paid change is priced by the billing run from catalog when it claims the\nperiod; there is no quote to read before then, and a second implementation here could disagree\nwith the first invoice. Direction, timing, what it replaces and what it adds or removes are\nwhat an operator can decide on.",
+        "properties": {
+          "action": {
+            "default": "switch",
+            "enum": [
+              "switch",
+              "withdraw_scheduled"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "upgrade",
+                  "downgrade",
+                  "equal"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "effective": {
+            "anyOf": [
+              {
+                "enum": [
+                  "now",
+                  "next_period"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective"
+          },
+          "effective_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective At"
+          },
+          "entitled_added": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entitled Added",
+            "type": "array"
+          },
+          "entitled_removed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entitled Removed",
+            "type": "array"
+          },
+          "expected": {
+            "$ref": "#/components/schemas/ExpectedStateIn"
+          },
+          "refusal_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refusal Code"
+          },
+          "refusal_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refusal Detail"
+          },
+          "usage_closed_now": {
+            "default": false,
+            "title": "Usage Closed Now",
+            "type": "boolean"
+          },
+          "usage_priced": {
+            "default": false,
+            "title": "Usage Priced",
+            "type": "boolean"
+          },
+          "would_clear_pending": {
+            "default": false,
+            "title": "Would Clear Pending",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "expected"
+        ],
+        "title": "PlanChangePreviewOut",
+        "type": "object"
+      },
+      "PlanOptionOut": {
+        "description": "One plan version the picker may offer, and whether this subscription can take it.",
+        "properties": {
+          "billing_interval": {
+            "title": "Billing Interval",
+            "type": "string"
+          },
+          "blocked_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocked Code"
+          },
+          "blocked_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocked Reason"
+          },
+          "bundled_products": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bundled Products"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "is_bespoke": {
+            "default": false,
+            "title": "Is Bespoke",
+            "type": "boolean"
+          },
+          "is_current": {
+            "default": false,
+            "title": "Is Current",
+            "type": "boolean"
+          },
+          "is_pending": {
+            "default": false,
+            "title": "Is Pending",
+            "type": "boolean"
+          },
+          "plan_id": {
+            "format": "uuid",
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "plan_name": {
+            "title": "Plan Name",
+            "type": "string"
+          },
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "prices": {
+            "items": {
+              "$ref": "#/components/schemas/PlanOptionPriceOut"
+            },
+            "title": "Prices",
+            "type": "array"
+          },
+          "recurring_minor": {
+            "title": "Recurring Minor",
+            "type": "integer"
+          },
+          "trial_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trial Days"
+          },
+          "version_no": {
+            "title": "Version No",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "plan_id",
+          "plan_name",
+          "plan_version_id",
+          "version_no",
+          "billing_interval",
+          "currency",
+          "recurring_minor"
+        ],
+        "title": "PlanOptionOut",
+        "type": "object"
+      },
+      "PlanOptionPriceOut": {
+        "properties": {
+          "amount_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Minor"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "meter_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meter Key"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "unit_price_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Price Micros"
+          }
+        },
+        "required": [
+          "kind",
+          "currency"
+        ],
+        "title": "PlanOptionPriceOut",
+        "type": "object"
+      },
+      "PlanOptionsOut": {
+        "properties": {
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/PlanOptionOut"
+            },
+            "title": "Options",
+            "type": "array"
+          },
+          "organization_id": {
+            "format": "uuid",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "product_key": {
+            "title": "Product Key",
+            "type": "string"
+          },
+          "subscription": {
+            "$ref": "#/components/schemas/PlanOptionsSubscriptionOut"
+          }
+        },
+        "required": [
+          "organization_id",
+          "product_key",
+          "subscription"
+        ],
+        "title": "PlanOptionsOut",
+        "type": "object"
+      },
+      "PlanOptionsSubscriptionOut": {
+        "properties": {
+          "billing_interval": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Billing Interval"
+          },
+          "change_blocked_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Blocked Code"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "current_period_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Period End"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "pending_plan_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Plan Name"
+          },
+          "pending_plan_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Plan Version Id"
+          },
+          "plan_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Name"
+          },
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "trial_ends_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trial Ends At"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "plan_version_id",
+          "currency"
+        ],
+        "title": "PlanOptionsSubscriptionOut",
+        "type": "object"
+      },
       "PriceHistoryEntryOut": {
         "description": "One past bespoke price this organization was set on this product, oldest details first \u2014\nread from console's own audit trail (`catalog.bespoke_price.created`), never from catalog:\nan immutable plan version carries no reason and no actor, and console's record of the act is\nthe only place both live.",
         "properties": {
@@ -947,6 +1534,18 @@
       "ProductSubscriptionOut": {
         "description": "The organization's live subscription for one product, read from subscription-service \u2014\nconsole's own projection (`OrgCommercialState`) does not carry the subscription id or\n`current_period_end`, and a pricing screen needs both.",
         "properties": {
+          "cancel_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel At"
+          },
           "current_period_end": {
             "anyOf": [
               {
@@ -959,10 +1558,40 @@
             ],
             "title": "Current Period End"
           },
+          "entitled_products": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entitled Products",
+            "type": "array"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "pending_plan_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Plan Name"
+          },
+          "pending_plan_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Plan Version Id"
           },
           "plan_name": {
             "anyOf": [
@@ -1583,6 +2212,62 @@
         ]
       }
     },
+    "/api/v1/admin/organizations/{organization_id}/plan-options": {
+      "get": {
+        "description": "The subscription as it is now, and the plan versions catalog says this organization may be\nmoved onto (public, or negotiated for this organization alone \u2014 never another's), each marked\nwith whether this subscription could actually take it. Owner and billing_ops; support is not\nadmitted, because a bespoke price is a customer's negotiated rate.",
+        "operationId": "get_plan_options_api_v1_admin_organizations__organization_id__plan_options_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The product whose plans to offer",
+            "in": "query",
+            "name": "product_key",
+            "required": true,
+            "schema": {
+              "description": "The product whose plans to offer",
+              "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+              "title": "Product Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanOptionsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The plans one subscription may be switched onto \u2014 the Change plan picker",
+        "tags": [
+          "console"
+        ]
+      }
+    },
     "/api/v1/admin/organizations/{organization_id}/pricing": {
       "get": {
         "description": "Compose catalog's public flat prices and subscription's live subscriptions with console's\nown bespoke-price audit history (`app/pricing.py`). 404 only when the organization itself does\nnot exist \u2014 an org with no subscription for a product still lists that product, `subscription`\nand `current_price` null, per the contract.",
@@ -1693,6 +2378,147 @@
           }
         },
         "summary": "Set a client's price for a product \u2014 a bespoke plan version, optionally applied now",
+        "tags": [
+          "console"
+        ]
+      }
+    },
+    "/api/v1/admin/organizations/{organization_id}/subscriptions/{product_key}/plan-change": {
+      "post": {
+        "description": "Switch the organization's subscription for `product_key` to `plan_version_id`.\n\n**When it takes effect is decided by the server, never asked for** (ADR-0029): a trial switches\nnow and free; a paying subscription switches at its **next billing period** (`effective:\n\"next_period\"`, landing at `effective_at`); an equal-price change applies now at no charge. For\na customer who should get a new plan sooner, grant comp credit instead.\n\n`reason` (1-500 characters) is required and recorded on the audit trail \u2014 never on the\nsubscription's event, which the customer org's own notification templates can render;\n`expected` is the state the preview returned, compared under subscription's lock (409\n`state_changed`). The target must be one catalog offers this organization *now* (the picker's\nset, re-read here): a version superseded by a newer one, or of a retired plan, is 422\n`not_offerable` \u2014 except a withdrawal back to the pin the subscription is on.\nErrors carry a stable `errors[0].code`: 404 `no_subscription` / `not_found`; 409\n`state_changed`, `billing_catching_up`, `request_in_progress`, `idempotency_key_reused`; 422\n`state`, `cadence`, `currency`, `already_pinned`, `product_mismatch`, `not_published`,\n`not_offerable`, `reserved_reason`, `bundle`; 503 `catalog_unavailable` \u2014 this request changed\nnothing; 503 `outcome_unknown` \u2014 the change may or may not have been made: refresh, or repeat\nthe same request, which reconciles.",
+        "operationId": "change_plan_api_v1_admin_organizations__organization_id__subscriptions__product_key__plan_change_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "product_key",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+              "title": "Product Key",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required, 8-255 characters. A claim row keyed on it is written before the subscription is called: a retry with the same key and body returns the recorded result without a second change; the same key with a different body is a 409; two concurrent requests with one key make one change.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required, 8-255 characters. A claim row keyed on it is written before the subscription is called: a retry with the same key and body returns the recorded result without a second change; the same key with a different body is a 409; two concurrent requests with one key make one change.",
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanChangeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanChangeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Switch a subscription's plan \u2014 a trial now, a paying subscription at its next period",
+        "tags": [
+          "console"
+        ]
+      }
+    },
+    "/api/v1/admin/organizations/{organization_id}/subscriptions/{product_key}/plan-change:preview": {
+      "post": {
+        "description": "The confirm screen's server-computed preview: direction, when it lands, what it replaces,\nthe products it adds or removes \u2014 and the `expected` state to send back on the confirm. A\nrefusal (a past_due subscription, a different currency or cadence, a version catalog no longer\noffers this organization \u2014 `not_offerable`) is part of the answer. Nothing is written, claimed\nor locked; a failure says so (503 `preview_unavailable`, never `outcome_unknown`).",
+        "operationId": "preview_plan_change_api_v1_admin_organizations__organization_id__subscriptions__product_key__plan_change_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "product_key",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+              "title": "Product Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanChangePreviewIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanChangePreviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What switching this subscription's plan would do \u2014 read-only, no amount",
         "tags": [
           "console"
         ]

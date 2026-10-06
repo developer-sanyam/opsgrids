@@ -135,24 +135,6 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "into the executor. Only steps whose recipient_kind is contact_id reach the call; "
         "address recipients never do."
     ),
-    ("services/catalog/app/api/console_internal.py", "ensure_bespoke_price"): (
-        "D3, admin-client-pricing slice: calls services.create_version, which has the same "
-        "reachable registry.products() branch #10 (below) names in app/api/admin.py — the "
-        "scanner cannot see that this call site always passes registry=None (a bespoke flat "
-        "price never declares bundled_products), which makes the branch unreachable in "
-        "practice: _validate_bundle raises BusinessRuleProblem rather than dereferencing a None "
-        "registry the one time the feature key is present. No fix needed unless this endpoint "
-        "is ever asked to author a bundle, which its own narrow BespokePriceIn schema cannot "
-        "express."
-    ),
-    ("services/catalog/app/api/admin.py", "create_version"): (
-        "D3 #10: calls services.create_version, which calls registry.products() (an httpx "
-        "request to product-service) inside get_operator_session's request-long transaction. "
-        "Fix: resolve the registry read in its own dependency with no session at all, before "
-        "the tenant session is opened, and pass the already-fetched product map into "
-        "create_version instead of the registry client — there is nothing in the bundle "
-        "validation that needs a transaction open around the read."
-    ),
     ("services/document/app/api/routes.py", "upload_asset"): (
         "D3 #12: calls services.create_asset, which calls store.put(...) (an S3 PUT, via "
         "anyio.to_thread) inside get_tenant_session's request-long transaction. Fix: check the "
@@ -290,6 +272,14 @@ ALLOWLIST: dict[tuple[str, str], str] = {
     ("services/subscription/app/api/internal.py", "change_plan_as_operator"): (
         "D3 #17, routed to the subscription slice: the operator-console path to the same "
         "change-plan/pin call, same instance."
+    ),
+    ("services/subscription/app/api/internal.py", "preview_change_plan_as_operator"): (
+        "D3 #17 (ADR-0029): the read-only plan-change preview evaluates the same change as "
+        "change_plan_as_operator, so it reads the new and the current pin from catalog (and, for "
+        "a bundle, the product registry) over HTTP inside a tenant-bound transaction. Unlike the "
+        "write it takes no row lock and writes nothing, so the connection is held, not a lock. "
+        "Same fix as #17: resolve the versions before the transaction opens and evaluate against "
+        "them."
     ),
 }
 

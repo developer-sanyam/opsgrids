@@ -1,10 +1,8 @@
 /**
- * Internal catalog seed data — products, plans and immutable plan versions. Nothing here is a wire
- * type any more: catalog-service's real `/admin/catalog` prefix only carries write routes (create
- * plan, patch, retire, create/publish version), never a `GET` that lists them, so there is no live
- * "browse the catalog" contract for a fixture to imitate. This module survives purely as seed data
- * the other fixtures (`orgs.ts`, `pricing.ts`) reference to keep prices and plan names internally
- * consistent — see `routes/Plans.tsx` for what the console shows instead of a catalog browser.
+ * Internal catalog seed data — products, plans and immutable plan versions, referenced by the
+ * other fixtures (`orgs.ts`, `pricing.ts`) to keep prices and plan names internally consistent.
+ * Nothing here is a wire type: the Plans & prices page reads catalog's real `/admin/catalog`
+ * contract (`api/catalog.ts`), whose fixtures-mode stand-in is `catalogAdmin.ts`.
  *
  * Amounts are integer minor units (paise). `rupees(x)` converts a whole-rupee figure to paise.
  */

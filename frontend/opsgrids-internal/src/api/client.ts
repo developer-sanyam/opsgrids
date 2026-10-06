@@ -19,11 +19,8 @@
  * `currency` and `entry_type` filters — no free-text search, so the ledger screen also filters its
  * page client-side for that.
  *
- * There is deliberately no `getCatalog()` here any more: catalog-service's `/admin/catalog` prefix
- * only carries **write** routes (create/patch/retire a plan, create/publish a version) — there is
- * no admin `GET` that lists products, plans or versions. A function that called it would 404 on
- * every read, so the catalog-browsing screen was rebuilt around what the API actually offers
- * instead of pointing at a route that doesn't exist (see `routes/Plans.tsx`).
+ * Catalog-service's own `/admin/catalog` reads and writes (the Plans & prices page) live in
+ * `./catalog.ts`, which owns that contract end to end.
  *
  * `admin.opsgrids.com` serves this console publicly, so `./fixtures` is loaded only through a
  * dynamic `import()` inside each `if (USE_FIXTURES)` branch below, never a static top-of-file
@@ -49,6 +46,11 @@ import type {
   MetricsOverviewOut,
   MetricsSeriesOut,
   Page,
+  PlanChangePreview,
+  PlanChangePreviewRequest,
+  PlanChangeRequest,
+  PlanChangeResult,
+  PlanOptions,
   SetPriceRequest,
   SetPriceResult,
   SubscriptionsOut,
@@ -209,6 +211,73 @@ export async function setOrganizationPrice(
     body: request,
     headers: { "Idempotency-Key": idempotencyKey },
   });
+}
+
+/* --------------------------- plan switching --------------------------- */
+
+/**
+ * `GET /admin/organizations/{id}/plan-options?product_key=` — the subscription as it is now, and the
+ * plan versions catalog says this organization may be moved onto (public, or negotiated for them
+ * alone), each marked with whether this subscription could actually take it. `owner` and
+ * `billing_ops`.
+ */
+export async function getPlanOptions(organizationId: string, productKey: string): Promise<PlanOptions> {
+  if (USE_FIXTURES) {
+    const { planOptionsForOrg } = await loadFixtures();
+    return settle(planOptionsForOrg(organizationId, productKey));
+  }
+  return apiRequest<PlanOptions>(
+    `/admin/organizations/${encodeURIComponent(organizationId)}/plan-options?product_key=${encodeURIComponent(productKey)}`,
+  );
+}
+
+/**
+ * `POST /admin/organizations/{id}/subscriptions/{product_key}/plan-change:preview` — what the
+ * change would do, as the subscription service itself computes it. Read-only; a refusal is part of
+ * the answer (`refusal_code`), not an error.
+ */
+export async function previewPlanChange(
+  organizationId: string,
+  productKey: string,
+  request: PlanChangePreviewRequest,
+): Promise<PlanChangePreview> {
+  if (USE_FIXTURES) {
+    const { previewFixturePlanChange } = await loadFixtures();
+    return settle(previewFixturePlanChange(organizationId, productKey, request), 320);
+  }
+  return apiRequest<PlanChangePreview>(planChangePath(organizationId, productKey, ":preview"), {
+    method: "POST",
+    body: request,
+  });
+}
+
+/**
+ * `POST /admin/organizations/{id}/subscriptions/{product_key}/plan-change` — switch the plan. A
+ * trial switches now; a paying subscription at its next billing period; an equal-price change now
+ * at no charge (the server decides). `idempotencyKey` is **required**: a retry with the same key
+ * and body returns the recorded result without a second change, and two concurrent requests with
+ * one key make one change. Generate it once per confirm and reuse it for a retry after an
+ * unknown outcome; mint a new one after a definitive refusal.
+ */
+export async function changePlan(
+  organizationId: string,
+  productKey: string,
+  request: PlanChangeRequest,
+  idempotencyKey: string,
+): Promise<PlanChangeResult> {
+  if (USE_FIXTURES) {
+    const { applyFixturePlanChange } = await loadFixtures();
+    return settle(applyFixturePlanChange(organizationId, productKey, request, idempotencyKey), 500);
+  }
+  return apiRequest<PlanChangeResult>(planChangePath(organizationId, productKey, ""), {
+    method: "POST",
+    body: request,
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+function planChangePath(organizationId: string, productKey: string, suffix: string): string {
+  return `/admin/organizations/${encodeURIComponent(organizationId)}/subscriptions/${encodeURIComponent(productKey)}/plan-change${suffix}`;
 }
 
 /* ----------------------------- overrides ---------------------------- */

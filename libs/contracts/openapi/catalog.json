@@ -1,6 +1,187 @@
 {
   "components": {
     "schemas": {
+      "AdminPlanCreateIn": {
+        "additionalProperties": false,
+        "description": "`POST /admin/catalog/plans`. The product key must be a registered, non-platform product.",
+        "properties": {
+          "code": {
+            "maxLength": 60,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,59}$",
+            "title": "Code",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "product_key": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+            "title": "Product Key",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 3,
+            "title": "Reason",
+            "type": "string"
+          },
+          "sort_order": {
+            "default": 100,
+            "title": "Sort Order",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "product_key",
+          "code",
+          "name",
+          "reason"
+        ],
+        "title": "AdminPlanCreateIn",
+        "type": "object"
+      },
+      "AdminPlanPatchIn": {
+        "additionalProperties": false,
+        "description": "`PATCH /admin/catalog/plans/{id}` \u2014 presentation only, with a reason.",
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 3,
+            "title": "Reason",
+            "type": "string"
+          },
+          "sort_order": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sort Order"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "AdminPlanPatchIn",
+        "type": "object"
+      },
+      "AdminVersionCreateIn": {
+        "additionalProperties": false,
+        "description": "`POST /admin/catalog/plans/{id}/versions`. The console always sends the **whole** sheet \u2014\nprices, features and seat classes \u2014 prefilled from the latest version; an empty sheet still\nclones the latest version of the same audience, as `VersionCreateIn` always has.\n`extra=\"forbid\"` so a misspelt key (`feature` for `features`) is refused, not dropped.",
+        "properties": {
+          "billing_interval": {
+            "default": "month",
+            "pattern": "^(month|year|one_time)$",
+            "title": "Billing Interval",
+            "type": "string"
+          },
+          "currency": {
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Currency",
+            "type": "string"
+          },
+          "features": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureIn"
+            },
+            "title": "Features",
+            "type": "array"
+          },
+          "prices": {
+            "items": {
+              "$ref": "#/components/schemas/PriceIn"
+            },
+            "title": "Prices",
+            "type": "array"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 3,
+            "title": "Reason",
+            "type": "string"
+          },
+          "restricted_to_org_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restricted To Org Id"
+          },
+          "seat_classes": {
+            "items": {
+              "$ref": "#/components/schemas/SeatClassIn"
+            },
+            "title": "Seat Classes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "currency",
+          "reason"
+        ],
+        "title": "AdminVersionCreateIn",
+        "type": "object"
+      },
+      "DeletedVersionOut": {
+        "description": "What `DELETE /admin/catalog/versions/{id}` removed \u2014 a draft, never anything published.",
+        "properties": {
+          "deleted": {
+            "const": true,
+            "default": true,
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "plan_id": {
+            "format": "uuid",
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "version_no": {
+            "title": "Version No",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "plan_id",
+          "version_no"
+        ],
+        "title": "DeletedVersionOut",
+        "type": "object"
+      },
       "FeatureIn": {
         "properties": {
           "feature_key": {
@@ -48,50 +229,120 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
-      "PlanCreateIn": {
-        "properties": {
-          "code": {
-            "maxLength": 60,
-            "minLength": 1,
-            "title": "Code",
-            "type": "string"
-          },
-          "name": {
-            "maxLength": 160,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "product_key": {
-            "maxLength": 40,
-            "minLength": 1,
-            "title": "Product Key",
-            "type": "string"
-          },
-          "sort_order": {
-            "default": 100,
-            "title": "Sort Order",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "product_key",
-          "code",
-          "name"
-        ],
-        "title": "PlanCreateIn",
-        "type": "object"
-      },
-      "PlanOut": {
+      "PlanDetailOut": {
+        "description": "`GET /admin/catalog/plans/{id}` \u2014 the plan, its counts, and one page of version summaries,\nnewest first, filtered to an audience.",
         "properties": {
           "code": {
             "title": "Code",
+            "type": "string"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/VersionCountsOut"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
             "type": "string"
           },
           "id": {
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "latest_version_no": {
+            "default": 0,
+            "title": "Latest Version No",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "product_key": {
+            "title": "Product Key",
+            "type": "string"
+          },
+          "sort_order": {
+            "title": "Sort Order",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/VersionSummaryOut"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "product_key",
+          "code",
+          "name",
+          "state",
+          "sort_order",
+          "created_at",
+          "updated_at",
+          "counts",
+          "versions"
+        ],
+        "title": "PlanDetailOut",
+        "type": "object"
+      },
+      "PlanListItemOut": {
+        "description": "One row of the Plans & prices table.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/VersionCountsOut"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanVersionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "latest_version_no": {
+            "default": 0,
+            "title": "Latest Version No",
+            "type": "integer"
           },
           "name": {
             "title": "Name",
@@ -108,13 +359,6 @@
           "state": {
             "title": "State",
             "type": "string"
-          },
-          "versions": {
-            "items": {
-              "$ref": "#/components/schemas/PlanVersionOut"
-            },
-            "title": "Versions",
-            "type": "array"
           }
         },
         "required": [
@@ -123,40 +367,38 @@
           "code",
           "name",
           "state",
-          "sort_order"
+          "sort_order",
+          "created_at",
+          "counts"
         ],
-        "title": "PlanOut",
+        "title": "PlanListItemOut",
         "type": "object"
       },
-      "PlanPatchIn": {
-        "description": "Editing a plan touches only its presentation. Re-pricing is a new version, never a\nfield update \u2014 that is what keeps published versions reconstructable (ADR-0000 \u00a79).",
+      "PlanListOut": {
         "properties": {
-          "name": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PlanListItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
             "anyOf": [
               {
-                "maxLength": 160,
-                "minLength": 1,
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Name"
-          },
-          "sort_order": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sort Order"
+            "title": "Next Cursor"
           }
         },
-        "title": "PlanPatchIn",
+        "required": [
+          "items"
+        ],
+        "title": "PlanListOut",
         "type": "object"
       },
       "PlanVersionOut": {
@@ -182,12 +424,50 @@
             "title": "Id",
             "type": "string"
           },
+          "plan_id": {
+            "format": "uuid",
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "plan_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Name"
+          },
+          "plan_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan State"
+          },
           "prices": {
             "items": {
               "$ref": "#/components/schemas/PriceOut"
             },
             "title": "Prices",
             "type": "array"
+          },
+          "product_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product Key"
           },
           "published_at": {
             "anyOf": [
@@ -231,6 +511,7 @@
         },
         "required": [
           "id",
+          "plan_id",
           "version_no",
           "state",
           "billing_interval",
@@ -325,6 +606,11 @@
             "title": "Currency",
             "type": "string"
           },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
           "kind": {
             "title": "Kind",
             "type": "string"
@@ -364,10 +650,50 @@
           }
         },
         "required": [
+          "id",
           "kind",
           "currency"
         ],
         "title": "PriceOut",
+        "type": "object"
+      },
+      "PublishIn": {
+        "additionalProperties": false,
+        "description": "Publishing is irreversible. `allow_zero_amounts` is the explicit acknowledgement a zero\nflat, per-seat or usage amount needs \u2014 without it a zero is refused as a likely typo.",
+        "properties": {
+          "allow_zero_amounts": {
+            "default": false,
+            "title": "Allow Zero Amounts",
+            "type": "boolean"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 3,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "PublishIn",
+        "type": "object"
+      },
+      "ReasonIn": {
+        "additionalProperties": false,
+        "description": "The body of a write that carries nothing but its justification (publish's flag aside).",
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 3,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "ReasonIn",
         "type": "object"
       },
       "SeatClassIn": {
@@ -718,34 +1044,80 @@
         "title": "ValidationError",
         "type": "object"
       },
-      "VersionCreateIn": {
-        "description": "Clone the plan's active version into a new draft, with these prices and features.\n\n`restricted_to_org_id` set makes it a bespoke, audience-of-one version (ADR-0004 \u00a72);\nleft NULL it is a public version every customer of the product can see once published. The\nsame field, pointed at a reseller's organization, is how a partner wholesale price is\nauthored \u2014 one mechanism, two commercial uses (docs/commerce-packaging.md).\n\nA **bundle** is authored here too, with no special field: its `features` declare\n`bundled_products` and `bundle_tier`, and its `prices` are the bundled rate. A bundle is a\nplan version, not a discount layered over one, which is what keeps a bundled invoice\nreconstructable from the version it pinned.",
+      "VersionCountsOut": {
+        "description": "How many versions a plan has, by state, for its **public** audience \u2014 and how many\naudience-of-one (bespoke or partner) versions sit beside them, in any state.",
+        "properties": {
+          "bespoke": {
+            "default": 0,
+            "title": "Bespoke",
+            "type": "integer"
+          },
+          "draft": {
+            "default": 0,
+            "title": "Draft",
+            "type": "integer"
+          },
+          "grandfathered": {
+            "default": 0,
+            "title": "Grandfathered",
+            "type": "integer"
+          },
+          "published": {
+            "default": 0,
+            "title": "Published",
+            "type": "integer"
+          }
+        },
+        "title": "VersionCountsOut",
+        "type": "object"
+      },
+      "VersionSummaryOut": {
+        "description": "One version without its sheet \u2014 the plan detail lists these and the screen fetches a\nversion's prices, features and seat classes only when it is opened (`GET /versions/{id}`).",
         "properties": {
           "billing_interval": {
-            "default": "month",
-            "pattern": "^(month|year|one_time)$",
             "title": "Billing Interval",
             "type": "string"
           },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
           "currency": {
-            "maxLength": 3,
-            "minLength": 3,
             "title": "Currency",
             "type": "string"
           },
-          "features": {
-            "items": {
-              "$ref": "#/components/schemas/FeatureIn"
-            },
-            "title": "Features",
-            "type": "array"
+          "feature_count": {
+            "default": 0,
+            "title": "Feature Count",
+            "type": "integer"
           },
-          "prices": {
-            "items": {
-              "$ref": "#/components/schemas/PriceIn"
-            },
-            "title": "Prices",
-            "type": "array"
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "plan_id": {
+            "format": "uuid",
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "price_count": {
+            "default": 0,
+            "title": "Price Count",
+            "type": "integer"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
           },
           "restricted_to_org_id": {
             "anyOf": [
@@ -759,18 +1131,25 @@
             ],
             "title": "Restricted To Org Id"
           },
-          "seat_classes": {
-            "items": {
-              "$ref": "#/components/schemas/SeatClassIn"
-            },
-            "title": "Seat Classes",
-            "type": "array"
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "version_no": {
+            "title": "Version No",
+            "type": "integer"
           }
         },
         "required": [
-          "currency"
+          "id",
+          "plan_id",
+          "version_no",
+          "state",
+          "billing_interval",
+          "currency",
+          "created_at"
         ],
-        "title": "VersionCreateIn",
+        "title": "VersionSummaryOut",
         "type": "object"
       }
     }
@@ -783,24 +1162,97 @@
   "openapi": "3.1.0",
   "paths": {
     "/api/v1/admin/catalog/plans": {
-      "post": {
-        "operationId": "create_plan_api_v1_admin_catalog_plans_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PlanCreateIn"
-              }
+      "get": {
+        "operationId": "list_plans_api_v1_admin_catalog_plans_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "product_key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Product Key"
             }
           },
-          "required": true
-        },
+          {
+            "in": "query",
+            "name": "audience",
+            "required": false,
+            "schema": {
+              "default": "public",
+              "enum": [
+                "public",
+                "restricted",
+                "all"
+              ],
+              "title": "Audience",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "active",
+                    "retired"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
-          "201": {
+          "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PlanOut"
+                  "$ref": "#/components/schemas/PlanListOut"
                 }
               }
             },
@@ -817,13 +1269,152 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Create a plan",
+        "summary": "List plans, one keyset page at a time (public audience by default)",
+        "tags": [
+          "catalog-admin"
+        ]
+      },
+      "post": {
+        "operationId": "create_plan_api_v1_admin_catalog_plans_post",
+        "parameters": [
+          {
+            "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+              "maxLength": 128,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminPlanCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanListItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a plan under a registered product",
         "tags": [
           "catalog-admin"
         ]
       }
     },
     "/api/v1/admin/catalog/plans/{plan_id}": {
+      "get": {
+        "operationId": "get_plan_api_v1_admin_catalog_plans__plan_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Plan Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "audience",
+            "required": false,
+            "schema": {
+              "default": "public",
+              "enum": [
+                "public",
+                "restricted",
+                "all"
+              ],
+              "title": "Audience",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One plan with a page of its versions (summaries; open a version for its sheet)",
+        "tags": [
+          "catalog-admin"
+        ]
+      },
       "patch": {
         "operationId": "update_plan_api_v1_admin_catalog_plans__plan_id__patch",
         "parameters": [
@@ -836,13 +1427,26 @@
               "title": "Plan Id",
               "type": "string"
             }
+          },
+          {
+            "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+              "maxLength": 128,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PlanPatchIn"
+                "$ref": "#/components/schemas/AdminPlanPatchIn"
               }
             }
           },
@@ -853,7 +1457,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PlanOut"
+                  "$ref": "#/components/schemas/PlanListItemOut"
                 }
               }
             },
@@ -870,7 +1474,73 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Edit a plan's name or ordering",
+        "summary": "Edit a plan's name or ordering (never its prices \u2014 that is a new version)",
+        "tags": [
+          "catalog-admin"
+        ]
+      }
+    },
+    "/api/v1/admin/catalog/plans/{plan_id}/reactivate": {
+      "post": {
+        "operationId": "reactivate_plan_api_v1_admin_catalog_plans__plan_id__reactivate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Plan Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+              "maxLength": 128,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReasonIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanListItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reactivate a retired plan: offer it again",
         "tags": [
           "catalog-admin"
         ]
@@ -889,14 +1559,37 @@
               "title": "Plan Id",
               "type": "string"
             }
+          },
+          {
+            "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+              "maxLength": 128,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReasonIn"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PlanOut"
+                  "$ref": "#/components/schemas/PlanListItemOut"
                 }
               }
             },
@@ -913,7 +1606,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Retire a plan",
+        "summary": "Retire a plan: stop offering it; existing pins keep billing",
         "tags": [
           "catalog-admin"
         ]
@@ -932,13 +1625,26 @@
               "title": "Plan Id",
               "type": "string"
             }
+          },
+          {
+            "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+              "maxLength": 128,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/VersionCreateIn"
+                "$ref": "#/components/schemas/AdminVersionCreateIn"
               }
             }
           },
@@ -966,15 +1672,79 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Draft a new plan version (clone-to-draft; bespoke when restricted_to_org_id set)",
+        "summary": "Draft a new plan version from a full sheet (bespoke when restricted_to_org_id set)",
         "tags": [
           "catalog-admin"
         ]
       }
     },
-    "/api/v1/admin/catalog/versions/{version_id}/publish": {
-      "post": {
-        "operationId": "publish_version_api_v1_admin_catalog_versions__version_id__publish_post",
+    "/api/v1/admin/catalog/versions/{version_id}": {
+      "delete": {
+        "operationId": "delete_draft_version_api_v1_admin_catalog_versions__version_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+              "maxLength": 128,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReasonIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a draft version (never a published or grandfathered one)",
+        "tags": [
+          "catalog-admin"
+        ]
+      },
+      "get": {
+        "operationId": "get_version_api_v1_admin_catalog_versions__version_id__get",
         "parameters": [
           {
             "in": "path",
@@ -1009,7 +1779,139 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Publish a draft version \u2014 from here it is immutable",
+        "summary": "One version with its full sheet: prices, features and seat classes",
+        "tags": [
+          "catalog-admin"
+        ]
+      }
+    },
+    "/api/v1/admin/catalog/versions/{version_id}/publish": {
+      "post": {
+        "operationId": "publish_version_api_v1_admin_catalog_versions__version_id__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+              "maxLength": 128,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish a draft version \u2014 validated, then immutable for good",
+        "tags": [
+          "catalog-admin"
+        ]
+      }
+    },
+    "/api/v1/admin/catalog/versions/{version_id}/withdraw": {
+      "post": {
+        "operationId": "withdraw_version_api_v1_admin_catalog_versions__version_id__withdraw_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required. Retrying with the same key replays the first answer (with an `Idempotent-Replayed: true` header) instead of changing anything twice; reusing it for a different request is a 409. Only a change that happened is recorded \u2014 a refused request can be retried under the same key.",
+              "maxLength": 128,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReasonIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Withdraw a published version (published -> grandfathered); existing pins keep it",
         "tags": [
           "catalog-admin"
         ]

@@ -25,6 +25,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
 from app import selectors
 from app.schemas import (
@@ -33,16 +34,23 @@ from app.schemas import (
     InternalPlanVersionNamesOut,
     InternalPlanVersionOut,
     InternalPriceOut,
+    OfferableVersionOut,
+    OfferableVersionsOut,
     PublicFlatPlanOut,
     PublicFlatPlansOut,
     SeatClassOut,
 )
 from platform_core.auth import require_service_token
 from platform_core.db import get_session
-from platform_core.errors import NotFoundProblem
+from platform_core.errors import NotFoundProblem, UnauthorizedProblem
 from platform_core.logging import get_logger
 
 log = get_logger("catalog.internal")
+
+#: Every product key on this platform is this shape (hrms, crm, storefront, ...). The same bound
+#: console's bespoke-price route puts on its path parameter (`console_internal.py`), here on a query
+#: value, so a stray string is a 422 rather than a lookup.
+_PRODUCT_KEY_PATTERN = r"^[a-z][a-z0-9_-]{0,39}$"
 
 router = APIRouter(
     prefix="/internal/v1",
@@ -123,6 +131,70 @@ async def get_plan_version(version_id: uuid.UUID, session: SessionDep) -> Intern
         prices=[InternalPriceOut.model_validate(p) for p in version.prices],
         features=[FeatureOut.model_validate(f) for f in version.features],
         seat_classes=[SeatClassOut.model_validate(sc) for sc in version.seat_classes],
+    )
+
+
+#: The one caller of the offerable-versions read below. It carries amounts for every plan a given
+#: organization could be moved onto, including a version negotiated for that organization alone —
+#: narrower than "any service holding a token for catalog", unlike the unfiltered pin lookup above
+#: it, which predates this and returns one version by id.
+TRUSTED_CALLER = "console"
+
+
+def require_console_caller(request: Request) -> None:
+    """Issued by console specifically; the router-level `require_service_token` has already
+    checked the token is valid and addressed to catalog, and recorded who minted it."""
+    if getattr(request.state, "service_caller", None) != TRUSTED_CALLER:
+        raise UnauthorizedProblem("Valid service token required")
+
+
+ConsoleCallerDep = Annotated[None, Depends(require_console_caller)]
+
+
+@router.get(
+    "/organizations/{organization_id}/offerable-versions",
+    response_model=OfferableVersionsOut,
+    summary="The plan versions one organization may be switched onto — console's plan picker",
+)
+async def list_offerable_versions(
+    organization_id: uuid.UUID,
+    _caller: ConsoleCallerDep,
+    session: SessionDep,
+    product_key: Annotated[
+        str, Query(pattern=_PRODUCT_KEY_PATTERN, description="The product whose plans to offer")
+    ],
+) -> OfferableVersionsOut:
+    """Active plans' published, current versions that are public or negotiated for exactly this
+    organization — `selectors.visible_plans`' audience rule, then superseded versions dropped
+    (`selectors.offerable_versions`). Console's `OperatorBilling` gate is the role check (owner and
+    billing_ops), so this cannot reuse the owner-only authoring router, and it must never reuse
+    the amount-free tenant `/plans` read, which is for a customer.
+
+    Read-only, and a global un-policied read like the rest of this file: the organization in the
+    path is a *filter* on whose bespoke prices are visible, not a tenant binding.
+    """
+    pairs = await selectors.offerable_versions(
+        session, product_key=product_key, org_id=organization_id
+    )
+    return OfferableVersionsOut(
+        versions=[
+            OfferableVersionOut(
+                plan_id=plan.id,
+                plan_code=plan.code,
+                plan_name=plan.name,
+                product_key=plan.product_key,
+                plan_version_id=version.id,
+                version_no=version.version_no,
+                state=version.state,
+                billing_interval=version.billing_interval,
+                currency=version.currency,
+                restricted_to_org_id=version.restricted_to_org_id,
+                published_at=version.published_at,
+                prices=[InternalPriceOut.model_validate(p) for p in version.prices],
+                features=[FeatureOut.model_validate(f) for f in version.features],
+            )
+            for plan, version in pairs
+        ]
     )
 
 

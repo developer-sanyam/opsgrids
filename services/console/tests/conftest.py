@@ -47,6 +47,7 @@ TENANT_TABLES = (
     "audit_logs",
     "outbox",
     "processed_events",
+    "idempotency_keys",
 )
 
 

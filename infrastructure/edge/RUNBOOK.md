@@ -615,7 +615,8 @@ not fail the check. Changing a product's `status` on the box is exactly the edit
 this fail, so run it after that too.
 
 Bundles are sold only through subscription's operator routes (`POST /internal/v1/subscriptions`,
-`…/{id}/change-plan`, service token); the customer route answers 403. A trial's length is the
+`…/{id}/change-plan`, a service token minted by **console** — a token from any other service is
+refused, ADR-0029); the customer route answers 403. A trial's length is the
 plan version's `trial_days` feature (14 when absent), never the customer's.
 
 ### Inventory Phase 1 (lots, rolls, stock operations): migration and the `operations` permission reconcile
@@ -969,6 +970,79 @@ record first. A rate of one in a long while is a database blip to read; every pu
 the rollback trigger above. Wiring `putaway.capture_failed` to an alert is a follow-up
 (`docs/backlog.md`).
 
+### Plans & prices in the console: catalog migration, rollout, what to watch
+
+The Plans & prices release (design: `docs/superpowers/specs/2026-10-06-admin-plans-page-design.md`;
+decision: [ADR-0030](../../docs/adr/0030-catalog-operator-writes.md)) gives the staff console a real
+catalogue page over catalog's existing `/api/v1/admin/catalog` prefix. **No route table changes** (the
+paths stay under the existing `staff_only` prefix, so admin-gateway and Caddy are not recreated) and **no
+new `.env` key**.
+
+**What migrates.** One catalog revision, `b7e4d2a9c613` (follows `c5f1e8a2b7d4`), in the ordinary
+`migrate` step. It replaces the body of `catalog.forbid_published_version_update()` (published rows may
+now take exactly one change, `state` to `grandfathered`; grandfathered rows take none; a draft cannot
+become grandfathered), extends `catalog.forbid_frozen_version_child_mutation()` and adds one
+`trg_<table>_frozen_no_insert` trigger each on `prices`, `features` and `seat_classes` (nothing can be
+added under a frozen version), and creates `catalog.idempotency_keys` (empty, RLS on and forced). All are
+instantaneous; nothing is backfilled.
+
+**Rollout order** (owner-approved deploy; merging deploys nothing): catalog first (migration + API), then
+notification (two new subscribable catalog events; harmless if it lags), subscription (lets a scheduled plan
+change be withdrawn back to a current pin whose version has been withdrawn; if it lags, that one request is
+refused `not_published` until it lands), console (the `not_offerable` wording names withdraw), then the
+console frontend.
+Old console builds keep working against the new catalog because the old stub made no catalog calls.
+
+**Verify, changing nothing.** On the box, from `infrastructure/edge/`:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T catalog alembic current
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT to_regclass('catalog.idempotency_keys') IS NOT NULL                         AS claims_table,
+       (SELECT relforcerowsecurity FROM pg_class WHERE oid = 'catalog.idempotency_keys'::regclass) AS rls_forced,
+       (SELECT count(*) FROM catalog.plan_versions WHERE state = 'grandfathered')     AS withdrawn;"
+```
+
+`alembic current` must print `b7e4d2a9c613 (head)`; the query prints `t|t|0` on a first deploy. Then, as
+an `owner`, open `admin.opsgrids.com/plans`: the table loads (public plans), a plan opens, a version's
+sheet opens. As `billing_ops` the same pages load with no actions; as `support` the page shows a notice.
+
+**The one irreversible step is publish.** Prove the write path without creating anything permanent: open
+an **existing** plan, use *New draft* on its current version, create the draft, then **delete the draft** —
+do not publish it. Do not create a smoke-test plan: a plan cannot be deleted (only retired), its
+`(product`, `code)` is burned for good, an unregistered product key is refused with 422 `unknown_product`,
+and an active plan under a real product shows in every one of that product's customers' plan list. If a
+plan was created by mistake, retire it with a reason. Publishing freezes a version for good; withdrawing
+afterwards keeps it pinned by anyone already on it. Publishing also needs product-service up (it is asked
+whether the product is a bundle); a 503 on publish means retry once it is back.
+
+**What to watch.** A 409 "Idempotency-Key was already used for a different request" means a client reused
+a key — the console mints one per dialog open, so a stream of them is a client bug, not an operator one.
+A 422 on publish lists every problem in `errors[]`; the commonest is a zero amount the owner must
+acknowledge or a usage price missing its meter. **Retiring a plan does not yet stop a subscription pinning
+one of its versions by id** (subscription does not read plan state — a later slice that needs catalog's
+internal version read to carry the plan's state too); until then, withdraw the specific version as well
+when it must stop selling. The console's **Change plan** already refuses a retired plan's versions and
+withdrawn ones (`not_offerable`, see "Staff plan switching" below). Withdrawing a plan's newest version puts
+the published version before it back on offer there, so withdraw that one too if it must stop selling.
+
+**Withdrawing does not cancel a plan change already scheduled onto the version.** A downgrade deferred to
+the next period re-pins at renewal without asking catalog, so it lands on the withdrawn version anyway.
+Before withdrawing a version that must stop selling, list the subscriptions scheduled onto it (read-only):
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT id, organization_id FROM subscription.subscriptions
+ WHERE pending_plan_version_id = '<version id>';"
+```
+
+Each row is a customer whose scheduled change has to be dealt with by hand (with the owner) until
+subscription re-validates a pending pin when it applies it.
+
+**Rollback.** Roll the console and catalog images back; the migration can stay (old catalog code ignores
+the claims table and never withdraws). If it must go: `alembic downgrade c5f1e8a2b7d4` on catalog — a
+version withdrawn meanwhile stays `grandfathered`.
+
 ### The billing run: first deploy, watching it, and what to do when it complains
 
 The billing run (ADR-0005's 2026-09-23 addendum and its review fixes) is the loop that converts
@@ -1179,6 +1253,66 @@ in force for that date; insert the rate (a new row, never an edit) or unset the 
 
 **Tax.** `BILLING_TAX_CODE` / `BILLING_TAX_JURISDICTION` in `.env` choose the `tax_rates` row;
 empty (the default) writes no tax line. Insert the rate row **before** setting the code.
+
+### Staff plan switching (ADR-0029): the billing run must be on, and what to check first
+
+The console's **Change plan** control (`/api/v1/admin/organizations/{id}/plan-options`,
+`.../subscriptions/{product_key}/plan-change:preview` and `.../plan-change`; owner and billing_ops) lets
+staff move a subscription to another plan. A **trial** switches immediately. A **paying** subscription
+switches at its **next billing period**, and an **equal-price** change applies at once — staff cannot force
+"now, prorated"; for goodwill sooner, use *Grant credit*. An equal-price change that applies now on a paying,
+usage-priced subscription is not free: the usage metered so far is closed at the current plan's usage rates
+and invoiced by the billing run (the confirm says so when it happens).
+
+Only versions catalog **offers the organization now** can be chosen: a version superseded by a newer one,
+withdrawn on the Plans page (ADR-0030), or of a retired plan, is refused **422 `not_offerable`** even if an
+operator's open dialog still lists it (the dialog then reloads the list). Withdrawing a scheduled change back to
+the current pin is always allowed, even when that pin's version has since been withdrawn. If
+catalog cannot be reached the confirm answers **503 `catalog_unavailable`** and nothing is claimed or changed.
+
+**"Next billing period" only happens while the billing run is running.** The change is stored as a
+pending change and applied when the run claims the next period. So, before the first staff switch on the
+box, confirm from the section above that:
+
+```bash
+# Expect `True`, then the cutover instant, then `None`. `BILLING_RUN_ENABLED` defaults to false.
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T subscription-worker \
+  python -c 'from app.config import settings; s = settings(); print(s.billing_run_enabled, s.billing_run_not_before, s.billing_run_not_before_invalid)'
+```
+
+* `BILLING_RUN_ENABLED=true` and a valid `BILLING_RUN_NOT_BEFORE`. With the run **off**, a scheduled change
+  waits indefinitely, and a change on any subscription whose period is already due is refused with
+  **409 `billing_catching_up`** — which is indefinite then, not "try again shortly".
+* `/health/billing-run` is not climbing (`overdue`, `failing_permanent`). A permanently failing claim also
+  freezes that subscription's plan changes until a person fixes the claim.
+
+Deploy order: **catalog and subscription first, then console** (it runs the migration for
+`console.idempotency_keys`) **and the `opsgrids-internal` frontend**. The admin-gateway is not recreated.
+Rollback is the console and frontend images; the other changes are additive and written rows stay.
+
+What to read when an operator reports a problem:
+
+```sql
+-- console: the claim and its outcome for one staff action (the Idempotency-Key the operator's browser sent)
+SELECT key, status, response, created_at, updated_at FROM console.idempotency_keys
+WHERE organization_id = :org ORDER BY created_at DESC LIMIT 20;
+-- console: every attempt leaves an intent row, then exactly one outcome row
+SELECT at, action, reason, acting_as, after FROM console.audit_logs
+WHERE organization_id = :org AND action LIKE 'subscription.plan_change%' ORDER BY at DESC;
+-- subscription: the scheduled change itself, and its operator
+SELECT id, state, plan_version_id, pending_plan_version_id, pending_change
+FROM subscription.subscriptions WHERE organization_id = :org;
+```
+
+A claim stuck `in_progress` is a request that died mid-call: after 60 seconds a retry with the same key
+reconciles it from a live read. `unknown` means the answer was lost; the operator sees **503
+`outcome_unknown`**, and repeating the same request is safe. A failed **preview** is never `outcome_unknown`
+(it is a read): it answers **503 `preview_unavailable`**, nothing was changed. The operator's reason is on the
+audit rows above (console's, and subscription's `audit_logs.reason`) and **not** on the
+`commerce.subscription.*` event — a customer org's own notification templates render that payload. A
+scheduled change emits **no event**, so the
+account list does not show it — the Change plan card (the live pricing read) does. Product access follows a
+change that has taken effect within about **15 minutes**.
 
 ### Operator MFA: mandatory rollout, the MFA reseal, and the one-off codes
 

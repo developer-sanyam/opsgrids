@@ -542,7 +542,10 @@ review replaced it with the rule below.*
   and its members are pinned as `pending_change`; nothing is emitted and entitlement does not
   change now. The run applies it when it claims the next period — that transition emits
   `commerce.subscription.downgraded` — and prices that period at the lower plan. Changing back to
-  the current pin withdraws it; an upgrade supersedes it.
+  the current pin withdraws it; an upgrade supersedes it. *(Amended by ADR-0029, 2026-10-06: the
+  event is labelled by the direction stored with the pending change — a staff change scheduled for
+  the next period that raises the price emits `upgraded` when applied. A change scheduled before
+  that keeps `downgraded`. Every consumer folds the two identically.)*
 - **Up then down within one period**: the upgrade's proration stands and is billed; the downgrade
   waits for the next period like any other.
 
