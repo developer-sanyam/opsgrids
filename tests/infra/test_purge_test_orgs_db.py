@@ -596,6 +596,46 @@ async def test_an_interrupted_run_leaves_each_organisation_whole_or_untouched(
         assert await _residual(conn, third), "an organisation after the failure was touched"
 
 
+async def test_a_refusal_after_the_first_organisation_committed_exits_1_with_the_summary(
+    engine: AsyncEngine, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exit 2 is "refused before anything was written". Here the first organisation is already
+    gone when the second is refused (a second purge holds the lock), so the run exits 1 and prints
+    what happened, and the owner is not told "nothing was done"."""
+    first, second, third = sorted([world.orgs["a"], world.orgs["b"], world.orgs["c"]])
+    real = purge._purge_one
+    calls: list[uuid.UUID] = []
+
+    async def lock_lost_on_the_second(*args: Any, **kwargs: Any) -> Any:
+        calls.append(args[2])
+        if len(calls) == 2:
+            raise purge.Refusal("another purge is running against this database")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(purge, "_purge_one", lock_lost_on_the_second)
+    out: list[str] = []
+    argv = ["--apply", "--confirm-count", "3", "--i-took-a-backup"]
+    for org in (first, second, third):
+        argv += ["--org-id", str(org)]
+    code = await asyncio.to_thread(
+        purge.main,
+        argv,
+        cfg=SimpleNamespace(environment="local", admin_dsn=REAL_DSN),
+        out=out.append,
+    )
+    assert code == 1
+    summary = next(x for x in _json_lines(out) if "organisations_remaining" in x)
+    assert (summary["organisations_deleted"], summary["failed"], summary["not_attempted"]) == (
+        1,
+        1,
+        1,
+    )
+    async with engine.connect() as conn:
+        assert await _residual(conn, first) == {}
+        assert await _residual(conn, second), "the refused organisation was touched"
+        assert await _residual(conn, third), "an organisation after the refusal was touched"
+
+
 async def test_a_second_apply_is_a_no_op(engine: AsyncEngine, world: World) -> None:
     a = world.orgs["a"]
     await _run([a], apply=True)

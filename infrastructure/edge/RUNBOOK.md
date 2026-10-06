@@ -2124,6 +2124,14 @@ traffic. Do **not** requeue a dead letter that names a removed organisation afte
 (`tools/dlq.py`): a consumer would recreate projection rows for an organisation that no longer
 exists.
 
+**Run it on the box, not through a tunnel.** The tool decides whether a database is live from the
+DSN it is given: `ENVIRONMENT` of `production`, `staging` or `uat`, a host that is not a loopback
+name, or no host at all (a unix socket). An `ssh -L` tunnel to the box's Postgres is a loopback
+address, so a laptop shell pointed at one with `ENVIRONMENT=local` would not be asked for
+`--i-know-this-is-the-live-database`; do not do that. Flags are matched in full (a shortened one
+is an error, not a guess), `--confirm-count` may be given once, and every `--keep-file` and
+`--ids-file` you repeat is read.
+
 From `infrastructure/edge/` on the box, define this once per shell. It is the invocation
 `reconcile-permissions` and the put-away purge use, each from a service image, here the `account`
 one; `ENVIRONMENT` there is `production`, which is why `--apply` will ask for

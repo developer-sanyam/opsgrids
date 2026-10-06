@@ -148,7 +148,9 @@ def test_a_live_database_needs_its_own_flag_to_apply(capsys: pytest.CaptureFixtu
         ("local", "localhost", False),
         ("local", "127.0.0.1", False),
         ("test", "::1", False),
-        ("ci", None, False),
+        # No host at all is a unix socket, which may be a forwarded one: not provably this machine.
+        ("ci", None, True),
+        ("local", None, True),
         # A laptop with ENVIRONMENT=local and a DATABASE_URL copied from the box.
         ("local", "postgres", True),
         ("local", "db.example.internal", True),
@@ -165,6 +167,22 @@ def test_the_live_environments_are_the_ones_settings_already_treats_as_real() ->
     ).read_text()
     assert 'self.environment not in ("production", "staging", "uat")' in source
     assert set(purge.LIVE_ENVIRONMENTS) == {"production", "staging", "uat"}
+
+
+def test_a_socket_dsn_needs_the_flag_even_when_the_environment_says_local(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`?host=/path` leaves the DSN with no host: nothing says it is this machine, and a socket can
+    be a forwarded one. The refusal comes before the tool connects."""
+    socket = SimpleNamespace(
+        environment="local", admin_dsn="postgresql+asyncpg://u:p@/opsgrids?host=/var/run/postgresql"
+    )
+    _refused(["--org-id", str(ORG_A), *APPLY], socket)
+    assert "--i-know-this-is-the-live-database is required" in capsys.readouterr().err
+    code, factory = _main(
+        ["--org-id", str(ORG_A), *APPLY, "--i-know-this-is-the-live-database"], socket
+    )
+    assert code == 1 and len(factory.dsns) == 1
 
 
 def test_a_remote_host_needs_the_flag_even_when_the_environment_says_local(
@@ -230,9 +248,62 @@ def test_the_option_set_is_pinned_so_nothing_can_select_for_you() -> None:
 
 def test_the_defaults_delete_nothing() -> None:
     args = purge.build_parser().parse_args([])
-    assert args.apply is False and args.org_id == [] and args.ids_file is None
-    assert args.confirm_count is None
+    assert args.apply is False and args.org_id == [] and args.ids_file == []
+    assert args.keep_file == [] and args.confirm_count is None
     assert args.i_took_a_backup is False and args.i_know_this_is_the_live_database is False
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--ap", "--confirm", "1", "--i-took", "--i-know-this-is-the-live-d"],
+        ["--app", "--confirm-c", "1", "--i-took-a-backup", "--org", str(ORG_A)],
+        ["--keep-f", "mine.txt"],
+        ["--ids", "ids.txt"],
+        ["--cand"],
+        ["--expl"],
+    ],
+)
+def test_no_flag_can_be_abbreviated(argv: list[str], capsys: pytest.CaptureFixture[str]) -> None:
+    """The gates are meant to be typed in full: `--ap` is not `--apply`, and nothing connects."""
+    factory = Factory()
+    with pytest.raises(SystemExit) as exit_info:
+        purge.main(argv, cfg=LOCAL, engine_factory=factory)
+    assert exit_info.value.code == 2 and factory.dsns == []
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
+def test_a_repeated_confirm_count_is_an_error_not_the_last_one(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    factory = Factory()
+    argv = ["--org-id", str(ORG_A), "--apply", "--i-took-a-backup"]
+    argv += ["--confirm-count", "3", "--confirm-count", "1"]
+    with pytest.raises(SystemExit) as exit_info:
+        purge.main(argv, cfg=LOCAL, engine_factory=factory)
+    assert exit_info.value.code == 2 and factory.dsns == []
+    assert "--confirm-count was given more than once" in capsys.readouterr().err
+
+
+def test_every_keep_file_and_every_ids_file_is_read(tmp_path: Path) -> None:
+    """`--keep-file mine.txt ... --keep-file other.txt` used to keep only `other.txt`: the first
+    protection list was dropped without a word. Both are kept now, and so are both ids files."""
+    mine, other = tmp_path / "mine.txt", tmp_path / "other.txt"
+    mine.write_text(f"{ORG_A}  # the owner's own\n")
+    other.write_text(f"{ORG_B}\n")
+    for kept in (ORG_A, ORG_B):
+        _refused(
+            ["--org-id", str(kept), "--keep-file", str(mine), "--keep-file", str(other), *APPLY]
+        )
+    _refused(["--org-id", str(ORG_A), "--keep-file", str(other), "--keep-file", str(mine), *APPLY])
+
+    first, second = tmp_path / "first.txt", tmp_path / "second.txt"
+    first.write_text(f"{ORG_A}\n")
+    second.write_text(f"{ORG_B}\n")
+    argv = ["--ids-file", str(first), "--ids-file", str(second), "--apply", "--i-took-a-backup"]
+    _refused([*argv, "--confirm-count", "1"])  # two organisations were named, not one
+    code, factory = _main([*argv, "--confirm-count", "2"])
+    assert code == 1 and len(factory.dsns) == 1, "both files counted: the gates passed"
 
 
 def test_a_dry_run_cannot_be_asked_to_delete(capsys: pytest.CaptureFixture[str]) -> None:
@@ -885,6 +956,66 @@ def test_an_error_line_never_carries_the_database_message() -> None:
     # Our own refusals name a table and a count and are safe to print.
     own = purge._error_line(ORG_A, RuntimeError("s.orders: 2 rows remain after the delete"))
     assert own["detail"] == "s.orders: 2 rows remain after the delete"
+
+
+class _Engine:
+    disposed = False
+
+    async def dispose(self) -> None:
+        self.disposed = True
+
+
+def _stub_run(monkeypatch: pytest.MonkeyPatch, *, refuse_on: int) -> list[uuid.UUID]:
+    """Run `run` with the database stubbed out: three organisations, each purge succeeds except the
+    `refuse_on`-th, which raises the refusal `_purge_one` raises when the advisory lock is held."""
+    ids = [ORG_A, ORG_B, uuid.UUID("dddddddd-0000-0000-0000-00000000000d")]
+    attempted: list[uuid.UUID] = []
+
+    async def read_phase(engine: Any, selected: Any, **_kw: Any) -> Any:
+        return purge.Plan({}, [], {}, frozenset()), list(selected), [], 5
+
+    async def purge_one(engine: Any, plan: Any, org: uuid.UUID, *_a: Any, **_kw: Any) -> Any:
+        attempted.append(org)
+        if len(attempted) == refuse_on:
+            raise purge.Refusal("another purge is running against this database")
+        return purge.OrgPlan(org, {Table("s", "t"): 2}, [], purge.UserReport(), {})
+
+    async def finish(engine: Any, result: Any, out: Any) -> None:
+        out(f"summary failed={result.failed} not_attempted={result.not_attempted}")
+
+    monkeypatch.setattr(purge, "_read_phase", read_phase)
+    monkeypatch.setattr(purge, "_purge_one", purge_one)
+    monkeypatch.setattr(purge, "_finish", finish)
+    return ids
+
+
+async def test_a_refusal_before_the_first_write_is_still_a_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ids = _stub_run(monkeypatch, refuse_on=1)
+    lines: list[str] = []
+    with pytest.raises(purge.Refusal, match="another purge"):
+        await purge.run(_Engine(), selected=ids, apply=True, out=lines.append)
+    assert lines == [], "nothing was done, so nothing is summarised: exit 2 is accurate"
+
+
+async def test_a_refusal_after_an_organisation_committed_is_a_failure_with_a_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exit 2 means "refused before anything was written". Two runs at once: the first commits
+    organisation 1, then loses the lock race for organisation 2. That is exit 1 with the summary
+    and the count of what was not attempted, not a one-line refusal the owner reads as "nothing
+    happened"."""
+    ids = _stub_run(monkeypatch, refuse_on=2)
+    lines: list[str] = []
+    engine = _Engine()
+    result = await purge.run(engine, selected=ids, apply=True, out=lines.append)
+    assert (result.removed, result.failed, result.not_attempted) == (1, 1, 1)
+    assert engine.disposed
+    failure = next(json.loads(x) for x in lines if x.startswith("{") and '"failed"' in x)
+    assert failure["error"] == "Refusal" and "another purge is running" in failure["detail"]
+    assert failure["organization_id"] == str(sorted(ids)[1])
+    assert lines[-1] == "summary failed=1 not_attempted=1"
 
 
 def test_the_database_label_never_carries_the_password() -> None:

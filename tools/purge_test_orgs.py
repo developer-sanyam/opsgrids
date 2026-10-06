@@ -39,8 +39,10 @@ without touching anything if any of these is false:
   say it);
 * on a live database `--i-know-this-is-the-live-database` is given. "Live" is `ENVIRONMENT` of
   `production`, `staging` or `uat` (the set `ServiceSettings` already treats as a real deployment)
-  **or** a database host that is not this machine; the flag is required for `--apply` only,
-  listing and the dry run never need it;
+  **or** a database host that is not provably this machine (a named loopback address; a DSN with
+  no host, which is a unix socket, counts as live); the flag is required for `--apply` only,
+  listing and the dry run never need it. The tool can only see the DSN, so an `ssh -L` tunnel to
+  the box looks like `localhost`: run it on the box, not through one;
 * no selected id is the platform's nil-UUID sentinel organisation, or is named by `--keep` /
   `--keep-file`;
 * at least one organisation would remain (the tool does not empty a platform), and no selected
@@ -692,8 +694,13 @@ def requires_live_flag(environment: str, host: str | None) -> bool:
     """`--apply` needs `--i-know-this-is-the-live-database` when the environment is a real
     deployment, or when the database is not on this machine whatever the environment says (a
     laptop with `ENVIRONMENT=local` and a `DATABASE_URL` copied from the box is the accident this
-    exists for)."""
-    return environment in LIVE_ENVIRONMENTS or (host is not None and host not in _LOOPBACK_HOSTS)
+    exists for). A DSN with no host at all (`?host=/path/to/socket`) is a unix socket, which can
+    just as well be a forwarded one, so it is treated as live too; only a named loopback address is
+    taken to be this machine.
+
+    What it cannot see: an `ssh -L` tunnel to the box is a loopback address. The tool only knows
+    the DSN, so the RUNBOOK says to run it on the box and not through one."""
+    return environment in LIVE_ENVIRONMENTS or host is None or host not in _LOOPBACK_HOSTS
 
 
 def check_selection(
@@ -1458,8 +1465,8 @@ def _error_line(org: uuid.UUID, exc: BaseException) -> dict[str, Any]:
         value = getattr(cause, attr, None)
         if value:
             line[attr] = value
-    if isinstance(exc, RuntimeError):
-        # Our own messages: a table and a count, never a value.
+    if isinstance(exc, RuntimeError | Refusal):
+        # Our own messages: a table and a count, or the rule that was broken, never a value.
         line["detail"] = str(exc)[:300]
     return line
 
@@ -1594,8 +1601,15 @@ async def run(
                         keep_users=keep_users,
                         keep_orphans=keep_orphans,
                     )
-                except Refusal:
-                    raise
+                except Refusal as exc:
+                    if not result.removed:
+                        raise  # nothing written yet: a refusal, exit 2
+                    # Earlier organisations are committed: that is a run that failed part-way
+                    # (exit 1, with the summary), not "refused before anything was written".
+                    result.failed += 1
+                    result.not_attempted = len(selected) - i - 1
+                    out(json.dumps(_error_line(org, exc)))
+                    break
                 except Exception as exc:
                     result.failed += 1
                     result.not_attempted = len(selected) - i - 1
@@ -1673,12 +1687,32 @@ async def _finish(engine: AsyncEngine, result: Result, out: Callable[[str], None
 
 
 # ------------------------------------------------------------------------------------ CLI
+class _Once(argparse.Action):
+    """A flag that may be given once. argparse's default keeps the last of a repeated flag and says
+    nothing, so `--confirm-count 3 ... --confirm-count 1` (a shell alias, an edited history line)
+    would silently be 1; here it is an error."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error(f"{option_string} was given more than once")
+        setattr(namespace, self.dest, values)
+
+
 def build_parser() -> argparse.ArgumentParser:
+    # No abbreviations: `--ap` for `--apply` or `--i-know-this-is-the-live-d` is not a flag the
+    # owner typed on purpose, and the gates exist to be typed in full.
     p = argparse.ArgumentParser(
         description=(
             "List organisations, or remove the ones you name (a dry run unless --apply). "
             "Owner-run and destructive: see the module docstring and the RUNBOOK."
-        )
+        ),
+        allow_abbrev=False,
     )
     sel = p.add_argument_group("selection (nothing is ever selected for you)")
     sel.add_argument(
@@ -1691,9 +1725,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sel.add_argument(
         "--ids-file",
+        action="append",
         type=Path,
+        default=[],
         metavar="FILE",
-        help="organisation ids to remove, one per line, # comments allowed",
+        help="organisation ids to remove, one per line, # comments allowed; repeatable, all read",
     )
     sel.add_argument(
         "--keep",
@@ -1705,9 +1741,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sel.add_argument(
         "--keep-file",
+        action="append",
         type=Path,
+        default=[],
         metavar="FILE",
-        help="organisation ids that must never be removed, one per line",
+        help="organisation ids that must never be removed, one per line; repeatable, all read",
     )
     sel.add_argument(
         "--keep-user",
@@ -1742,9 +1780,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gate.add_argument(
         "--confirm-count",
+        action=_Once,
         type=int,
         metavar="N",
-        help="the number of organisations you are removing; must match",
+        help="the number of organisations you are removing; must match; given once",
     )
     gate.add_argument(
         "--i-took-a-backup",
@@ -1781,13 +1820,15 @@ def _database_label(dsn: str) -> str:
     return f"{url.host}:{url.port}/{url.database}"
 
 
-def _read_ids(path: Path | None) -> list[uuid.UUID]:
-    if path is None:
-        return []
-    try:
-        return parse_ids(path.read_text(encoding="utf-8"), source=str(path))
-    except (OSError, UnicodeDecodeError) as exc:
-        raise Refusal(f"cannot read {path}: {type(exc).__name__}") from None
+def _read_ids(paths: Iterable[Path]) -> list[uuid.UUID]:
+    """Every id in every file given (a repeated `--keep-file` keeps all of them, not the last)."""
+    found: list[uuid.UUID] = []
+    for path in paths:
+        try:
+            found += parse_ids(path.read_text(encoding="utf-8"), source=str(path))
+        except (OSError, UnicodeDecodeError) as exc:
+            raise Refusal(f"cannot read {path}: {type(exc).__name__}") from None
+    return found
 
 
 def _refuse(problems: Iterable[str]) -> int:
