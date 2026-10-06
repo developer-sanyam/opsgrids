@@ -1,4 +1,4 @@
-"""The merchant-connect migration (`d9e0f1a2b3c4`, ADR-0030) against the real database: a Cashfree
+"""The merchant-connect migration (`d9e0f1a2b3c4`, ADR-0033) against the real database: a Cashfree
 account holds one secret, a live Razorpay account still holds two, only the two providers exist,
 and the verification columns are there. The round trip is a gate (`make migration-roundtrip`); the
 downgrade's refusal is pinned here by what it counts.

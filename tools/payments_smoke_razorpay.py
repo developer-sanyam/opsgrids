@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Owner-run, opt-in smoke test of Razorpay in **test mode** (ADR-0029). Settles what the Phase A
+"""Owner-run, opt-in smoke test of Razorpay in **test mode** (ADR-0032). Settles what the Phase A
 design could only assume about Razorpay's own API — see the "Unverified" list of
 `docs/superpowers/specs/2026-10-06-payments-phase-a-design.md`, §9, which this tool answers line by
 line. Read `tools/payments_smoke_common.py` first: the rules (opt-in, never CI or production, keys

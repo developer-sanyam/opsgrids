@@ -1,5 +1,5 @@
 """The `no_mandate` guard (ADR-0005 Q4) and the money guard — decided **before any provider call**
-(ADR-0029).
+(ADR-0032).
 
 Flipping a platform wire on without this would have been the harm: every consumer stages a charge
 with no mandate, so every charge would have created a real Razorpay Order and then raised, burned

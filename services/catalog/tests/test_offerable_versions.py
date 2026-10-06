@@ -8,7 +8,8 @@ What is pinned:
   table, so it carries its own negative test here.
 * **Offerable means current.** Active plans only, published versions only, and a version is dropped
   when a newer published version of the same plan has the same audience, cadence and currency
-  (nothing grandfathers on publish, so the old one is otherwise still pinnable by id).
+  (nothing grandfathers on publish, so the old one is otherwise still pinnable by id). A version
+  withdrawn on the Plans page (ADR-0030) is not published, so it is not offered.
 * **Everything a picker needs in one row** — plan identity beside the version's, prices with their
   ids and amounts, the feature sheet.
 """
@@ -203,6 +204,25 @@ class TestWhatIsOffered:
         offered = {r["plan_version_id"] for r in await _offered(client, org)}
         assert offered == {str(yearly.id), str(euro.id), str(bespoke.id), str(newer.id)}
         assert str(monthly.id) not in offered
+
+    async def test_a_withdrawn_version_is_not_offered(
+        self, client: AsyncClient, platform_session: AsyncSession
+    ) -> None:
+        """Withdraw (ADR-0030) is how the Plans page stops selling one version; the staff plan
+        switch (ADR-0029) must honour it, public or negotiated alike."""
+        org = uuid.uuid4()
+        async with platform_session.begin():
+            plan = await _plan(platform_session)
+            public = await _publish(platform_session, plan, amount_minor=1500)
+            bespoke = await _publish(platform_session, plan, amount_minor=900, org=org)
+            kept = await _plan(platform_session, code="kept", name="Kept")
+            still_on_sale = await _publish(platform_session, kept)
+            for version in (public, bespoke):
+                await services.withdraw_version(
+                    platform_session, operator_principal(), version, request=None
+                )
+        offered = {r["plan_version_id"] for r in await _offered(client, org)}
+        assert offered == {str(still_on_sale.id)}
 
     async def test_the_same_org_filter_holds_for_a_product_with_no_plans(
         self, client: AsyncClient

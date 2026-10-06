@@ -213,7 +213,7 @@ export function previewFixturePlanChange(
     return refused(
       expected,
       "not_offerable",
-      "that plan version is no longer on offer for this organization: a newer version has replaced it, or its plan was retired. Choose again from the plans on offer now.",
+      "that plan version is no longer on offer for this organization: a newer version has replaced it, it was withdrawn, or its plan was retired. Choose again from the plans on offer now.",
     );
   }
 

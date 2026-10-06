@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 
 class ServiceInfo(BaseModel):
@@ -287,6 +287,12 @@ class ProductSubscriptionOut(BaseModel):
     #: What this subscription switches on — one key for an ordinary subscription, a bundle's
     #: members for a bundle.
     entitled_products: list[str] = Field(default_factory=list)
+    #: When the current period (for a trial: the trial itself) began. UTC.
+    current_period_start: datetime | None = None
+    #: While trialling: the latest instant the trial may be extended to — subscription's own
+    #: `MAX_TOTAL_TRIAL_DAYS` from the trial's start, stated by subscription so console never
+    #: restates the cap (ADR-0031). `null` for any other state. UTC.
+    trial_max_ends_at: datetime | None = None
 
 
 class ProductPriceOut(BaseModel):
@@ -553,3 +559,160 @@ class PlanOptionsOut(BaseModel):
     product_key: str
     subscription: PlanOptionsSubscriptionOut
     options: list[PlanOptionOut] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------- staff add product (ADR-0031)
+
+#: Lowercase, starts with a letter — every product key on this platform (the same bound the plan
+#: switch routes put on their path parameter).
+PRODUCT_KEY_PATTERN = r"^[a-z][a-z0-9_-]{0,39}$"
+
+
+def _reason_text(value: str) -> str:
+    if not value.strip():
+        raise ValueError("reason must not be blank")
+    return value.strip()
+
+
+class AddProductOptionOut(BaseModel):
+    """One plan version the Add product picker may offer, and whether this organization can take
+    it. Amounts are integer minor units, for display only."""
+
+    plan_id: uuid.UUID
+    plan_name: str
+    plan_version_id: uuid.UUID
+    version_no: int
+    billing_interval: str
+    currency: str
+    #: Negotiated for this organization alone (never another's — those are not returned).
+    is_bespoke: bool = False
+    #: Flat plus per-seat at quantity one, usage ignored — display only.
+    recurring_minor: int
+    prices: list[PlanOptionPriceOut] = Field(default_factory=list)
+    bundled_products: list[str] | None = None
+    #: The version's own trial length (`trial_days`); `null` means the platform default.
+    trial_days: int | None = None
+    #: False when the version sells no trial (`trial_days` 0) — only a paid add is possible.
+    offers_trial: bool = True
+    #: A bundle's members this organization is already entitled to through another live
+    #: subscription. Adding the bundle bills both, with no credit — said before the confirm.
+    overlapping_products: list[str] = Field(default_factory=list)
+    #: Why this organization cannot take the version: `org_currency_mismatch` (its live
+    #: subscriptions are billed in another currency) or `one_time` (never billed). `null` when it
+    #: can. Subscription refuses either regardless; this only says so up front.
+    blocked_code: str | None = None
+    blocked_reason: str | None = None
+
+
+class AddProductCandidateOut(BaseModel):
+    """A product this organization has no subscription row for, in any state."""
+
+    product_key: str
+    product_name: str
+    #: The live subscriptions (by product key — a bundle such as `suite`) that already entitle this
+    #: organization to this product. Subscription still accepts the add, and both are billed with
+    #: no credit — said before the confirm, like a bundle's `overlapping_products`.
+    entitled_through: list[str] = Field(default_factory=list)
+    versions: list[AddProductOptionOut] = Field(default_factory=list)
+
+
+class ExistingSubscriptionOut(BaseModel):
+    """A product the organization already has a row for — never offered, whatever its state (a
+    cancelled subscription cannot be reopened or replaced yet)."""
+
+    product_key: str
+    state: str
+
+
+class AddProductOptionsOut(BaseModel):
+    organization_id: uuid.UUID
+    #: The currency the organization's live subscriptions are billed in, when there is exactly one;
+    #: `null` for an organization with none (any currency may be chosen) — or, for a legacy
+    #: mixed-currency organization, more than one.
+    currency: str | None = None
+    existing: list[ExistingSubscriptionOut] = Field(default_factory=list)
+    products: list[AddProductCandidateOut] = Field(default_factory=list)
+
+
+class AddProductIn(BaseModel):
+    """Open a subscription for a product this organization does not have — the confirm.
+
+    **A trial by default.** `trial: false` starts the subscription paying: subscription claims its
+    first period for billing in the same transaction and nothing checks for a usable payment
+    mandate first, so a failed charge opens dunning (past due, then suspended after the grace
+    window). A paid add is therefore refused unless `acknowledge_immediate_charge` is true.
+
+    `extra="forbid"` — a write accepts exactly this shape.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    product_key: str = Field(pattern=PRODUCT_KEY_PATTERN)
+    plan_version_id: uuid.UUID
+    trial: bool = True
+    acknowledge_immediate_charge: bool = False
+    #: Why — required, 1-500 characters; the audit row's reason only, never on the subscription's
+    #: event (a customer org's notification templates render the whole payload).
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_is_not_blank(cls, value: str) -> str:
+        return _reason_text(value)
+
+
+class AddProductOut(BaseModel):
+    """What was opened, read back off subscription's own answer."""
+
+    subscription_id: uuid.UUID
+    product_key: str
+    state: str
+    plan_version_id: uuid.UUID
+    currency: str
+    trial_ends_at: datetime | None = None
+    current_period_start: datetime | None = None
+    current_period_end: datetime | None = None
+    entitled_products: list[str] = Field(default_factory=list)
+    #: True for a paid add: its first period was claimed for billing in the same transaction.
+    charge_claimed: bool
+    #: True when this answer is the recorded result of an earlier request with the same
+    #: `Idempotency-Key` — no second subscription was opened.
+    replayed: bool = False
+
+
+# --------------------------------------------------------------- staff extend trial (ADR-0031)
+
+
+class ExtendTrialIn(BaseModel):
+    """Move a trial's end to an absolute instant — the confirm.
+
+    `new_trial_ends_at` is where the trial will end; `expected_trial_ends_at` is the end the
+    operator saw, sent back verbatim from the read (subscription compares it under its row lock:
+    409 `state_changed` when it moved). Absolute on purpose: a repeat can never add the time twice.
+    Both need a timezone. `extra="forbid"`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    new_trial_ends_at: AwareDatetime
+    expected_trial_ends_at: AwareDatetime
+    #: Why — required, 1-500 characters; the audit row's reason only, never on the subscription's
+    #: event.
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_is_not_blank(cls, value: str) -> str:
+        return _reason_text(value)
+
+
+class ExtendTrialOut(BaseModel):
+    """The trial's end as subscription now holds it."""
+
+    subscription_id: uuid.UUID
+    product_key: str
+    state: str
+    trial_ends_at: datetime | None = None
+    previous_trial_ends_at: datetime | None = None
+    #: `true` when this answer is the recorded result of an earlier request with the same key.
+    replayed: bool = False

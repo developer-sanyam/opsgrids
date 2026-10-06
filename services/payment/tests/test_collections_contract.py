@@ -1,4 +1,4 @@
-"""`CollectionsContract` (ADR-0030) against every merchant adapter — the Razorpay one on its stub
+"""`CollectionsContract` (ADR-0033) against every merchant adapter — the Razorpay one on its stub
 and on a stateful fake Razorpay over HTTP, the Cashfree one on the in-process fake wire and on the
 real `CashfreeHttpWire` over an `httpx.MockTransport` that answers as that same fake — and against
 adapters broken in exactly the way each check exists to catch. No network, no real keys.
@@ -441,7 +441,7 @@ def test_the_contract_fails_for_an_adapter_broken_the_way_it_guards_against(
 
 def test_every_adapter_here_is_a_collections_provider_and_none_is_a_payment_provider_stub() -> None:
     """The standalone seam: the Cashfree merchant adapter has no `charge`, `create_mandate` or
-    `find_payment` to stub (ADR-0030)."""
+    `find_payment` to stub (ADR-0033)."""
     cashfree = _cashfree_stub(CashfreeFakeWire())
     assert isinstance(cashfree, CollectionsProvider)
     for absent in ("charge", "create_mandate", "find_payment", "debit"):

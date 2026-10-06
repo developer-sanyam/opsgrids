@@ -140,7 +140,7 @@ async def get_provider_event(
 ) -> ProviderEvent | None:
     """An inbox row by the provider's event id — the idempotency lookup for a webhook. The key is
     `(organization, provider, event id)`: an event id is only unique within the provider that
-    issued it (ADR-0029)."""
+    issued it (ADR-0032)."""
     result = await session.execute(
         select(ProviderEvent).where(
             ProviderEvent.organization_id == organization_id,
@@ -182,7 +182,7 @@ SWEEP_READER_CHARGE_COLUMNS: tuple[str, ...] = (
     # collection expiry sweep (`app/collections/cron.py`) merchant ones only.
     "payee",
     # The stuck-charge sweep resumes `debit` charges only; the poller (`due_pollable_charges`) reads
-    # `checkout` ones and authorized debits (ADR-0029).
+    # `checkout` ones and authorized debits (ADR-0032).
     "flow",
 )
 
@@ -217,7 +217,7 @@ async def due_stuck_charges(
             Charge.payee == PAYEE_PLATFORM,
             # Never a checkout: that charge is `created` with no provider payment until the
             # customer pays, and "resuming" it would fail it as `attempts_exhausted` and suspend a
-            # customer who has not yet paid (ADR-0029).
+            # customer who has not yet paid (ADR-0032).
             Charge.flow == FLOW_DEBIT,
             Charge.state == CHARGE_CREATED,
             Charge.provider_payment_id.is_(None),
@@ -249,7 +249,7 @@ async def usable_mandate(
 
     `provider` restricts the answer to mandates held at that provider: a Razorpay token cannot be
     debited through Cashfree, so once the default provider is Cashfree a Razorpay mandate does not
-    count and the customer authorises afresh (ADR-0029). None keeps the older, unfiltered reading.
+    count and the customer authorises afresh (ADR-0032). None keeps the older, unfiltered reading.
     """
     stmt = (
         select(Mandate)
@@ -287,7 +287,7 @@ async def refunded_total_for_charge(
     return int(result.scalar_one())
 
 
-# --------------------------------------------------------------------------- checkout (ADR-0029)
+# --------------------------------------------------------------------------- checkout (ADR-0032)
 
 
 async def platform_charges_for_invoice(
@@ -351,7 +351,7 @@ async def due_pollable_charges(
     session: AsyncSession, *, now: datetime, limit: int = 100
 ) -> list[tuple[uuid.UUID, uuid.UUID]]:
     """Every platform charge that has a provider Order and no terminal state, and is **due to be
-    asked about now**, as `(organization_id, charge_id)` — the poller's discovery (ADR-0029).
+    asked about now**, as `(organization_id, charge_id)` — the poller's discovery (ADR-0032).
 
     Two kinds, both of which nothing else will ever resolve while the webhook is private:
 

@@ -1,4 +1,4 @@
-"""Merchant connect with Cashfree (ADR-0030), through the real routes: connecting, verifying,
+"""Merchant connect with Cashfree (ADR-0033), through the real routes: connecting, verifying,
 disconnecting, the one-time-code rule, the payer a Cashfree checkout needs, the neutral webhook
 path, status checks, refunds and the reconciliation report — with negative-authorization and
 cross-tenant cases for every admin route.
@@ -682,7 +682,7 @@ class TestCheckout:
         The stub never saw that Order, and a Cashfree Order's `order_id` *is* the collection's id:
         a reopen that minted one there would make the stand-in the authority on a payment it
         cannot see. It is refused as "try again" and nothing is made (the recorded-Order rule,
-        ADR-0029); once the live wire is back, the payment made at the real Cashfree is found."""
+        ADR-0032); once the live wire is back, the payment made at the real Cashfree is found."""
         merchant_providers.cashfree_live = True
         _, opened, order = await _opened(client, merchant_providers, org_id)
         charge_id = opened["collection"]["id"]

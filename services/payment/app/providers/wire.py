@@ -1,5 +1,5 @@
 """Provider-neutral wire machinery: the error classes, the timeouts, the call deadline and the one
-HTTP client both live adapters are built on (ADR-0029).
+HTTP client both live adapters are built on (ADR-0032).
 
 Everything a provider's HTTP wire has in common lives here so neither adapter module imports the
 other, and so the three outcomes a failed call can have are named once, at the seam, instead of

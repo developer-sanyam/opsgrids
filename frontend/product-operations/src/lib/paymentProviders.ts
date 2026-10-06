@@ -1,5 +1,5 @@
 /**
- * The words the payment screens use for each provider a merchant can connect (ADR-0030): its
+ * The words the payment screens use for each provider a merchant can connect (ADR-0033): its
  * name, what its two modes are called, and how a reconciliation difference reads. The server
  * speaks one vocabulary (`test` / `live`, stable mismatch codes); this is the only place that
  * turns it into Razorpay's or Cashfree's own words.

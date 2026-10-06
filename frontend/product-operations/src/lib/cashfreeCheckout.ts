@@ -1,5 +1,5 @@
 /**
- * Cashfree's own hosted checkout, opened in a modal for an order's online payment (ADR-0030).
+ * Cashfree's own hosted checkout, opened in a modal for an order's online payment (ADR-0033).
  *
  * The customer's card, UPI or bank details are typed into Cashfree's checkout — served by
  * Cashfree — and never into this app. The only thing this module is given is the

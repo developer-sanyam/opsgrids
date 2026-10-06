@@ -1,7 +1,7 @@
 # Merchant connect: Cashfree — design (as built)
 
 **Date:** 2026-10-06 · **Branch:** `feat/merchant-cashfree`, stacked on `feat/payments-phase-a` ·
-**Decision:** [ADR-0030](../../adr/0030-merchant-connect-collections-seam.md) ·
+**Decision:** [ADR-0033](../../adr/0033-merchant-connect-collections-seam.md) ·
 **Runbook:** `infrastructure/edge/RUNBOOK.md` → "Merchant connect: Cashfree for tenant online payments"
 
 This is the rollout's P1–P3 (the P0 fixes — provider and mode immutable per account row, the
@@ -18,7 +18,7 @@ list a live sandbox must settle is at the end.
   still move money for the account — an open payment, a cancelled or expired one whose provider Order can still
   be paid, a pending refund — unless the operator chooses "Disconnect anyway" (`force`, audited with the
   counts). A collection records which wire made its Order (`charges.order_wire`); a stub Order is never asked
-  about at a live provider, never reopened there, and once closed blocks nothing (ADR-0030 §8).
+  about at a live provider, never reopened there, and once closed blocks nothing (ADR-0033 §8).
 - **"Check connection" asks the provider, so it is refused on the stub wire** (409
   `verification-unavailable`, nothing recorded): a stub accepts any keys.
 - **Connecting, replacing, checking and disconnecting need a one-time-code session** (`amr ∋ otp`), with a

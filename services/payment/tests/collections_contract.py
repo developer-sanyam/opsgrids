@@ -1,5 +1,5 @@
 """`CollectionsContract` — what every merchant (tenant collections) adapter must do, as executable
-tests (ADR-0030). The sibling of `ProviderContract` and `CheckoutContract` for the standalone
+tests (ADR-0033). The sibling of `ProviderContract` and `CheckoutContract` for the standalone
 `CollectionsProvider` seam: there is no server-side debit here, so nothing about `charge` or
 `find_payment`, and the invariants are reworded for an Order a customer pays in the provider's own
 checkout.
@@ -7,7 +7,7 @@ checkout.
 1. **Lookup before create.** `ensure_order` finds the Order by its receipt before it creates one —
    twice with one adapter, or once each with two adapters over the same provider account (a fresh
    process after a crash), it is **one** Order; `find_order` never creates. (Against real
-   Razorpay the receipt search is best-effort — ADR-0029, "Sandbox facts" — so this is held
+   Razorpay the receipt search is best-effort — ADR-0032, "Sandbox facts" — so this is held
    against a double whose search is exact; collections relies on it only until an Order id is
    recorded.) **A recorded Order is never made again**: given `recorded_order_id`, the adapter
    fetches that Order by its id, and one its account does not hold is refused

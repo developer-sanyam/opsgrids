@@ -18,7 +18,7 @@ make relay SERVICE=payment            # outbox relay
 - **`charges`** — one collection attempt against an invoice. Idempotent on a **platform-supplied**
   `idempotency_key` (Razorpay has none). Small state machine: `created → authorized → captured |
   failed`. `provider` is the provider the charge was created under, for life; `flow` is `debit` (the
-  machine debits a mandate) or `checkout` (a person pays in the provider's hosted page; ADR-0029).
+  machine debits a mandate) or `checkout` (a person pays in the provider's hosted page; ADR-0032).
 - **`refunds`** — append-only (a correction is a new row).
 - **`provider_events`** — the append-only webhook inbox and the reconciliation source of truth,
   idempotent on `provider_event_id` — Razorpay's `X-Razorpay-Event-Id` **header** (its body has no
@@ -35,7 +35,7 @@ survives the post-migration grant re-apply. Every business table is tenant-scope
 provider, Razorpay — mandate caps, a pre-debit notice, multi-day activation, and no native
 idempotency key — so another adapter fits inside it. Two adapters exist, **Razorpay** and
 **Cashfree**, and `ProviderContract` (lookup before create) is the contract for the order-then-charge
-shape; a checkout and a direct (mandate) debit have sibling contracts (ADR-0029).
+shape; a checkout and a direct (mandate) debit have sibling contracts (ADR-0032).
 
 * **What an adapter can do is declared, not guessed**: `ProviderCapabilities` (currencies, minimum,
   debit shape, mandate needs, checkout support, header-signed webhooks, wire) is read before a
@@ -80,14 +80,14 @@ Nothing here has been run against a real provider. `tools/payments_smoke_razorpa
 ## Endpoints
 
 - `POST /api/v1/payment/checkouts`, `GET /api/v1/payment/checkouts/{charge_id}`,
-  `POST /api/v1/payment/checkouts/{charge_id}/confirm` — the platform checkout (ADR-0029): open or
+  `POST /api/v1/payment/checkouts/{charge_id}/confirm` — the platform checkout (ADR-0032): open or
   reopen the checkout for one invoice, read its status (the provider is asked while it is open), and
   Razorpay's signed confirm. All need `core.product.activation.write` at `ORG`; the amount is the
   invoice's own; **the browser is never evidence**; another organization's charge is a 404. A poller
   (`app/checkout/cron.py`) resolves what nobody is told, because the webhooks below are private.
 - `POST /api/v1/webhooks/razorpay` — the provider webhook. **Signature-guarded, not token-guarded**
   (a provider carries no platform token); it is **routed to payment but deliberately not public** in
-  app-gateway in this release (owner decision, ADR-0029), and payment verifies the HMAC signature
+  app-gateway in this release (owner decision, ADR-0032), and payment verifies the HMAC signature
   before recording or acting on anything. A Cashfree sibling (`/webhooks/cashfree`) exists in the
   service, is a 404 unless Cashfree is enabled, and has no gateway route at all. Both store a
   **redacted** body (no name, email, phone, VPA or card detail): the inbox is append-only. A permanent condition in a

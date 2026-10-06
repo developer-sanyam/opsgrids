@@ -1,5 +1,5 @@
 """`GET /payment/checkouts/{id}` and `POST /payment/checkouts/{id}/confirm` — how a checkout learns
-what happened (ADR-0029, Phase A).
+what happened (ADR-0032, Phase A).
 
 **The browser is never evidence.** Every state change below comes from the provider's own answer to
 `order_payments` (or a signed webhook, `test_platform_webhook_phase_a.py`) and goes through the

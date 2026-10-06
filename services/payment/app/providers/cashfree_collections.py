@@ -1,4 +1,4 @@
-"""A merchant's Cashfree account, behind the standalone `CollectionsProvider` seam (ADR-0030).
+"""A merchant's Cashfree account, behind the standalone `CollectionsProvider` seam (ADR-0033).
 
 Built on what platform billing's Phase A already proved and nothing parallel to it: the same
 `CashfreeHttpWire` (or, on the stub, the same stateful `CashfreeFakeWire`), the same `Decimal`-exact

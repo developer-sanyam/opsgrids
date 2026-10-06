@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Owner-run, opt-in smoke test of Cashfree Payments in the **sandbox** (ADR-0029). Settles what the
+"""Owner-run, opt-in smoke test of Cashfree Payments in the **sandbox** (ADR-0032). Settles what the
 Phase A design could only assume about Cashfree's own API — the "Unverified" list of
 `docs/superpowers/specs/2026-10-06-payments-phase-a-design.md`, §9. Read
 `tools/payments_smoke_common.py` first: the rules (opt-in, never CI or production, keys from the

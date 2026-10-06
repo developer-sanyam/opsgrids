@@ -1,5 +1,5 @@
 /**
- * The order's payment card with a Cashfree account (ADR-0030): it dispatches on the session's
+ * The order's payment card with a Cashfree account (ADR-0033): it dispatches on the session's
  * provider (Cashfree's modal, never Razorpay's Checkout), asks the server afterwards, and — while
  * the payment is still pending — asks again every few seconds for about a minute, telling the
  * operator not to take payment again. A hidden tab does not ask at all.

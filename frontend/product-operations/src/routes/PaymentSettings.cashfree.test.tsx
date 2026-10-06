@@ -1,5 +1,5 @@
 /**
- * Payment settings with a choice of provider (ADR-0030): Cashfree's own fields (App ID, Secret Key
+ * Payment settings with a choice of provider (ADR-0033): Cashfree's own fields (App ID, Secret Key
  * as a password, Sandbox or Production — no webhook secret), the provider fixed once connected,
  * a connection check with a state badge, the webhook panel with a copyable URL and Cashfree's own
  * steps, and a plain sentence when the session did not sign in with a one-time code.

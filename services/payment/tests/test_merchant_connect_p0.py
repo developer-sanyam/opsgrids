@@ -1,4 +1,4 @@
-"""Merchant-connect, Rollout P0 (ADR-0029): the fixes that must land **before any second collections
+"""Merchant-connect, Rollout P0 (ADR-0032): the fixes that must land **before any second collections
 provider value is accepted**, with no behaviour change for a Razorpay merchant.
 
 * **Provider and mode are fixed for the life of a `merchant_accounts` row.** `set_merchant_account`
@@ -101,7 +101,7 @@ class TestProviderAndModeAreImmutable:
         async with admin_session.begin():
             from sqlalchemy import text
 
-            # A Cashfree row holds no webhook secret (ADR-0030's CHECK), so the stand-in drops it.
+            # A Cashfree row holds no webhook secret (ADR-0033's CHECK), so the stand-in drops it.
             await admin_session.execute(
                 text(
                     "UPDATE payment.merchant_accounts SET provider = 'cashfree', "
@@ -142,7 +142,7 @@ class TestProviderAndModeAreImmutable:
     async def test_only_the_two_collections_providers_are_accepted(
         self, client: AsyncClient, org_id: uuid.UUID
     ) -> None:
-        """P0 pinned "no second provider value"; P1 (ADR-0030) accepts Cashfree — in Cashfree's
+        """P0 pinned "no second provider value"; P1 (ADR-0033) accepts Cashfree — in Cashfree's
         own shape only (a Razorpay body naming `cashfree` is still a 422) — and nothing else."""
         assert (await _put(client, org_id, provider="cashfree")).status_code == 422
         assert (await _put(client, org_id, provider="stripe")).status_code == 422

@@ -961,6 +961,15 @@ services:
     environment:
       <<: *service-env
       CATALOG_SERVICE_URL: http://catalog:8000
+      # The payment consumer, the dunning sweep and the billing run run inside this API process
+      # (RUN_CONSUMERS_IN_API, ADR-0013's memory-budget erratum), so they need the same settings
+      # `subscription-worker` below carries — without them the run reads its kill switch as off
+      # and its billing and payment calls go to localhost. Keep the two blocks in step.
+      BILLING_SERVICE_URL: http://billing:8000
+      PAYMENT_SERVICE_URL: http://payment:8000
+      # The billing run's kill switch and cutover — see the runbook's "The billing run".
+      BILLING_RUN_ENABLED: ${BILLING_RUN_ENABLED:-false}
+      BILLING_RUN_NOT_BEFORE: ${BILLING_RUN_NOT_BEFORE:-}
     networks:
       - back
 
@@ -1025,7 +1034,7 @@ services:
       - back
 
   # Runs on its in-process stub unless the owner switches a provider's wire on
-  # (payment/app/config.py, ADR-0029): every charge path runs and nothing reaches the network.
+  # (payment/app/config.py, ADR-0032): every charge path runs and nothing reaches the network.
   # **Keys alone change nothing** — PAYMENT_WIRE=live (Razorpay) or CASHFREE_ENV=sandbox|production
   # (Cashfree) is what opens a socket, so credentials may sit in `.env` until the owner decides.
   # The webhook secret must still be a real value — production refuses the dev-only default — so
@@ -1051,6 +1060,12 @@ services:
       PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-razorpay}
       PAYMENT_WIRE: ${PAYMENT_WIRE:-stub}
       PAYMENT_ALLOW_LIVE_KEYS: ${PAYMENT_ALLOW_LIVE_KEYS:-false}
+      # STAGING ONLY: `true` lets Razorpay test keys (PAYMENT_WIRE=live) and CASHFREE_ENV=sandbox
+      # run although every service here says ENVIRONMENT=production — for a box with no real
+      # paying customers. Refused beside PAYMENT_ALLOW_LIVE_KEYS or any live key; `payment` logs a
+      # WARNING at start-up and preflight warns while it is on (RUNBOOK.md, 'Payments: test mode
+      # on a staging box').
+      PAYMENT_ALLOW_TEST_KEYS: ${PAYMENT_ALLOW_TEST_KEYS:-false}
       CASHFREE_ENV: ${CASHFREE_ENV:-stub}
       CASHFREE_APP_ID: ${CASHFREE_APP_ID:-}
       CASHFREE_SECRET_KEY: ${CASHFREE_SECRET_KEY:-}
@@ -1059,13 +1074,13 @@ services:
       # to Razorpay at all (`stub` until turned on), and whether live (`rzp_live_`) keys may be
       # connected. Both default to the safe side.
       COLLECTIONS_WIRE: ${COLLECTIONS_WIRE:-stub}
-      # A tenant's Cashfree account (ADR-0030): `stub` until the owner turns it on, sandbox first.
+      # A tenant's Cashfree account (ADR-0033): `stub` until the owner turns it on, sandbox first.
       COLLECTIONS_CASHFREE_WIRE: ${COLLECTIONS_CASHFREE_WIRE:-stub}
       COLLECTIONS_ALLOW_LIVE_KEYS: ${COLLECTIONS_ALLOW_LIVE_KEYS:-false}
     networks:
       - back
 
-  # Runs the charge consumers, the stuck-charge sweep (D3) and the charge poller (ADR-0029),
+  # Runs the charge consumers, the stuck-charge sweep (D3) and the charge poller (ADR-0032),
   # supervised in one process — app/worker.py. A charge whose process died between the provider
   # call and recording it is resumed only by that sweep (the consumer marks the event processed at
   # claim time), so it must run wherever payment runs; and while the provider webhooks are private

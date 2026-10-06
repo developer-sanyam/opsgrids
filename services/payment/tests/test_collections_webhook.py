@@ -351,7 +351,7 @@ class TestSignature:
         org_id: uuid.UUID,
     ) -> None:
         account_id, opened, order_id = await _open(client, org_id)
-        # An account with an open checkout cannot be disconnected (ADR-0030): cancel it first.
+        # An account with an open checkout cannot be disconnected (ADR-0033): cancel it first.
         cancelled = await client.post(
             f"{internal_base(org_id, order_id)}/charges/{opened['collection']['id']}/cancel",
             headers=operations_token(),

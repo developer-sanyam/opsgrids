@@ -193,7 +193,7 @@ def test_the_deciding_attempt_is_money_first_then_most_recent() -> None:
 
 class TestPayableUntil:
     """How long a closed collection's provider Order may still take a payment — what holds up a
-    disconnect (ADR-0030 §8). Known answers, written down first."""
+    disconnect (ADR-0033 §8). Known answers, written down first."""
 
     CREATED = datetime(2026, 10, 6, 10, 0, tzinfo=UTC)
     TTL = timedelta(hours=24)

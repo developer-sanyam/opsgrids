@@ -59,7 +59,7 @@ function openCheckout(session: OrderCheckoutSessionOut, businessName: string) {
 }
 
 /**
- * The order's payment (ADR-0024 A4, Fulfilment F10, ADR-0030): whether it is paid, every online
+ * The order's payment (ADR-0024 A4, Fulfilment F10, ADR-0033): whether it is paid, every online
  * payment attempt, and — when the order can be paid online — "Collect online payment", which opens
  * the connected provider's own hosted checkout (Razorpay's, or Cashfree's in a modal). This screen
  * never marks an order paid: when the checkout closes it asks the server to check with the

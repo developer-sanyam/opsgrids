@@ -77,7 +77,7 @@ CLIENT_TYPE_NAMES: frozenset[str] = frozenset(
         "EwayClient",
         "ImsClient",
         "PaymentProvider",
-        # payment's platform-checkout and direct-debit seams (app/providers/base.py, ADR-0029): a
+        # payment's platform-checkout and direct-debit seams (app/providers/base.py, ADR-0032): a
         # checkout provider opens a hosted checkout over HTTP, and a direct-debit provider debits a
         # saved mandate. Both are called on a worker thread with no transaction open.
         "CheckoutProvider",
@@ -139,24 +139,6 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "the run's transaction opens, from the trigger payload, and pass the resolved addresses "
         "into the executor. Only steps whose recipient_kind is contact_id reach the call; "
         "address recipients never do."
-    ),
-    ("services/catalog/app/api/console_internal.py", "ensure_bespoke_price"): (
-        "D3, admin-client-pricing slice: calls services.create_version, which has the same "
-        "reachable registry.products() branch #10 (below) names in app/api/admin.py — the "
-        "scanner cannot see that this call site always passes registry=None (a bespoke flat "
-        "price never declares bundled_products), which makes the branch unreachable in "
-        "practice: _validate_bundle raises BusinessRuleProblem rather than dereferencing a None "
-        "registry the one time the feature key is present. No fix needed unless this endpoint "
-        "is ever asked to author a bundle, which its own narrow BespokePriceIn schema cannot "
-        "express."
-    ),
-    ("services/catalog/app/api/admin.py", "create_version"): (
-        "D3 #10: calls services.create_version, which calls registry.products() (an httpx "
-        "request to product-service) inside get_operator_session's request-long transaction. "
-        "Fix: resolve the registry read in its own dependency with no session at all, before "
-        "the tenant session is opened, and pass the already-fetched product map into "
-        "create_version instead of the registry client — there is nothing in the bundle "
-        "validation that needs a transaction open around the read."
     ),
     ("services/document/app/api/routes.py", "upload_asset"): (
         "D3 #12: calls services.create_asset, which calls store.put(...) (an S3 PUT, via "

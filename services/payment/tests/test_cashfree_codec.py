@@ -1,4 +1,4 @@
-"""Cashfree's wire format, pinned with **independent known answers** (ADR-0029): the money
+"""Cashfree's wire format, pinned with **independent known answers** (ADR-0032): the money
 conversion that must never touch a float, the webhook signature, the status maps and the redaction.
 
 Every expected value below was written down (or computed with `openssl`, for the signature) before

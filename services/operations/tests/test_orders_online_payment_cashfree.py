@@ -1,4 +1,4 @@
-"""Online payment for an order through a merchant's **Cashfree** account (ADR-0030), from the
+"""Online payment for an order through a merchant's **Cashfree** account (ADR-0033), from the
 order's side: the payer negotiation, the provider-shaped checkout session, and the phone that goes
 to payment only when the provider needs it — and is never invented, logged or audited here.
 

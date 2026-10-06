@@ -183,7 +183,7 @@ class StuckChargeSweep:
         """The adapter that finishes **this charge**: the one it was created under
         (`charges.provider`), whatever the configured default is now. A Razorpay charge left
         `created` is looked up and resumed through Razorpay while the default is Cashfree — Cashfree
-        cannot find Razorpay's Order, and "creating" it there is a second debit (ADR-0029). The
+        cannot find Razorpay's Order, and "creating" it there is a second debit (ADR-0032). The
         zero-argument `provider_factory` stays the answer when it names that provider, so an adapter
         a test (or a wiring) built keeps its own state."""
         if self._provider_resolver is not None:

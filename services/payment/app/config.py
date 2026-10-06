@@ -10,6 +10,7 @@ from pydantic import SecretStr, model_validator
 from app.providers import cashfree_codec
 from app.providers.wire import MAX_DECLARED_CALL_BUDGET_SECONDS
 from platform_core.config import ServiceSettings, settings_for
+from platform_core.logging import get_logger
 
 #: Razorpay key ids carry their mode in the prefix: `rzp_test_…` / `rzp_live_…`.
 _RAZORPAY_KEY_ID = re.compile(r"^rzp_(test|live)_[A-Za-z0-9]{6,40}$")
@@ -17,6 +18,14 @@ _RAZORPAY_KEY_ID = re.compile(r"^rzp_(test|live)_[A-Za-z0-9]{6,40}$")
 # starts with `TEST` (`cashfree_codec.production_shaped` / `sandbox_shaped`, shared with a
 # merchant's connect form). Third-party-sourced shapes: a mismatch is a safe false-refuse, never a
 # reason to let a key through, and a key that matches neither is judged by the switch alone.
+
+
+def _razorpay_mode(key_id: str | None) -> Literal["test", "live"] | None:
+    """`test` / `live` for a Razorpay-shaped key id, None for anything else (or nothing)."""
+    match = _RAZORPAY_KEY_ID.fullmatch(key_id or "")
+    if match is None:
+        return None
+    return "test" if match.group(1) == "test" else "live"
 
 
 class Settings(ServiceSettings):
@@ -34,7 +43,7 @@ class Settings(ServiceSettings):
     #: suspend loop (ADR-0004 §5) — so the relay draining this outbox is load-bearing.
     db_outbox_role: str | None = "opsgrids_outbox"
 
-    # --- provider (Razorpay and Cashfree, ADR-0029) ---------------------------------------------
+    # --- provider (Razorpay and Cashfree, ADR-0032) ---------------------------------------------
     #: The provider **new** platform charges are raised on. An existing charge, mandate and
     #: webhook keep the provider they were created under for life (`charges.provider`): a Razorpay
     #: charge left `created` is finished through Razorpay while this says Cashfree, because a
@@ -52,6 +61,16 @@ class Settings(ServiceSettings):
     #: all. Off: nothing the environment holds can move real money until the owner says so, the
     #: same switch `COLLECTIONS_ALLOW_LIVE_KEYS` is for tenants.
     payment_allow_live_keys: bool = False
+
+    #: **Staging only.** Whether test credentials (`rzp_test_…` with `PAYMENT_WIRE=live`, and
+    #: `CASHFREE_ENV=sandbox`) may run although `ENVIRONMENT=production`. Off (the default): they
+    #: are refused there, because a public test card would pay a real invoice. On: for a box that
+    #: says `production` but has **no real paying customers** (the owner's staging edge box,
+    #: 2026-10-06) — the provider's checkout runs in test mode, `payment` logs a WARNING at
+    #: start-up (`announce_test_mode`), and every checkout answers `test_mode: true`. It never lets
+    #: real money move: it is refused beside `PAYMENT_ALLOW_LIVE_KEYS`, a live-shaped key or
+    #: `CASHFREE_ENV=production`, so a box runs on test keys or on live money, never both.
+    payment_allow_test_keys: bool = False
 
     #: Razorpay credentials. **Optional**: an unconfigured box passes preflight and runs on the
     #: stub. The key id is public by design (Checkout is opened in the browser with it); the key
@@ -142,7 +161,7 @@ class Settings(ServiceSettings):
     #: `collections_wire_for`). The platform's own provider is switched by `PAYMENT_WIRE`, never
     #: by this. Turning this on is an owner decision, made in the box's `.env`.
     collections_wire: Literal["stub", "razorpay"] = "stub"
-    #: The same switch for a merchant's **Cashfree** account (ADR-0030), its own variable so the
+    #: The same switch for a merchant's **Cashfree** account (ADR-0033), its own variable so the
     #: legacy `COLLECTIONS_WIRE` literal never changes meaning: `stub` (the default) runs a
     #: merchant's Cashfree adapter on the in-process stateful fake — no socket, no money — and
     #: `live` talks to Cashfree over HTTPS with that merchant's own App ID and Secret Key, against
@@ -173,6 +192,18 @@ class Settings(ServiceSettings):
         """The right-to-call lease on one collection: longer than any call it covers, twice over
         plus a minute — the same margin `charge_reclaim_after_seconds` is held to."""
         return int(2 * self.collections_call_timeout_seconds + 60)
+
+    @property
+    def test_mode_providers(self) -> tuple[str, ...]:
+        """The platform providers whose wire is on with **test** credentials: Razorpay on a live
+        wire with a `rzp_test_` key id, Cashfree on `sandbox`. A stub is not test mode (no
+        provider is called at all), and neither is a live key."""
+        found: list[str] = []
+        if self.payment_wire == "live" and _razorpay_mode(self.razorpay_key_id) == "test":
+            found.append("razorpay")
+        if self.cashfree_env == "sandbox":
+            found.append("cashfree")
+        return tuple(found)
 
     def collections_wire_for(self, provider: str) -> Literal["stub", "live"]:
         """Whether `provider`'s collections wire is live. Per provider, so a second provider can
@@ -205,19 +236,46 @@ class Settings(ServiceSettings):
         return self
 
     @model_validator(mode="after")
+    def _test_keys_never_beside_live_money(self) -> Settings:
+        """`PAYMENT_ALLOW_TEST_KEYS` is a staging switch, so it is refused beside anything that can
+        move real money: `PAYMENT_ALLOW_LIVE_KEYS`, a live-shaped key on either provider (on any
+        switch, so a live key cannot sit in `.env` waiting for the wire), or
+        `CASHFREE_ENV=production`. Runs before the per-provider rules so the refusal names this
+        flag. Off, it changes nothing."""
+        if not self.payment_allow_test_keys:
+            return self
+        if self.payment_allow_live_keys:
+            raise ValueError(
+                "PAYMENT_ALLOW_TEST_KEYS and PAYMENT_ALLOW_LIVE_KEYS cannot both be true: a box "
+                "runs on test keys or on live money, never both"
+            )
+        if _razorpay_mode(self.razorpay_key_id) == "live":
+            raise ValueError(
+                "PAYMENT_ALLOW_TEST_KEYS=true with a live RAZORPAY_KEY_ID (rzp_live_…) is "
+                "refused: test mode never runs beside a key that moves real money"
+            )
+        secret = self.cashfree_secret_key.get_secret_value() if self.cashfree_secret_key else ""
+        if secret.startswith(_CASHFREE_SECRET_PROD_PREFIX) or self.cashfree_env == "production":
+            raise ValueError(
+                "PAYMENT_ALLOW_TEST_KEYS=true with a production CASHFREE_SECRET_KEY or "
+                "CASHFREE_ENV=production is refused: test mode never runs beside live money"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _razorpay_switch_and_keys(self) -> Settings:
         """`PAYMENT_WIRE=live` needs a real pair; a half-set pair is refused whatever the wire; a
         live-shaped key is refused unless allowed; test keys never reach a production box on a
-        live wire (a customer could pay a real invoice with a public test card). Refused at
-        start-up, with the variable named and never a value."""
+        live wire (a customer could pay a real invoice with a public test card) unless the box
+        says it has no paying customers (`PAYMENT_ALLOW_TEST_KEYS`). Refused at start-up, with the
+        variable named and never a value."""
         key_id = self.razorpay_key_id
         secret = self.razorpay_key_secret
         if bool(key_id) != bool(secret and secret.get_secret_value()):
             raise ValueError("RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET must be set together")
         mode: str | None = None
         if key_id:
-            match = _RAZORPAY_KEY_ID.fullmatch(key_id)
-            mode = match.group(1) if match else None
+            mode = _razorpay_mode(key_id)
             if mode == "live" and not self.payment_allow_live_keys:
                 raise ValueError(
                     "RAZORPAY_KEY_ID is a live key (rzp_live_…) and PAYMENT_ALLOW_LIVE_KEYS is "
@@ -230,10 +288,15 @@ class Settings(ServiceSettings):
                 raise ValueError(
                     "RAZORPAY_KEY_ID must be a Razorpay key id (rzp_test_… or rzp_live_…)"
                 )
-            if mode == "test" and self.environment == "production":
+            if (
+                mode == "test"
+                and self.environment == "production"
+                and not self.payment_allow_test_keys
+            ):
                 raise ValueError(
                     "PAYMENT_WIRE=live with test keys (rzp_test_…) is refused when "
-                    "ENVIRONMENT=production: real invoices would be payable with a test card"
+                    "ENVIRONMENT=production: real invoices would be payable with a test card "
+                    "(a staging box with no paying customers sets PAYMENT_ALLOW_TEST_KEYS=true)"
                 )
         return self
 
@@ -241,9 +304,11 @@ class Settings(ServiceSettings):
     def _cashfree_switch_and_keys(self) -> Settings:
         """The same rules for Cashfree. `sandbox` needs both credentials and never reaches a
         production box (sandbox accepts public test cards and VPAs: real invoices payable for
-        free); `production` needs both, needs `PAYMENT_ALLOW_LIVE_KEYS`, and refuses test-shaped
-        keys; production-shaped keys are refused unless allowed, on any switch; and
-        `PAYMENT_PROVIDER=cashfree` on a production box needs the real thing, not the stub."""
+        free) unless it says it has no paying customers (`PAYMENT_ALLOW_TEST_KEYS`); `production`
+        needs both, needs `PAYMENT_ALLOW_LIVE_KEYS`, and refuses test-shaped keys;
+        production-shaped keys are refused unless allowed, on any switch; and
+        `PAYMENT_PROVIDER=cashfree` on a production box needs the real thing (or, under
+        `PAYMENT_ALLOW_TEST_KEYS`, the sandbox), never the stub."""
         app_id = self.cashfree_app_id.get_secret_value() if self.cashfree_app_id else ""
         secret = self.cashfree_secret_key.get_secret_value() if self.cashfree_secret_key else ""
         if bool(app_id) != bool(secret):
@@ -260,10 +325,11 @@ class Settings(ServiceSettings):
                 f"CASHFREE_ENV={self.cashfree_env} needs CASHFREE_APP_ID and CASHFREE_SECRET_KEY"
             )
         if self.cashfree_env == "sandbox":
-            if self.environment == "production":
+            if self.environment == "production" and not self.payment_allow_test_keys:
                 raise ValueError(
                     "CASHFREE_ENV=sandbox is refused when ENVIRONMENT=production: sandbox "
-                    "accepts public test cards, so real invoices would be payable for free"
+                    "accepts public test cards, so real invoices would be payable for free (a "
+                    "staging box with no paying customers sets PAYMENT_ALLOW_TEST_KEYS=true)"
                 )
             if prod_shaped:
                 raise ValueError("CASHFREE_ENV=sandbox with production-shaped keys is refused")
@@ -272,14 +338,17 @@ class Settings(ServiceSettings):
                 raise ValueError("CASHFREE_ENV=production needs PAYMENT_ALLOW_LIVE_KEYS=true")
             if test_shaped:
                 raise ValueError("CASHFREE_ENV=production with test-shaped keys is refused")
+        staging_sandbox = self.cashfree_env == "sandbox" and self.payment_allow_test_keys
         if (
             self.payment_provider == "cashfree"
             and self.environment == "production"
             and self.cashfree_env != "production"
+            and not staging_sandbox
         ):
             raise ValueError(
                 "PAYMENT_PROVIDER=cashfree on a production box needs CASHFREE_ENV=production "
-                "(the stub and the sandbox cannot collect real money)"
+                "(the stub and the sandbox cannot collect real money; a staging box with no "
+                "paying customers may use CASHFREE_ENV=sandbox with PAYMENT_ALLOW_TEST_KEYS=true)"
             )
         return self
 
@@ -299,3 +368,25 @@ class Settings(ServiceSettings):
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]
+
+
+def announce_test_mode(cfg: Settings) -> bool:
+    """One WARNING at start-up when `PAYMENT_ALLOW_TEST_KEYS` is on, so a box running payments in
+    test mode says so in its own log, every time it starts. Names the mode, the environment and
+    which providers run on test credentials — **never a key or any part of one**. Returns whether
+    it warned; silent (and False) when the flag is off, whatever keys are set."""
+    if not cfg.payment_allow_test_keys:
+        return False
+    get_logger("payment.config").warning(
+        "payment.test_mode.enabled",
+        mode="test",
+        environment=cfg.environment,
+        default_provider=cfg.payment_provider,
+        test_mode_providers=list(cfg.test_mode_providers),
+        detail=(
+            "PAYMENT_ALLOW_TEST_KEYS=true: payments run in TEST MODE. Provider test cards and "
+            "sandbox VPAs pay invoices and no real money moves. For a box with no real paying "
+            "customers only (RUNBOOK.md, 'Payments: test mode on a staging box')."
+        ),
+    )
+    return True

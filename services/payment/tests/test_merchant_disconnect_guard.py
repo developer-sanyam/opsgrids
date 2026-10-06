@@ -1,4 +1,4 @@
-"""Disconnecting a merchant account (ADR-0030 §8), through the real routes: what the provider may
+"""Disconnecting a merchant account (ADR-0033 §8), through the real routes: what the provider may
 still do for the account blocks it — an open payment, a cancelled or expired one whose provider
 Order can still be paid, a refund still pending — and `force` disconnects anyway, audited with
 what was outstanding. And a checkout made on the stub wire never wedges an account: it can be

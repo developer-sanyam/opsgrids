@@ -106,6 +106,20 @@ async def _publish(
         PlanCreateIn(product_key=product_key, code=code, name=code.title()),
         request=None,
     )
+    # These ladders live under throwaway product keys; register them as the bundle and its
+    # members so authoring — and publishing, which re-checks the members — validates against a
+    # registry that knows them. A sheet that declares no members is registered as a plain
+    # product: a registered *bundle* must name its members (ADR-0030 §3).
+    members = next(
+        (list(f.value) for f in features or [] if f.feature_key == "bundled_products"), None
+    )
+    registry = (
+        FakeRegistry.default().with_bundle(product_key, members)
+        if members is not None
+        else FakeRegistry(
+            [*FakeRegistry.default()._entries.values(), domain.RegisteredProduct(product_key)]
+        )
+    )
     version = await services.create_version(
         session,
         op,
@@ -120,17 +134,11 @@ async def _publish(
             seat_classes=seat_classes or [],
         ),
         request=None,
-        # These ladders live under throwaway product keys; register them as the bundle and its
-        # members so authoring validates against a registry that knows them.
-        registry=FakeRegistry.default().with_bundle(
-            product_key,
-            next(
-                (list(f.value) for f in features or [] if f.feature_key == "bundled_products"),
-                [],
-            ),
-        ),
+        products=registry.snapshot(),
     )
-    published = await services.publish_version(session, op, version, request=None)
+    published = await services.publish_version(
+        session, op, version, request=None, products=registry.snapshot()
+    )
     fresh = await selectors.get_version(session, published.id)
     assert fresh is not None
     return fresh

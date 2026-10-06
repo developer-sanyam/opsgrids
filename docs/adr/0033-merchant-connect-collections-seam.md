@@ -1,6 +1,6 @@
-# ADR-0030 — Merchant connect: a standalone collections seam, and Cashfree as a second provider
+# ADR-0033 — Merchant connect: a standalone collections seam, and Cashfree as a second provider
 
-**Status:** Proposed — built on `feat/merchant-cashfree` (stacked on `feat/payments-phase-a`), not deployed ·
+**Status:** Proposed — built on `feat/merchant-cashfree` (on top of payments Phase A, now on `main`), not deployed ·
 **Date:** 2026-10-06 · **Service:** `payment` (with `operations`, `app-gateway`, the Operations app) ·
 **Design:** [merchant connect: Cashfree](../superpowers/specs/2026-10-06-merchant-cashfree-design.md)
 
@@ -10,7 +10,9 @@ merchant account, built from that account's sealed keys), [ADR-0019](0019-statut
 one-time-code requirements) and [ADR-0002](0002-row-level-security.md) (the webhook's narrow pre-tenant lookup).
 It changes a seam [ADR-0004](0004-commercial-model.md) §6 drew for platform billing: tenant collections no
 longer borrow it. Platform billing's own provider work (the shared Cashfree wire, codec and fake this reuses) is
-recorded by the payments Phase A decision, which this does not change.
+recorded by the payments Phase A decision ([ADR-0032](0032-payment-provider-seam-and-checkout.md)), which this
+does not change. This record was drafted as 0030 and renumbered to 0033 when it was brought up to date with
+`main`, where 0030–0032 had been taken.
 
 ## Context
 

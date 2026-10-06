@@ -9,23 +9,28 @@ table cannot carry, so it is defended by a negative-authz test.
 
 from __future__ import annotations
 
+import base64
 import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from app.models import (
     PLAN_ACTIVE,
+    PLATFORM_ORG,
     PRICE_FLAT,
-    VERSION_DRAFT,
     VERSION_PUBLISHED,
+    Feature,
+    IdempotencyKey,
     Plan,
     PlanVersion,
     Price,
+    SeatClass,
 )
+from platform_core.errors import ValidationProblem
 
 
 def _audience_ok(org_id: uuid.UUID) -> Any:
@@ -42,10 +47,13 @@ def _audience_ok(org_id: uuid.UUID) -> Any:
 
 
 def _with_children(stmt: Select[Any]) -> Select[Any]:
+    # `plan` too: `PlanVersionOut` reads the plan's name, product and state off it, and a lazy
+    # load inside an async session would raise rather than quietly issue a query.
     return stmt.options(
         selectinload(PlanVersion.prices),
         selectinload(PlanVersion.features),
         selectinload(PlanVersion.seat_classes),
+        selectinload(PlanVersion.plan),
     )
 
 
@@ -109,6 +117,11 @@ async def offerable_versions(
     when a higher-numbered published version of the same plan has the same audience, cadence and
     currency — those are the things a customer cannot cross (one currency and one cadence per
     subscription), so a monthly version is not superseded by a yearly one.
+
+    A version withdrawn on the Plans page (`published -> grandfathered`, ADR-0030) is no longer
+    published, so it is never offered — and, for the same reason, it supersedes nothing: withdraw
+    the newest version of a plan and the published one before it is the current one again. Withdraw
+    that one too if it must stop selling.
     """
     offered: list[tuple[Plan, PlanVersion]] = []
     for plan, versions in await visible_plans(session, product_key=product_key, org_id=org_id):
@@ -326,24 +339,43 @@ async def find_bespoke_version(
     amount_minor: int,
     billing_interval: str,
 ) -> PlanVersion | None:
-    """A version of this plan already restricted to this organization, at exactly this flat
-    price — draft or published. This is what makes authoring a bespoke price idempotent by its
-    own content (docs/io-outside-transactions.md): a retried request, or a crash between the
-    catalog call and console's own record of it, finds the version it already made instead of
-    minting a second one.
+    """A **published** version of this plan, restricted to this organization, whose sheet is the
+    exact shape console authors: one price, `flat`, at this amount and currency, and no seat
+    classes. This is what makes authoring a bespoke price idempotent by its own content
+    (docs/io-outside-transactions.md): a retried request, or a crash between the catalog call and
+    console's own record of it, finds the version it already made instead of minting a second.
+
+    **Published only, and only that shape.** Console drafts and publishes in one transaction, so
+    it never leaves a draft behind; a matching *draft* can only be someone else's, such as an
+    owner's negotiated sheet under review on the Plans page. Reusing it would let the console
+    path, which `billing_ops` may call, publish an owner's draft without the owner-only gate, the
+    reason or the review (ADR-0030 §1). For the same reason a published version with any other
+    component (a per-seat price, a usage rate, a seat class) is not "the same price" and is not
+    returned: the caller asked for one flat amount and nothing else.
     """
+    any_price = aliased(Price)
     version_id = (
         await session.execute(
             select(PlanVersion.id)
-            .join(Price, Price.plan_version_id == PlanVersion.id)
             .where(
                 PlanVersion.plan_id == plan_id,
                 PlanVersion.restricted_to_org_id == organization_id,
                 PlanVersion.currency == currency,
                 PlanVersion.billing_interval == billing_interval,
-                PlanVersion.state.in_((VERSION_DRAFT, VERSION_PUBLISHED)),
-                Price.kind == PRICE_FLAT,
-                Price.amount_minor == amount_minor,
+                PlanVersion.state == VERSION_PUBLISHED,
+                select(Price.id)
+                .where(
+                    Price.plan_version_id == PlanVersion.id,
+                    Price.kind == PRICE_FLAT,
+                    Price.amount_minor == amount_minor,
+                    Price.currency == currency,
+                )
+                .exists(),
+                select(func.count(any_price.id))
+                .where(any_price.plan_version_id == PlanVersion.id)
+                .scalar_subquery()
+                == 1,
+                ~select(SeatClass.id).where(SeatClass.plan_version_id == PlanVersion.id).exists(),
             )
             .order_by(PlanVersion.version_no.desc())
             .limit(1)
@@ -352,17 +384,272 @@ async def find_bespoke_version(
     return await get_version(session, version_id) if version_id is not None else None
 
 
+# --------------------------------------------------------------------- operator Plans & prices page
+#
+# Global, un-policied definitional data read by staff (owner and billing_ops), so there is no
+# `ctx.apply()` here: the audience filter below is a *view* choice, not isolation. The gate is the
+# route's operator-role dependency, tested per route.
+
+#: Unit separator — never legal in a product key, a plan code, a uuid or a number.
+_CURSOR_SEP = "\x1f"
+
+
+def encode_cursor(*parts: str) -> str:
+    """The ordering columns of the last row on a page, as one opaque token."""
+    return base64.urlsafe_b64encode(_CURSOR_SEP.join(parts).encode("utf-8")).decode("ascii")
+
+
+def decode_cursor(cursor: str, *, expected_parts: int) -> list[str]:
+    """A cursor comes back from a client, so a malformed one is a 422, not a 500."""
+    try:
+        parts = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8").split(_CURSOR_SEP)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValidationProblem("Invalid cursor") from exc
+    if len(parts) != expected_parts:
+        raise ValidationProblem("Invalid cursor")
+    return parts
+
+
+def _public_version_exists() -> Any:
+    return (
+        select(PlanVersion.id)
+        .where(PlanVersion.plan_id == Plan.id, PlanVersion.restricted_to_org_id.is_(None))
+        .exists()
+    )
+
+
+def _any_version_exists() -> Any:
+    return select(PlanVersion.id).where(PlanVersion.plan_id == Plan.id).exists()
+
+
+def _restricted_version_exists() -> Any:
+    return (
+        select(PlanVersion.id)
+        .where(PlanVersion.plan_id == Plan.id, PlanVersion.restricted_to_org_id.is_not(None))
+        .exists()
+    )
+
+
+async def list_plans_page(
+    session: AsyncSession,
+    *,
+    product_key: str | None,
+    audience: str,
+    state: str | None,
+    cursor: str | None,
+    limit: int,
+) -> tuple[list[Plan], str | None]:
+    """One keyset page of plans, ordered `product_key, sort_order, code, id`.
+
+    `audience` chooses which plans appear: `public` (the default) is a plan with a public version
+    or with no version yet — a plan being authored is public until a bespoke price says
+    otherwise; `restricted` is a plan with at least one audience-of-one version; `all` is every
+    plan. Bespoke versions multiply on the one public flat plan per product, so the default view
+    is the bounded one.
+    """
+    stmt = select(Plan)
+    if product_key is not None:
+        stmt = stmt.where(Plan.product_key == product_key)
+    if state is not None:
+        stmt = stmt.where(Plan.state == state)
+    if audience == "public":
+        stmt = stmt.where(or_(_public_version_exists(), ~_any_version_exists()))
+    elif audience == "restricted":
+        stmt = stmt.where(_restricted_version_exists())
+    if cursor is not None:
+        key, sort_order, code, plan_id = decode_cursor(cursor, expected_parts=4)
+        try:
+            after = (key, int(sort_order), code, uuid.UUID(plan_id))
+        except ValueError as exc:
+            raise ValidationProblem("Invalid cursor") from exc
+        stmt = stmt.where(tuple_(Plan.product_key, Plan.sort_order, Plan.code, Plan.id) > after)
+    stmt = stmt.order_by(Plan.product_key, Plan.sort_order, Plan.code, Plan.id).limit(limit + 1)
+    rows = list((await session.execute(stmt)).scalars().all())
+    page = rows[:limit]
+    next_cursor = None
+    if len(rows) > limit and page:
+        last = page[-1]
+        next_cursor = encode_cursor(last.product_key, str(last.sort_order), last.code, str(last.id))
+    return page, next_cursor
+
+
+async def version_counts(
+    session: AsyncSession, plan_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, dict[str, int]]:
+    """Per plan: public versions by state, and every audience-of-one version as `bespoke`."""
+    if not plan_ids:
+        return {}
+    is_public = PlanVersion.restricted_to_org_id.is_(None)
+    rows = (
+        await session.execute(
+            select(PlanVersion.plan_id, PlanVersion.state, is_public, func.count())
+            .where(PlanVersion.plan_id.in_(plan_ids))
+            .group_by(PlanVersion.plan_id, PlanVersion.state, is_public)
+        )
+    ).all()
+    counts: dict[uuid.UUID, dict[str, int]] = {pid: {} for pid in plan_ids}
+    for plan_id, state, public, n in rows:
+        bucket = counts[plan_id]
+        key = state if public else "bespoke"
+        bucket[key] = bucket.get(key, 0) + int(n)
+    return counts
+
+
+async def latest_version_numbers(
+    session: AsyncSession, plan_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    if not plan_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(PlanVersion.plan_id, func.max(PlanVersion.version_no))
+            .where(PlanVersion.plan_id.in_(plan_ids))
+            .group_by(PlanVersion.plan_id)
+        )
+    ).all()
+    return {plan_id: int(n) for plan_id, n in rows}
+
+
+async def current_public_versions(
+    session: AsyncSession, plan_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, PlanVersion]:
+    """Each plan's newest published **public** version, with its sheet — what it sells today."""
+    if not plan_ids:
+        return {}
+    newest = (
+        select(PlanVersion.id)
+        .where(
+            PlanVersion.plan_id.in_(plan_ids),
+            PlanVersion.state == VERSION_PUBLISHED,
+            PlanVersion.restricted_to_org_id.is_(None),
+        )
+        .order_by(PlanVersion.plan_id, PlanVersion.version_no.desc())
+        .distinct(PlanVersion.plan_id)
+    )
+    ids = list((await session.execute(newest)).scalars().all())
+    if not ids:
+        return {}
+    versions = (
+        (await session.execute(_with_children(select(PlanVersion).where(PlanVersion.id.in_(ids)))))
+        .scalars()
+        .all()
+    )
+    return {v.plan_id: v for v in versions}
+
+
+async def version_summaries_page(
+    session: AsyncSession,
+    plan_id: uuid.UUID,
+    *,
+    audience: str,
+    cursor: str | None,
+    limit: int,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """One page of a plan's versions **without** their sheets, newest first, with how many prices
+    and features each carries — the plan detail loads a version's sheet only when it is opened."""
+    price_count = (
+        select(func.count(Price.id))
+        .where(Price.plan_version_id == PlanVersion.id)
+        .correlate(PlanVersion)
+        .scalar_subquery()
+    )
+    feature_count = (
+        select(func.count(Feature.id))
+        .where(Feature.plan_version_id == PlanVersion.id)
+        .correlate(PlanVersion)
+        .scalar_subquery()
+    )
+    stmt = select(PlanVersion, price_count, feature_count).where(PlanVersion.plan_id == plan_id)
+    if audience == "public":
+        stmt = stmt.where(PlanVersion.restricted_to_org_id.is_(None))
+    elif audience == "restricted":
+        stmt = stmt.where(PlanVersion.restricted_to_org_id.is_not(None))
+    if cursor is not None:
+        (raw,) = decode_cursor(cursor, expected_parts=1)
+        try:
+            before = int(raw)
+        except ValueError as exc:
+            raise ValidationProblem("Invalid cursor") from exc
+        stmt = stmt.where(PlanVersion.version_no < before)
+    stmt = stmt.order_by(PlanVersion.version_no.desc()).limit(limit + 1)
+    rows = (await session.execute(stmt)).all()
+    page = rows[:limit]
+    items = [
+        {
+            "id": v.id,
+            "plan_id": v.plan_id,
+            "version_no": v.version_no,
+            "state": v.state,
+            "billing_interval": v.billing_interval,
+            "currency": v.currency,
+            "restricted_to_org_id": v.restricted_to_org_id,
+            "published_at": v.published_at,
+            "created_at": v.created_at,
+            "price_count": int(prices),
+            "feature_count": int(features),
+        }
+        for v, prices, features in page
+    ]
+    next_cursor = encode_cursor(str(page[-1][0].version_no)) if len(rows) > limit and page else None
+    return items, next_cursor
+
+
+async def get_version_for_update(
+    session: AsyncSession, version_id: uuid.UUID
+) -> PlanVersion | None:
+    """One version, its row locked for the rest of the transaction, with its sheet loaded.
+
+    Every state-changing write (publish, withdraw, delete) reads through this, so two operators
+    acting on the same version serialize on the row and the second sees the first's outcome —
+    a clean business-rule refusal rather than a trigger error from a stale read.
+    """
+    # `populate_existing`: an earlier read in this transaction may have the row in the identity
+    # map already, and the whole point of taking the lock is to judge the state it now holds.
+    stmt = (
+        _with_children(select(PlanVersion).where(PlanVersion.id == version_id))
+        .with_for_update(of=PlanVersion)
+        .execution_options(populate_existing=True)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_plan_for_update(session: AsyncSession, plan_id: uuid.UUID) -> Plan | None:
+    """One plan, its row locked — retire and reactivate judge its state under the lock."""
+    return await session.get(Plan, plan_id, with_for_update=True, populate_existing=True)
+
+
+async def get_idempotency_claim(session: AsyncSession, *, key: str) -> IdempotencyKey | None:
+    """The committed claim on this key, read after an `ON CONFLICT DO NOTHING` found it taken."""
+    return (
+        await session.execute(
+            select(IdempotencyKey).where(
+                IdempotencyKey.organization_id == PLATFORM_ORG, IdempotencyKey.key == key
+            )
+        )
+    ).scalar_one_or_none()
+
+
 __all__ = [
     "all_public_flat_plans",
     "clone_source",
+    "current_public_versions",
+    "decode_cursor",
+    "encode_cursor",
     "find_bespoke_version",
+    "get_idempotency_claim",
     "get_plan",
+    "get_plan_for_update",
     "get_plan_versions",
     "get_public_flat_plan",
     "get_version",
+    "get_version_for_update",
     "get_visible_plan",
     "latest_version_no",
+    "latest_version_numbers",
+    "list_plans_page",
     "offerable_versions",
     "product_has_any_plan",
+    "version_counts",
+    "version_summaries_page",
     "visible_plans",
 ]

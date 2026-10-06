@@ -1,4 +1,4 @@
-"""The payment provider switches and keys, as the box receives them (ADR-0029).
+"""The payment provider switches and keys, as the box receives them (ADR-0032).
 
 Four promises, each a way this goes wrong on a production VM that nobody sees until deploy:
 
@@ -31,12 +31,14 @@ ENV_EXAMPLE = EDGE_DIR / ".env.example"
 PREFLIGHT = EDGE_DIR / "preflight.sh"
 LIB = EDGE_DIR / "lib/payment-switches.sh"
 MATRIX = REPO_ROOT / "docs/deploy/ENV_SOURCE_MATRIX.md"
+RUNBOOK = EDGE_DIR / "RUNBOOK.md"
 
 SECRET_KEYS = ("RAZORPAY_KEY_SECRET", "CASHFREE_SECRET_KEY", "CASHFREE_APP_ID")
 SWITCHES = {
     "PAYMENT_PROVIDER": "${PAYMENT_PROVIDER:-razorpay}",
     "PAYMENT_WIRE": "${PAYMENT_WIRE:-stub}",
     "PAYMENT_ALLOW_LIVE_KEYS": "${PAYMENT_ALLOW_LIVE_KEYS:-false}",
+    "PAYMENT_ALLOW_TEST_KEYS": "${PAYMENT_ALLOW_TEST_KEYS:-false}",
     "CASHFREE_ENV": "${CASHFREE_ENV:-stub}",
     "CASHFREE_APP_ID": "${CASHFREE_APP_ID:-}",
     "CASHFREE_SECRET_KEY": "${CASHFREE_SECRET_KEY:-}",
@@ -147,6 +149,7 @@ class TestPreflightIsWired:
             "PAYMENT_PROVIDER",
             "PAYMENT_WIRE",
             "PAYMENT_ALLOW_LIVE_KEYS",
+            "PAYMENT_ALLOW_TEST_KEYS",
             "CASHFREE_ENV",
             "CASHFREE_APP_ID",
             "CASHFREE_SECRET_KEY",
@@ -310,6 +313,129 @@ class TestThePreflightRules:
             assert value not in text
 
 
+#: The staging box's test-mode lines (RUNBOOK.md, 'Payments: test mode on a staging box').
+STAGING_TEST_MODE = {
+    "RAZORPAY_KEY_ID": RZP_TEST,
+    "RAZORPAY_KEY_SECRET": SECRET,
+    "PAYMENT_WIRE": "live",
+    "CASHFREE_APP_ID": CF_TEST_APP,
+    "CASHFREE_SECRET_KEY": CF_TEST_SECRET,
+    "CASHFREE_ENV": "sandbox",
+    "PAYMENT_ALLOW_TEST_KEYS": "true",
+}
+
+
+class TestTheStagingTestKeysOverride:
+    """`PAYMENT_ALLOW_TEST_KEYS` (2026-10-06): preflight mirrors the service — off, nothing changes;
+    on, test keys and the sandbox pass on this production-labelled box; beside live money,
+    refused."""
+
+    @pytest.mark.parametrize("provider", ["razorpay", "cashfree"])
+    def test_the_runbooks_staging_lines_pass_for_either_default_provider(
+        self, provider: str
+    ) -> None:
+        assert _problems(**STAGING_TEST_MODE, PAYMENT_PROVIDER=provider) == []
+
+    @pytest.mark.parametrize("flag", ["", "false", "False", "0", "no", "off"])
+    def test_off_the_test_keys_are_refused_exactly_as_before(self, flag: str) -> None:
+        problems = _problems(**{**STAGING_TEST_MODE, "PAYMENT_ALLOW_TEST_KEYS": flag})
+        assert any("test keys" in p and "production box" in p for p in problems), problems
+        assert any("sandbox is refused on a production box" in p for p in problems), problems
+
+    @pytest.mark.parametrize("flag", ["true", "True", "1", "yes", "on"])
+    def test_on_is_read_the_way_pydantic_reads_a_boolean(self, flag: str) -> None:
+        assert _problems(**{**STAGING_TEST_MODE, "PAYMENT_ALLOW_TEST_KEYS": flag}) == []
+
+    def test_a_value_that_is_not_a_boolean_is_refused_by_name(self) -> None:
+        problems = _problems(PAYMENT_ALLOW_TEST_KEYS="maybe")
+        assert problems == ["PAYMENT_ALLOW_TEST_KEYS must be true or false"]
+
+    def test_the_flag_without_keys_is_harmless(self) -> None:
+        assert _problems(PAYMENT_ALLOW_TEST_KEYS="true") == []
+
+    @pytest.mark.parametrize(
+        "live",
+        [
+            pytest.param({"PAYMENT_ALLOW_LIVE_KEYS": "true"}, id="both-flags"),
+            pytest.param({"PAYMENT_ALLOW_LIVE_KEYS": "True"}, id="both-flags-as-pydantic-reads"),
+            pytest.param({"RAZORPAY_KEY_ID": RZP_LIVE, "RAZORPAY_KEY_SECRET": SECRET}, id="rzp"),
+            pytest.param(
+                {"CASHFREE_APP_ID": CF_PROD_APP, "CASHFREE_SECRET_KEY": CF_PROD_SECRET}, id="cf"
+            ),
+            pytest.param(
+                {
+                    "CASHFREE_ENV": "production",
+                    "PAYMENT_ALLOW_LIVE_KEYS": "true",
+                    "CASHFREE_APP_ID": CF_PROD_APP,
+                    "CASHFREE_SECRET_KEY": CF_PROD_SECRET,
+                },
+                id="cf-production",
+            ),
+        ],
+    )
+    def test_the_flag_beside_live_money_is_refused(self, live: dict[str, str]) -> None:
+        problems = _problems(PAYMENT_ALLOW_TEST_KEYS="true", **live)
+        assert any(p.startswith("PAYMENT_ALLOW_TEST_KEYS") for p in problems), problems
+
+    def test_the_flag_relaxes_nothing_else(self) -> None:
+        flag = {"PAYMENT_ALLOW_TEST_KEYS": "true"}
+        assert any(
+            "PAYMENT_PROVIDER=cashfree" in p
+            for p in _problems(**flag, PAYMENT_PROVIDER="cashfree", CASHFREE_ENV="stub")
+        )
+        assert any("must be set together" in p for p in _problems(**flag, RAZORPAY_KEY_ID=RZP_TEST))
+        assert any("PAYMENT_WIRE=live needs" in p for p in _problems(**flag, PAYMENT_WIRE="live"))
+        assert any("needs CASHFREE_APP_ID" in p for p in _problems(**flag, CASHFREE_ENV="sandbox"))
+
+    def test_no_problem_ever_contains_a_value(self) -> None:
+        problems = _problems(
+            **STAGING_TEST_MODE,
+            PAYMENT_ALLOW_LIVE_KEYS="true",
+            PAYMENT_PROVIDER="cashfree",
+        )
+        assert problems
+        text = "\n".join(problems)
+        for value in (SECRET, RZP_TEST, CF_TEST_APP, CF_TEST_SECRET):
+            assert value not in text
+
+
+def _test_mode_warning_block() -> str:
+    text = PREFLIGHT.read_text()
+    block = text[text.index("if payment_test_keys_allowed; then") :]
+    return block[: block.index("\nfi\n") + 4]
+
+
+def _preflight_warning(**env: str) -> subprocess.CompletedProcess[str]:
+    """Preflight's test-mode block, run as preflight runs it (`set -euo pipefail`, the library
+    sourced), with only `env` set."""
+    script = f'set -euo pipefail\nsource "{LIB}"\n{_test_mode_warning_block()}'
+    clean = {k: v for k, v in os.environ.items() if k not in ALL_KEYS}
+    return subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, env={**clean, **env}
+    )
+
+
+class TestPreflightWarnsLoudlyInTestMode:
+    def test_on_it_warns_loudly_and_never_fails(self) -> None:
+        done = _preflight_warning(**STAGING_TEST_MODE)
+        assert done.returncode == 0, done.stderr
+        assert "warn" in done.stderr and "TEST MODE" in done.stderr
+        assert "PAYMENT_ALLOW_TEST_KEYS is ON" in done.stderr and "FAIL" not in done.stderr
+        assert "Payments: test mode on a staging box" in done.stderr
+        for value in (SECRET, RZP_TEST, CF_TEST_APP, CF_TEST_SECRET):
+            assert value not in done.stderr + done.stdout
+
+    @pytest.mark.parametrize("flag", [None, "", "false", "0"])
+    def test_off_or_unset_it_says_nothing(self, flag: str | None) -> None:
+        env = {} if flag is None else {"PAYMENT_ALLOW_TEST_KEYS": flag}
+        done = _preflight_warning(**env)
+        assert done.returncode == 0 and done.stderr == "" and done.stdout == ""
+
+    def test_the_warning_is_wired_after_the_rules(self) -> None:
+        text = PREFLIGHT.read_text()
+        assert text.index("payment_switch_problems)") < text.index("if payment_test_keys_allowed")
+
+
 class TestTheMatrixDocumentsEveryKey:
     @pytest.mark.parametrize("key", [*SWITCHES, "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"])
     def test_the_source_matrix_has_a_row_and_no_key_is_called_inert(self, key: str) -> None:
@@ -323,3 +449,44 @@ class TestTheMatrixDocumentsEveryKey:
                 "NOT USED FOR ANY CALL",
             ):
                 assert stale not in row, (key, stale)
+
+
+def _runbook_section(title: str) -> str:
+    text = RUNBOOK.read_text()
+    body = text.split(f"### {title}\n", 1)[1]
+    return body.split("\n### ", 1)[0]
+
+
+class TestTheRunbookSaysExactlyWhatToSet:
+    """The owner sets test mode by hand on the box, from this section alone."""
+
+    SECTION = "Payments: test mode on a staging box"
+
+    def test_the_turn_on_lines_are_exactly_the_staging_set(self) -> None:
+        section = _runbook_section(self.SECTION)
+        turn_on = section.split("**Turning it on.**", 1)[1].split("**Turning it off**", 1)[0]
+        block = turn_on.split("```bash\n", 1)[1].split("```", 1)[0]
+        names = {line.split("=", 1)[0] for line in block.splitlines() if "=" in line}
+        assert names == {*STAGING_TEST_MODE, "PAYMENT_PROVIDER"}
+        for exact in (
+            "PAYMENT_ALLOW_TEST_KEYS=true",
+            "PAYMENT_WIRE=live",
+            "CASHFREE_ENV=sandbox",
+        ):
+            assert exact in block.splitlines(), exact
+
+    def test_it_says_how_to_turn_it_off_and_never_holds_a_key(self) -> None:
+        section = _runbook_section(self.SECTION)
+        turn_off = section.split("**Turning it off**", 1)[1]
+        for line in ("PAYMENT_WIRE=stub", "CASHFREE_ENV=stub", "PAYMENT_ALLOW_TEST_KEYS"):
+            assert line in turn_off, line
+        assert "PAYMENT_ALLOW_LIVE_KEYS" in section and "never both" in section.lower()
+        # Placeholders only: the secret-shape scan guards real shapes; this guards the obvious.
+        for line in section.splitlines():
+            for key in ("RAZORPAY_KEY_SECRET=", "CASHFREE_SECRET_KEY=", "CASHFREE_APP_ID="):
+                if line.startswith(key):
+                    value = line.split("=", 1)[1]
+                    assert value == "" or value.startswith("<"), line
+
+    def test_the_turning_a_provider_on_section_points_at_it(self) -> None:
+        assert self.SECTION in _runbook_section("Payments: turning a provider on")

@@ -1,4 +1,4 @@
-# ADR-0029 — Payment provider seam: two providers, one checkout, no mandate debit yet
+# ADR-0032 — Payment provider seam: two providers, one checkout, no mandate debit yet
 
 **Status:** Accepted by the owner, 2026-10-06 (decisions D1-D7 of the design) — built on
 `feat/payments-phase-a`, not merged, not deployed. Decision 13 and "Sandbox facts" were added the
@@ -15,6 +15,9 @@ webhook inbox are append-only; every table carries `organization_id`; no cross-s
 [ADR-0024](0024-fulfilment-boundaries.md) §8 (tenant collections, which share the Razorpay adapter);
 and the production edge's [RUNBOOK](../../infrastructure/edge/RUNBOOK.md) (the box, and why its `.env`
 is the only place a key lives).
+ADR-0029 is the staff plan-control record and ADR-0030 the catalog operator surface (both merged in
+#105 and #106); ADR-0031 is reserved by `feat/admin-add-product-trial`. This record was first drafted as
+0029 and renumbered to 0032 when it was brought up to date with `main`, so no two records share a number.
 
 ## Context
 
@@ -79,7 +82,9 @@ stored the provider's body verbatim (a payer's email, phone and UPI id in an app
    without `CASHFREE_ENV=production`. The reason is concrete: a public test card paying a real invoice
    is a free subscription. **A consequence the owner should know:** the box cannot be pointed at test
    or sandbox keys at all. Test mode is exercised on a developer's machine and with the smoke tools;
-   the first key the box ever holds is a live one.
+   the first key the box ever holds is a live one. *(Amended 2026-10-06: a box with no real paying
+   customers may opt in to test keys with `PAYMENT_ALLOW_TEST_KEYS`; see "Staging test mode" below.
+   The default is unchanged.)*
 
 6. **A platform checkout surface, behind an existing permission.** Three routes under
    `/api/v1/payment/checkouts` (open or reopen; read-through status; Razorpay's signed confirm), all
@@ -248,6 +253,42 @@ checkout's identity at the provider.
   once one is recorded, so a duplicate is never shown; but there is no stray search for a merchant's
   account. Adding one would be new provider traffic on merchants' keys, not a behaviour-preserving
   change, and is left for the merchant-connect work.
+
+## Staging test mode (2026-10-06)
+
+**Context.** The owner confirmed that the edge box — the one deployment that runs
+`ENVIRONMENT=production` — is a **staging** server with no real paying customers, and asked for its
+payments to run on Razorpay test keys and Cashfree sandbox keys. Decision 5 refuses exactly that on a
+box that says `production`, for a reason that still holds wherever real customers pay.
+
+**Decision.** An explicit, opt-in override, `PAYMENT_ALLOW_TEST_KEYS` (default `false`), with the default
+behaviour unchanged:
+
+1. **On, it relaxes only the two test-key refusals**: a `rzp_test_` pair on a live wire, and
+   `CASHFREE_ENV=sandbox` (including as `PAYMENT_PROVIDER=cashfree`, which otherwise needs
+   `CASHFREE_ENV=production` on a production box). Every other rule stands — pairs both-or-neither, the
+   wire switches, key shapes, the stub never the default provider on a production box.
+2. **It never runs beside live money.** It is refused with `PAYMENT_ALLOW_LIVE_KEYS=true`, with any
+   live-shaped key on either provider (on any switch, so a live key cannot sit waiting in `.env`), and with
+   `CASHFREE_ENV=production`. Live keys still need `PAYMENT_ALLOW_LIVE_KEYS`; the two flags are never on
+   together, so no configuration mixes test and live money.
+3. **It is loud.** `payment` logs one WARNING (`payment.test_mode.enabled`: the mode, the environment and
+   which providers run on test credentials, never a key) at every start of the API and of the standalone
+   worker; preflight mirrors the rules (`lib/payment-switches.sh`, reading the flag as pydantic does) and
+   warns on every deploy while it is on, never failing on it alone; `/payment/info` reports
+   `provider`, `mode` (`stub` / `test` / `live`) and `test_keys_allowed`.
+4. **The checkout says so.** `PlatformCheckoutOut` and `PlatformCheckoutStatusOut` gain a required
+   boolean `test_mode`: true when the provider that **owns the charge** (the row's provider, not the
+   configured default) runs on test / sandbox credentials — a `rzp_test_` key id on a live wire, or
+   Cashfree `sandbox` — and false on live credentials and on a stub, where nothing is paid at all. The
+   adapters declare it (`credentials_mode`); one that declares nothing reads as a stub. A provider that
+   cannot be built answers `false` rather than failing a status read.
+
+**Consequences.** Invoices paid in test mode are recorded paid with test money; `test_mode` describes the
+credentials *now* and is not stored on the charge, so the moment test mode is turned off is the boundary
+an operator records (RUNBOOK, "Payments: test mode on a staging box", which lists the exact `.env` lines
+for turning it on and off). Turning it off means removing the flag *and* taking the test keys off the
+wires in one edit; the flag alone removed is a start-up refusal, by design.
 
 ## Amendments to ADR-0004
 

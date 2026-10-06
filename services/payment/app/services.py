@@ -202,7 +202,7 @@ def debit_refusal(
 ) -> str | None:
     """Why a debit **cannot succeed at this provider**, as a stable `charges.failure_reason` code —
     or None when it may be attempted. Decided before any provider call, so a charge that could only
-    fail at the provider fails here, with no call made and no bank fee paid (ADR-0005 Q4; ADR-0029).
+    fail at the provider fails here, with no call made and no bank fee paid (ADR-0005 Q4; ADR-0032).
 
     In order: a currency the provider does not take, an amount below its minimum (Razorpay: 100
     paise — it is a `400` that would burn an attempt), and no usable mandate for a provider whose
@@ -460,7 +460,7 @@ def call_provider_charge(provider: PaymentProvider, charge: Charge) -> ChargeRes
 
     **Only as good as the provider's receipt index.** The stub's is exact, so this holds there
     (`ProviderContract`). Razorpay's live receipt search can miss an Order created seconds earlier
-    (ADR-0029, 2026-10-06), so a live order-then-charge debit — Phase B; no live adapter reaches
+    (ADR-0032, 2026-10-06), so a live order-then-charge debit — Phase B; no live adapter reaches
     this today, a platform debit is refused `no_mandate` before any call — must record the Order id
     in its own transaction before it creates the payment, and resume from the recorded id.
 
@@ -495,7 +495,7 @@ def provider_for_charge(default: PaymentProvider, charge: Charge) -> PaymentProv
     """The adapter that finishes **this charge**: the default when it is the provider the charge was
     created under (so the adapter a caller or a test built keeps its own state), otherwise the
     registry's adapter for the charge's own provider. A retry of an idempotency key must not send a
-    Razorpay charge to Cashfree because the default moved (ADR-0029)."""
+    Razorpay charge to Cashfree because the default moved (ADR-0032)."""
     if default.name == charge.provider:
         return default
     from app.deps import resolve_provider
@@ -512,7 +512,7 @@ OUTCOME_MISCONFIGURED = "misconfigured"
 
 @dataclass(frozen=True, slots=True)
 class CallOutcome:
-    """The three-way taxonomy at the seam (ADR-0029), plus success:
+    """The three-way taxonomy at the seam (ADR-0032), plus success:
 
     * `result` — the provider answered; `result` is what it said. Recorded (`finalize_charge`).
     * `unknown` — a timeout, a connect failure, a `429`/`5xx`, an unreadable answer: the call may or
@@ -750,7 +750,7 @@ async def finalize_charge(
     if result.provider != charge.provider:
         # A payment made at one provider must never be recorded against a charge that belongs to
         # another: it would bind an id of the wrong namespace, and every later lookup would ask
-        # the wrong provider about it. A defect in whoever routed the call (ADR-0029).
+        # the wrong provider about it. A defect in whoever routed the call (ADR-0032).
         log.error(
             "payment.charge.provider_mismatch",
             charge_id=str(charge.id),

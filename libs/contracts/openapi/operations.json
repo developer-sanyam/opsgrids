@@ -140,7 +140,7 @@
         "type": "object"
       },
       "CashfreeOrderCheckoutSessionOut": {
-        "description": "What the browser's `Cashfree({mode}).checkout({paymentSessionId})` needs (ADR-0030). The\nsession id is fetched from Cashfree for this response by payment and never stored anywhere;\nreopening the checkout fetches it again. No credential, and no customer detail: the phone\nCashfree requires went to it server to server.",
+        "description": "What the browser's `Cashfree({mode}).checkout({paymentSessionId})` needs (ADR-0033). The\nsession id is fetched from Cashfree for this response by payment and never stored anywhere;\nreopening the checkout fetches it again. No credential, and no customer detail: the phone\nCashfree requires went to it server to server.",
         "properties": {
           "amount_minor": {
             "title": "Amount Minor",

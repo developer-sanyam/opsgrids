@@ -51,7 +51,7 @@ What is **stubbed**, unless a wire is given — the one seam:
   network. The platform's provider gets a wire only when the owner sets `PAYMENT_WIRE=live`
   (`app/deps.py`); a tenant's collections adapter only when `COLLECTIONS_WIRE=razorpay`.
 
-**What the live platform wire does (Phase A, ADR-0029).** Customer-present checkout only:
+**What the live platform wire does (Phase A, ADR-0032).** Customer-present checkout only:
 `ensure_order` is `GET /orders?receipt=…` then `POST /orders` (with `payment_capture: true`, so an
 authorised payment is captured rather than auto-refunded after three days) only if that found none;
 a recorded Order is `GET /orders/{id}`; `find_order` is the receipt search alone;
@@ -88,6 +88,7 @@ from app.providers.base import (
     ChargeResult,
     CheckoutRequest,
     CheckoutSession,
+    CredentialsMode,
     MalformedWebhook,
     MandateResult,
     OrderResult,
@@ -340,6 +341,15 @@ class RazorpayProvider:
         return self._wire is not None
 
     @property
+    def credentials_mode(self) -> CredentialsMode:
+        """`stub` without a live wire (whatever key is set: nothing is called), `test` on a live
+        wire with a test-mode key id (`rzp_test_…`), and `live` for any other key on a live wire —
+        an unrecognised key is never reported as test mode."""
+        if self._wire is None:
+            return "stub"
+        return "test" if (self._key_id or "").startswith("rzp_test_") else "live"
+
+    @property
     def capabilities(self) -> ProviderCapabilities:
         """What this adapter can do **as built**. The stub keeps the legacy, tolerant posture the
         development flow and every older test rely on. A live platform adapter is checkout-only in
@@ -365,7 +375,7 @@ class RazorpayProvider:
 
     def _refuse_debit_on_wire(self, what: str) -> None:
         """A live wire never debits: a collection, and a platform checkout, is paid by the customer
-        in Razorpay's own Checkout. A server-side debit over the live wire is Phase B (ADR-0029),
+        in Razorpay's own Checkout. A server-side debit over the live wire is Phase B (ADR-0032),
         and is not built; the service layer refuses a charge that would need one."""
         if self._wire is not None:
             raise NotImplementedError(f"{what} is not available on the live wire")

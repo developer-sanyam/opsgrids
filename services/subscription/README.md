@@ -69,6 +69,15 @@ never the 60-character transition reason, and never on the event, which a custom
 templates can render) and `expected` (409 `state_changed` when the subscription is no longer what the caller
 saw). Refusals carry `errors[0].code`. ADR-0029.
 
+ADR-0031 adds console's **Add product** and **Extend trial** on the same footing. `POST /subscriptions` refuses a
+row for the product in any state, `cancelled` included (409 `already_subscribed`), a `one_time` version (422
+`one_time`), and a currency other than the organization's live subscriptions' (422 `org_currency_mismatch`);
+`trial: false` claims the first period at once. `POST /subscriptions/{id}/extend-trial` takes an absolute
+`new_trial_ends_at` and the `expected_trial_ends_at` the operator saw (409 `state_changed` when it moved, so a
+replay adds nothing), a required `note`, and refuses `not_trial`, `claim_in_flight` (the run is pricing the
+conversion), `trial_not_extended` and `trial_cap` — at most `MAX_TOTAL_TRIAL_DAYS` (90, an owner-adjustable
+default) from the trial's start, `current_period_start`. The operator listing carries `trial_max_ends_at`.
+
 ## Publishes
 
 Every accepted transition emits exactly one `commerce.subscription.*` event, in the same
@@ -77,6 +86,7 @@ transaction as the state change and its append-only transition row.
 | Event | Means |
 |---|---|
 | `commerce.subscription.trial_started` | A subscription opened in `trial`, with `trial_ends_at` |
+| `commerce.subscription.trial_extended` | Staff moved a trial's end later (`trial → trial`, ADR-0031). The full lifecycle payload — `trial_ends_at` is the new end — plus `previous_trial_ends_at`; the operator's reason stays on the audit row, never on the event. Deliberately **not** `trial_started`, which console counts and notification rules fire on |
 | `commerce.subscription.activated` | Now `active` — a new paid subscription, a trial converted by the billing run (`reason: trial_convert`, with a `billing` block naming the first invoice), or a **dunning recovery** (`reason: dunning_recovered`) |
 | `commerce.subscription.renewed` | The billing run rolled the period and invoiced it; carries the `billing` block (period, invoice id, total). `state` is `active` or `past_due` |
 | `commerce.subscription.upgraded` / `.downgraded` | Re-pinned to a dearer / cheaper published version — immediately (a trial, an equal-price change, a customer's own upgrade) or, for a change scheduled for the next period, when the billing run applies it; the label follows the direction stored with the pending change (ADR-0029). A staff change carries the operator's `note` |
@@ -87,7 +97,9 @@ transaction as the state change and its append-only transition row.
 
 `product-service` binds the lifecycle events and projects them onto `Activation`; `past_due` maps to
 an activation that still entitles, `suspended` and `cancelled` do not. Nothing binds
-`payment_retry_due` except payment.
+`payment_retry_due` except payment. `trial_extended` is bound by product (the activation's trial end
+moves) and console (the fold's trial end moves; it is not counted as a trial start) — deploy those two
+consumers **before** this service starts emitting it (RUNBOOK, "Staff add product and extend trial").
 
 ## Consumes
 

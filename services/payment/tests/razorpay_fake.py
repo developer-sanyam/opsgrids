@@ -1,5 +1,5 @@
 """A stateful Razorpay, as an `httpx.MockTransport` handler — the double the live Razorpay
-adapter is tested against (ADR-0029). No network, no real keys: every key here is a `dev-only-`
+adapter is tested against (ADR-0032). No network, no real keys: every key here is a `dev-only-`
 placeholder.
 
 It remembers what a real account would — Orders by id, found by a **"contains"** receipt filter (so
@@ -160,7 +160,7 @@ class FakeRazorpay:
 
     def _refund(self, request: httpx.Request, payment_id: str) -> httpx.Response:
         """`POST /v1/payments/{id}/refund` — the same `X-Refund-Idempotency` is the same refund
-        (tenant collections, ADR-0030's contract)."""
+        (tenant collections, ADR-0033's contract)."""
         payment = next(
             (p for items in self.payments.values() for p in items if p["id"] == payment_id), None
         )

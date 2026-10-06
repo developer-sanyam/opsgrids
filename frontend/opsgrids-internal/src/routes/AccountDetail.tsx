@@ -27,6 +27,8 @@ import {
 } from "@/ui";
 import type { Column, Definition } from "@/ui";
 import { ArrowLeftIcon, CheckCircleIcon, GiftIcon, LockIcon, PauseIcon, PlayIcon } from "@/ui/icons";
+import { AddProductCard } from "./AccountAddProduct";
+import { ExtendTrialCard } from "./AccountExtendTrial";
 import { PlanChangeCard } from "./AccountPlanChange";
 import { ClientPricingCard } from "./AccountPricing";
 import { CompGrantAction, ReactivateAction, SuspendAction } from "./AccountActions";
@@ -218,6 +220,11 @@ export function AccountDetailPage() {
     setReloadKey((k) => k + 1);
   }, []);
 
+  // Bumped by a staff subscription action, so the cards that read the live composite re-read it
+  // quietly — never the page-level reload, which would unmount their dialogs.
+  const [commerceTick, setCommerceTick] = useState(0);
+  const bumpCommerce = useCallback(() => setCommerceTick((t) => t + 1), []);
+
   if (detail.status === "loading") {
     return (
       <div className="flex flex-col gap-5">
@@ -323,9 +330,16 @@ export function AccountDetailPage() {
 
       {/* Its own card, with its own live read and its own dialogs: the page-level reload above
           replaces this whole page with a skeleton, which would unmount a dialog mid-flow. */}
-      <PlanChangeCard org={pricingOrg} />
+      <PlanChangeCard org={pricingOrg} refreshSignal={commerceTick} />
 
-      <ClientPricingCard org={pricingOrg} />
+      {/* Same reason, same shape: each hosts its own dialogs. Adding a product changes what the
+          sibling cards show — a new subscription to switch, a trial to extend, a plan price — so
+          it asks each of them to re-read. */}
+      <AddProductCard org={pricingOrg} onChanged={bumpCommerce} />
+
+      <ExtendTrialCard org={pricingOrg} refreshSignal={commerceTick} />
+
+      <ClientPricingCard org={pricingOrg} refreshSignal={commerceTick} />
 
       <UsageCard orgId={data.organization_id} reloadKey={reloadKey} />
 

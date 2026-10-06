@@ -1,4 +1,4 @@
-"""The Cashfree merchant adapter (ADR-0030), offline: what it sends, how it reads Cashfree's
+"""The Cashfree merchant adapter (ADR-0033), offline: what it sends, how it reads Cashfree's
 answers and webhooks, and what it refuses — against scripted `httpx.MockTransport` answers and the
 stateful fake. Every credential is a `dev-only-` placeholder; no request leaves the machine.
 """
@@ -639,7 +639,7 @@ class TestCredentials:
 
 
 def test_no_collections_module_reads_the_platforms_own_credentials() -> None:
-    """A merchant's adapter is built from that merchant's keys and nothing else (ADR-0030): no
+    """A merchant's adapter is built from that merchant's keys and nothing else (ADR-0033): no
     collections module, no merchant adapter, and not the factory names a platform credential
     setting — so a missing merchant key can never quietly fall back to the platform's."""
     platform = {

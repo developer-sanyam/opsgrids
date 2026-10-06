@@ -1,4 +1,4 @@
-"""merchant connect: a Cashfree account holds one secret; verification state (ADR-0030)
+"""merchant connect: a Cashfree account holds one secret; verification state (ADR-0033)
 
 One additive revision on `merchant_accounts`, no row rewritten and no backfill:
 

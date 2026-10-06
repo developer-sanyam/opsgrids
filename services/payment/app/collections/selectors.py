@@ -116,7 +116,7 @@ async def count_open_collections(
 @dataclass(frozen=True, slots=True)
 class DisconnectBlockers:
     """What a merchant account could still be told about by its provider — money that may still
-    move — and so what removing its keys would leave unrecorded (ADR-0030 §8)."""
+    move — and so what removing its keys would leave unrecorded (ADR-0033 §8)."""
 
     #: `created`, `authorized` or `failed` collections: a customer can still pay them.
     open_collections: int = 0

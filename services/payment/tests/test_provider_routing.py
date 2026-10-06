@@ -1,4 +1,4 @@
-"""Provider selection and routing (ADR-0029): `PAYMENT_PROVIDER` chooses where **new** charges go;
+"""Provider selection and routing (ADR-0032): `PAYMENT_PROVIDER` chooses where **new** charges go;
 every existing row is finished by the provider it was created under.
 
 "Switchable" does not mean migratable. A Razorpay charge left `created` while the owner flips the

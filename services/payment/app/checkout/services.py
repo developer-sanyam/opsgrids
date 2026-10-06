@@ -1,5 +1,5 @@
 """Writes for platform checkout — a customer paying one of OpsGrids' own invoices in the provider's
-hosted checkout (ADR-0029, Phase A).
+hosted checkout (ADR-0032, Phase A).
 
 **Why it exists.** The platform's only collection path was a server-side debit of a saved mandate,
 and no mandate can be created yet. A customer who owes an invoice — a trial that ended into
@@ -23,7 +23,7 @@ second short transaction records the Order id. Every function here that touches 
 already bound to the organization and inside its transaction; the callers (`app/api/checkout.py`,
 `app/checkout/cron.py`) own the transactions, so nothing here can hold one across a provider call.
 
-**The recorded Order id is the checkout's identity at the provider** (ADR-0029, sandbox facts of
+**The recorded Order id is the checkout's identity at the provider** (ADR-0032, sandbox facts of
 2026-10-06: Razorpay accepts a duplicate receipt, and its receipt search can miss a fresh Order).
 It is recorded before any browser sees it, it is the only id a browser is ever handed
 (`withheld_order`), every reopen fetches that Order by its id, and the poller asks about it — plus,

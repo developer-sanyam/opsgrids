@@ -206,7 +206,7 @@ PAYMENT_STATUS_STATES: dict[str, str] = {
 #: `PAYMENT_USER_DROPPED`, settlement and refund events — asserts none here: the poll settles it.
 EVENT_OUTCOMES: dict[str, str] = {"PAYMENT_SUCCESS": "captured"}
 
-#: Tenant collections reads one more (ADR-0030): a collection's Order takes several attempts, and
+#: Tenant collections reads one more (ADR-0033): a collection's Order takes several attempts, and
 #: its state machine records a failed attempt — bound to that attempt's own payment id — without
 #: ever letting it undo a capture (`app.collections.domain.decide`). `PAYMENT_USER_DROPPED` (the
 #: customer closed the page) is **never** a failure: the Order is still payable.

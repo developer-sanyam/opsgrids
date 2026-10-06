@@ -1,4 +1,4 @@
-"""A merchant's Razorpay account, behind the standalone `CollectionsProvider` seam (ADR-0030).
+"""A merchant's Razorpay account, behind the standalone `CollectionsProvider` seam (ADR-0033).
 
 Tenant collections (ADR-0024 §8) used to hold the platform's whole `PaymentProvider` and keep
 Razorpay's vocabulary — its event names, its refund statuses, the shape of a refund entity, where a
@@ -8,7 +8,7 @@ neutral `CollectionWebhookFacts` an adapter hands it.
 
 **No behaviour change.** This is the same `RazorpayProvider` a merchant's account always ran on —
 the same lookup-before-create Order (a best-effort receipt search on the live wire: Razorpay keeps
-no receipt unique and its search can lag a create, ADR-0029 "Sandbox facts"), the same live wire
+no receipt unique and its search can lag a create, ADR-0032 "Sandbox facts"), the same live wire
 behind `COLLECTIONS_WIRE=razorpay`, the same HMAC — with the collections half of the seam added
 around it:
 
@@ -174,7 +174,7 @@ class RazorpayCollectionsProvider(RazorpayProvider):
 
         An Order the collection already records (`recorded_order_id`) is fetched by its id
         (`GET /orders/{id}`) and never searched for or made again — the platform's recorded-Order
-        rule (ADR-0029). Collections never reopens a Razorpay checkout at the provider today (the
+        rule (ADR-0032). Collections never reopens a Razorpay checkout at the provider today (the
         browser is handed the recorded id), so this is the seam's promise kept, not a new call."""
         if recorded_order_id is not None:
             return self._recorded_order(

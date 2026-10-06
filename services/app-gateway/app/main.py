@@ -131,7 +131,7 @@ ENGAGE_TRACKING_PREFIX = "/api/v1/engage/t/"
 #: secret before it trusts a byte of it. An unknown account and a bad signature are the same 400.
 #:
 #: **And** `/api/v1/webhooks/collections` — the provider-neutral path for the same thing
-#: (ADR-0030): a Cashfree merchant registers it (and a Cashfree Order names it as its
+#: (ADR-0033): a Cashfree merchant registers it (and a Cashfree Order names it as its
 #: `notify_url`). POST only, the same `?account=` query, the same handler behind it; payment takes
 #: the provider from the account row, never from the path, so the Razorpay path is kept forever as
 #: an alias and neither path can be used to have a body judged by the other provider's rules.

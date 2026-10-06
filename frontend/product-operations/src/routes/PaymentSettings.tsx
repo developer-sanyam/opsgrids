@@ -147,7 +147,7 @@ function ConnectionStatus({
 }
 
 /**
- * The organization's own payment-provider account (ADR-0024 A4, ADR-0030): Razorpay or Cashfree,
+ * The organization's own payment-provider account (ADR-0024 A4, ADR-0033): Razorpay or Cashfree,
  * chosen when connecting and fixed while connected (switching is disconnect, then connect). Here
  * an admin connects it, replaces its credentials, checks them with the provider, reads where the
  * provider's webhooks should go, disconnects it, and compares recent online payments with the

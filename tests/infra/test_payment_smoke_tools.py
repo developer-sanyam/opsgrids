@@ -1,4 +1,4 @@
-"""The owner-run payment smoke tools (`tools/payments_smoke_*.py`, ADR-0029) — their *rules*.
+"""The owner-run payment smoke tools (`tools/payments_smoke_*.py`, ADR-0032) — their *rules*.
 
 These are the one place in the repository that can call a real payment provider, so the tests are
 about what they must never do, run entirely against `httpx.MockTransport`:

@@ -1,5 +1,5 @@
 """The live HTTP wire to Razorpay — for tenant collections (ADR-0024 §8) and, behind
-`PAYMENT_WIRE=live`, for platform billing's customer-present checkout (ADR-0029).
+`PAYMENT_WIRE=live`, for platform billing's customer-present checkout (ADR-0032).
 
 `razorpay.py`'s adapter keeps its wire stubbed by default. Tenant collections needs a small part
 of the API: it creates an Order, lets the customer pay it in Razorpay's own hosted Checkout, asks

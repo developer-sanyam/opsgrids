@@ -1,5 +1,5 @@
 """The charge poller for payment — the only way a platform charge learns an outcome while the
-provider webhooks are private (ADR-0029, owner decision). Runs inside `payment-worker` / the API's
+provider webhooks are private (ADR-0032, owner decision). Runs inside `payment-worker` / the API's
 background group beside the stuck-charge sweep; `python -m app.checkout.cron` runs it alone for
 local debugging.
 

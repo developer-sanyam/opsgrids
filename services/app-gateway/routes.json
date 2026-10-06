@@ -45,7 +45,7 @@
     "connection and the collections reconciliation report, ADR-0024 §8) and",
     "`/api/v1/webhooks/razorpay/collections` is a tenant's own Razorpay webhook — public in",
     "`WEBHOOK_PUBLIC_PATHS` (POST only), authenticated by that merchant's HMAC, 256 KiB cap.",
-    "`/api/v1/webhooks/collections` is the provider-neutral path for the same handler (ADR-0030,",
+    "`/api/v1/webhooks/collections` is the provider-neutral path for the same handler (ADR-0033,",
     "Cashfree merchants register it): public for POST only, same cap, provider from the account row."
   ],
   "routes": [

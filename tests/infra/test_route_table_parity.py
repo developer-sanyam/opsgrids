@@ -97,7 +97,7 @@ DATA_DELETION_STATUS = "/api/v1/webhooks/whatsapp/data-deletion-status"
 #: A tenant's own Razorpay webhook (tenant payment collection, ADR-0024 §8) — payment-service,
 #: not notification. The platform's own `/api/v1/webhooks/razorpay` stays routed-but-not-public.
 RAZORPAY_COLLECTIONS = "/api/v1/webhooks/razorpay/collections"
-#: The provider-neutral path of the same tenant webhook (ADR-0030): Cashfree merchants register
+#: The provider-neutral path of the same tenant webhook (ADR-0033): Cashfree merchants register
 #: it, a Cashfree Order names it as `notify_url`, and payment takes the provider from the account
 #: row, so the Razorpay path above stays as an alias of it forever.
 COLLECTIONS = "/api/v1/webhooks/collections"
@@ -383,5 +383,5 @@ def test_payment_serves_the_collections_webhook_and_buffers_what_the_gateway_all
     payment = _payment()
     assert payment["put_status"]["/api/v1/nowhere"] == 404
     assert payment["put_status"][RAZORPAY_COLLECTIONS] == 405
-    assert payment["put_status"][COLLECTIONS] == 405, "the neutral path is not mounted (ADR-0030)"
+    assert payment["put_status"][COLLECTIONS] == 405, "the neutral path is not mounted (ADR-0033)"
     assert payment["max_webhook_body_bytes"] == RAZORPAY_COLLECTIONS_BODY_CAP

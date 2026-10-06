@@ -61,7 +61,7 @@ class PayerRequired(ValidationProblem):
     """payment's answer when the connected provider needs the paying customer on every Order
     (Cashfree: a phone) and the checkout was asked for without one. The route answers it by asking
     again with the order's own customer — the one time operations sends a phone to payment, and
-    only to a provider that needs one (ADR-0030)."""
+    only to a provider that needs one (ADR-0033)."""
 
     problem_type = "payer-required"
     title = "The payment provider needs the paying customer's details"

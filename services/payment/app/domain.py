@@ -84,7 +84,7 @@ def is_terminal(state: str) -> bool:
 #: exactly these (`services._reconcile_charge`) and nothing else (D3).
 FAILURE_ATTEMPTS_EXHAUSTED = "attempts_exhausted"
 FAILURE_LOOKUP_UNAVAILABLE = "lookup_unavailable"
-#: A checkout nobody paid before it expired (ADR-0029). The platform stopped waiting, but the
+#: A checkout nobody paid before it expired (ADR-0032). The platform stopped waiting, but the
 #: provider's Order may still be payable (Razorpay Orders do not expire on their own), so a capture
 #: that lands afterwards is still recorded: the money moved.
 FAILURE_CHECKOUT_EXPIRED = "checkout_expired"

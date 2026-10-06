@@ -36,7 +36,7 @@ PROD_ROUTES = Path(__file__).resolve().parents[3] / "infrastructure/edge/routes.
 WHATSAPP = "/api/v1/webhooks/whatsapp"
 RAZORPAY = "/api/v1/webhooks/razorpay"
 RAZORPAY_COLLECTIONS = "/api/v1/webhooks/razorpay/collections"
-#: The provider-neutral path of the same tenant webhook (ADR-0030; Cashfree merchants register it).
+#: The provider-neutral path of the same tenant webhook (ADR-0033; Cashfree merchants register it).
 COLLECTIONS = "/api/v1/webhooks/collections"
 #: Meta documents payloads up to 3 MB; the route says so in both tables.
 WHATSAPP_BODY_CAP = 3 * 1024 * 1024
@@ -263,7 +263,7 @@ class TestNothingElseIsPublic:
         # Pinned, not derived from the policy: every public webhook, by exact path and method.
         # Meta's WhatsApp callback; Facebook Login's deauthorize / data-deletion callbacks; and a
         # tenant's own payment-provider webhook (tenant collections, ADR-0024 §8) at its original
-        # Razorpay path and its provider-neutral one (ADR-0030) — never the platform's own
+        # Razorpay path and its provider-neutral one (ADR-0033) — never the platform's own
         # `/api/v1/webhooks/razorpay`, which stays routed-but-not-public.
         assert reached == {
             ("GET", WHATSAPP),
@@ -278,7 +278,7 @@ class TestNothingElseIsPublic:
 
 
 class TestTheTenantCollectionsWebhook:
-    """A merchant's payment-provider webhook (ADR-0024 §8, ADR-0030), at both its paths."""
+    """A merchant's payment-provider webhook (ADR-0024 §8, ADR-0033), at both its paths."""
 
     @pytest.mark.parametrize("path", [COLLECTIONS, RAZORPAY_COLLECTIONS])
     async def test_a_signed_delivery_reaches_payment_with_its_headers_byte_for_byte(

@@ -970,10 +970,83 @@ record first. A rate of one in a long while is a database blip to read; every pu
 the rollback trigger above. Wiring `putaway.capture_failed` to an alert is a follow-up
 (`docs/backlog.md`).
 
+### Plans & prices in the console: catalog migration, rollout, what to watch
+
+The Plans & prices release (design: `docs/superpowers/specs/2026-10-06-admin-plans-page-design.md`;
+decision: [ADR-0030](../../docs/adr/0030-catalog-operator-writes.md)) gives the staff console a real
+catalogue page over catalog's existing `/api/v1/admin/catalog` prefix. **No route table changes** (the
+paths stay under the existing `staff_only` prefix, so admin-gateway and Caddy are not recreated) and **no
+new `.env` key**.
+
+**What migrates.** One catalog revision, `b7e4d2a9c613` (follows `c5f1e8a2b7d4`), in the ordinary
+`migrate` step. It replaces the body of `catalog.forbid_published_version_update()` (published rows may
+now take exactly one change, `state` to `grandfathered`; grandfathered rows take none; a draft cannot
+become grandfathered), extends `catalog.forbid_frozen_version_child_mutation()` and adds one
+`trg_<table>_frozen_no_insert` trigger each on `prices`, `features` and `seat_classes` (nothing can be
+added under a frozen version), and creates `catalog.idempotency_keys` (empty, RLS on and forced). All are
+instantaneous; nothing is backfilled.
+
+**Rollout order** (owner-approved deploy; merging deploys nothing): catalog first (migration + API), then
+notification (two new subscribable catalog events; harmless if it lags), subscription (lets a scheduled plan
+change be withdrawn back to a current pin whose version has been withdrawn; if it lags, that one request is
+refused `not_published` until it lands), console (the `not_offerable` wording names withdraw), then the
+console frontend.
+Old console builds keep working against the new catalog because the old stub made no catalog calls.
+
+**Verify, changing nothing.** On the box, from `infrastructure/edge/`:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T catalog alembic current
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT to_regclass('catalog.idempotency_keys') IS NOT NULL                         AS claims_table,
+       (SELECT relforcerowsecurity FROM pg_class WHERE oid = 'catalog.idempotency_keys'::regclass) AS rls_forced,
+       (SELECT count(*) FROM catalog.plan_versions WHERE state = 'grandfathered')     AS withdrawn;"
+```
+
+`alembic current` must print `b7e4d2a9c613 (head)`; the query prints `t|t|0` on a first deploy. Then, as
+an `owner`, open `admin.opsgrids.com/plans`: the table loads (public plans), a plan opens, a version's
+sheet opens. As `billing_ops` the same pages load with no actions; as `support` the page shows a notice.
+
+**The one irreversible step is publish.** Prove the write path without creating anything permanent: open
+an **existing** plan, use *New draft* on its current version, create the draft, then **delete the draft** —
+do not publish it. Do not create a smoke-test plan: a plan cannot be deleted (only retired), its
+`(product`, `code)` is burned for good, an unregistered product key is refused with 422 `unknown_product`,
+and an active plan under a real product shows in every one of that product's customers' plan list. If a
+plan was created by mistake, retire it with a reason. Publishing freezes a version for good; withdrawing
+afterwards keeps it pinned by anyone already on it. Publishing also needs product-service up (it is asked
+whether the product is a bundle); a 503 on publish means retry once it is back.
+
+**What to watch.** A 409 "Idempotency-Key was already used for a different request" means a client reused
+a key — the console mints one per dialog open, so a stream of them is a client bug, not an operator one.
+A 422 on publish lists every problem in `errors[]`; the commonest is a zero amount the owner must
+acknowledge or a usage price missing its meter. **Retiring a plan does not yet stop a subscription pinning
+one of its versions by id** (subscription does not read plan state — a later slice that needs catalog's
+internal version read to carry the plan's state too); until then, withdraw the specific version as well
+when it must stop selling. The console's **Change plan** already refuses a retired plan's versions and
+withdrawn ones (`not_offerable`, see "Staff plan switching" below). Withdrawing a plan's newest version puts
+the published version before it back on offer there, so withdraw that one too if it must stop selling.
+
+**Withdrawing does not cancel a plan change already scheduled onto the version.** A downgrade deferred to
+the next period re-pins at renewal without asking catalog, so it lands on the withdrawn version anyway.
+Before withdrawing a version that must stop selling, list the subscriptions scheduled onto it (read-only):
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT id, organization_id FROM subscription.subscriptions
+ WHERE pending_plan_version_id = '<version id>';"
+```
+
+Each row is a customer whose scheduled change has to be dealt with by hand (with the owner) until
+subscription re-validates a pending pin when it applies it.
+
+**Rollback.** Roll the console and catalog images back; the migration can stay (old catalog code ignores
+the claims table and never withdraws). If it must go: `alembic downgrade c5f1e8a2b7d4` on catalog — a
+version withdrawn meanwhile stays `grandfathered`.
+
 ### Payments: turning a provider on
 
 The payments release (design: `docs/superpowers/specs/2026-10-06-payments-phase-a-design.md`; decisions:
-[ADR-0029](../../docs/adr/0029-payment-provider-seam-and-checkout.md)) lets an organization's owner pay one
+[ADR-0032](../../docs/adr/0032-payment-provider-seam-and-checkout.md)) lets an organization's owner pay one
 of OpsGrids' own invoices in **Razorpay's or Cashfree's hosted checkout**. It is **Phase A only**: a
 customer-present checkout. **There is no saved mandate and no automatic recurring debit**, and the platform's
 provider webhooks stay **private**, so the platform learns that an invoice was paid by **asking the
@@ -1025,9 +1098,12 @@ a production box**; `CASHFREE_ENV=production` with test-shaped keys; and `PAYMEN
 on a production box without `CASHFREE_ENV=production`. The reason is the same each time: a public test
 card paying a real invoice is a free subscription.
 
-**What that means for rehearsal: this box cannot be run against test or sandbox keys.** Test-mode
-checkouts are rehearsed on a developer's machine (the stub, or the smoke tools below); **the first key
-the box ever holds is a live one**, and the first checkout it takes is real money.
+**What that means for rehearsal: by default this box cannot be run against test or sandbox keys.**
+Test-mode checkouts are rehearsed on a developer's machine (the stub, or the smoke tools below), and the
+first key a box *with paying customers* ever holds is a live one. **The exception is a staging box with no
+real paying customers**: `PAYMENT_ALLOW_TEST_KEYS=true` lets the test pair and the sandbox run there,
+loudly. The owner decided on 2026-10-06 that the edge box is such a box: see the next section,
+"Payments: test mode on a staging box", which replaces step 4 below while it applies.
 
 **Order of steps** (owner decisions throughout; nothing here is done by the deploy):
 
@@ -1067,7 +1143,7 @@ the box ever holds is a live one**, and the first checkout it takes is real mone
    were written to fail safe on each unknown, but a surprise is a reason to look, not to proceed.
 
    **Razorpay's `probe` was run on 2026-10-06** and four answers differed from the design; the adapter
-   was corrected for each (ADR-0029, "Sandbox facts"), so the same output from a rerun is now expected,
+   was corrected for each (ADR-0032, "Sandbox facts"), so the same output from a rerun is now expected,
    not a reason to stop: a duplicate `receipt` is **accepted** (a second Order, no `400`); the receipt
    search answered `count: 0` for an Order created seconds earlier (and once `429`); `payment_capture`
    is not echoed on the Order; a bad key is `401` with `error.code = BAD_REQUEST_ERROR`. What changed:
@@ -1150,10 +1226,107 @@ it does, so a duplicate Order is never shown; but nothing searches a merchant's 
 duplicate, and a lost create retried after the lease can leave one there (unpayable, since nobody has its
 id). That is unchanged by this release.
 
+### Payments: test mode on a staging box
+
+**Owner decision, 2026-10-06.** The edge box runs `ENVIRONMENT=production` (every compose service does),
+but it is a **staging server with no real paying customers**, and its payments are to run on **Razorpay
+test keys** (`rzp_test_…`) and **Cashfree sandbox keys**. By default `payment` refuses exactly that on a
+box that says `production` (previous section: a public test card would pay a real invoice).
+`PAYMENT_ALLOW_TEST_KEYS=true` is the explicit, opt-in override ([ADR-0032](../../docs/adr/0032-payment-provider-seam-and-checkout.md),
+"Staging test mode"). **Never set it on a box where real customers pay.** Everything else in the previous
+section still applies (Phase A only, no webhook to register, the poller learns outcomes); this section
+replaces its step 4 while the box is in test mode.
+
+**What the flag does, and what it refuses.**
+
+* It lets `rzp_test_` keys run with `PAYMENT_WIRE=live`, and `CASHFREE_ENV=sandbox` run (also as
+  `PAYMENT_PROVIDER=cashfree`), although `ENVIRONMENT=production`. Nothing else is relaxed.
+* It is **refused** — `payment` will not start, and preflight fails first — beside
+  `PAYMENT_ALLOW_LIVE_KEYS=true`, beside **any** live-shaped key (`rzp_live_…`, a `cfsk_ma_prod_…` Cashfree
+  secret, even with its wire off), and beside `CASHFREE_ENV=production`. A box runs on test keys or on
+  live money, **never both**.
+* It is **loud**: `payment` logs one WARNING `payment.test_mode.enabled` every time it starts (the mode,
+  the environment and which providers run on test credentials; never a key); preflight prints a
+  `warn  !!! PAYMENT_ALLOW_TEST_KEYS is ON …` block on every deploy (a warning, never a failure);
+  `/api/v1/payment/info` answers `"mode": "test"`; and every platform checkout answer —
+  `POST /payment/checkouts`, `GET /payment/checkouts/{id}` and the confirm — carries
+  `"test_mode": true` (the dashboard shows a test-mode notice from it).
+
+**Turning it on.** Generate the keys in each provider's **test** environment (Razorpay: switch the
+dashboard to *Test Mode*, then Account & Settings → API Keys; Cashfree: the *Sandbox* dashboard →
+Developers → API Keys — the App ID starts `TEST`, the secret `cfsk_ma_test_`). Edit `.env` on the box
+(same rules as "5. Secrets": nothing goes through git, chat or CI; paste each value, never type it into a
+shell history). **Exactly these lines**, with the dashboard's values in place of the `<…>`:
+
+```bash
+PAYMENT_ALLOW_TEST_KEYS=true
+PAYMENT_PROVIDER=razorpay
+RAZORPAY_KEY_ID=<the rzp_test_ key id>
+RAZORPAY_KEY_SECRET=<its key secret>
+PAYMENT_WIRE=live
+CASHFREE_APP_ID=<the sandbox App ID, TEST...>
+CASHFREE_SECRET_KEY=<the sandbox secret key, cfsk_ma_test_...>
+CASHFREE_ENV=sandbox
+```
+
+`PAYMENT_PROVIDER` is the provider new invoices' checkouts open at: `razorpay` or `cashfree`, either
+works in test mode. One provider alone is fine too: leave the other's pair empty and its switch at `stub`
+(`PAYMENT_WIRE=stub`, or `CASHFREE_ENV=stub`), but then `PAYMENT_PROVIDER` must name the one that is on.
+`PAYMENT_ALLOW_LIVE_KEYS` must be **absent or `false`**. Then:
+
+```bash
+make edge-preflight HOST=… CONFIRM=…
+#   expect: "ok    payment provider switches are consistent", the "warn  !!! PAYMENT_ALLOW_TEST_KEYS is ON"
+#   block, a payment wire "switched on" line, and no FAIL row
+docker compose -f compose.prod.yml --env-file .env up -d payment payment-worker   # on the box, as in step 4
+make edge-logs HOST=… CONFIRM=… SERVICE=payment TAIL=100
+#   expect: payment.test_mode.enabled (warning) and payment.charge_poller.started; no
+#   payment.provider.credentials_rejected
+docker compose -f compose.prod.yml --env-file .env exec -T payment python -c \
+  "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/api/v1/payment/info').read().decode())"
+#   expect: "mode":"test" and "test_keys_allowed":true (provider names and modes only, never a key)
+```
+
+Then take one checkout end to end from a test organization: open it, pay with the provider's published
+**test** card or sandbox UPI id, and watch the status answer `paid: true` with `test_mode: true`.
+
+**Turning it off** (back to the default; do it before any real customer could pay on this box). In **one**
+edit of `.env`, remove the flag *and* take the test keys off the wires — removing only the flag while a
+`rzp_test_` pair is on a live wire, or the sandbox is on, makes `payment` refuse to start (preflight
+catches it first):
+
+```bash
+# delete PAYMENT_ALLOW_TEST_KEYS (or set it to false), and set:
+PAYMENT_PROVIDER=razorpay
+PAYMENT_WIRE=stub
+CASHFREE_ENV=stub
+# and empty both test pairs: RAZORPAY_KEY_ID=, RAZORPAY_KEY_SECRET=, CASHFREE_APP_ID=, CASHFREE_SECRET_KEY=
+```
+
+Then `make edge-preflight …` (the test-mode warning is gone) and the same `docker compose … up -d payment
+payment-worker`. To go live afterwards follow the previous section's step 4 with **live** keys and
+`PAYMENT_ALLOW_LIVE_KEYS=true`; the two flags are never on together.
+
+**What test mode leaves behind.** Invoices paid in test mode are marked paid (their subscriptions
+activated) with test money. `test_mode` describes the provider's credentials **now**, not when a charge
+was made, and no row records it, so **note the moment you turn test mode off**: every checkout charge
+created before it on this box was test money. Let open test checkouts resolve first (a day,
+`CHECKOUT_TTL_SECONDS`): once the wire is the stub, or on live keys, the platform can no longer ask about a
+test-mode Order (it answers "could not be asked" and expires nothing), exactly as the previous section's
+rollback describes.
+
+```sql
+-- the checkouts this box took before test mode was turned off (replace the instant)
+SELECT provider, state, failure_reason, count(*)
+FROM payment.charges
+WHERE flow = 'checkout' AND created_at < '2026-10-06T00:00:00Z'
+GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+```
+
 ### Merchant connect: Cashfree for tenant online payments
 
 The merchant-connect release (design: `docs/superpowers/specs/2026-10-06-merchant-cashfree-design.md`;
-decision: [ADR-0030](../../docs/adr/0030-merchant-connect-collections-seam.md)) lets an organization
+decision: [ADR-0033](../../docs/adr/0033-merchant-connect-collections-seam.md)) lets an organization
 connect **either** its own Razorpay **or** its own Cashfree account in Operations → Payment settings,
 and take an order's online payment through that provider's hosted checkout, opened by staff inside
 Operations (there is no payment link and no storefront checkout in this release). Money goes to the
@@ -1251,7 +1424,7 @@ live (409 "cancel it and start a new one").
 **Rollback.** Set `COLLECTIONS_CASHFREE_WIRE=stub` (no data changes; checkouts become not-payable, with
 the UI saying so; webhooks still verify). A checkout opened while the wire was live is not reopened on
 the stub: it answers 503 "try again" until the wire is back, because the stub must never stand in for an
-Order a customer may have paid (the recorded-Order rule, ADR-0029). **Do not roll the `payment` image back once a Cashfree row
+Order a customer may have paid (the recorded-Order rule, ADR-0032). **Do not roll the `payment` image back once a Cashfree row
 exists** — the previous code would build a Razorpay adapter from Cashfree keys — and the migration's
 downgrade refuses while one exists.
 
@@ -1494,9 +1667,10 @@ switches at its **next billing period**, and an **equal-price** change applies a
 usage-priced subscription is not free: the usage metered so far is closed at the current plan's usage rates
 and invoiced by the billing run (the confirm says so when it happens).
 
-Only versions catalog **offers the organization now** can be chosen: a version superseded by a newer one, or
-of a retired plan, is refused **422 `not_offerable`** even if an operator's open dialog still lists it (the
-dialog then reloads the list). Withdrawing a scheduled change back to the current pin is always allowed. If
+Only versions catalog **offers the organization now** can be chosen: a version superseded by a newer one,
+withdrawn on the Plans page (ADR-0030), or of a retired plan, is refused **422 `not_offerable`** even if an
+operator's open dialog still lists it (the dialog then reloads the list). Withdrawing a scheduled change back to
+the current pin is always allowed, even when that pin's version has since been withdrawn. If
 catalog cannot be reached the confirm answers **503 `catalog_unavailable`** and nothing is claimed or changed.
 
 **"Next billing period" only happens while the billing run is running.** The change is stored as a
@@ -1542,6 +1716,65 @@ audit rows above (console's, and subscription's `audit_logs.reason`) and **not**
 scheduled change emits **no event**, so the
 account list does not show it — the Change plan card (the live pricing read) does. Product access follows a
 change that has taken effect within about **15 minutes**.
+
+### Staff add product and extend trial (ADR-0031): deploy the consumers first
+
+Two more console controls on the account page, on the same claim table and the same rules as Change plan:
+
+* **Add product** (`GET /api/v1/admin/organizations/{id}/add-product-options`, `POST .../subscriptions`;
+  owner and billing_ops) gives an organization a product it has **no subscription row for in any state** —
+  a cancelled one cannot be re-added yet (409 `already_subscribed`). A **trial by default**. A **paid** start
+  bills at once: subscription claims the first period immediately and **no payment mandate is checked**,
+  so a failed charge opens dunning; the operator must tick that, or the API answers 422
+  `charge_not_acknowledged`. A `one_time` plan (422 `one_time`) and a currency other than the
+  organization's live subscriptions' (422 `org_currency_mismatch`) are refused, and so is a version
+  catalog no longer offers the organization (422 `not_offerable`; a catalogue outage is 503
+  `catalog_unavailable`, which changed nothing).
+* **Extend trial** (`POST .../subscriptions/{product_key}/extend-trial`; **owner only**) moves a trial's end
+  to an absolute instant — the operator picks the last day in **IST**. Refused with 409 `state_changed` if
+  the trial end moved since it was read (which is also why a repeat never adds the time twice), 422
+  `not_trial`, `claim_in_flight` (the billing run is already pricing the conversion), `trial_not_extended`,
+  or `trial_cap`. **The cap is 90 days from the trial's start** (`MAX_TOTAL_TRIAL_DAYS` in
+  `services/subscription/app/domain.py`, an owner-adjustable default; changing it is a code change and a
+  subscription redeploy).
+
+Extend trial emits a **new event, `commerce.subscription.trial_extended`**, which product (the activation's
+trial end) and console (the account's trial end) must consume. **Deploy order:**
+
+1. **product** and **console** — their consumers bind the new routing key. A consumer bound before the
+   producer exists simply receives nothing.
+2. **subscription** — now it can emit `trial_extended`. Deployed before step 1, the event lands in queues
+   not bound to it: product keeps the old trial end and a customer whose old end has passed stays locked
+   out until the next lifecycle event.
+3. the **opsgrids-internal** frontend (and **notification**, whose catalogue now lists the key so a rule
+   can be written for it; nothing fires by default).
+
+No migration (console reuses `console.idempotency_keys`; actions `add_product`, `extend_trial`). The
+admin-gateway is not recreated. Rollback: the console and frontend images; consumers binding an extra key
+are harmless, and written rows stay.
+
+Checks after deploying, before the first staff use:
+
+```bash
+# Every consuming queue carries the new binding (on the box; rabbitmqctl, the broker's own CLI).
+docker compose -f compose.prod.yml --env-file .env exec -T rabbitmq \
+  rabbitmqctl list_bindings source_name destination_name routing_key | grep trial_extended
+# Expect three rows: product.events, console.events and notification.events (notification binds
+# every key in its SUBSCRIBABLE_EVENTS). Only the first two until notification is redeployed in
+# step 3 — and product.events or console.events missing at any point means stop.
+```
+
+```sql
+-- console: the claims and outcomes for one organization's staff actions
+SELECT key, action, status, response, updated_at FROM console.idempotency_keys
+WHERE organization_id = :org ORDER BY created_at DESC LIMIT 20;
+SELECT at, action, reason, acting_as, after FROM console.audit_logs
+WHERE organization_id = :org AND (action LIKE 'subscription.add_product%' OR action LIKE 'subscription.trial_extension%')
+ORDER BY at DESC;
+-- subscription: the extension itself (a trial -> trial transition) and its operator
+SELECT occurred_at, from_state, to_state, reason, actor FROM subscription.subscription_transitions
+WHERE organization_id = :org AND reason = 'trial_extended' ORDER BY occurred_at DESC;
+```
 
 ### Operator MFA: mandatory rollout, the MFA reseal, and the one-off codes
 

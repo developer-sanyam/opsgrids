@@ -1,4 +1,4 @@
-"""payments phase A: checkout charges, the poll index, provider-scoped unique indexes (ADR-0029)
+"""payments phase A: checkout charges, the poll index, provider-scoped unique indexes (ADR-0032)
 
 One additive revision, no table rewritten and no backfill:
 

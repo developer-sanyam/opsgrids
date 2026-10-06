@@ -55,7 +55,7 @@ const GROUPS: NavGroup[] = [
       { to: "/warehouses", label: "Warehouses", icon: WarehouseIcon },
       { to: "/warehouses/map", label: "Warehouse Map", icon: MapPinIcon },
       // The organization's own payment-provider account (Razorpay or Cashfree) and payment
-      // reconciliation (ADR-0024 A4, ADR-0030).
+      // reconciliation (ADR-0024 A4, ADR-0033).
       { to: "/settings/payments", label: "Online Payments", icon: CreditCardIcon },
     ],
   },

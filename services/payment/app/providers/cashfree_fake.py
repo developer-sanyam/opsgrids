@@ -1,5 +1,5 @@
 """An in-process, stateful Cashfree — the wire `CASHFREE_ENV=stub` runs on, and the double the
-Cashfree tests drive (ADR-0029).
+Cashfree tests drive (ADR-0032).
 
 It is a **wire**, not an adapter: `CashfreeFakeWire.request` answers the same `(method, path)`
 calls `CashfreeHttpWire` makes, so the real `CashfreeProvider` — its lookup, its create, its `409`
@@ -49,7 +49,7 @@ class CashfreeFakeWire:
         self.payments: dict[str, list[dict[str, Any]]] = {}
         self._idempotency: dict[str, str] = {}
         self._cf_ids = itertools.count(1_000_001)
-        #: Refunds by `order_id`, oldest first (tenant collections, ADR-0030).
+        #: Refunds by `order_id`, oldest first (tenant collections, ADR-0033).
         self.refunds: dict[str, list[dict[str, Any]]] = {}
         self._cf_refund_ids = itertools.count(5_000_001)
         #: Every request made, `(method, path)`: what a test asserts the adapter did and did not do.

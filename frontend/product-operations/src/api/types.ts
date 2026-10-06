@@ -701,7 +701,7 @@ export interface OrderPaymentsOut {
   collections: OrderCollectionOut[];
 }
 
-/** The payment providers a merchant can connect (ADR-0030). */
+/** The payment providers a merchant can connect (ADR-0033). */
 export type CollectionsProvider = "razorpay" | "cashfree";
 
 /** What the browser needs to open Razorpay's hosted Checkout — the **public** key id and the
@@ -753,7 +753,7 @@ export interface OrderRefundIn {
 export type ConnectionState = "unverified" | "verified" | "failed";
 
 /** `GET/PUT /payment/collections/merchant-account` — the organization's own payment-provider
- *  account (Razorpay or Cashfree, ADR-0030). */
+ *  account (Razorpay or Cashfree, ADR-0033). */
 export interface MerchantAccountOut {
   configured: boolean;
   id?: string | null;

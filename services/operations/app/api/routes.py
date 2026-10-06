@@ -2024,7 +2024,7 @@ async def order_payments(
 
 
 def _payer(order: Order) -> dict[str, str | None]:
-    """The order's customer, as a provider that needs one is sent it (ADR-0030). Built only after
+    """The order's customer, as a provider that needs one is sent it (ADR-0033). Built only after
     payment asked for it; never logged, audited or kept by operations either."""
     if not order.customer_phone.strip():
         raise PhoneRequired(

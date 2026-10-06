@@ -1,4 +1,4 @@
-"""collections: which wire made a collection's provider Order (ADR-0030 §8)
+"""collections: which wire made a collection's provider Order (ADR-0033 §8)
 
 One additive revision on `charges`, no row rewritten and no backfill:
 

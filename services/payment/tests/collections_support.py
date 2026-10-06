@@ -53,7 +53,7 @@ class MerchantProviders:
     merchant's own sealed secret. Records every key secret it was handed, to prove the sealed key
     round-trips and never leaks anywhere else.
 
-    A Cashfree account (ADR-0030) gets the real `CashfreeCollectionsProvider` over one stateful
+    A Cashfree account (ADR-0033) gets the real `CashfreeCollectionsProvider` over one stateful
     `CashfreeFakeWire` per App ID (`cashfree_wires`), the wire `COLLECTIONS_CASHFREE_WIRE=stub` runs
     on: what a test makes "the customer" do there (`wire.pay(...)`) is what a status check finds."""
 
@@ -138,7 +138,7 @@ def principal_for(
     amr: list[str] | None = None,
 ) -> Principal:
     """A tenant admin. Signed in with a one-time code (`amr=["otp"]`) unless a test says
-    otherwise: connecting, rotating, verifying and disconnecting need it (ADR-0030); a test of that
+    otherwise: connecting, rotating, verifying and disconnecting need it (ADR-0033); a test of that
     rule passes `amr=["pwd"]`."""
     return Principal(
         sub=uuid.uuid4(),

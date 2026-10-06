@@ -44,7 +44,7 @@ So the shape here encodes Razorpay's constraints as first-class:
 * `verify_webhook` is signature-first: a provider callback is trusted because it carries the
   provider's HMAC over the raw body, never because it carries a session or a token.
 
-**The live adapter is bound by all of this (B5g), by the contract for its shape (ADR-0029).** The
+**The live adapter is bound by all of this (B5g), by the contract for its shape (ADR-0032).** The
 Razorpay adapter has a stubbed wire by default and a live one (`razorpay_wire.RazorpayHttpWire`)
 behind `PAYMENT_WIRE=live`; when it is live it implements the lookup-before-create contract above
 as far as Razorpay allows — `ensure_order` searches for the Order by `receipt` before it creates one
@@ -354,7 +354,7 @@ class PaymentProvider(Protocol):
         Promoted into the neutral interface for platform billing's checkout: the answer to this
         call — or a signature-verified webhook — is the only thing that may ever move a charge to
         `captured`. The customer's browser saying "paid" is never evidence (ADR-0024 §8,
-        ADR-0029).
+        ADR-0032).
         """
         ...
 
@@ -393,7 +393,7 @@ class CollectionWebhookFacts:
 @runtime_checkable
 class CollectionsProvider(Protocol):
     """The seam tenant collections (`app/collections/`, ADR-0024 §8) holds — **standalone**, not a
-    `PaymentProvider` (ADR-0030): one instance per merchant account, built per call from that
+    `PaymentProvider` (ADR-0033): one instance per merchant account, built per call from that
     account's own sealed keys and never cached.
 
     A collection is paid by the customer, in the provider's own hosted checkout, against an Order
@@ -410,7 +410,7 @@ class CollectionsProvider(Protocol):
       memory only, never stored. `recorded_order_id` is the Order the collection **already
       records**, on a reopen: the adapter fetches that Order by its id and returns it, or refuses
       (`ProviderTransient`, `recorded_order_not_found`) — never a receipt search, never another
-      create (the recorded-Order rule of `CheckoutRequest.recorded_order_id`, ADR-0029).
+      create (the recorded-Order rule of `CheckoutRequest.recorded_order_id`, ADR-0032).
     * `find_order` — the lookup alone, never a create (the expiry sweep, for a collection that
       recorded no Order).
     * `order_payments` — every attempt on an Order as the provider reports it now, in the neutral
@@ -487,7 +487,7 @@ class CollectionsProvider(Protocol):
 class ProviderCapabilities:
     """What one adapter, as built, can and cannot do — read by the service layer **before** any
     provider call, so a charge that could only fail at the provider fails here instead, with no
-    call made and no bank fee paid (ADR-0005 Q4, ADR-0029).
+    call made and no bank fee paid (ADR-0005 Q4, ADR-0032).
 
     The defaults are the legacy stub's: it accepts any currency and amount, and "debits" with no
     mandate (the development posture every older test depends on). A live adapter narrows them.
@@ -536,6 +536,29 @@ def capabilities_of(provider: object) -> ProviderCapabilities:
     """`provider`'s declared capabilities, or the legacy ones for an adapter that declares none."""
     declared = getattr(provider, "capabilities", None)
     return declared if isinstance(declared, ProviderCapabilities) else LEGACY_CAPABILITIES
+
+
+#: What an adapter, as built, is running on: `stub` (no provider is called at all), `test` (a
+#: live wire on test / sandbox credentials: the provider's test cards pay, no real money moves) or
+#: `live` (real money).
+CredentialsMode = Literal["stub", "test", "live"]
+
+
+def credentials_mode_of(provider: object) -> CredentialsMode:
+    """`provider`'s declared `credentials_mode`, or `stub` for an adapter that declares none (a test
+    double, or an adapter built before this existed)."""
+    declared = getattr(provider, "credentials_mode", None)
+    if declared == "test":
+        return "test"
+    if declared == "live":
+        return "live"
+    return "stub"
+
+
+def in_test_mode(provider: object) -> bool:
+    """Whether `provider` runs on test / sandbox credentials — what a checkout's `test_mode`
+    reports. False for a stub (nothing is paid at all) and for live credentials."""
+    return credentials_mode_of(provider) == "test"
 
 
 # --------------------------------------------------------------------------- checkout

@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # may be on the path in a given process.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# **Hermetic by construction** (ADR-0029). The Makefile exports the developer's root `.env` into
+# **Hermetic by construction** (ADR-0032). The Makefile exports the developer's root `.env` into
 # `make test`, and a developer may well hold Razorpay or Cashfree test keys there. Keys never switch
 # the network on (the wire is chosen by an explicit switch), but the switches themselves could come
 # from that file too — so they are pinned here, in the process environment, before any settings are

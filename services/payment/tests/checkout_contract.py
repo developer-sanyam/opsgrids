@@ -1,4 +1,4 @@
-"""`CheckoutContract` — what every customer-present checkout adapter must do (ADR-0029), as
+"""`CheckoutContract` — what every customer-present checkout adapter must do (ADR-0032), as
 executable tests. The sibling of `ProviderContract` for the shape that has no server-side debit.
 
 `ProviderContract` holds an adapter that creates a payment against an Order (Razorpay's debit shape)
@@ -9,7 +9,7 @@ adapters of Phase A. The invariants are the same ones, reworded for it:
    its receipt before it creates one — twice with one adapter, or once each with two adapters over
    the same provider account (a fresh process resuming after a crash), it is **one** Order *when
    the provider's receipt search shows it* (the fakes' does; Razorpay's real one can miss a fresh
-   Order and accepts a duplicate receipt — ADR-0029, 2026-10-06); `find_order` never creates; and
+   Order and accepts a duplicate receipt — ADR-0032, 2026-10-06); `find_order` never creates; and
    an Order the charge already records (`recorded_order_id`) is **fetched by its id** and never
    made again — found even when the receipt search cannot see it, and returned in preference to
    any duplicate carrying the same receipt.

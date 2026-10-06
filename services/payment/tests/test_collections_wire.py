@@ -179,7 +179,7 @@ def test_neither_the_wire_nor_the_adapter_reprs_a_secret() -> None:
 def test_the_platform_wire_is_chosen_by_payment_wire_and_never_by_collections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The two switches are independent (ADR-0029). Before Phase A this pinned that the platform
+    """The two switches are independent (ADR-0032). Before Phase A this pinned that the platform
     provider never got a wire at all; now it gets one under `PAYMENT_WIRE=live` and **only**
     then: `COLLECTIONS_WIRE` turning a merchant's wire on says nothing about the platform's, and
     the platform's turning on says nothing about a merchant's."""

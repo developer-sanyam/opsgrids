@@ -2374,7 +2374,7 @@ export async function insightDiscrepancyTrend(days = 30): Promise<DiscrepancyTre
 /* ------------------------------------ online payment (ADR-0024 A4, Fulfilment F10) ------------------------------------ */
 /**
  * An order's online payment, and the organization's own payment-provider connection (Razorpay or
- * Cashfree, ADR-0030). No fixture-mode branch (the dispatch section's precedent): every function
+ * Cashfree, ADR-0033). No fixture-mode branch (the dispatch section's precedent): every function
  * calls the real endpoint.
  *
  * Nothing here can mark an order paid. `startOrderCheckout` returns what the provider's hosted

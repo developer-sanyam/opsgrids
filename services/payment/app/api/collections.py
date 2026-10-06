@@ -1,4 +1,4 @@
-"""Tenant collections — the public surface (ADR-0024 §8, ADR-0030).
+"""Tenant collections — the public surface (ADR-0024 §8, ADR-0033).
 
 Two kinds of route, authenticated completely differently:
 

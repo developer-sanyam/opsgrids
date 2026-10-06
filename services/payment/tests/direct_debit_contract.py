@@ -1,5 +1,5 @@
 """`DirectDebitContract` — what an adapter for a provider with **no Order step** must do, as
-executable tests (ADR-0029). The sibling of `ProviderContract` for `debit_shape = "direct"`.
+executable tests (ADR-0032). The sibling of `ProviderContract` for `debit_shape = "direct"`.
 
 Cashfree debits a saved mandate with `POST /subscriptions/pay`, keyed by a merchant-chosen
 `payment_id`: there is no Order to create and no payment to "find against" one. The Order-then-

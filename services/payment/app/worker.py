@@ -24,7 +24,7 @@ import asyncio
 from app import consumers
 from app.checkout.cron import build_poller
 from app.collections.cron import build_expiry_sweep
-from app.config import settings
+from app.config import announce_test_mode, settings
 from app.cron import build_sweep
 from app.supervise import run_supervised
 from platform_core.db import (
@@ -41,6 +41,8 @@ log = get_logger("payment.worker")
 
 async def main() -> None:
     cfg = settings()
+    # The `split-workers` rollback runs the poller here, so test mode is announced here too.
+    announce_test_mode(cfg)
     engine = init_engine(cfg)
     # Consumers run NOBYPASSRLS: the per-message tenant GUC only means something if row-level
     # security can bind this role (ADR-0002).

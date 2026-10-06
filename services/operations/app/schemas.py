@@ -2062,7 +2062,7 @@ class RazorpayOrderCheckoutSessionOut(BaseModel):
 
 
 class CashfreeOrderCheckoutSessionOut(BaseModel):
-    """What the browser's `Cashfree({mode}).checkout({paymentSessionId})` needs (ADR-0030). The
+    """What the browser's `Cashfree({mode}).checkout({paymentSessionId})` needs (ADR-0033). The
     session id is fetched from Cashfree for this response by payment and never stored anywhere;
     reopening the checkout fetches it again. No credential, and no customer detail: the phone
     Cashfree requires went to it server to server."""

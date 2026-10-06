@@ -1,5 +1,5 @@
 /**
- * The payment card inside the real order page (ADR-0030): when a payment changes, the page
+ * The payment card inside the real order page (ADR-0033): when a payment changes, the page
  * refreshes the order **without unmounting the card**, so a payment still pending keeps being
  * asked about, "don't take payment again" stays up, and an error the operator has not read yet —
  * a missing customer phone, a checkout that could not load — stays on screen. The card's own tests

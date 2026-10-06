@@ -1,4 +1,4 @@
-"""The Cashfree adapter — platform billing's second provider (ADR-0029), Phase A: customer-present
+"""The Cashfree adapter — platform billing's second provider (ADR-0032), Phase A: customer-present
 checkout. Real everywhere it exists; on `CASHFREE_ENV=stub` its wire is an in-process stateful fake
 (`cashfree_fake.py`) and no socket is ever opened, whatever keys are present.
 
@@ -44,6 +44,7 @@ from app.providers.base import (
     ChargeResult,
     CheckoutRequest,
     CheckoutSession,
+    CredentialsMode,
     MalformedWebhook,
     MandateResult,
     OrderResult,
@@ -79,7 +80,7 @@ _EVENT_NAME_MAX = 80
 #: same key; two receipts never share one).
 _IDEMPOTENCY_NAMESPACE = uuid.UUID("5d0e3d3a-9f0e-4c8e-9a43-0b7a0f6f3c11")
 
-_NOT_BUILT = "is not built: mandates and debits are Phase B and refunds are not built (ADR-0029)"
+_NOT_BUILT = "is not built: mandates and debits are Phase B and refunds are not built (ADR-0032)"
 
 
 def idempotency_key(op: str, receipt: str) -> str:
@@ -119,6 +120,13 @@ class CashfreeProvider:
     @property
     def is_live(self) -> bool:
         return self._mode != "stub"
+
+    @property
+    def credentials_mode(self) -> CredentialsMode:
+        """`stub` on the in-process fake, `test` on Cashfree's sandbox, `live` on production."""
+        if self._mode == "sandbox":
+            return "test"
+        return "live" if self._mode == "production" else "stub"
 
     @property
     def capabilities(self) -> ProviderCapabilities:

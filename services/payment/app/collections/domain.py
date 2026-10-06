@@ -16,7 +16,7 @@ Five things are decided here:
    moved.
 3. **Which neutral payment status means which state** (`state_for_provider_status`). A provider's
    own words — event names, refund statuses, where an error code sits, what of a webhook body is
-   kept — live with its adapter (ADR-0030: `app/providers/razorpay_collections.py`,
+   kept — live with its adapter (ADR-0033: `app/providers/razorpay_collections.py`,
    `app/providers/cashfree_collections.py`), which hands collections `CollectionWebhookFacts` in
    the platform's vocabulary.
 4. **What a refund's provider key is** (`refund_idempotency_key`), in each provider's own shape.

@@ -5,7 +5,7 @@ processor. This is the single place the concrete ones are chosen and built from 
 so selecting a provider is a wiring change here, not a change to any rule. Exposed as FastAPI
 dependencies so a test overrides them the same way it overrides a session.
 
-**Two questions, answered differently (ADR-0029).**
+**Two questions, answered differently (ADR-0032).**
 
 * *Which provider takes a NEW charge?* `get_provider()` — the configured default
   (`PAYMENT_PROVIDER`, `razorpay` unless the owner changes it). Zero-argument, so every existing
