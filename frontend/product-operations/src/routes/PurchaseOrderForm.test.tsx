@@ -14,6 +14,13 @@ import type { AuthContextValue, MeOut } from "@opsgrids/client";
 import type { PurchaseOrderOut, SupplierOut } from "@/api/types";
 import { PurchaseOrderFormPage } from "./PurchaseOrderForm";
 
+/**
+ * An expected delivery date comfortably after today. The form refuses a date in the past and reads
+ * the real clock for "today" (`@/lib/now`), so a literal date here stopped passing the day it went
+ * by. Computed from the same clock, it cannot.
+ */
+const EXPECTED_DATE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
 const listWarehouses = vi.fn();
 const searchActiveSuppliers = vi.fn();
 const searchInventory = vi.fn();
@@ -141,7 +148,7 @@ describe("PurchaseOrderFormPage", () => {
     await waitFor(() => expect(listWarehouses).toHaveBeenCalled());
     await chooseSupplier(user);
     await user.selectOptions(await screen.findByLabelText("Warehouse"), "Bengaluru DC");
-    await user.type(screen.getByLabelText("Expected date"), "2026-10-01");
+    await user.type(screen.getByLabelText("Expected date"), EXPECTED_DATE);
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(await screen.findByRole("heading", { name: "Line items" })).toBeDefined();
@@ -160,7 +167,7 @@ describe("PurchaseOrderFormPage", () => {
     await waitFor(() => expect(listWarehouses).toHaveBeenCalled());
     await chooseSupplier(user);
     await user.selectOptions(await screen.findByLabelText("Warehouse"), "Bengaluru DC");
-    await user.type(screen.getByLabelText("Expected date"), "2026-10-01");
+    await user.type(screen.getByLabelText("Expected date"), EXPECTED_DATE);
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
     await screen.findByRole("heading", { name: "Line items" });
