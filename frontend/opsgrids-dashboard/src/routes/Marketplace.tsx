@@ -31,18 +31,22 @@ function productHost(key: string): string | undefined {
 const PRICING_CONTACT_EMAIL = "info@opsgrids.com";
 
 /**
- * The plan version a trial pins to: the first published version with a flat price. The API
- * never tells this app what that price is — pricing is agreed per client — but the same
- * published, flat-priced version is still what `startTrial` needs and still what decides
+ * The plan version a trial pins to: in the first plan with a published, flat-priced version, the
+ * **newest public monthly** one — the catalogue's current list price. Publishing a new price
+ * leaves the old version published (subscriptions stay pinned to it), so "the first one" would
+ * start every new trial on a price the catalogue has moved past; a yearly version is its own
+ * cadence and is never what a trial starts on. A plan with no public monthly version falls back
+ * to its first published flat one. The API never tells this app what the price is — pricing is
+ * agreed per client — but this version is still what `startTrial` needs and still what decides
  * whether a product can be started at all.
  */
 function trialOffer(plans: Plan[]): PlanVersion | null {
   for (const plan of plans) {
-    for (const version of plan.versions) {
-      if (version.state !== "published") continue;
-      const hasFlatPrice = version.prices.some((p) => p.kind === "flat");
-      if (hasFlatPrice) return version;
-    }
+    const flat = plan.versions.filter((v) => v.state === "published" && v.prices.some((p) => p.kind === "flat"));
+    const first = flat[0];
+    if (!first) continue;
+    const monthly = flat.filter((v) => v.billing_interval === "month" && v.restricted_to_org_id === null);
+    return monthly.reduce<PlanVersion>((newest, v) => (v.version_no > newest.version_no ? v : newest), monthly[0] ?? first);
   }
   return null;
 }
