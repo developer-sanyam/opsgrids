@@ -144,4 +144,5 @@ Cancel, add product, extend trial and the Plans page are later releases of the s
 room for each: the claim table is generic over `action`, the coded-error vocabulary is open, and `ExpectedState`,
 the note and the reserved-reason guard are on the shared path. Still open, and not decided here: end-of-period
 cancel (needs the billing run to honour `cancel_at`), reopening after a cancel, gating owner hand-activation of a
-product, per-action operator step-up, and moving the older suspend/reactivate delegation to `operator:<sub>`.
+product (done in [ADR-0037](0037-stop-events-and-the-hand-activation-gate.md), with the stop-event fix a staff cancel
+also needs), per-action operator step-up, and moving the older suspend/reactivate delegation to `operator:<sub>`.

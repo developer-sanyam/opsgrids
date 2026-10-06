@@ -35,7 +35,7 @@ from app.models import (
 )
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
-from platform_core.errors import BusinessRuleProblem, NotFoundProblem
+from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
 from platform_core.events import publish_event
 from platform_core.logging import get_logger
 
@@ -57,6 +57,34 @@ EVT_DEACTIVATED = "core.product.deactivated"
 #: hand-activated trial (ADR-0004 §5).
 _PROJECTION_TRIAL = "trial"
 _PROJECTION_DE_ENTITLING = ("suspended", "cancelled")
+
+
+#: The stable machine code on a refusal because a subscription feeds the product. Clients branch on
+#: `errors[0].code`; the words are for the person.
+CODE_SUBSCRIPTION_MANAGED = "subscription_managed"
+SUBSCRIPTION_MANAGED_DETAIL = (
+    "This product is managed by a subscription. Manage it on the Subscriptions page or "
+    "contact OpsGrids."
+)
+
+
+class SubscriptionManagedConflict(ConflictProblem):
+    """409 `subscription_managed`: the product has been fed by a subscription, so it is no longer
+    the owner's to switch by hand.
+
+    Defined here rather than imported: product cannot import subscription (one `app` per process,
+    and the coupling between the two is the event contract, never code). The shape is the platform's
+    coded problem — `errors[0].code` — the same as subscription's own coded refusals, so a client
+    reads one convention.
+    """
+
+    code = CODE_SUBSCRIPTION_MANAGED
+
+    def __init__(self) -> None:
+        super().__init__(
+            SUBSCRIPTION_MANAGED_DETAIL,
+            errors=[{"code": CODE_SUBSCRIPTION_MANAGED, "message": SUBSCRIPTION_MANAGED_DETAIL}],
+        )
 
 
 def _source_status(state: str) -> str:
@@ -212,6 +240,23 @@ async def project_subscription(
     for member in members:
         row = by_member.get(member)
         if row is None:
+            if status == SOURCE_SUSPENDED and rows:
+                # A stop that names a member this source never fed: a lapsed rung-up the stop
+                # applied silently (ADR-0037), so the payload carries the *new* pin. There is
+                # nothing to switch off and no entitlement to remember, and a row written here
+                # would be a suspended source with subscription provenance for a product the
+                # organization never had, which the hand-activation gate would then refuse. The
+                # rows this source does have carry the watermark, so an older event is still
+                # dropped. When it has none, this stop is the first thing the source hears and its
+                # rows are the only watermark, so they are written as before.
+                log.info(
+                    "subscription.projection.stop_member_skipped",
+                    organization_id=str(organization_id),
+                    source=product_key,
+                    member=member,
+                    state=state,
+                )
+                continue
             session.add(
                 ActivationSource(
                     organization_id=organization_id,
@@ -364,6 +409,17 @@ async def activate(
 
     A hand activation is the product's **own source** — the same source row its standalone
     subscription folds into, exactly as the two always shared the activation.
+
+    **Refused while a subscription manages the product** (409 `subscription_managed`). That shared
+    row is the hole: a cancelled or suspended subscription leaves its source `suspended`, and an
+    owner's hand activation upserts the very same row back to `active` — a cancellation or a
+    suspension undone with one request, for good, because a cancelled subscription never emits
+    again. So after the activation lock and before any write, every source of this activation —
+    its own and any bundle's, in any status including `suspended` and the `removed` tombstone a
+    downgrade leaves — is read, and any that carries subscription provenance
+    (`ActivationSource.is_subscription_managed`) refuses the request. Fresh organizations and
+    hand-only ones carry none, and activate as ever. No "trial already used" rule rides with it: it
+    would be bypassed by omitting `trial_days`, and it is not what this closes.
     """
     product = await selectors.get_product(session, product_key)
     if product is None:
@@ -384,9 +440,21 @@ async def activate(
     trial_ends = datetime.now(UTC) + timedelta(days=trial_days) if trial_days is not None else None
     # The same activation lock the projection takes, before anything is read.
     await _lock(session, ctx.organization_id, "act", product_key)
+    # Read after the lock, fresh: a fold that held it ahead of us has committed by now, and its
+    # provenance must be what this read sees. Nothing has been written yet, so a refusal leaves no
+    # activation change, no audit row and no outbox row.
+    sources = await selectors.sources_for(session, ctx.organization_id, product_key, fresh=True)
+    if any(s.is_subscription_managed for s in sources):
+        log.info(
+            "product.activate.subscription_managed",
+            organization_id=str(ctx.organization_id),
+            product_key=product_key,
+            sources=sorted(s.source_product_key for s in sources),
+        )
+        raise SubscriptionManagedConflict()
     # `state_occurred_at` is left alone: this path is not event-driven and carries no ordering to
     # guard, exactly as it never stamped the activation.
-    source = await selectors.get_source(session, ctx.organization_id, product_key, product_key)
+    source = next((s for s in sources if s.source_product_key == product_key), None)
     if source is None:
         session.add(
             ActivationSource(
@@ -445,7 +513,9 @@ async def deactivate(
 
     Refused while another live source — a bundle that includes the product — still feeds it:
     switching off the product's own source would leave it on anyway, and a 200 that changes
-    nothing is a lie.
+    nothing is a lie. And refused (409 `subscription_managed`) while the product's own source is
+    live and a subscription feeds it: ending a subscription is the Subscriptions page's act, and a
+    hand deactivation would only last until the subscription's next event.
     """
     # The same activation lock the projection takes, before anything is read: a suite fold
     # committing between the check below and the write would otherwise be ORed away.
@@ -464,6 +534,11 @@ async def deactivate(
             "change or cancel that instead"
         )
     own = next((s for s in sources if s.source_product_key == product_key), None)
+    if own is not None and own.is_subscription_managed and own.is_live:
+        # The product's own subscription is serving it. Switching its source off by hand would
+        # strand a paying customer without the product until the next lifecycle event happened to
+        # switch it back on — the same ownership `activate` refuses to take the other way.
+        raise SubscriptionManagedConflict()
     if own is not None:
         own.status = SOURCE_SUSPENDED
         own.trial_ends_at = None
