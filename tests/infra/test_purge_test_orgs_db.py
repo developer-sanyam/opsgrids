@@ -468,7 +468,10 @@ async def test_a_table_created_by_another_role_without_a_grant_stops_the_run(
     assert REAL_DSN is not None
     a = world.orgs["a"]
     superuser = create_async_engine(
-        make_url(REAL_DSN).set(username="opsgrids", password="opsgrids")  # the dev superuser
+        make_url(REAL_DSN).set(  # the dev superuser, as in tools/dev-bootstrap/compose.yml
+            username="opsgrids",
+            password="opsgrids",  # pragma: allowlist secret
+        )
     )
     try:
         try:
