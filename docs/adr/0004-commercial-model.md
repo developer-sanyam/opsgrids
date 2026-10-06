@@ -186,7 +186,9 @@ service that owns it.
 > event's time, so a stale trio event cannot re-add it. A hand activation is the product's own
 > source, shared with its standalone subscription exactly as the two always shared the row; a
 > hand deactivation of a product a bundle still feeds is refused rather than answered with a 200
-> that changes nothing. Details: [commerce-packaging.md](../commerce-packaging.md).
+> that changes nothing. A hand activation of a product a subscription has fed, in any status, is
+> refused too (409 `subscription_managed`, [ADR-0037](0037-stop-events-and-the-hand-activation-gate.md)).
+> Details: [commerce-packaging.md](../commerce-packaging.md).
 >
 > **Concurrency.** Both the recompute and the watermark are read-then-write, so each fold holds
 > transaction-scoped advisory locks — on the source first, then on every activation it feeds now
