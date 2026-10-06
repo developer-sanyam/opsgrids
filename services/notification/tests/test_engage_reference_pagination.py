@@ -23,12 +23,12 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy.engine import make_url
 
 from app import models
 from app.config import settings
 from app.main import app
 from platform_core.auth import Principal, get_principal
+from platform_core.testing import is_shared_dev_database
 from tests.helpers import principal_for
 
 pytestmark = pytest.mark.integration
@@ -45,8 +45,7 @@ PAGE = 4
 
 @pytest.fixture(autouse=True)
 def _only_an_isolated_database() -> None:
-    database = make_url(settings().database_url).database
-    if database == "opsgrids":
+    if is_shared_dev_database(settings().database_url):
         pytest.fail(
             "This module's fixtures truncate the tenant tables; refusing to run against the "
             "shared `opsgrids` database. Point DATABASE_URL at an isolated one."

@@ -822,7 +822,10 @@ async def test_services_record_is_a_no_op_once_recorded(
 
 
 def test_engine_for_tests_is_not_the_shared_database() -> None:
-    """The suite must never touch the shared `opsgrids` database."""
-    from sqlalchemy.engine import make_url
+    """The suite must never touch the shared development `opsgrids` database.
 
-    assert make_url(settings().app_dsn).database != "opsgrids"
+    Not "the database is not called opsgrids": CI's own database is literally named that, and is
+    the job's throwaway container rather than anything shared (`is_shared_dev_database`)."""
+    from platform_core.testing import is_shared_dev_database
+
+    assert not is_shared_dev_database(settings().app_dsn)
