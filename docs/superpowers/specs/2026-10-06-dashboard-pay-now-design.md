@@ -267,7 +267,7 @@ itself is unaffected.
 3. **ADR-0004 §6**: the provider's SDK is provider-specific by nature. `lib/checkout/launch.ts` is
    the one place the dashboard branches on `client_action.type`. The ADR note belongs to the
    payments track (the Cashfree critique, §2.10). No ADR is written here.
-4. **Gateway**: verified on `main` @ `d284d5d9` — `/api/v1/payment` is routed, authenticated
+4. **Gateway**: verified on `main` @ `6b4a699d` — `/api/v1/payment` is routed, authenticated
    and with no product key, in both `services/app-gateway/routes.json` (→ `localhost:8163`) and
    `infrastructure/edge/routes.prod.json` (→ `payment:8000`), and no public-path list in the
    gateway's `app/main.py` covers it. So `/api/v1/payment/checkouts…` needs no route change.
