@@ -1,5 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiError, PermissionProvider } from "@opsgrids/client";
@@ -190,10 +191,13 @@ function setup({
   vi.mocked(api.listSubscriptions).mockResolvedValue(subscriptions as never);
   vi.mocked(api.listSubscriptionPlanSummaries).mockResolvedValue(summaries);
   vi.mocked(api.getSubscriptionPlanOptions).mockResolvedValue(options);
+  // The page sits under the app's router, and a past-due row can render a router Link.
   render(
-    <PermissionProvider grants={grants}>
-      <SubscriptionsPage />
-    </PermissionProvider>,
+    <MemoryRouter>
+      <PermissionProvider grants={grants}>
+        <SubscriptionsPage />
+      </PermissionProvider>
+    </MemoryRouter>,
   );
   return userEvent.setup();
 }
