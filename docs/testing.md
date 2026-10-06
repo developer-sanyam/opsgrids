@@ -30,6 +30,93 @@ Collected, not hand-maintained — regenerate them rather than edit them (2026-0
 
 Python counts are `pytest --collect-only`; the frontend count is vitest's own total.
 
+## How CI runs this, and how long it takes
+
+Decisions and the reasoning behind them: [ADR-0040](adr/0040-faster-ci.md). Every row is still a `make`
+target that `make gate` runs; what changed is how the rows are spread over runners.
+
+| Job | Runs |
+|---|---|
+| `Changed areas` | Which half of the repository a pull request touches, which services, which of the test shards have anything affected |
+| `Backend — lint, boundaries, schemas` | `lint`, `hygiene`, `boundaries`, both shard-coverage checks, `openapi-check`, `shellcheck`, `hadolint` |
+| `Backend — types` | `mypy` over libs, every service, the tooling (the mypy cache is saved even when the job is red) |
+| `Backend — tooling tests` | `make test-infra` |
+| `Backend — migrations` | Round-trip and drift check for every service, two at a time |
+| `Backend — tests N/6` | Its share of the service suites (below); shard 1 also runs the library tests and the boot smoke |
+| `Contracts`, `Supply chain` | As before; supply-chain rows now each report even if an earlier one is red |
+| `Frontend — types, lint, boundaries`, `Frontend — tests and build N/4` | The workspace, four slices at once |
+
+### The service tests are sharded by item
+
+An *item* is a whole service or one part of one. `tools/ci_shards.py` cuts any service that outweighs half a shard's
+share into parts by recorded per-file duration ([`tools/test-durations.json`](../tools/test-durations.json)), and deals
+the items out longest-first. Parts of one service never share a shard, so never a database: each shard is a runner
+with its own Postgres, and every service fixture `TRUNCATE`s its schema before each test.
+
+```bash
+make test-shard-plan                 # the split, with estimated seconds per shard
+make test-shard-verify               # every test file is in exactly one item (a CI static row)
+make test-shard SHARD=3 SHARDS=6     # run one shard's items, as CI does; AFFECTED_SERVICES narrows it
+```
+
+**Re-balancing.** The durations are a measurement and go stale as suites grow; a stale file never drops a test (every
+file still runs exactly once), it only skews the balance. Each shard uploads its junit timings as `junit-shard-N`:
+
+```bash
+gh run download <run-id> -p 'junit-shard-*' -D /tmp/junit
+python3 tools/ci_shards.py refresh /tmp/junit      # rewrites tools/test-durations.json
+make test-shard-plan                               # check the estimate, then commit
+```
+
+Changing `TEST_SHARDS` (top of `ci.yml`, and the Makefile default — a test keeps them equal) changes the number of
+runners. Look at `make test-shard-plan TEST_SHARDS=<n>` first; below the point where one item is a whole shard there is
+nothing left to gain.
+
+### Why the CI database runs without fsync
+
+The fixtures truncate about fifty tables before every test, and a service suite is mostly those commits.
+`tools/ci-postgres-tune.sh` turns `fsync`, `synchronous_commit` and `full_page_writes` off on the throwaway CI
+database (and refuses to run unless `CI=true`). It is 25–40% faster on a GitHub runner (`operations` 1,138 s → 838 s,
+`finance` 125 → 84 s); on a laptop's Docker VM the same change is 2.4×, which is a reason to measure on the runner.
+
+### Measured timings
+
+Seven recent runs before the change, wall clock: 22.9, 37.1, 30.0, 28.6, 36.1, 33.3, **32.5** minutes. None was green.
+The table compares the latest of them (a `main` push) with the first run of the sharded pipeline (a push to the branch,
+whole pipeline, same trigger shape as `main`). Rows marked *stopped* ended at their first red step, so their
+later rows did not run — the "after" column shows what those rows cost once they were allowed to report.
+
+| Job | Before — run 37452127273 | After, round 1 — run 37466031956 |
+|---|---|---|
+| Wall clock | **32.5 min** | **13.0 min** |
+| Changed areas | 5 s | 8 s |
+| Lint, types, contracts | 13 s (*stopped* at lint) | 716 s, every row ran: types 415 s (cold cache), tooling tests 221 s, OpenAPI 44 s |
+| Migrations | 85 / 99 / 121 s (3 jobs) | 73 / 88 / 103 s (3 jobs) |
+| Service tests | 448 / 750 / **1,920** s (3 jobs) | 462 / 352 / 614 / 400 / **764** s (5 jobs) |
+| Contracts | 20 s | 16 s |
+| Supply chain | 38 s (*stopped* at the advisory scan) | 244 s, every row ran: secret scan 209 s |
+| Frontend | 1,151 s (*stopped*: tests red, build skipped) | static 341 s; four legs 326 / 201 / 197 / 299 s |
+| Job time summed | 77.5 min | 86.7 min |
+
+Reading it: the critical path went from the 32-minute test shard to the 12-minute static job (cold mypy plus the
+tooling tests, in series) and the 12.7-minute test shard that the seeded durations left heavier than the rest. The
+summed job time is higher only because rows that used to be skipped (the secret scan, the build, mypy, the tooling
+tests) now run; the same rows, counted in the "before" column, would put it near 95 minutes.
+
+**Round 2** (pushed, but GitHub refused to start the jobs: *"recent account payments have failed or your spending
+limit needs to be increased"*) re-deals the shards from the durations measured in round 1, splits the static job into
+three, and merges the three migrations jobs into one. It is a prediction, not a measurement, until a run proves it:
+
+| | Predicted |
+|---|---|
+| Six test shards, estimated test time | 363 – 367 s each (every shard within 4 s), plus ~95 s setup: ~7.7 min |
+| Static, types (warm cache), tooling tests | 1.5 – 4 min each, in parallel |
+| Frontend | ~5 min |
+| Wall clock | **~8 min** |
+
+Per-shard overhead measured in round 1 (what the six shards pay and the old three did not): containers 27–40 s, migrate
+25–42 s, checkout and `uv` ~10 s, artifact upload ~4 s.
+
 ## What passing tests do not mean
 
 Every defect in [discoveries.md](discoveries.md) passed a green suite. Most were **contract

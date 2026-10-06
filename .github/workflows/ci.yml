@@ -479,12 +479,6 @@ jobs:
         # is mostly interpreter start-up, which the second vCPU takes half of.
         run: make migrate JOBS=2
 
-      - name: Start CPU sampling
-        # A measurement, not a check: how busy the two vCPUs really are while the tests run.
-        # The suite is run one item at a time because an earlier trial of two processes on this
-        # hardware lost; if the idle figure below is ever large, that trial is worth repeating.
-        run: nohup vmstat 5 > "$RUNNER_TEMP/vmstat.log" 2>&1 &
-
       - name: Service tests
         # Every item in this shard (tools/ci_shards.py: a service, or a part of one), unless
         # the `changes` job narrowed AFFECTED_SERVICES — see tools/filter-affected.sh and
@@ -510,12 +504,6 @@ jobs:
         # exercises the entrypoint, which is identical across services.
         if: ${{ !cancelled() && matrix.shard == 1 }}
         run: make smoke
-
-      - name: CPU use while the tests ran
-        if: ${{ !cancelled() }}
-        run: |
-          pkill vmstat || true
-          awk 'NR>3 { us+=$13; sy+=$14; id+=$15; wa+=$16; n++ } END { if (n) printf "vmstat, %d samples: user %.0f%% system %.0f%% idle %.0f%% iowait %.0f%%\n", n, us/n, sy/n, id/n, wa/n }' "$RUNNER_TEMP/vmstat.log"
 
       - name: Upload test timings
         # What `tools/ci_shards.py refresh` reads to re-balance the shards. Also on failure:
