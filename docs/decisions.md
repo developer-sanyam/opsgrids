@@ -6,9 +6,9 @@ themselves are the authority — this page exists so you can find the right one 
 **Every question an ADR left open is decided or recorded as waiting on demand** in
 [adr/open-questions-register.md](adr/open-questions-register.md). That page links each question
 to the ADR section that decides it and to the backlog item that builds it. Numbers are allocated in
-order and never reused. The next free number is **0034** (0027 is allocated to the inventory Phase 9
+order and never reused. The next free number is **0036** (0027 is allocated to the inventory Phase 9
 work, which has not merged). This table was last brought up to date at 0019, apart from 0028–0033
-below; [`adr/`](adr/) is the complete list.
+and 0035 below; [`adr/`](adr/) is the complete list.
 
 | ADR | Title | Header status | What exists today |
 |---|---|---|---|
@@ -38,6 +38,7 @@ below; [`adr/`](adr/) is the complete list.
 | [0031](adr/0031-staff-add-product-and-trial-extension.md) | Staff Add product and Extend trial | Proposed 2026-10-06 (for owner sign-off) | Built on `feat/admin-add-product-trial`, not deployed. New event `commerce.subscription.trial_extended`; deploy its consumers first (RUNBOOK) |
 | [0032](adr/0032-payment-provider-seam-and-checkout.md) | Payment provider seam: Razorpay and Cashfree, one customer-present checkout, no mandate debit yet | Accepted 2026-10-06 | Built on `feat/payments-phase-a`, not merged or deployed: every switch defaults to the stub (`PAYMENT_PROVIDER`, `PAYMENT_WIRE`, `CASHFREE_ENV`), webhooks stay private and the platform polls; amends the ADR-0004 §6 addendum. Nothing is verified against a provider until the owner runs `tools/payments_smoke_*.py` |
 | [0033](adr/0033-merchant-connect-collections-seam.md) | Merchant connect: a standalone collections seam, and Cashfree as a second provider | Proposed 2026-10-06 | Built on `feat/merchant-cashfree` (on top of payments Phase A, ADR-0032), not deployed; Cashfree's wire stays `stub` until the owner's sandbox run |
+| [0035](adr/0035-list-prices-2026-10-06.md) | List prices 2026-10-06: INR 30,000 a month, INR 3,00,000 a year, for every product | Accepted 2026-10-06 (owner decision) | Built on `feat/list-prices-30k-month-3l-year`, not deployed: catalog migration `b88a833020dc` publishes a yearly and a monthly version of each of the eleven public flat plans; existing subscriptions keep their pinned price until staff switch them; monthly-to-yearly needs cancel-and-resubscribe (not built) |
 
 Several header status lines (0002, 0004, 0006, 0007, 0009, 0010, 0012) were written before the
 work they describe shipped. The "What exists today" column is the current fact. Correcting the

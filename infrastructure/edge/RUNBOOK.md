@@ -1738,6 +1738,82 @@ customer change-plan and the plan reads answer **503 `catalog_unavailable`** and
 table shows no plan line; check catalog's logs for 401s from caller `subscription`. No migration; no gateway
 route change (the paths sit under `/api/v1/subscriptions`).
 
+### List prices 2026-10-06 (ADR-0035): the pricing change, and who pays what
+
+**The pricing change of 2026-10-06.** Every product together now lists at **INR 30,000 a month or
+INR 3,00,000 a year**, split across the eleven products by their old prices: Revenue, People and IT
+INR 3,000 / 30,000; Finance and Inventory INR 3,750 / 37,500; Engage, Marketing, Projects, PulseBoard,
+Storefront and Support INR 2,250 / 22,500 (month / year; table in
+`docs/superpowers/specs/2026-10-06-list-prices-design.md`). **Existing subscriptions keep the price
+they are pinned to until staff switch them** — nothing re-pins anyone, and a trial already running
+converts at the price it started on.
+
+**What migrates.** One catalog revision, `b88a833020dc` (follows `b7e4d2a9c613`), in the ordinary
+`migrate` step: for each of the eleven public flat plans it inserts a published yearly version and
+then a published monthly one (22 rows plus their prices). Inserts only, instantaneous, no new `.env`
+key, no route change. It **aborts the whole migration** (and so the deploy step) with `... is not one
+flat INR price` or `... has paid seat classes` if a plan's current public version was re-priced on
+the Plans page with another shape — nothing is applied; re-price that plan on the Plans page instead
+and re-run. A retired plan, a plan whose public versions were all withdrawn, or a missing plan is
+skipped with a warning in the migrate output.
+
+**Deploy order: the dashboard with or before catalog.** The old dashboard starts a trial on a
+product's *oldest* published version, which after this migration is the old price; the new one starts
+it on the newest public monthly version. With only the old version present the new dashboard picks
+that same version, so shipping the dashboard first is safe.
+
+**Verify, changing nothing.** On the box, from `infrastructure/edge/`:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T catalog alembic current
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT billing_interval, count(*), sum(amount_minor) FROM (
+  SELECT DISTINCT ON (p.id, v.billing_interval) v.billing_interval, pr.amount_minor
+  FROM catalog.plans p
+  JOIN catalog.plan_versions v ON v.plan_id = p.id
+  JOIN catalog.prices pr ON pr.plan_version_id = v.id AND pr.kind = 'flat'
+  WHERE v.state = 'published' AND v.restricted_to_org_id IS NULL
+    AND (p.product_key, p.code) IN (('crm','revenue'),('hrms','people'),('itsm','it'),
+        ('finance','finance'),('operations','inventory'),('engage','engage'),('marketing','marketing'),
+        ('projects','projects'),('pulseboard','pulseboard'),('storefront','storefront'),('support','support'))
+  ORDER BY p.id, v.billing_interval, v.version_no DESC) newest
+GROUP BY billing_interval ORDER BY 1;"
+```
+
+`alembic current` must print `b88a833020dc (head)`; the query must print exactly `month|11|3000000`
+and `year|11|30000000` (paise). Fewer than 11 means a plan was skipped — read the migrate output. Then
+in the console, a customer's **Change plan** lists the new monthly price and the yearly one blocked
+("cadence"); **Add product** offers both.
+
+**Moving a customer to the new price** is the staff **Change plan** to the new monthly version
+(ADR-0029: a trial switches now and free; a paying subscription switches at its next period). **A
+monthly subscription cannot be moved to yearly** — every write refuses `cadence`, and cancel-then-
+subscribe is not built (a cancelled subscription cannot be replaced yet). A new product can be added
+on yearly with **Add product**.
+
+**Optional, owner's call: stop the old prices being pinned by id.** The old versions stay published
+(existing subscribers are pinned to them); no screen offers them any more, but the customer API's
+subscribe still accepts one by id. To close that, withdraw each old version on the Plans page
+(`admin.opsgrids.com/plans`) — first list anything scheduled onto it with the read-only query under
+"Plans & prices in the console" above.
+
+**Rollback.** Roll the images back and **leave the migration**: older catalog code reads the new rows
+(the old dashboard would then start new trials on the old price again). The downgrade **refuses**
+while the new versions exist; `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1` makes it delete them, which
+breaks every subscription pinned or scheduled onto one. Only after this prints `0` (read-only):
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+WITH lp AS (
+  SELECT v.id FROM catalog.plan_versions v
+  JOIN catalog.prices pr ON pr.plan_version_id = v.id AND pr.kind = 'flat'
+  WHERE v.restricted_to_org_id IS NULL
+    AND (v.billing_interval, pr.amount_minor) IN (('month',225000),('month',300000),('month',375000),
+        ('year',2250000),('year',3000000),('year',3750000)))
+SELECT count(*) FROM subscription.subscriptions
+ WHERE plan_version_id IN (SELECT id FROM lp) OR pending_plan_version_id IN (SELECT id FROM lp);"
+```
+
 ### Staff add product and extend trial (ADR-0031): deploy the consumers first
 
 Two more console controls on the account page, on the same claim table and the same rules as Change plan:
