@@ -32,6 +32,7 @@ const OrganizationPage = lazy(() => import("./routes/admin/Organization").then((
 const OrgUnitsPage = lazy(() => import("./routes/admin/OrgUnits").then((m) => ({ default: m.OrgUnitsPage })));
 const LocationsPage = lazy(() => import("./routes/admin/Locations").then((m) => ({ default: m.LocationsPage })));
 const DomainsPage = lazy(() => import("./routes/admin/Domains").then((m) => ({ default: m.DomainsPage })));
+const BillingReturnPage = lazy(() => import("./routes/BillingReturn").then((m) => ({ default: m.BillingReturnPage })));
 
 function lazyFallback() {
   return <Skeleton className="h-80 w-full rounded-card" />;
@@ -90,6 +91,8 @@ const router = createBrowserRouter([
           { path: "products", element: <MarketplacePage /> },
           { path: "subscriptions", element: <SubscriptionsPage /> },
           { path: "invoices", element: <InvoicesPage /> },
+          // A payment provider's redirect lands here; the page asks the server, never the URL.
+          { path: "billing/return", element: <Suspense fallback={lazyFallback()}><BillingReturnPage /></Suspense> },
           { path: "help", element: <HelpPage /> },
           { path: "account/security", element: <Suspense fallback={lazyFallback()}><SecurityPage /></Suspense> },
           { path: "admin/members", element: admin("core.identity.membership.read", <MembersPage />) },

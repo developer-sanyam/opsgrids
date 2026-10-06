@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { ApiError, problemMessage, useAsync } from "@opsgrids/client";
+import { ApiError, problemMessage, useAsync, useCan } from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -14,11 +14,18 @@ import {
 } from "@opsgrids/ui";
 import type { Column, StatusTone, TableSelection } from "@opsgrids/ui";
 
-import { getCreditBalance, getOrganization, listInvoices } from "@/api";
-import type { Invoice } from "@/api/types";
+import { getCreditBalance, getOrganization, listInvoices, listSubscriptions } from "@/api";
+import type { Invoice, Subscription } from "@/api/types";
 import { downloadCsv } from "@/lib/csv";
 import { formatDate, formatMoney } from "@/lib/money";
 import { PageHeader } from "@/ui";
+import { payableInvoiceIds } from "@/ui/billing/payable";
+import { PaymentPanel } from "@/ui/billing/PaymentPanel";
+import { usePayInvoice } from "@/ui/billing/usePayInvoice";
+
+/** The permission the subscribe action checks (`subscription/api/routes.py`): paying for what you
+ *  subscribed to is the same owner decision, and the server enforces it on the checkout call. */
+const PAY_PERMISSION = "core.product.activation.write";
 
 /**
  * `void` and `uncollectible` mean something different here than the shared registry's general
@@ -40,14 +47,29 @@ async function loadCreditBalance(): Promise<{ balance_minor: number; currency: s
   return getCreditBalance(org.currency);
 }
 
-/** Frozen invoices, as the billing service returns them. Nothing here edits money. */
+/** Frozen invoices, as the billing service returns them. Nothing here edits money — "Pay now"
+ *  hands the customer to the payment provider, and only the server's answer says it was paid. */
 export function InvoicesPage() {
   const invoices = useAsync(loadInvoices, []);
   const credit = useAsync(loadCreditBalance, []);
+  const canPay = useCan(PAY_PERMISSION, "ORG");
+  // Which subscriptions are in dunning — the only signal of an unpaid invoice (see `payable.ts`).
+  // A failed read simply offers no "Pay now"; the list itself is unaffected.
+  const overdue = useAsync(
+    (): Promise<Subscription[]> => (canPay ? listSubscriptions() : Promise.resolve([])),
+    [canPay],
+  );
+  const pay = usePayInvoice();
   const [inspecting, setInspecting] = useState<Invoice | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const forbidden = invoices.status === "error" && invoices.error instanceof ApiError && invoices.error.status === 403;
+
+  const payable =
+    canPay && invoices.status === "success" && overdue.status === "success"
+      ? payableInvoiceIds(invoices.data, overdue.data, pay.paid)
+      : new Set<string>();
+  const payingId = pay.busy && pay.state.phase !== "idle" ? pay.state.target.invoiceId : null;
 
   const columns: Column<Invoice>[] =
     invoices.status === "success"
@@ -76,6 +98,45 @@ export function InvoicesPage() {
             align: "right",
             cellClassName: "tnum",
             render: (inv) => <span className="text-ink">{formatMoney(inv.total_minor, inv.currency)}</span>,
+          },
+          {
+            key: "pay",
+            header: "",
+            align: "right",
+            mobile: "actions",
+            render: (inv) =>
+              !payable.has(inv.id) ? null : pay.checkingId === inv.id ? (
+                // Its last payment window closed, or the wait ran out: this row checks that payment
+                // first, where the person is, instead of offering a second one beside a warning
+                // they may not be able to see.
+                <Button
+                  variant="outline"
+                  size="sm"
+                  loading={payingId === inv.id}
+                  disabled={pay.busy}
+                  onKeyDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void pay.checkAgain();
+                  }}
+                >
+                  Check status<span className="sr-only"> of invoice {inv.number}</span>
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  loading={payingId === inv.id}
+                  disabled={pay.busy}
+                  // The row opens the invoice's drawer on click and on Enter/Space; paying is not that.
+                  onKeyDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void pay.start({ invoiceId: inv.id, label: `Invoice ${inv.number}` });
+                  }}
+                >
+                  Pay now<span className="sr-only"> invoice {inv.number}</span>
+                </Button>
+              ),
           },
         ]
       : [];
@@ -126,6 +187,8 @@ export function InvoicesPage() {
           </div>
         </Card>
       ) : null}
+
+      <PaymentPanel pay={pay} />
 
       {invoices.status === "loading" ? <Skeleton className="h-64 w-full rounded-card" /> : null}
 
