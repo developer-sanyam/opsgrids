@@ -292,7 +292,7 @@ to:
 Add `from typing import Callable, TypeVar` (or add to the existing `from typing import Any, Protocol` line) and `T = TypeVar("T")` near the top of the file. Update the method body's return statement from:
 
 ```python
-return AuthorizationRequest.from_json(raw if isinstance(raw, str) else raw.decode("utf-8"))
+            return AuthorizationRequest.from_json(raw if isinstance(raw, str) else raw.decode("utf-8"))
 ```
 
 to:
