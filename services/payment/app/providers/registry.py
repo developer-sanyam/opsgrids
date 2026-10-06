@@ -1,4 +1,4 @@
-"""Which providers exist, and how each is built from configuration (ADR-0029).
+"""Which providers exist, and how each is built from configuration (ADR-0032).
 
 `app/deps.py` is the single place a provider is chosen and cached; this module is the table it
 chooses from, kept free of caching and of any import of `deps` so the adapters stay importable

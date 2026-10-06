@@ -1,4 +1,4 @@
-"""The charge poller (`app/checkout/cron.py`, ADR-0029): the only way a platform charge learns an
+"""The charge poller (`app/checkout/cron.py`, ADR-0032): the only way a platform charge learns an
 outcome while the provider webhooks are private, and the sweep exclusion that makes a checkout
 safe to leave `created`.
 

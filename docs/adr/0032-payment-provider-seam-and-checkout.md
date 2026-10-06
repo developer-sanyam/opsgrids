@@ -1,4 +1,4 @@
-# ADR-0029 — Payment provider seam: two providers, one checkout, no mandate debit yet
+# ADR-0032 — Payment provider seam: two providers, one checkout, no mandate debit yet
 
 **Status:** Accepted by the owner, 2026-10-06 (decisions D1-D7 of the design) — built on
 `feat/payments-phase-a`, not merged, not deployed. Decision 13 and "Sandbox facts" were added the
@@ -15,6 +15,9 @@ webhook inbox are append-only; every table carries `organization_id`; no cross-s
 [ADR-0024](0024-fulfilment-boundaries.md) §8 (tenant collections, which share the Razorpay adapter);
 and the production edge's [RUNBOOK](../../infrastructure/edge/RUNBOOK.md) (the box, and why its `.env`
 is the only place a key lives).
+ADR-0029 is the staff plan-control record and ADR-0030 the catalog operator surface (both merged in
+#105 and #106); ADR-0031 is reserved by `feat/admin-add-product-trial`. This record was first drafted as
+0029 and renumbered to 0032 when it was brought up to date with `main`, so no two records share a number.
 
 ## Context
 

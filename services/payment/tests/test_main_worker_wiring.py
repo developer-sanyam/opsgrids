@@ -147,7 +147,7 @@ async def test_the_consumer_and_sweep_both_run_inside_one_supervised_group(
     assert len(expiry_built) == 1
     assert expiry_built[0].work_scope == ("bulkhead", engines[0])
     await asyncio.wait_for(expiry_built[0].ran.wait(), timeout=1)
-    # So does the charge poller (ADR-0029): the only thing that learns a platform charge's outcome
+    # So does the charge poller (ADR-0032): the only thing that learns a platform charge's outcome
     # while the provider webhooks are private, on the same bulkhead.
     assert len(poller_built) == 1
     assert poller_built[0].work_scope == ("bulkhead", engines[0])

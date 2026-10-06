@@ -1,5 +1,5 @@
 """A stateful Razorpay, as an `httpx.MockTransport` handler — the double the live Razorpay
-adapter is tested against (ADR-0029). No network, no real keys: every key here is a `dev-only-`
+adapter is tested against (ADR-0032). No network, no real keys: every key here is a `dev-only-`
 placeholder.
 
 It remembers what a real account would — Orders by id, found by a **"contains"** receipt filter (so

@@ -47,7 +47,7 @@ optional_empty="PII_DECRYPT_KEYS SENTRY_DSN BACKUP_S3_ENDPOINT BACKUP_S3_ACCESS_
 # OPS_ALERT_EMAIL is the same shape: ops-monitor still runs and still logs `ops.alert.firing`
 # with nothing configured, it just pages nobody — warned about below, not refused.
 optional_empty="$optional_empty SMTP_HOST SMTP_USERNAME SMTP_PASSWORD RAZORPAY_KEY_ID RAZORPAY_KEY_SECRET OPS_ALERT_EMAIL"
-# The payment provider switches and Cashfree's credentials (ADR-0029). All are COMMENTED in
+# The payment provider switches and Cashfree's credentials (ADR-0032). All are COMMENTED in
 # `.env.example`, so none is a required key; listed here so a box that uncomments one and leaves it
 # empty still deploys — an empty value is the safe default (stub, no live keys), exactly as
 # `env_ignore_empty` reads it in the service. What a non-empty value may be is checked below.
@@ -281,7 +281,7 @@ if [ -z "$secret_problems" ]; then ok "secrets are long enough and distinct"; el
 fi
 
 # The payment provider switches and keys, checked the way `payment` checks them at start-up
-# (ADR-0029): a box that would crash-loop the payment service — and with it the stuck-charge sweep
+# (ADR-0032): a box that would crash-loop the payment service — and with it the stuck-charge sweep
 # and the charge poller — is refused here, with the variable named and never a value.
 # shellcheck disable=SC1091  # sourced, not executed — see the file's own header
 . ./lib/payment-switches.sh

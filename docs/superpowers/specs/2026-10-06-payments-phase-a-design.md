@@ -2,7 +2,7 @@
 
 Status: **implemented on branch, pending owner review** (`feat/payments-phase-a`; not deployed, not
 merged). This file is the implementation contract and records every place the build departs from the
-brief. Decisions of record: [ADR-0029](../../adr/0029-payment-provider-seam-and-checkout.md), which
+brief. Decisions of record: [ADR-0032](../../adr/0032-payment-provider-seam-and-checkout.md), which
 amends the [ADR-0004](../../adr/0004-commercial-model.md) §6 addendum. Base: `main` @ `bbe6cf09`,
 payment Alembic head `a8c1d2e3f4b5` before this work, `c7d8e9f0a1b2` after.
 
@@ -82,7 +82,7 @@ service's wait and the wire's hard bound; its default rose **30 → 45 s** (a Ra
 five requests of 2 s + 5 s = 35 s) and a validator refuses anything under 35 s.
 
 **Razorpay accepts a duplicate `receipt`, and its receipt search can miss a fresh Order** (the sandbox,
-2026-10-06; ADR-0029 "Sandbox facts"). The design first assumed a duplicate was a 400. So the receipt
+2026-10-06; ADR-0032 "Sandbox facts"). The design first assumed a duplicate was a 400. So the receipt
 is not an idempotency key: a checkout's Order id is recorded before any browser sees it, a reopen
 fetches that Order by its id (`GET /orders/{id}`), and only the recorded id is ever handed to a
 browser. The receipt search runs only when no id is recorded, as a best-effort recovery of a create
@@ -147,7 +147,7 @@ permission**, so no ADR-0007 fleet rollout).
   `{"type": "cashfree_checkout", payment_session_id, mode, openable}`. `openable` is false on a stub.
   Cashfree needs a customer phone (10 digits, or `+` and 8-15 digits); a request without a usable one
   is a 422 before any call, and a phone is never invented. A Cashfree session token is **never
-  stored**: reopening fetches it again. **Refusals are coded** in `errors[0].code` (ADR-0029, decision
+  stored**: reopening fetches it again. **Refusals are coded** in `errors[0].code` (ADR-0032, decision
   13): 409 `invoice_already_paid` (the only 409 that means paid), `checkout_in_progress`,
   `previous_checkout_not_closable`, `previous_checkout_payment_in_flight`, `checkout_not_supported`;
   422 `phone_required` (field `customer.phone`), `customer_details_required`, `currency_unsupported`,
@@ -295,7 +295,9 @@ mirrors the validators (names only), and the stub warning now says what to do. T
 7. **`make boundaries` fails on `main` before this work** (`Module app.orders does not exist`). The
    layers contract was verified for `services/payment` with a trimmed config instead; the failure is
    left alone.
-8. **ADR number 0029**, because 0027 is reserved by an unmerged branch.
+8. **ADR number 0032.** It was drafted as 0029 (0027 being reserved by an unmerged branch) and
+   renumbered when it met `main`, where 0029 (staff plan control) and 0030 (catalog operator writes)
+   had merged first and 0031 is reserved by `feat/admin-add-product-trial`.
 9. **Known failures left untouched** (they fail on `main` too): `tests/infra` `test_step_up_marker`
    (OAUTH_AMR), `test_route_table_parity` (E501), ruff format on `app/consumers.py` and `app/schemas.py`
    hunks in `services/operations`, two frontend `PurchaseOrderForm` date-fixture tests,

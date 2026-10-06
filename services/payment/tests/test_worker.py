@@ -1,5 +1,5 @@
 """`payment-worker` runs the charge consumers, the stuck-charge sweep and the charge poller
-together, supervised (D3 round 3; the poller is Phase A, ADR-0029). The sweep had no container of
+together, supervised (D3 round 3; the poller is Phase A, ADR-0032). The sweep had no container of
 its own, so it ran nowhere; it now runs in the worker, and these tests pin the three properties
 that make that safe:
 

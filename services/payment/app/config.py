@@ -35,7 +35,7 @@ class Settings(ServiceSettings):
     #: suspend loop (ADR-0004 §5) — so the relay draining this outbox is load-bearing.
     db_outbox_role: str | None = "opsgrids_outbox"
 
-    # --- provider (Razorpay and Cashfree, ADR-0029) ---------------------------------------------
+    # --- provider (Razorpay and Cashfree, ADR-0032) ---------------------------------------------
     #: The provider **new** platform charges are raised on. An existing charge, mandate and
     #: webhook keep the provider they were created under for life (`charges.provider`): a Razorpay
     #: charge left `created` is finished through Razorpay while this says Cashfree, because a

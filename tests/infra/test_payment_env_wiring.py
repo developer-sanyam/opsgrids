@@ -1,4 +1,4 @@
-"""The payment provider switches and keys, as the box receives them (ADR-0029).
+"""The payment provider switches and keys, as the box receives them (ADR-0032).
 
 Four promises, each a way this goes wrong on a production VM that nobody sees until deploy:
 

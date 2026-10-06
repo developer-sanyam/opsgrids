@@ -1,4 +1,4 @@
-"""The live HTTP wire to Cashfree — a thin `httpx` client, no SDK (ADR-0029).
+"""The live HTTP wire to Cashfree — a thin `httpx` client, no SDK (ADR-0032).
 
 Cashfree's PG API as Phase A uses it (every endpoint, enum and length below comes from
 model-summarised documentation, not a raw OpenAPI file or a live call: the owner-run

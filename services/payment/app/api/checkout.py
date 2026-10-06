@@ -1,4 +1,4 @@
-"""Platform checkout — the customer surface for paying one of OpsGrids' own invoices (ADR-0029).
+"""Platform checkout — the customer surface for paying one of OpsGrids' own invoices (ADR-0032).
 
 Three routes, one owner gate. A person behind the gateway (`/api/v1/payment/checkouts…`) who may
 **activate and deactivate products** for the organization — `core.product.activation.write` at

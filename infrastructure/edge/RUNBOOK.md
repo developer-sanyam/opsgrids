@@ -1046,7 +1046,7 @@ version withdrawn meanwhile stays `grandfathered`.
 ### Payments: turning a provider on
 
 The payments release (design: `docs/superpowers/specs/2026-10-06-payments-phase-a-design.md`; decisions:
-[ADR-0029](../../docs/adr/0029-payment-provider-seam-and-checkout.md)) lets an organization's owner pay one
+[ADR-0032](../../docs/adr/0032-payment-provider-seam-and-checkout.md)) lets an organization's owner pay one
 of OpsGrids' own invoices in **Razorpay's or Cashfree's hosted checkout**. It is **Phase A only**: a
 customer-present checkout. **There is no saved mandate and no automatic recurring debit**, and the platform's
 provider webhooks stay **private**, so the platform learns that an invoice was paid by **asking the
@@ -1140,7 +1140,7 @@ the box ever holds is a live one**, and the first checkout it takes is real mone
    were written to fail safe on each unknown, but a surprise is a reason to look, not to proceed.
 
    **Razorpay's `probe` was run on 2026-10-06** and four answers differed from the design; the adapter
-   was corrected for each (ADR-0029, "Sandbox facts"), so the same output from a rerun is now expected,
+   was corrected for each (ADR-0032, "Sandbox facts"), so the same output from a rerun is now expected,
    not a reason to stop: a duplicate `receipt` is **accepted** (a second Order, no `400`); the receipt
    search answered `count: 0` for an Order created seconds earlier (and once `429`); `payment_capture`
    is not echoed on the Order; a bad key is `401` with `error.code = BAD_REQUEST_ERROR`. What changed:

@@ -1,4 +1,4 @@
-"""The platform's refund idempotency key fits what both providers accept (ADR-0029).
+"""The platform's refund idempotency key fits what both providers accept (ADR-0032).
 
 `services.create_refund` used to send `refund:<uuid>` — 43 characters containing a `:`. Razorpay's
 `X-Refund-Idempotency` wants at least 10 characters of `[A-Za-z0-9_-]`, so the first live refund

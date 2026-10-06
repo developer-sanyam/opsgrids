@@ -194,7 +194,7 @@ async def set_merchant_account(
     existing = await selectors.lock_live_merchant_account(session, organization_id)
     if existing is not None:
         if existing.provider != provider or existing.mode != mode:
-            # **Provider and mode are fixed for the life of a row** (ADR-0029). Every charge taken
+            # **Provider and mode are fixed for the life of a row** (ADR-0032). Every charge taken
             # into this account is pointed at it by `merchant_account_id`, and the keys are what
             # reaches the provider for it (status checks, refunds): overwriting the provider or
             # the mode in place would repoint every earlier charge at keys of another provider or

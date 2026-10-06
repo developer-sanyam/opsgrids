@@ -1,4 +1,4 @@
-"""Shared set-up for the platform-checkout tests (ADR-0029). A plain module, not conftest, for the
+"""Shared set-up for the platform-checkout tests (ADR-0032). A plain module, not conftest, for the
 reason `helpers.py` gives.
 
 The providers a test installs are the real adapters over stateful fakes — the live Razorpay adapter

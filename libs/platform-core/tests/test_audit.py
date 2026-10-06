@@ -82,7 +82,7 @@ class TestSnapshotsAreStorable:
 
 
 class TestProviderSecretsAreRedacted:
-    """Merchant-connect P0 (ADR-0029): a payment-provider credential must never be stored in an
+    """Merchant-connect P0 (ADR-0032): a payment-provider credential must never be stored in an
     audit row. `key_secret` and `webhook_secret` are the merchant account's own field names;
     `secret_key` is Cashfree's. Matched case-insensitively, at any depth."""
 

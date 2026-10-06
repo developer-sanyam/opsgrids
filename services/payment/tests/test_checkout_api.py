@@ -1,5 +1,5 @@
 """`POST /payment/checkouts` — a customer opening the provider's checkout for one of OpsGrids' own
-invoices (ADR-0029, Phase A).
+invoices (ADR-0032, Phase A).
 
 What these pin, each a way this could go wrong in production:
 

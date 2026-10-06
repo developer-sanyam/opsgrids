@@ -3,7 +3,7 @@
 This module is the OpenAPI surface: a change here is a change to the published contract. Two
 internal surfaces meet payment — the service-to-service charge create (billing calls it after
 finalize) and the provider webhooks (signature-guarded, private). The one **customer surface** is
-the platform checkout (ADR-0029): a person who may activate products opens, reads and confirms the
+the platform checkout (ADR-0032): a person who may activate products opens, reads and confirms the
 checkout for one invoice. A person still never creates a charge directly: the amount is always the
 invoice's own charge's, never a request field.
 """
@@ -75,7 +75,7 @@ class UsableMandateOut(BaseModel):
     usable: bool
     mandate_id: uuid.UUID | None = None
     #: The provider the mandate is held at, and the provider the question was asked of (the
-    #: configured default for new charges). Additive (ADR-0029): a mandate at another provider does
+    #: configured default for new charges). Additive (ADR-0032): a mandate at another provider does
     #: not count, because a Razorpay token cannot be debited through Cashfree.
     provider: str | None = None
 
@@ -299,7 +299,7 @@ class ReconciliationOut(BaseModel):
 
 
 # ===================================================================== platform checkout
-# (ADR-0029). A customer paying one of OpsGrids' own invoices in the provider's hosted checkout.
+# (ADR-0032). A customer paying one of OpsGrids' own invoices in the provider's hosted checkout.
 # The amount, the currency and the subscription are never in a request: they are read from the
 # invoice's own charge.
 

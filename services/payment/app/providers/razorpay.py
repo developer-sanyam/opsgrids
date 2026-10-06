@@ -51,7 +51,7 @@ What is **stubbed**, unless a wire is given — the one seam:
   network. The platform's provider gets a wire only when the owner sets `PAYMENT_WIRE=live`
   (`app/deps.py`); a tenant's collections adapter only when `COLLECTIONS_WIRE=razorpay`.
 
-**What the live platform wire does (Phase A, ADR-0029).** Customer-present checkout only:
+**What the live platform wire does (Phase A, ADR-0032).** Customer-present checkout only:
 `ensure_order` is `GET /orders?receipt=…` then `POST /orders` (with `payment_capture: true`, so an
 authorised payment is captured rather than auto-refunded after three days) only if that found none;
 a recorded Order is `GET /orders/{id}`; `find_order` is the receipt search alone;
@@ -365,7 +365,7 @@ class RazorpayProvider:
 
     def _refuse_debit_on_wire(self, what: str) -> None:
         """A live wire never debits: a collection, and a platform checkout, is paid by the customer
-        in Razorpay's own Checkout. A server-side debit over the live wire is Phase B (ADR-0029),
+        in Razorpay's own Checkout. A server-side debit over the live wire is Phase B (ADR-0032),
         and is not built; the service layer refuses a charge that would need one."""
         if self._wire is not None:
             raise NotImplementedError(f"{what} is not available on the live wire")

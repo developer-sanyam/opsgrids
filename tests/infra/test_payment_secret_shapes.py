@@ -1,4 +1,4 @@
-"""No real-shaped payment credential is ever committed (ADR-0029).
+"""No real-shaped payment credential is ever committed (ADR-0032).
 
 `detect-secrets` (the repo's `make secrets` gate) has no Razorpay or Cashfree detector, and the
 owner of this work was handed sandbox credentials in chat. So this is the guard that is specific to

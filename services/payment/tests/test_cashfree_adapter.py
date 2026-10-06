@@ -1,4 +1,4 @@
-"""The Cashfree adapter (ADR-0029, Phase A): the requests it makes against a scripted transport —
+"""The Cashfree adapter (ADR-0032, Phase A): the requests it makes against a scripted transport —
 the shape, the headers, the exact JSON number for an amount — and how it reads Cashfree's
 answers and webhooks. No network and no real keys: every credential here is a `dev-only-`
 placeholder, and the stateful behaviour is `CashfreeFakeWire`'s.

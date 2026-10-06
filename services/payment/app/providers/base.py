@@ -44,7 +44,7 @@ So the shape here encodes Razorpay's constraints as first-class:
 * `verify_webhook` is signature-first: a provider callback is trusted because it carries the
   provider's HMAC over the raw body, never because it carries a session or a token.
 
-**The live adapter is bound by all of this (B5g), by the contract for its shape (ADR-0029).** The
+**The live adapter is bound by all of this (B5g), by the contract for its shape (ADR-0032).** The
 Razorpay adapter has a stubbed wire by default and a live one (`razorpay_wire.RazorpayHttpWire`)
 behind `PAYMENT_WIRE=live`; when it is live it implements the lookup-before-create contract above
 as far as Razorpay allows — `ensure_order` searches for the Order by `receipt` before it creates one
@@ -353,7 +353,7 @@ class PaymentProvider(Protocol):
         Promoted into the neutral interface for platform billing's checkout: the answer to this
         call — or a signature-verified webhook — is the only thing that may ever move a charge to
         `captured`. The customer's browser saying "paid" is never evidence (ADR-0024 §8,
-        ADR-0029).
+        ADR-0032).
         """
         ...
 
@@ -379,7 +379,7 @@ class CollectionsProvider(PaymentProvider, Protocol):
 class ProviderCapabilities:
     """What one adapter, as built, can and cannot do — read by the service layer **before** any
     provider call, so a charge that could only fail at the provider fails here instead, with no
-    call made and no bank fee paid (ADR-0005 Q4, ADR-0029).
+    call made and no bank fee paid (ADR-0005 Q4, ADR-0032).
 
     The defaults are the legacy stub's: it accepts any currency and amount, and "debits" with no
     mandate (the development posture every older test depends on). A live adapter narrows them.

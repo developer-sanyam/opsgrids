@@ -1,4 +1,4 @@
-"""Merchant-connect, Rollout P0 (ADR-0029): the fixes that must land **before any second collections
+"""Merchant-connect, Rollout P0 (ADR-0032): the fixes that must land **before any second collections
 provider value is accepted**, with no behaviour change for a Razorpay merchant.
 
 * **Provider and mode are fixed for the life of a `merchant_accounts` row.** `set_merchant_account`

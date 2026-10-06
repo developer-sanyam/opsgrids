@@ -168,7 +168,7 @@ class TestTheMandateQuestion:
             "amount_minor": amount,
             "usable": False,
             "mandate_id": None,
-            # Additive (ADR-0029): the provider the question was asked of — the configured default.
+            # Additive (ADR-0032): the provider the question was asked of — the configured default.
             "provider": "razorpay",
         }
 

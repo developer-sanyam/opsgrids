@@ -101,7 +101,7 @@ CHARGE_STATES = (
     CHARGE_EXPIRED,
 )
 
-# --- charge flows (ADR-0029) ----------------------------------------------------------------
+# --- charge flows (ADR-0032) ----------------------------------------------------------------
 #: How a platform charge is collected. `debit`: OpsGrids debits the customer's saved mandate (the
 #: billing run, the dunning ladder) — the only flow before Phase A, and the stuck-charge sweep's.
 #: `checkout`: the customer pays an invoice themselves in the provider's hosted checkout. A
@@ -367,7 +367,7 @@ class Charge(Base, TenantBase):
     reference_type: Mapped[str | None] = mapped_column(String(40))
     reference_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
 
-    # --- how a platform charge is collected (ADR-0029) ---------------------------------------
+    # --- how a platform charge is collected (ADR-0032) ---------------------------------------
     #: `debit` or `checkout` — see `FLOW_CHECKOUT`. Merchant charges are always `debit`-flow rows
     #: with their own lifecycle; the column is meaningful for platform charges.
     flow: Mapped[str] = mapped_column(
@@ -436,7 +436,7 @@ class Charge(Base, TenantBase):
             ),
         ),
         # The webhook reconciles a charge by its provider payment id, under a bound tenant. Scoped
-        # to the provider (ADR-0029): two providers' id spaces are unrelated, and a Cashfree
+        # to the provider (ADR-0032): two providers' id spaces are unrelated, and a Cashfree
         # `cf_payment_id` that happens to equal a Razorpay one must not be a conflict.
         Index(
             "uq_charges_org_provider_payment_id",
@@ -462,7 +462,7 @@ class Charge(Base, TenantBase):
             "created_at",
             postgresql_where=text("state = 'created' AND provider_payment_id IS NULL"),
         ),
-        # The poller's discovery (ADR-0029): charges that have a provider Order and no terminal
+        # The poller's discovery (ADR-0032): charges that have a provider Order and no terminal
         # state, by provider and flow.
         Index(
             "ix_charges_poll",
@@ -574,7 +574,7 @@ class ProviderEvent(Base, TenantBase):
     operator.
 
     Storing the `payload` and `signature` makes reconciliation replayable and auditable. The
-    payload is the provider's body **after redaction** (ADR-0029): the table is append-only, so a
+    payload is the provider's body **after redaction** (ADR-0032): the table is append-only, so a
     payer's name, email, phone, UPI id or card detail must never be written to it. What is kept is
     an allow-list that still reads back as the provider's envelope (`_meta.webhook_version` records
     the shape), enough to replay a reconciliation, never enough to identify who paid.
@@ -621,7 +621,7 @@ class ProviderEvent(Base, TenantBase):
 
     __table_args__ = (
         CheckConstraint("payee in ('platform', 'merchant')", name="payee"),
-        # Scoped to the provider (ADR-0029): an event id is only unique within the provider that
+        # Scoped to the provider (ADR-0032): an event id is only unique within the provider that
         # issued it, and one platform now has two of them.
         UniqueConstraint(
             "organization_id",

@@ -1,4 +1,4 @@
-"""The error taxonomy at the seam (ADR-0029): every way a provider call can end is one of four
+"""The error taxonomy at the seam (ADR-0032): every way a provider call can end is one of four
 outcomes, and the service layer treats them differently.
 
 * **result** — recorded.

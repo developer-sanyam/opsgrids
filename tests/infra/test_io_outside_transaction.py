@@ -77,7 +77,7 @@ CLIENT_TYPE_NAMES: frozenset[str] = frozenset(
         "EwayClient",
         "ImsClient",
         "PaymentProvider",
-        # payment's platform-checkout and direct-debit seams (app/providers/base.py, ADR-0029): a
+        # payment's platform-checkout and direct-debit seams (app/providers/base.py, ADR-0032): a
         # checkout provider opens a hosted checkout over HTTP, and a direct-debit provider debits a
         # saved mandate. Both are called on a worker thread with no transaction open.
         "CheckoutProvider",

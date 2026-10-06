@@ -1,5 +1,5 @@
 """An in-process, stateful Cashfree — the wire `CASHFREE_ENV=stub` runs on, and the double the
-Cashfree tests drive (ADR-0029).
+Cashfree tests drive (ADR-0032).
 
 It is a **wire**, not an adapter: `CashfreeFakeWire.request` answers the same `(method, path)`
 calls `CashfreeHttpWire` makes, so the real `CashfreeProvider` — its lookup, its create, its `409`

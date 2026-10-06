@@ -1,4 +1,4 @@
-"""The Phase A revision, as the database enforces it (ADR-0029): checkout charges, the poll index
+"""The Phase A revision, as the database enforces it (ADR-0032): checkout charges, the poll index
 and the sweep reader's column grant.
 
 The migration is additive, with server defaults and no backfill: every existing charge is a `debit`,

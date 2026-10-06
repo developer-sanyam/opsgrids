@@ -1,4 +1,4 @@
-"""The platform webhook ingest, ready for the day it is made public (ADR-0029) — and private today.
+"""The platform webhook ingest, ready for the day it is made public (ADR-0032) — and private today.
 
 The owner's decision is **poll-only**: no webhook path is public and the gateway's public-path lists
 are untouched. Everything on this side is built and held to its promises now, so that day is only a

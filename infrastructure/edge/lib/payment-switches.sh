@@ -3,7 +3,7 @@
 # effects of its own (no `cd`, no `set -e`), the same shape as lib/secret-strength.sh.
 #
 # Mirrors, on purpose and exactly, the start-up validators of `services/payment/app/config.py`
-# (ADR-0029), so a box that would crash-loop `payment` and `payment-worker` — `Settings` refuses to
+# (ADR-0032), so a box that would crash-loop `payment` and `payment-worker` — `Settings` refuses to
 # start, nothing serves, the stuck-charge sweep and the charge poller stop with it — fails
 # *preflight* instead, before a build and before anything changes:
 #

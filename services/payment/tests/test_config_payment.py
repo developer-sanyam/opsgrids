@@ -1,4 +1,4 @@
-"""The provider switches and their start-up validators (ADR-0029): an unconfigured box must start; a
+"""The provider switches and their start-up validators (ADR-0032): an unconfigured box must start; a
 misconfigured one must refuse, naming the variable and never a value; and no combination lets keys
 being *present* switch the network on.
 

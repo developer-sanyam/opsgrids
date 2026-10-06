@@ -1,5 +1,5 @@
 """Shared rules for the owner-run payment smoke tools (`payments_smoke_razorpay.py`,
-`payments_smoke_cashfree.py`) — ADR-0029, and "Payments: turning a provider on" in the RUNBOOK.
+`payments_smoke_cashfree.py`) — ADR-0032, and "Payments: turning a provider on" in the RUNBOOK.
 
 These tools exist to settle what the design could only *assume* about a provider (the real HTTP
 status of a bad key, how a duplicate receipt is refused, which payment fields carry a person, what

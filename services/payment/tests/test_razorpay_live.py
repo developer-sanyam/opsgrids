@@ -1,4 +1,4 @@
-"""The platform's live Razorpay adapter (ADR-0029, Phase A), against a stateful fake Razorpay behind
+"""The platform's live Razorpay adapter (ADR-0032, Phase A), against a stateful fake Razorpay behind
 `httpx.MockTransport`: the requests it makes, the `400` it searches once more after, the money it
 refuses before any request, the key it classifies as the platform's own, and the checkout callback
 signature it verifies. No network and no real keys.

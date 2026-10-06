@@ -16,7 +16,7 @@ and answered **200** (`services.ingest_webhook`), because a retry could not chan
 
 Mounted under `/api/v1` so its path is `/api/v1/webhooks/razorpay`, which is what the gateway
 forwards, body and signature header untouched. **Deliberately not public on the app gateway today**
-(owner decision, ADR-0029): platform billing learns outcomes by polling the provider
+(owner decision, ADR-0032): platform billing learns outcomes by polling the provider
 (`app/checkout/cron.py`), and a public path is a separate, owner-gated change that also touches the
 gateway's public-path lists, both route tables and their parity tests. Everything on this side — the
 signature check, the idempotent inbox, the payload redaction, the body cap — is built and tested so
@@ -81,7 +81,7 @@ TRANSIENT_DATABASE_ERRORS: tuple[type[BaseException], ...] = (
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 #: Each route is bound to **its own** adapter, never to whichever provider is the default now: a
 #: Razorpay delivery is verified with Razorpay's secret and a Cashfree one with Cashfree's, whatever
-#: `PAYMENT_PROVIDER` says (ADR-0029).
+#: `PAYMENT_PROVIDER` says (ADR-0032).
 ProviderDep = Annotated[PaymentProvider, Depends(razorpay_provider)]
 CashfreeProviderDep = Annotated[PaymentProvider, Depends(cashfree_provider)]
 
