@@ -433,7 +433,12 @@ def test_the_plan_digest_follows_the_tree(tree: Path) -> None:
 
 
 def test_a_shard_whose_plan_differs_from_the_changes_jobs_refuses_to_run() -> None:
-    env = {**os.environ, "TEST_PLAN_DIGEST": "0000000000000000"}
+    env = {
+        **os.environ,
+        "TEST_PLAN_DIGEST": "0000000000000000",
+        # As in the test below: were the comparison to regress, nothing may reach a real database.
+        "DATABASE_URL": "postgresql+asyncpg://nobody:nobody@127.0.0.1:1/none",
+    }
     result = subprocess.run(
         ["bash", str(REPO_ROOT / "tools/test-shard.sh"), "1", str(_workflow_test_shards()), "1"],
         env=env,
@@ -442,3 +447,68 @@ def test_a_shard_whose_plan_differs_from_the_changes_jobs_refuses_to_run() -> No
     )
     assert result.returncode == 1
     assert "differs from the changes job" in result.stderr
+
+
+def test_a_ci_shard_with_no_plan_digest_refuses_to_run() -> None:
+    # An empty digest must not mean "nothing to compare against" in CI: it means the changes job's
+    # planner produced nothing, which is when the agreement check matters most.
+    env = {k: v for k, v in os.environ.items() if k != "TEST_PLAN_DIGEST"}
+    env["CI"] = "true"
+    # Should the check ever regress, the script goes on to run real service tests: point them at
+    # a database that cannot answer, so the failure is a refused connection and nothing is
+    # truncated on whatever Postgres is around.
+    env["DATABASE_URL"] = "postgresql+asyncpg://nobody:nobody@127.0.0.1:1/none"
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "tools/test-shard.sh"), "1", str(_workflow_test_shards()), "1"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "no TEST_PLAN_DIGEST" in result.stderr
+
+
+def _run_the_changes_jobs_shards_step(
+    tmp_path: Path, fake_python: str
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """The `shards` step's script run with a stand-in `python3`: (result, GITHUB_OUTPUT text)."""
+    steps = _workflow()["jobs"]["changes"]["steps"]
+    script = next(s["run"] for s in steps if s.get("id") == "shards")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    python = bin_dir / "python3"
+    python.write_text(f"#!/usr/bin/env bash\n{fake_python}\n")
+    python.chmod(0o755)
+    output = tmp_path / "github_output"
+    output.write_text("")
+    env = {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_OUTPUT": str(output),
+        "TEST_SHARDS": "6",
+    }
+    result = subprocess.run(
+        ["bash", "-e", "-c", script], env=env, capture_output=True, text=True, cwd=tmp_path
+    )
+    return result, output.read_text()
+
+
+def test_a_planner_that_crashes_fails_the_changes_job(tmp_path: Path) -> None:
+    # `echo "x=$(planner)"` swallows the planner's exit status: the step stayed green with
+    # `test_shards=` and `test_plan=` empty, the shards' agreement check was switched off, and
+    # the failure surfaced only as an opaque fromJSON('') error in the `tests` matrix.
+    result, written = _run_the_changes_jobs_shards_step(tmp_path, "echo boom >&2; exit 1")
+    assert result.returncode != 0
+    assert "test_plan=\n" not in written
+
+
+def test_a_planner_that_prints_nothing_fails_the_changes_job(tmp_path: Path) -> None:
+    result, _ = _run_the_changes_jobs_shards_step(tmp_path, "exit 0")
+    assert result.returncode != 0
+
+
+def test_the_changes_job_publishes_what_the_planner_printed(tmp_path: Path) -> None:
+    # Called as `python3 tools/ci_shards.py <needed|digest> <shards>`, so the subcommand is $2.
+    fake = 'case "$2" in needed) echo "[1,2]" ;; digest) echo abc123 ;; esac'
+    result, written = _run_the_changes_jobs_shards_step(tmp_path, fake)
+    assert result.returncode == 0, result.stderr
+    assert written.splitlines() == ["test_shards=[1,2]", "test_plan=abc123"]

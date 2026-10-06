@@ -27,13 +27,18 @@ python=${PYTHON:-python3}
 # CI's `changes` job decided which shards exist from its own view of the tree and passed us the
 # fingerprint of the plan it saw. If ours differs, the two jobs disagree about what the tests
 # are, and one of them is wrong — fail rather than run a plan nobody else is running. Unset
-# (a local run), there is nothing to compare against.
+# on a local run there is nothing to compare against; unset *in CI* means the changes job never
+# produced a digest, and skipping the comparison then would switch the check off exactly when
+# the thing it guards (the planner) has already failed.
 if [ -n "${TEST_PLAN_DIGEST:-}" ]; then
   ours=$("$python" "$root/tools/ci_shards.py" digest "$shards")
   if [ "$ours" != "$TEST_PLAN_DIGEST" ]; then
     echo "test-shard: this job's plan ($ours) differs from the changes job's ($TEST_PLAN_DIGEST)" >&2
     exit 1
   fi
+elif [ "${CI:-}" = "true" ]; then
+  echo "test-shard: CI gave this job no TEST_PLAN_DIGEST — the changes job's planner produced none, so the plan cannot be checked" >&2
+  exit 1
 fi
 
 pre=$("$python" "$root/tools/ci_shards.py" items "$shard" "$shards")

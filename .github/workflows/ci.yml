@@ -129,8 +129,15 @@ jobs:
           AFFECTED_ALL: ${{ steps.filter.outputs.services_all }}
           AFFECTED_SERVICES: ${{ steps.filter.outputs.services_list }}
         run: |
-          echo "test_shards=$(python3 tools/ci_shards.py needed "$TEST_SHARDS")" >> "$GITHUB_OUTPUT"
-          echo "test_plan=$(python3 tools/ci_shards.py digest "$TEST_SHARDS")" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          # Computed into variables first: a command substitution inside `echo`'s argument
+          # discards the planner's exit status, so a crash left this step green with an empty
+          # output — and an empty digest switches off the shards' plan-agreement check.
+          shards=$(python3 tools/ci_shards.py needed "$TEST_SHARDS")
+          digest=$(python3 tools/ci_shards.py digest "$TEST_SHARDS")
+          test -n "$shards" -a -n "$digest"
+          echo "test_shards=$shards" >> "$GITHUB_OUTPUT"
+          echo "test_plan=$digest" >> "$GITHUB_OUTPUT"
 
   # The backend was one job of thirteen serial steps and 637s — the whole pipeline's
   # critical path. It was split across jobs, because of a measurement: on a 2-vCPU runner, running
