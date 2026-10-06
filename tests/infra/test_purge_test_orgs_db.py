@@ -869,6 +869,79 @@ async def test_a_membership_added_to_a_doomed_user_mid_run_stops_the_run(
     assert again.failed == 0 and again.users_deleted == 0, "now shared with B: kept"
 
 
+async def test_every_outside_the_database_note_names_a_table_the_plan_deletes_from(
+    engine: AsyncEngine,
+) -> None:
+    """A renamed or removed table would silently stop its note from printing."""
+    plan = await _plan(engine)
+    assert set(purge.EXTERNAL_LEFTOVERS) <= {str(t) for t in plan.order}
+
+
+async def test_platform_audit_rows_that_name_the_removed_are_left_and_reported(
+    engine: AsyncEngine, world: World
+) -> None:
+    """Operator actions and no-active-organisation auth events are filed under the platform's nil
+    organisation, with the user as actor and their IP and user agent. They are not the tenant's
+    rows, so a purge does not delete them; it says how many there are instead of letting "user
+    deleted" read as "gone from every table"."""
+    a, a_only, ab = world.orgs["a"], world.users["a_only"], world.users["ab"]
+    insert = (
+        "INSERT INTO auth.audit_logs (id, organization_id, actor_id, action, entity, entity_id, "
+        "ip, user_agent) VALUES (gen_random_uuid(), :nil, :actor, 'pto.test.platform_row', "
+        "'user', :entity, CAST('203.0.113.7' AS inet), 'pto-test-agent')"
+    )
+    async with engine.begin() as conn:
+        # Names the organisation (an operator action on it).
+        await conn.execute(text(insert), {"nil": NIL, "actor": None, "entity": a})
+        # Names a user who is deleted with it (an MFA event with no active organisation)...
+        await conn.execute(text(insert), {"nil": NIL, "actor": a_only, "entity": None})
+        # ...and one the user is the subject of.
+        await conn.execute(text(insert), {"nil": NIL, "actor": None, "entity": a_only})
+        # `ab` is shared with an organisation that stays: not deleted, so its row is not counted.
+        await conn.execute(text(insert), {"nil": NIL, "actor": ab, "entity": None})
+        # Unrelated to anything removed.
+        await conn.execute(text(insert), {"nil": NIL, "actor": uuid.uuid4(), "entity": None})
+    key = purge.PLATFORM_AUDIT_KEY
+    try:
+        _dry, dry_lines = await _run([a], apply=False)
+        dry_line = next(x for x in _json_lines(dry_lines) if x.get("organization_id") == str(a))
+        assert dry_line["left_in_place"][key] == 3
+
+        _done, lines = await _run([a], apply=True)
+        applied = next(x for x in _json_lines(lines) if x.get("organization_id") == str(a))
+        assert applied["left_in_place"][key] == 3
+        async with engine.connect() as conn:
+            assert (
+                await _scalar(
+                    conn,
+                    "SELECT count(*) FROM auth.audit_logs "
+                    "WHERE action = 'pto.test.platform_row' AND organization_id = :nil",
+                    nil=NIL,
+                )
+                == 5
+            ), "the tool deleted audit rows that are not the organisation's"
+            assert (
+                await _scalar(
+                    conn,
+                    "SELECT count(*) FROM auth.audit_logs WHERE action = 'organization.purged' "
+                    "AND entity_id = :o",
+                    o=a,
+                )
+                == 1
+            )
+        # A re-run: the user is gone, the organisation is gone; the one row naming the
+        # organisation is still counted, and the purge's own record is not.
+        _again, again_lines = await _run([a], apply=False)
+        again = next(x for x in _json_lines(again_lines) if x.get("organization_id") == str(a))
+        assert again["status"] == "already-clean"
+        assert again["left_in_place"][key] == 1
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM auth.audit_logs WHERE action = 'pto.test.platform_row'")
+            )
+
+
 async def test_the_deletion_leaves_one_counts_only_audit_row_under_the_platform(
     engine: AsyncEngine, world: World
 ) -> None:

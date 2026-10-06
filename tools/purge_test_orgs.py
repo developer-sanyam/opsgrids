@@ -98,8 +98,13 @@ away with the user.
 **What it leaves, on purpose.** `processed_events` (a per-consumer idempotency ledger with no
 organisation on it, so nothing ties a row to a tenant), the global catalogue, and plan versions
 restricted to a deleted organisation (`catalog.plan_versions.restricted_to_org_id`: a published
-plan version is immutable, CLAUDE.md). The plan versions are counted in the output as
-`left_in_place`; `processed_events` is named here and in the RUNBOOK.
+plan version is immutable, CLAUDE.md), and the rows in `auth.audit_logs` that are filed under the
+platform's nil organisation yet name a removed organisation or one of its removed users (operator
+actions on it; MFA factors re-sealed or enrolled with no active organisation, which carry the
+user's id, IP and user agent). The tool's own `organization.purged` rows are the record of a purge
+and stay too. Both kinds are counted in the output as `left_in_place` (the audit rows under
+`auth.audit_logs.platform_rows_naming_removed`), so a "user deleted" is not read as "gone from
+every table"; `processed_events` is named here and in the RUNBOOK.
 
 **What it prints: counts only.** One JSON line per organisation with the per-table row counts, a
 `live_signals` block (members, subscriptions by state, captured payments: the facts a name cannot
@@ -212,13 +217,28 @@ EXTERNAL_LEFTOVERS: dict[str, str] = {
     "payment.charges": "payment provider: orders and payments stay in the provider's dashboard",
     "notification.provider_accounts": "messaging provider: connected WhatsApp/email sender "
     "identities and webhooks stay registered with Meta or the mail provider",
+    "notification.w1_numbers": "Meta (WhatsApp): the number stays registered to the business "
+    "account at Meta. Its registration PIN was sealed in this row (`registration_pin_sealed`) "
+    "and is destroyed with it: if the number was real, reset its two-step verification PIN in "
+    "Meta's dashboard before anyone has to re-register it",
+    "notification.email_domains": "DNS and mail provider: the SPF, DKIM and return-path records "
+    "published for this organisation's sending domain stay in your DNS, and the domain stays "
+    "registered with the mail provider; remove both if the domain was real",
+    "notification.email_connections": "mail provider: the app password or API key this "
+    "organisation connected (sealed in this row, gone with it) stays valid at the provider; "
+    "revoke it there if it was real",
 }
 GENERAL_LEFTOVERS = (
-    "RabbitMQ: queues are not per organisation. A message already published about a removed "
-    "organisation is consumed harmlessly or dead-lettered; do not requeue a dead letter that names "
-    "it (tools/dlq.py), because a consumer would recreate projection rows for an organisation that "
-    "no longer exists.",
-    "Redis: caches and rate-limit keys for the organisation expire on their own TTLs.",
+    "RabbitMQ: queues are not per organisation, and nothing ties an event to an organisation that "
+    "still exists. A message already published (or still in an outbox) about a removed "
+    "organisation is consumed all the same: a consumer folds it into its projection (the "
+    "console's organisation list and revenue, for one), so rows for the organisation can come "
+    "back. Let the queues and outboxes drain before you apply and run the same command again "
+    "afterwards; a re-run removes what reappeared. Do not requeue a dead letter that names it "
+    "(tools/dlq.py) for the same reason.",
+    "Redis: cache and rate-limit keys expire on their own TTLs, but the permission-version "
+    "counter `pv:<organization_id>` has none. It stays, one tiny key, and nothing reads it for "
+    "an organisation that no longer exists (`DEL pv:<id>` in redis-cli removes it).",
     "Web bundles are not per organisation; nothing to remove.",
     "Backups taken before this run still hold the organisation until they age out "
     "(docs/engage-erasure-and-unsubscribe.md says the same of every delete here).",
@@ -902,7 +922,38 @@ async def _count(
     return int(row.scalar_one())
 
 
-async def _left_in_place(conn: Conn, org: uuid.UUID) -> dict[str, int]:
+#: The key `left_in_place` reports platform-organisation audit rows under.
+PLATFORM_AUDIT_KEY = "auth.audit_logs.platform_rows_naming_removed"
+
+
+async def _platform_audit_rows(conn: Conn, org: uuid.UUID, orphans: Sequence[uuid.UUID]) -> int:
+    """Audit rows filed under the platform sentinel organisation that name this organisation or one
+    of the users about to be deleted: operator actions on the organisation, and the authentication
+    events that have no active organisation (an MFA factor re-sealed or enrolled, filed there with
+    the user as actor and their IP and user agent). They are selected by `organization_id = :org`
+    for the tenant, so these survive; the owner is told how many, rather than left to assume the
+    user is gone from every table. The tool's own `organization.purged` rows are the record of a
+    purge and are not counted."""
+    audit = _t(AUDIT)
+    if not await _exists_table(conn, audit):
+        return 0
+    for column in ("actor_id", "entity_id", "action"):
+        if not await _column_exists(conn, audit, column):
+            return 0
+    statement = (
+        f"SELECT count(*) FROM {audit.sql} WHERE organization_id = :platform "  # noqa: S608
+        "AND action <> 'organization.purged' AND (entity_id = :org "
+        "OR actor_id = ANY(CAST(:orphans AS uuid[])) OR entity_id = ANY(CAST(:orphans AS uuid[])))"
+    )
+    row = await conn.execute(
+        text(statement), {"platform": PLATFORM_ORG, "org": org, "orphans": list(orphans)}
+    )
+    return int(row.scalar_one())
+
+
+async def _left_in_place(
+    conn: Conn, org: uuid.UUID, orphans: Sequence[uuid.UUID] = ()
+) -> dict[str, int]:
     found: dict[str, int] = {}
     for schema, name, column in LEFT_IN_PLACE:
         table = Table(schema, name)
@@ -916,6 +967,8 @@ async def _left_in_place(conn: Conn, org: uuid.UUID) -> dict[str, int]:
         ).scalar_one()
         if n:
             found[f"{table}.{column}"] = int(n)
+    if platform_rows := await _platform_audit_rows(conn, org, orphans):
+        found[PLATFORM_AUDIT_KEY] = platform_rows
     return found
 
 
@@ -982,7 +1035,7 @@ async def plan_org(
         counts,
         orphans,
         users,
-        await _left_in_place(conn, org),
+        await _left_in_place(conn, org, orphans),
         processed=list(processed),
         signals=await _signals(conn, org),
     )
@@ -1487,6 +1540,19 @@ def _org_line(op: OrgPlan, mode: str, status: str) -> dict[str, Any]:
     return line
 
 
+#: What the prefix note prints when the container does not know the bucket's name.
+BUCKET_PLACEHOLDER = "<S3_PUBLIC_BUCKET>"
+
+
+def public_bucket(environ: Mapping[str, str]) -> str:
+    """The public bucket's name for the "remove this prefix" note. `compose.prod.yml` hands
+    `S3_PUBLIC_BUCKET` to caddy, minio-init and document, not to the `account` image this tool runs
+    in, so it is usually unset here and a guessed default would print a prefix that, on a box with
+    a renamed bucket, `mc rm` would remove nothing from. Unset (or empty), the note says what to
+    substitute rather than guess."""
+    return environ.get("S3_PUBLIC_BUCKET") or BUCKET_PLACEHOLDER
+
+
 def _external_notes(op: OrgPlan, bucket: str) -> list[str]:
     """What this organisation leaves outside the database, from the tables it had rows in."""
     counts = {str(t): n for t, n in op.counts.items()}
@@ -1610,7 +1676,7 @@ async def run(
     apply: bool = False,
     database: str = "",
     environment: str = "local",
-    bucket: str = "opsgrids-public",
+    bucket: str = BUCKET_PLACEHOLDER,
     out: Callable[[str], None] = print,
 ) -> Result:
     """Plan the selected organisations read-only; under `apply`, delete them one transaction each,
@@ -1936,7 +2002,7 @@ def main(
                 apply=args.apply,
                 database=database,
                 environment=cfg.environment,
-                bucket=os.environ.get("S3_PUBLIC_BUCKET") or "opsgrids-public",
+                bucket=public_bucket(os.environ),
                 out=out,
             )
         )

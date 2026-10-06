@@ -1060,12 +1060,52 @@ def test_the_database_label_never_carries_the_password() -> None:
 
 
 def test_what_a_purge_leaves_outside_the_database_is_named() -> None:
-    for table in ("document.assets", "payment.mandates", "storefront.custom_domain_claims"):
+    for table in (
+        "document.assets",
+        "payment.mandates",
+        "storefront.custom_domain_claims",
+        "notification.w1_numbers",
+        "notification.email_domains",
+        "notification.email_connections",
+    ):
         assert table in purge.EXTERNAL_LEFTOVERS
     joined = " ".join(purge.GENERAL_LEFTOVERS)
     for word in ("RabbitMQ", "Redis", "Web bundles", "Backups"):
         assert word in joined
     assert "{bucket}/{org}/" in purge.EXTERNAL_LEFTOVERS["document.assets"]
+
+
+def test_the_leftover_notes_say_what_is_true_of_events_and_redis() -> None:
+    """A late event DOES recreate rows (a consumer folds it with no check that the organisation
+    exists), and the permission-version key has no TTL: "consumed harmlessly" and "expire on their
+    own" were both wrong."""
+    rabbit = next(x for x in purge.GENERAL_LEFTOVERS if x.startswith("RabbitMQ"))
+    assert "harmlessly" not in rabbit
+    assert "come back" in rabbit and "drain" in rabbit and "run the same command again" in rabbit
+    redis = next(x for x in purge.GENERAL_LEFTOVERS if x.startswith("Redis"))
+    assert "pv:<organization_id>" in redis and "has none" in redis
+    assert "for the organisation expire on their own TTLs." not in redis, "the old blanket claim"
+
+
+def test_a_whatsapp_number_note_says_the_registration_pin_goes_with_the_row() -> None:
+    note = purge.EXTERNAL_LEFTOVERS["notification.w1_numbers"]
+    assert "registration_pin_sealed" in note and "destroyed" in note and "PIN" in note
+    assert "DNS" in purge.EXTERNAL_LEFTOVERS["notification.email_domains"]
+    assert "revoke" in purge.EXTERNAL_LEFTOVERS["notification.email_connections"]
+
+
+def test_the_bucket_in_the_prefix_note_is_never_a_guess() -> None:
+    """`S3_PUBLIC_BUCKET` is not passed to the `account` container, so it is normally unset here;
+    a hard-coded default would print a prefix `mc rm` silently removes nothing from on a box whose
+    bucket was renamed."""
+    assert purge.public_bucket({}) == purge.BUCKET_PLACEHOLDER == "<S3_PUBLIC_BUCKET>"
+    assert purge.public_bucket({"S3_PUBLIC_BUCKET": ""}) == purge.BUCKET_PLACEHOLDER
+    assert purge.public_bucket({"S3_PUBLIC_BUCKET": "shop-images"}) == "shop-images"
+    plan = purge.OrgPlan(ORG_A, {Table("document", "assets"): 2}, [], purge.UserReport(), {})
+    note = purge._external_notes(plan, purge.public_bucket({}))[0]
+    assert f"<S3_PUBLIC_BUCKET>/{ORG_A}/" in note and "opsgrids-public" not in note
+    source = TOOL.read_text()
+    assert 'or "opsgrids-public"' not in source, "no guessed default in the code"
 
 
 # -------------------------------------------------------------------------------- the documents
@@ -1092,6 +1132,7 @@ _NOT_THE_TOOLS = {
     "--entrypoint",
     "--recursive",
     "--force",
+    "--no-table-headers",  # rabbitmqctl
 }
 
 
@@ -1126,6 +1167,15 @@ def test_the_runbook_section_has_the_whole_procedure() -> None:
         "ADR-0036",
         "MinIO",
         "RabbitMQ",
+        # What a late event does, what the tool cannot print, what has no TTL, what is lost.
+        "Let the events drain",
+        "list_queues",
+        "same command again",
+        "<S3_PUBLIC_BUCKET>",
+        "pv:<organization_id>",
+        "registration PIN",
+        "platform_rows_naming_removed",
+        "not through a tunnel",
     ):
         assert needle in section, needle
     # The order of the steps is the safety: look, choose, back up, dry-run, apply, verify.

@@ -2104,7 +2104,14 @@ the organisations you are removing, they are not flagged `is_staff` and you did 
 `--keep-user`; a user who belongs to any organisation that stays is never touched (only the
 membership goes). **What stays**, and is reported rather than hidden: `processed_events` (a
 per-consumer idempotency ledger with no organisation on it), the global catalogue, plan versions
-restricted to a removed organisation (a published plan version is immutable) and operator accounts.
+restricted to a removed organisation (a published plan version is immutable), operator accounts,
+and the rows in `auth.audit_logs` that are filed under the platform's nil organisation but name a
+removed organisation or one of its removed users (operator actions on it, and authentication events
+with no active organisation, which carry the user's id, IP address and user agent). Those last two
+are counted per organisation in `left_in_place` (the audit rows as
+`auth.audit_logs.platform_rows_naming_removed`): they are the platform's own audit trail, not the
+organisation's, and the tool does not delete them. A removed user is gone from every table except
+those.
 The append-only tables (refunds, provider events, invoices' ledgers, audit trails) are emptied for
 the organisation by lifting each one's delete guard **by name, inside that organisation's
 transaction, only on tables where it has rows**, and putting it back before the commit; nothing is
@@ -2117,12 +2124,26 @@ names to your own terminal, because you cannot choose by id alone. Each purged o
 leaves one counts-only row in `auth.audit_logs` under the platform's nil organisation, written in
 the same transaction.
 
-**Run it when the box is quiet** (a few minutes; nothing needs to be stopped). Lifting a guard
+**Run it when the box is quiet** (a few minutes; no service needs to be stopped). Lifting a guard
 takes a lock that keeps writers off that table until the organisation's transaction ends, and a
 lock it cannot get in ten seconds fails that organisation cleanly instead of queueing behind
-traffic. Do **not** requeue a dead letter that names a removed organisation afterwards
-(`tools/dlq.py`): a consumer would recreate projection rows for an organisation that no longer
-exists.
+traffic.
+
+**Let the events drain, before and after.** A consumer folds an event into its projection without
+checking that the organisation still exists (no foreign key crosses a schema, and the consumers
+run inside the API containers), so an event still queued or sitting in an outbox when you delete
+can recreate rows for the removed organisation afterwards: the console's organisation list and
+revenue are where it shows. So right after a smoke or end-to-end run, and again before step 5,
+check that nothing is in flight: `make edge-status` (from your laptop) shows the outbox and
+dead-letter checks green, and this prints nothing when every queue is empty:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T rabbitmq \
+  rabbitmqctl -q list_queues --no-table-headers name messages | awk '$2 > 0'
+```
+
+Step 6 runs the command once more after a few minutes. Do **not** requeue a dead letter that
+names a removed organisation (`tools/dlq.py`) for the same reason.
 
 **Run it on the box, not through a tunnel.** The tool decides whether a database is live from the
 DSN it is given: `ENVIRONMENT` of `production`, `staging` or `uat`, a host that is not a loopback
@@ -2219,7 +2240,11 @@ the output, fix the cause and run the same command again, it skips what is alrea
 refusal before anything was written. Add `--keep-orphan-users` to remove memberships only and keep
 every account.
 
-**6. Verify.** The same command again is a no-op (`already_clean`). Then:
+**6. Verify.** Wait a few minutes for the queues to drain again (the check in "Let the events
+drain"), then run the **same command again**. Normally it is a no-op: every id is `already-clean`
+and `organisations_deleted` is `0`. If an id now has rows and is `deleted`, a late event recreated
+projection rows for it after the purge (usually in `console`), and this run removed them; that is
+not a tool error. Repeat until it is a no-op. Then:
 
 ```bash
 PURGE                                       # what is left; your own organisations are all there
@@ -2235,23 +2260,38 @@ now exclude what you removed.
 what it did not touch, and never touches any of it:
 
 - **Object storage (MinIO).** Uploaded images are keyed `<organization>/<asset>` in the public
-  bucket; the tool prints the exact prefix (`<bucket>/<org-uuid>/`) when the organisation had
-  assets. Remove it with the root credential `minio-init` already carries, listing first:
+  bucket; the tool prints the prefix (`<S3_PUBLIC_BUCKET>/<org-uuid>/`) when the organisation had
+  assets. The `account` container is not given the bucket's name, so the tool cannot print it: it
+  is `S3_PUBLIC_BUCKET` in `.env`, `opsgrids-public` unless you renamed it, and the `ls` below
+  shows the buckets that exist. Remove the prefix with the root credential `minio-init` already
+  carries, listing first:
 
   ```bash
   MC='docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T --entrypoint mc minio-init'
+  $MC ls  "og/"                               # the bucket names
   $MC ls  "og/<bucket>/<org-uuid>/"
   $MC rm --recursive --force "og/<bucket>/<org-uuid>/"
   ```
 
-  Skip it if no such line was printed: there were no assets.
+  Skip it if no such line was printed: there were no assets. A wrong bucket name removes nothing
+  (the listing comes back empty), and the images stay world-readable.
 - **Payment and messaging providers.** Mandates, orders and a connected merchant account stay in the
-  Razorpay or Cashfree dashboard, and a connected WhatsApp or email sender stays registered with
-  Meta or the mail provider; revoke them there if they were real.
+  Razorpay or Cashfree dashboard, and a connected WhatsApp number or email sender stays registered
+  with Meta or the mail provider; revoke them there if they were real. Two things are lost with the
+  rows and need a hand if the thing was real: a WhatsApp number's registration PIN is sealed only in
+  `notification.w1_numbers`, so reset its two-step verification PIN in Meta's dashboard before
+  anyone has to re-register the number; and a mail connection's app password or API key is gone
+  from the database but stays valid at the provider, so revoke it there.
 - **DNS and certificates.** A custom domain an organisation pointed at the box is yours to remove at
-  the registrar; Caddy keeps any certificate it issued until it expires.
-- **RabbitMQ, Redis and web bundles** have nothing per organisation to remove (see above for the
-  dead-letter caution).
+  the registrar; Caddy keeps any certificate it issued until it expires. The same goes for the
+  SPF, DKIM and return-path records of a sending domain it verified
+  (`notification.email_domains`): they stay in your DNS and at the mail provider.
+- **RabbitMQ** has nothing per organisation to remove, but see "Let the events drain": a late event
+  recreates rows, and the re-run in step 6 removes them. **Redis** keys are caches and rate-limit
+  counters on TTLs, except `pv:<organization_id>` (the permission-version counter), which has no
+  TTL and stays: one tiny key per organisation that ever had a grant change, never read again.
+  Remove it with `DEL pv:<org-uuid>` in `redis-cli` if you want it gone. **Web bundles** are not
+  per organisation.
 
 **If it was wrong.** Nothing the tool does can be undone by the tool: **the backup is the undo.**
 Stop writing, restore it as in "Restore from backup", "the real thing" (`gunzip -c <chosen>.sql.gz

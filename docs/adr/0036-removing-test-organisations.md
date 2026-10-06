@@ -95,6 +95,13 @@ Verified in code before deciding:
 * `processed_events` in every schema: an idempotency ledger keyed by event id, with no organisation on it.
 * `catalog.plan_versions.restricted_to_org_id`: a published plan version is immutable (CLAUDE.md); the count is
   reported per organisation. The catalogue is global.
+* `auth.audit_logs` rows filed under the platform's nil organisation that name a removed organisation or one of its
+  removed users: operator actions on the organisation, and authentication events that have no active organisation
+  (an MFA factor re-sealed or enrolled), which carry the user's id, IP address and user agent. They are the platform's
+  audit trail, not the tenant's, and the tool's own `organization.purged` rows live among them; deleting rows from the
+  record of who did what to whom is a decision for a person, not a side effect of removing a tenant. They are counted
+  per organisation in `left_in_place` (`auth.audit_logs.platform_rows_naming_removed`) so that "user deleted" is not
+  read as "gone from every table".
 * Anything that was only ever copied elsewhere: a backup, a provider's dashboard, a mail provider's log.
 
 ## Consequences
@@ -110,8 +117,12 @@ Verified in code before deciding:
   migrated database and fails when one is not. A table that has neither is not reached, so the complement is pinned
   too: a database test lists every table the purge does not reach and fails until a new one is named there as not
   tenant data.
-* **A late event can recreate a projection row** for a removed organisation if a consumer is still holding a message
-  about it; the RUNBOOK says not to requeue such a dead letter, and a re-run removes what reappeared.
+* **A late event recreates projection rows** for a removed organisation: a consumer folds an event with no check that
+  the organisation exists (no foreign key crosses a schema, and consumers run inside the API containers), so an event
+  still queued or in an outbox when the purge runs comes back as rows in `console` and elsewhere. The RUNBOOK therefore
+  says to let the queues and outboxes drain before applying, to re-run the same command a few minutes after (a re-run
+  removes what reappeared, and a non-zero re-run is that, not a tool error), and not to requeue a dead letter that
+  names a removed organisation.
 * **The real-database test is opt-in** (`OPSGRIDS_PURGE_ORGS_TEST_DATABASE_URL`), like the put-away purge's, because
   `tests/infra` is database-free. It builds one row in every table the tool reaches from the live catalogue, not a
   hand-picked few, and removes everything it made.
