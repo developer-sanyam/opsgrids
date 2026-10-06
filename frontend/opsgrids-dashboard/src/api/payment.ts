@@ -1,61 +1,96 @@
 /**
  * Paying an OpsGrids invoice by card, UPI or netbanking — the dashboard's whole view of
- * payment-service's customer checkout (docs/superpowers/specs/2026-10-06-dashboard-pay-now-design.md).
+ * payment-service's customer checkout (ADR-0029; docs/superpowers/specs/2026-10-06-dashboard-pay-now-design.md §3).
  *
- * The three wire shapes are read in exactly one place, `fromWire`, and the three ways the server
- * says no are read in exactly one place, `checkoutRefusal`. Everything else in the app sees the
- * mapped types below and nothing off the wire. When the service's real shapes are reconciled with
- * the contract this was written against, these two functions are the whole of the change.
+ * The contract is `libs/contracts/openapi/payment.json`: `PlatformCheckoutIn`, `CheckoutCustomerIn`,
+ * `PlatformCheckoutOut`, `PlatformCheckoutStatusOut`, `CheckoutConfirmIn`, and the coded refusals
+ * of `POST /payment/checkouts` (`errors[0].code`, services/payment/app/checkout/services.py). The
+ * wire is touched in exactly three places: the request bodies below, `fromWire` for every answer,
+ * and `checkoutRefusal` for every way the server says no. Everything else in the app sees the
+ * mapped types and nothing off the wire.
  *
  * Nothing here is a secret. The only provider identifier that ever reaches the browser is the
  * public Razorpay key id, and it arrives from the server inside a checkout — it is checked to be a
  * key id here, so a misconfigured server can never get a secret rendered into a page. Nothing is
  * persisted: a checkout lives in component state for as long as the screen that started it.
  */
-import { ApiError, apiRequest, fieldErrorMap, fieldErrors, problemMessage, problemSlug } from "@opsgrids/client";
+import { ApiError, apiRequest, fieldErrorMap, problemMessage } from "@opsgrids/client";
 
+/** The providers that hand the browser a `client_action` this page can open. */
 export type CheckoutProvider = "razorpay" | "cashfree";
 
-/** The charge's lifecycle as payment-service reports it. Only the server moves it. */
+/**
+ * `PlatformCheckoutStatusOut.state`, plus `expired`. An expiry is not a state on the wire: it is
+ * `failed` with `failure_reason: "checkout_expired"` — nobody paid before the checkout closed —
+ * and it is told apart here from a payment that failed.
+ */
 export type CheckoutState = "created" | "authorized" | "captured" | "failed" | "expired";
 
-/** What the browser must do to let the customer pay — one variant per provider SDK. */
+/** An openable `client_action` — what the browser opens, one variant per provider SDK. */
 export type ClientAction =
   | { type: "razorpay_checkout"; keyId: string; orderId: string }
   | { type: "cashfree_checkout"; paymentSessionId: string; mode: "sandbox" | "production" };
 
-/** A checkout the server opened for one invoice. The amount is the server's, never the page's. */
-export interface CheckoutSession {
+interface CheckoutBase {
   chargeId: string;
   provider: CheckoutProvider;
-  action: ClientAction;
-  /**
-   * `client_action.openable`: false when the server's provider is a stub, whose Order or session
-   * no real checkout would accept. Nothing is launched on one.
-   */
-  openable: boolean;
+  /** The invoice's own charge, never the page's figure. */
   amountMinor: number;
   currency: string;
-  expiresAt: string | null;
+  /** `expires_at`: when this checkout stops being payable. Always set on an opened checkout. */
+  expiresAt: string;
 }
 
-/** A status read. The only answer to "did it work?" this app ever acts on. */
+/** A checkout whose `client_action.openable` is true: a real provider window can take it. */
+export interface OpenableCheckout extends CheckoutBase {
+  openable: true;
+  action: ClientAction;
+}
+
+/**
+ * `client_action.openable: false` — a stub provider's stand-in Order or session that no real
+ * checkout would accept (a stub Razorpay's key id is even empty). There is nothing to launch.
+ */
+export interface StubCheckout extends CheckoutBase {
+  openable: false;
+  action: null;
+}
+
+/** `PlatformCheckoutOut`: a checkout the server opened (or reopened) for one invoice. */
+export type CheckoutSession = OpenableCheckout | StubCheckout;
+
+/**
+ * `PlatformCheckoutStatusOut` — the only answer to "did it work?" this app ever acts on. It is what
+ * the status read and the Razorpay confirm both return.
+ */
 export interface CheckoutStatus {
   chargeId: string;
+  /** A plain string on the wire. Read, never branched on: a status needs no launcher. */
+  provider: string;
   state: CheckoutState;
-  provider: CheckoutProvider;
+  /** True only for a captured payment. Checked to agree with `state`. */
+  paid: boolean;
   amountMinor: number;
   currency: string;
+  /** `expires_at`: nullable on a status read. */
+  expiresAt: string | null;
+  /** `failure_reason`: set only on a `failed` checkout. */
+  failureReason: string | null;
+  /** `provider_checked`: false when the provider could not be asked this time — `state` is then the last one recorded. */
+  providerChecked: boolean;
 }
 
-/** Contact details the provider needs for some payments (Cashfree requires a phone number). */
+/**
+ * `CheckoutCustomerIn`, as this page sends it: only from the details prompt, which always carries
+ * a phone. The provider gets it and nothing else does — the server never stores it.
+ */
 export interface CheckoutCustomer {
-  name: string;
-  email: string;
+  name: string | null;
+  email: string | null;
   phone: string;
 }
 
-/** The three fields Razorpay's Checkout hands its `handler`. Sent to `/confirm` and nowhere else. */
+/** `CheckoutConfirmIn`: the three fields Razorpay's Checkout hands its `handler`. Sent to `/confirm` and nowhere else. */
 export interface RazorpayHandlerFields {
   razorpay_order_id: string;
   razorpay_payment_id: string;
@@ -72,18 +107,47 @@ export class PaymentContractError extends Error {
   }
 }
 
-// ------------------------------------------------------------------------------------- calls
+// ------------------------------------------------------------------------------ requests
 
-/** `POST /payment/checkouts` — open (or re-open) the one checkout for this invoice. */
+/** `CheckoutCustomerIn`'s own limits. A value past one is sent as null rather than refused. */
+const NAME_MAX = 100;
+const EMAIL_MAX = 254;
+
+interface CheckoutCustomerIn {
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+}
+
+interface PlatformCheckoutIn {
+  invoice_id: string;
+  customer?: CheckoutCustomerIn;
+}
+
+/** Blank, or longer than the server takes: null. A provider gets no name rather than a cut one. */
+function optionalText(value: string | null, max: number): string | null {
+  const trimmed = value?.trim() ?? "";
+  return trimmed.length > 0 && trimmed.length <= max ? trimmed : null;
+}
+
+function customerIn(customer: CheckoutCustomer): CheckoutCustomerIn {
+  return {
+    name: optionalText(customer.name, NAME_MAX),
+    email: optionalText(customer.email, EMAIL_MAX),
+    phone: customer.phone,
+  };
+}
+
+// ------------------------------------------------------------------------------- calls
+
+/** `POST /payment/checkouts` — open (or re-open) the one checkout for this invoice. 201. */
 export async function createCheckout(invoiceId: string, customer?: CheckoutCustomer): Promise<CheckoutSession> {
-  const raw = await apiRequest<unknown>("/payment/checkouts", {
-    method: "POST",
-    body: customer ? { invoice_id: invoiceId, customer } : { invoice_id: invoiceId },
-  });
+  const body: PlatformCheckoutIn = customer ? { invoice_id: invoiceId, customer: customerIn(customer) } : { invoice_id: invoiceId };
+  const raw = await apiRequest<unknown>("/payment/checkouts", { method: "POST", body });
   return fromWire("checkout", raw);
 }
 
-/** `GET /payment/checkouts/{charge_id}` — read-through: the server asks the provider when open. */
+/** `GET /payment/checkouts/{charge_id}` — read-through: the server asks the provider while it is open. */
 export async function getCheckoutStatus(chargeId: string, signal?: AbortSignal): Promise<CheckoutStatus> {
   const raw = await apiRequest<unknown>(`/payment/checkouts/${encodeURIComponent(chargeId)}`, { signal });
   return fromWire("status", raw);
@@ -91,28 +155,25 @@ export async function getCheckoutStatus(chargeId: string, signal?: AbortSignal):
 
 /**
  * `POST /payment/checkouts/{charge_id}/confirm` — Razorpay only. Hands the server the handler's
- * three fields so it can verify the signature and fetch the payment itself. The answer is not
- * used as proof either: the caller polls the status read afterwards, whatever this returns.
+ * three fields so it can verify the signature and ask Razorpay itself. The answer is not used as
+ * proof either: the caller polls the status read afterwards, whatever this returns.
  */
-export async function confirmRazorpay(chargeId: string, fields: RazorpayHandlerFields): Promise<CheckoutState> {
+export async function confirmRazorpay(chargeId: string, fields: RazorpayHandlerFields): Promise<CheckoutStatus> {
   const raw = await apiRequest<unknown>(`/payment/checkouts/${encodeURIComponent(chargeId)}/confirm`, {
     method: "POST",
     body: fields,
   });
-  return fromWire("confirm", raw).state;
+  return fromWire("status", raw);
 }
 
 // ----------------------------------------------------------------------------- wire mapping
 
 type Wire = Record<string, unknown>;
 
-/**
- * The states payment-service sends (`PlatformCheckoutStatusOut.state`). An expiry is not a state on
- * the wire: it is `failed` with `failure_reason: "checkout_expired"`, mapped to `expired` below.
- */
 const WIRE_STATES = ["created", "authorized", "captured", "failed"] as const;
 const EXPIRED_REASON = "checkout_expired";
 const PROVIDERS: readonly CheckoutProvider[] = ["razorpay", "cashfree"];
+const ACTION_TYPES = { razorpay: "razorpay_checkout", cashfree: "cashfree_checkout" } as const;
 /** A Razorpay *public* key id. A key secret has no such prefix, so it can never pass this. */
 const RAZORPAY_KEY_ID = /^rzp_(test|live)_[A-Za-z0-9]+$/;
 const ISO_CURRENCY = /^[A-Z]{3}$/;
@@ -123,6 +184,14 @@ function isObject(value: unknown): value is Wire {
 
 function text(source: Wire, key: string, what: string): string {
   const value = source[key];
+  if (typeof value !== "string" || value.length === 0) throw new PaymentContractError(what);
+  return value;
+}
+
+/** A key the schema requires that may be null: missing is a contract break, null is not. */
+function nullableText(source: Wire, key: string, what: string): string | null {
+  const value = source[key];
+  if (value === null) return null;
   if (typeof value !== "string" || value.length === 0) throw new PaymentContractError(what);
   return value;
 }
@@ -143,134 +212,128 @@ function minorUnits(source: Wire, what: string): { amountMinor: number; currency
   return { amountMinor: amount, currency };
 }
 
-/** The wire state, with a checkout nobody paid before it expired told apart from a failed payment. */
-function checkoutState(source: Wire, what: string): CheckoutState {
-  const state = oneOf(source, "state", WIRE_STATES, what);
-  return state === "failed" && source.failure_reason === EXPIRED_REASON ? "expired" : state;
-}
-
-function openable(raw: unknown): boolean {
-  if (!isObject(raw) || typeof raw.openable !== "boolean") throw new PaymentContractError("checkout");
-  return raw.openable;
-}
-
-function clientAction(raw: unknown, provider: CheckoutProvider): ClientAction {
-  if (!isObject(raw)) throw new PaymentContractError("checkout");
-  if (raw.type === "razorpay_checkout" && provider === "razorpay") {
-    const keyId = text(raw, "key_id", "checkout");
-    if (!RAZORPAY_KEY_ID.test(keyId)) throw new PaymentContractError("checkout");
-    return { type: "razorpay_checkout", keyId, orderId: text(raw, "order_id", "checkout") };
-  }
-  if (raw.type === "cashfree_checkout" && provider === "cashfree") {
-    return {
-      type: "cashfree_checkout",
-      paymentSessionId: text(raw, "payment_session_id", "checkout"),
-      mode: oneOf(raw, "mode", ["sandbox", "production"] as const, "checkout"),
-    };
-  }
-  throw new PaymentContractError("checkout");
+/** `PlatformCheckoutStatusOut`. `failure_reason` and `provider_checked` have server defaults (null, true). */
+function statusFromWire(raw: Wire): CheckoutStatus {
+  const what = "status";
+  const wireState = oneOf(raw, "state", WIRE_STATES, what);
+  const paid = raw.paid;
+  // `paid` is `state == captured` on the server; a body where they disagree is not one it sends.
+  if (typeof paid !== "boolean" || paid !== (wireState === "captured")) throw new PaymentContractError(what);
+  const failureReason = raw.failure_reason ?? null;
+  if (failureReason !== null && typeof failureReason !== "string") throw new PaymentContractError(what);
+  const providerChecked = raw.provider_checked === undefined ? true : raw.provider_checked;
+  if (typeof providerChecked !== "boolean") throw new PaymentContractError(what);
+  return {
+    chargeId: text(raw, "charge_id", what),
+    provider: text(raw, "provider", what),
+    state: wireState === "failed" && failureReason === EXPIRED_REASON ? "expired" : wireState,
+    paid,
+    ...minorUnits(raw, what),
+    expiresAt: nullableText(raw, "expires_at", what),
+    failureReason,
+    providerChecked,
+  };
 }
 
 /**
- * The one function that reads payment-service's checkout responses. Strict on purpose: an amount
- * that is not an integer, a currency that is not ISO-4217, a state or provider this page has
- * never heard of, or a client action that does not match its provider is a refusal to proceed,
- * never a best guess.
+ * `client_action`, tagged by `type`, which must be its provider's. Only an openable one is read
+ * further — strictly, since it is what a provider window is opened with. A stub's is never opened,
+ * so its stand-in ids are not read at all.
+ */
+function actionFromWire(raw: unknown, provider: CheckoutProvider): ClientAction | null {
+  const what = "checkout";
+  if (!isObject(raw) || raw.type !== ACTION_TYPES[provider] || typeof raw.openable !== "boolean") {
+    throw new PaymentContractError(what);
+  }
+  if (!raw.openable) return null;
+  if (raw.type === "razorpay_checkout") {
+    const keyId = text(raw, "key_id", what);
+    if (!RAZORPAY_KEY_ID.test(keyId)) throw new PaymentContractError(what);
+    return { type: "razorpay_checkout", keyId, orderId: text(raw, "order_id", what) };
+  }
+  return {
+    type: "cashfree_checkout",
+    paymentSessionId: text(raw, "payment_session_id", what),
+    mode: oneOf(raw, "mode", ["sandbox", "production"] as const, what),
+  };
+}
+
+/** `PlatformCheckoutOut`. Every key is required, and `expires_at` is never null on it. */
+function checkoutFromWire(raw: Wire): CheckoutSession {
+  const what = "checkout";
+  const provider = oneOf(raw, "provider", PROVIDERS, what);
+  const base: CheckoutBase = {
+    chargeId: text(raw, "charge_id", what),
+    provider,
+    ...minorUnits(raw, what),
+    expiresAt: text(raw, "expires_at", what),
+  };
+  const action = actionFromWire(raw.client_action, provider);
+  return action ? { ...base, openable: true, action } : { ...base, openable: false, action: null };
+}
+
+/**
+ * The one function that reads payment-service's checkout answers. Strict on purpose: an amount
+ * that is not an integer, a currency that is not ISO-4217, a state or provider this page has never
+ * heard of, a required key missing, or a client action that does not match its provider is a
+ * refusal to proceed, never a best guess.
  */
 export function fromWire(kind: "checkout", raw: unknown): CheckoutSession;
 export function fromWire(kind: "status", raw: unknown): CheckoutStatus;
-export function fromWire(kind: "confirm", raw: unknown): { state: CheckoutState };
-export function fromWire(
-  kind: "checkout" | "status" | "confirm",
-  raw: unknown,
-): CheckoutSession | CheckoutStatus | { state: CheckoutState } {
-  if (!isObject(raw)) throw new PaymentContractError(kind === "checkout" ? "checkout" : "status");
-  if (kind === "confirm") return { state: checkoutState(raw, "status") };
-  if (kind === "status") {
-    return {
-      chargeId: text(raw, "charge_id", "status"),
-      state: checkoutState(raw, "status"),
-      provider: oneOf(raw, "provider", PROVIDERS, "status"),
-      ...minorUnits(raw, "status"),
-    };
-  }
-  const provider = oneOf(raw, "provider", PROVIDERS, "checkout");
-  const expires = raw.expires_at;
-  return {
-    chargeId: text(raw, "charge_id", "checkout"),
-    provider,
-    action: clientAction(raw.client_action, provider),
-    openable: openable(raw.client_action),
-    ...minorUnits(raw, "checkout"),
-    expiresAt: typeof expires === "string" && expires.length > 0 ? expires : null,
-  };
+export function fromWire(kind: "checkout" | "status", raw: unknown): CheckoutSession | CheckoutStatus {
+  if (!isObject(raw)) throw new PaymentContractError(kind);
+  return kind === "checkout" ? checkoutFromWire(raw) : statusFromWire(raw);
 }
 
 // ---------------------------------------------------------------------------- refusals
 
-/** The coded 422 refusals this page has its own words (or its own prompt) for. */
-export type RefusalCode = "phone_required" | "currency_unsupported" | "amount_below_minimum";
+/** 409s that mean "not now" — wait, then try again. None of them is a payment. */
+const BUSY_CODES = ["checkout_in_progress", "previous_checkout_not_closable", "previous_checkout_payment_in_flight"] as const;
+export type BusyCode = (typeof BUSY_CODES)[number];
 
-/**
- * Every spelling of a refusal this page acts on, as a machine code in `errors[].code` or as the
- * problem `type` slug (hyphens read as underscores). The `customer_*` and `unsupported_currency`
- * names are payment-service's own (`_REQUEST_CODES`, services/payment/app/checkout/services.py);
- * `customer_details_required` is the provider asking for contact details, which the phone prompt
- * collects.
- */
-const REFUSAL_CODES: ReadonlyMap<string, RefusalCode> = new Map([
-  ["phone_required", "phone_required"],
-  ["customer_phone_required", "phone_required"],
-  ["customer_details_required", "phone_required"],
-  ["currency_unsupported", "currency_unsupported"],
-  ["unsupported_currency", "currency_unsupported"],
-  ["amount_below_minimum", "amount_below_minimum"],
-]);
+/** 422s the details prompt answers: the provider needs who is paying. */
+const DETAILS_CODES = ["phone_required", "customer_details_required"] as const;
+export type DetailsCode = (typeof DETAILS_CODES)[number];
 
-/**
- * payment-service raises these refusals as a bare `ValidationProblem(message)` — type `validation`,
- * no `errors[]`, no code — so today the sentence is the only thing that tells them apart. Each is
- * matched whole against `_REQUEST_CODES` in services/payment/app/checkout/services.py, and only on
- * an uncoded `validation` 422. A reworded sentence falls through to the server's own words
- * (`other`), never to a wrong prompt; once the service attaches a code, `REFUSAL_CODES` wins first.
- */
-const UNCODED_REFUSALS: ReadonlyMap<string, RefusalCode> = new Map([
-  ["Add a customer phone number to pay online", "phone_required"],
-  ["Add the customer's details to pay online", "phone_required"],
-  ["Only INR invoices can be paid online", "currency_unsupported"],
-  ["The amount is below the minimum that can be paid online (Rs 1)", "amount_below_minimum"],
-]);
+/** 422s for what can never be paid online, refused before any provider call. */
+const UNPAYABLE_CODES = ["currency_unsupported", "amount_below_minimum", "nothing_to_pay"] as const;
 
-/**
- * The only machine codes that mean "this invoice is already paid". payment-service answers other
- * 409s from the same route — a checkout another click is preparing, an expired checkout not yet
- * closed, a provider without checkout — and none of those is a payment. So a 409 is read as paid
- * only when it says so in a code, never from its status or its sentence.
- */
-const ALREADY_PAID_CODES: ReadonlySet<string> = new Set(["invoice_already_paid", "already_paid"]);
+/** Why online payment cannot take this invoice: the 409 `checkout_not_supported`, and the 422s above. */
+export type UnpayableCode = "checkout_not_supported" | (typeof UNPAYABLE_CODES)[number];
 
 export type CheckoutRefusal =
+  /** 409 `invoice_already_paid` — the only refusal that means paid. */
   | { kind: "already_paid" }
-  /** A 409 that is not a coded "paid": the server's own sentence, and the invoice stays payable. */
+  | { kind: "busy"; code: BusyCode; message: string }
+  | { kind: "needs_details"; code: DetailsCode; message: string }
+  | { kind: "unpayable"; code: UnpayableCode; message: string }
+  /** A 409 with no code this page knows: the server's own sentence, and the invoice stays payable. */
   | { kind: "conflict"; message: string }
   | { kind: "not_found" }
   | { kind: "forbidden" }
-  | { kind: "coded"; code: RefusalCode; message: string }
-  /** A field-level 422 — the phone number the customer typed, most likely. */
+  /** A field-level 422 with no refusal code — the framework's own, on `customer.phone` most likely. */
   | { kind: "invalid"; fields: Record<string, string>; message: string }
   | { kind: "other"; message: string };
 
-/** Every machine code a problem carries: its `errors[].code`s, then its `type` slug. */
-function problemCodes(error: ApiError): string[] {
-  const codes = fieldErrors(error.problem).map((entry) => entry.code.replace(/-/g, "_"));
-  const slug = problemSlug(error.problem).replace(/-/g, "_");
-  return slug ? [...codes, slug] : codes;
+function member<T extends string>(allowed: readonly T[], value: string | null): T | undefined {
+  return allowed.find((candidate) => candidate === value);
 }
 
 /**
- * Why the server would not open (or report on) a checkout. Machine codes decide: `errors[].code`
- * first, the problem `type` slug second (`phone-required` and `phone_required` are the same code),
- * so either convention the service settles on lands here. A status alone decides only 403 and 404.
+ * `errors[0].code`. Read here rather than through `fieldErrors`, which keeps only entries with a
+ * `field` — and the busy 409s carry `{code, message}` with no field.
+ */
+function refusalCode(error: ApiError): string | null {
+  const errors: unknown = error.problem?.errors;
+  const first: unknown = Array.isArray(errors) ? errors[0] : undefined;
+  if (!isObject(first)) return null;
+  return typeof first.code === "string" ? first.code : null;
+}
+
+/**
+ * Why the server would not open (or report on) a checkout. A code decides, and only at the status
+ * the contract gives it: `invoice_already_paid` is paid only on a 409, never from a status or a
+ * sentence. A status alone decides only 403 and 404.
  */
 export function checkoutRefusal(error: unknown): CheckoutRefusal {
   if (!(error instanceof ApiError)) {
@@ -279,17 +342,21 @@ export function checkoutRefusal(error: unknown): CheckoutRefusal {
   if (error.status === 404) return { kind: "not_found" };
   if (error.status === 403) return { kind: "forbidden" };
   const message = problemMessage(error);
-  const codes = problemCodes(error);
+  const code = refusalCode(error);
   if (error.status === 409) {
-    return codes.some((code) => ALREADY_PAID_CODES.has(code)) ? { kind: "already_paid" } : { kind: "conflict", message };
+    if (code === "invoice_already_paid") return { kind: "already_paid" };
+    const busy = member(BUSY_CODES, code);
+    if (busy) return { kind: "busy", code: busy, message };
+    if (code === "checkout_not_supported") return { kind: "unpayable", code, message };
+    return { kind: "conflict", message };
   }
   if (error.status === 422) {
-    const coded = codes.map((code) => REFUSAL_CODES.get(code)).find((code) => code !== undefined);
-    if (coded) return { kind: "coded", code: coded, message };
-    if (fieldErrors(error.problem).length > 0) return { kind: "invalid", fields: fieldErrorMap(error.problem), message };
-    const detail = error.problem?.detail;
-    const uncoded = detail && problemSlug(error.problem) === "validation" ? UNCODED_REFUSALS.get(detail) : undefined;
-    if (uncoded) return { kind: "coded", code: uncoded, message };
+    const details = member(DETAILS_CODES, code);
+    if (details) return { kind: "needs_details", code: details, message };
+    const unpayable = member(UNPAYABLE_CODES, code);
+    if (unpayable) return { kind: "unpayable", code: unpayable, message };
+    const fields = fieldErrorMap(error.problem);
+    if (Object.keys(fields).length > 0) return { kind: "invalid", fields, message };
   }
   return { kind: "other", message };
 }

@@ -12,15 +12,21 @@ import { ApiError } from "@opsgrids/client";
 vi.mock("@/lib/checkout/poll", () => ({ pollCheckout: vi.fn() }));
 
 import { PaymentContractError } from "@/api/payment";
-import type { CheckoutStatus } from "@/api/payment";
+import type { CheckoutState, CheckoutStatus } from "@/api/payment";
 import { pollCheckout } from "@/lib/checkout/poll";
 import type { PollOptions, PollOutcome } from "@/lib/checkout/poll";
+import { checkoutStatus } from "@/test-utils/payment";
 
 import { BillingReturnPage } from "./BillingReturn";
 
 const CHARGE = "6f1c1d1e-0000-4000-8000-000000000001";
 
-const STATUS: CheckoutStatus = { chargeId: CHARGE, state: "captured", provider: "cashfree", amountMinor: 499900, currency: "INR" };
+/** `PlatformCheckoutStatusOut` for this charge, as a Cashfree return lands on it. */
+function statusOf(state: CheckoutState): CheckoutStatus {
+  return checkoutStatus(state, { charge_id: CHARGE, provider: "cashfree" });
+}
+
+const STATUS = statusOf("captured");
 
 function renderAt(url: string) {
   return render(
@@ -56,19 +62,19 @@ describe("BillingReturnPage", () => {
     renderAt(`/billing/return?charge_id=${CHARGE}`);
     // A cancelled checkout redirects here too: arriving is no sign anything was paid.
     expect(screen.getByText("Checking the payment status…")).toBeTruthy();
-    act(() => report?.({ ...STATUS, state: "authorized" }));
+    act(() => report?.(statusOf("authorized")));
     expect(screen.getByText("Payment pending — don't pay again.")).toBeTruthy();
   });
 
   it("says don't pay again when the wait runs out on an authorized payment", async () => {
-    vi.mocked(pollCheckout).mockResolvedValueOnce({ kind: "unsettled", last: { ...STATUS, state: "authorized" } });
+    vi.mocked(pollCheckout).mockResolvedValueOnce({ kind: "unsettled", last: statusOf("authorized") });
     renderAt(`/billing/return?charge_id=${CHARGE}`);
     expect(await screen.findByText("Still waiting for confirmation — don't pay again.")).toBeTruthy();
   });
 
   it("offers another check when the wait runs out, keeping it and the way back on screen while it runs", async () => {
     const user = userEvent.setup();
-    vi.mocked(pollCheckout).mockResolvedValueOnce({ kind: "unsettled", last: { ...STATUS, state: "created" } });
+    vi.mocked(pollCheckout).mockResolvedValueOnce({ kind: "unsettled", last: statusOf("created") });
     renderAt(`/billing/return?charge_id=${CHARGE}`);
     expect(await screen.findByText("No payment has been confirmed yet.")).toBeTruthy();
     // The result takes focus, so a keyboard user is where the next action is.
@@ -80,7 +86,7 @@ describe("BillingReturnPage", () => {
     expect(screen.getByRole("button", { name: "Check again" }).getAttribute("aria-busy")).toBe("true");
     expect(screen.getByRole("link", { name: "Back to Invoices" })).toBeTruthy();
 
-    act(() => finish?.({ kind: "settled", status: { ...STATUS, state: "expired" } }));
+    act(() => finish?.({ kind: "settled", status: statusOf("expired") }));
     expect(await screen.findByText("This payment session expired.")).toBeTruthy();
   });
 

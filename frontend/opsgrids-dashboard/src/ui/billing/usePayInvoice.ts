@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { checkoutRefusal, createCheckout } from "@/api/payment";
-import type { CheckoutCustomer, CheckoutRefusal, CheckoutSession, CheckoutState } from "@/api/payment";
+import type { BusyCode, CheckoutCustomer, CheckoutRefusal, CheckoutSession, CheckoutState, UnpayableCode } from "@/api/payment";
 import { launchCheckout } from "@/lib/checkout/launch";
 import { pollCheckout, POLL_INTERVAL_MS } from "@/lib/checkout/poll";
 
@@ -53,7 +53,7 @@ export interface PayInvoice {
   state: PayState;
   /** True while a payment is being opened, is open, or is being waited on. */
   busy: boolean;
-  /** Invoices the server has said, on this screen, are paid — captured here, or a coded 409. */
+  /** Invoices the server has said, on this screen, are paid — `paid: true` here, or a 409 `invoice_already_paid`. */
   paid: ReadonlySet<string>;
   /**
    * The invoice whose last checkout should be checked before anything else is done with it — its
@@ -71,19 +71,37 @@ export interface PayInvoice {
   cancel: () => void;
 }
 
-const PHONE_FIELDS = ["customer.phone", "phone"];
+/** `CheckoutCustomerIn.phone`, as the framework's own 422 names it. */
+const PHONE_FIELD = "customer.phone";
+
+const BUSY_COPY: Record<BusyCode, NoticeCopy> = {
+  checkout_in_progress: COPY.preparing,
+  previous_checkout_not_closable: COPY.previousClosing,
+  previous_checkout_payment_in_flight: COPY.previousInFlight,
+};
+
+const UNPAYABLE_COPY: Record<UnpayableCode, NoticeCopy> = {
+  checkout_not_supported: COPY.unavailable,
+  currency_unsupported: COPY.currencyUnsupported,
+  amount_below_minimum: COPY.belowMinimum,
+  nothing_to_pay: COPY.nothingToPay,
+};
 
 function refusalState(target: PayTarget, refusal: CheckoutRefusal, hadCustomer: boolean): PayState {
   switch (refusal.kind) {
     case "already_paid":
-      return {
-        phase: "refused",
-        target,
-        notice: { tone: "success", title: "This invoice is already paid.", detail: "A payment for it has already been received — there is nothing more to pay." },
-      };
+      return { phase: "refused", target, notice: COPY.alreadyPaid };
+    case "busy":
+      // Not "paid": wait, then try again. The button stays, and the server decides the next click.
+      return { phase: "refused", target, notice: BUSY_COPY[refusal.code] };
+    case "unpayable":
+      return { phase: "refused", target, notice: UNPAYABLE_COPY[refusal.code] };
+    case "needs_details":
+      // The prompt collects the phone and sends the signed-in person's name and email with it. A
+      // refusal of what it sent is shown on its field.
+      return { phase: "needs_phone", target, fieldError: hadCustomer ? refusal.message : undefined };
     case "conflict":
-      // Not "paid": another click preparing this checkout, an expired one not closed yet, a
-      // provider without checkout. The server's own sentence says which; the button stays.
+      // A 409 with no code this page knows. Never "paid": the server's own sentence, and the button stays.
       return { phase: "refused", target, notice: { tone: "warning", title: refusal.message } };
     case "not_found":
       return {
@@ -101,20 +119,8 @@ function refusalState(target: PayTarget, refusal: CheckoutRefusal, hadCustomer: 
           detail: "Ask your organisation's owner to pay it.",
         },
       };
-    case "coded":
-      if (refusal.code === "phone_required") {
-        return { phase: "needs_phone", target, fieldError: hadCustomer ? refusal.message : undefined };
-      }
-      return {
-        phase: "refused",
-        target,
-        notice:
-          refusal.code === "currency_unsupported"
-            ? { tone: "warning", title: "Online payment isn't available for this invoice's currency yet.", detail: "Contact OpsGrids support to pay it another way." }
-            : { tone: "warning", title: "This amount is below the payment provider's minimum.", detail: "Contact OpsGrids support to settle it another way." },
-      };
     case "invalid": {
-      const phoneError = PHONE_FIELDS.map((field) => refusal.fields[field]).find((message) => message !== undefined);
+      const phoneError = refusal.fields[PHONE_FIELD];
       if (hadCustomer && phoneError) return { phase: "needs_phone", target, fieldError: phoneError };
       return { phase: "refused", target, notice: { tone: "danger", title: refusal.message } };
     }
@@ -163,7 +169,7 @@ export function usePayInvoice(): PayInvoice {
     setPaid((prev) => new Set(prev).add(invoiceId));
   }, []);
 
-  /** Show a refusal; only a coded "already paid" 409 is remembered as paid. */
+  /** Show a refusal; only a 409 `invoice_already_paid` is remembered as paid. */
   const refuse = useCallback(
     (target: PayTarget, refusal: CheckoutRefusal, hadCustomer: boolean) => {
       if (refusal.kind === "already_paid") markPaid(target.invoiceId);
@@ -200,7 +206,8 @@ export function usePayInvoice(): PayInvoice {
       if (signal.aborted || outcome.kind === "aborted") return;
       if (outcome.kind === "settled") {
         const settled = outcome.status.state;
-        if (settled === "captured") markPaid(target.invoiceId);
+        // `paid`: the server's own word, true only for a captured payment.
+        if (outcome.status.paid) markPaid(target.invoiceId);
         setState({ phase: settled === "captured" ? "captured" : settled === "failed" ? "failed" : "expired", target, session });
         return;
       }

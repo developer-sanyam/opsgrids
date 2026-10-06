@@ -12,13 +12,10 @@ vi.mock("@/api/payment", async (importOriginal) => ({
 }));
 
 import * as payment from "@/api/payment";
-import type { CheckoutState, CheckoutStatus } from "@/api/payment";
+import type { CheckoutState } from "@/api/payment";
+import { checkoutStatus as status } from "@/test-utils/payment";
 
 import { POLL_ATTEMPTS, POLL_INTERVAL_MS, pollCheckout } from "./poll";
-
-function status(state: CheckoutState): CheckoutStatus {
-  return { chargeId: "c1", state, provider: "razorpay", amountMinor: 100, currency: "INR" };
-}
 
 let visibility: DocumentVisibilityState = "visible";
 

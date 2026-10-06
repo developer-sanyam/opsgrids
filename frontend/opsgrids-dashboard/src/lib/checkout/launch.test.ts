@@ -6,38 +6,20 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@opsgrids/client";
+
 vi.mock("@/api/payment", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/payment")>()),
   confirmRazorpay: vi.fn(),
 }));
 
 import * as payment from "@/api/payment";
-import type { CheckoutSession } from "@/api/payment";
+import { CASHFREE_CHECKOUT as CF_SESSION, checkoutStatus, RAZORPAY_CHECKOUT as RZP_SESSION } from "@/test-utils/payment";
 
 import { CASHFREE_SDK_SRC } from "./cashfree";
 import { launchCheckout } from "./launch";
 import { RAZORPAY_CHECKOUT_SRC } from "./razorpay";
 import { CheckoutUnavailableError, resetScriptLoadsForTests } from "./script";
-
-const RZP_SESSION: CheckoutSession = {
-  chargeId: "charge-1",
-  provider: "razorpay",
-  action: { type: "razorpay_checkout", keyId: "rzp_test_Platform0001", orderId: "order_P1" },
-  openable: true,
-  amountMinor: 499900,
-  currency: "INR",
-  expiresAt: null,
-};
-
-const CF_SESSION: CheckoutSession = {
-  chargeId: "charge-2",
-  provider: "cashfree",
-  action: { type: "cashfree_checkout", paymentSessionId: "session_abc", mode: "sandbox" },
-  openable: true,
-  amountMinor: 100,
-  currency: "INR",
-  expiresAt: null,
-};
 
 type Options = Record<string, unknown> & { handler: (r: unknown) => void; modal: { ondismiss: () => void } };
 type Win = Window & { Razorpay?: unknown; Cashfree?: unknown };
@@ -61,7 +43,7 @@ function stubRazorpay(behaviour: (options: Options, emit: (event: string) => voi
 }
 
 beforeEach(() => {
-  vi.mocked(payment.confirmRazorpay).mockResolvedValue("captured");
+  vi.mocked(payment.confirmRazorpay).mockResolvedValue(checkoutStatus("captured"));
 });
 
 afterEach(() => {
@@ -83,11 +65,18 @@ describe("Razorpay", () => {
     expect(options?.order_id).toBe("order_P1");
     expect(options?.description).toBe("Invoice INV-1");
     expect(JSON.stringify(options)).not.toMatch(/secret/i);
-    expect(payment.confirmRazorpay).toHaveBeenCalledExactlyOnceWith("charge-1", fields);
+    expect(payment.confirmRazorpay).toHaveBeenCalledExactlyOnceWith(RZP_SESSION.chargeId, fields);
   });
 
   it("still waits on the server when confirm is refused (400 on a signature mismatch)", async () => {
-    vi.mocked(payment.confirmRazorpay).mockRejectedValue(new Error("400"));
+    vi.mocked(payment.confirmRazorpay).mockRejectedValue(
+      new ApiError(400, "Invalid checkout confirmation", {
+        type: "https://errors.opsgrids.dev/invalid-checkout-confirmation",
+        title: "Invalid checkout confirmation",
+        status: 400,
+        detail: "could not verify the confirmation",
+      }),
+    );
     stubRazorpay((o) => o.handler({ razorpay_order_id: "o", razorpay_payment_id: "p", razorpay_signature: "bad" }));
     await expect(launchCheckout(RZP_SESSION, "Invoice INV-1")).resolves.toEqual({ wait: "full" });
   });

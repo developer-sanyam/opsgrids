@@ -6,7 +6,7 @@
  * caller is told how long it is worth waiting on the server, and nothing else.
  */
 import { confirmRazorpay } from "@/api/payment";
-import type { CheckoutSession } from "@/api/payment";
+import type { OpenableCheckout } from "@/api/payment";
 
 import { openCashfree } from "./cashfree";
 import { openRazorpay } from "./razorpay";
@@ -20,9 +20,12 @@ import { openRazorpay } from "./razorpay";
  */
 export type LaunchOutcome = { wait: "full" } | { wait: "glance"; failed: boolean };
 
-/** `onOpened` fires once the provider's window is actually up — not while its script is loading. */
+/**
+ * `onOpened` fires once the provider's window is actually up — not while its script is loading.
+ * Only an openable checkout can get here: a stub's (`openable: false`) has no action to open.
+ */
 export async function launchCheckout(
-  session: CheckoutSession,
+  session: OpenableCheckout,
   description: string,
   onOpened?: () => void,
 ): Promise<LaunchOutcome> {

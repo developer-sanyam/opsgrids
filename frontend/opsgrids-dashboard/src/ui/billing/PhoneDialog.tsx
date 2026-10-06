@@ -7,9 +7,10 @@ import type { CheckoutCustomer } from "@/api/payment";
 import { normalisePhone } from "@/lib/checkout/phone";
 
 /**
- * Asked for only when the server answers `phone_required` — the provider needs a contact number
- * for this payment. The signed-in person's own name and email travel with it, and the dialog says
- * so. Nothing typed here is stored by this page.
+ * Asked for only when the server answers `phone_required` or `customer_details_required` — the
+ * provider needs to know who is paying (Cashfree requires a phone on every order). The signed-in
+ * person's own name and email travel with the number as `customer`, and the dialog says so.
+ * Nothing typed here is stored by this page, and the server passes it to the provider only.
  *
  * It stays up, busy, while the number is tried, so a number the provider turns down comes back
  * with the number still in the field and the server's reason under it.
@@ -51,7 +52,7 @@ export function PhoneDialog({
       return;
     }
     setError(undefined);
-    onSubmit({ name: user?.name ?? "", email: user?.email ?? "", phone: normalised });
+    onSubmit({ name: user?.name ?? null, email: user?.email ?? null, phone: normalised });
   }
 
   return (

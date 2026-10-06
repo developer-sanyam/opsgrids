@@ -1,9 +1,9 @@
 /**
  * "Pay now" on the Invoices page: who sees it, which invoices carry it, and how each answer the
- * server can give — paid, busy, unknown, refused with a code, phone needed — reaches the customer.
- * The refusals are payment-service's own problem bodies (feat/payments-phase-a), not the shapes
- * this page would like. The provider window is the launcher's (tested on its own); here it is a
- * stand-in.
+ * server can give — paid, busy, unknown, refused with a code, details needed — reaches the
+ * customer. Every answer is payment-service's own wire (libs/contracts/openapi/payment.json and the
+ * coded refusals of `POST /payment/checkouts`), mapped by the page's own `fromWire`. The provider
+ * window is the launcher's (tested on its own); here it is a stand-in.
  */
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -33,10 +33,18 @@ vi.mock("@/lib/checkout/launch", () => ({ launchCheckout: vi.fn() }));
 
 import * as api from "@/api";
 import * as payment from "@/api/payment";
-import type { CheckoutSession, CheckoutState } from "@/api/payment";
+import type { OpenableCheckout } from "@/api/payment";
 import { launchCheckout } from "@/lib/checkout/launch";
 import type { LaunchOutcome } from "@/lib/checkout/launch";
 import { POLL_ATTEMPTS, POLL_INTERVAL_MS } from "@/lib/checkout/poll";
+import {
+  checkoutProblem,
+  checkoutStatus as status,
+  frameworkProblem,
+  RAZORPAY_CHECKOUT as SESSION,
+  refusalMessage,
+  STUB_CHECKOUT,
+} from "@/test-utils/payment";
 
 import { InvoicesPage } from "./Invoices";
 
@@ -77,35 +85,9 @@ const SUBSCRIPTIONS = [
   { id: "sub-current", product_key: "crm", state: "active", dunning: null },
 ];
 
-const SESSION: CheckoutSession = {
-  chargeId: "charge-1",
-  provider: "razorpay",
-  action: { type: "razorpay_checkout", keyId: "rzp_test_Platform0001", orderId: "order_P1" },
-  openable: true,
-  amountMinor: 499900,
-  currency: "INR",
-  expiresAt: null,
-};
-
-function status(state: CheckoutState) {
-  return { chargeId: "charge-1", state, provider: "razorpay" as const, amountMinor: 499900, currency: "INR" };
-}
-
-/** A problem exactly as payment-service's `ProblemError.to_problem` writes it: no `errors` key. */
-function serviceProblem(status: number, slug: string, title: string, detail: string): ApiError {
-  return new ApiError(status, title, {
-    type: `https://errors.opsgrids.dev/${slug}`,
-    title,
-    status,
-    detail,
-    instance: "/payment/checkouts",
-    request_id: "req-1",
-  });
-}
-
 /** The stand-in provider window: opens at once, then ends as the test says. */
 function windowThat(outcome: LaunchOutcome) {
-  return async (_session: CheckoutSession, _label: string, onOpened?: () => void) => {
+  return async (_session: OpenableCheckout, _label: string, onOpened?: () => void) => {
     onOpened?.();
     return outcome;
   };
@@ -195,7 +177,7 @@ describe("InvoicesPage — paying", () => {
     expect(within(region).getByText("Invoice INV-0042 · ₹4,999.00")).toBeTruthy();
     expect(payment.createCheckout).toHaveBeenCalledExactlyOnceWith("inv-due", undefined);
     expect(launchCheckout).toHaveBeenCalledExactlyOnceWith(SESSION, "Invoice INV-0042", expect.any(Function));
-    expect(payment.getCheckoutStatus).toHaveBeenCalledWith("charge-1", expect.any(AbortSignal));
+    expect(payment.getCheckoutStatus).toHaveBeenCalledWith(SESSION.chargeId, expect.any(AbortSignal));
     // Paid on this screen: its button goes away without waiting for dunning to close — and the
     // keyboard lands on what happened, not at the top of the page.
     expect(screen.queryByRole("button", { name: /Pay now/ })).toBeNull();
@@ -250,9 +232,9 @@ describe("InvoicesPage — paying", () => {
     expect(screen.getByRole("button", { name: "Pay now invoice INV-0042" })).toBeTruthy();
   });
 
-  it("launches nothing on a stub provider's checkout", async () => {
+  it("launches nothing on a stub provider's checkout (client_action.openable: false)", async () => {
     const user = userEvent.setup();
-    vi.mocked(payment.createCheckout).mockResolvedValue({ ...SESSION, openable: false });
+    vi.mocked(payment.createCheckout).mockResolvedValue(STUB_CHECKOUT);
     renderPage();
     await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
     expect(await screen.findByText("Online payment isn't available right now.")).toBeTruthy();
@@ -364,80 +346,93 @@ describe("InvoicesPage — a window closed before paying", () => {
 });
 
 describe("InvoicesPage — refusals", () => {
-  it.each([
-    "This invoice's checkout is being prepared; try again in a moment",
-    "The previous checkout for this invoice could not be closed yet; try again shortly",
-    "Online payment is not available with the configured provider",
-  ])("409 %j: shows the server's reason and keeps the invoice payable — never 'already paid'", async (detail) => {
+  async function refusedWith(error: ApiError) {
     const user = userEvent.setup();
-    vi.mocked(payment.createCheckout).mockRejectedValue(serviceProblem(409, "conflict", "Conflict", detail));
+    vi.mocked(payment.createCheckout).mockRejectedValue(error);
     renderPage();
     await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
-    expect(await screen.findByText(detail)).toBeTruthy();
+    return user;
+  }
+
+  it.each([
+    ["checkout_in_progress", "This payment is already being prepared."],
+    ["previous_checkout_not_closable", "The last payment window for this invoice is still being closed."],
+    ["previous_checkout_payment_in_flight", "An earlier payment for this invoice is still being processed."],
+  ] as const)("409 %s: tells the customer to wait and retry, keeps the invoice payable — never 'already paid'", async (code, title) => {
+    await refusedWith(checkoutProblem(code));
+    expect(await within(liveRegion()).findByText(title)).toBeTruthy();
     expect(screen.queryByText("This invoice is already paid.")).toBeNull();
     expect(screen.getByRole("button", { name: "Pay now invoice INV-0042" })).toBeTruthy();
     expect(launchCheckout).not.toHaveBeenCalled();
   });
 
-  it("coded already-paid 409: says the invoice is already paid and drops its button", async () => {
-    const user = userEvent.setup();
-    vi.mocked(payment.createCheckout).mockRejectedValue(serviceProblem(409, "invoice-already-paid", "Conflict", "This invoice has already been paid"));
-    renderPage();
-    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+  it("409 invoice_already_paid: says the invoice is already paid and drops its button", async () => {
+    await refusedWith(checkoutProblem("invoice_already_paid"));
     expect(await screen.findByText("This invoice is already paid.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Pay now/ })).toBeNull();
     expect(launchCheckout).not.toHaveBeenCalled();
   });
 
+  it("an uncoded 409 shows the server's own sentence and is never read as paid, even this one", async () => {
+    await refusedWith(new ApiError(409, "Conflict", { type: "https://errors.opsgrids.dev/conflict", status: 409, detail: "This invoice has already been paid" }));
+    expect(await screen.findByText("This invoice has already been paid")).toBeTruthy();
+    expect(screen.queryByText("This invoice is already paid.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Pay now invoice INV-0042" })).toBeTruthy();
+  });
+
+  it.each([
+    ["checkout_not_supported", "Online payment isn't available right now."],
+    ["currency_unsupported", "Online payment isn't available for this invoice's currency yet."],
+    ["amount_below_minimum", "This amount is below the payment provider's minimum."],
+    ["nothing_to_pay", "There's nothing to pay on this invoice."],
+  ] as const)("%s: says why in this page's words, and nothing is opened or marked paid", async (code, title) => {
+    await refusedWith(checkoutProblem(code));
+    expect(await within(liveRegion()).findByText(title)).toBeTruthy();
+    expect(screen.queryByText("This invoice is already paid.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Pay now invoice INV-0042" })).toBeTruthy();
+    expect(launchCheckout).not.toHaveBeenCalled();
+  });
+
   it("404: says the invoice could not be found", async () => {
-    const user = userEvent.setup();
-    vi.mocked(payment.createCheckout).mockRejectedValue(new ApiError(404, "Not found", { status: 404 }));
-    renderPage();
-    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+    await refusedWith(new ApiError(404, "Not found", { status: 404, detail: "No payable charge for this invoice" }));
     expect(await screen.findByText("We couldn't find this invoice.")).toBeTruthy();
     expect(launchCheckout).not.toHaveBeenCalled();
   });
 
-  it("422 unsupported currency, as payment-service words it: says why, in this page's words", async () => {
-    const user = userEvent.setup();
-    vi.mocked(payment.createCheckout).mockRejectedValue(
-      serviceProblem(422, "validation", "Validation failed", "Only INR invoices can be paid online"),
-    );
-    renderPage();
-    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
-    expect(await screen.findByText("Online payment isn't available for this invoice's currency yet.")).toBeTruthy();
-  });
+  it.each(["phone_required", "customer_details_required"] as const)(
+    "422 %s: opens the details prompt and retries with the customer",
+    async (code) => {
+      const user = userEvent.setup();
+      vi.mocked(payment.createCheckout).mockRejectedValueOnce(checkoutProblem(code)).mockResolvedValueOnce(SESSION);
+      renderPage();
+      await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
 
-  it("422 phone required, as payment-service sends it for Cashfree: asks for a number and retries with it", async () => {
-    const user = userEvent.setup();
-    const phoneRequired = serviceProblem(422, "validation", "Validation failed", "Add a customer phone number to pay online");
-    vi.mocked(payment.createCheckout).mockRejectedValueOnce(phoneRequired).mockResolvedValueOnce(SESSION);
-    renderPage();
-    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+      const dialog = await screen.findByRole("dialog", { name: "Add a mobile number" });
+      const field = within(dialog).getByLabelText(/Mobile number/);
+      expect(document.activeElement).toBe(field);
+      // Nothing has been tried with a number yet: no reason under the field.
+      expect(within(dialog).queryByText(refusalMessage(code))).toBeNull();
+      await user.type(field, "12345");
+      await user.click(within(dialog).getByRole("button", { name: "Continue to payment" }));
+      expect(await within(dialog).findByText("Enter a 10-digit mobile number, like 98200 11122.")).toBeTruthy();
+      expect(payment.createCheckout).toHaveBeenCalledTimes(1);
 
-    const dialog = await screen.findByRole("dialog", { name: "Add a mobile number" });
-    const field = within(dialog).getByLabelText(/Mobile number/);
-    expect(document.activeElement).toBe(field);
-    await user.type(field, "12345");
-    await user.click(within(dialog).getByRole("button", { name: "Continue to payment" }));
-    expect(await within(dialog).findByText("Enter a 10-digit mobile number, like 98200 11122.")).toBeTruthy();
-    expect(payment.createCheckout).toHaveBeenCalledTimes(1);
+      await user.clear(field);
+      await user.type(field, "+91 98200 11122");
+      await user.click(within(dialog).getByRole("button", { name: "Continue to payment" }));
 
-    await user.clear(field);
-    await user.type(field, "+91 98200 11122");
-    await user.click(within(dialog).getByRole("button", { name: "Continue to payment" }));
-
-    expect(await screen.findByText("Payment received.")).toBeTruthy();
-    expect(payment.createCheckout).toHaveBeenLastCalledWith("inv-due", {
-      name: "Asha Rao",
-      email: "asha@example.com",
-      phone: "9820011122",
-    });
-  });
+      expect(await screen.findByText("Payment received.")).toBeTruthy();
+      expect(payment.createCheckout).toHaveBeenLastCalledWith("inv-due", {
+        name: "Asha Rao",
+        email: "asha@example.com",
+        phone: "9820011122",
+      });
+    },
+  );
 
   it("keeps the number and the dialog when the provider turns the number down, and clears the reason on edit", async () => {
     const user = userEvent.setup();
-    const phoneRequired = serviceProblem(422, "validation", "Validation failed", "Add a customer phone number to pay online");
+    const phoneRequired = checkoutProblem("phone_required");
     let refuse: ((error: unknown) => void) | undefined;
     vi.mocked(payment.createCheckout)
       .mockRejectedValueOnce(phoneRequired)
@@ -453,20 +448,27 @@ describe("InvoicesPage — refusals", () => {
     expect(within(dialog).getByRole("button", { name: "Opening payment…" }).getAttribute("aria-busy")).toBe("true");
     act(() => refuse?.(phoneRequired));
 
-    expect(await within(dialog).findByText("Add a customer phone number to pay online")).toBeTruthy();
+    expect(await within(dialog).findByText(refusalMessage("phone_required"))).toBeTruthy();
     expect(screen.getByRole("dialog", { name: "Add a mobile number" })).toBe(dialog);
     expect(field.value).toBe("98200 11122");
     await user.type(field, "3");
-    expect(within(dialog).queryByText("Add a customer phone number to pay online")).toBeNull();
+    expect(within(dialog).queryByText(refusalMessage("phone_required"))).toBeNull();
   });
 
-  it("cancelling the phone prompt puts focus on the notice, not the page body", async () => {
+  it("shows the framework's own 422 on customer.phone under the field", async () => {
     const user = userEvent.setup();
-    vi.mocked(payment.createCheckout).mockRejectedValue(
-      serviceProblem(422, "validation", "Validation failed", "Add a customer phone number to pay online"),
-    );
+    const tooLong = frameworkProblem("customer.phone", "string_too_long", "String should have at most 16 characters");
+    vi.mocked(payment.createCheckout).mockRejectedValueOnce(checkoutProblem("phone_required")).mockRejectedValueOnce(tooLong);
     renderPage();
     await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+    const dialog = await screen.findByRole("dialog", { name: "Add a mobile number" });
+    await user.type(within(dialog).getByLabelText(/Mobile number/), "98200 11122");
+    await user.click(within(dialog).getByRole("button", { name: "Continue to payment" }));
+    expect(await within(dialog).findByText("String should have at most 16 characters")).toBeTruthy();
+  });
+
+  it("cancelling the details prompt puts focus on the notice, not the page body", async () => {
+    const user = await refusedWith(checkoutProblem("phone_required"));
     const dialog = await screen.findByRole("dialog", { name: "Add a mobile number" });
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();

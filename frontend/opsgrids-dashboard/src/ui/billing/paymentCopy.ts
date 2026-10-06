@@ -58,4 +58,46 @@ export const COPY = {
     title: "The payment didn't go through.",
     detail: "The payment window was closed after a failed attempt. Check its status, or pay again.",
   },
+
+  // How `POST /payment/checkouts` says no, one entry per refusal code (api/payment.ts).
+
+  /** 409 `invoice_already_paid` — the only refusal that marks an invoice paid. */
+  alreadyPaid: {
+    tone: "success",
+    title: "This invoice is already paid.",
+    detail: "A payment for it has already been received — there is nothing more to pay.",
+  },
+  /** 409 `checkout_in_progress`: another click is opening this invoice's checkout. */
+  preparing: {
+    tone: "info",
+    title: "This payment is already being prepared.",
+    detail: "Wait a moment, then select Pay now again.",
+  },
+  /** 409 `previous_checkout_not_closable`: the expired checkout could not be closed yet — it may still be paid. */
+  previousClosing: {
+    tone: "warning",
+    title: "The last payment window for this invoice is still being closed.",
+    detail: "Try again in a minute. If you paid in it, don't pay again — it will show as received once the payment provider confirms it.",
+  },
+  /** 409 `previous_checkout_payment_in_flight`: a payment on an earlier checkout is still processing. */
+  previousInFlight: {
+    tone: "warning",
+    title: "An earlier payment for this invoice is still being processed.",
+    detail: "Wait a few minutes before trying again — if that payment goes through, there will be nothing more to pay.",
+  },
+  currencyUnsupported: {
+    tone: "warning",
+    title: "Online payment isn't available for this invoice's currency yet.",
+    detail: "Contact OpsGrids support to pay it another way.",
+  },
+  belowMinimum: {
+    tone: "warning",
+    title: "This amount is below the payment provider's minimum.",
+    detail: "Contact OpsGrids support to settle it another way.",
+  },
+  nothingToPay: {
+    tone: "info",
+    title: "There's nothing to pay on this invoice.",
+    detail: "Reload the page to see its current state.",
+  },
 } satisfies Record<string, NoticeCopy>;
