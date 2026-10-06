@@ -51,10 +51,13 @@ cadence and the row kind; a version whose id already exists is left alone, child
 **Downgrade.** Catalog cannot see which subscriptions pin these versions (a cross-schema read is
 not allowed), and deleting a pinned version breaks the pin lookup — billing and every plan read —
 for each subscriber on it. So the downgrade **refuses** whenever any of these versions exists,
-unless `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1` is set (precedent `d7a3c9e5b184`); with it, it
+unless `OPSGRIDS_ALLOW_LIST_PRICE_DOWNGRADE=1` is set (the pattern of `d7a3c9e5b184`); with it, it
 deletes exactly the rows this migration inserted, with the frozen-row triggers disabled around the
 delete as the seeds' downgrades do. Prefer rolling the code back: older catalog code reads these
-rows fine. `tools/roundtrip.sh` sets the override on its `downgrade base`, which drops the schema.
+rows fine. Its own variable, not the shared `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE`: this refusal
+fires on every database the seeds ran on, fresh ones included, so `tools/roundtrip.sh` has to pass
+the override for every service's `downgrade base` — and the shared one there would also switch off
+operations' refusals to drop real lots, rolls and put-away captures.
 
 No outbox event and no audit row, as with every seeded plan: this file and ADR-0035 are the record.
 
@@ -89,8 +92,9 @@ log = logging.getLogger()
 # namespace, as `53f1a7a8b99d` chose, so these ids cannot collide with a row another migration owns.
 _NAMESPACE = uuid.UUID("744fb268-2411-4b28-80a9-d1550ca68414")
 
-#: Set to `1` to let `downgrade()` delete versions a subscription may be pinned to.
-ALLOW_DESTRUCTIVE_ENV = "OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE"
+#: Set to `1` to let `downgrade()` delete versions a subscription may be pinned to. This
+#: migration's own switch (see the module docstring), never the shared destructive-downgrade one.
+ALLOW_DESTRUCTIVE_ENV = "OPSGRIDS_ALLOW_LIST_PRICE_DOWNGRADE"
 
 CURRENCY = "INR"
 MONTH = "month"

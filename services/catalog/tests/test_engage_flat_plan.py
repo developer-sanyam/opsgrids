@@ -126,7 +126,7 @@ async def test_engage_resolves_to_a_published_flat_price_a_trial_can_pin(
     # Stepping down from head passes through `b88a833020dc`, whose downgrade refuses while its
     # list-price versions exist (it cannot see subscription's pins); on a test database deleting
     # them is the point.
-    monkeypatch.setenv("OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE", "1")
+    monkeypatch.setenv("OPSGRIDS_ALLOW_LIST_PRICE_DOWNGRADE", "1")
     seed = _seed_module()
     cfg = _alembic_config()
     plan_id, version_id, price_id = seed.IDS[_PRODUCT_KEY]

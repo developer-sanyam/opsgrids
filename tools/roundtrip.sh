@@ -5,12 +5,15 @@
 # argument would mean quoting `&&` past both make and bash. The assertions are exactly what
 # the previous inline loop ran: all the way up, all the way down, all the way up again.
 #
-# `downgrade base` drops every table the service owns, so it says, in the environment, that
-# destroying data is the point (OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1). A migration that cannot
-# tell whether its rows are in use elsewhere — catalog's b88a833020dc cannot see which subscriptions
-# pin its plan versions — refuses its downgrade without it. Only this step carries it; nothing that
-# runs on a real box (`remote.sh migrate`, a hand-typed `alembic downgrade <rev>`) does.
+# Catalog's b88a833020dc cannot tell whether a subscription pins its list-price versions, so its
+# downgrade refuses whenever they exist — on every database the seeds ran on, fresh ones too —
+# unless OPSGRIDS_ALLOW_LIST_PRICE_DOWNGRADE=1. `downgrade base` drops the schema anyway, so this
+# step passes that one switch, which no other migration reads. It deliberately does NOT pass the
+# shared OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE: that is what stops operations' downgrades from
+# dropping real lots, rolls and put-away captures, and a roundtrip run against a database holding
+# them must still be refused. Nothing that runs on a real box (`remote.sh migrate`, a hand-typed
+# `alembic downgrade <rev>`) sets either.
 set -euo pipefail
 uv run alembic upgrade head
-OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1 uv run alembic downgrade base
+OPSGRIDS_ALLOW_LIST_PRICE_DOWNGRADE=1 uv run alembic downgrade base
 uv run alembic upgrade head

@@ -112,7 +112,7 @@ def test_every_non_platform_product_gets_one_published_flat_inr_plan(
     # Stepping down from head passes through `b88a833020dc`, whose downgrade refuses while its
     # list-price versions exist (it cannot see subscription's pins); on a test database deleting
     # them is the point.
-    monkeypatch.setenv("OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE", "1")
+    monkeypatch.setenv("OPSGRIDS_ALLOW_LIST_PRICE_DOWNGRADE", "1")
     seed = _seed_module()
     cfg = _alembic_config()
     plan_ids = [ids[0] for ids in seed.IDS.values()]

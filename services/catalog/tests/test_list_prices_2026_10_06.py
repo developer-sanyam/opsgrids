@@ -16,7 +16,7 @@ What is pinned:
   missing plans are skipped.
 * **Re-runnable**: a second run (alembic stamped back) changes nothing.
 * **The downgrade refuses** while any of these versions exists unless
-  `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1`; with it, it removes exactly what the upgrade added; on a
+  `OPSGRIDS_ALLOW_LIST_PRICE_DOWNGRADE=1`; with it, it removes exactly what the upgrade added; on a
   database without these rows it is a clean no-op either way.
 * **What the reads offer afterwards**: offerable-versions offers the new monthly version instead of
   the old one, and the yearly one as its own cadence; the customer read lists both without amounts;
@@ -60,7 +60,7 @@ from tests.helpers import customer_principal, operator_principal
 
 _ROOT = Path(__file__).resolve().parent.parent
 _VERSIONS = _ROOT / "migrations" / "versions"
-ALLOW = "OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE"
+ALLOW = "OPSGRIDS_ALLOW_LIST_PRICE_DOWNGRADE"
 
 
 def _load(filename: str, name: str) -> ModuleType:
@@ -681,6 +681,18 @@ class TestTheDowngrade:
                 await _alembic(command.downgrade, BEFORE)
             assert await _current() == LP.revision, value
             assert await _ours_present() == 22, value
+
+        # The shared switch is not this one: `tools/roundtrip.sh` passes only this migration's own,
+        # so the shared one keeps guarding operations' real lots and rolls on a roundtrip.
+        monkeypatch.delenv(ALLOW, raising=False)
+        monkeypatch.setenv("OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE", "1")
+        with pytest.raises(RuntimeError, match=ALLOW):
+            await _alembic(command.downgrade, BEFORE)
+        assert await _ours_present() == 22
+        monkeypatch.delenv("OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE")
+        roundtrip = (_ROOT.parent.parent / "tools" / "roundtrip.sh").read_text()
+        assert f"{ALLOW}=1 uv run alembic downgrade base" in roundtrip
+        assert "OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1 uv run" not in roundtrip
 
         monkeypatch.setenv(ALLOW, "1")
         await _alembic(command.downgrade, BEFORE)
