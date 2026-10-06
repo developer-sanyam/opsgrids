@@ -19,7 +19,10 @@ vi.mock("@/api", () => ({
   changeSubscriptionPlan: vi.fn(),
 }));
 
+vi.mock("@/lib/csv", () => ({ downloadCsv: vi.fn() }));
+
 import * as api from "@/api";
+import { downloadCsv } from "@/lib/csv";
 
 const base = {
   plan_version_id: "v",
@@ -108,6 +111,7 @@ const OPTIONS: PlanOptions = {
   current: ref({}),
   pending: null,
   pending_effective_at: null,
+  pending_scheduled_by: null,
   options: [
     option({ is_current: true, blocked_code: "current", blocked_reason: "This is the plan you are on." }),
     option({ plan_version_id: "growth-2", version_no: 2 }),
@@ -135,7 +139,13 @@ const OPTIONS: PlanOptions = {
 
 function preview(overrides: Partial<PlanChangePreview>): PlanChangePreview {
   return {
-    expected: { state: "active", plan_version_id: "growth-1", pending_plan_version_id: null },
+    expected: {
+      state: "active",
+      plan_version_id: "growth-1",
+      pending_plan_version_id: null,
+      current_period_end: PERIOD_END,
+      lifecycle_claim_id: null,
+    },
     action: "switch",
     direction: "downgrade",
     effective: "next_period",
@@ -154,23 +164,32 @@ function preview(overrides: Partial<PlanChangePreview>): PlanChangePreview {
 }
 
 function summary(overrides: Partial<SubscriptionPlanSummary> = {}): SubscriptionPlanSummary {
-  return { subscription_id: "s1", current: ref({}), pending: null, pending_effective_at: null, ...overrides };
+  return {
+    subscription_id: "s1",
+    current: ref({}),
+    pending: null,
+    pending_effective_at: null,
+    pending_scheduled_by: null,
+    ...overrides,
+  };
 }
 
 function setup({
   subscriptions = [revenue],
   summaries = [summary()],
   grants = OWNER,
+  options = OPTIONS,
 }: {
   subscriptions?: object[];
   summaries?: SubscriptionPlanSummary[];
   grants?: string[];
+  options?: PlanOptions;
 } = {}) {
   vi.clearAllMocks();
   vi.mocked(api.listProducts).mockResolvedValue(products as never);
   vi.mocked(api.listSubscriptions).mockResolvedValue(subscriptions as never);
   vi.mocked(api.listSubscriptionPlanSummaries).mockResolvedValue(summaries);
-  vi.mocked(api.getSubscriptionPlanOptions).mockResolvedValue(OPTIONS);
+  vi.mocked(api.getSubscriptionPlanOptions).mockResolvedValue(options);
   render(
     <PermissionProvider grants={grants}>
       <SubscriptionsPage />
@@ -269,11 +288,12 @@ describe("SubscriptionsPage — what each row says", () => {
     expect(await screen.findByText("₹1,800.00 per month · agreed for your organisation")).toBeTruthy();
   });
 
-  it("renders without the plan line when that read fails", async () => {
+  it("renders without the plan line when that read fails — and says so, with a retry", async () => {
     vi.clearAllMocks();
     vi.mocked(api.listProducts).mockResolvedValue(products as never);
-    vi.mocked(api.listSubscriptions).mockResolvedValue([revenue] as never);
+    vi.mocked(api.listSubscriptions).mockResolvedValue([{ ...revenue, pending_plan_version_id: "rev-1" }] as never);
     vi.mocked(api.listSubscriptionPlanSummaries).mockRejectedValue(new Error("catalog down"));
+    const user = userEvent.setup();
     render(
       <PermissionProvider grants={OWNER}>
         <SubscriptionsPage />
@@ -281,6 +301,65 @@ describe("SubscriptionsPage — what each row says", () => {
     );
     expect(await screen.findByText(`Renews ${formatDate(PERIOD_END)}`)).toBeTruthy();
     expect(screen.queryByText("Revenue Growth")).toBeNull();
+    expect(screen.getByText("Plan details couldn't be loaded")).toBeTruthy();
+    // The subscription row itself still knows a change is waiting.
+    expect(screen.getByText("A plan change is scheduled")).toBeTruthy();
+
+    vi.mocked(api.listSubscriptionPlanSummaries).mockResolvedValue([summary()]);
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("Revenue Growth")).toBeTruthy();
+    expect(screen.queryByText("Plan details couldn't be loaded")).toBeNull();
+  });
+
+  it("a cancelled row shows no scheduled change, on screen or in the export", async () => {
+    const cancelled = { ...revenue, state: "cancelled", cancel_at: "2026-10-06T00:00:00Z", pending_plan_version_id: "rev-1" };
+    const user = setup({
+      subscriptions: [cancelled],
+      summaries: [
+        summary({ pending: ref({ plan_version_id: "rev-1", plan_name: "Revenue" }), pending_effective_at: PERIOD_END }),
+      ],
+    });
+    expect(await screen.findByText(`Cancelled ${formatDate("2026-10-06T00:00:00Z")}`)).toBeTruthy();
+    expect(screen.queryByText(/Changes to/)).toBeNull();
+    expect(screen.queryByText("A plan change is scheduled")).toBeNull();
+
+    await user.click(screen.getByRole("checkbox", { name: /Revenue/ }));
+    await user.click(screen.getByRole("button", { name: "Export selected" }));
+    expect(downloadCsv).toHaveBeenCalledTimes(1);
+    const [, header, rows] = vi.mocked(downloadCsv).mock.calls[0] ?? [];
+    const at = (name: string) => (header ?? []).indexOf(name);
+    expect(rows?.[0]?.[at("Scheduled plan")]).toBe("");
+    expect(rows?.[0]?.[at("Scheduled from")]).toBe("");
+  });
+
+  it("a change OpsGrids scheduled is named as agreed, and only OpsGrids can undo it", async () => {
+    setup({
+      subscriptions: [{ ...revenue, pending_plan_version_id: "growth-agreed" }],
+      summaries: [
+        summary({
+          pending: ref({ plan_version_id: "growth-agreed", plan_name: "Revenue Growth (agreed)" }),
+          pending_effective_at: PERIOD_END,
+          pending_scheduled_by: "opsgrids",
+        }),
+      ],
+    });
+    expect(
+      await screen.findByText(`Changes to Revenue Growth (agreed) on ${formatDate(PERIOD_END)} · agreed with OpsGrids`),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Keep current plan/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /More actions/ })).toBeNull();
+    const change = screen.getByRole("button", { name: "Change plan Revenue" });
+    expect(change.getAttribute("aria-disabled")).toBe("true");
+    expect(
+      screen.getByText("A plan change agreed with OpsGrids is scheduled. Contact info@opsgrids.com to change it."),
+    ).toBeTruthy();
+  });
+
+  it("an active subscription past its period end says the renewal is due, not 'Renews' a past date", async () => {
+    const ended = new Date(Date.now() - 2 * DAY).toISOString();
+    setup({ subscriptions: [{ ...revenue, current_period_end: ended }] });
+    expect(await screen.findByText(`Renewal due ${formatDate(ended)}`)).toBeTruthy();
+    expect(screen.queryByText(/^Renews/)).toBeNull();
   });
 
   it("describes the page as plans and renewals, not only trials", async () => {
@@ -387,7 +466,7 @@ describe("SubscriptionsPage — change plan picker", () => {
     expect(within(confirm).getByRole("button", { name: "Change plan" })).toBeTruthy();
   });
 
-  it("a refusal is the answer: the server's sentence and the next step, and no confirm", async () => {
+  it("a refusal is the answer: the next step, announced in the dialog's alert, and no confirm", async () => {
     const user = setup();
     vi.mocked(api.previewSubscriptionPlanChange).mockResolvedValue(
       preview({
@@ -401,11 +480,77 @@ describe("SubscriptionsPage — change plan picker", () => {
     const dialog = await openChangePlan(user);
     await user.click(await within(dialog).findByRole("radio", { name: /^Revenue Billed monthly/ }));
     await user.click(within(dialog).getByRole("button", { name: "Review change" }));
-    expect(
-      await within(dialog).findByText("a billing period on this subscription is due and has not been processed yet"),
-    ).toBeTruthy();
-    expect(within(dialog).getByText(/still processing this subscription's latest billing period/)).toBeTruthy();
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toMatch(/still processing this subscription's latest billing period/);
+    expect(alert.textContent).toMatch(/contact info@opsgrids\.com/);
+    // The server's sentence is for the record, not the headline.
+    expect(within(dialog).queryByText(/has not been processed yet/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Schedule change" })).toBeNull();
+  });
+
+  it("Review change while the plans are still loading says so instead of doing nothing", async () => {
+    const user = setup();
+    vi.mocked(api.getSubscriptionPlanOptions).mockReturnValue(new Promise(() => undefined));
+    const dialog = await openChangePlan(user);
+    await user.click(within(dialog).getByRole("button", { name: "Review change" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toMatch(/still loading/);
+    expect(api.previewSubscriptionPlanChange).not.toHaveBeenCalled();
+  });
+
+  it("the scheduled plan is listed but cannot be picked again", async () => {
+    const user = setup({
+      options: {
+        ...OPTIONS,
+        pending: ref({ plan_version_id: "rev-1", plan_name: "Revenue" }),
+        pending_effective_at: PERIOD_END,
+        pending_scheduled_by: "customer",
+        options: [
+          OPTIONS.options[0] as PlanOption,
+          option({
+            plan_version_id: "rev-1",
+            plan_id: "rev",
+            plan_name: "Revenue",
+            is_pending: true,
+            blocked_code: "pending",
+            blocked_reason: "Already scheduled. To stay on your current plan instead, use Keep current plan.",
+          }),
+          option({ plan_version_id: "growth-2", version_no: 2 }),
+        ],
+      },
+    });
+    const dialog = await openChangePlan(user);
+    const scheduled = await within(dialog).findByRole("radio", { name: /^Revenue\b.*Already scheduled\./ });
+    expect((scheduled as HTMLInputElement).disabled).toBe(true);
+    expect(within(dialog).getByText("Scheduled")).toBeTruthy();
+    expect(within(dialog).getByText(/Choosing another plan replaces it\./)).toBeTruthy();
+  });
+
+  it("while OpsGrids' scheduled change waits, nothing can be picked and nothing says it would be replaced", async () => {
+    const user = setup({
+      options: {
+        ...OPTIONS,
+        change_blocked_code: "scheduled_by_opsgrids",
+        pending: ref({ plan_version_id: "growth-agreed", plan_name: "Revenue Growth (agreed)" }),
+        pending_effective_at: PERIOD_END,
+        pending_scheduled_by: "opsgrids",
+      },
+    });
+    // The row's own Change plan is disabled in this state; open the dialog the way a stale page
+    // would (the row did not know yet) to prove the dialog holds the line on its own.
+    const dialog = await openChangePlan(user);
+    const radios = await within(dialog).findAllByRole("radio");
+    expect(radios.every((r) => (r as HTMLInputElement).disabled)).toBe(true);
+    expect(within(dialog).getByText(/agreed with OpsGrids, is scheduled/)).toBeTruthy();
+    expect(within(dialog).queryByText(/replaces it/)).toBeNull();
+    expect(within(dialog).getByText(/Contact info@opsgrids\.com to change or cancel it/)).toBeTruthy();
+  });
+
+  it("tells a member who cannot read invoices why no price is shown", async () => {
+    const user = setup({ grants: ["core.product.activation.write:ORG", "core.product.activation.read:ORG"] });
+    const dialog = await openChangePlan(user);
+    await within(dialog).findAllByRole("radio");
+    expect(within(dialog).getByText(/Prices are shown only to people who can read your organisation's invoices/)).toBeTruthy();
+    expect(within(dialog).queryByText(/Prices are shown only for plans agreed/)).toBeNull();
   });
 
   it("asks for a choice before asking the server", async () => {
@@ -450,7 +595,10 @@ describe("SubscriptionsPage — keep current plan and cancel", () => {
     vi.mocked(api.previewSubscriptionPlanChange).mockResolvedValue(withdraw);
     vi.mocked(api.changeSubscriptionPlan).mockResolvedValue(revenue as never);
 
-    await user.click(await screen.findByRole("button", { name: "Keep current plan Revenue" }));
+    // Three actions on this row: Keep current plan and Cancel sit behind "More actions" so the
+    // pills never wrap onto two lines.
+    await user.click(await screen.findByRole("button", { name: "More actions for Revenue" }));
+    await user.click(screen.getByRole("menuitem", { name: "Keep current plan" }));
     const dialog = await screen.findByRole("dialog", { name: "Keep Revenue on Revenue Growth?" });
     expect(
       within(dialog).getByText(
@@ -460,6 +608,28 @@ describe("SubscriptionsPage — keep current plan and cancel", () => {
     await user.click(within(dialog).getByRole("button", { name: "Keep current plan" }));
     await waitFor(() => expect(api.changeSubscriptionPlan).toHaveBeenCalledWith("s1", "growth-1", withdraw.expected));
     expect(api.previewSubscriptionPlanChange).toHaveBeenCalledWith("s1", "growth-1");
+  });
+
+  it("Keep current plan on a row that is behind closes, says so and reads the rows again", async () => {
+    const user = setup({
+      subscriptions: [{ ...revenue, pending_plan_version_id: "rev-1" }],
+      summaries: [
+        summary({ pending: ref({ plan_version_id: "rev-1", plan_name: "Revenue" }), pending_effective_at: PERIOD_END }),
+      ],
+    });
+    // The billing run applied the change since the page loaded: the plan in force is no longer
+    // offered, so the server answers `not_offerable` — there is no list here to choose again from.
+    vi.mocked(api.previewSubscriptionPlanChange).mockResolvedValue(
+      preview({ direction: null, effective: null, effective_at: null, refusal_code: "not_offerable", refusal_detail: "x" }),
+    );
+    await user.click(await screen.findByRole("button", { name: "More actions for Revenue" }));
+    await user.click(screen.getByRole("menuitem", { name: "Keep current plan" }));
+    const dialog = await screen.findByRole("dialog", { name: "Keep Revenue on Revenue Growth?" });
+    await user.click(within(dialog).getByRole("button", { name: "Keep current plan" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(api.listSubscriptions).toHaveBeenCalledTimes(2));
+    expect(api.changeSubscriptionPlan).not.toHaveBeenCalled();
+    expect(screen.queryByText(/choose again/)).toBeNull();
   });
 
   it("offers Keep current plan only while a change is scheduled", async () => {

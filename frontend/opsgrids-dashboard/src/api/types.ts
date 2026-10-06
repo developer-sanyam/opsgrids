@@ -114,12 +114,21 @@ export interface Subscription {
   dunning: Dunning | null;
 }
 
-/** `ExpectedState` — the subscription as a preview saw it; sent back with the change. */
+/**
+ * `CustomerExpectedState` — the subscription as a preview saw it, sent back whole with the change.
+ * The period end and the billing run's pending claim decide when a change lands and whether it is
+ * charged, so a roll or a claim in between is refused (`state_changed`) rather than confirmed blind.
+ */
 export interface ExpectedState {
   state: string;
   plan_version_id: string;
   pending_plan_version_id: string | null;
+  current_period_end: string | null;
+  lifecycle_claim_id: string | null;
 }
+
+/** Who scheduled the waiting change: the OpsGrids team (a negotiated price) or the organisation. */
+export type ScheduledBy = "opsgrids" | "customer";
 
 /** `PlanPriceOut` — one component of the organisation's own negotiated price. Integer minor units. */
 export interface PlanPrice {
@@ -152,7 +161,7 @@ export interface PlanRef {
 export interface PlanOption extends PlanRef {
   is_current: boolean;
   is_pending: boolean;
-  /** `current`, `cadence`, `currency` or `bundle`; null when it can be chosen. */
+  /** `current`, `pending`, `cadence`, `currency` or `bundle`; null when it can be chosen. */
   blocked_code: string | null;
   blocked_reason: string | null;
 }
@@ -162,26 +171,29 @@ export interface PlanOptions {
   subscription_id: string;
   product_key: string;
   state: string;
-  /** `state` or `bundle` when this subscription cannot change plan at all. */
+  /** `bundle`, `state` or `scheduled_by_opsgrids` when this subscription cannot change plan at all. */
   change_blocked_code: string | null;
   current: PlanRef | null;
   pending: PlanRef | null;
   pending_effective_at: string | null;
+  pending_scheduled_by: ScheduledBy | null;
   options: PlanOption[];
 }
 
-/** `SubscriptionPlanSummaryOut` — one row's plan line. */
+/** `SubscriptionPlanSummaryOut` — one row's plan line. A cancelled row never has a scheduled change. */
 export interface SubscriptionPlanSummary {
   subscription_id: string;
   current: PlanRef | null;
   pending: PlanRef | null;
   pending_effective_at: string | null;
+  pending_scheduled_by: ScheduledBy | null;
 }
 
 /** `ChangePlanPreviewOut` — what a change would do, as the server computes it. No amount. */
 export interface PlanChangePreview {
   expected: ExpectedState;
   action: "switch" | "withdraw_scheduled";
+  /** Null for a refusal, a withdrawal, and a change that is free (`paid` false). */
   direction: "upgrade" | "downgrade" | "equal" | null;
   effective: "now" | "next_period" | null;
   effective_at: string | null;

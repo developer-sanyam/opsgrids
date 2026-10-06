@@ -8,6 +8,7 @@ import {
   DataTable,
   EmptyState,
   ErrorState,
+  InlineAlert,
   RowActions,
   Skeleton,
   StatusBadge,
@@ -67,24 +68,30 @@ interface Row {
 interface Loaded {
   rows: Row[];
   products: Product[];
+  /** The plan line could not be read: the page says so and offers to try again. */
+  plansFailed: boolean;
 }
 
-/** The plan line is a second read: when it fails, the page still renders without it. */
-async function loadSummaries(): Promise<SubscriptionPlanSummary[]> {
+/**
+ * The plan line is a second read: when it fails, the page still renders without it — and says so,
+ * rather than leaving a dash where the plan and any scheduled change should be.
+ */
+async function loadSummaries(): Promise<SubscriptionPlanSummary[] | null> {
   try {
     const summaries = await listSubscriptionPlanSummaries();
     return Array.isArray(summaries) ? summaries : [];
   } catch {
-    return [];
+    return null;
   }
 }
 
 async function loadRows(): Promise<Loaded> {
-  const [subscriptions, products, summaries] = await Promise.all([
+  const [subscriptions, products, read] = await Promise.all([
     listSubscriptions(),
     listProducts().catch(() => [] as Product[]),
     loadSummaries(),
   ]);
+  const summaries = read ?? [];
   const names = Object.fromEntries(products.map((p) => [p.key, shortProductName(p.name)]));
   const plans = new Map(summaries.map((s) => [s.subscription_id, s]));
   const rows = subscriptions.map((subscription) => {
@@ -99,7 +106,7 @@ async function loadRows(): Promise<Loaded> {
       plan: plans.get(subscription.id) ?? null,
     };
   });
-  return { rows, products };
+  return { rows, products, plansFailed: read === null };
 }
 
 /** Each product your organisation has started, its plan and state, and the actions its lifecycle allows. */
@@ -145,6 +152,7 @@ export function SubscriptionsPage() {
 
   const subscriptionRows = rows.data.rows;
   const products = rows.data.products;
+  const plansFailed = rows.data.plansFailed;
 
   const columns: Column<Row>[] = [
     {
@@ -176,7 +184,7 @@ export function SubscriptionsPage() {
     {
       key: "plan",
       header: "Plan",
-      render: (row) => <PlanCell plan={row.plan} />,
+      render: (row) => <PlanCell plan={row.plan} subscription={row.subscription} />,
     },
     {
       key: "state",
@@ -213,11 +221,15 @@ export function SubscriptionsPage() {
       render: (row) => {
         const s = row.subscription;
         const finished = s.state === "cancelled";
-        const unavailable = changePlanUnavailableReason(s);
+        const scheduledBy = row.plan?.pending_scheduled_by ?? null;
+        const unavailable = changePlanUnavailableReason(s, scheduledBy);
         const waiting = row.plan?.pending ?? null;
         return (
           <RowActions
             label={row.name}
+            // Two inline at most: with Keep current plan beside them, three pills wrap onto two
+            // lines on desktop and phone alike, so the third goes behind "More actions".
+            inlineLimit={2}
             actions={[
               {
                 label: "Change plan",
@@ -227,9 +239,10 @@ export function SubscriptionsPage() {
                 disabledReason: unavailable ?? undefined,
               },
               {
+                // A change the OpsGrids team scheduled (a negotiated price) is theirs to withdraw.
                 label: "Keep current plan",
                 onSelect: () => setKeepingPlan(row),
-                hidden: !canWrite || waiting === null || !canChangePlan(s),
+                hidden: !canWrite || waiting === null || scheduledBy === "opsgrids" || !canChangePlan(s),
               },
               { label: "Cancel", tone: "danger", onSelect: () => setCancelling(row), hidden: !canWrite || finished },
             ]}
@@ -269,22 +282,41 @@ export function SubscriptionsPage() {
         "Scheduled plan",
         "Scheduled from",
       ],
-      chosen.map((row) => [
-        row.name,
-        row.plan?.current?.plan_name ?? "",
-        row.subscription.state,
-        row.subscription.state === "trial" ? (row.subscription.trial_ends_at ?? "") : "",
-        row.subscription.current_period_start ?? "",
-        row.subscription.current_period_end ?? "",
-        row.plan?.pending?.plan_name ?? "",
-        row.plan?.pending_effective_at ?? "",
-      ]),
+      chosen.map((row) => {
+        // A cancelled subscription never reaches a scheduled change; the export must not imply one.
+        const waiting = row.subscription.state === "cancelled" ? null : (row.plan ?? null);
+        return [
+          row.name,
+          row.plan?.current?.plan_name ?? "",
+          row.subscription.state,
+          row.subscription.state === "trial" ? (row.subscription.trial_ends_at ?? "") : "",
+          row.subscription.current_period_start ?? "",
+          row.subscription.current_period_end ?? "",
+          waiting?.pending?.plan_name ?? "",
+          waiting?.pending ? (waiting.pending_effective_at ?? "") : "",
+        ];
+      }),
     );
   }
 
   return (
     <div className="flex flex-col gap-6">
       <PageHeader eyebrow="Billing" title="Subscriptions" description={PAGE_DESCRIPTION} />
+
+      {plansFailed ? (
+        <InlineAlert
+          tone="warning"
+          title="Plan details couldn't be loaded"
+          action={
+            <Button size="sm" variant="outline" onClick={rows.reload}>
+              Try again
+            </Button>
+          }
+        >
+          The plan each product is on, and any scheduled plan change, aren't shown below. Everything else on this
+          page is up to date.
+        </InlineAlert>
+      ) : null}
 
       <Card className="p-0">
         <DataTable
@@ -318,7 +350,12 @@ export function SubscriptionsPage() {
         title={`Cancel ${cancelling?.name ?? "this subscription"}?`}
         body={
           cancelling
-            ? cancelBody(cancelling.name, cancelling.subscription, cancelling.plan?.pending?.plan_name ?? null)
+            ? cancelBody(
+                cancelling.name,
+                cancelling.subscription,
+                cancelling.plan?.pending?.plan_name ?? null,
+                cancelling.plan?.pending_effective_at ?? null,
+              )
             : ""
         }
         confirmLabel="Cancel subscription"
@@ -361,17 +398,35 @@ export function SubscriptionsPage() {
             toast.success(message);
             rows.reload();
           }}
+          onStale={(message) => {
+            setKeepingPlan(null);
+            toast.info(message);
+            rows.reload();
+          }}
         />
       ) : null}
     </div>
   );
 }
 
-/** The plan in force, its price or cadence, and a scheduled change — or a dash when unread. */
-function PlanCell({ plan }: { plan: SubscriptionPlanSummary | null }) {
+/**
+ * The plan in force, its price or cadence, and a scheduled change. When the plan line could not
+ * be read, a dash — and, from the subscription row itself, that a change is scheduled.
+ */
+function PlanCell({ plan, subscription }: { plan: SubscriptionPlanSummary | null; subscription: Subscription }) {
   const current = plan?.current ?? null;
-  if (plan === null || current === null) return <span className="text-muted">—</span>;
-  const pending = pendingLine(plan.pending, plan.pending_effective_at);
+  if (plan === null || current === null) {
+    const waiting = subscription.state !== "cancelled" && (subscription.pending_plan_version_id ?? null) !== null;
+    return waiting ? (
+      <span className="text-xs font-medium text-ink-soft">A plan change is scheduled</span>
+    ) : (
+      <span className="text-muted">—</span>
+    );
+  }
+  const pending = pendingLine(plan.pending, plan.pending_effective_at, {
+    scheduledBy: plan.pending_scheduled_by,
+    state: subscription.state,
+  });
   return (
     <div className="flex flex-col gap-1">
       <span className="font-medium text-ink">{planName(current)}</span>

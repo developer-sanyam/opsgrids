@@ -1,6 +1,6 @@
 import { useId, useMemo, useState } from "react";
 
-import { ApiError, problemMessage, useAsync } from "@opsgrids/client";
+import { ApiError, problemMessage, useAsync, useCan } from "@opsgrids/client";
 import { Button, ConfirmDialog, FormDialog, InlineAlert, RadioGroup, Skeleton, Tag } from "@opsgrids/ui";
 import type { RadioOption } from "@opsgrids/ui";
 
@@ -9,6 +9,7 @@ import type { PlanChangePreview, PlanOptions, Subscription } from "@/api/types";
 import {
   confirmLabel,
   confirmTitle,
+  failureMessage,
   optionDescription,
   optionLabels,
   planName,
@@ -21,24 +22,26 @@ import {
 import { formatDate } from "@/lib/money";
 import { problemCode } from "@/lib/problemCode";
 
-/** A refusal or failure, as the dialog shows it: the server's sentence and what to do next. */
+/**
+ * A refusal or failure, as the dialog shows it: one sentence in the dialog's one alert — the next
+ * step when there is one, the server's sentence otherwise — so a screen reader hears what to do.
+ */
 interface Failure {
   message: string;
-  guidance: string | null;
   reference: string | undefined;
 }
 
 function failureOf(error: unknown): Failure {
-  const code = problemCode(error);
   return {
-    message: problemMessage(error),
-    guidance: refusalGuidance(code),
+    message: failureMessage(problemCode(error), problemMessage(error), "This change can't be made."),
     reference: error instanceof ApiError ? error.problem?.request_id : undefined,
   };
 }
 
 /** Codes that mean "look again": the confirm returns to the picker with fresh options. */
-const BACK_TO_PICKER = new Set(["state_changed", "not_offerable", "already_pinned", "state"]);
+const BACK_TO_PICKER = new Set(["state_changed", "not_offerable", "already_pinned", "state", "scheduled_by_opsgrids"]);
+
+const INVOICES_PERMISSION = "core.billing.invoice.read";
 
 interface Props {
   subscription: Subscription;
@@ -64,6 +67,7 @@ interface Props {
  */
 export function ChangePlanDialog({ subscription, product, productNames, onClose, onChanged }: Props) {
   const groupName = useId();
+  const canSeePrices = useCan(INVOICES_PERMISSION, "ORG");
   const options = useAsync(() => getSubscriptionPlanOptions(subscription.id), [subscription.id]);
   const [selected, setSelected] = useState<string | null>(null);
   const [pickError, setPickError] = useState<string | undefined>(undefined);
@@ -77,13 +81,15 @@ export function ChangePlanDialog({ subscription, product, productNames, onClose,
   const choices = useMemo(() => (data ? uniqueOptions(data.options) : []), [data]);
   const labels = useMemo(() => optionLabels(choices), [choices]);
   const target = choices.find((o) => o.plan_version_id === selected) ?? null;
-  const selectable = choices.filter((o) => o.blocked_code === null);
+  const blockedCode = data?.change_blocked_code ?? null;
+  // Nothing can be chosen while the subscription itself cannot change plan (the alert says why).
+  const selectable = blockedCode === null ? choices.filter((o) => o.blocked_code === null) : [];
 
   const radioOptions: RadioOption[] = choices.map((o) => ({
     value: o.plan_version_id,
     label: labels.get(o.plan_version_id) ?? planName(o),
     description: optionDescription(o),
-    disabled: o.blocked_code !== null,
+    disabled: blockedCode !== null || o.blocked_code !== null,
     aside: o.is_current ? (
       <Tag tone="info">Current plan</Tag>
     ) : o.is_pending ? (
@@ -96,6 +102,17 @@ export function ChangePlanDialog({ subscription, product, productNames, onClose,
   async function review() {
     setPickError(undefined);
     setFormFailure(null);
+    if (options.status !== "success") {
+      // The plan list is not on screen, so there is no radio group to carry "choose a plan".
+      setFormFailure({
+        message:
+          options.status === "loading"
+            ? "The plans on offer are still loading."
+            : "The plans on offer couldn't be loaded. Use Try again, then choose a plan.",
+        reference: undefined,
+      });
+      return;
+    }
     if (selected === null) {
       setPickError("Choose the plan to move to.");
       return;
@@ -107,8 +124,7 @@ export function ChangePlanDialog({ subscription, product, productNames, onClose,
       if (answer.refusal_code !== null) {
         // The refusal is the answer; the confirm step is never offered for it.
         setFormFailure({
-          message: answer.refusal_detail ?? "This change can't be made.",
-          guidance: refusalGuidance(answer.refusal_code),
+          message: failureMessage(answer.refusal_code, answer.refusal_detail, "This change can't be made."),
           reference: undefined,
         });
         if (answer.refusal_code === "not_offerable") {
@@ -121,7 +137,12 @@ export function ChangePlanDialog({ subscription, product, productNames, onClose,
       setPreview(answer);
     } catch (error) {
       // A preview is a read: when it fails, nothing was changed.
-      setFormFailure({ ...failureOf(error), guidance: "Nothing was changed. Try again in a moment." });
+      const failure = failureOf(error);
+      setFormFailure(
+        refusalGuidance(problemCode(error)) === null
+          ? { ...failure, message: `${failure.message} Nothing was changed. Try again in a moment.` }
+          : failure,
+      );
     } finally {
       setChecking(false);
     }
@@ -161,7 +182,7 @@ export function ChangePlanDialog({ subscription, product, productNames, onClose,
   const fromPlan = planName(current);
   const toPlan = target ? (labels.get(target.plan_version_id) ?? planName(target)) : "the new plan";
   const pendingPlan = pending ? planName(pending) : null;
-  const blockedCode = data?.change_blocked_code ?? null;
+  const staffScheduled = data?.pending_scheduled_by === "opsgrids";
 
   return (
     <>
@@ -204,9 +225,10 @@ export function ChangePlanDialog({ subscription, product, productNames, onClose,
               </p>
               {pending ? (
                 <p>
-                  A change to <span className="font-semibold text-ink">{pendingPlan}</span> is scheduled
-                  {data?.pending_effective_at ? ` for ${formatDate(data.pending_effective_at)}` : ""}. Choosing
-                  another plan replaces it.
+                  A change to <span className="font-semibold text-ink">{pendingPlan}</span>
+                  {staffScheduled ? ", agreed with OpsGrids," : ""} is scheduled
+                  {data?.pending_effective_at ? ` for ${formatDate(data.pending_effective_at)}` : ""}.
+                  {blockedCode === null ? " Choosing another plan replaces it." : ""}
                 </p>
               ) : null}
             </div>
@@ -215,8 +237,7 @@ export function ChangePlanDialog({ subscription, product, productNames, onClose,
                 {refusalGuidance(blockedCode)}
               </InlineAlert>
             ) : null}
-            {formFailure?.guidance ? <p className="text-sm text-ink-soft">{formFailure.guidance}</p> : null}
-            {choices.length === 0 || selectable.length === 0 ? (
+            {blockedCode === null && (choices.length === 0 || selectable.length === 0) ? (
               <p className="text-sm text-muted">
                 No other plan is on offer for this product right now. Contact info@opsgrids.com to discuss a
                 different plan.
@@ -233,7 +254,11 @@ export function ChangePlanDialog({ subscription, product, productNames, onClose,
                   setFormFailure(null);
                 }}
                 options={radioOptions}
-                helper="Prices are shown only for plans agreed for your organisation. Pricing for other plans is agreed with OpsGrids."
+                helper={
+                  canSeePrices
+                    ? "Prices are shown only for plans agreed for your organisation. Pricing for other plans is agreed with OpsGrids."
+                    : "Prices are shown only to people who can read your organisation's invoices. Pricing is agreed with OpsGrids."
+                }
                 {...(pickError ? { error: pickError } : {})}
               />
             ) : null}
@@ -269,26 +294,19 @@ export function ChangePlanDialog({ subscription, product, productNames, onClose,
         {...(confirmFailure ? { error: confirmFailure.message } : {})}
         {...(confirmFailure?.reference ? { reference: confirmFailure.reference } : {})}
       >
-        {preview ? (
-          <PreviewNotes notes={previewNotes(preview, { pendingPlan, productNames })} guidance={confirmFailure?.guidance ?? null} />
-        ) : undefined}
+        {preview ? <PreviewNotes notes={previewNotes(preview, { fromPlan, pendingPlan, productNames })} /> : undefined}
       </ConfirmDialog>
     </>
   );
 }
 
-function PreviewNotes({ notes, guidance }: { notes: string[]; guidance: string | null }) {
-  if (notes.length === 0 && guidance === null) return null;
+function PreviewNotes({ notes }: { notes: string[] }) {
+  if (notes.length === 0) return null;
   return (
-    <div className="flex flex-col gap-2">
-      {notes.length > 0 ? (
-        <ul className="flex list-disc flex-col gap-1 pl-4 text-sm text-ink-soft">
-          {notes.map((note) => (
-            <li key={note}>{note}</li>
-          ))}
-        </ul>
-      ) : null}
-      {guidance ? <p className="text-sm text-ink-soft">{guidance}</p> : null}
-    </div>
+    <ul className="flex list-disc flex-col gap-1 pl-4 text-sm text-ink-soft">
+      {notes.map((note) => (
+        <li key={note}>{note}</li>
+      ))}
+    </ul>
   );
 }

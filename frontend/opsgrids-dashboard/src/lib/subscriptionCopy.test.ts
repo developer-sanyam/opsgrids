@@ -7,12 +7,14 @@ import {
   cancelBody,
   changePlanUnavailableReason,
   confirmLabel,
+  failureMessage,
   optionDescription,
   optionLabels,
   pendingLine,
   previewNotes,
   previewSentence,
   priceLine,
+  refusalGuidance,
   statusLine,
   uniqueOptions,
 } from "./subscriptionCopy";
@@ -60,7 +62,13 @@ function option(overrides: Partial<PlanOption> = {}): PlanOption {
 
 function preview(overrides: Partial<PlanChangePreview> = {}): PlanChangePreview {
   return {
-    expected: { state: "active", plan_version_id: "v1", pending_plan_version_id: null },
+    expected: {
+      state: "active",
+      plan_version_id: "v1",
+      pending_plan_version_id: null,
+      current_period_end: "2026-11-04T00:00:00Z",
+      lifecycle_claim_id: null,
+    },
     action: "switch",
     direction: "upgrade",
     effective: "now",
@@ -105,10 +113,18 @@ describe("statusLine — the one date that matters next, by state", () => {
 
   it.each([
     ["past_due", null, "Awaiting payment", "Pay the overdue invoice to keep access"],
-    ["suspended", null, "Access suspended", "Contact info@opsgrids.com to restore access"],
+    // Dunning's cycle is closed by the time it suspends, so the row cannot say which suspension is
+    // in force: both ways back are named, paying first.
+    ["suspended", null, "Access suspended", "Pay any overdue invoice, or contact info@opsgrids.com to restore access"],
   ])("%s is stated in words", (state, dunning, primary, secondary) => {
     const line = statusLine(sub({ state, dunning }), NOW);
     expect([line.primary, line.secondary, line.attention]).toEqual([primary, secondary, true]);
+  });
+
+  it("an active subscription whose period ended and has not yet renewed says the renewal is due", () => {
+    const line = statusLine(sub({ state: "active", current_period_end: "2026-10-04T00:00:00Z" }), NOW);
+    expect(line.primary).toBe(`Renewal due ${formatDate("2026-10-04T00:00:00Z")}`);
+    expect(line.secondary).toBe("Being processed");
   });
 
   it("a cancelled subscription says when it ended", () => {
@@ -286,5 +302,81 @@ describe("the rest of the page's words", () => {
     const trial = cancelBody("Revenue", sub({ state: "trial" }), null);
     expect(trial).toMatch(/^The Revenue trial ends now/);
     expect(trial).toMatch(/can't be undone/);
+  });
+
+  it("a past-due cancel says the overdue invoice is still owed, and never offers a refund for time left", () => {
+    const text = cancelBody("Revenue", sub({ state: "past_due" }), null);
+    expect(text).toMatch(/The overdue invoice is still due after cancelling/);
+    expect(text).not.toMatch(/refund for the time left/);
+  });
+
+  it("a suspended cancel says access has already ended and any overdue invoice stays due", () => {
+    const text = cancelBody("Revenue", sub({ state: "suspended" }), null);
+    expect(text).toMatch(/^Access to Revenue is already suspended; cancelling makes that final\./);
+    expect(text).toMatch(/Any overdue invoice is still due after cancelling/);
+    expect(text).not.toMatch(/ends now/);
+  });
+
+  it("a scheduled change whose date has passed takes effect before the cancel, not 'will not happen'", () => {
+    const text = cancelBody("Revenue", sub({ state: "active" }), "Lite", "2026-10-04T00:00:00Z", NOW);
+    expect(text).toMatch(new RegExp(`The change to Lite was due on ${formatDate("2026-10-04T00:00:00Z")}, so it takes effect before the cancellation\\.$`));
+    expect(text).not.toMatch(/will not happen/);
+    const future = cancelBody("Revenue", sub({ state: "active" }), "Lite", "2026-11-04T00:00:00Z", NOW);
+    expect(future).toMatch(/The scheduled change to Lite will not happen\.$/);
+  });
+});
+
+describe("a change the OpsGrids team scheduled", () => {
+  it("is named as agreed with OpsGrids on the row", () => {
+    expect(pendingLine(ref({ plan_name: "Growth (agreed)" }), "2026-11-04T00:00:00Z", { scheduledBy: "opsgrids" })).toBe(
+      `Changes to Growth (agreed) on ${formatDate("2026-11-04T00:00:00Z")} · agreed with OpsGrids`,
+    );
+  });
+
+  it("makes Change plan unavailable, with who to contact", () => {
+    expect(changePlanUnavailableReason(sub({ state: "active" }), "opsgrids")).toBe(
+      "A plan change agreed with OpsGrids is scheduled. Contact info@opsgrids.com to change it.",
+    );
+    expect(changePlanUnavailableReason(sub({ state: "active" }), "customer")).toBeNull();
+  });
+
+  it("is refused with a next step, not the server's internal sentence", () => {
+    expect(refusalGuidance("scheduled_by_opsgrids")).toMatch(/Contact info@opsgrids\.com to change or cancel it/);
+    expect(failureMessage("scheduled_by_opsgrids", "a plan change agreed with the OpsGrids team …", "x")).toBe(
+      refusalGuidance("scheduled_by_opsgrids"),
+    );
+    expect(failureMessage("catalog_unavailable", "catalog did not answer which plans are on offer", "x")).not.toMatch(
+      /catalog/,
+    );
+    expect(failureMessage(null, "the server's sentence", "x")).toBe("the server's sentence");
+    expect(failureMessage(null, null, "fallback")).toBe("fallback");
+  });
+});
+
+describe("a cancelled row", () => {
+  it("never shows a scheduled change, whatever a cached summary says", () => {
+    expect(pendingLine(ref({ plan_name: "Lite" }), "2026-11-04T00:00:00Z", { state: "cancelled" })).toBeNull();
+  });
+});
+
+describe("a paid upgrade on a usage-priced plan", () => {
+  it("notes the separate usage invoice at the old plan's rates", () => {
+    const notes = previewNotes(preview({ usage_priced: true, usage_closed_now: true }), {
+      fromPlan: "Growth",
+      pendingPlan: null,
+      productNames: (keys) => keys,
+    });
+    expect(notes).toContain(
+      "Usage so far this period is invoiced separately at Growth's usage rates; usage from now on is billed at the new plan's.",
+    );
+  });
+
+  it("says nothing extra about usage when no usage closes now", () => {
+    const notes = previewNotes(preview({ usage_priced: false, usage_closed_now: false }), {
+      fromPlan: "Growth",
+      pendingPlan: null,
+      productNames: (keys) => keys,
+    });
+    expect(notes.some((n) => /usage rates/.test(n))).toBe(false);
   });
 });
