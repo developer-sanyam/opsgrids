@@ -73,8 +73,13 @@ trigger and foreign-key check off for the whole session and needs a superuser th
 ask for.
 
 **What it deletes.** Every table in every non-system schema with an `organization_id` column,
-found from `information_schema` at run time (nothing is a hard-coded list, so a service added next
-month is covered). Tables without that column that hang off those rows by a foreign key
+found from the catalog (`pg_class`, `pg_attribute`: not `information_schema`, which hides a table
+the role has no privilege on) at run time, so nothing is a hard-coded list and a service added next
+month is covered. A table the role cannot read and delete from is not skipped: the preflight
+refuses the run and names it. `--explain` lists the tables that are *not* reached (no
+`organization_id` and no foreign key into one), and a real-database test pins that list, so a
+new tenant table keyed some other way fails the suite instead of being quietly left alone. Tables
+without that column that hang off those rows by a foreign key
 (`account.membership_roles`, `account.role_permissions`, …) are found from the foreign keys and
 deleted by joining to their parent. Order is foreign-key-safe: children before parents, from the
 catalog's own constraint graph (the organisation row goes after everything that references it). Its
@@ -188,6 +193,10 @@ KNOWN_ORG_REFERENCES: dict[tuple[str, str, str], str] = {
 LEFT_IN_PLACE: tuple[tuple[str, str, str], ...] = (
     ("catalog", "plan_versions", "restricted_to_org_id"),
 )
+
+#: Tables every service schema has that no purge reaches: Alembic's version row, and the
+#: per-consumer idempotency ledger (a row per event id, with no organisation on it).
+BOOKKEEPING_TABLES = ("alembic_version", "processed_events")
 
 #: A table with rows for the organisation -> what lives outside the database as a result.
 EXTERNAL_LEFTOVERS: dict[str, str] = {
@@ -335,21 +344,34 @@ class Node:
 # --------------------------------------------------------------------------- catalog queries
 _SYSTEM_SQL = ", ".join(f"'{s}'" for s in _SYSTEM_SCHEMAS)
 
+# Discovery reads `pg_class` and `pg_attribute`, not `information_schema`: the latter lists only
+# what the current role owns or holds a privilege on, so a table created by another role (a
+# hand-applied hotfix, a superuser's migration) without a grant to this one would be invisible,
+# skipped by the purge, and its rows would outlive the organisation row they belong to. The
+# catalog shows every table; a table the role cannot delete from is then found by `preflight`
+# and refuses the run, instead of being silently left behind.
 _ORG_TABLES_SQL = text(
     f"""
-    SELECT c.table_schema, c.table_name, c.data_type
-    FROM information_schema.columns c
-    JOIN information_schema.tables t
-      ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-    WHERE c.column_name = 'organization_id'
-      AND t.table_type = 'BASE TABLE'
-      AND c.table_schema NOT IN ({_SYSTEM_SQL})
-      AND c.table_schema NOT LIKE 'pg\\_%'
-      AND NOT EXISTS (
-        SELECT 1 FROM pg_class pc JOIN pg_namespace pn ON pn.oid = pc.relnamespace
-        WHERE pn.nspname = c.table_schema AND pc.relname = c.table_name AND pc.relispartition)
-    ORDER BY c.table_schema, c.table_name
+    SELECT n.nspname::text, c.relname::text, format_type(a.atttypid, NULL)
+    FROM pg_attribute a
+    JOIN pg_class c ON c.oid = a.attrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE a.attname::text = 'organization_id' AND a.attnum > 0 AND NOT a.attisdropped
+      AND c.relkind IN ('r', 'p') AND NOT c.relispartition
+      AND n.nspname NOT IN ({_SYSTEM_SQL}) AND n.nspname NOT LIKE 'pg\\_%'
+    ORDER BY 1, 2
     """  # noqa: S608 - the system-schema list is a module constant
+)
+
+#: Every base table in a service schema: what `--explain` weighs the plan against.
+_ALL_TABLES_SQL = text(
+    f"""
+    SELECT n.nspname::text, c.relname::text
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition
+      AND n.nspname NOT IN ({_SYSTEM_SQL}) AND n.nspname NOT LIKE 'pg\\_%'
+    ORDER BY 1, 2
+    """  # noqa: S608
 )
 
 _FKS_SQL = text(
@@ -388,18 +410,26 @@ _DELETE_TRIGGERS_SQL = text(
 
 _USER_TABLES_SQL = text(
     """
-    SELECT c.table_name
-    FROM information_schema.columns c
-    JOIN information_schema.tables t
-      ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-    WHERE c.table_schema = :schema AND c.column_name = 'user_id' AND t.table_type = 'BASE TABLE'
-    ORDER BY c.table_name
+    SELECT c.relname::text
+    FROM pg_attribute a
+    JOIN pg_class c ON c.oid = a.attrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname::text = :schema AND a.attname::text = 'user_id'
+      AND a.attnum > 0 AND NOT a.attisdropped
+      AND c.relkind IN ('r', 'p') AND NOT c.relispartition
+    ORDER BY 1
     """
 )
 
 _COLUMN_EXISTS_SQL = text(
-    "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
-    "WHERE table_schema = :s AND table_name = :t AND column_name = :c)"
+    """
+    SELECT EXISTS (
+      SELECT 1 FROM pg_attribute a
+      JOIN pg_class c ON c.oid = a.attrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname::text = :s AND c.relname::text = :t AND a.attname::text = :c
+        AND a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'p'))
+    """
 )
 
 _ROLE_SQL = text(
@@ -411,7 +441,8 @@ _PRIVILEGE_SQL = text(
     """
     SELECT n.nspname, c.relname,
            has_table_privilege(current_user, c.oid, 'DELETE'),
-           pg_has_role(current_user, c.relowner, 'USAGE')
+           pg_has_role(current_user, c.relowner, 'USAGE'),
+           has_table_privilege(current_user, c.oid, 'SELECT')
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE c.relkind IN ('r', 'p') AND (n.nspname || '.' || c.relname) = ANY(:tables)
     """
@@ -476,6 +507,10 @@ class Plan:
     order: list[Table]
     triggers: dict[Table, list[Trigger]]
     org_tables: frozenset[Table]
+    #: Base tables in a service schema that the purge does not reach (`schema.name`): no
+    #: `organization_id`, and no foreign key into a table that has one. Shown by `--explain` so
+    #: what is left alone is as visible as what is deleted.
+    unreached: tuple[str, ...] = ()
 
 
 def build_nodes(
@@ -598,7 +633,13 @@ async def build_plan(conn: Conn) -> Plan:
     nodes = build_nodes(org_tables, fks, auth_user_tables)
     order = delete_order(nodes, fks)
     triggers = await discover_delete_triggers(conn)
-    return Plan(nodes, order, triggers, frozenset(org_tables))
+    reached = {str(t) for t in nodes}
+    unreached = tuple(
+        f"{schema}.{name}"
+        for schema, name in (await conn.execute(_ALL_TABLES_SQL)).all()
+        if f"{schema}.{name}" not in reached
+    )
+    return Plan(nodes, order, triggers, frozenset(org_tables), unreached)
 
 
 # ------------------------------------------------------------------------------- selection
@@ -1103,9 +1144,16 @@ async def preflight(conn: Conn, plan: Plan) -> list[str]:
         )
     tables = [str(t) for t in plan.order]
     rows = (await conn.execute(_PRIVILEGE_SQL, {"tables": tables})).all()
-    no_delete = [f"{r[0]}.{r[1]}" for r in rows if not r[2]]
+    # Every table the catalog shows is in the plan, so a table this role cannot read and delete
+    # from (created by another role, never granted) stops the run here: it would otherwise be
+    # counted and deleted from blind, or skipped while the organisation row went.
+    no_delete = [f"{r[0]}.{r[1]}" for r in rows if not (r[2] and r[4])]
     if no_delete:
-        problems.append(f"role {name!r} lacks DELETE on: {', '.join(no_delete)}")
+        problems.append(f"role {name!r} lacks DELETE or SELECT on: {', '.join(no_delete)}")
+    found = {f"{r[0]}.{r[1]}" for r in rows}
+    unseen = [t for t in tables if t not in found]
+    if unseen:
+        problems.append(f"tables in the plan that the catalog does not show: {', '.join(unseen)}")
     not_owner = [
         f"{r[0]}.{r[1]}" for r in rows if not r[3] and plan.triggers.get(Table(r[0], r[1]))
     ]
@@ -1960,6 +2008,19 @@ async def _explain(engine: AsyncEngine, out: Callable[[str], None]) -> int:
         guards = ", ".join(t.name for t in plan.triggers.get(table, []))
         if guards:
             out(f"      delete guard lifted inside the transaction when rows exist: {guards}")
+    bookkeeping = [n for n in plan.unreached if n.split(".", 1)[1] in BOOKKEEPING_TABLES]
+    others = [n for n in plan.unreached if n not in bookkeeping]
+    out("")
+    out(
+        f"{len(others)} other tables are NOT reached: no organization_id, and no foreign key "
+        "from them into a table that is deleted from. Whatever a tenant has in them stays:"
+    )
+    for name in others:
+        out(f"      {name}")
+    out(
+        f"      (and {len(bookkeeping)} bookkeeping tables, `{'` and `'.join(BOOKKEEPING_TABLES)}` "
+        "in every schema: migration state, and an idempotency ledger with no organisation on it)"
+    )
     return 0
 
 

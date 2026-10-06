@@ -178,15 +178,17 @@ async def _org_rows(conn: AsyncConnection, table: Any, org: uuid.UUID) -> int:
 
 
 async def _tables_with_org_column(conn: AsyncConnection) -> list[Any]:
-    """Independent of the tool: every base table with an `organization_id`, from the catalog."""
+    """Independent of the tool: every base table with an `organization_id`, from the catalog (not
+    `information_schema`, which hides what the role has no privilege on)."""
     rows = (
         await conn.execute(
             text(
-                "SELECT c.table_schema, c.table_name FROM information_schema.columns c "
-                "JOIN information_schema.tables t ON t.table_schema = c.table_schema "
-                "AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE' "
-                "WHERE c.column_name = 'organization_id' AND c.table_schema <> ALL(:sys) "
-                "AND c.table_schema NOT LIKE 'pg\\_%' ORDER BY 1, 2"
+                "SELECT n.nspname, c.relname FROM pg_attribute a "
+                "JOIN pg_class c ON c.oid = a.attrelid "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE a.attname = 'organization_id' AND a.attnum > 0 AND NOT a.attisdropped "
+                "AND c.relkind IN ('r', 'p') AND NOT c.relispartition "
+                "AND n.nspname <> ALL(:sys) AND n.nspname NOT LIKE 'pg\\_%' ORDER BY 1, 2"
             ),
             {"sys": list(_SYSTEM)},
         )
@@ -314,6 +316,158 @@ async def test_discovery_is_the_catalogs_not_a_list(engine: AsyncEngine, world: 
     assert unknown == [], (
         f"a column points at an organisation and the tool does not know: {unknown}"
     )
+
+
+#: The base tables in a service schema that the purge does not reach, each on purpose: no
+#: `organization_id` and no foreign key into a table that has one. (Besides `alembic_version` and
+#: `processed_events`, which every schema has.) A table added by a later migration that is not
+#: tenant data goes here with a reason; one that IS tenant data needs an `organization_id`
+#: (CLAUDE.md), and then the purge reaches it by itself.
+UNREACHED = {
+    # The global catalogue and reference data: shared by every organisation.
+    "catalog.features",
+    "catalog.plan_versions",  # `restricted_to_org_id` is counted and left (immutable)
+    "catalog.plans",
+    "catalog.prices",
+    "catalog.seat_classes",
+    "product.products",
+    "metering.meters",
+    "billing.tax_rates",
+    "finance.tax_rates",
+    "finance.withholding_rates",
+    "account.permissions",
+    # The platform's own: signing keys, social-login provider config, operator accounts. The
+    # operator side is never an organisation's.
+    "auth.signing_keys",
+    "auth.platform_oauth_providers",
+    "auth.staff_accounts",
+    "auth.staff_enrollment_codes",
+    # Meta's data-deletion callback ledger: a confirmation code and a request key, no tenant.
+    "notification.w1_meta_deletion_requests",
+}
+
+
+async def test_the_tables_the_purge_does_not_reach_are_exactly_the_ones_named(
+    engine: AsyncEngine,
+) -> None:
+    """Discovery is by `organization_id` and by foreign keys into it. A future tenant table keyed
+    some other way (`tenant_id`, `workspace_id`) with no such key would be skipped and the purge
+    would report success with that data still there. So the complement is pinned: a new table the
+    purge does not reach fails here until someone decides it is not tenant data and names it."""
+    plan = await _plan(engine)
+    async with engine.connect() as conn:
+        every = {
+            f"{r[0]}.{r[1]}"
+            for r in (
+                await conn.execute(
+                    text(
+                        "SELECT n.nspname, c.relname FROM pg_class c "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition "
+                        "AND n.nspname <> ALL(:sys) AND n.nspname NOT LIKE 'pg\\_%'"
+                    ),
+                    {"sys": list(_SYSTEM)},
+                )
+            ).all()
+        }
+    reached = {str(t) for t in plan.nodes}
+    outside = every - reached
+    assert set(plan.unreached) == outside, "the tool's own list of what it leaves is wrong"
+    tenant_candidates = {t for t in outside if t.split(".", 1)[1] not in purge.BOOKKEEPING_TABLES}
+    assert tenant_candidates == UNREACHED, (
+        f"not reached and not named: {sorted(tenant_candidates - UNREACHED)}; "
+        f"named but now reached or gone: {sorted(UNREACHED - tenant_candidates)}"
+    )
+    assert {"account.users", "account.organizations", "auth.sessions"} <= reached
+
+
+async def test_discovery_does_not_depend_on_what_the_role_may_see(
+    engine: AsyncEngine, world: World
+) -> None:
+    """`information_schema` shows a role only the tables it owns or holds a privilege on. A narrow
+    role (the operations service's) sees a fraction of them there; the plan the tool builds from
+    the catalog is the same whoever builds it."""
+    assert REAL_DSN is not None
+    narrow = create_async_engine(make_url(REAL_DSN).set(username="opsgrids_operations"))
+    try:
+        async with engine.connect() as admin, narrow.connect() as limited:
+            full = await purge.discover_org_tables(admin)
+            assert await purge.discover_org_tables(limited) == full
+            through_information_schema = await _scalar(
+                limited,
+                "SELECT count(DISTINCT (table_schema, table_name)) FROM information_schema.columns "
+                "WHERE column_name = 'organization_id' AND table_schema <> ALL(:sys)",
+                sys=list(_SYSTEM),
+            )
+            assert through_information_schema < len(full) // 2, "the premise of this test"
+            plan_a, plan_b = await purge.build_plan(admin), await purge.build_plan(limited)
+            assert [str(t) for t in plan_a.order] == [str(t) for t in plan_b.order]
+            assert plan_a.unreached == plan_b.unreached
+    finally:
+        await narrow.dispose()
+
+
+async def test_a_table_created_by_another_role_without_a_grant_stops_the_run(
+    engine: AsyncEngine, world: World
+) -> None:
+    """The case behind the change: a hand-applied hotfix, run as a superuser, creates
+    `x.new_table (organization_id ...)` and grants this role nothing. Through `information_schema`
+    it does not exist for the owner role, so it was skipped, the organisation row went, and its
+    rows in that table stayed as orphans for good. From the catalog the tool sees it, and the
+    preflight refuses the run naming it."""
+    assert REAL_DSN is not None
+    a = world.orgs["a"]
+    superuser = create_async_engine(
+        make_url(REAL_DSN).set(username="opsgrids", password="opsgrids")  # the dev superuser
+    )
+    try:
+        try:
+            async with superuser.begin() as conn:
+                await conn.execute(text("SELECT 1"))
+        except Exception:
+            pytest.skip(
+                "needs the dev superuser (`opsgrids`) to create a table the owner cannot see"
+            )
+        async with superuser.begin() as conn:
+            await conn.execute(text("CREATE SCHEMA pto_hidden"))
+            await conn.execute(
+                text(
+                    "CREATE TABLE pto_hidden.leftover "
+                    "(id uuid PRIMARY KEY, organization_id uuid NOT NULL)"
+                )
+            )
+            await conn.execute(
+                text("INSERT INTO pto_hidden.leftover VALUES (gen_random_uuid(), :o)"), {"o": a}
+            )
+        try:
+            async with engine.connect() as conn:
+                assert (
+                    await _scalar(
+                        conn,
+                        "SELECT count(*) FROM information_schema.columns "
+                        "WHERE table_schema = 'pto_hidden'",
+                    )
+                    == 0
+                ), "the premise: the owner role cannot see it through information_schema"
+                assert "pto_hidden.leftover" in {
+                    str(t) for t in await purge.discover_org_tables(conn)
+                }
+            with pytest.raises(
+                purge.Refusal, match=r"lacks DELETE or SELECT on: .*pto_hidden\.leftover"
+            ):
+                await _run([a], apply=True)
+            async with engine.connect() as conn:
+                assert (
+                    await _scalar(
+                        conn, "SELECT count(*) FROM account.organizations WHERE id = :o", o=a
+                    )
+                    == 1
+                ), "a refused run deleted the organisation row"
+        finally:
+            async with superuser.begin() as conn:
+                await conn.execute(text("DROP SCHEMA pto_hidden CASCADE"))
+    finally:
+        await superuser.dispose()
 
 
 # ---------------------------------------------------------------------------------- dry run
@@ -1111,6 +1265,9 @@ async def test_main_lists_dry_runs_and_applies_end_to_end(
     out.clear()
     assert await asyncio.to_thread(purge.main, ["--explain"], cfg=cfg, out=out.append) == 0
     assert any("auth.sessions" in x for x in out) and any("delete guard" in x for x in out)
+    explained = "\n".join(out)
+    assert "NOT reached" in explained and "catalog.plans" in explained, "what is left is shown"
+    assert "alembic_version" in explained and "processed_events" in explained
 
     out.clear()
     assert await asyncio.to_thread(purge.main, ["--org-id", str(a)], cfg=cfg, out=out.append) == 0

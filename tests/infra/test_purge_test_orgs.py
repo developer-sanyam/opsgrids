@@ -867,6 +867,42 @@ def test_the_tool_has_one_delete_and_one_insert_and_nothing_global() -> None:
     )
 
 
+def test_discovery_reads_the_catalog_not_information_schema() -> None:
+    """`information_schema` lists only what the current role owns or may use, so a table made by
+    another role without a grant would be invisible to the purge and left behind with the
+    organisation row gone. The catalog (`pg_class`, `pg_attribute`) lists everything."""
+    sql = "\n".join(_code_strings(TOOL.read_text()))
+    assert not re.search(r"information_schema\s*\.\s*(columns|tables)", sql)
+    assert "pg_attribute" in sql and "pg_class" in sql and "relispartition" in sql
+
+
+class _PreflightConn:
+    """Answers `preflight`'s two queries: the role, then the privilege rows."""
+
+    def __init__(self, rows: list[tuple[str, str, bool, bool, bool]], *, bypass: bool = True):
+        self.rows, self.bypass = rows, bypass
+
+    async def execute(self, statement: Any, params: Any = None) -> Any:
+        if "rolbypassrls" in str(statement):
+            return SimpleNamespace(one=lambda: ("owner_role", False, self.bypass))
+        return SimpleNamespace(all=lambda: self.rows)
+
+
+async def test_preflight_names_a_table_the_role_cannot_read_and_delete_from() -> None:
+    tables = [Table("s", n) for n in ("a", "b", "c")]
+    plan = purge.Plan({}, tables, {}, frozenset(tables))
+    # (schema, name, DELETE, owns it, SELECT): b has no SELECT, c is not in the catalog's answer.
+    rows = [("s", "a", True, True, True), ("s", "b", True, True, False)]
+    problems = await purge.preflight(_PreflightConn(rows), plan)
+    assert len(problems) == 2
+    assert "lacks DELETE or SELECT on: s.b" in problems[0] and "s.a" not in problems[0]
+    assert "catalog does not show: s.c" in problems[1]
+    ok = [("s", n, True, True, True) for n in "abc"]
+    assert await purge.preflight(_PreflightConn(ok), plan) == []
+    no_bypass = await purge.preflight(_PreflightConn(ok, bypass=False), plan)
+    assert len(no_bypass) == 1 and "row-level security" in no_bypass[0]
+
+
 def test_the_tool_connects_as_the_admin_role_and_nothing_else() -> None:
     source = TOOL.read_text()
     code = re.sub(r'""".*?"""', "", source, flags=re.DOTALL)

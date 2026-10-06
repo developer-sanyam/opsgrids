@@ -65,9 +65,11 @@ Verified in code before deciding:
    `--apply` deletes with, in a `REPEATABLE READ READ ONLY` transaction, per table. `--apply` counts again inside each
    organisation's transaction, deletes, and checks that nothing is left before it commits.
 5. **One transaction per organisation, as `opsgrids_admin`.** An interrupted or failed run leaves each organisation
-   whole or untouched, and a re-run finishes the rest. Tables are *discovered* (`information_schema`, `pg_constraint`,
-   `pg_trigger`), not listed, so a service added later is covered, and are deleted children first from the constraint
-   graph. A table with no `organization_id` that hangs off one by a delete-blocking or cascading key is found by walking
+   whole or untouched, and a re-run finishes the rest. Tables are *discovered* from the catalog (`pg_class`, `pg_attribute`,
+   `pg_constraint`, `pg_trigger`; not `information_schema`, which hides a table the role has no privilege on), not
+   listed, so a service added later is covered, and a table the role cannot read and delete from refuses the run
+   instead of being skipped. They are deleted children first from the constraint graph; `--explain` lists the tables
+   that are not reached and a database test pins that list. A table with no `organization_id` that hangs off one by a delete-blocking or cascading key is found by walking
    the keys and selected through its parent. The transaction sets the tenant GUC locally, takes an advisory lock so two
    runs cannot interleave, and uses a lock timeout so it fails rather than queues behind traffic.
 6. **Delete guards are lifted by name, in the transaction, and put back.** Only a trigger that fires on `DELETE`, only on
@@ -105,7 +107,9 @@ Verified in code before deciding:
   (`docs/engage-erasure-and-unsubscribe.md` covers what that takes) and it does not shorten any backup's life.
 * **A new table is covered the day it ships**, provided it carries `organization_id` (CLAUDE.md already requires it).
   A new column that points at an organisation under another name must be added to `KNOWN_ORG_REFERENCES`; a test scans a
-  migrated database and fails when one is not.
+  migrated database and fails when one is not. A table that has neither is not reached, so the complement is pinned
+  too: a database test lists every table the purge does not reach and fails until a new one is named there as not
+  tenant data.
 * **A late event can recreate a projection row** for a removed organisation if a consumer is still holding a message
   about it; the RUNBOOK says not to requeue such a dead letter, and a re-run removes what reappeared.
 * **The real-database test is opt-in** (`OPSGRIDS_PURGE_ORGS_TEST_DATABASE_URL`), like the put-away purge's, because

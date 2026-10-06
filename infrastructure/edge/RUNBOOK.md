@@ -2192,7 +2192,9 @@ Read, in this order: `organisations_remaining` (are your own still there?), each
 not recognise, is not what you meant to remove: stop and look it up by id), its `users` block
 (`deleted` against `kept_shared_with_another_organization` and `kept_protected`), any
 `left_in_place`, and the lines about what lives outside the database. `PURGE --explain` prints every
-table, what selects its rows and the order (children first) if you want to see the plan itself.
+table, what selects its rows and the order (children first) if you want to see the plan itself, and
+then the tables it does **not** reach (the global catalogue, the platform's keys and operator
+accounts, tax tables; nothing that has an `organization_id`).
 
 Names in the listing and in `candidates.txt` are whatever the person who signed up typed, so the
 tool prints them with every non-printable character replaced by `?` and cut at 80 characters, and
