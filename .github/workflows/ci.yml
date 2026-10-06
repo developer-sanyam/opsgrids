@@ -442,7 +442,7 @@ jobs:
         ports: ['5673:5672']
         options: >-
           --health-cmd "rabbitmq-diagnostics -q ping"
-          --health-interval 4s --health-timeout 5s --health-retries 40
+          --health-interval 10s --health-timeout 5s --health-retries 20
 
     steps:
       - uses: actions/checkout@v4
