@@ -16,7 +16,10 @@ does not change what any check asserts: every row that ran before runs now.
 ## Context
 
 Measured on the last seven runs (`gh run view`, per-step timestamps; table in [testing.md](../testing.md)): 22–37
-minutes wall clock, and not one green run in the last hundred. The wall clock was one job:
+minutes wall clock, and not one green run in the last hundred. The before and after rows of that table are
+[run 37452127273](https://github.com/developer-sanyam/opsgrids/actions/runs/37452127273) (a `main` push) and
+[run 37466031956](https://github.com/developer-sanyam/opsgrids/actions/runs/37466031956) (the first sharded run); logs
+and artifacts expire, so the tables are the durable record. The wall clock was one job:
 
 - `Backend — tests 3/3` took **32 minutes**, of which `operations` alone was **19** (1,995 tests, 1,138 s). The other
   two shards took 7 and 12 minutes. Services were dealt to shards by `tools/shard-weights.txt`, one number per service
@@ -29,8 +32,6 @@ minutes wall clock, and not one green run in the last hundred. The wall clock wa
 - Service-local suites spend most of their time waiting on the disk: each fixture `TRUNCATE`s ~50 tables before every
   test.
 - The frontend job ran five checks in a row (19 minutes, then the build, which has not run since the tests went red).
-- Every push to `main` cancelled the previous `main` run (`cancel-in-progress` with no event condition), so a burst of
-  merges left a trail of cancelled runs, none of which proved the commit it was for.
 
 ## Decision
 
@@ -59,6 +60,8 @@ minutes wall clock, and not one green run in the last hundred. The wall clock wa
 5. **The static job is three jobs** — lint/boundaries/schemas, types, repository-tooling tests — each with every row
    running regardless of the one before (`if: ${{ !cancelled() }}`), and the mypy cache is *saved* even when the job is
    red (restore and save are separate steps; a cache step's own save only runs on success, so it had never been written).
+   Only `main` saves it: an entry is ~110 MB under a per-commit key, and saving from every pull-request push would fill
+   the 10 GB cache quota within about a week and evict the entry the pull requests restore from.
    The supply-chain rows and the library tests and boot smoke report independently the same way.
 6. **One migrations job**, two services at a time, instead of three: with a tuned database the round-trip and the drift
    check take about two minutes, and three jobs paid three container starts and three rounded-up minutes for it.
@@ -67,13 +70,24 @@ minutes wall clock, and not one green run in the last hundred. The wall clock wa
    test fails if a workspace package is in no leg or in two.
 8. **A change that is only `docs/` skips the database-backed jobs** (migrations, service tests, contracts). Nothing
    wider is trusted: Markdown elsewhere and `infrastructure/` stay code, because service tests read
-   `infrastructure/edge/RUNBOOK.md`, `routes.prod.json` and the preflight libraries by path.
-9. **Concurrency:** a superseded pull-request run is cancelled; a push to `main` is not, and is not queued behind
-   another (its group is its own commit). Every job has a `timeout-minutes`.
-10. **`ci-plan.sh` does nothing when the box is already at or past the commit.** Because `main` runs are no longer
-    cancelled, the run for commit A can finish after commit B (built on A) has deployed; the box then reports B, which is
-    not an ancestor of A, and the plan read that as "no usable base" and deployed *everything from A* — a rollback.
-    Found by reasoning about the deploy path, pinned by a test.
+   `infrastructure/edge/RUNBOOK.md`, `routes.prod.json` and the preflight libraries by path. A renamed file counts under
+   both its old and new path (the files API gives the old one only as `previous_filename`), so moving the RUNBOOK into
+   `docs/` is still code.
+9. **Concurrency is unchanged: a superseded run is cancelled, on `main` as well as on a pull request** (group = the
+   ref, `cancel-in-progress: true`). An earlier draft of this change stopped cancelling `main` runs, on the reasoning that
+   deploy ships what a *finished green* run proved. Review measured what that costs and found it buys nothing today: in
+   the eight hours to 2026-10-06 11:27 UTC, 7 of 12 `main` runs were cancelled after billing 34–79 minutes each (414 in
+   all, on the old pipeline), and a full run of this one bills about 95 ([testing.md](../testing.md)), so each
+   superseded commit would have billed roughly 40 more — and could leave the newest run queued behind the others for
+   runners. None of the last 40 `main` runs was green (33 failures, 7 cancelled), so no intermediate green commit has
+   ever been lost to a cancellation; and `deploy.yml` plans from the commit the box last served, not from the previous
+   commit, so a commit whose run was cancelled is part of the next deploy anyway. If never-cancel is wanted later it is
+   its own owner decision with that minute cost stated. Every job has a `timeout-minutes`.
+10. **`ci-plan.sh` does nothing when the box is already at or past the commit.** The run for commit A can still finish
+    after commit B (built on A) has deployed — someone re-runs an old run from the Actions tab, or A's run completed a
+    moment before B's push would have cancelled it. The box then reports B, which is not an ancestor of A, and the plan
+    read that as "no usable base" and deployed *everything from A* — a rollback. Found by reasoning about the deploy
+    path, pinned by a test; kept when the draft above was reverted, because the case does not need uncancelled runs.
 
 ## Consequences
 
@@ -83,9 +97,12 @@ minutes wall clock, and not one green run in the last hundred. The wall clock wa
   `Frontend — tests and build N/4`. `main` has no branch protection (owner, 2026-09-23); if one is added it should
   require these names (or an aggregate job).
 - **Durations drift.** `tools/test-durations.json` is a measurement. The plan stays *correct* when it goes stale (every
-  file still runs exactly once); only the balance degrades. Refresh: download a run's `junit-shard-*` artifacts and run
-  `python3 tools/ci_shards.py refresh <dir>` ([testing.md](../testing.md)). A test fails if one shard is handed more
-  than 1.35× the mean.
+  file still runs exactly once); only the balance degrades, and an entry for a file that no longer exists is a `note:`
+  from `verify`, not a failure. Refresh: download a run's `junit-shard-*` artifacts and run
+  `python3 tools/ci_shards.py refresh --run <run url> <dir>`, which records the run in the file's `source`
+  ([testing.md](../testing.md)). A test fails if one shard is handed more than 1.35× the mean — that one stays in the
+  per-pull-request gate on purpose: it can only change with the durations or the test files, and a refresh that yields a
+  lopsided plan should fail its own pull request.
 - **More jobs run at once** (up to 20 for a full run), so a runner-concurrency limit can queue some; in the measured run
   one job waited 35 s.
 - **Minutes.** A full run bills about as much as before once the rows that used to be skipped are counted (they were
@@ -96,12 +113,35 @@ minutes wall clock, and not one green run in the last hundred. The wall clock wa
   started because recent account payments have failed or your spending limit needs to be increased" — so it is
   unmeasured. It reuses only commands that ran in the measured round, and the single migrations job was run end to end
   locally against a scratch database; it is still a prediction until a run proves it.
-- **Assumption about `fix/ci-failures` (PR #102).** It does not touch `ci.yml` today. If it adds services or setup steps
-  (an `opsgrids_mon` database, mailhog) to the job that runs the library tests, that job is still `tests`, shard 1, in the
-  same place; the step list around it changed only by the added tuning, timing-upload and `!cancelled()` conditions.
+- **`fix/ci-failures` (PR #102) edits `ci.yml` too, so whichever merges second has one edit to make.** An earlier draft
+  of this ADR said #102 did not touch `ci.yml`; it does. It widens the `rabbitmq` service's ports to the management port,
+  adds a `mailhog` service right after it, and adds a step `Ops-monitor integration database` (`if: matrix.shard == 1`)
+  between `Service tests` and `Library tests`. The two branches used to conflict on exactly one line, a faster `rabbitmq`
+  health probe (4 s instead of 10 s) worth a few seconds per shard; that line is back to what `main` has, so a trial
+  merge of the two tips (`git merge-tree`, 2026-10-06) is conflict-free and `actionlint` passes on the result. The merge
+  is still not *right* as it stands: #102's step has a bare `if: matrix.shard == 1`, so a red `Service tests` skips it,
+  and `Library tests` — which runs regardless — then fails for want of the `opsgrids_mon` database, a failure that is not
+  its own. `test_a_shard_one_step_is_not_skipped_by_a_red_service_test_step` fails on the merged tree until that step's
+  condition is `${{ !cancelled() && matrix.shard == 1 }}`. Either order merges; landing #102 first (the smaller change,
+  and the one that fixes the red rows) and then rebasing this branch, making that edit and running `actionlint` on the
+  result is the cheaper path, because no CI can check a hand-resolved workflow while Actions is unavailable.
+- **Rollback is the whole change, not the workflow.** `tests/infra` reads `ci.yml`'s `TEST_SHARDS`, the `changes` job's
+  outputs and the `tests` matrix, so reverting only `.github/workflows/ci.yml` leaves tests that expect the new workflow
+  beside the old one and turns `Backend — tooling tests` red on top of whatever prompted the rollback. Revert the squash
+  commit: workflow, Makefile, `tools/`, `ci-plan.sh` and the tests together.
 
 ## Not done, and why
 
+- **An aggregate `ci-ok` job.** No single check means "CI passed": the test and migration jobs do not exist for a
+  docs-only change, and the `tests` matrix has only the shards with work. Not added because nothing consumes it while
+  `main` has no branch protection, and it bills a minute on every run. The day protection is added: a final job with
+  `if: ${{ always() }}`, `needs` on every other job, failing if any result is `failure` or `cancelled` (skipped is fine),
+  and that job as the only required check.
+- **Failing the deploy plan when the box's last-good ref cannot be read.** `deploy.yml` leaves `BASE` empty on any ssh
+  failure and `ci-plan.sh` then deploys everything, which is what a new box or a rewritten history needs. Making that a
+  hard failure would stop a first deploy, and the rollback it guards against (an older run finishing after a newer
+  deploy while the lookup fails) needed uncancelled `main` runs to be likely; with cancellation back it is the same rare
+  case it was before this branch. A deploy-path decision for the owner, not this track's.
 - **`pytest-xdist` or two processes per runner.** Needs per-worker databases the fixtures cannot select without
   editing every service's `conftest`; the earlier trial lost. Revisit with a CPU measurement (idle share while the tests
   run), not before.

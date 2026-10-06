@@ -499,12 +499,20 @@ def test_the_plan_digest_follows_the_tree(tree: Path) -> None:
     assert ci_shards.digest(2) != before  # a file the other job did not see
 
 
+# A database that cannot answer (port 1), for the tests that run the real test-shard.sh: if the
+# check under test ever regresses, the script goes on to run service tests, and they must meet a
+# refused connection rather than truncate whatever Postgres is around.
+UNREACHABLE_DATABASE = (
+    "postgresql+asyncpg://nobody:nobody@127.0.0.1:1/none"  # pragma: allowlist secret
+)
+
+
 def test_a_shard_whose_plan_differs_from_the_changes_jobs_refuses_to_run() -> None:
     env = {
         **os.environ,
         "TEST_PLAN_DIGEST": "0000000000000000",
-        # As in the test below: were the comparison to regress, nothing may reach a real database.
-        "DATABASE_URL": "postgresql+asyncpg://nobody:nobody@127.0.0.1:1/none",
+        # Were the comparison to regress, nothing may reach a real database.
+        "DATABASE_URL": UNREACHABLE_DATABASE,
     }
     result = subprocess.run(
         ["bash", str(REPO_ROOT / "tools/test-shard.sh"), "1", str(_workflow_test_shards()), "1"],
@@ -524,7 +532,7 @@ def test_a_ci_shard_with_no_plan_digest_refuses_to_run() -> None:
     # Should the check ever regress, the script goes on to run real service tests: point them at
     # a database that cannot answer, so the failure is a refused connection and nothing is
     # truncated on whatever Postgres is around.
-    env["DATABASE_URL"] = "postgresql+asyncpg://nobody:nobody@127.0.0.1:1/none"
+    env["DATABASE_URL"] = UNREACHABLE_DATABASE
     result = subprocess.run(
         ["bash", str(REPO_ROOT / "tools/test-shard.sh"), "1", str(_workflow_test_shards()), "1"],
         env=env,
