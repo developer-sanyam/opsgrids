@@ -354,6 +354,30 @@ async def test_a_dry_run_changes_nothing_and_says_exactly_what_apply_will_delete
     assert applied["live_signals"] == dry_line["live_signals"]
 
 
+@pytest.mark.parametrize("keys", [("a", "c"), ("a", "b", "c")])
+async def test_a_dry_run_of_organisations_that_share_a_user_counts_what_apply_deletes(
+    engine: AsyncEngine, world: World, keys: tuple[str, ...]
+) -> None:
+    """The cast has users in two selected organisations (`ac` is in a and c, `ab` in a and b). In
+    one snapshot the first organisation is still there when the second is counted, so a shared
+    user's session, membership and role rows used to be counted under both: the dry run said 551
+    rows where `--apply` deleted 547. The promise is table by table, organisation by organisation,
+    for any selection, not only for one organisation."""
+    selected = [world.orgs[k] for k in keys]
+    dry, dry_lines = await _run(selected, apply=False)
+    done, lines = await _run(selected, apply=True)
+
+    dry_by_org = {x["organization_id"]: x for x in _json_lines(dry_lines) if "status" in x}
+    done_by_org = {x["organization_id"]: x for x in _json_lines(lines) if "status" in x}
+    assert len(dry_by_org) == len(done_by_org) == len(keys)
+    assert _processed(dry_lines) == _processed(lines)
+    for org, line in done_by_org.items():
+        assert line["deleted"] == dry_by_org[org]["would_delete"], f"{org}: dry run != apply"
+        assert line["users"] == dry_by_org[org]["users"], org
+    assert dry.rows == done.rows and dry.users_deleted == done.users_deleted
+    assert (done.failed, done.removed) == (0, len(keys))
+
+
 # ------------------------------------------------------------------------------------- apply
 async def test_apply_removes_one_organisation_and_nothing_of_any_other(
     engine: AsyncEngine, world: World

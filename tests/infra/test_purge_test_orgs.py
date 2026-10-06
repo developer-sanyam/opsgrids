@@ -643,6 +643,51 @@ def test_a_composite_key_joins_on_every_column() -> None:
     assert 't."order_id" = p1."id" AND t."org" = p1."organization_id"' in sql
 
 
+def test_bind_names_can_be_tagged_so_one_statement_can_ask_about_two_organisations() -> None:
+    nodes = _nodes()
+    assert nodes[Table("s", "orders")].predicate(nodes, "t", 0, "_3") == (
+        '(t."organization_id" = :org_3)'
+    )
+    sql = nodes[Table("s", "attachments")].predicate(nodes, "t", 0, "_1")
+    assert ":org_1" in sql and ":org " not in sql and ":org)" not in sql, "every level is tagged"
+    sessions = nodes[Table("auth", "sessions")].predicate(nodes, "t", 0, "_2")
+    assert ":org_2" in sessions and ":orphans_2" in sessions and ":orphans " not in sessions
+
+
+class _CountingConn:
+    """Records the statement a count sends, and answers with a fixed number."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, dict[str, Any]]] = []
+
+    async def execute(self, statement: Any, params: dict[str, Any]) -> Any:
+        self.sent.append((str(statement), params))
+        return SimpleNamespace(scalar_one=lambda: 7)
+
+
+async def test_a_dry_run_count_leaves_out_what_an_earlier_organisation_takes() -> None:
+    """The dry run counts every selected organisation from one snapshot in which the first is still
+    there; `--apply` finds a later one after the earlier ones are gone. A user in both has a session
+    and a membership in each: counted under the later one they would be counted twice."""
+    nodes = _nodes()
+    sessions = nodes[Table("auth", "sessions")]
+    own = {"org": ORG_B, "orphans": [uuid.UUID(int=5)]}
+
+    alone = _CountingConn()
+    assert await purge._count(alone, sessions, nodes, own) == 7
+    assert "org_0" not in alone.sent[0][0] and set(alone.sent[0][1]) == {"org", "orphans"}
+
+    later = _CountingConn()
+    prior = (ORG_A, [uuid.UUID(int=5), uuid.UUID(int=6)])
+    await purge._count(later, sessions, nodes, own, [prior, (uuid.uuid4(), [])])
+    statement, params = later.sent[0]
+    assert statement.count("IS NOT TRUE") == 2, "one exclusion per earlier organisation"
+    assert ":org_0" in statement and ":org_1" in statement and ":orphans_1" in statement
+    assert params["org_0"] == ORG_A and params["orphans_0"] == list(prior[1])
+    assert params["org"] == ORG_B, "the organisation being counted keeps the plain names"
+    assert " AND ((" in statement and statement.rstrip().endswith("IS NOT TRUE)")
+
+
 def test_a_table_that_is_only_nulled_by_the_delete_is_not_deleted_from() -> None:
     assert Table("s", "audit") not in _nodes(), "ON DELETE SET NULL rows are not the organisation's"
 

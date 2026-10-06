@@ -25,8 +25,10 @@ input to a deletion. You choose the ids and you type them.
         --i-took-a-backup [--i-know-this-is-the-live-database]
 
 Step 2 is not an estimate. It runs the same per-table statements as step 3 as `SELECT count(*)` in
-a read-only transaction, so `would_delete` is what `--apply` deletes, table by table. `--explain`
-prints the plan itself: every table, the SQL that selects its rows, and the order.
+a read-only transaction, so `would_delete` is what `--apply` deletes, table by table (with several
+organisations, each is counted as it will be found when its turn comes, without the rows an earlier
+one in the run has already taken: a user in two of them is counted once). `--explain` prints the
+plan itself: every table, the SQL that selects its rows, and the order.
 
 **What `--apply` refuses.** Before it opens a transaction that can write it checks, and exits 2
 without touching anything if any of these is false:
@@ -286,21 +288,23 @@ class Cond:
     parent: Table | None = None
     pairs: tuple[tuple[str, str], ...] = ()  # (child column, parent column) for `parent`
 
-    def sql(self, alias: str, nodes: dict[Table, Node], depth: int) -> str:
+    def sql(self, alias: str, nodes: dict[Table, Node], depth: int, tag: str = "") -> str:
+        """`tag` suffixes the two bind names (`:org`, `:orphans`), so one statement can ask the
+        same question about more than one organisation (see `_count`'s `earlier`)."""
         if self.kind == "org":
-            return f'{alias}."organization_id" = :org'
+            return f'{alias}."organization_id" = :org{tag}'
         if self.kind == "row":
-            return f'{alias}."id" = :org'
+            return f'{alias}."id" = :org{tag}'
         if self.kind == "user":
-            return f'{alias}."{self.column}" = ANY(CAST(:orphans AS uuid[]))'
+            return f'{alias}."{self.column}" = ANY(CAST(:orphans{tag} AS uuid[]))'
         if self.kind == "session":
-            return f'{alias}."active_org_id" = :org'
+            return f'{alias}."active_org_id" = :org{tag}'
         assert self.parent is not None
         if depth >= _MAX_DEPTH:
             raise SchemaDrift(f"foreign keys nest deeper than {_MAX_DEPTH} levels at {self.parent}")
         inner = f"p{depth + 1}"
         join = " AND ".join(f'{alias}."{c}" = {inner}."{pc}"' for c, pc in self.pairs)
-        parents_rows = nodes[self.parent].predicate(nodes, inner, depth + 1)
+        parents_rows = nodes[self.parent].predicate(nodes, inner, depth + 1, tag)
         # Identifiers come from the catalog and were checked by `Table`; values are bound.
         return f"EXISTS (SELECT 1 FROM {self.parent.sql} {inner} WHERE {join} AND ({parents_rows}))"  # noqa: S608
 
@@ -320,8 +324,10 @@ class Node:
         if cond not in self.conds:
             self.conds.append(cond)
 
-    def predicate(self, nodes: dict[Table, Node], alias: str = "t", depth: int = 0) -> str:
-        return " OR ".join(f"({c.sql(alias, nodes, depth)})" for c in self.conds)
+    def predicate(
+        self, nodes: dict[Table, Node], alias: str = "t", depth: int = 0, tag: str = ""
+    ) -> str:
+        return " OR ".join(f"({c.sql(alias, nodes, depth, tag)})" for c in self.conds)
 
 
 # --------------------------------------------------------------------------- catalog queries
@@ -815,11 +821,35 @@ def _params(org: uuid.UUID, orphans: Sequence[uuid.UUID]) -> dict[str, Any]:
     return {"org": org, "orphans": list(orphans)}
 
 
-async def _count(conn: Conn, node: Node, nodes: dict[Table, Node], params: dict[str, Any]) -> int:
-    where = node.predicate(nodes)
+#: An organisation a dry run treats as already gone when it counts a later one: its id and the
+#: users it retires.
+Earlier = Sequence[tuple[uuid.UUID, Sequence[uuid.UUID]]]
+
+
+async def _count(
+    conn: Conn,
+    node: Node,
+    nodes: dict[Table, Node],
+    params: dict[str, Any],
+    earlier: Earlier = (),
+) -> int:
+    """Rows of one table that are this organisation's. `earlier` is for the dry run only: it counts
+    every selected organisation from one snapshot in which the first is still there, so a row two
+    of them could both claim (a user in both has one session and one membership in each, and
+    the user, with every session, goes with the last of them) would be counted twice, though
+    `--apply` deletes it once, under the first. Excluding what each earlier organisation's
+    selector matches makes the dry run count what the apply will find when its turn comes."""
+    where = f"({node.predicate(nodes)})"
+    bound = dict(params)
+    for k, (prior, prior_orphans) in enumerate(earlier):
+        # `IS NOT TRUE`, not `NOT`: a selector that is NULL for a row (a nullable column) did not
+        # match it, and the row is still there for this organisation.
+        where += f" AND (({node.predicate(nodes, 't', 0, f'_{k}')}) IS NOT TRUE)"
+        bound[f"org_{k}"] = prior
+        bound[f"orphans_{k}"] = list(prior_orphans)
     row = await conn.execute(
         text(f"SELECT count(*) FROM {node.table.sql} t WHERE {where}"),  # noqa: S608
-        params,
+        bound,
     )
     return int(row.scalar_one())
 
@@ -892,12 +922,13 @@ async def plan_org(
     *,
     keep_users: Iterable[uuid.UUID],
     keep_orphans: bool,
+    earlier: Earlier = (),
 ) -> OrgPlan:
     orphans, users = await classify_users(
         conn, org, processed, keep_users=keep_users, keep_orphans=keep_orphans
     )
     params = _params(org, orphans)
-    counts = {t: await _count(conn, plan.nodes[t], plan.nodes, params) for t in plan.order}
+    counts = {t: await _count(conn, plan.nodes[t], plan.nodes, params, earlier) for t in plan.order}
     op = OrgPlan(
         org,
         counts,
@@ -1456,17 +1487,19 @@ async def _read_phase(
         ordered = children_first(selected, await selected_parents(conn, selected))
         plans: list[OrgPlan] = []
         if want_plans:
+            earlier: list[tuple[uuid.UUID, list[uuid.UUID]]] = []
             for i, org in enumerate(ordered):
-                plans.append(
-                    await plan_org(
-                        conn,
-                        plan,
-                        org,
-                        ordered[: i + 1],
-                        keep_users=keep_users,
-                        keep_orphans=keep_orphans,
-                    )
+                op = await plan_org(
+                    conn,
+                    plan,
+                    org,
+                    ordered[: i + 1],
+                    keep_users=keep_users,
+                    keep_orphans=keep_orphans,
+                    earlier=earlier,
                 )
+                plans.append(op)
+                earlier.append((org, op.orphans))
         await conn.rollback()
     return plan, ordered, plans, total
 
