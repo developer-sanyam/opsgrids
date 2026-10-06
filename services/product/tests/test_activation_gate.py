@@ -350,6 +350,175 @@ class TestAfterASubscription:
         assert await _written(session, org_id) == before
 
 
+class TestAStopNamingAMemberTheSourceNeverFed:
+    """A stop that applied a lapsed rung-up silently (ADR-0037) names the *new* pin's members.
+
+    The suite held the duo, a deferred change to the trio came due, and the customer cancelled (or
+    staff suspended) before the billing run claimed the boundary. The stop's payload names
+    `finance`, which this subscription never entitled. A source row written for it would be a
+    suspended activation with subscription provenance for a product the organization never had, and
+    the gate would then refuse the owner a product no subscription ever fed.
+    """
+
+    @staticmethod
+    async def _held_the_duo(org_id: uuid.UUID, sid: uuid.UUID, stop: str) -> None:
+        await project_subscription_event(
+            real_envelope(
+                org_id,
+                state="active",
+                product_key="suite",
+                members=DUO,
+                subscription_id=sid,
+                minutes=0,
+            )
+        )
+        await project_subscription_event(
+            real_envelope(
+                org_id,
+                state=stop,
+                product_key="suite",
+                members=TRIO,
+                subscription_id=sid,
+                minutes=1,
+            )
+        )
+
+    @pytest.mark.parametrize("stop", ["cancelled", "suspended"])
+    async def test_no_source_or_activation_is_made_for_the_member_never_held(
+        self, session: AsyncSession, org_id: uuid.UUID, stop: str
+    ) -> None:
+        await self._held_the_duo(org_id, uuid.uuid4(), stop)
+
+        written = await _written(session, org_id)
+        assert [(a[0], a[1]) for a in written["activations"]] == [
+            ("crm", "suspended"),
+            ("hrms", "suspended"),
+        ]
+        assert {(s[0], s[1], s[2]) for s in written["sources"]} == {
+            ("crm", "suite", "suspended"),
+            ("hrms", "suite", "suspended"),
+        }
+        async with session.begin():
+            entitled = set(await selectors.entitlements_for(session, org_id))
+        assert not entitled & {"hrms", "crm", "finance"}
+
+    @pytest.mark.parametrize("stop", ["cancelled", "suspended"])
+    async def test_the_owner_may_still_activate_the_member_never_held(
+        self, client: AsyncClient, org_id: uuid.UUID, stop: str
+    ) -> None:
+        await self._held_the_duo(org_id, uuid.uuid4(), stop)
+
+        as_owner(org_id)
+        response = await _post(client, "finance")
+        assert response.status_code == 201, response.text
+        assert response.json()["entitles"] is True
+        # The members the duo did feed stay refused: the subscription still manages them.
+        for member in DUO:
+            _assert_refused(await _post(client, member))
+
+    async def test_the_stop_still_carries_the_watermark_so_an_older_event_is_dropped(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """Skipping the new member must not weaken the ordering guard: the rows the source does
+        have are stamped with the stop's time, so a late `upgraded` for the trio is stale."""
+        sid = uuid.uuid4()
+        await self._held_the_duo(org_id, sid, "cancelled")
+        before = await _written(session, org_id)
+
+        await project_subscription_event(
+            real_envelope(
+                org_id,
+                state="active",
+                product_key="suite",
+                members=TRIO,
+                subscription_id=sid,
+                minutes=0,
+                event_type="commerce.subscription.upgraded",
+            )
+        )
+
+        assert await _written(session, org_id) == before
+
+    async def test_a_member_the_subscription_did_hold_is_still_recorded_when_the_stop_names_it(
+        self, client: AsyncClient, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The rung-up was announced and folded before the stop, so the subscription did entitle
+        `finance`: its row exists and the stop switches it off, and the owner is refused."""
+        sid = uuid.uuid4()
+        await project_subscription_event(
+            real_envelope(
+                org_id,
+                state="active",
+                product_key="suite",
+                members=DUO,
+                subscription_id=sid,
+                minutes=0,
+            )
+        )
+        await project_subscription_event(
+            real_envelope(
+                org_id,
+                state="active",
+                product_key="suite",
+                members=TRIO,
+                subscription_id=sid,
+                minutes=1,
+                event_type="commerce.subscription.upgraded",
+            )
+        )
+        await project_subscription_event(
+            real_envelope(
+                org_id,
+                state="cancelled",
+                product_key="suite",
+                members=TRIO,
+                subscription_id=sid,
+                minutes=2,
+            )
+        )
+
+        written = await _written(session, org_id)
+        assert ("finance", "suite", "suspended") in {s[:3] for s in written["sources"]}
+        as_owner(org_id)
+        _assert_refused(await _post(client, "finance"))
+
+    async def test_a_stop_that_is_the_first_event_the_source_hears_writes_every_member(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """With no rows yet, the stop's own rows are the only watermark there will be, and nothing
+        says which of its members were ever held, so all are written as before. A late `active`
+        for the duo is then dropped as older than the stop."""
+        sid = uuid.uuid4()
+        await project_subscription_event(
+            real_envelope(
+                org_id,
+                state="cancelled",
+                product_key="suite",
+                members=TRIO,
+                subscription_id=sid,
+                minutes=1,
+            )
+        )
+        written = await _written(session, org_id)
+        assert {s[:3] for s in written["sources"]} == {
+            ("hrms", "suite", "suspended"),
+            ("crm", "suite", "suspended"),
+            ("finance", "suite", "suspended"),
+        }
+
+        await project_subscription_event(
+            real_envelope(
+                org_id,
+                state="active",
+                product_key="suite",
+                members=DUO,
+                subscription_id=sid,
+                minutes=0,
+            )
+        )
+        assert await _written(session, org_id) == written
+
+
 class TestWithNoSubscription:
     async def test_a_fresh_organization_activates(
         self, client: AsyncClient, org_id: uuid.UUID
@@ -470,6 +639,77 @@ class TestAuthorization:
         await self._managed(org_id)
         app.dependency_overrides.pop(get_principal, None)
         assert (await _post(client)).status_code == 401
+
+
+class TestDeactivationAuthorization:
+    """`DELETE /products/activations/{key}` gained a state-dependent 409. The permission check comes
+    first, as it does on the POST: a caller who may not deactivate must not learn, from a 409
+    instead of a 403, that an organization's product is fed by a subscription."""
+
+    async def _live(self, org_id: uuid.UUID) -> None:
+        """The refusing state: the product's own subscription is serving it."""
+        await project_subscription_event(real_envelope(org_id, state="active"))
+
+    async def test_without_the_permission_it_is_403_not_409(
+        self, client: AsyncClient, org_id: uuid.UUID
+    ) -> None:
+        await self._live(org_id)
+        as_owner(org_id, perms=[])
+        response = await client.delete("/api/v1/products/activations/hrms")
+        assert response.status_code == 403
+        assert "subscription" not in response.text.lower()
+
+    async def test_with_the_read_permission_alone_it_is_403(
+        self, client: AsyncClient, org_id: uuid.UUID
+    ) -> None:
+        await self._live(org_id)
+        as_owner(org_id, perms=["core.product.activation.read:ORG"])
+        response = await client.delete("/api/v1/products/activations/hrms")
+        assert response.status_code == 403
+        assert "subscription" not in response.text.lower()
+
+    async def test_a_member_with_only_own_scope_is_403(
+        self, client: AsyncClient, org_id: uuid.UUID
+    ) -> None:
+        await self._live(org_id)
+        as_owner(org_id, perms=[f"{WRITE}:OWN"])
+        response = await client.delete("/api/v1/products/activations/hrms")
+        assert response.status_code == 403
+        assert "subscription" not in response.text.lower()
+
+    async def test_unauthenticated_is_401(self, client: AsyncClient, org_id: uuid.UUID) -> None:
+        await self._live(org_id)
+        app.dependency_overrides.pop(get_principal, None)
+        response = await client.delete("/api/v1/products/activations/hrms")
+        assert response.status_code == 401
+        assert "subscription" not in response.text.lower()
+
+    async def test_none_of_the_refusals_wrote_anything(
+        self, client: AsyncClient, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        await self._live(org_id)
+        before = await _written(session, org_id)
+        for perms in ([], ["core.product.activation.read:ORG"], [f"{WRITE}:OWN"]):
+            as_owner(org_id, perms=perms)
+            assert (await client.delete("/api/v1/products/activations/hrms")).status_code == 403
+        assert await _written(session, org_id) == before
+
+    async def test_one_organizations_live_subscription_does_not_refuse_anothers_deactivate(
+        self, client: AsyncClient, org_id: uuid.UUID
+    ) -> None:
+        """Org A's live provenance is invisible to org B: B's hand activation deactivates as ever,
+        while A, on the very same route, is refused on its own provenance."""
+        stranger = uuid.uuid4()
+        await self._live(stranger)
+
+        as_owner(org_id)
+        assert (await _post(client)).status_code == 201
+        response = await client.delete("/api/v1/products/activations/hrms")
+        assert response.status_code == 200, response.text
+        assert response.json()["entitles"] is False
+
+        as_owner(stranger)
+        _assert_refused(await client.delete("/api/v1/products/activations/hrms"))
 
 
 class TestDeactivation:

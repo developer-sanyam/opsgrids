@@ -240,6 +240,23 @@ async def project_subscription(
     for member in members:
         row = by_member.get(member)
         if row is None:
+            if status == SOURCE_SUSPENDED and rows:
+                # A stop that names a member this source never fed: a lapsed rung-up the stop
+                # applied silently (ADR-0037), so the payload carries the *new* pin. There is
+                # nothing to switch off and no entitlement to remember, and a row written here
+                # would be a suspended source with subscription provenance for a product the
+                # organization never had, which the hand-activation gate would then refuse. The
+                # rows this source does have carry the watermark, so an older event is still
+                # dropped. When it has none, this stop is the first thing the source hears and its
+                # rows are the only watermark, so they are written as before.
+                log.info(
+                    "subscription.projection.stop_member_skipped",
+                    organization_id=str(organization_id),
+                    source=product_key,
+                    member=member,
+                    state=state,
+                )
+                continue
             session.add(
                 ActivationSource(
                     organization_id=organization_id,

@@ -46,9 +46,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app import domain, services
 from app.config import settings
 from app.models import AuditLog, OutboxEvent, SubscriptionItem
+from app.schemas import OperatorChangePlanIn, OperatorSubscribeIn
 from platform_core.events import build_envelope
 from platform_core.testing import cross_service_schema_lock, schema_lock_key
-from tests.helpers import FakeCatalog
+from tests.helpers import FakeCatalog, FakeRegistry, make_bundle
 from tests.test_billing_run import _subscription, _transitions
 from tests.test_billing_run_review import _dunning_suspend
 from tests.test_billing_run_round2 import (
@@ -408,6 +409,75 @@ class TestAStopWithALapsedChangeFoldsAsAStop:
         assert domain.EVT_DOWNGRADED not in [e.event_type for e in staged]
         sub = await _subscription(session, subscription_id)
         assert sub.pending_change is None
+
+
+@pytest.mark.usefixtures("cleanup_folds")
+class TestALapsedRungUpIsAnnouncedByTheStopAlone:
+    """A stop that applies a lapsed change which *adds* members says so only through its own event.
+
+    Staff schedule a deferred rung-up (duo to trio, `next_period`), the boundary passes with the
+    billing run off, and the customer cancels (or staff suspend) before anything claims it. The stop
+    applies the change silently, so the one event it stages names the trio, a product (`finance`)
+    the subscription never entitled. That payload is the contract product's fold relies on to
+    write no source for a member a stop names but the subscription never fed
+    (`project_subscription`, covered in product's `test_activation_gate.py`): this pins what
+    subscription really stages.
+    """
+
+    @pytest.mark.parametrize("stop", ["cancel", "operator_suspend"])
+    async def test_the_stop_names_the_new_pin_and_no_upgrade_was_announced(
+        self,
+        session: AsyncSession,
+        admin_session: AsyncSession,
+        catalog: FakeCatalog,
+        org_id: uuid.UUID,
+        stop: str,
+    ) -> None:
+        do_stop, stop_event, _ = STOPS[stop]
+        duo = catalog.add(make_bundle(["hrms", "crm"], tier="duo", amount_minor=58200))
+        trio = catalog.add(make_bundle(["hrms", "crm", "finance"], tier="trio", amount_minor=80700))
+        async with session.begin():
+            sub = await services.subscribe_as_operator(
+                session,
+                catalog,
+                FakeRegistry(),
+                OperatorSubscribeIn(
+                    organization_id=org_id,
+                    product_key="suite",
+                    plan_version_id=duo.id,
+                    operator_id="op-1",
+                ),
+            )
+            subscription_id = sub.id
+        session.expunge_all()
+        async with session.begin():
+            held = await services.require_subscription(session, subscription_id)
+            await services.change_plan_as_operator(
+                session,
+                catalog,
+                FakeRegistry(),
+                held,
+                OperatorChangePlanIn(
+                    organization_id=org_id,
+                    plan_version_id=trio.id,
+                    operator_id="op-1",
+                    timing="next_period",
+                ),
+            )
+        await _period_ended(subscription_id)
+        waiting = await _subscription(session, subscription_id)
+        assert waiting.pending_change is not None, "the rung-up must be waiting"
+
+        await do_stop(session, org_id, subscription_id)
+
+        staged = await _staged(admin_session, subscription_id)
+        assert [e.event_type for e in staged] == ["commerce.subscription.activated", stop_event]
+        assert staged[0].payload["entitled_products"] == ["hrms", "crm"]
+        assert staged[-1].payload["entitled_products"] == ["hrms", "crm", "finance"]
+        assert staged[-1].payload["plan_version_id"] == str(trio.id)
+        assert domain.EVT_UPGRADED in await _audits(admin_session, subscription_id), (
+            "the applied change is on the record, as an audit row rather than an announcement"
+        )
 
 
 @pytest.mark.usefixtures("cleanup_folds")
