@@ -1751,16 +1751,67 @@ converts at the price it started on.
 **What migrates.** One catalog revision, `b88a833020dc` (follows `b7e4d2a9c613`), in the ordinary
 `migrate` step: for each of the eleven public flat plans it inserts a published yearly version and
 then a published monthly one (22 rows plus their prices). Inserts only, instantaneous, no new `.env`
-key, no route change. It **aborts the whole migration** (and so the deploy step) with `... is not one
-flat INR price` or `... has paid seat classes` if a plan's current public version was re-priced on
-the Plans page with another shape — nothing is applied; re-price that plan on the Plans page instead
-and re-run. A retired plan, a plan whose public versions were all withdrawn, or a missing plan is
-skipped with a warning in the migrate output.
+key, no route change. It checks every plan first and **aborts the whole migration** (and so the
+deploy step; nothing is applied) when:
 
-**Deploy order: the dashboard with or before catalog.** The old dashboard starts a trial on a
-product's *oldest* published version, which after this migration is the old price; the new one starts
-it on the newest public monthly version. With only the old version present the new dashboard picks
-that same version, so shipping the dashboard first is safe.
+* a plan's current public version is not exactly one flat INR price (`... is not one flat INR
+  price`) or has a paid seat class (`... has paid seat classes`). The only two ways past it, both the
+  owner's call: publish a version of that plan that is exactly one flat INR price with free seats on
+  the Plans page (the migration then stacks on it), or withdraw that plan's public versions so it is
+  skipped;
+* a plan has an **open public draft** (`nothing applied — open public draft(s) on crm/revenue v2`).
+  The new versions would be numbered above it, and a draft published below them never sells. Delete
+  each named draft on the Plans page (or publish it first, knowing this release supersedes it at
+  once), then re-run. A bespoke draft does not block.
+
+It **warns** (stderr, `WARNI [root] list prices 2026-10-06: ...`) and carries on for a retired plan, a
+plan whose public versions were all withdrawn, or a missing plan (each skipped), and for a source
+selling at another amount than the split was computed from (applied anyway — stop and ask the owner
+whether the table still holds). The pre-deploy check below finds all of these before the deploy does.
+
+**Before deploying, read-only.** On the box, from `infrastructure/edge/`:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT p.product_key || '/' || p.code, p.state,
+  (SELECT string_agg(pr.kind || ':' || pr.currency || ':' || coalesce(pr.amount_minor::text, '-'), ',')
+     FROM catalog.prices pr WHERE pr.plan_version_id = cur.id) AS prices,
+  (SELECT count(*) FROM catalog.seat_classes sc
+     WHERE sc.plan_version_id = cur.id AND sc.price_id IS NOT NULL) AS paid_seats,
+  (SELECT string_agg('v' || d.version_no, ',' ORDER BY d.version_no) FROM catalog.plan_versions d
+     WHERE d.plan_id = p.id AND d.state = 'draft' AND d.restricted_to_org_id IS NULL) AS public_drafts
+FROM catalog.plans p
+LEFT JOIN LATERAL (
+  SELECT v.id FROM catalog.plan_versions v
+  WHERE v.plan_id = p.id AND v.state = 'published' AND v.restricted_to_org_id IS NULL
+  ORDER BY v.version_no DESC LIMIT 1) cur ON true
+WHERE (p.product_key, p.code) IN (('crm','revenue'),('hrms','people'),('itsm','it'),
+    ('finance','finance'),('operations','inventory'),('engage','engage'),('marketing','marketing'),
+    ('projects','projects'),('pulseboard','pulseboard'),('storefront','storefront'),('support','support'))
+ORDER BY 1;
+SELECT 'live yearly subscriptions', count(*) FROM subscription.subscriptions
+ WHERE billing_interval = 'year' AND state <> 'cancelled';"
+```
+
+Go ahead only when it prints all eleven plans, each `active`, with exactly `flat:INR:199900` (crm,
+hrms, itsm), `flat:INR:249900` (finance, operations) or `flat:INR:149900` (the other six), `0` paid
+seats and nothing in the last column — e.g. `crm/revenue|active|flat:INR:199900|0|`. Any other line is
+the abort or warning above, found early. The last line should be `live yearly subscriptions|0`: a
+yearly subscription console already folded keeps showing its full yearly price as monthly revenue
+until its next transition (console now counts a twelfth; nothing re-folds an old snapshot), so if it
+is not 0, note those organizations' MRR as overstated until then.
+
+**Deploy order: catalog's migration last.** Subscription (the customer subscribe write now refuses a
+superseded version, `422 not_offerable`), console (MRR counts a yearly price as a twelfth) and the
+dashboard (a trial starts on the newest public monthly version) must be running before the new
+versions exist — in one release that is simply the normal deploy; if staged, catalog goes last. A
+dashboard tab opened before the deploy still posts the old version: the server refuses it (`Couldn't
+start ...: that plan version is no longer on offer ...`) and a reload fixes it. Old catalog code
+reads the new rows fine.
+
+**No event is emitted** for the 22 versions (like every seeded plan), so a notification automation
+rule on `catalog.plan_version.published`, if one exists, does not fire: announce the price change by
+hand.
 
 **Verify, changing nothing.** On the box, from `infrastructure/edge/`:
 
@@ -1781,26 +1832,38 @@ GROUP BY billing_interval ORDER BY 1;"
 ```
 
 `alembic current` must print `b88a833020dc (head)`; the query must print exactly `month|11|2500000`
-and `year|11|30000000` (paise). Fewer than 11 means a plan was skipped — read the migrate output. Then
-in the console, a customer's **Change plan** lists the new monthly price and the yearly one blocked
-("cadence"); **Add product** offers both.
+and `year|11|30000000` (paise). Fewer than 11 means a plan was skipped — read the migrate output
+(`WARNI [root] list prices 2026-10-06: ... skipped`). Then in the console, a customer's **Change plan**
+lists the new monthly price and the yearly one blocked ("cadence"); **Add product** offers both.
+
+**A skipped plan is not retried by itself**: alembic records the revision as applied. Once the plan is
+active again with a published public version, and **only while `b88a833020dc` is still catalog's
+head**, re-run it — it adds only the versions that are missing:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T catalog alembic stamp b7e4d2a9c613
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T catalog alembic upgrade head
+```
+
+After a later catalog revision has landed, stamping back would re-run that one too: publish the
+plan's two versions by hand on the Plans page instead, at the table's amounts.
 
 **Moving a customer to the new price** is the staff **Change plan** to the new monthly version
 (ADR-0029: a trial switches now and free; a paying subscription switches at its next period). **A
-monthly subscription cannot be moved to yearly** — every write refuses `cadence`, and cancel-then-
-subscribe is not built (a cancelled subscription cannot be replaced yet). A new product can be added
-on yearly with **Add product**.
+monthly subscription cannot be moved to yearly** — every write refuses `cadence`. **Never advise a
+customer to cancel to get there**: a cancelled subscription cannot be replaced (`already_subscribed`),
+so they would lose the product. A new product can be added on yearly with **Add product**.
 
-**Optional, owner's call: stop the old prices being pinned by id.** The old versions stay published
-(existing subscribers are pinned to them); no screen offers them any more, but the customer API's
-subscribe still accepts one by id. To close that, withdraw each old version on the Plans page
-(`admin.opsgrids.com/plans`) — first list anything scheduled onto it with the read-only query under
-"Plans & prices in the console" above.
+**The old prices.** The old versions stay published (existing subscribers are pinned to them), and
+nothing new can start on them: no screen offers them and the customer subscribe write refuses them
+(`not_offerable`). Withdrawing them on the Plans page is not needed.
 
 **Rollback.** Roll the images back and **leave the migration**: older catalog code reads the new rows
-(the old dashboard would then start new trials on the old price again). The downgrade **refuses**
-while the new versions exist; `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1` makes it delete them, which
-breaks every subscription pinned or scheduled onto one. Only after this prints `0` (read-only):
+(the old dashboard would then start new trials on the old price again — the old subscription code
+accepts it). The downgrade **refuses** while the new versions exist;
+`OPSGRIDS_ALLOW_LIST_PRICE_DOWNGRADE=1` (this migration's own switch, not the shared destructive one)
+makes it delete them, which breaks everything that names one. Only if every line of this prints `0`
+(read-only):
 
 ```bash
 docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
@@ -1810,9 +1873,22 @@ WITH lp AS (
   WHERE v.restricted_to_org_id IS NULL
     AND (v.billing_interval, pr.amount_minor) IN (('month',187500),('month',250000),('month',312500),
         ('year',2250000),('year',3000000),('year',3750000)))
-SELECT count(*) FROM subscription.subscriptions
- WHERE plan_version_id IN (SELECT id FROM lp) OR pending_plan_version_id IN (SELECT id FROM lp);"
+SELECT 'subscriptions', count(*) FROM subscription.subscriptions
+ WHERE plan_version_id IN (SELECT id FROM lp) OR pending_plan_version_id IN (SELECT id FROM lp)
+UNION ALL
+SELECT 'billing_periods', count(*) FROM subscription.billing_periods
+ WHERE plan_version_id IN (SELECT id FROM lp) OR from_plan_version_id IN (SELECT id FROM lp)
+UNION ALL
+SELECT 'transitions', count(*) FROM subscription.subscription_transitions
+ WHERE from_plan_version_id IN (SELECT id FROM lp) OR to_plan_version_id IN (SELECT id FROM lp)
+UNION ALL
+SELECT 'invoice_lines', count(*) FROM billing.invoice_lines WHERE plan_version_id IN (SELECT id FROM lp);"
 ```
+
+A billing period still waiting to be billed against one of these versions would fail on every retry
+once it is gone, and an invoice line naming one could no longer be reconstructed (ADR-0000 §9). So any
+non-zero line — even a past transition or an old invoice — means the versions are part of the record:
+never delete them; rolling the code back is the rollback.
 
 ### Staff add product and extend trial (ADR-0031): deploy the consumers first
 
