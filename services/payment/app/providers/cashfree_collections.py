@@ -53,6 +53,7 @@ from app.providers.base import (
     CheckoutRequest,
     CollectionRefundFacts,
     CollectionWebhookFacts,
+    CredentialsMode,
     MalformedWebhook,
     OrderResult,
     PaymentSnapshot,
@@ -135,6 +136,12 @@ class CashfreeCollectionsProvider:
     @property
     def is_live(self) -> bool:
         return self._mode != "stub"
+
+    @property
+    def credentials_mode(self) -> CredentialsMode:
+        """The same answer as the platform's Cashfree adapter (`credentials_mode_of`): `stub` on
+        the in-process fake, `test` on the merchant's Sandbox keys, `live` on Production."""
+        return self._orders.credentials_mode
 
     @property
     def checkout_mode(self) -> Literal["sandbox", "production"]:

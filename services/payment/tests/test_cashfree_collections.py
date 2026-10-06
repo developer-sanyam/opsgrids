@@ -23,7 +23,7 @@ import pytest
 from app.collections import domain
 from app.domain import derive_event_id
 from app.providers import cashfree_codec as codec
-from app.providers.base import CheckoutCustomer
+from app.providers.base import CheckoutCustomer, credentials_mode_of
 from app.providers.cashfree_collections import (
     CashfreeCollectionsProvider,
     idempotency_key_for_refund,
@@ -608,6 +608,19 @@ class TestCredentials:
             domain.validate_credentials("cashfree", mode="production", allow_live=True, **base)
             == "live"
         )
+
+    @pytest.mark.parametrize(("mode", "expected"), [("sandbox", "test"), ("production", "live")])
+    def test_the_adapter_says_what_it_runs_on_like_the_platform_adapter(
+        self, mode: str, expected: str
+    ) -> None:
+        """`credentials_mode` means what it means on the platform's adapters: the merchant's
+        Sandbox keys on a live wire are `test`, Production is `live`, and the fake is `stub`."""
+        live = _live(lambda request: _json(200, {}), mode=mode)
+        assert live.credentials_mode == expected
+        assert credentials_mode_of(live) == expected
+        stub, _ = _stub()
+        assert stub.credentials_mode == "stub"
+        assert credentials_mode_of(stub) == "stub"
 
     def test_test_shaped_keys_are_refused_for_production(self) -> None:
         with pytest.raises(domain.CredentialProblem, match="Sandbox keys"):
