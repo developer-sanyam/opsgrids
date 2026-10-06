@@ -306,6 +306,43 @@ def test_a_superseded_run_is_cancelled_on_main_as_well_as_on_a_pull_request() ->
     assert "github.sha" not in group
 
 
+def _shard_one_steps_a_red_step_would_skip(workflow: dict[str, Any]) -> list[str]:
+    """Steps of the `tests` job that run on shard 1 only but are not `!cancelled()`-gated."""
+    steps = workflow["jobs"]["tests"]["steps"]
+    return [
+        str(step.get("name", step.get("run")))
+        for step in steps
+        if "matrix.shard == 1" in str(step.get("if", "")) and "!cancelled()" not in str(step["if"])
+    ]
+
+
+def test_a_shard_one_step_is_not_skipped_by_a_red_service_test_step() -> None:
+    # The library tests and the boot smoke run even when the service tests failed, so that a red
+    # row does not hide whether they are also red (`if: ${{ !cancelled() && matrix.shard == 1 }}`).
+    # A step on shard 1 that *provisions* for them — PR #102's "Ops-monitor integration database",
+    # which creates `opsgrids_mon` — must be gated the same way: with a bare
+    # `if: matrix.shard == 1` it is skipped as soon as "Service tests" fails, and the library
+    # tests then run without their database and report a failure that is not theirs. Gate such a
+    # step `${{ !cancelled() && matrix.shard == 1 }}`.
+    assert _shard_one_steps_a_red_step_would_skip(_workflow()) == []
+
+
+def test_the_shard_one_gate_check_names_a_step_that_would_be_skipped() -> None:
+    workflow = {
+        "jobs": {
+            "tests": {
+                "steps": [
+                    {"name": "Service tests", "run": "make test-shard"},
+                    {"name": "Provision", "if": "matrix.shard == 1", "run": "true"},
+                    {"name": "Gated", "if": "${{ !cancelled() && matrix.shard == 1 }}"},
+                    {"name": "Every shard", "if": "${{ !cancelled() }}"},
+                ]
+            }
+        }
+    }
+    assert _shard_one_steps_a_red_step_would_skip(workflow) == ["Provision"]
+
+
 def test_every_frontend_package_is_in_exactly_one_test_and_build_leg() -> None:
     legs = _workflow()["jobs"]["frontend-tests"]["strategy"]["matrix"]["include"]
     owned = [p.removeprefix("./") for leg in legs for p in str(leg["packages"]).split()]
