@@ -87,10 +87,12 @@ def as_principal(principal: Principal) -> Iterator[None]:
 def _flat_price(plans: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """The one offer a marketplace card shows: the first published version's flat price.
 
-    The dashboard's `trialOffer`, line for line — a published version with a `flat` price. The
-    customer read no longer says what it costs (pricing is set per client), only that the offer
-    exists. If this returns None for a product, its card has no "Start trial" button, whatever
-    the product catalogue says about its status.
+    The dashboard's `trialOffer` as it was when Engage had one version — a published version with
+    a `flat` price. (It now takes the newest public monthly one, which with a single version is
+    the same row; `test_list_prices_2026_10_06.py` pins the rule against several.) The customer
+    read no longer says what it costs (pricing is set per client), only that the offer exists. If
+    this returns None for a product, its card has no "Start trial" button, whatever the product
+    catalogue says about its status.
     """
     for plan in plans:
         for version in plan["versions"]:
@@ -119,8 +121,12 @@ async def _plan_count(plan_id: str) -> int:
 
 
 async def test_engage_resolves_to_a_published_flat_price_a_trial_can_pin(
-    client, org_a: uuid.UUID
+    client, org_a: uuid.UUID, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Stepping down from head passes through `b88a833020dc`, whose downgrade refuses while its
+    # list-price versions exist (it cannot see subscription's pins); on a test database deleting
+    # them is the point.
+    monkeypatch.setenv("OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE", "1")
     seed = _seed_module()
     cfg = _alembic_config()
     plan_id, version_id, price_id = seed.IDS[_PRODUCT_KEY]
