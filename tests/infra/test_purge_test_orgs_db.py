@@ -647,7 +647,7 @@ async def test_the_independent_survivor_check_notices_a_selector_that_is_too_bro
     def too_broad(self: Any, nodes: Any, alias: str = "t", depth: int = 0, tag: str = "") -> str:
         if self.table == victim and (alias, depth, tag) == ("t", 0, ""):
             return f'{alias}."organization_id" = ANY(ARRAY[{cast}])'
-        return real_predicate(self, nodes, alias, depth, tag)
+        return str(real_predicate(self, nodes, alias, depth, tag))
 
     async with engine.connect() as conn:
         before = await _survivors(conn, [a], gone_users)
