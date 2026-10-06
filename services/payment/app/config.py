@@ -255,7 +255,7 @@ class Settings(ServiceSettings):
                 "refused: test mode never runs beside a key that moves real money"
             )
         secret = self.cashfree_secret_key.get_secret_value() if self.cashfree_secret_key else ""
-        if secret.startswith(_CASHFREE_SECRET_PROD_PREFIX) or self.cashfree_env == "production":
+        if cashfree_codec.production_shaped(secret) or self.cashfree_env == "production":
             raise ValueError(
                 "PAYMENT_ALLOW_TEST_KEYS=true with a production CASHFREE_SECRET_KEY or "
                 "CASHFREE_ENV=production is refused: test mode never runs beside live money"
