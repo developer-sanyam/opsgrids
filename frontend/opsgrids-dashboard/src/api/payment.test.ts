@@ -12,9 +12,11 @@ import {
   checkoutProblem,
   frameworkProblem,
   RAZORPAY_CHECKOUT_WIRE,
+  RAZORPAY_TEST_CHECKOUT_WIRE,
   refusalMessage,
   statusWire,
   STUB_RAZORPAY_CHECKOUT_WIRE,
+  withoutTestMode,
 } from "@/test-utils/payment";
 
 import { checkoutRefusal, confirmRazorpay, createCheckout, fromWire, getCheckoutStatus, PaymentContractError } from "./payment";
@@ -25,10 +27,11 @@ describe("fromWire — PlatformCheckoutOut", () => {
       chargeId: RAZORPAY_CHECKOUT_WIRE.charge_id,
       provider: "razorpay",
       openable: true,
-      action: { type: "razorpay_checkout", keyId: "rzp_test_Platform0001", orderId: "order_P1" },
+      action: { type: "razorpay_checkout", keyId: "rzp_live_Platform0001", orderId: "order_P1" },
       amountMinor: 499900,
       currency: "INR",
       expiresAt: "2026-10-07T12:30:00Z",
+      testMode: false,
     });
   });
 
@@ -49,6 +52,7 @@ describe("fromWire — PlatformCheckoutOut", () => {
       amountMinor: 499900,
       currency: "INR",
       expiresAt: "2026-10-07T12:30:00Z",
+      testMode: false,
     });
     // The stub Cashfree answers a sandbox mode and a stand-in session; nothing is launched on it either.
     const stubCashfree = { ...CASHFREE_CHECKOUT_WIRE, client_action: { ...CASHFREE_CHECKOUT_WIRE.client_action, openable: false } };
@@ -78,6 +82,58 @@ describe("fromWire — PlatformCheckoutOut", () => {
   });
 });
 
+describe("fromWire — test_mode", () => {
+  it("reads test_mode: true on test keys and in Cashfree's sandbox", () => {
+    expect(fromWire("checkout", RAZORPAY_TEST_CHECKOUT_WIRE)).toMatchObject({
+      testMode: true,
+      action: { type: "razorpay_checkout", keyId: "rzp_test_Platform0001" },
+    });
+    expect(fromWire("checkout", CASHFREE_CHECKOUT_WIRE)).toMatchObject({ testMode: true, action: { mode: "sandbox" } });
+  });
+
+  it("reads test_mode: false on live keys and on a stub", () => {
+    expect(fromWire("checkout", RAZORPAY_CHECKOUT_WIRE).testMode).toBe(false);
+    expect(fromWire("checkout", STUB_RAZORPAY_CHECKOUT_WIRE).testMode).toBe(false);
+    const production = { ...CASHFREE_CHECKOUT_WIRE, client_action: { ...CASHFREE_CHECKOUT_WIRE.client_action, mode: "production" }, test_mode: false };
+    expect(fromWire("checkout", production).testMode).toBe(false);
+  });
+
+  it("reads a checkout from a server that predates test_mode as not in test mode, even on a test key", () => {
+    expect(fromWire("checkout", withoutTestMode(RAZORPAY_TEST_CHECKOUT_WIRE))).toMatchObject({ openable: true, testMode: false });
+    expect(fromWire("checkout", withoutTestMode(CASHFREE_CHECKOUT_WIRE))).toMatchObject({ openable: true, testMode: false });
+    expect(fromWire("checkout", withoutTestMode(STUB_RAZORPAY_CHECKOUT_WIRE))).toMatchObject({ openable: false, testMode: false });
+  });
+
+  it("accepts a test key with test_mode: false — the notice is only left out", () => {
+    expect(fromWire("checkout", { ...RAZORPAY_TEST_CHECKOUT_WIRE, test_mode: false })).toMatchObject({ openable: true, testMode: false });
+  });
+
+  it("reads test_mode on a status read, and its absence as false", () => {
+    expect(fromWire("status", statusWire("captured", { test_mode: true })).testMode).toBe(true);
+    expect(fromWire("status", statusWire("captured")).testMode).toBe(false);
+    expect(fromWire("status", withoutTestMode(statusWire("authorized", { test_mode: true }))).testMode).toBe(false);
+  });
+
+  it.each([
+    ["test_mode sent as a string", { ...RAZORPAY_TEST_CHECKOUT_WIRE, test_mode: "true" }],
+    ["test_mode sent as null", { ...RAZORPAY_TEST_CHECKOUT_WIRE, test_mode: null }],
+    ["test_mode: true on a live Razorpay key", { ...RAZORPAY_CHECKOUT_WIRE, test_mode: true }],
+    [
+      "test_mode: true on Cashfree's production mode",
+      { ...CASHFREE_CHECKOUT_WIRE, client_action: { ...CASHFREE_CHECKOUT_WIRE.client_action, mode: "production" }, test_mode: true },
+    ],
+  ])("refuses a checkout with %s — never 'no real money' over a window that takes it", (_label, raw) => {
+    expect(() => fromWire("checkout", raw)).toThrow(PaymentContractError);
+  });
+
+  it.each([
+    ["sent as a string", statusWire("created", { test_mode: "false" })],
+    ["sent as null", statusWire("created", { test_mode: null })],
+  ])("refuses a status with test_mode %s", (_label, raw) => {
+    expect(() => fromWire("status", raw)).toThrow(PaymentContractError);
+  });
+});
+
 describe("fromWire — PlatformCheckoutStatusOut", () => {
   it("maps every field of a status read", () => {
     expect(fromWire("status", statusWire("authorized", { provider: "cashfree", provider_checked: false }))).toEqual({
@@ -90,6 +146,7 @@ describe("fromWire — PlatformCheckoutStatusOut", () => {
       expiresAt: "2026-10-07T12:30:00Z",
       failureReason: null,
       providerChecked: false,
+      testMode: false,
     });
   });
 

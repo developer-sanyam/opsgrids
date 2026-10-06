@@ -6,7 +6,9 @@ this page was coded against an assumed contract; the review round (§8) reconcil
 early cut of that branch. The **contract round (§9)** matched it to the finished API @
 `7853e654`: `services/payment/app/api/checkout.py`, `app/schemas.py`, `app/checkout/services.py`
 and `libs/contracts/openapi/payment.json`. §3 is that contract, and every test fixture is built
-from it (`src/test-utils/payment.ts`).
+from it (`src/test-utils/payment.ts`). The **test-mode round (§10)** adds `test_mode` to the
+checkout and status answers, built against the same agreed contract as the payment-service
+change that sends it.
 
 Sources: the Razorpay design critique (§2: "New endpoints" and the dashboard pay button) and the
 Cashfree design critique (§2.10 customer side, §2.4(b) one-time checkout).
@@ -25,6 +27,9 @@ Cashfree design critique (§2.10 customer side, §2.4(b) one-time checkout).
   `customer_details_required` (Cashfree needs the paying customer, with a phone, on every order).
   The page then retries with `customer: {name, email, phone}`. The name and email come from the
   signed-in user, and the dialog tells the user they will be sent.
+- **Test mode**: when the server says the charge's provider runs on test or sandbox credentials
+  (`test_mode: true`, §3.6), the payment notice on Invoices and on the return page carries a
+  second notice, "Test mode — no real money will be charged." It is not shown otherwise.
 - **Gate**: the controls appear only for `core.product.activation.write` at ORG scope, the same
   permission the subscribe and change-plan actions check (`Subscriptions.tsx`,
   `services/subscription/app/api/routes.py:44`). The server enforces it on every call.
@@ -94,7 +99,7 @@ click Pay now ─► POST /payment/checkouts ─► launcher(client_action) ─�
 - **Phone width**: below 768 px the invoice table becomes cards, and Pay now sits in the card's
   action slot (tested).
 
-## 3. API contract (payment-service @ `7853e654`)
+## 3. API contract (payment-service @ `7853e654`, plus `test_mode`)
 
 The source of truth is `libs/contracts/openapi/payment.json` and the route module
 `services/payment/app/api/checkout.py`. The dashboard reads the wire in one module,
@@ -119,7 +124,8 @@ Request `PlatformCheckoutIn` (extra keys are refused):
 | `customer.email` | `string \| null`, max 254 | the signed-in user's email; blank or over-long → `null` |
 | `customer.phone` | `string \| null`, max 16, `^(\d{10}\|\+\d{8,15})$` | 10 digits, any `+91`/`0` prefix removed |
 
-Response `PlatformCheckoutOut` — every key required, none nullable:
+Response `PlatformCheckoutOut` — every key required, none nullable (`test_mode` is read leniently
+when it is missing, §3.6):
 
 | Field | Type | Page |
 |---|---|---|
@@ -129,6 +135,7 @@ Response `PlatformCheckoutOut` — every key required, none nullable:
 | `amount_minor` | integer | `amountMinor` (non-negative safe integer) |
 | `currency` | string | `currency` (three upper-case letters) |
 | `expires_at` | date-time, **not null** | `expiresAt` |
+| `test_mode` | boolean | `testMode`; missing → `false`; anything but a boolean, or `true` on a live action → `PaymentContractError` (§3.6) |
 
 `client_action`:
 
@@ -156,6 +163,7 @@ closing as `checkout_expired`) the server asks the provider first.
 | `expires_at` | `date-time \| null`, **required** | `expiresAt` (a missing key is a contract break, `null` is not) |
 | `failure_reason` | `string \| null`, default `null` | `failureReason` |
 | `provider_checked` | boolean, default `true` | `providerChecked` (false: the provider could not be asked this time) |
+| `test_mode` | boolean, required | `testMode`; missing → `false`; anything but a boolean → `PaymentContractError` (§3.6) |
 
 `paid: true` is what marks the invoice paid on screen. The poll stops on `captured`, `failed` or
 `expired`.
@@ -213,6 +221,38 @@ server decides the next click. Everything else:
 3. **Gateway.** `/api/v1/payment` is routed, authenticated and with no product key, in both
    `services/app-gateway/routes.json` and `infrastructure/edge/routes.prod.json` on `main`, and
    is not in any public-path list, so `/api/v1/payment/checkouts…` needs no route change.
+
+### 3.6 `test_mode`
+
+The agreed contract, built by the payment-service and dashboard changes in parallel:
+
+- **Server.** payment-service gains a boolean setting `PAYMENT_ALLOW_TEST_KEYS` (default
+  `false`), which lets a non-production box such as staging run real provider calls on test
+  credentials. `PlatformCheckoutOut` (`POST /payment/checkouts`) and `PlatformCheckoutStatusOut`
+  (`GET /payment/checkouts/{id}` and the confirm answer) gain a **required boolean `test_mode`**.
+  It is `true` when the provider that owns the charge runs on test or sandbox credentials (a
+  Razorpay key id starting `rzp_test_`, or `CASHFREE_ENV=sandbox`) and `false` otherwise. A stub
+  provider sends `false`.
+- **Reading it** (`testModeOf` in `api/payment.ts`):
+  - A missing key reads as `false`, so the page still works against a server from before the
+    field. The page says "no real money" only when the server says so.
+  - `null`, a string or anything else that is not a boolean is a contract break, like
+    `provider_checked`.
+  - On an openable checkout, `test_mode: true` with an action that takes live money (a
+    `rzp_live_` key id, or Cashfree `mode: "production"`) is refused as a contract break. Nothing
+    is opened, so a customer is never told "no real money" over a live payment window.
+  - The reverse, a test key with `test_mode: false`, is accepted and only goes without the
+    notice. An older server's test checkout looks exactly like this.
+- **Showing it.** "Test mode — no real money will be charged." is a warning-tone `InlineAlert`.
+  The words carry the meaning: an icon and a sentence, never the tint alone. It sits under the
+  payment's own notice, inside the same polite live region (`PaymentNotice`, `role="status"`,
+  `aria-live="polite"`, `aria-atomic="true"`; the alerts inside are `live="off"`). So it is
+  announced together with each change of the payment, never as a separate interruption.
+  - **Invoices:** shown from the moment the server has opened the checkout (`starting` now carries
+    the session while the provider's script loads), through the open window, the wait and its
+    result. It is also shown on a refusal that comes after the checkout was opened: the window
+    could not be opened, or the status could not be read.
+  - **`/billing/return`:** shown when the latest status read says `test_mode: true`.
 
 ## 4. Which invoices are payable: a deviation from "unpaid invoices"
 
@@ -299,15 +339,19 @@ itself is unaffected.
 - `src/routes/BillingReturn.tsx` (lazy route); `Invoices.tsx` and `Subscriptions.tsx` (additive
   edits).
 - Tests:
-  - `api/payment.test.ts`: mapping, request bodies and URLs, and every refusal code;
+  - `api/payment.test.ts`: mapping, request bodies and URLs, every refusal code, and `test_mode`
+    (true, false, missing, malformed, `true` on a live action);
   - `lib/checkout/launch.test.ts`: both launchers against fake SDKs, dismiss, failure, blocked
     script, confirm path;
   - `lib/checkout/poll.test.ts`: stop conditions, hidden tab, 4xx/5xx, abort;
   - `routes/Invoices.test.tsx`: gating, one invoice per cycle, every coded 409 and 422 and its
     screen, details prompt (kept open, number kept), double click, closed window (delayed glance,
     row Check status, Pay again), glance to authorized to captured, run-out then Check again,
-    stub checkout, focus, live region, phone width;
-  - `routes/BillingReturn.test.tsx`;
+    stub checkout, focus, live region, phone width, and the test-mode notice (shown from checkout
+    creation through the result, kept on a post-window refusal, absent on a live checkout and on
+    one from an older server);
+  - `routes/BillingReturn.test.tsx`, including the test-mode notice for `true`, `false` and a
+    missing `test_mode`;
   - the overdue cases in `routes/Subscriptions.test.tsx`.
 
 ## 8. Review round (2026-10-06)
@@ -351,3 +395,16 @@ bodies (`src/test-utils/payment.ts`):
 | `customer.name` / `customer.email` were sent as `""` when unknown | `null`, as `CheckoutCustomerIn` allows; blank or past the schema's limits (100 / 254) also `null` |
 | Refusals were read from any `errors[].code` through `fieldErrors`, which drops the busy 409s (no `field`), then from the type slug and four sentences | `errors[0].code`, read directly, at its contract status only; slug, sentence and alias fallbacks deleted |
 | `checkout_in_progress`, `previous_checkout_not_closable`, `previous_checkout_payment_in_flight` showed the server's sentence; `checkout_not_supported` and `nothing_to_pay` had no screen of their own | Each code has its own copy (§3.4): the busy ones say wait and retry, and only `invoice_already_paid` marks the invoice paid |
+
+## 10. Test-mode round (2026-10-06)
+
+Staging runs Pay now against the providers' test keys (`PAYMENT_ALLOW_TEST_KEYS`), so a payment
+there moves no money. The page now says so (§3.6):
+
+| Change | Where |
+|---|---|
+| `test_mode` read on both answers: missing → `false`, malformed → contract break, `true` on a live action → contract break | `api/payment.ts` (`testModeOf`, `takesLiveMoney`) |
+| "Test mode — no real money will be charged." under the payment notice, in the same polite live region | `ui/billing/PaymentNotice.tsx`, `paymentCopy.ts` (`COPY.testMode`) |
+| The checkout is on screen from the moment it exists: `starting` carries it while the window loads, and a refusal after it (window failed, status unreadable) keeps it | `ui/billing/usePayInvoice.ts`, `PaymentPanel.tsx` |
+| The return page reads it from the latest status | `routes/BillingReturn.tsx` |
+| Fixtures: the default Razorpay checkout is now on live keys (`rzp_live_…`, `test_mode: false`); `RAZORPAY_TEST_CHECKOUT_WIRE` is the staging one (`rzp_test_…`, `true`); Cashfree's sandbox fixture is `true`; the stub and `statusWire` default to `false`; `withoutTestMode` builds an older server's body | `src/test-utils/payment.ts` |

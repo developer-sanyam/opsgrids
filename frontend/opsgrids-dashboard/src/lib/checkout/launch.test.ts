@@ -61,7 +61,7 @@ describe("Razorpay", () => {
     await expect(launchCheckout(RZP_SESSION, "Invoice INV-1")).resolves.toEqual({ wait: "full" });
 
     const options = seen[0];
-    expect(options?.key).toBe("rzp_test_Platform0001");
+    expect(options?.key).toBe("rzp_live_Platform0001");
     expect(options?.order_id).toBe("order_P1");
     expect(options?.description).toBe("Invoice INV-1");
     expect(JSON.stringify(options)).not.toMatch(/secret/i);

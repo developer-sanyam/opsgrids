@@ -42,8 +42,11 @@ import {
   checkoutStatus as status,
   frameworkProblem,
   RAZORPAY_CHECKOUT as SESSION,
+  RAZORPAY_TEST_CHECKOUT as TEST_SESSION,
+  RAZORPAY_TEST_CHECKOUT_WIRE,
   refusalMessage,
   STUB_CHECKOUT,
+  withoutTestMode,
 } from "@/test-utils/payment";
 
 import { InvoicesPage } from "./Invoices";
@@ -257,6 +260,59 @@ describe("InvoicesPage — paying", () => {
     renderPage();
     await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
     expect(await screen.findByText("Razorpay's payment window could not be opened.")).toBeTruthy();
+  });
+});
+
+describe("InvoicesPage — test mode", () => {
+  const TEST_MODE = "Test mode — no real money will be charged.";
+
+  it("says so, in the live region, from the moment the checkout exists until the result", async () => {
+    const user = userEvent.setup();
+    vi.mocked(payment.createCheckout).mockResolvedValue(TEST_SESSION);
+    let opened: (() => void) | undefined;
+    let finish: ((outcome: LaunchOutcome) => void) | undefined;
+    vi.mocked(launchCheckout).mockImplementation((_s, _l, onOpened) => {
+      opened = onOpened;
+      return new Promise((resolve) => (finish = resolve));
+    });
+    renderPage();
+    const region = liveRegion();
+    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+
+    // While the provider's script loads: the checkout is the server's, and it is a test one.
+    expect(await within(region).findByText(TEST_MODE)).toBeTruthy();
+    expect(within(region).getByText("Opening the payment window…")).toBeTruthy();
+    expect(within(region).getByText("Invoice INV-0042 · ₹4,999.00")).toBeTruthy();
+
+    act(() => opened?.());
+    expect(within(region).getByText("Finish paying in the payment window.")).toBeTruthy();
+    expect(within(region).getByText(TEST_MODE)).toBeTruthy();
+
+    act(() => finish?.({ wait: "full" }));
+    expect(await within(region).findByText("Payment received.")).toBeTruthy();
+    expect(within(region).getByText(TEST_MODE)).toBeTruthy();
+  });
+
+  it("keeps saying so when the status cannot be read after the window", async () => {
+    const user = userEvent.setup();
+    vi.mocked(payment.createCheckout).mockResolvedValue(TEST_SESSION);
+    vi.mocked(payment.getCheckoutStatus).mockRejectedValue(new payment.PaymentContractError("status"));
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+    expect(await within(liveRegion()).findByText("We couldn't confirm this payment.")).toBeTruthy();
+    expect(within(liveRegion()).getByText(TEST_MODE)).toBeTruthy();
+  });
+
+  it.each([
+    ["a live checkout (test_mode: false)", SESSION],
+    ["a checkout from a server that predates test_mode", payment.fromWire("checkout", withoutTestMode(RAZORPAY_TEST_CHECKOUT_WIRE))],
+  ])("says nothing about test mode for %s", async (_label, session) => {
+    const user = userEvent.setup();
+    vi.mocked(payment.createCheckout).mockResolvedValue(session);
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Pay now invoice INV-0042" }));
+    expect(await within(liveRegion()).findByText("Payment received.")).toBeTruthy();
+    expect(screen.queryByText(/Test mode/)).toBeNull();
   });
 });
 

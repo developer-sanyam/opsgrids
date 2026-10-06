@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 
 import { Button } from "@opsgrids/ui";
 
+import type { CheckoutSession } from "@/api/payment";
 import { formatMoney } from "@/lib/money";
 
 import { focusIfLost } from "./focusIfLost";
@@ -37,9 +38,15 @@ function noticeFor(state: PayState): NoticeCopy | null {
   }
 }
 
+/** The checkout this state is about, once the server has opened one. */
+function sessionOf(state: PayState): CheckoutSession | null {
+  return "session" in state && state.session ? state.session : null;
+}
+
 function contextFor(state: PayState): string | undefined {
   if (state.phase === "idle") return undefined;
-  if ("session" in state) return `${state.target.label} · ${formatMoney(state.session.amountMinor, state.session.currency)}`;
+  const session = sessionOf(state);
+  if (session) return `${state.target.label} · ${formatMoney(session.amountMinor, session.currency)}`;
   return state.target.label;
 }
 
@@ -83,6 +90,7 @@ export function PaymentPanel({ pay }: { pay: PayInvoice }) {
         <PaymentNotice
           copy={noticeFor(state)}
           context={contextFor(state)}
+          testMode={sessionOf(state)?.testMode === true}
           action={
             canCheck ? (
               <div className="flex flex-wrap gap-2">

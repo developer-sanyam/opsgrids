@@ -22,17 +22,25 @@ import type {
 
 export const CHARGE_ID = "6f1c1d1e-0000-4000-8000-000000000001";
 
-/** `PlatformCheckoutOut` from a live Razorpay: the public key id and the Order id. */
+/** `PlatformCheckoutOut` from Razorpay on live keys: the public key id, the Order id, `test_mode: false`. */
 export const RAZORPAY_CHECKOUT_WIRE = {
   charge_id: CHARGE_ID,
   provider: "razorpay",
-  client_action: { type: "razorpay_checkout", key_id: "rzp_test_Platform0001", order_id: "order_P1", openable: true },
+  client_action: { type: "razorpay_checkout", key_id: "rzp_live_Platform0001", order_id: "order_P1", openable: true },
   amount_minor: 499900,
   currency: "INR",
   expires_at: "2026-10-07T12:30:00Z",
+  test_mode: false,
 };
 
-/** `PlatformCheckoutOut` from a live Cashfree: the session id and the SDK mode. */
+/** The same checkout from Razorpay on test keys (a staging box, `PAYMENT_ALLOW_TEST_KEYS`): `test_mode: true`. */
+export const RAZORPAY_TEST_CHECKOUT_WIRE = {
+  ...RAZORPAY_CHECKOUT_WIRE,
+  client_action: { ...RAZORPAY_CHECKOUT_WIRE.client_action, key_id: "rzp_test_Platform0001" },
+  test_mode: true,
+};
+
+/** `PlatformCheckoutOut` from Cashfree on `CASHFREE_ENV=sandbox`: the session id, the SDK mode, `test_mode: true`. */
 export const CASHFREE_CHECKOUT_WIRE = {
   charge_id: "6f1c1d1e-0000-4000-8000-000000000002",
   provider: "cashfree",
@@ -40,13 +48,20 @@ export const CASHFREE_CHECKOUT_WIRE = {
   amount_minor: 100,
   currency: "INR",
   expires_at: "2026-10-07T12:30:00Z",
+  test_mode: true,
 };
 
-/** The stub Razorpay's `PlatformCheckoutOut`: no key id at all, and a stand-in Order. */
+/** The stub Razorpay's `PlatformCheckoutOut`: no key id at all, a stand-in Order, and `test_mode: false`. */
 export const STUB_RAZORPAY_CHECKOUT_WIRE = {
   ...RAZORPAY_CHECKOUT_WIRE,
   client_action: { type: "razorpay_checkout", key_id: "", order_id: "order_stub_0001", openable: false },
+  test_mode: false,
 };
+
+/** A body as a payment-service from before `test_mode` sends it: the same, without the key. */
+export function withoutTestMode(wire: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(wire).filter(([key]) => key !== "test_mode"));
+}
 
 function openableFromWire(raw: unknown): OpenableCheckout {
   const session = fromWire("checkout", raw);
@@ -56,10 +71,14 @@ function openableFromWire(raw: unknown): OpenableCheckout {
 
 /** The mapped checkouts the page sees for the bodies above. */
 export const RAZORPAY_CHECKOUT: OpenableCheckout = openableFromWire(RAZORPAY_CHECKOUT_WIRE);
+export const RAZORPAY_TEST_CHECKOUT: OpenableCheckout = openableFromWire(RAZORPAY_TEST_CHECKOUT_WIRE);
 export const CASHFREE_CHECKOUT: OpenableCheckout = openableFromWire(CASHFREE_CHECKOUT_WIRE);
 export const STUB_CHECKOUT: CheckoutSession = fromWire("checkout", STUB_RAZORPAY_CHECKOUT_WIRE);
 
-/** `PlatformCheckoutStatusOut` for a state, as `_status_out` writes it. `expired` is `failed` + `checkout_expired`. */
+/**
+ * `PlatformCheckoutStatusOut` for a state, as `_status_out` writes it. `expired` is `failed` +
+ * `checkout_expired`. On live keys (`test_mode: false`) unless an override says otherwise.
+ */
 export function statusWire(state: CheckoutState, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   const failed = state === "failed" || state === "expired";
   return {
@@ -72,6 +91,7 @@ export function statusWire(state: CheckoutState, overrides: Record<string, unkno
     expires_at: "2026-10-07T12:30:00Z",
     failure_reason: failed ? (state === "expired" ? "checkout_expired" : "payment_failed") : null,
     provider_checked: true,
+    test_mode: false,
     ...overrides,
   };
 }

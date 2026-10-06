@@ -96,6 +96,7 @@ export function BillingReturnPage() {
           <PaymentNotice
             copy={noticeFor(outcome, status)}
             context={status ? formatMoney(status.amountMinor, status.currency) : undefined}
+            testMode={status?.testMode === true}
             action={
               outcome?.kind === "unsettled" || rechecking ? (
                 <Button

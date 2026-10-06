@@ -11,11 +11,11 @@ import { ApiError } from "@opsgrids/client";
 
 vi.mock("@/lib/checkout/poll", () => ({ pollCheckout: vi.fn() }));
 
-import { PaymentContractError } from "@/api/payment";
+import { fromWire, PaymentContractError } from "@/api/payment";
 import type { CheckoutState, CheckoutStatus } from "@/api/payment";
 import { pollCheckout } from "@/lib/checkout/poll";
 import type { PollOptions, PollOutcome } from "@/lib/checkout/poll";
-import { checkoutStatus } from "@/test-utils/payment";
+import { checkoutStatus, statusWire, withoutTestMode } from "@/test-utils/payment";
 
 import { BillingReturnPage } from "./BillingReturn";
 
@@ -51,6 +51,31 @@ describe("BillingReturnPage", () => {
     expect(within(region).getByText("₹4,999.00")).toBeTruthy();
     expect(pollCheckout).toHaveBeenCalledWith(CHARGE, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(screen.getByRole("link", { name: "Back to Invoices" }).getAttribute("href")).toBe("/invoices");
+  });
+
+  it("says the payment was in test mode, in the live region, when the server says so", async () => {
+    const test = checkoutStatus("captured", { charge_id: CHARGE, provider: "cashfree", test_mode: true });
+    vi.mocked(pollCheckout).mockImplementation(async (_id: string, options: PollOptions) => {
+      options.onStatus?.(test);
+      return { kind: "settled", status: test };
+    });
+    renderAt(`/billing/return?charge_id=${CHARGE}`);
+    const region = screen.getByRole("status");
+    expect(await within(region).findByText("Payment received.")).toBeTruthy();
+    expect(within(region).getByText("Test mode — no real money will be charged.")).toBeTruthy();
+  });
+
+  it.each([
+    ["test_mode: false", STATUS],
+    ["a server that predates test_mode", fromWire("status", withoutTestMode(statusWire("captured", { charge_id: CHARGE, test_mode: true })))],
+  ])("says nothing about test mode for %s", async (_label, status) => {
+    vi.mocked(pollCheckout).mockImplementation(async (_id: string, options: PollOptions) => {
+      options.onStatus?.(status);
+      return { kind: "settled", status };
+    });
+    renderAt(`/billing/return?charge_id=${CHARGE}`);
+    expect(await screen.findByText("Payment received.")).toBeTruthy();
+    expect(screen.queryByText(/Test mode/)).toBeNull();
   });
 
   it("checks neutrally while it waits, and says don't pay again once the server has seen a payment", async () => {

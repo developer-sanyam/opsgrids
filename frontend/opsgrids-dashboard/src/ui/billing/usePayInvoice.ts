@@ -35,8 +35,11 @@ export type WaitMode = "full" | "check";
 
 export type PayState =
   | { phase: "idle" }
-  /** `withPhone`: this attempt carries the number typed into the phone prompt, which stays up. */
-  | { phase: "starting"; target: PayTarget; withPhone: boolean }
+  /**
+   * `withPhone`: this attempt carries the number typed into the phone prompt, which stays up.
+   * `session`: the checkout, once the server has opened it, while its window loads.
+   */
+  | { phase: "starting"; target: PayTarget; withPhone: boolean; session?: CheckoutSession | undefined }
   | { phase: "needs_phone"; target: PayTarget; fieldError?: string | undefined }
   | { phase: "open"; target: PayTarget; session: CheckoutSession }
   | { phase: "waiting"; target: PayTarget; session: CheckoutSession; state: CheckoutState | null; mode: WaitMode }
@@ -47,7 +50,8 @@ export type PayState =
    */
   | { phase: "unconfirmed"; target: PayTarget; session: CheckoutSession; sawPayment: boolean }
   | { phase: "closed"; target: PayTarget; session: CheckoutSession; failed: boolean }
-  | { phase: "refused"; target: PayTarget; notice: NoticeCopy };
+  /** `session`: set when the refusal came after a checkout was opened — its window failed, or its status could not be read. */
+  | { phase: "refused"; target: PayTarget; notice: NoticeCopy; session?: CheckoutSession | undefined };
 
 export interface PayInvoice {
   state: PayState;
@@ -213,7 +217,7 @@ export function usePayInvoice(): PayInvoice {
       }
       if (outcome.kind === "refused") {
         // After the window, so money may have moved: never the create-time "nothing was charged".
-        setState({ phase: "refused", target, notice: COPY.unreadable });
+        setState({ phase: "refused", target, notice: COPY.unreadable, session });
         return;
       }
       if (how.kind === "glance" && mode === "check") {
@@ -245,6 +249,8 @@ export function usePayInvoice(): PayInvoice {
           setState({ phase: "refused", target, notice: COPY.unavailable });
           return;
         }
+        // The checkout exists from here on, so what it is (its amount, test mode) shows while its window loads.
+        setState({ phase: "starting", target, withPhone: customer !== undefined, session });
         let launched;
         try {
           launched = await launchCheckout(session, target.label, () => {
@@ -253,7 +259,7 @@ export function usePayInvoice(): PayInvoice {
         } catch (error: unknown) {
           if (!signal.aborted) {
             const title = error instanceof Error ? error.message : "The payment window could not be opened.";
-            setState({ phase: "refused", target, notice: { tone: "danger", title } });
+            setState({ phase: "refused", target, notice: { tone: "danger", title }, session });
           }
           return;
         }

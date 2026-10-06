@@ -8,6 +8,11 @@ export interface NoticeCopy {
 }
 
 export const COPY = {
+  /**
+   * Beside every notice about a checkout whose provider runs on test or sandbox credentials
+   * (`test_mode: true`). Its own warning, in words, so it never rests on the tint.
+   */
+  testMode: { tone: "warning", title: "Test mode — no real money will be charged." },
   opening: { tone: "info", title: "Opening the payment window…" },
   inWindow: { tone: "info", title: "Finish paying in the payment window." },
   pending: {

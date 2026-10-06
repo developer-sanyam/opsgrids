@@ -39,6 +39,8 @@ interface CheckoutBase {
   currency: string;
   /** `expires_at`: when this checkout stops being payable. Always set on an opened checkout. */
   expiresAt: string;
+  /** `test_mode`: the provider that owns the charge runs on test or sandbox credentials — no real money moves. */
+  testMode: boolean;
 }
 
 /** A checkout whose `client_action.openable` is true: a real provider window can take it. */
@@ -78,6 +80,8 @@ export interface CheckoutStatus {
   failureReason: string | null;
   /** `provider_checked`: false when the provider could not be asked this time — `state` is then the last one recorded. */
   providerChecked: boolean;
+  /** `test_mode`: as on the checkout — the charge's provider runs on test or sandbox credentials. */
+  testMode: boolean;
 }
 
 /**
@@ -212,6 +216,18 @@ function minorUnits(source: Wire, what: string): { amountMinor: number; currency
   return { amountMinor: amount, currency };
 }
 
+/**
+ * `test_mode`. Required on the contract, but a server from before it was added leaves it out, and
+ * that reads as false: the page only ever says "no real money" when the server says so. Anything
+ * but a boolean is a contract break.
+ */
+function testModeOf(source: Wire, what: string): boolean {
+  const value = source.test_mode;
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new PaymentContractError(what);
+  return value;
+}
+
 /** `PlatformCheckoutStatusOut`. `failure_reason` and `provider_checked` have server defaults (null, true). */
 function statusFromWire(raw: Wire): CheckoutStatus {
   const what = "status";
@@ -232,6 +248,7 @@ function statusFromWire(raw: Wire): CheckoutStatus {
     expiresAt: nullableText(raw, "expires_at", what),
     failureReason,
     providerChecked,
+    testMode: testModeOf(raw, what),
   };
 }
 
@@ -258,7 +275,19 @@ function actionFromWire(raw: unknown, provider: CheckoutProvider): ClientAction 
   };
 }
 
-/** `PlatformCheckoutOut`. Every key is required, and `expires_at` is never null on it. */
+/** An action that takes real money: a `rzp_live_` key id, or Cashfree's production mode. */
+function takesLiveMoney(action: ClientAction): boolean {
+  return action.type === "razorpay_checkout" ? action.keyId.startsWith("rzp_live_") : action.mode === "production";
+}
+
+/**
+ * `PlatformCheckoutOut`. Every key is required, and `expires_at` is never null on it.
+ *
+ * `test_mode: true` on an action that takes live money is refused, so the page can never tell a
+ * customer "no real money" over a live payment window. The other way round — a test key with
+ * `test_mode` false or absent — only goes without the notice, which is what an older server's
+ * test checkout looks like, so it is accepted.
+ */
 function checkoutFromWire(raw: Wire): CheckoutSession {
   const what = "checkout";
   const provider = oneOf(raw, "provider", PROVIDERS, what);
@@ -267,8 +296,10 @@ function checkoutFromWire(raw: Wire): CheckoutSession {
     provider,
     ...minorUnits(raw, what),
     expiresAt: text(raw, "expires_at", what),
+    testMode: testModeOf(raw, what),
   };
   const action = actionFromWire(raw.client_action, provider);
+  if (action && base.testMode && takesLiveMoney(action)) throw new PaymentContractError(what);
   return action ? { ...base, openable: true, action } : { ...base, openable: false, action: null };
 }
 
