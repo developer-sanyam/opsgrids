@@ -112,9 +112,14 @@ jobs:
           # An empty file list means the API told us nothing useful; tools/affected-areas.sh
           # treats no input the same way — run everything rather than conclude a pull
           # request changed nothing.
+          #
+          # Both names of a renamed file: `filename` is where it went, `previous_filename`
+          # where it came from. Reading only the first let `git mv infrastructure/edge/RUNBOOK.md
+          # docs/runbook.md` look like a docs-only change — the file service tests read by path
+          # had vanished, and every job that would have noticed was skipped.
           gh api --paginate \
             "repos/${{ github.repository }}/pulls/${{ github.event.number }}/files" \
-            --jq '.[].filename' \
+            --jq '.[] | .filename, (.previous_filename // empty)' \
             | tools/affected-areas.sh | tee -a "$GITHUB_OUTPUT"
 
       - id: shards

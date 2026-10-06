@@ -26,10 +26,17 @@
 # anywhere or to infrastructure/: service tests read infrastructure/edge/RUNBOOK.md,
 # routes.prod.json and the preflight libraries by path, so a change there can fail them.
 #
+# A rename is two paths, and both must be on stdin: the file's new path in `filename` and its
+# old one in `previous_filename` (the pull-request files API reports the old one nowhere else).
+# Classified by the new path alone, moving infrastructure/edge/RUNBOOK.md to docs/runbook.md is
+# "only docs" — while the service test that reads the RUNBOOK by path is exactly what that move
+# breaks. With both paths in, a move out of code is code whichever way it points. The workflow's
+# jq expression is pinned against this script in tests/infra/test_affected_areas.py.
+#
 # usage: printf '%s\n' "${files[@]}" | tools/affected-areas.sh
 #   reads changed file paths, one per line, on stdin (as `gh api .../files --jq
-#   '.[].filename'` prints them); writes backend=, frontend=, code=, services_all=,
-#   services_list= to stdout, one per line, GITHUB_OUTPUT format.
+#   '.[] | .filename, (.previous_filename // empty)'` prints them); writes backend=, frontend=,
+#   code=, services_all=, services_list= to stdout, one per line, GITHUB_OUTPUT format.
 set -euo pipefail
 
 backend=false

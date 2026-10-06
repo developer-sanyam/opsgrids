@@ -12,8 +12,12 @@ degenerate case of getting none.
 
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 from pathlib import Path
+
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AFFECTED_AREAS = REPO_ROOT / "tools/affected-areas.sh"
@@ -174,3 +178,70 @@ def test_the_workflow_file_is_code() -> None:
 
 def test_no_input_at_all_is_code() -> None:
     assert run([])["code"] == "true"
+
+
+# ---------------------------------------------------------------- renames: both names count
+
+
+def test_a_rename_into_docs_is_still_code_when_the_old_path_is_given() -> None:
+    # `git mv infrastructure/edge/RUNBOOK.md docs/runbook.md`: the pull-request files API lists
+    # the new path as `filename` and the old one only as `previous_filename`. Service tests read
+    # the RUNBOOK by path, so a move that takes it out of infrastructure/ must still run them.
+    plan = run(["docs/runbook.md", "infrastructure/edge/RUNBOOK.md"])
+    assert plan["code"] == "true"
+    assert plan["services_all"] == "true"
+
+
+def test_a_rename_out_of_docs_is_code_by_its_new_path() -> None:
+    plan = run(["infrastructure/edge/RUNBOOK.md", "docs/runbook.md"])
+    assert plan["code"] == "true"
+
+
+def test_a_rename_between_two_docs_paths_stays_docs_only() -> None:
+    plan = run(["docs/adr/0040-ci.md", "docs/adr/0040-faster-ci.md"])
+    assert plan["backend"] == "true"
+    assert plan["code"] == "false"
+
+
+def test_a_rename_between_two_services_runs_both() -> None:
+    plan = run(["services/billing/app/x.py", "services/auth/app/x.py"])
+    assert plan["services_all"] == "false"
+    assert plan["services_list"] == "auth billing"
+
+
+def _workflows_jq_expression() -> str:
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    steps = workflow["jobs"]["changes"]["steps"]
+    script = next(s["run"] for s in steps if s.get("id") == "filter")
+    match = re.search(r"--jq '([^']+)'", script)
+    assert match, "the changes job must read the file list with gh api --jq '<expr>'"
+    return match.group(1)
+
+
+def test_the_workflow_hands_the_script_both_names_of_a_renamed_file() -> None:
+    # The pulls/N/files payload as the API shapes it: a rename carries `previous_filename`, a
+    # plain edit does not. Runs the workflow's own jq expression into the real script, so this
+    # fails if either side stops agreeing about what a rename looks like.
+    payload = [
+        {
+            "filename": "docs/runbook.md",
+            "status": "renamed",
+            "previous_filename": "infrastructure/edge/RUNBOOK.md",
+        },
+        {"filename": "docs/testing.md", "status": "modified"},
+    ]
+    listed = subprocess.run(
+        ["jq", "-r", _workflows_jq_expression()],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert listed == [
+        "docs/runbook.md",
+        "infrastructure/edge/RUNBOOK.md",
+        "docs/testing.md",
+    ]
+    plan = run(listed)
+    assert plan["code"] == "true"
+    assert plan["services_all"] == "true"
