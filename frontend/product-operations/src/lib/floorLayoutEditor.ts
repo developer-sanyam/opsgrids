@@ -152,6 +152,74 @@ export function unplacedLocations(all: LocationOut[], state: EditorState): Locat
   return all.filter((l) => !placed.has(l.id));
 }
 
+/** A floor as people name it: "Floor 0", or "Floor 0 — Ground" when it has a name. */
+export function floorTitle(floor: { floor_number: number; name: string }): string {
+  return floor.name ? `Floor ${floor.floor_number} — ${floor.name}` : `Floor ${floor.floor_number}`;
+}
+
+/** A location the draft does not have that another floor's published layout already does. */
+export interface ElsewhereLocation {
+  location: LocationOut;
+  /** The floor it is on, as `floorTitle` names it. */
+  floorTitle: string;
+}
+
+/**
+ * Splits locations that are not on this draft into those that are on no floor — what Auto-arrange
+ * and the unplaced list offer — and those another floor's published layout already holds.
+ *
+ * Publishing a layout writes its floor onto every location it places, and "find stock" and put-away
+ * guidance read a location on two published floors as being on whichever was published last. So a
+ * location that is already on a floor is only ever placed here as a deliberate act, one at a time,
+ * never as part of a bulk arrange. `onOtherFloors` maps a location id to the title of that floor.
+ */
+export function splitByFloor(
+  notOnDraft: readonly LocationOut[],
+  onOtherFloors: ReadonlyMap<string, string>,
+): { unplaced: LocationOut[]; elsewhere: ElsewhereLocation[] } {
+  const unplaced: LocationOut[] = [];
+  const elsewhere: ElsewhereLocation[] = [];
+  for (const location of notOnDraft) {
+    const floor = onOtherFloors.get(location.id);
+    if (floor === undefined) unplaced.push(location);
+    else elsewhere.push({ location, floorTitle: floor });
+  }
+  return { unplaced, elsewhere };
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * Screen pixels on the canvas.
+ *
+ * The canvas is drawn in millimetres and scaled to fit, so anything sized in millimetres is a few
+ * pixels on a phone. Handles and walk nodes are sized from the pixels they must be instead.
+ * ------------------------------------------------------------------------------------------- */
+
+/** The side of the least target a finger can be expected to hit (the design system's touch size). */
+export const TOUCH_TARGET_PX = 44;
+
+/** How far a finger or pen may wander between touching down and lifting and still be a tap. */
+export const TAP_SLOP_PX = 10;
+
+/**
+ * Millimetres one screen pixel spans, from the canvas's viewBox and its rendered size — `null`
+ * before it has been measured. The viewBox is fitted inside the box ("meet"), so the scale is the
+ * tighter of the two axes: a canvas capped in height is drawn smaller than its width alone says.
+ */
+export function mmPerPixel(
+  viewBox: { width: number; height: number },
+  rendered: { width: number; height: number } | null,
+): number | null {
+  if (rendered === null || rendered.width <= 0 || rendered.height <= 0) return null;
+  const pixelsPerMm = Math.min(rendered.width / viewBox.width, rendered.height / viewBox.height);
+  return pixelsPerMm > 0 ? 1 / pixelsPerMm : null;
+}
+
+/** A length given in screen pixels, in canvas millimetres — never less than `floorMm`, which is
+ *  also what it is wherever the canvas has not been measured. */
+export function pixelsToMm(pixels: number, mmPerPx: number | null, floorMm: number): number {
+  return mmPerPx === null ? floorMm : Math.max(floorMm, Math.round(pixels * mmPerPx));
+}
+
 /** Straight-line distance between two points, rounded to a whole millimetre — the default a new
  *  edge's distance field starts from (the user can always type a longer real walking distance;
  *  this just saves typing the common case). */

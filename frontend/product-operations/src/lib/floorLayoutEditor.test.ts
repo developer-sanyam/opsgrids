@@ -9,12 +9,16 @@ import {
   editorStateToGeometryIn,
   euclideanDistanceMm,
   findFreeSpot,
+  floorTitle,
   footprintFor,
   geometryToEditorState,
   labelFontSizeMm,
   labelWidthMm,
   locationNodeCode,
+  mmPerPixel,
   nextJunctionCode,
+  pixelsToMm,
+  splitByFloor,
   statesEqual,
   unplacedLocations,
 } from "./floorLayoutEditor";
@@ -159,6 +163,71 @@ describe("unplacedLocations", () => {
       { id: "b", warehouse_id: "w", parent_id: null, kind: "bin" as const, code: "B", name: "B", is_default: false, barcode: null, pick_sequence: null, max_weight_grams: null, max_volume_milli: null, storage_type: null },
     ];
     expect(unplacedLocations(locations, state).map((l) => l.id)).toEqual(["b"]);
+  });
+});
+
+describe("floorTitle", () => {
+  it("names a floor by number, and by name when it has one", () => {
+    expect(floorTitle({ floor_number: 0, name: "" })).toBe("Floor 0");
+    expect(floorTitle({ floor_number: 2, name: "Mezzanine" })).toBe("Floor 2 — Mezzanine");
+  });
+});
+
+describe("splitByFloor", () => {
+  const bin = (id: string): LocationOut => ({
+    id,
+    warehouse_id: "w",
+    parent_id: null,
+    kind: "bin",
+    code: id.toUpperCase(),
+    name: id,
+    is_default: false,
+    barcode: null,
+    pick_sequence: null,
+    max_weight_grams: null,
+    max_volume_milli: null,
+    storage_type: null,
+  });
+
+  it("keeps what is on no floor, and sets aside what another floor holds with that floor's title", () => {
+    const { unplaced, elsewhere } = splitByFloor(
+      [bin("a"), bin("b"), bin("c")],
+      new Map([
+        ["b", "Floor 0"],
+        ["x", "Floor 3"],
+      ]),
+    );
+    expect(unplaced.map((l) => l.id)).toEqual(["a", "c"]);
+    expect(elsewhere.map((e) => [e.location.id, e.floorTitle])).toEqual([["b", "Floor 0"]]);
+  });
+
+  it("sets nothing aside when no other floor holds anything, and keeps order", () => {
+    const { unplaced, elsewhere } = splitByFloor([bin("c"), bin("a")], new Map());
+    expect(unplaced.map((l) => l.id)).toEqual(["c", "a"]);
+    expect(elsewhere).toEqual([]);
+  });
+});
+
+describe("mmPerPixel / pixelsToMm", () => {
+  const viewBox = { width: 30000, height: 4000 };
+
+  it("is unknown until the canvas has been measured, or while it has no size", () => {
+    expect(mmPerPixel(viewBox, null)).toBeNull();
+    expect(mmPerPixel(viewBox, { width: 0, height: 0 })).toBeNull();
+  });
+
+  it("is the viewBox over the rendered size, by the tighter axis", () => {
+    // Width alone says 30000 / 300 = 100 mm per pixel; the 100px height says 4000 / 100 = 40 per pixel
+    // on its own axis, so the plan is drawn at the smaller scale: 100 mm per pixel.
+    expect(mmPerPixel(viewBox, { width: 300, height: 100 })).toBeCloseTo(100);
+    // A canvas capped in height is drawn smaller than its width alone says: 4000 / 20 = 200 mm per pixel.
+    expect(mmPerPixel(viewBox, { width: 300, height: 20 })).toBeCloseTo(200);
+  });
+
+  it("turns pixels into millimetres, never below the floor, and is the floor where nothing is measured", () => {
+    expect(pixelsToMm(8, 100, 90)).toBe(800);
+    expect(pixelsToMm(8, 5, 90)).toBe(90);
+    expect(pixelsToMm(8, null, 90)).toBe(90);
   });
 });
 
