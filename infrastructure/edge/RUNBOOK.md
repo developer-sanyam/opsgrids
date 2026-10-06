@@ -2201,6 +2201,228 @@ member's MFA lock has no admin endpoint by design — it would need a new permis
 cross-service membership check to guard a fifteen-minute wait — so expiry *is* the unlock. The lock
 refuses recovery codes as well as authenticator codes, so there is nothing to do but wait.
 
+### Removing test organisations
+
+The box has collected organisations nobody wants: every end-to-end and smoke run, every demo and
+every half-finished signup left one behind, with its users, subscriptions, invoices and audit trail
+spread over thirty-odd service schemas. There is no in-app way to delete an organisation (a
+tenant's data is append-only and audited by design), so this is the one sanctioned way:
+`tools/purge_test_orgs.py`, **run by the owner, on the box, after a backup** (ADR-0036). It is not
+part of a deploy, is not run by the pipeline and is not run for you: not by a deploy, not by CI,
+not by an agent. The only thing that ever deletes here is a command the owner typed.
+
+**It never chooses for you.** With no ids it only *lists*, with a hint ("LIKELY TEST": a name or
+slug like `e2e-…`, `smoke`, `buyer-…`, `test`, `demo`; every member on a throwaway mail domain;
+or "idle": no active subscription and no captured payment). The hint is printed beside a name and
+is never an input to a deletion. You name the ids; it deletes those and nothing else.
+
+**What goes, for each organisation you name** (one database transaction per organisation, so a
+stop part-way leaves each one whole or untouched): every row in every service schema carrying its
+`organization_id` (found from the catalog when it runs, not from a list, so a service added next
+month is covered), the rows that hang off those by a foreign key, its sessions, its memberships,
+and the organisation row itself. A **user** goes with it only if every membership they had was in
+the organisations you are removing, they are not flagged `is_staff` and you did not name them with
+`--keep-user`; a user who belongs to any organisation that stays is never touched (only the
+membership goes). **What stays**, and is reported rather than hidden: `processed_events` (a
+per-consumer idempotency ledger with no organisation on it), the global catalogue, plan versions
+restricted to a removed organisation (a published plan version is immutable), operator accounts,
+and the rows in `auth.audit_logs` that are filed under the platform's nil organisation but name a
+removed organisation or one of its removed users (operator actions on it, and authentication events
+with no active organisation, which carry the user's id, IP address and user agent). Those last two
+are counted per organisation in `left_in_place` (the audit rows as
+`auth.audit_logs.platform_rows_naming_removed`): they are the platform's own audit trail, not the
+organisation's, and the tool does not delete them. A removed user is gone from every table except
+those.
+The append-only tables (refunds, provider events, invoices' ledgers, audit trails) are emptied for
+the organisation by lifting each one's delete guard **by name, inside that organisation's
+transaction, only on tables where it has rows**, and putting it back before the commit; nothing is
+switched off globally and no superuser is used. It connects as `opsgrids_admin`, the owner of every
+table and the only role that can read an organisation across every schema.
+
+It prints **counts only**: per table, per organisation, and a summary. Never a row, an email, a
+name or a connection string. The listing in step 1 is the one exception: it prints organisation
+names to your own terminal, because you cannot choose by id alone. Each purged organisation also
+leaves one counts-only row in `auth.audit_logs` under the platform's nil organisation, written in
+the same transaction.
+
+**Run it when the box is quiet** (a few minutes; no service needs to be stopped). Lifting a guard
+takes a lock that keeps writers off that table until the organisation's transaction ends, and a
+lock it cannot get in ten seconds fails that organisation cleanly instead of queueing behind
+traffic.
+
+**Let the events drain, before and after.** A consumer folds an event into its projection without
+checking that the organisation still exists (no foreign key crosses a schema, and the consumers
+run inside the API containers), so an event still queued or sitting in an outbox when you delete
+can recreate rows for the removed organisation afterwards: the console's organisation list and
+revenue are where it shows. So right after a smoke or end-to-end run, and again before step 5,
+check that nothing is in flight: `make edge-status` (from your laptop) shows the outbox and
+dead-letter checks green, and this prints nothing when every queue is empty:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T rabbitmq \
+  rabbitmqctl -q list_queues --no-table-headers name messages | awk '$2 > 0'
+```
+
+Step 6 runs the command once more after a few minutes. Do **not** requeue a dead letter that
+names a removed organisation (`tools/dlq.py`) for the same reason.
+
+**Run it on the box, not through a tunnel.** The tool decides whether a database is live from the
+DSN it is given: `ENVIRONMENT` of `production`, `staging` or `uat`, a host that is not a loopback
+name, or no host at all (a unix socket). An `ssh -L` tunnel to the box's Postgres is a loopback
+address, so a laptop shell pointed at one with `ENVIRONMENT=local` would not be asked for
+`--i-know-this-is-the-live-database`; do not do that. Flags are matched in full (a shortened one
+is an error, not a guess), `--confirm-count` may be given once, and every `--keep-file` and
+`--ids-file` you repeat is read.
+
+From `infrastructure/edge/` on the box, define this once per shell. It is the invocation
+`reconcile-permissions` and the put-away purge use, each from a service image, here the `account`
+one; `ENVIRONMENT` there is `production`, which is why `--apply` will ask for
+`--i-know-this-is-the-live-database`:
+
+```bash
+ssh deploy@<ip>
+cd /srv/opsgrids/repo/infrastructure/edge
+mkdir -p ~/purge
+PURGE() {
+  docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T \
+    -e PYTHONPATH=/app -v "$(cd ../.. && pwd)/tools:/opt/tools:ro" -v "$HOME/purge:/opt/purge:ro" \
+    account python /opt/tools/purge_test_orgs.py "$@"
+}
+```
+
+**1. Look.** Read-only; prints every organisation with its id, name, slug, created and last-active
+dates, member count, subscriptions by state, captured payments and the hint:
+
+```bash
+PURGE                       # the table, for you to read
+PURGE --candidates > ~/purge/candidates.txt   # only the LIKELY TEST rows, as a file to edit
+```
+
+**2. Choose.** First write down **your own** organisations, the ones that must never go, in
+`~/purge/keep.txt` (one id per line, `#` comments allowed). A kept id is refused outright and its
+members are never treated as orphans. Then decide what to remove: open `candidates.txt`, **delete
+every line you want to keep**, and save it as `~/purge/ids.txt`, or skip the file and repeat
+`--org-id <uuid>`. The tool also refuses the platform's nil-UUID organisation, refuses to remove
+every organisation, and refuses to remove an organisation whose child organisation would stay (name
+the child as well and it goes first; a loop of parent links is refused).
+
+**3. Back up.** From your laptop, and read its output for `database: …/opsgrids-<stamp>.sql.gz (N
+bytes)` and that it uploaded off the box:
+
+```bash
+make edge-backup HOST=deploy@<ip> CONFIRM=<EDGE_HOST>
+```
+
+The tool cannot see your backup, so `--i-took-a-backup` is an attestation that you did. Note the
+file name; it is what step 6's restore needs. **Optional but worth it:** rehearse the whole thing on
+the restore drill's scratch database first (see "Restore from backup", steps 1 and 2: the database
+is `opsgrids_restore`), by adding
+`-e DATABASE_URL="postgresql+asyncpg://opsgrids_app:${OPSGRIDS_DB_PASSWORD}@postgres:5432/opsgrids_restore"`
+(after `set -a; . ./.env; set +a`) to the `PURGE` function. It proves the backup restores and shows
+the real counts with nothing at stake.
+
+**4. Dry run.** Same command as the delete, without `--apply`. It runs the same statements as
+`SELECT count(*)` in a read-only transaction, so `would_delete` is what `--apply` deletes, table by
+table:
+
+```bash
+PURGE --ids-file /opt/purge/ids.txt --keep-file /opt/purge/keep.txt
+```
+
+Read, in this order: `organisations_remaining` (are your own still there?), each organisation's
+`live_signals` (an organisation with an active subscription or captured payments, or members you do
+not recognise, is not what you meant to remove: stop and look it up by id), its `users` block
+(`deleted` against `kept_shared_with_another_organization` and `kept_protected`), any
+`left_in_place`, and the lines about what lives outside the database. `PURGE --explain` prints every
+table, what selects its rows and the order (children first) if you want to see the plan itself, and
+then the tables it does **not** reach (the global catalogue, the platform's keys and operator
+accounts, tax tables; nothing that has an `organization_id`).
+
+Names in the listing and in `candidates.txt` are whatever the person who signed up typed, so the
+tool prints them with every non-printable character replaced by `?` and cut at 80 characters, and
+refuses an ids file that has one in it. If it refuses your file, open it and look at the line it
+names: someone's organisation name put it there.
+
+**5. Apply.** All of the flags are required, and each one refuses before anything connects if it is
+missing: `--confirm-count N` must equal the number of organisations you named, `--i-took-a-backup`
+says you did step 3, and `--i-know-this-is-the-live-database` says you know this one is live.
+Organisations are processed in id order, except that a sub-organisation always goes before its
+parent when you selected both (the dry run printed them in that order), and it stops at the first
+failure:
+
+```bash
+PURGE --ids-file /opt/purge/ids.txt --keep-file /opt/purge/keep.txt \
+  --apply --confirm-count <N> --i-took-a-backup --i-know-this-is-the-live-database
+```
+
+Exit `0` is done, `1` is a failure part-way (the JSON line names the organisation, the SQLSTATE and
+the table or constraint, never a value; each organisation is wholly deleted or untouched, so read
+the output, fix the cause and run the same command again, it skips what is already gone), `2` is a
+refusal before anything was written. Add `--keep-orphan-users` to remove memberships only and keep
+every account.
+
+**6. Verify.** Wait a few minutes for the queues to drain again (the check in "Let the events
+drain"), then run the **same command again**. Normally it is a no-op: every id is `already-clean`
+and `organisations_deleted` is `0`. If an id now has rows and is `deleted`, a late event recreated
+projection rows for it after the purge (usually in `console`), and this run removed them; that is
+not a tool error. Repeat until it is a no-op. Then:
+
+```bash
+PURGE                                       # what is left; your own organisations are all there
+make edge-status HOST=deploy@<ip> CONFIRM=<EDGE_HOST>   # from your laptop; ops-monitor stays green
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -c \
+  "select at, entity_id, after from auth.audit_logs where action = 'organization.purged' order by at"
+```
+
+Sign in to the dashboard as yourself and open a product; the console's organisation list and MRR
+now exclude what you removed.
+
+**7. Outside the database.** The tool prints, per organisation and from the tables it had rows in,
+what it did not touch, and never touches any of it:
+
+- **Object storage (MinIO).** Uploaded images are keyed `<organization>/<asset>` in the public
+  bucket; the tool prints the prefix (`<S3_PUBLIC_BUCKET>/<org-uuid>/`) when the organisation had
+  assets. The `account` container is not given the bucket's name, so the tool cannot print it: it
+  is `S3_PUBLIC_BUCKET` in `.env`, `opsgrids-public` unless you renamed it, and the `ls` below
+  shows the buckets that exist. Remove the prefix with the root credential `minio-init` already
+  carries, listing first:
+
+  ```bash
+  MC='docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T --entrypoint mc minio-init'
+  $MC ls  "og/"                               # the bucket names
+  $MC ls  "og/<bucket>/<org-uuid>/"
+  $MC rm --recursive --force "og/<bucket>/<org-uuid>/"
+  ```
+
+  Skip it if no such line was printed: there were no assets. A wrong bucket name removes nothing
+  (the listing comes back empty), and the images stay world-readable.
+- **Payment and messaging providers.** Mandates, orders and a connected merchant account stay in the
+  Razorpay or Cashfree dashboard, and a connected WhatsApp number or email sender stays registered
+  with Meta or the mail provider; revoke them there if they were real. Two things are lost with the
+  rows and need a hand if the thing was real: a WhatsApp number's registration PIN is sealed only in
+  `notification.w1_numbers`, so reset its two-step verification PIN in Meta's dashboard before
+  anyone has to re-register the number; and a mail connection's app password or API key is gone
+  from the database but stays valid at the provider, so revoke it there.
+- **DNS and certificates.** A custom domain an organisation pointed at the box is yours to remove at
+  the registrar; Caddy keeps any certificate it issued until it expires. The same goes for the
+  SPF, DKIM and return-path records of a sending domain it verified
+  (`notification.email_domains`): they stay in your DNS and at the mail provider.
+- **RabbitMQ** has nothing per organisation to remove, but see "Let the events drain": a late event
+  recreates rows, and the re-run in step 6 removes them. **Redis** keys are caches and rate-limit
+  counters on TTLs, except `pv:<organization_id>` (the permission-version counter), which has no
+  TTL and stays: one tiny key per organisation that ever had a grant change, never read again.
+  Remove it with `DEL pv:<org-uuid>` in `redis-cli` if you want it gone. **Web bundles** are not
+  per organisation.
+
+**If it was wrong.** Nothing the tool does can be undone by the tool: **the backup is the undo.**
+Stop writing, restore it as in "Restore from backup", "the real thing" (`gunzip -c <chosen>.sql.gz
+| psql … -d opsgrids`, then `remote.sh migrate` and `remote.sh health`), and accept that anything
+written since the backup is lost, which is why you run this right after one and when the box is
+quiet. A narrower repair is an engineer's hand job: restore into the scratch database
+(`opsgrids_restore`) and copy the one organisation's rows back table by table, parents before
+children (the reverse of the order `--explain` prints), then its users and memberships. The
+`auth.audit_logs` rows above say when each organisation was purged and how many rows it had.
+
 ### Deploying from the pipeline
 
 `.github/workflows/deploy.yml` runs the same two scripts a laptop does — `ssh-deploy.sh` for the
