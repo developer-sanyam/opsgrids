@@ -147,3 +147,26 @@ def test_head_to_head_deploys_nothing(git_repo: GitRepo) -> None:
     plan = run_ci_plan(git_repo, base)
     assert plan["services"] == "false"
     assert plan["apps"] == []
+
+
+def test_a_run_for_a_commit_the_box_has_already_passed_deploys_nothing(git_repo: GitRepo) -> None:
+    """CI runs on main are no longer cancelled when a newer push lands, so the run for commit A
+    can finish after commit B (built on A) has deployed. The box then reports B as its last good
+    ref. B is not an ancestor of A, which used to read as "no usable base" and deploy everything
+    from A — rolling production back to it."""
+    base = _baseline(git_repo)
+    older = git_repo.commit_from(base, {"services/checkout/app.py": "v2\n"}, "older main commit")
+    newer = git_repo.commit_from(older, {"frontend/product-hrms/src/index.ts": "v2\n"}, "newer")
+    # HEAD is the older commit — what the finishing CI run checked out — and the box has `newer`.
+    subprocess.run(["git", "-C", str(git_repo.path), "checkout", "-q", older], check=True)
+    plan = run_ci_plan(git_repo, newer)
+    assert plan["services"] == "false"
+    assert plan["apps"] == []
+
+
+def test_a_newer_commit_after_the_box_still_deploys_its_diff(git_repo: GitRepo) -> None:
+    base = _baseline(git_repo)
+    newer = git_repo.commit_from(base, {"services/checkout/app.py": "v2\n"}, "newer")
+    plan = run_ci_plan(git_repo, base)
+    assert plan["services"] == "true"
+    assert newer  # the guard must not swallow the ordinary forward deploy
