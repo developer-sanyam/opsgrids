@@ -35,7 +35,7 @@ from app.schemas import (
     CancelIn,
     ChangePlanIn,
     ChangePlanPreviewIn,
-    ChangePlanPreviewOut,
+    CustomerChangePlanPreviewOut,
     DunningOut,
     PlanOptionsOut,
     ServiceInfo,
@@ -182,7 +182,11 @@ async def cancel_subscription(
     ctx: ManageCtx,
     request: Request,
 ) -> SubscriptionOut:
-    subscription = await services.require_subscription(session, subscription_id)
+    """Immediate and terminal. A change scheduled for the next period is cleared with it (an
+    audit row says so): a cancelled subscription never reaches that period."""
+    subscription = await services.require_subscription(
+        session, subscription_id, organization_id=ctx.organization_id
+    )
     ctx.assert_can_touch(owner_id=None)
     subscription = await services.cancel(
         session, ctx, subscription, reason=payload.reason, request=request
@@ -208,8 +212,12 @@ async def change_plan(
     the next period; an equal-price change moves now. Ask `.../change-plan/preview` first and send
     its `expected` back. Refusals carry `errors[0].code`: 409 `state_changed`,
     `billing_catching_up`; 422 `state`, `cadence`, `currency`, `already_pinned`,
-    `product_mismatch`, `not_published`, `not_offerable`; 404 `not_found`; 403 for a bundle."""
-    subscription = await services.require_subscription(session, subscription_id)
+    `product_mismatch`, `not_published`, `not_offerable`, `scheduled_by_opsgrids`; 404
+    `not_found`; 403 for a bundle."""
+    # Filtered on the caller's organization as well as isolated by RLS (the net, not the licence).
+    subscription = await services.require_subscription(
+        session, subscription_id, organization_id=ctx.organization_id
+    )
     ctx.assert_can_touch(owner_id=None)
     subscription = await services.change_plan(
         session, ctx, catalog, subscription, payload, request=request
@@ -219,7 +227,7 @@ async def change_plan(
 
 @router.post(
     "/subscriptions/{subscription_id}/change-plan/preview",
-    response_model=ChangePlanPreviewOut,
+    response_model=CustomerChangePlanPreviewOut,
     summary="What changing this subscription's plan would do — read-only, writes nothing",
 )
 async def preview_change_plan(
@@ -228,7 +236,7 @@ async def preview_change_plan(
     session: SessionDep,
     ctx: ManageCtx,
     catalog: CatalogDep,
-) -> ChangePlanPreviewOut:
+) -> CustomerChangePlanPreviewOut:
     """The confirm screen's server-computed answer, from the evaluation `change-plan` itself runs:
     direction, whether it applies `now` or at the `next_period` (and when), whether a prorated
     charge is raised now, what it replaces, the products it adds or removes — and the `expected`

@@ -96,6 +96,34 @@ NOT_OFFERABLE_DETAIL = (
     "that plan version is no longer on offer for this organization: a newer version has replaced "
     "it, it was withdrawn, or its plan was retired. Choose again from the plans on offer now."
 )
+#: 422: a customer's change-plan while a change the OpsGrids team scheduled is waiting (ADR-0033
+#: §6). Staff schedule a negotiated price from the next period; withdrawing it ("keep my plan"),
+#: replacing it with another scheduled change, or superseding it with one that applies now would
+#: each undo an agreed deal with nothing but an audit row to say so.
+CODE_SCHEDULED_BY_OPSGRIDS = "scheduled_by_opsgrids"
+SCHEDULED_BY_OPSGRIDS_DETAIL = (
+    "a plan change agreed with the OpsGrids team is scheduled for this subscription; contact "
+    "OpsGrids to change or cancel it"
+)
+
+#: Who scheduled a waiting change, as a tenant is told it.
+SCHEDULED_BY_OPSGRIDS = "opsgrids"
+SCHEDULED_BY_CUSTOMER = "customer"
+
+
+def pending_scheduled_by(pending_change: dict[str, Any] | None) -> str | None:
+    """Who scheduled the change waiting on a subscription: `opsgrids` when an operator did (the
+    staff plan switch and console's Set price record `{"type": "operator"}` as the actor),
+    `customer` for anything else, None when nothing waits.
+
+    A change stored before the actor was recorded on it (before 2026-09-23) predates every staff
+    path that schedules one, so it counts as the customer's own."""
+    if not pending_change:
+        return None
+    actor = pending_change.get("actor")
+    if isinstance(actor, dict) and actor.get("type") == "operator":
+        return SCHEDULED_BY_OPSGRIDS
+    return SCHEDULED_BY_CUSTOMER
 
 
 class CodedRefusal(BusinessRuleProblem):

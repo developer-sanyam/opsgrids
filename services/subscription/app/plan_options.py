@@ -31,12 +31,13 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Iterable, Sequence
+from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain, selectors
 from app.catalog import PlanCatalog
-from app.models import STATE_ACTIVE, STATE_TRIAL, Subscription
+from app.models import STATE_ACTIVE, STATE_CANCELLED, STATE_TRIAL, Subscription
 from app.schemas import (
     CatalogOfferableVersion,
     CatalogPlanVersion,
@@ -57,6 +58,7 @@ _CHANGEABLE_STATES = (STATE_TRIAL, STATE_ACTIVE)
 
 BLOCKED_CURRENT = "current"
 BLOCKED_BUNDLE = "bundle"
+BLOCKED_PENDING = "pending"
 
 
 # ------------------------------------------------------------------------------ the pure rules
@@ -215,7 +217,27 @@ def change_blocked_code(subscription: Subscription) -> str | None:
         return domain.CODE_BUNDLE
     if subscription.state not in _CHANGEABLE_STATES:
         return domain.CODE_STATE
+    if scheduled_by(subscription) == domain.SCHEDULED_BY_OPSGRIDS:
+        return domain.CODE_SCHEDULED_BY_OPSGRIDS
     return None
+
+
+def waiting_pin(subscription: Subscription) -> uuid.UUID | None:
+    """The plan a scheduled change moves this subscription to, as a customer is told it — None
+    for a cancelled subscription, which never reaches another period. `services.cancel` clears the
+    waiting change; a row cancelled before it did still carries one, and it is not reported."""
+    if subscription.state == STATE_CANCELLED:
+        return None
+    return subscription.pending_plan_version_id
+
+
+def scheduled_by(subscription: Subscription) -> Literal["opsgrids", "customer"] | None:
+    """Who scheduled the waiting change (`opsgrids` or `customer`), None when none is reported."""
+    if waiting_pin(subscription) is None:
+        return None
+    if domain.pending_scheduled_by(subscription.pending_change) == domain.SCHEDULED_BY_OPSGRIDS:
+        return "opsgrids"
+    return "customer"
 
 
 def build_options(
@@ -231,11 +253,14 @@ def build_options(
     De-duplicated by version id (catalog's set has no repeats; this does not trust that it never
     will). When the current pin is no longer on offer — superseded, withdrawn, its plan retired —
     it still heads the list, so the customer can see what they are on beside what they could move
-    to; the write accepts it only as "keep my plan" while a change is waiting.
+    to; the write accepts it only as "keep my plan" while a change is waiting. The change already
+    scheduled is listed, marked and disabled (`pending`): picking it again would only "replace" it
+    with itself.
     """
     currency = subscription.currency
     interval = current_interval(subscription, current)
-    pending_id = subscription.pending_plan_version_id
+    pending_id = waiting_pin(subscription)
+    staff_scheduled = scheduled_by(subscription) == domain.SCHEDULED_BY_OPSGRIDS
     seen: set[uuid.UUID] = set()
     rows: list[PlanOptionOut] = []
     for offer in offered:
@@ -244,17 +269,26 @@ def build_options(
         seen.add(offer.plan_version_id)
         ref = _ref_from_offer(offer, organization_id, may_see=may_see)
         is_current = offer.plan_version_id == subscription.plan_version_id
+        is_pending = offer.plan_version_id == pending_id
         code: str | None
         reason: str | None
         if is_current:
             code, reason = BLOCKED_CURRENT, "This is the plan you are on."
+        elif is_pending:
+            code, reason = (
+                BLOCKED_PENDING,
+                "Already scheduled, as agreed with the OpsGrids team."
+                if staff_scheduled
+                else "Already scheduled. To stay on your current plan instead, use Keep current "
+                "plan.",
+            )
         else:
             code, reason = blocked(offer, currency=currency, interval=interval)
         rows.append(
             PlanOptionOut(
                 **ref.model_dump(),
                 is_current=is_current,
-                is_pending=offer.plan_version_id == pending_id,
+                is_pending=is_pending,
                 blocked_code=code,
                 blocked_reason=reason,
             )
@@ -290,7 +324,7 @@ async def plan_options(
     """The Change plan picker for one subscription. The caller has already resolved the
     subscription under the tenant binding (another organization's id is a 404 before this)."""
     may_see = may_see_amounts(principal)
-    pending_id = subscription.pending_plan_version_id
+    pending_id = waiting_pin(subscription)
     current_doc, pending_doc, offered = await asyncio.gather(
         catalog.get_plan_version(subscription.plan_version_id),
         catalog.get_plan_version(pending_id) if pending_id else _none(),
@@ -310,6 +344,7 @@ async def plan_options(
             else None
         ),
         pending_effective_at=await selectors.scheduled_change_effective_at(session, subscription),
+        pending_scheduled_by=scheduled_by(subscription),
         options=build_options(
             subscription, offered, current_doc, organization_id=organization_id, may_see=may_see
         ),
@@ -324,18 +359,19 @@ async def plan_summaries(
     catalog: PlanCatalog,
     subscriptions: Sequence[Subscription],
 ) -> list[SubscriptionPlanSummaryOut]:
-    """The plan line of every row on the page, one catalog lookup per distinct pin."""
+    """The plan line of every row on the page, one catalog lookup per distinct pin. A cancelled
+    row reports no scheduled change (`waiting_pin`)."""
     may_see = may_see_amounts(principal)
     pins: list[uuid.UUID] = []
     for s in subscriptions:
-        for pin in (s.plan_version_id, s.pending_plan_version_id):
+        for pin in (s.plan_version_id, waiting_pin(s)):
             if pin is not None and pin not in pins:
                 pins.append(pin)
     found = await asyncio.gather(*(catalog.get_plan_version(p) for p in pins))
     docs = dict(zip(pins, found, strict=True))
     out: list[SubscriptionPlanSummaryOut] = []
     for s in subscriptions:
-        pending = s.pending_plan_version_id
+        pending = waiting_pin(s)
         out.append(
             SubscriptionPlanSummaryOut(
                 subscription_id=s.id,
@@ -348,6 +384,7 @@ async def plan_summaries(
                     else None
                 ),
                 pending_effective_at=await selectors.scheduled_change_effective_at(session, s),
+                pending_scheduled_by=scheduled_by(s),
             )
         )
     return out

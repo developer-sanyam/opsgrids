@@ -21,12 +21,12 @@
         "type": "object"
       },
       "ChangePlanIn": {
-        "description": "Re-pin a subscription to a different published version. The old pin is preserved on the\ntransition row \u2014 never overwritten in history (ADR-0004 \u00a72).\n\nThe version must be one catalog offers this organization now (422 `not_offerable` otherwise),\nor the pin the subscription is already on \u2014 which withdraws a change that is waiting.\n`expected` is the state the customer's preview was computed from (`ChangePlanPreviewOut.\nexpected`); when sent, it is compared under the row lock and a mismatch is a 409\n`state_changed`, so a confirm never applies a change the customer did not see. Optional, so a\ncaller that predates the preview keeps working.",
+        "description": "Re-pin a subscription to a different published version. The old pin is preserved on the\ntransition row \u2014 never overwritten in history (ADR-0004 \u00a72).\n\nThe version must be one catalog offers this organization now (422 `not_offerable` otherwise),\nor the pin the subscription is already on \u2014 which withdraws a change that is waiting.\n`expected` is the state the customer's preview was computed from (`CustomerChangePlanPreviewOut.\nexpected`, sent back whole); when sent, it is compared under the row lock \u2014 state, pin, pending\nchange, period end and the billing run's pending claim \u2014 and a mismatch is a 409\n`state_changed`, so a confirm never applies a change, a date or a charge the customer did not\nsee. Optional, so a caller that predates the preview keeps working.\n\nA change the OpsGrids team scheduled (a negotiated price from the next period) is not the\ncustomer's to withdraw or replace: while one waits, every customer change is refused 422\n`scheduled_by_opsgrids`.",
         "properties": {
           "expected": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ExpectedState"
+                "$ref": "#/components/schemas/CustomerExpectedState"
               },
               {
                 "type": "null"
@@ -61,8 +61,8 @@
         "title": "ChangePlanPreviewIn",
         "type": "object"
       },
-      "ChangePlanPreviewOut": {
-        "description": "What a change-plan would do right now, without an amount.\n\n**No amount, deliberately.** A paid change is priced by the billing run from catalog and the\nsubscription's items when it claims the period; there is no quote to read until then, and\ninventing one here would be a second pricing implementation that could disagree with the first\ninvoice. What *is* knowable, and what an operator needs to decide, is the direction, when it\nlands, what it replaces, and which products it adds or removes.",
+      "CustomerChangePlanPreviewOut": {
+        "description": "The customer's preview: the same answer, with the customer's fuller `expected` to send back.\n\n`direction` is null whenever `paid` is false (a trial with nothing claimed): such a change is\nalways now and free, so the comparison is never needed, and answering it would let a trialist\ncompare any public plan's list price against a negotiated amount they can see.",
         "properties": {
           "action": {
             "default": "switch",
@@ -131,7 +131,7 @@
             "type": "array"
           },
           "expected": {
-            "$ref": "#/components/schemas/ExpectedState"
+            "$ref": "#/components/schemas/CustomerExpectedState"
           },
           "paid": {
             "default": false,
@@ -184,7 +184,68 @@
         "required": [
           "expected"
         ],
-        "title": "ChangePlanPreviewOut",
+        "title": "CustomerChangePlanPreviewOut",
+        "type": "object"
+      },
+      "CustomerExpectedState": {
+        "additionalProperties": false,
+        "description": "The customer's picture of the subscription: `ExpectedState` plus the two facts that decide\n*when* a change lands and *whether money moves*, neither of which state, pin or pending\ncaptures.\n\n* `current_period_end` \u2014 a scheduled change lands at the end of the period (or of the claimed\n  one). A renewal the billing run records moves this and nothing else, so without it a preview\n  that said \"moves on 5 Nov\" would be confirmed after the roll and scheduled for 5 Dec.\n* `lifecycle_claim_id` \u2014 the renewal or trial conversion the billing run has claimed and not yet\n  recorded, or null. A claim prices the change against the claimed period, and a claimed trial\n  conversion turns a free trial switch into a paid, prorated one while `state` still says\n  `trial`.\n\nBoth are required, null included: the customer confirm sends back exactly what its preview\nreturned, so a missing field is a client that never saw a preview, not an old caller to excuse.\nThe staff path keeps `ExpectedState` \u2014 console builds it from the three fields it reads.",
+        "properties": {
+          "current_period_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Period End"
+          },
+          "lifecycle_claim_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle Claim Id"
+          },
+          "pending_plan_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Plan Version Id"
+          },
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "state": {
+            "maxLength": 20,
+            "minLength": 1,
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "plan_version_id",
+          "current_period_end",
+          "lifecycle_claim_id"
+        ],
+        "title": "CustomerExpectedState",
         "type": "object"
       },
       "DunningOut": {
@@ -256,41 +317,6 @@
           "max_attempts"
         ],
         "title": "DunningOut",
-        "type": "object"
-      },
-      "ExpectedState": {
-        "additionalProperties": false,
-        "description": "What the caller believes the subscription is, compared under the row lock.\n\nA preview and the confirm that follows it are two requests; a customer's own change, a period\nroll or dunning can all move the subscription in between. A mismatch is a 409 `state_changed`\n\u2014 the caller re-reads and decides again, rather than confirming something they never saw.",
-        "properties": {
-          "pending_plan_version_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pending Plan Version Id"
-          },
-          "plan_version_id": {
-            "format": "uuid",
-            "title": "Plan Version Id",
-            "type": "string"
-          },
-          "state": {
-            "maxLength": 20,
-            "minLength": 1,
-            "title": "State",
-            "type": "string"
-          }
-        },
-        "required": [
-          "state",
-          "plan_version_id"
-        ],
-        "title": "ExpectedState",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -496,6 +522,21 @@
               }
             ],
             "title": "Pending Effective At"
+          },
+          "pending_scheduled_by": {
+            "anyOf": [
+              {
+                "enum": [
+                  "opsgrids",
+                  "customer"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Scheduled By"
           },
           "product_key": {
             "title": "Product Key",
@@ -882,7 +923,7 @@
         "type": "object"
       },
       "SubscriptionPlanSummaryOut": {
-        "description": "The plan line of one row on the Subscriptions page: what it is on, and what it moves to.",
+        "description": "The plan line of one row on the Subscriptions page: what it is on, and what it moves to.\n\nA cancelled subscription has no scheduled change: it never reaches another period. Cancelling\nnow clears one; a row cancelled before that still carries it, and it is not reported.",
         "properties": {
           "current": {
             "anyOf": [
@@ -915,6 +956,21 @@
               }
             ],
             "title": "Pending Effective At"
+          },
+          "pending_scheduled_by": {
+            "anyOf": [
+              {
+                "enum": [
+                  "opsgrids",
+                  "customer"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Scheduled By"
           },
           "subscription_id": {
             "format": "uuid",
@@ -1133,6 +1189,7 @@
     },
     "/api/v1/subscriptions/{subscription_id}/cancel": {
       "post": {
+        "description": "Immediate and terminal. A change scheduled for the next period is cleared with it (an\naudit row says so): a cancelled subscription never reaches that period.",
         "operationId": "cancel_subscription_api_v1_subscriptions__subscription_id__cancel_post",
         "parameters": [
           {
@@ -1186,7 +1243,7 @@
     },
     "/api/v1/subscriptions/{subscription_id}/change-plan": {
       "post": {
-        "description": "When it lands is decided by the server, never asked for: a trial moves now and free; a paid\nupgrade moves now with a prorated charge for the rest of the period; a paid downgrade waits for\nthe next period; an equal-price change moves now. Ask `.../change-plan/preview` first and send\nits `expected` back. Refusals carry `errors[0].code`: 409 `state_changed`,\n`billing_catching_up`; 422 `state`, `cadence`, `currency`, `already_pinned`,\n`product_mismatch`, `not_published`, `not_offerable`; 404 `not_found`; 403 for a bundle.",
+        "description": "When it lands is decided by the server, never asked for: a trial moves now and free; a paid\nupgrade moves now with a prorated charge for the rest of the period; a paid downgrade waits for\nthe next period; an equal-price change moves now. Ask `.../change-plan/preview` first and send\nits `expected` back. Refusals carry `errors[0].code`: 409 `state_changed`,\n`billing_catching_up`; 422 `state`, `cadence`, `currency`, `already_pinned`,\n`product_mismatch`, `not_published`, `not_offerable`, `scheduled_by_opsgrids`; 404\n`not_found`; 403 for a bundle.",
         "operationId": "change_plan_api_v1_subscriptions__subscription_id__change_plan_post",
         "parameters": [
           {
@@ -1269,7 +1326,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ChangePlanPreviewOut"
+                  "$ref": "#/components/schemas/CustomerChangePlanPreviewOut"
                 }
               }
             },

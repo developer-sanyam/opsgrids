@@ -36,6 +36,7 @@ from app.models import (
     PERIOD_VOID_PENDING,
     PERIOD_VOIDED,
     STATE_ACTIVE,
+    STATE_CANCELLED,
     STATE_PAST_DUE,
     STATE_SUSPENDED,
     STATE_TRIAL,
@@ -54,12 +55,16 @@ def _with_items(stmt: Select[Any]) -> Select[Any]:
 async def list_subscriptions(session: AsyncSession, ctx: ScopeContext) -> list[Subscription]:
     """Every subscription this organization holds.
 
-    Scoped through `ctx.apply` for the single enforcement point the convention requires; at the
-    `ORG` floor these routes run under, that is the identity filter, and the tenant binding plus
-    RLS is what actually isolates one organization from another.
+    Filtered on the caller's organization explicitly — at the `ORG` floor these routes run under,
+    `ctx.apply` is the identity filter, and RLS is the net, not the licence to skip the filter —
+    and scoped through `ctx.apply` for the single enforcement point the convention requires.
     """
     stmt = ctx.apply(
-        _with_items(select(Subscription).order_by(Subscription.product_key)),
+        _with_items(
+            select(Subscription)
+            .where(Subscription.organization_id == ctx.organization_id)
+            .order_by(Subscription.product_key)
+        ),
         owner_col=Subscription.organization_id,
     )
     return list((await session.execute(stmt)).scalars().all())
@@ -538,8 +543,10 @@ async def scheduled_change_effective_at(
     """When the change waiting on this subscription applies, for a customer to read: the end of
     the claimed period while a renewal or conversion claim is pending, else the end of the current
     period — the same boundary the write schedules against (`services._evaluate_change_plan`) and
-    the billing run applies at (`services.apply_lapsed_change`). None when nothing is waiting."""
-    if subscription.pending_plan_version_id is None:
+    the billing run applies at (`services.apply_lapsed_change`). None when nothing is waiting, and
+    for a cancelled subscription, which never reaches another period (a row cancelled before
+    `services.cancel` cleared its waiting change still carries one)."""
+    if subscription.pending_plan_version_id is None or subscription.state == STATE_CANCELLED:
         return None
     claim = await pending_lifecycle_claim(session, subscription.organization_id, subscription.id)
     if claim is not None and claim.period_end is not None:

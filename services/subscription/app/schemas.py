@@ -126,6 +126,28 @@ class ExpectedState(BaseModel):
     pending_plan_version_id: uuid.UUID | None = None
 
 
+class CustomerExpectedState(ExpectedState):
+    """The customer's picture of the subscription: `ExpectedState` plus the two facts that decide
+    *when* a change lands and *whether money moves*, neither of which state, pin or pending
+    captures.
+
+    * `current_period_end` — a scheduled change lands at the end of the period (or of the claimed
+      one). A renewal the billing run records moves this and nothing else, so without it a preview
+      that said "moves on 5 Nov" would be confirmed after the roll and scheduled for 5 Dec.
+    * `lifecycle_claim_id` — the renewal or trial conversion the billing run has claimed and not yet
+      recorded, or null. A claim prices the change against the claimed period, and a claimed trial
+      conversion turns a free trial switch into a paid, prorated one while `state` still says
+      `trial`.
+
+    Both are required, null included: the customer confirm sends back exactly what its preview
+    returned, so a missing field is a client that never saw a preview, not an old caller to excuse.
+    The staff path keeps `ExpectedState` — console builds it from the three fields it reads.
+    """
+
+    current_period_end: datetime | None
+    lifecycle_claim_id: uuid.UUID | None
+
+
 class SubscribeIn(BaseModel):
     """Start a subscription for a product, pinned to a catalog plan version.
 
@@ -154,14 +176,19 @@ class ChangePlanIn(BaseModel):
 
     The version must be one catalog offers this organization now (422 `not_offerable` otherwise),
     or the pin the subscription is already on — which withdraws a change that is waiting.
-    `expected` is the state the customer's preview was computed from (`ChangePlanPreviewOut.
-    expected`); when sent, it is compared under the row lock and a mismatch is a 409
-    `state_changed`, so a confirm never applies a change the customer did not see. Optional, so a
-    caller that predates the preview keeps working.
+    `expected` is the state the customer's preview was computed from (`CustomerChangePlanPreviewOut.
+    expected`, sent back whole); when sent, it is compared under the row lock — state, pin, pending
+    change, period end and the billing run's pending claim — and a mismatch is a 409
+    `state_changed`, so a confirm never applies a change, a date or a charge the customer did not
+    see. Optional, so a caller that predates the preview keeps working.
+
+    A change the OpsGrids team scheduled (a negotiated price from the next period) is not the
+    customer's to withdraw or replace: while one waits, every customer change is refused 422
+    `scheduled_by_opsgrids`.
     """
 
     plan_version_id: uuid.UUID
-    expected: ExpectedState | None = None
+    expected: CustomerExpectedState | None = None
 
 
 class ChangePlanPreviewIn(BaseModel):
@@ -333,6 +360,17 @@ class ChangePlanPreviewOut(BaseModel):
     refusal_detail: str | None = None
 
 
+class CustomerChangePlanPreviewOut(ChangePlanPreviewOut):
+    """The customer's preview: the same answer, with the customer's fuller `expected` to send back.
+
+    `direction` is null whenever `paid` is false (a trial with nothing claimed): such a change is
+    always now and free, so the comparison is never needed, and answering it would let a trialist
+    compare any public plan's list price against a negotiated amount they can see.
+    """
+
+    expected: CustomerExpectedState
+
+
 # --------------------------------------------------------------------- customer plan reads
 #
 # What the customer's Subscriptions page shows about plans (ADR-0033). **Amounts are the
@@ -381,7 +419,8 @@ class PlanOptionOut(PlanRefOut):
     is_current: bool = False
     is_pending: bool = False
     #: Why this subscription cannot take it: `cadence` or `currency` (one cadence and one currency
-    #: per subscription), or `current` (it is the plan already in force). Null when it can.
+    #: per subscription), `bundle`, `current` (it is the plan already in force) or `pending` (it is
+    #: the change already scheduled). Null when it can.
     blocked_code: str | None = None
     blocked_reason: str | None = None
 
@@ -398,23 +437,32 @@ class PlanOptionsOut(BaseModel):
     subscription_id: uuid.UUID
     product_key: str
     state: str
-    #: `state` (only a trial or an active subscription changes plan) or `bundle` (a bundle's plan
-    #: is changed by the OpsGrids team). Null when a change may be asked for.
+    #: `bundle` (a bundle's plan is changed by the OpsGrids team), `state` (only a trial or an
+    #: active subscription changes plan) or `scheduled_by_opsgrids` (a change the OpsGrids team
+    #: scheduled is waiting, and only they change it). Null when a change may be asked for.
     change_blocked_code: str | None = None
     current: PlanRefOut | None = None
     pending: PlanRefOut | None = None
     #: When the waiting change applies: the end of the period it waits for.
     pending_effective_at: datetime | None = None
+    #: Who scheduled the waiting change: `opsgrids` (staff — a negotiated price from the next
+    #: period, which the customer cannot withdraw or replace) or `customer`. Null when none waits.
+    pending_scheduled_by: Literal["opsgrids", "customer"] | None = None
     options: list[PlanOptionOut] = Field(default_factory=list)
 
 
 class SubscriptionPlanSummaryOut(BaseModel):
-    """The plan line of one row on the Subscriptions page: what it is on, and what it moves to."""
+    """The plan line of one row on the Subscriptions page: what it is on, and what it moves to.
+
+    A cancelled subscription has no scheduled change: it never reaches another period. Cancelling
+    now clears one; a row cancelled before that still carries it, and it is not reported."""
 
     subscription_id: uuid.UUID
     current: PlanRefOut | None = None
     pending: PlanRefOut | None = None
     pending_effective_at: datetime | None = None
+    #: As on `PlanOptionsOut`: `opsgrids`, `customer`, or null when nothing waits.
+    pending_scheduled_by: Literal["opsgrids", "customer"] | None = None
 
 
 class CancelIn(BaseModel):
