@@ -46,6 +46,8 @@ class FakeRazorpay:
         self._auth = "Basic " + base64.b64encode(f"{key_id}:{key_secret}".encode()).decode()
         self.orders: dict[str, dict[str, Any]] = {}
         self.payments: dict[str, list[dict[str, Any]]] = {}
+        #: Refunds by their `X-Refund-Idempotency` key.
+        self.refunds: dict[str, dict[str, Any]] = {}
         self.capture_requested: dict[str, Any] = {}
         self.requests: list[httpx.Request] = []
         self.bodies: list[dict[str, Any]] = []
@@ -138,6 +140,12 @@ class FakeRazorpay:
                 return self._error(400, "BAD_REQUEST_ERROR", "The id provided does not exist")
             return httpx.Response(200, json=order)
         if (
+            request.method == "POST"
+            and path.startswith("/v1/payments/")
+            and path.endswith("/refund")
+        ):
+            return self._refund(request, path.split("/")[3])
+        if (
             request.method == "GET"
             and path.startswith("/v1/orders/")
             and path.endswith("/payments")
@@ -149,6 +157,30 @@ class FakeRazorpay:
                 200, json={"entity": "collection", "items": self.payments.get(order_id, [])}
             )
         return self._error(404, "BAD_REQUEST_ERROR", "The requested URL was not found")
+
+    def _refund(self, request: httpx.Request, payment_id: str) -> httpx.Response:
+        """`POST /v1/payments/{id}/refund` — the same `X-Refund-Idempotency` is the same refund
+        (tenant collections, ADR-0033's contract)."""
+        payment = next(
+            (p for items in self.payments.values() for p in items if p["id"] == payment_id), None
+        )
+        if payment is None:
+            return self._error(400, "BAD_REQUEST_ERROR", "The id provided does not exist")
+        key = request.headers.get("X-Refund-Idempotency", "")
+        known = self.refunds.get(key)
+        if known is not None:
+            return httpx.Response(200, json=known)
+        body = json.loads(request.content)
+        refund = {
+            "id": f"rfnd_{uuid.uuid4().hex[:14]}",
+            "entity": "refund",
+            "payment_id": payment_id,
+            "amount": body.get("amount"),
+            "currency": payment["currency"],
+            "status": "pending",
+        }
+        self.refunds[key] = refund
+        return httpx.Response(200, json=refund)
 
     @staticmethod
     def _error(status: int, code: str, description: str) -> httpx.Response:

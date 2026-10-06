@@ -24,6 +24,8 @@ BODY = (
     b'{"data":{"order":{"order_id":"o-1","order_amount":499.00}},"type":"PAYMENT_SUCCESS_WEBHOOK"}'
 )
 SIGNATURE = "oBgunN7Wi7UYUwtOkZb2dGfPPZe4sxagr9FnzWMGg/U="  # pragma: allowlist secret
+ORG = "0b9c2f0e-4f7a-4d3e-9a51-6c1d2e3f4a5b"
+CHARGE = "7d1e8a2b-3c4d-4e5f-8a6b-9c0d1e2f3a4b"
 
 
 class TestMoneyOutbound:
@@ -284,7 +286,7 @@ class TestRedaction:
                 "order": {
                     "order_id": "ord-1",
                     "order_currency": "INR",
-                    "order_tags": {"organization_id": "org-1", "charge_id": "ch-1"},
+                    "order_tags": {"organization_id": ORG, "charge_id": CHARGE},
                     "order_amount": "499.00",
                 },
                 "payment": {
@@ -317,6 +319,47 @@ class TestRedaction:
         body["data"]["payment"]["brand_new_field"] = "someone@example.com"
         body["data"]["customer_details"]["new_pii"] = "x"
         assert "brand_new_field" not in json.dumps(codec.redact_webhook_body(body))
+
+    def test_another_integrations_order_tags_never_reach_the_inbox(self) -> None:
+        """A merchant's own website puts its buyer in `order_tags`; the account-wide webhook
+        delivers that Order here too. Only the platform's own keys, in the platform's own shapes,
+        are kept."""
+        body = _webhook()
+        body["data"]["order"]["order_tags"] = {
+            "customer_email": "jane@example.com",
+            "ship_to": "12 MG Road Pune 411001",
+            "phone": "9820011122",
+            "organization_id": "jane@example.com",  # one of ours by name, not by shape
+            "charge_id": 4001,
+            "reference_type": "Jane Doe, 12 MG Road",
+            "flow": "checkout",
+        }
+        stored = codec.redact_webhook_body(body)
+        assert stored["data"]["order"]["order_tags"] == {"flow": "checkout"}
+        text = json.dumps(stored)
+        for pii in ("jane@example.com", "MG Road", "9820011122", "Jane", "4001"):
+            assert pii not in text
+
+    def test_the_platforms_own_tags_are_kept_in_canonical_form(self) -> None:
+        body = _webhook()
+        body["data"]["order"]["order_tags"] = {
+            "organization_id": ORG.upper(),
+            "charge_id": CHARGE,
+            "subscription_id": CHARGE,
+            "reference_id": ORG,
+            "reference_type": "operations.order",
+            "product_key": "operations",
+            "flow": "checkout",
+        }
+        assert codec.redact_webhook_body(body)["data"]["order"]["order_tags"] == {
+            "organization_id": ORG,
+            "charge_id": CHARGE,
+            "subscription_id": CHARGE,
+            "reference_id": ORG,
+            "reference_type": "operations.order",
+            "product_key": "operations",
+            "flow": "checkout",
+        }
 
     def test_redaction_is_idempotent(self) -> None:
         once = codec.redact_webhook_body(_webhook())
@@ -365,7 +408,7 @@ def _webhook() -> dict[str, Any]:
                 "order_id": "ord-1",
                 "order_amount": Decimal("499.00"),
                 "order_currency": "INR",
-                "order_tags": {"organization_id": "org-1", "charge_id": "ch-1"},
+                "order_tags": {"organization_id": ORG, "charge_id": CHARGE},
             },
             "payment": {
                 "cf_payment_id": 3001,

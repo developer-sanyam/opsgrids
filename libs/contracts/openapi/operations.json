@@ -139,6 +139,60 @@
         "title": "CancelIn",
         "type": "object"
       },
+      "CashfreeOrderCheckoutSessionOut": {
+        "description": "What the browser's `Cashfree({mode}).checkout({paymentSessionId})` needs (ADR-0033). The\nsession id is fetched from Cashfree for this response by payment and never stored anywhere;\nreopening the checkout fetches it again. No credential, and no customer detail: the phone\nCashfree requires went to it server to server.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "sandbox",
+              "production"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "openable": {
+            "title": "Openable",
+            "type": "boolean"
+          },
+          "order_number": {
+            "title": "Order Number",
+            "type": "string"
+          },
+          "payment_session_id": {
+            "title": "Payment Session Id",
+            "type": "string"
+          },
+          "provider": {
+            "const": "cashfree",
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_order_id": {
+            "title": "Provider Order Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "payment_session_id",
+          "mode",
+          "provider_order_id",
+          "amount_minor",
+          "currency",
+          "openable",
+          "order_number"
+        ],
+        "title": "CashfreeOrderCheckoutSessionOut",
+        "type": "object"
+      },
       "CategorySpend": {
         "description": "One category's share of committed spend \u2014 grouped from purchase orders. Mirrors the\nSPA's `CategorySpend`.",
         "properties": {
@@ -4598,12 +4652,27 @@
           "checkout": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/OrderCheckoutSessionOut"
+                "discriminator": {
+                  "mapping": {
+                    "cashfree": "#/components/schemas/CashfreeOrderCheckoutSessionOut",
+                    "razorpay": "#/components/schemas/RazorpayOrderCheckoutSessionOut"
+                  },
+                  "propertyName": "provider"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/RazorpayOrderCheckoutSessionOut"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CashfreeOrderCheckoutSessionOut"
+                  }
+                ]
               },
               {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Checkout"
           },
           "collection": {
             "$ref": "#/components/schemas/OrderCollectionOut"
@@ -4614,63 +4683,6 @@
           "checkout"
         ],
         "title": "OrderCheckoutOut",
-        "type": "object"
-      },
-      "OrderCheckoutSessionOut": {
-        "description": "Exactly what the browser needs to open the provider's hosted Checkout \u2014 the **public** key\nid and the provider Order id \u2014 plus the prefill it may show. Never a secret.",
-        "properties": {
-          "amount_minor": {
-            "title": "Amount Minor",
-            "type": "integer"
-          },
-          "currency": {
-            "title": "Currency",
-            "type": "string"
-          },
-          "key_id": {
-            "title": "Key Id",
-            "type": "string"
-          },
-          "mode": {
-            "enum": [
-              "test",
-              "live"
-            ],
-            "title": "Mode",
-            "type": "string"
-          },
-          "openable": {
-            "title": "Openable",
-            "type": "boolean"
-          },
-          "order_number": {
-            "title": "Order Number",
-            "type": "string"
-          },
-          "prefill": {
-            "$ref": "#/components/schemas/CheckoutPrefillOut"
-          },
-          "provider": {
-            "title": "Provider",
-            "type": "string"
-          },
-          "provider_order_id": {
-            "title": "Provider Order Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "provider",
-          "key_id",
-          "provider_order_id",
-          "amount_minor",
-          "currency",
-          "mode",
-          "openable",
-          "order_number",
-          "prefill"
-        ],
-        "title": "OrderCheckoutSessionOut",
         "type": "object"
       },
       "OrderCollectionOut": {
@@ -5258,6 +5270,32 @@
           "payment_term": {
             "title": "Payment Term",
             "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "provider_wire": {
+            "anyOf": [
+              {
+                "enum": [
+                  "stub",
+                  "live"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Wire"
           },
           "total_minor": {
             "title": "Total Minor",
@@ -8150,6 +8188,64 @@
           "lines"
         ],
         "title": "QuoteOut",
+        "type": "object"
+      },
+      "RazorpayOrderCheckoutSessionOut": {
+        "description": "Exactly what the browser needs to open Razorpay's hosted Checkout \u2014 the **public** key id\nand the provider Order id \u2014 plus the prefill it may show. Never a secret.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "key_id": {
+            "title": "Key Id",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "test",
+              "live"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "openable": {
+            "title": "Openable",
+            "type": "boolean"
+          },
+          "order_number": {
+            "title": "Order Number",
+            "type": "string"
+          },
+          "prefill": {
+            "$ref": "#/components/schemas/CheckoutPrefillOut"
+          },
+          "provider": {
+            "const": "razorpay",
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_order_id": {
+            "title": "Provider Order Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "key_id",
+          "provider_order_id",
+          "amount_minor",
+          "currency",
+          "mode",
+          "openable",
+          "order_number",
+          "prefill"
+        ],
+        "title": "RazorpayOrderCheckoutSessionOut",
         "type": "object"
       },
       "ReceiveIn": {
@@ -18928,7 +19024,7 @@
     },
     "/api/v1/operations/orders/{order_id}/payments/checkout": {
       "post": {
-        "description": "Returns what the browser needs to open the provider's own hosted checkout. The amount is\nthe order's stored total \u2014 nothing the browser sends is read. Opening a checkout records\nnothing about payment on the order: it is paid when the provider says so.",
+        "description": "Returns what the browser needs to open the provider's own hosted checkout. The amount is\nthe order's stored total \u2014 nothing the browser sends is read. Opening a checkout records\nnothing about payment on the order: it is paid when the provider says so.\n\nA provider that needs the paying customer on every Order (Cashfree) makes payment answer the\nfirst call `payer-required`; the order's own customer phone is then sent, server to server \u2014\nthe only time operations sends it to payment, and never to a provider that does not need it.\nAn order with no phone is a 422 `phone-required`: a phone is never invented.",
         "operationId": "start_order_checkout_api_v1_operations_orders__order_id__payments_checkout_post",
         "parameters": [
           {

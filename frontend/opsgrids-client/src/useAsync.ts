@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { DependencyList } from "react";
 
 export type AsyncState<T> =
@@ -14,6 +14,22 @@ export interface AsyncControls {
    * shows the row you just deleted while it refetches is lying for as long as that takes.
    */
   reload: () => void;
+  /**
+   * Run the loader again **in the background**: the current data stays on screen (and
+   * `refreshing` is true) until the new answer replaces it.
+   *
+   * For a screen whose children hold state of their own that a skeleton would destroy — a
+   * payment card mid-poll, a form, an error the user has not read yet. Unmounting them to show a
+   * loading state loses that state for good. Before any data has loaded, and after the deps
+   * change, it is an ordinary reload: there is nothing current to keep.
+   */
+  refresh: () => void;
+  /** True while a `refresh` is in flight over data still shown. */
+  refreshing: boolean;
+}
+
+function sameDeps(a: DependencyList, b: DependencyList): boolean {
+  return a.length === b.length && a.every((value, index) => Object.is(value, b[index]));
 }
 
 /**
@@ -21,8 +37,8 @@ export interface AsyncControls {
  * drops results from a superseded call so a fast filter change never flashes stale data.
  *
  * This is the read half of every screen in the platform — the write half is `useMutation`. The
- * two meet at `reload`, which replaces the `const [reloadKey, setReloadKey] = useState(0)` nonce
- * screens were threading through `deps` by hand.
+ * two meet at `reload` (or `refresh`), which replaces the `const [reloadKey, setReloadKey] =
+ * useState(0)` nonce screens were threading through `deps` by hand.
  */
 export function useAsync<T>(
   loader: () => Promise<T>,
@@ -33,22 +49,44 @@ export function useAsync<T>(
     data: null,
     error: null,
   });
+  const [refreshing, setRefreshing] = useState(false);
   const [nonce, setNonce] = useState(0);
+  const keepRef = useRef(false);
+  const depsRef = useRef<DependencyList>(deps);
 
   const reload = useCallback(() => {
+    keepRef.current = false;
+    setNonce((previous) => previous + 1);
+  }, []);
+
+  const refresh = useCallback(() => {
+    keepRef.current = true;
     setNonce((previous) => previous + 1);
   }, []);
 
   useEffect(() => {
     let active = true;
-    setState({ status: "loading", data: null, error: null });
+    // `state` is this render's: what is on screen when the refresh was asked for.
+    const keep = keepRef.current && state.status === "success" && sameDeps(depsRef.current, deps);
+    keepRef.current = false;
+    depsRef.current = deps;
+    if (keep) {
+      setRefreshing(true);
+    } else {
+      setRefreshing(false);
+      setState({ status: "loading", data: null, error: null });
+    }
     loader()
       .then((data) => {
-        if (active) setState({ status: "success", data, error: null });
+        if (active) {
+          setRefreshing(false);
+          setState({ status: "success", data, error: null });
+        }
       })
       .catch((err: unknown) => {
         if (active) {
           const error = err instanceof Error ? err : new Error(String(err));
+          setRefreshing(false);
           setState({ status: "error", data: null, error });
         }
       });
@@ -58,5 +96,5 @@ export function useAsync<T>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, nonce]);
 
-  return { ...state, reload };
+  return { ...state, reload, refresh, refreshing };
 }

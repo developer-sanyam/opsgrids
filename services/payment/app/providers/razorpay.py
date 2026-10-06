@@ -934,14 +934,3 @@ def build_provider(
         wire=wire,
         platform_billing=True,
     )
-
-
-def build_collections_provider(
-    *, key_id: str, key_secret: str, webhook_secret: str, wire: ProviderWire | None
-) -> RazorpayProvider:
-    """One merchant account's adapter (ADR-0024 §8: "one adapter instance per merchant account,
-    built from that account's sealed keys"). `wire` is the live HTTP wire, or None for the stub —
-    `app.deps.get_collections_provider_factory` decides which from configuration."""
-    return RazorpayProvider(
-        key_id=key_id, key_secret=key_secret, webhook_secret=webhook_secret, wire=wire
-    )

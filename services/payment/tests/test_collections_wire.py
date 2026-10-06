@@ -243,3 +243,34 @@ def test_the_legacy_collections_wire_value_means_razorpay_live() -> None:
 def test_collections_default_to_the_stub_wire() -> None:
     merchant = deps._collections_provider(KEY_ID, KEY_SECRET, "hook-secret-0001")
     assert isinstance(merchant, RazorpayProvider) and merchant.is_live is False
+
+
+class TestTheCashfreeStubAccounts:
+    """The in-process Cashfree a merchant's stub adapter runs on is a process-wide object: it is
+    keyed so that two organizations never share one, and it is bounded."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(deps, "_CASHFREE_STUB_WIRES", type(deps._CASHFREE_STUB_WIRES)())
+
+    def test_the_same_app_id_with_another_secret_is_another_account(self) -> None:
+        mine = deps._cashfree_stub_wire("TESTsharedapp01", "dev-only-secret-a")
+        again = deps._cashfree_stub_wire("TESTsharedapp01", "dev-only-secret-a")
+        theirs = deps._cashfree_stub_wire("TESTsharedapp01", "dev-only-secret-b")
+        assert mine is again and mine is not theirs
+        assert all("dev-only-secret" not in str(key) for key in deps._CASHFREE_STUB_WIRES)
+
+    def test_the_registry_and_each_request_log_are_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(deps, "_STUB_WIRES_MAX", 3)
+        first = deps._cashfree_stub_wire("TESTapp0", "dev-only-secret")
+        for n in range(1, 5):
+            deps._cashfree_stub_wire(f"TESTapp{n}", "dev-only-secret")
+        assert len(deps._CASHFREE_STUB_WIRES) == 3
+        assert deps._cashfree_stub_wire("TESTapp0", "dev-only-secret") is not first
+        wire = deps._cashfree_stub_wire("TESTlog", "dev-only-secret")
+        for _ in range(deps._STUB_LOG_MAX + 50):
+            with pytest.raises(ProviderCallError):
+                wire.request("GET", "/orders/none")
+        assert len(wire.requests) == deps._STUB_LOG_MAX

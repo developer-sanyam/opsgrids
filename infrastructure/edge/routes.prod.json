@@ -53,7 +53,11 @@
     "collection, ADR-0024 §8) — distinct from the platform's own `/api/v1/webhooks/razorpay`,",
     "which stays routed-but-not-public. Declared public in `WEBHOOK_PUBLIC_PATHS` for POST only;",
     "payment verifies each body against that merchant's own sealed webhook secret, named by the",
-    "`?account=` query. 256 KiB cap, the same ceiling payment enforces behind it."
+    "`?account=` query. 256 KiB cap, the same ceiling payment enforces behind it.",
+    "`/api/v1/webhooks/collections` is the provider-neutral path to the same handler (ADR-0033):",
+    "Cashfree merchants register it and Cashfree Orders name it as `notify_url`. Public in",
+    "`WEBHOOK_PUBLIC_PATHS` for POST only, the same 256 KiB cap; payment takes the provider from",
+    "the account row, never from the path."
   ],
   "routes": [
     { "prefix": "/api/v1/auth/operator", "upstream": "http://auth:8000", "blocked": true },
@@ -83,6 +87,7 @@
     { "prefix": "/api/v1/payment", "upstream": "http://payment:8000" },
     { "prefix": "/api/v1/webhooks/razorpay", "upstream": "http://payment:8000" },
     { "prefix": "/api/v1/webhooks/razorpay/collections", "upstream": "http://payment:8000", "max_body_bytes": 262144 },
+    { "prefix": "/api/v1/webhooks/collections", "upstream": "http://payment:8000", "max_body_bytes": 262144 },
 
     { "prefix": "/api/v1/notifications", "upstream": "http://notification:8000", "product": "notification" },
     { "prefix": "/api/v1/engage", "upstream": "http://notification:8000", "product": "engage" },

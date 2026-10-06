@@ -25,21 +25,24 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app.collections import selectors, services
+from app.collections import domain, selectors, services
 from app.config import settings
 from app.deps import CollectionsProviderFactory, get_collections_provider_factory
+from app.models import ORDER_WIRE_LIVE
+from app.providers.base import OrderResult
 from app.schemas import (
+    CashfreeCheckoutSessionOut,
     CheckoutIn,
     CheckoutOut,
-    CheckoutSessionOut,
     CollectionActorIn,
     CollectionOut,
     CollectionRefundIn,
+    RazorpayCheckoutSessionOut,
     ReferenceCollectionsOut,
 )
 from platform_core.auth import require_service_token
 from platform_core.db import get_session
-from platform_core.errors import ForbiddenProblem, NotFoundProblem
+from platform_core.errors import ConflictProblem, ForbiddenProblem, NotFoundProblem
 from platform_core.logging import get_logger
 
 log = get_logger("payment.collections.internal")
@@ -87,11 +90,22 @@ async def list_collections(
             session, organization_id, reference_type, reference_id
         )
         views = await selectors.collection_views(session, organization_id, charges)
+    provider = account.provider if account is not None else None
     return ReferenceCollectionsOut(
         merchant_account_configured=account is not None,
         mode=account.mode if account is not None else None,
         wire=settings().collections_wire,
+        provider=provider,
+        provider_wire=settings().collections_wire_for(provider) if provider else None,
         collections=views,
+    )
+
+
+def _payer(payload: CheckoutIn) -> services.Payer | None:
+    if payload.payer is None:
+        return None
+    return services.Payer(
+        name=payload.payer.name, email=payload.payer.email, phone=payload.payer.phone
     )
 
 
@@ -106,7 +120,10 @@ async def open_checkout(
     request: Request,
 ) -> CheckoutOut:
     """Open (or reuse) the checkout for one order and return what a browser needs to open the
-    provider's own hosted Checkout: the public key id and the provider Order id. Never a secret."""
+    provider's own hosted checkout — Razorpay: the public key id and the provider Order id;
+    Cashfree: the `payment_session_id`, fetched from Cashfree for this response and never stored.
+    Never a secret. A provider that needs the paying customer refuses a request without `payer`
+    (422 `payer-required`) before anything is written."""
     async with session.begin():
         await services.bind(session, organization_id)
         claim = await services.claim_checkout(
@@ -116,30 +133,42 @@ async def open_checkout(
             reference_id=reference_id,
             amount_minor=payload.amount_minor,
             currency=payload.currency,
+            payer=_payer(payload),
             request=request,
         )
 
+    order: OrderResult | None = None
+    order_wire = ORDER_WIRE_LIVE
     if claim.ticket is not None:
         try:
-            order = await services.create_provider_order(factory, claim.ticket)
+            order, order_wire = await services.create_provider_order(factory, claim.ticket)
         except services.ProviderRefusedProblem:
             # Refused: nothing was created there. Release the right to call so a fix (new keys)
             # can be retried at once; a timeout keeps it, so a retry cannot race a late create.
+            if claim.reopen:
+                # A reopen holds no right to call, so there is nothing to release. The Order is
+                # there but cannot be paid any more (expired at the provider, or no session).
+                raise ConflictProblem(
+                    "This online payment can no longer be reopened at the payment provider; "
+                    "cancel it and start a new one"
+                ) from None
             async with session.begin():
                 await services.bind(session, organization_id)
                 await services.release_call(
                     session, organization_id=organization_id, charge_id=claim.charge_id
                 )
             raise
-        async with session.begin():
-            await services.bind(session, organization_id)
-            await services.record_checkout(
-                session,
-                organization_id=organization_id,
-                charge_id=claim.charge_id,
-                provider_order_id=order.provider_order_id,
-                request=request,
-            )
+        if not claim.reopen:
+            async with session.begin():
+                await services.bind(session, organization_id)
+                await services.record_checkout(
+                    session,
+                    organization_id=organization_id,
+                    charge_id=claim.charge_id,
+                    provider_order_id=order.provider_order_id,
+                    order_wire=order_wire,
+                    request=request,
+                )
 
     async with session.begin():
         await services.bind(session, organization_id)
@@ -147,26 +176,43 @@ async def open_checkout(
         account = await selectors.live_merchant_account(session, organization_id)
         assert charge is not None
         view = (await selectors.collection_views(session, organization_id, [charge]))[0]
-    checkout = None
+    checkout: RazorpayCheckoutSessionOut | CashfreeCheckoutSessionOut | None = None
     if (
         charge.provider_order_id is not None
         and account is not None
         and account.id == charge.merchant_account_id
         and charge.state not in ("captured", "cancelled", "expired")
     ):
-        checkout = CheckoutSessionOut(
-            provider=charge.provider,
-            key_id=account.key_id,
-            provider_order_id=charge.provider_order_id,
-            amount_minor=charge.amount_minor,
-            currency=charge.currency,
-            mode=account.mode,
-            openable=settings().collections_wire == "razorpay",
-        )
+        openable = settings().collections_wire_for(account.provider) == "live"
+        if account.provider == domain.PROVIDER_CASHFREE:
+            # The session token is in memory only — this response is the one place it goes.
+            token = order.checkout_token if order is not None else None
+            if token is not None and order is not None:
+                checkout = CashfreeCheckoutSessionOut(
+                    provider="cashfree",
+                    payment_session_id=token,
+                    mode="production" if account.mode == "live" else "sandbox",
+                    provider_order_id=charge.provider_order_id,
+                    amount_minor=charge.amount_minor,
+                    currency=charge.currency,
+                    openable=openable,
+                )
+        else:
+            checkout = RazorpayCheckoutSessionOut(
+                provider="razorpay",
+                key_id=account.key_id,
+                provider_order_id=charge.provider_order_id,
+                amount_minor=charge.amount_minor,
+                currency=charge.currency,
+                mode=account.mode,
+                openable=openable,
+            )
     log.info(
         "payment.collection.checkout",
         organization_id=str(organization_id),
         charge_id=str(claim.charge_id),
+        provider=charge.provider,
+        reopened=claim.reopen,
         ready=checkout is not None,
         state=view.state,
     )

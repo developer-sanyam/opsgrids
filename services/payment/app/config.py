@@ -7,18 +7,17 @@ from typing import Literal
 
 from pydantic import SecretStr, model_validator
 
+from app.providers import cashfree_codec
 from app.providers.wire import MAX_DECLARED_CALL_BUDGET_SECONDS
 from platform_core.config import ServiceSettings, settings_for
 from platform_core.logging import get_logger
 
 #: Razorpay key ids carry their mode in the prefix: `rzp_test_…` / `rzp_live_…`.
 _RAZORPAY_KEY_ID = re.compile(r"^rzp_(test|live)_[A-Za-z0-9]{6,40}$")
-#: Cashfree secret keys carry theirs too (`cfsk_ma_test_…` / `cfsk_ma_prod_…`), and a sandbox App ID
-#: starts with `TEST`. Third-party-sourced shapes: a mismatch is a safe false-refuse, never a
-#: reason to let a key through, and a key that matches neither is judged by the switch alone.
-_CASHFREE_SECRET_TEST_PREFIX = "cfsk_ma_test_"  # noqa: S105  # pragma: allowlist secret
-_CASHFREE_SECRET_PROD_PREFIX = "cfsk_ma_prod_"  # noqa: S105  # pragma: allowlist secret
-_CASHFREE_APP_ID_TEST_PREFIX = "TEST"
+# Cashfree secret keys carry theirs too (`cfsk_ma_test_…` / `cfsk_ma_prod_…`), and a sandbox App ID
+# starts with `TEST` (`cashfree_codec.production_shaped` / `sandbox_shaped`, shared with a
+# merchant's connect form). Third-party-sourced shapes: a mismatch is a safe false-refuse, never a
+# reason to let a key through, and a key that matches neither is judged by the switch alone.
 
 
 def _razorpay_mode(key_id: str | None) -> Literal["test", "live"] | None:
@@ -162,8 +161,16 @@ class Settings(ServiceSettings):
     #: `collections_wire_for`). The platform's own provider is switched by `PAYMENT_WIRE`, never
     #: by this. Turning this on is an owner decision, made in the box's `.env`.
     collections_wire: Literal["stub", "razorpay"] = "stub"
-    #: Whether a merchant may connect **live** keys (`rzp_live_…`). Off: only test-mode keys are
-    #: accepted, so nothing a tenant configures can move real money until the owner says so.
+    #: The same switch for a merchant's **Cashfree** account (ADR-0033), its own variable so the
+    #: legacy `COLLECTIONS_WIRE` literal never changes meaning: `stub` (the default) runs a
+    #: merchant's Cashfree adapter on the in-process stateful fake — no socket, no money — and
+    #: `live` talks to Cashfree over HTTPS with that merchant's own App ID and Secret Key, against
+    #: the environment the merchant chose when connecting (Sandbox or Production). An owner
+    #: decision, sandbox first.
+    collections_cashfree_wire: Literal["stub", "live"] = "stub"
+    #: Whether a merchant may connect **live** keys (`rzp_live_…`, or a Cashfree account in
+    #: Production). Off: only test-mode / Sandbox accounts are accepted, so nothing a tenant
+    #: configures can move real money until the owner says so.
     collections_allow_live_keys: bool = False
     #: How long one collection provider call (an Order create, a status check, a refund) may take
     #: before the caller stops waiting. The call runs on a worker thread; an abandoned one is safe
@@ -200,9 +207,20 @@ class Settings(ServiceSettings):
 
     def collections_wire_for(self, provider: str) -> Literal["stub", "live"]:
         """Whether `provider`'s collections wire is live. Per provider, so a second provider can
-        be switched on without touching the first; `COLLECTIONS_WIRE=razorpay` (the only
-        non-stub value there is) means Razorpay live, as it always has."""
+        be switched on without touching the first; `COLLECTIONS_WIRE=razorpay` (its only non-stub
+        value) means Razorpay live, as it always has, and `COLLECTIONS_CASHFREE_WIRE` is
+        Cashfree's own switch."""
+        if provider == "cashfree":
+            return self.collections_cashfree_wire
         return "live" if self.collections_wire == provider else "stub"
+
+    @property
+    def collections_public_api_base(self) -> str:
+        """The public `/api/v1` root a provider reaches this platform's webhooks at — built from
+        `APP_BASE_URL` (every platform hostname serves `/api/*` same-origin through the edge), never
+        from a browser's `window.location`. A merchant's webhook URL and a Cashfree Order's
+        `notify_url` are this plus the webhook path."""
+        return f"{self.app_base_url.rstrip('/')}/api/v1"
 
     @model_validator(mode="after")
     def _call_timeout_covers_the_wire_budget(self) -> Settings:
@@ -237,7 +255,7 @@ class Settings(ServiceSettings):
                 "refused: test mode never runs beside a key that moves real money"
             )
         secret = self.cashfree_secret_key.get_secret_value() if self.cashfree_secret_key else ""
-        if secret.startswith(_CASHFREE_SECRET_PROD_PREFIX) or self.cashfree_env == "production":
+        if cashfree_codec.production_shaped(secret) or self.cashfree_env == "production":
             raise ValueError(
                 "PAYMENT_ALLOW_TEST_KEYS=true with a production CASHFREE_SECRET_KEY or "
                 "CASHFREE_ENV=production is refused: test mode never runs beside live money"
@@ -295,10 +313,8 @@ class Settings(ServiceSettings):
         secret = self.cashfree_secret_key.get_secret_value() if self.cashfree_secret_key else ""
         if bool(app_id) != bool(secret):
             raise ValueError("CASHFREE_APP_ID and CASHFREE_SECRET_KEY must be set together")
-        prod_shaped = secret.startswith(_CASHFREE_SECRET_PROD_PREFIX)
-        test_shaped = secret.startswith(_CASHFREE_SECRET_TEST_PREFIX) or app_id.startswith(
-            _CASHFREE_APP_ID_TEST_PREFIX
-        )
+        prod_shaped = cashfree_codec.production_shaped(secret)
+        test_shaped = cashfree_codec.sandbox_shaped(app_id, secret)
         if prod_shaped and not self.payment_allow_live_keys:
             raise ValueError(
                 "CASHFREE_SECRET_KEY is a production key and PAYMENT_ALLOW_LIVE_KEYS is not "

@@ -1074,6 +1074,8 @@ services:
       # to Razorpay at all (`stub` until turned on), and whether live (`rzp_live_`) keys may be
       # connected. Both default to the safe side.
       COLLECTIONS_WIRE: ${COLLECTIONS_WIRE:-stub}
+      # A tenant's Cashfree account (ADR-0033): `stub` until the owner turns it on, sandbox first.
+      COLLECTIONS_CASHFREE_WIRE: ${COLLECTIONS_CASHFREE_WIRE:-stub}
       COLLECTIONS_ALLOW_LIVE_KEYS: ${COLLECTIONS_ALLOW_LIVE_KEYS:-false}
     networks:
       - back

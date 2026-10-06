@@ -55,6 +55,7 @@ from app.models import (
 )
 from app.providers.base import (
     ChargeResult,
+    CollectionsProvider,
     DirectDebitProvider,
     MalformedWebhook,
     PaymentProvider,
@@ -1000,7 +1001,9 @@ def _is_provider_id_collision(exc: IntegrityError) -> bool:
     return any(name in message for name in _PROVIDER_ID_INDEXES)
 
 
-def _identity_of(provider: PaymentProvider, payload: dict[str, Any]) -> str | None:
+def _identity_of(
+    provider: PaymentProvider | CollectionsProvider, payload: dict[str, Any]
+) -> str | None:
     """The derived identity (`domain.derive_event_id`) of a **stored** webhook body — what the event
     it recorded actually was, whatever delivery id it was filed under. Read back from JSONB, so key
     order and number formatting may differ from the bytes Razorpay sent; the identity is built

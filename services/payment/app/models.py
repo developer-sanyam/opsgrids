@@ -122,6 +122,11 @@ PAYEE_PLATFORM = "platform"
 PAYEE_MERCHANT = "merchant"
 PAYEES = (PAYEE_PLATFORM, PAYEE_MERCHANT)
 
+#: Which wire made a merchant collection's provider Order (`Charge.order_wire`): the in-process
+#: stand-in, or the provider itself.
+ORDER_WIRE_STUB = "stub"
+ORDER_WIRE_LIVE = "live"
+
 # --- merchant account states -----------------------------------------------------------
 MERCHANT_ACCOUNT_ACTIVE = "active"
 #: Soft-removed: the sealed secrets are wiped, `deleted_at` is set, and nothing can verify a
@@ -248,27 +253,51 @@ class MerchantAccount(Base, TenantBase):
 
     __tablename__ = "merchant_accounts"
 
-    #: `razorpay` — the only provider this platform has an adapter for.
+    #: `razorpay` or `cashfree` (ADR-0033). **Fixed for the life of the row**, like `mode`: every
+    #: charge taken into this account names it, and its keys are what reaches the provider for it.
     provider: Mapped[str] = mapped_column(String(40), nullable=False)
-    #: The provider's public key id (`rzp_test_…` / `rzp_live_…`). What the browser is given.
+    #: The provider's public key id — a Razorpay key id (`rzp_test_…` / `rzp_live_…`, what the
+    #: browser is given) or a Cashfree App ID (`x-client-id`; never sent to a browser).
     key_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    #: `test` or `live`, derived from `key_id` and never set independently of it.
+    #: `test` or `live`: derived from a Razorpay key id; the merchant's own choice of Sandbox or
+    #: Production for Cashfree, whose App ID does not say.
     mode: Mapped[str] = mapped_column(String(8), nullable=False)
-    #: Sealed. NULL only once the account is removed (the secrets are wiped, not kept).
+    #: Sealed. NULL only once the account is removed (the secrets are wiped, not kept). For
+    #: Cashfree this is the Secret Key, which also signs every webhook.
     key_secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     key_secret_masked: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    #: Sealed; Razorpay only (a merchant-chosen webhook secret). Always NULL for Cashfree.
     webhook_secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     webhook_secret_masked: Mapped[str] = mapped_column(String(16), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=MERCHANT_ACCOUNT_ACTIVE)
     #: When the credentials were last replaced in place (the row, and so the webhook URL, kept).
     rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When the provider last accepted these credentials (`POST …/merchant-account/verify`). Reset
+    #: to NULL whenever the credentials change: a verification is of the keys it probed.
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The stable code of the last failed verification (`credentials_rejected`, or the provider's
+    #: own code) — never its message. NULL once verified, or when never tried.
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
 
     __table_args__ = (
         CheckConstraint("status in ('active', 'removed')", name="status"),
         CheckConstraint("mode in ('test', 'live')", name="mode"),
+        CheckConstraint("provider in ('razorpay', 'cashfree')", name="provider"),
+        # Every live account holds the key secret it calls the provider with; a removed one holds
+        # none (wiped, not kept).
         CheckConstraint(
-            "(status = 'active') = (key_secret_enc IS NOT NULL AND webhook_secret_enc IS NOT NULL)",
-            name="secrets_present_iff_active",
+            "(status = 'active') = (key_secret_enc IS NOT NULL)",
+            name="key_secret_present_iff_active",
+        ),
+        # A Razorpay account's webhooks are signed with a secret of their own...
+        CheckConstraint(
+            "provider <> 'razorpay' OR status <> 'active' OR webhook_secret_enc IS NOT NULL",
+            name="razorpay_active_has_webhook_secret",
+        ),
+        # ...and a Cashfree account has none: its Secret Key signs them.
+        CheckConstraint(
+            "provider <> 'cashfree' OR webhook_secret_enc IS NULL",
+            name="cashfree_has_no_webhook_secret",
         ),
         # One live account per organization. Partial, so a removed row stays as history and a
         # new one can be connected beside it.
@@ -377,6 +406,14 @@ class Charge(Base, TenantBase):
     #: the Order's own expiry at Cashfree). The poller closes a checkout past it that nothing paid.
     checkout_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    #: Which wire made a merchant collection's provider Order, recorded with the Order:
+    #: `stub` — the in-process stand-in, so no customer can ever pay it and no real provider holds
+    #: it — or `live`. Null on a platform charge, and on a collection recorded before this was
+    #: kept, which is treated as possibly real. What lets a stub test checkout be cancelled,
+    #: expired and disconnected from once the wire is live, without asking a provider that has
+    #: never heard of it (ADR-0033 §8).
+    order_wire: Mapped[str | None] = mapped_column(String(8))
+
     refunds: Mapped[list[Refund]] = relationship(back_populates="charge")
 
     __table_args__ = (
@@ -393,6 +430,10 @@ class Charge(Base, TenantBase):
         ),
         CheckConstraint("payee in ('platform', 'merchant')", name="payee"),
         CheckConstraint("flow in ('debit', 'checkout')", name="flow"),
+        CheckConstraint(
+            "order_wire IS NULL OR (payee = 'merchant' AND order_wire in ('stub', 'live'))",
+            name="order_wire",
+        ),
         # A checkout is a platform charge with an expiry; nothing else is a checkout.
         CheckConstraint(
             "flow = 'debit' OR (payee = 'platform' AND checkout_expires_at IS NOT NULL)",

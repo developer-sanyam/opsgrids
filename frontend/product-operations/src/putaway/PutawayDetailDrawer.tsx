@@ -8,6 +8,7 @@ import { LOCATION_KIND_LABEL } from "@/data/locationKinds";
 import { reportOnce } from "@/lib/clientReport";
 import { formatDateTime } from "@/lib/format";
 import { formatCoordinates, isValidMicroPair, microToDegrees, positionOf } from "@/lib/geo";
+import { needsOneTimeCodeSession } from "@/lib/oneTimeCode";
 import { getMapsApiKey } from "@/lib/mapsConfig";
 import { ApiError, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import { Button, Drawer, EmptyState, ErrorState, InlineAlert, Skeleton } from "@/ui";
@@ -120,19 +121,7 @@ function useWorkerName(workerId: string | null): string {
   return workers.data.items.find((w) => w.id === workerId)?.display_name || "A warehouse worker";
 }
 
-/**
- * The reveal route needs a session that signed in with a one-time code: the server answers a
- * password-only or single-sign-on session with a 403 whose detail is `Additional authentication
- * required: otp` (`require(..., amr={"otp"})` in `platform_core/auth.py`). That problem's `type` is the
- * generic `forbidden`, so the detail is the only thing that tells it apart from a plain missing
- * permission; every other 403 keeps the server's own sentence.
- */
-function needsOneTimeCodeSession(error: unknown): boolean {
-  if (!(error instanceof ApiError) || error.status !== 403) return false;
-  const detail = error.problem?.detail ?? "";
-  return detail.startsWith("Additional authentication required:") && /\botp\b/.test(detail);
-}
-
+// The reveal route needs a session that signed in with a one-time code (`needsOneTimeCodeSession`).
 const ONE_TIME_CODE_MESSAGE =
   "Revealing a worker's location needs a session signed in with a one-time code. Sign in again with your authenticator code, or ask an admin who has MFA enabled.";
 

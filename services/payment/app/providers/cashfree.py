@@ -83,7 +83,9 @@ _IDEMPOTENCY_NAMESPACE = uuid.UUID("5d0e3d3a-9f0e-4c8e-9a43-0b7a0f6f3c11")
 _NOT_BUILT = "is not built: mandates and debits are Phase B and refunds are not built (ADR-0032)"
 
 
-def _idempotency_key(op: str, receipt: str) -> str:
+def idempotency_key(op: str, receipt: str) -> str:
+    """The `x-idempotency-key` of a create: a UUID derived from what it creates (`op`) and its
+    receipt — the same create sends the same key; two receipts never share one."""
     return str(uuid.uuid5(_IDEMPOTENCY_NAMESPACE, f"{op}:{receipt}"))
 
 
@@ -228,14 +230,22 @@ class CashfreeProvider:
                 "order_expiry_time": request.expires_at.isoformat(timespec="seconds"),
                 "order_tags": dict(request.notes),
             }
-            if request.return_url:
-                body["order_meta"] = {"return_url": request.return_url}
+            meta = {
+                key: value
+                for key, value in (
+                    ("return_url", request.return_url),
+                    ("notify_url", request.notify_url),
+                )
+                if value
+            }
+            if meta:
+                body["order_meta"] = meta
             try:
                 created = self._wire.request(
                     "POST",
                     "/orders",
                     json=body,
-                    headers={"x-idempotency-key": _idempotency_key("order", request.receipt)},
+                    headers={"x-idempotency-key": idempotency_key("order", request.receipt)},
                 )
             except ProviderRejected as exc:
                 if exc.status_code != 409:

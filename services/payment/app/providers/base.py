@@ -84,6 +84,7 @@ out of the database and the database's vocabulary out of the provider.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -358,18 +359,125 @@ class PaymentProvider(Protocol):
         ...
 
 
-@runtime_checkable
-class CollectionsProvider(PaymentProvider, Protocol):
-    """The seam tenant collections (`app/collections/`, ADR-0024 §8) holds: a `PaymentProvider` —
-    one instance per merchant account, built from that account's own sealed keys.
+@dataclass(frozen=True, slots=True)
+class CollectionRefundFacts:
+    """A refund entity from a verified merchant refund webhook — ids, money and the refund's state
+    in the platform's own vocabulary (`created` / `processed` / `failed`; the adapter maps its
+    provider's words into it). Never a person."""
 
-    A collection's payment is made by the customer, in the provider's own hosted checkout, against
-    an Order this platform created; there is no server-side `charge`. What collections needs
-    beyond Order creation (`ensure_order`, lookup-before-create by receipt) and refunds is to ask
-    the provider, server to server, what has happened to that Order (`order_payments`, which sits
-    on `PaymentProvider` now that platform checkout asks it too). That answer — or a
-    signature-verified webhook — is the only thing that may ever move a collection to `captured`.
+    provider_refund_id: str
+    provider_payment_id: str | None
+    amount_minor: int | None
+    currency: str | None
+    state: str
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionWebhookFacts:
+    """What collections reads from one verified merchant webhook, beyond the `WebhookEvent`
+    itself, in the platform's vocabulary — so `app/collections/` never learns a provider's words.
+
+    `outcome` is the collection outcome a payment event asserts (`captured` / `failed` /
+    `authorized`), or None for an event that asserts none (a customer closing the page, a refund,
+    a settlement). `refund` is set for a refund event. `failure_code` is the provider's stable
+    error code for a failed attempt. `stored` is what the append-only inbox keeps of the body: an
+    allow-list the adapter's own `parse_webhook` can still read back (`_identity_of` re-derives a
+    stored event's identity from it)."""
+
+    outcome: str | None
+    refund: CollectionRefundFacts | None
+    failure_code: str | None
+    stored: dict[str, Any]
+
+
+@runtime_checkable
+class CollectionsProvider(Protocol):
+    """The seam tenant collections (`app/collections/`, ADR-0024 §8) holds — **standalone**, not a
+    `PaymentProvider` (ADR-0033): one instance per merchant account, built per call from that
+    account's own sealed keys and never cached.
+
+    A collection is paid by the customer, in the provider's own hosted checkout, against an Order
+    this platform created; there is no server-side debit, so there is no `charge`,
+    `create_mandate` or `find_payment` here for an adapter to stub. What collections needs:
+
+    * `ensure_order` — the Order whose receipt (the collection's own id) is `receipt`, **looked up
+      first** and created only if the provider holds none. `payer` is who is paying, for a provider
+      that requires a customer on every Order (Cashfree: an id and a phone); passed through to the
+      provider and nowhere else. `expires_at` is when the provider should stop taking payment and
+      `notify_url` where it should deliver this Order's webhooks (both ignored by a provider that
+      has no such field). The result's `checkout_token` is what the browser opens the provider's
+      checkout with when that is not the Order id itself (Cashfree's `payment_session_id`): in
+      memory only, never stored. `recorded_order_id` is the Order the collection **already
+      records**, on a reopen: the adapter fetches that Order by its id and returns it, or refuses
+      (`ProviderTransient`, `recorded_order_not_found`) — never a receipt search, never another
+      create (the recorded-Order rule of `CheckoutRequest.recorded_order_id`, ADR-0032).
+    * `find_order` — the lookup alone, never a create (the expiry sweep, for a collection that
+      recorded no Order).
+    * `order_payments` — every attempt on an Order as the provider reports it now, in the neutral
+      vocabulary (`best_attempt`). This answer, or a signature-verified webhook, is the only thing
+      that may ever move a collection to `captured`.
+    * `refund` — by the payment and its Order (Cashfree refunds an Order, Razorpay a payment); the
+      same `idempotency_key` is the same refund at the provider.
+    * `verify_webhook(headers, body)` — the provider's signature over these exact bytes, with
+      whatever headers it signs (Cashfree signs a timestamp header too). Fails closed: False,
+      never a raise, for anything that is not an exact match.
+    * `parse_webhook`, `webhook_delivery_id`, `webhook_facts` — a verified body as a
+      `WebhookEvent`, the transport's (unsigned) delivery id, and the collection facts in the
+      platform's vocabulary.
+    * `probe` — one authenticated, read-only request that proves the credentials work. Returns on
+      success; raises `ProviderMisconfigured` when the provider rejects the credentials and
+      another `ProviderCallError` (or an `httpx` error) when it could not tell.
+
+    **Against real Razorpay the receipt lookup is best-effort** (see the module docstring): a
+    create whose answer was lost can leave an Order the search does not show, and the retry then
+    makes a second one. Collections binds the first Order id it is handed (`record_checkout`) and
+    from then on hands out and asks about only that id, so a duplicate is never payable — nobody is
+    ever given its id. Unlike the platform poller, collections does not search for payments on one
+    (`StrayPayment`).
+
+    Every request is bounded: the declared per-request timeouts, summed, stay inside
+    `collections_call_timeout_seconds` (`CollectionsContract`).
     """
+
+    name: str
+    request_timeouts_seconds: tuple[float, ...]
+
+    def ensure_order(
+        self,
+        *,
+        receipt: str,
+        amount_minor: int,
+        currency: str,
+        notes: dict[str, str],
+        payer: CheckoutCustomer | None = None,
+        expires_at: datetime | None = None,
+        notify_url: str | None = None,
+        recorded_order_id: str | None = None,
+    ) -> OrderResult: ...
+
+    def find_order(self, *, receipt: str) -> OrderResult | None: ...
+
+    def order_payments(self, *, order_id: str) -> list[PaymentSnapshot]: ...
+
+    def refund(
+        self,
+        *,
+        idempotency_key: str,
+        provider_payment_id: str,
+        amount_minor: int,
+        currency: str,
+        provider_order_id: str | None = None,
+    ) -> RefundResult: ...
+
+    def verify_webhook(self, *, headers: Mapping[str, str], body: bytes) -> bool: ...
+
+    def parse_webhook(self, *, body: bytes) -> WebhookEvent: ...
+
+    def webhook_delivery_id(self, headers: Mapping[str, str]) -> str | None: ...
+
+    def webhook_facts(self, event: WebhookEvent) -> CollectionWebhookFacts: ...
+
+    def probe(self) -> None: ...
 
 
 # --------------------------------------------------------------------------- capabilities
@@ -493,6 +601,9 @@ class CheckoutRequest:
     customer: CheckoutCustomer | None = None
     #: Where the provider sends the browser back to (Cashfree). Never evidence of payment.
     return_url: str | None = None
+    #: Where the provider delivers this Order's webhooks (Cashfree `order_meta.notify_url`, which
+    #: must be HTTPS). None: whatever the account's dashboard registers.
+    notify_url: str | None = None
     #: The Order id the charge **already records**, when it does (a reopened checkout). The adapter
     #: then fetches **that Order by its id** and returns it, or refuses (`ProviderTransient`,
     #: `recorded_order_not_found`) — it never searches by receipt (a receipt can name several

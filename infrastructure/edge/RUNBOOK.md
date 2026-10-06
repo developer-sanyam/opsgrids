@@ -1323,6 +1323,129 @@ WHERE flow = 'checkout' AND created_at < '2026-10-06T00:00:00Z'
 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 ```
 
+### Merchant connect: Cashfree for tenant online payments
+
+The merchant-connect release (design: `docs/superpowers/specs/2026-10-06-merchant-cashfree-design.md`;
+decision: [ADR-0033](../../docs/adr/0033-merchant-connect-collections-seam.md)) lets an organization
+connect **either** its own Razorpay **or** its own Cashfree account in Operations → Payment settings,
+and take an order's online payment through that provider's hosted checkout, opened by staff inside
+Operations (there is no payment link and no storefront checkout in this release). Money goes to the
+merchant's own account; the platform never holds it. **Nothing here can move real money until the
+owner turns it on**: a merchant's Cashfree runs on the in-process stub until `COLLECTIONS_CASHFREE_WIRE`
+says `live`, and a Production account needs `COLLECTIONS_ALLOW_LIVE_KEYS=true` as well.
+
+**What migrates.** Two revisions (payment), part of the ordinary `migrate` step.
+`d9e0f1a2b3c4` follows the payments Phase A head `c7d8e9f0a1b2`: on `payment.merchant_accounts` it
+replaces the two-secret CHECK (a Cashfree account holds one secret: its Secret Key also signs webhooks)
+with `key_secret_present_iff_active`, `razorpay_active_has_webhook_secret`,
+`cashfree_has_no_webhook_secret` and `provider in ('razorpay','cashfree')`, and adds `verified_at` and
+`last_error_code` (nullable). Every existing row satisfies all four CHECKs; no backfill, no append-only
+table touched. The downgrade **refuses** while any Cashfree account exists. `e2f3a4b5c6d7` follows it:
+`payment.charges.order_wire` (nullable, `stub` | `live`, CHECK-ed; NULL on every existing row) records
+which wire made a collection's provider Order, so a stub test checkout never holds up a disconnect or
+gets asked about at the real provider. If payments Phase A received a review fix with its own revision,
+confirm `alembic heads` shows **one** head and re-point `d9e0f1a2b3c4`'s `down_revision`.
+
+**Deploy order** (staged by the owner; merging deploys nothing): migrate payment, then `payment`, then
+`app-gateway` (the neutral webhook path `/api/v1/webhooks/collections` must be public — POST only,
+256 KiB cap — before any merchant registers it; the original `/api/v1/webhooks/razorpay/collections`
+stays as an alias), then `operations`, then the Operations app (`make edge-web APP=operations`) and the
+edge routes. `payment` and `operations` ship together: operations relays the provider-shaped checkout
+session and sends a customer phone only when payment asks for one.
+
+**The switches** (`.env`, owner decisions, both default to the safe side):
+
+| Variable | Meaning |
+|---|---|
+| `COLLECTIONS_CASHFREE_WIRE` | `stub` (default): a merchant's Cashfree account runs on the fake; a checkout cannot be paid for real (the UI says so). `live`: calls `sandbox.cashfree.com` or `api.cashfree.com`, as the merchant chose when connecting, with that merchant's own keys. **Sandbox first.** |
+| `COLLECTIONS_ALLOW_LIVE_KEYS` | Also covers Cashfree **Production** (and, as before, `rzp_live_…`). |
+
+`COLLECTIONS_WIRE=razorpay` keeps meaning exactly what it meant (Razorpay live); it says nothing about
+Cashfree. No prod config change without the owner's approval.
+
+**Verify after the deploy, changing nothing.** From `infrastructure/edge/`:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T payment alembic current
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT provider, status, count(*) FROM payment.merchant_accounts GROUP BY 1, 2 ORDER BY 1, 2;"
+curl -s -o /dev/null -w '%{http_code}\n' -X POST 'https://app.opsgrids.com/api/v1/webhooks/collections?account=00000000-0000-0000-0000-000000000000' -d '{}'
+```
+
+`alembic current` prints `e2f3a4b5c6d7 (head)`; the counts are what they were before (Razorpay rows
+only); the `curl` prints **400** (reached payment, refused the unsigned body) — a **401** means the
+gateway does not know the path (the policy, `routes.prod.json` and the image disagree: stop).
+
+**What a merchant does in their own Cashfree dashboard** (owner: send this to a merchant who asks):
+
+1. Sign in to Operations with an authenticator code — connecting, replacing, checking and
+   disconnecting a payment account all need a session that gave a one-time code (a password-only
+   or SSO session is refused with a sentence saying so). The role needs
+   `operations.payments.merchant_account.write`.
+2. Payment settings → choose **Cashfree** → Connect: the **App ID** and **Secret Key** from Cashfree →
+   Developers → API Keys, for the environment chosen (**Sandbox** or **Production**; an App ID does not
+   say which, so the merchant picks — mismatched-looking keys are refused). There is no webhook secret.
+3. **Check connection**. "Verified" means Cashfree accepted the keys; "Check failed" with
+   `credentials_rejected` almost always means Sandbox keys with Production chosen, or the reverse.
+   While the platform still runs Cashfree on the stub (`COLLECTIONS_CASHFREE_WIRE=stub`) there is
+   nobody to ask: the button is disabled, the server refuses the check (409
+   `verification-unavailable`, nothing recorded) and the account stays "Not checked". **After the owner
+   turns the wire on, every merchant presses Check connection** — nothing was checked before then.
+4. Cashfree → Developers → Webhooks → add the **Webhook URL** shown on the page (copy button) as a
+   Payment Gateway endpoint, **webhook version 2025-01-01 or later**, subscribed to
+   `PAYMENT_SUCCESS_WEBHOOK`, `PAYMENT_FAILED_WEBHOOK`, `PAYMENT_USER_DROPPED_WEBHOOK`,
+   `REFUND_STATUS_WEBHOOK`. On a public HTTPS box every Cashfree Order also names that URL as its
+   `notify_url`; the dashboard endpoint is the belt to those braces. "Last webhook received" on the
+   page shows whether deliveries arrive. A missing webhook is slower for payments — staff's status
+   checks and the post-checkout poll still settle them — but **a refund's outcome arrives only by
+   webhook**, and a pending refund holds up a disconnect until it does. The dashboard endpoint receives
+   every Order on the Cashfree account, the merchant's own website's included: those are recorded as
+   ignored, and of their `order_tags` only the platform's own ids are ever kept.
+5. **Production only:** Cashfree → Developers → Whitelisting → add `ops.opsgrids.com`, or Cashfree
+   refuses to open its checkout there. Cashfree's own KYC must be complete for Production.
+6. Every order collected with Cashfree needs the **customer's phone** on the order (10 digits, or `+`
+   and the country code). An order without one is refused with "add the customer's phone" — the
+   platform never invents one, and the phone goes to Cashfree server to server and is not stored,
+   logged or audited by payment.
+
+**Switching provider** is: Disconnect, Connect the other provider, register the **new** webhook URL
+there. Disconnect is refused (409 `disconnect-blocked`, saying what is outstanding) while the provider
+may still move money for the account: an open online payment (cancel it from its order); a cancelled or
+expired one whose provider Order can still be paid (a Cashfree Order until its own expiry — up to a day
+after it was opened — and any provider for 20 minutes after the cancel, for a UPI request approved
+late); a refund still pending at the provider. Waiting clears all of these. "Disconnect anyway" (`force`)
+goes ahead regardless; the audit row `payment.merchant_account.removed` then records what was
+outstanding (`after.forced`), and each of those is settled in the old provider's own dashboard — an
+order paid after it stays unpaid here, a refund that fails stays refunded here. A refund of a payment
+taken through the old account is made in that provider's own dashboard. A checkout opened while the
+wire was still the stub never holds anything up once cancelled, and is never reopened once the wire is
+live (409 "cancel it and start a new one").
+
+**Rollback.** Set `COLLECTIONS_CASHFREE_WIRE=stub` (no data changes; checkouts become not-payable, with
+the UI saying so; webhooks still verify). A checkout opened while the wire was live is not reopened on
+the stub: it answers 503 "try again" until the wire is back, because the stub must never stand in for an
+Order a customer may have paid (the recorded-Order rule, ADR-0032). **Do not roll the `payment` image back once a Cashfree row
+exists** — the previous code would build a Razorpay adapter from Cashfree keys — and the migration's
+downgrade refuses while one exists.
+
+**What only a live sandbox settles** (owner-run, with the owner's chosen sandbox credentials; never
+from CI): the real signature timestamp format and a dashboard "Test" delivery; the delivery-id header
+name (`x-idempotency-header`, read as `x-idempotency-key` too); whether `notify_url` is delivered with
+no dashboard endpoint and keeps its `?account=` query; the probe's `404` vs `401` (`GET /pg/orders/<random>`);
+whether Get Order returns `payment_session_id` on reopen (if not, a reopened checkout answers 409
+"cancel it and start a new one"); `refund_id` charset and refund statuses; `x-api-version` 2025-01-01
+acceptance; fee-bearing amounts; `POST /pg/simulate` for SUCCESS / FAILED / PENDING / USER_DROPPED; the
+`_modal` checkout and domain whitelisting; a `+`-prefixed international phone.
+
+**Log lines to watch** (`docker compose … logs payment`): `payment.merchant_account.verification`
+(`connection_state`, `error_code`), `payment.merchant_account.removed_with_outstanding` (a forced
+disconnect, with its counts: someone now owes those payments and refunds a look in the provider's
+dashboard), `payment.collection.stub_order_unknown` (a stub Order the stub no longer remembers, treated
+as unpaid — expected on the stub wire after a restart), `payment.collection.webhook_bad_signature` (a burst for one
+`account_id` is someone probing it, or a merchant who re-keyed without updating the platform),
+`payment.collections_webhook` (`ignored_reason`, `duplicate`), `payment.collection.checkout`
+(`provider`, `reopened`), `payment.collection.provider_refused` (the provider's stable code only).
+
 ### The billing run: first deploy, watching it, and what to do when it complains
 
 The billing run (ADR-0005's 2026-09-23 addendum and its review fixes) is the loop that converts

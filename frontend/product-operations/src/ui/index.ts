@@ -14,6 +14,7 @@ export {
   CheckboxGroup,
   Combobox,
   ConfirmDialog,
+  CopyField,
   DataTable,
   DeltaPill,
   DonutChart,
