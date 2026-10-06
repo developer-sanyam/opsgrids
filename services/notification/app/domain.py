@@ -97,7 +97,9 @@ CATEGORY_ALL: Final = "*"
 #: any string is a valid trigger cannot tell an operator which automations are possible.
 SUBSCRIBABLE_EVENTS: Final[tuple[str, ...]] = (
     # catalog
+    "catalog.plan.reactivated",
     "catalog.plan.retired",
+    "catalog.plan_version.grandfathered",
     "catalog.plan_version.published",
     # commerce
     "commerce.credit.consumed",

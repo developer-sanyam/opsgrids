@@ -112,13 +112,21 @@ def _list_price_minor(version: CatalogPlanVersion) -> int:
 
 
 def _validate_new_pin(
-    version: CatalogPlanVersion | None, organization_id: uuid.UUID
+    version: CatalogPlanVersion | None,
+    organization_id: uuid.UUID,
+    *,
+    current_pin: uuid.UUID | None = None,
 ) -> CatalogPlanVersion:
     """A pin a customer may actually subscribe to: it exists, is published, and is theirs to see.
 
     A bespoke version negotiated for another organization is refused with the same 404 a
     nonexistent one gets, so its existence is never disclosed — the audience-of-one rule from
     ADR-0004 §2, defended here the way catalog defends its own read.
+
+    `current_pin` is the version the subscription is already on. Pointing a change-plan back at it
+    is not a new pin — it keeps the one they have (or withdraws a scheduled change) — so it need
+    not still be published: a version withdrawn on catalog's Plans page (`grandfathered`,
+    ADR-0030) stays the pin of everyone already on it, and they must still be able to stay.
     """
     if version is None:
         raise domain.CodedNotFound(domain.CODE_NOT_FOUND, "No such plan version")
@@ -128,7 +136,7 @@ def _validate_new_pin(
         # state check, so that holds whatever its state — a draft prepared for someone else must
         # not answer `not_published` and so confirm it exists.
         raise domain.CodedNotFound(domain.CODE_NOT_FOUND, "No such plan version")
-    if version.state != VERSION_PUBLISHED:
+    if version.state != VERSION_PUBLISHED and version.id != current_pin:
         raise domain.CodedRefusal(
             domain.CODE_NOT_PUBLISHED,
             "that plan version is not published and cannot be subscribed to",
@@ -727,7 +735,9 @@ async def _evaluate_change_plan(
             "only a trial or an active one can",
         )
     new_version = _validate_new_pin(
-        await catalog.get_plan_version(plan_version_id), organization_id
+        await catalog.get_plan_version(plan_version_id),
+        organization_id,
+        current_pin=subscription.plan_version_id,
     )
     if new_version.id == subscription.plan_version_id:
         if subscription.pending_change is None:

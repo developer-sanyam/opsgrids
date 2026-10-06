@@ -16,13 +16,15 @@ a bundle, so every other plan authors exactly as it did.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Protocol
 
 import httpx
 
 from app.domain import RegisteredProduct
 from platform_core.config import ServiceSettings
-from platform_core.errors import UpstreamUnavailableProblem
+from platform_core.errors import BusinessRuleProblem, UpstreamUnavailableProblem
 from platform_core.internal_auth import mint_service_token
 from platform_core.logging import correlation_id_ctx, get_logger
 
@@ -70,3 +72,36 @@ class HttpProductRegistry:
             )
             for row in response.json()["products"]
         }
+
+
+@dataclass(frozen=True, slots=True)
+class ProductSnapshot:
+    """The registry as read **before** the request's transaction opened (D3,
+    docs/io-outside-transactions.md #10): the operator routes fetch it in a dependency that runs
+    ahead of the session, so no HTTP call to product-service ever happens while a catalog
+    connection — and a row lock — is held.
+
+    `products` is None when the read failed; `failure` then says why, and only a check that
+    actually needs the registry (a plan's product key, a bundle's members, whether a product is a
+    bundle at publish) raises it. A plain version still *drafts* while product-service is down;
+    publishing waits for it, because only the registry can say the product is not a bundle that
+    must name its members (ADR-0030 §3).
+    """
+
+    products: Mapping[str, RegisteredProduct] | None
+    failure: UpstreamUnavailableProblem | None = None
+
+    def require(self, purpose: str) -> Mapping[str, RegisteredProduct]:
+        if self.products is not None:
+            return self.products
+        if self.failure is not None:
+            raise self.failure
+        raise BusinessRuleProblem(f"{purpose} needs the product registry, which was not consulted")
+
+
+async def take_snapshot(registry: ProductRegistry) -> ProductSnapshot:
+    """Read the registry once, outside any transaction, and keep a failure for later."""
+    try:
+        return ProductSnapshot(products=await registry.products())
+    except UpstreamUnavailableProblem as exc:
+        return ProductSnapshot(products=None, failure=exc)

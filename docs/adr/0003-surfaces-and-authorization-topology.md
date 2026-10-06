@@ -246,15 +246,17 @@ permission grammar (ADR-0000 §5) — these never touch `pv` or a membership's g
 | Add product — the picker and the confirm (`GET /admin/organizations/{id}/add-product-options`, `POST /admin/organizations/{id}/subscriptions`; ADR-0030) | ✅ | ✅ | |
 | Extend trial (`POST /admin/organizations/{id}/subscriptions/{product_key}/extend-trial`; ADR-0030) | ✅ | | |
 | Credit ledger (billing's staff route) | ✅ | ✅ | |
-| Catalog writes (plans, versions, publish) | ✅ | | |
+| Catalog reads (`GET /admin/catalog/plans`, `/plans/{id}`, `/versions/{id}`; ADR-0030) | ✅ | ✅ | |
+| Catalog writes (plans, versions, publish, withdraw, delete draft, retire, reactivate; reason + `Idempotency-Key`, ADR-0030) | ✅ | | |
 | `GET /auth/operator/me` | ✅ | ✅ | ✅ |
 | Issue a staff account's enrolment code (`POST /auth/operator/enrollment-codes`) | ✅ | | |
 
-No row exists yet for a staff *catalog read* — there is no such route today, only the writes
-above; when one is added it belongs in this table before it ships, not after, per MINOR 9 of the
-2026-09-24 security review that found this table describing capabilities the code did not
-actually enforce (metrics overview had drifted to look support-readable here when the route was
-`owner`/`billing_ops`-only in code, and this row named a route that never existed).
+The staff *catalog read* row was added (2026-10-06, ADR-0030) before the routes shipped, as this
+table requires — per MINOR 9 of the 2026-09-24 security review that found this table describing
+capabilities the code did not actually enforce (metrics overview had drifted to look
+support-readable here when the route was `owner`/`billing_ops`-only in code). `support` is left out
+of it deliberately: the catalogue includes every audience-of-one version, so reading it is reading
+every customer's negotiated price.
 
 `owner` is not "every permission that exists" as a stored list — it is every `require_operator`
 call site accepting it, which is the operator-side reading of ADR-0000 §5's corollary: a role is

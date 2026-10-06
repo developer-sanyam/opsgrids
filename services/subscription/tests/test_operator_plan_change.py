@@ -651,6 +651,65 @@ class TestDeferredChangeKeepsItsOperator:
         assert row.after["superseded_by_plan_version_id"] == str(same_price.id)
 
 
+class TestAWithdrawnCurrentPin:
+    """Catalog's Plans page can withdraw a version (`published -> grandfathered`, ADR-0030); every
+    subscription already on it keeps it. Staying on it is therefore not a new pin: withdrawing a
+    scheduled change back to it still works, on the preview and the write. Moving *onto* a
+    withdrawn version is still refused."""
+
+    async def test_a_scheduled_change_can_still_be_withdrawn(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        catalog: FakeCatalog,
+        org_id: uuid.UUID,
+    ) -> None:
+        sub_id, current = await _subscribe(session, catalog, org_id, 1000)
+        cheaper = catalog.add(make_version(product_key="hrms", amount_minor=500))
+        scheduled = await _change(client, sub_id, org_id, cheaper.id, timing="next_period")
+        assert scheduled.status_code == 200, scheduled.text
+        assert scheduled.json()["pending_plan_version_id"] == str(cheaper.id)
+
+        catalog.add(current.model_copy(update={"state": "grandfathered"}))
+
+        preview = await _preview(client, sub_id, org_id, current.id)
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["action"] == "withdraw_scheduled"
+        withdrawn = await _change(client, sub_id, org_id, current.id, note="staying put")
+        assert withdrawn.status_code == 200, withdrawn.text
+        assert withdrawn.json()["plan_version_id"] == str(current.id)
+        assert withdrawn.json()["pending_plan_version_id"] is None
+
+    async def test_with_nothing_scheduled_it_is_already_pinned_not_unpublished(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        catalog: FakeCatalog,
+        org_id: uuid.UUID,
+    ) -> None:
+        sub_id, current = await _subscribe(session, catalog, org_id, 1000)
+        catalog.add(current.model_copy(update={"state": "grandfathered"}))
+        response = await _change(client, sub_id, org_id, current.id)
+        assert (response.status_code, _code(response)) == (422, domain.CODE_ALREADY_PINNED)
+
+    async def test_moving_onto_another_withdrawn_version_is_still_refused(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        catalog: FakeCatalog,
+        org_id: uuid.UUID,
+    ) -> None:
+        sub_id, _ = await _subscribe(session, catalog, org_id, 1000)
+        withdrawn = catalog.add(
+            make_version(product_key="hrms", amount_minor=2000, state="grandfathered")
+        )
+        write = await _change(client, sub_id, org_id, withdrawn.id)
+        assert (write.status_code, _code(write)) == (422, domain.CODE_NOT_PUBLISHED)
+        preview = await _preview(client, sub_id, org_id, withdrawn.id)
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["refusal_code"] == domain.CODE_NOT_PUBLISHED
+
+
 class TestTheAppliedEventNamesItsDirection:
     async def _schedule(
         self,

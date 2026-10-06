@@ -66,10 +66,6 @@
   "opsgrids-internal/src/routes/Overview.tsx": {
     "spacing": 1
   },
-  "opsgrids-internal/src/routes/Plans.tsx": {
-    "colour": 1,
-    "spacing": 1
-  },
   "opsgrids-internal/src/routes/RouteError.tsx": {
     "colour": 1,
     "spacing": 2
