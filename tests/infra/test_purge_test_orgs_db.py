@@ -791,6 +791,87 @@ async def test_the_survivor_rules(engine: AsyncEngine, world: World) -> None:
         await _run([a], apply=True)
 
 
+async def _set_parent(engine: AsyncEngine, child: uuid.UUID, parent: uuid.UUID) -> None:
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE account.organizations SET parent_org_id = :p WHERE id = :c"),
+            {"p": parent, "c": child},
+        )
+
+
+def _processed(lines: list[str]) -> list[uuid.UUID]:
+    """The organisations a run reported on, in the order it reported them."""
+    return [
+        uuid.UUID(x["organization_id"])
+        for x in _json_lines(lines)
+        if "organization_id" in x and "status" in x
+    ]
+
+
+@pytest.mark.parametrize("parent_sorts_first", [True, False])
+async def test_a_parent_and_its_child_selected_together_go_child_first(
+    engine: AsyncEngine, world: World, parent_sorts_first: bool
+) -> None:
+    """The refusal says "select them too": that has to work, whichever of the two ids sorts first.
+    `parent_org_id` is RESTRICT and each organisation is its own transaction, so processing in id
+    order failed on the parent (SQLSTATE 23503) when its id was the smaller, while the dry run,
+    which only counts, reported both as deletable."""
+    low, high = sorted([world.orgs["a"], world.orgs["b"]])
+    parent, child = (low, high) if parent_sorts_first else (high, low)
+    await _set_parent(engine, child, parent)
+
+    dry, dry_lines = await _run([parent, child], apply=False)
+    assert (dry.failed, dry.removed) == (0, 2)
+    done, lines = await _run([parent, child], apply=True)
+    assert (done.failed, done.removed, done.not_attempted) == (0, 2, 0), lines
+    assert _processed(dry_lines) == _processed(lines) == [child, parent], (
+        "the dry run and the apply take the same order, child first"
+    )
+    async with engine.connect() as conn:
+        for org in (parent, child):
+            assert await _residual(conn, org) == {}
+            assert (
+                await _scalar(
+                    conn, "SELECT count(*) FROM account.organizations WHERE id = :o", o=org
+                )
+                == 0
+            )
+        for key in ("c", "anchor", "real"):
+            assert await _residual(conn, world.orgs[key]), f"{key} lost its rows"
+
+
+@pytest.mark.parametrize("root_sorts_first", [True, False])
+async def test_a_chain_of_sub_organisations_goes_leaf_first(
+    engine: AsyncEngine, world: World, root_sorts_first: bool
+) -> None:
+    ascending = sorted([world.orgs["a"], world.orgs["b"], world.orgs["c"]])
+    root, mid, leaf = ascending if root_sorts_first else ascending[::-1]
+    await _set_parent(engine, mid, root)
+    await _set_parent(engine, leaf, mid)
+
+    done, lines = await _run([root, mid, leaf], apply=True)
+    assert (done.failed, done.removed) == (0, 3), lines
+    assert _processed(lines) == [leaf, mid, root]
+    async with engine.connect() as conn:
+        for org in (root, mid, leaf):
+            assert await _residual(conn, org) == {}
+
+
+async def test_a_loop_of_parent_links_is_refused_before_anything_is_written(
+    engine: AsyncEngine, world: World
+) -> None:
+    a, b = world.orgs["a"], world.orgs["b"]
+    await _set_parent(engine, a, b)
+    await _set_parent(engine, b, a)
+    async with engine.connect() as conn:
+        before = await _everything(conn)
+    for apply in (False, True):
+        with pytest.raises(purge.Refusal, match="forms a loop"):
+            await _run([a, b], apply=apply)
+    async with engine.connect() as conn:
+        assert await _everything(conn) == before
+
+
 async def test_the_platform_sentinel_organisation_is_refused(
     engine: AsyncEngine, world: World
 ) -> None:

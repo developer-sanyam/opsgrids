@@ -2153,7 +2153,8 @@ PURGE --candidates > ~/purge/candidates.txt   # only the LIKELY TEST rows, as a 
 members are never treated as orphans. Then decide what to remove: open `candidates.txt`, **delete
 every line you want to keep**, and save it as `~/purge/ids.txt`, or skip the file and repeat
 `--org-id <uuid>`. The tool also refuses the platform's nil-UUID organisation, refuses to remove
-every organisation, and refuses to remove an organisation whose child organisation would stay.
+every organisation, and refuses to remove an organisation whose child organisation would stay (name
+the child as well and it goes first; a loop of parent links is refused).
 
 **3. Back up.** From your laptop, and read its output for `database: …/opsgrids-<stamp>.sql.gz (N
 bytes)` and that it uploaded off the box:
@@ -2193,7 +2194,9 @@ names: someone's organisation name put it there.
 **5. Apply.** All of the flags are required, and each one refuses before anything connects if it is
 missing: `--confirm-count N` must equal the number of organisations you named, `--i-took-a-backup`
 says you did step 3, and `--i-know-this-is-the-live-database` says you know this one is live.
-Organisations are processed in id order and it stops at the first failure:
+Organisations are processed in id order, except that a sub-organisation always goes before its
+parent when you selected both (the dry run printed them in that order), and it stops at the first
+failure:
 
 ```bash
 PURGE --ids-file /opt/purge/ids.txt --keep-file /opt/purge/keep.txt \

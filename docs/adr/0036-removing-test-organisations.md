@@ -57,7 +57,10 @@ Verified in code before deciding:
    `--i-took-a-backup`, and, when the environment is `production`, `staging` or `uat` (the set `ServiceSettings`
    already treats as real) **or the database host is not this machine**, `--i-know-this-is-the-live-database`. Listing
    and the dry run need none of them. It also refuses the nil-UUID platform organisation, any id named by `--keep` or
-   `--keep-file`, a selection that would leave no organisation, and one that would orphan a child organisation.
+   `--keep-file`, a selection that would leave no organisation, and one that would orphan a child organisation. Naming
+   a parent and its sub-organisation together is allowed: `parent_org_id` is `ON DELETE RESTRICT` and each organisation
+   is its own transaction, so the child is processed first (the rest in id order), in the dry run and the apply alike;
+   a loop of parent links has no order and is refused.
 4. **The dry run is the same statements, read-only.** `would_delete` is `SELECT count(*)` over exactly the predicates
    `--apply` deletes with, in a `REPEATABLE READ READ ONLY` transaction, per table. `--apply` counts again inside each
    organisation's transaction, deletes, and checks that nothing is left before it commits.

@@ -107,7 +107,9 @@ database (object storage under the organisation's prefix, provider-side objects,
 in-flight events).
 
 **Safe to re-run and to interrupt.** One transaction per organisation: an interrupted run leaves
-each organisation either wholly deleted or untouched. Running it again for an organisation that is
+each organisation either wholly deleted or untouched. Organisations go in id order, except that a
+sub-organisation always goes before its parent when you select both (`parent_org_id` is
+`RESTRICT`), and the dry run uses that same order. Running it again for an organisation that is
 gone finds nothing and says so: `already-clean` when an earlier purge of that id is on record,
 `not-found` when none is (a typo cannot delete anything, and does not look like a success). The
 audit trail of the deletion itself is one row per organisation
@@ -128,7 +130,7 @@ import re
 import sys
 import uuid
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -639,9 +641,45 @@ def parse_ids(text_: str, *, source: str) -> list[uuid.UUID]:
 
 
 def distinct(ids: Iterable[uuid.UUID]) -> list[uuid.UUID]:
-    """Sorted and de-duplicated: the order the organisations are processed in, and what
-    `--confirm-count` counts."""
+    """Sorted and de-duplicated: what `--confirm-count` counts, and the order organisations are
+    processed in unless one is the parent of another (see `children_first`)."""
     return sorted(set(ids))
+
+
+def children_first(
+    ids: Sequence[uuid.UUID], parent_of: Mapping[uuid.UUID, uuid.UUID | None]
+) -> list[uuid.UUID]:
+    """The selected organisations in the order they can be deleted.
+
+    `account.organizations.parent_org_id` is `ON DELETE RESTRICT` and each organisation is its own
+    transaction, so a parent can only go after every child of it is gone. When the owner selects a
+    parent and its sub-organisation together (which is what `guard_survivors` tells them to do), the
+    child goes first whatever the two ids sort like. Everything else keeps `distinct`'s id order:
+    each pass takes, in id order, every organisation with no selected child still waiting. An
+    organisation naming itself as its own parent is not waiting on anything (one `DELETE` removes
+    it). A loop (A is B's parent and B is A's) has no order, and is refused."""
+    selected = set(ids)
+    waiting: dict[uuid.UUID, set[uuid.UUID]] = {i: set() for i in selected}
+    for child in selected:
+        parent = parent_of.get(child)
+        if parent is not None and parent != child and parent in selected:
+            waiting[parent].add(child)
+    ordered: list[uuid.UUID] = []
+    pending = sorted(selected)
+    while pending:
+        ready = [i for i in pending if not waiting[i]]
+        if not ready:
+            loop = ", ".join(str(i) for i in pending)
+            raise Refusal(
+                f"parent_org_id forms a loop among the selected organisations ({loop}); "
+                "no order can remove them: fix the parent links first"
+            )
+        ordered.extend(ready)
+        gone = set(ready)
+        pending = [i for i in pending if i not in gone]
+        for children in waiting.values():
+            children -= gone
+    return ordered
 
 
 def requires_live_flag(environment: str, host: str | None) -> bool:
@@ -1068,6 +1106,19 @@ async def guard_survivors(conn: Conn, selected: Sequence[uuid.UUID]) -> tuple[li
     return problems, total, remaining
 
 
+async def selected_parents(
+    conn: Conn, selected: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, uuid.UUID | None]:
+    """`parent_org_id` of every selected organisation that exists, for `children_first`."""
+    org = _t(ORGS)
+    rows = await _grouped(
+        conn,
+        f"SELECT id, parent_org_id FROM {org.sql} WHERE id = ANY(CAST(:ids AS uuid[]))",  # noqa: S608
+        {"ids": list(selected)},
+    )
+    return {r[0]: r[1] for r in rows}
+
+
 # --------------------------------------------------------------------------------- listing
 #: Whole tokens (split on anything that is not a letter or digit) that mark a name or slug as test
 #: data. Token-wise and exact, so `Latest Textiles` is not `test`, `Contest Winners` is not `test`
@@ -1389,9 +1440,11 @@ async def _read_phase(
     keep_users: Sequence[uuid.UUID],
     keep_orphans: bool,
     want_plans: bool,
-) -> tuple[Plan, list[OrgPlan], int]:
+) -> tuple[Plan, list[uuid.UUID], list[OrgPlan], int]:
     """Everything read before anything can be written: the catalog plan, the role and survivor
-    checks, and (for a dry run) each organisation's counts, all from one snapshot."""
+    checks, the order the organisations will be processed in (children before their parents) and,
+    for a dry run, each organisation's counts, all from one snapshot. The dry run and `--apply`
+    take that one order, so what the first prints is what the second does, in the same sequence."""
     async with engine.connect() as conn:
         await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
         plan = await build_plan(conn)
@@ -1400,21 +1453,22 @@ async def _read_phase(
         problems += more
         if problems:
             raise Refusal("; ".join(problems))
+        ordered = children_first(selected, await selected_parents(conn, selected))
         plans: list[OrgPlan] = []
         if want_plans:
-            for i, org in enumerate(selected):
+            for i, org in enumerate(ordered):
                 plans.append(
                     await plan_org(
                         conn,
                         plan,
                         org,
-                        selected[: i + 1],
+                        ordered[: i + 1],
                         keep_users=keep_users,
                         keep_orphans=keep_orphans,
                     )
                 )
         await conn.rollback()
-    return plan, plans, total
+    return plan, ordered, plans, total
 
 
 async def _purge_one(
@@ -1472,13 +1526,14 @@ async def run(
     out: Callable[[str], None] = print,
 ) -> Result:
     """Plan the selected organisations read-only; under `apply`, delete them one transaction each,
-    in id order, stopping at the first failure. Prints counts, returns the summary, disposes of the
-    engine. Raises `Refusal` or `SchemaDrift` before any write if a rule is not met."""
+    in id order (a child organisation before its parent, if both are selected), stopping at the
+    first failure. Prints counts, returns the summary, disposes of the engine. Raises `Refusal` or
+    `SchemaDrift` before any write if a rule is not met."""
     selected = distinct(selected)
     mode = "apply" if apply else "dry-run"
     result = Result(mode, database, environment, selected=len(selected))
     try:
-        plan, plans, result.organisations_before = await _read_phase(
+        plan, selected, plans, result.organisations_before = await _read_phase(
             engine,
             selected,
             keep_users=keep_users,

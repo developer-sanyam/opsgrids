@@ -391,6 +391,56 @@ def test_selection_is_sorted_and_deduplicated() -> None:
     assert purge.distinct([ORG_B, ORG_A, ORG_B]) == [ORG_A, ORG_B]
 
 
+# ----------------------------------------------------------------- parents and their children
+def _ids(n: int) -> list[uuid.UUID]:
+    """Ids that sort in the order given: `_ids(3)` is three ascending uuids."""
+    return [uuid.UUID(int=(i + 1) << 100) for i in range(n)]
+
+
+@pytest.mark.parametrize("parent_sorts_first", [True, False])
+def test_a_child_is_processed_before_its_parent_whichever_id_sorts_first(
+    parent_sorts_first: bool,
+) -> None:
+    """`parent_org_id` is ON DELETE RESTRICT and each organisation is its own transaction: the
+    parent's delete fails while the child exists. `guard_survivors` tells the owner to select both,
+    so both orders have to work."""
+    low, high = _ids(2)
+    parent, child = (low, high) if parent_sorts_first else (high, low)
+    assert purge.children_first(purge.distinct([parent, child]), {child: parent}) == [child, parent]
+
+
+def test_children_first_is_a_stable_order_that_changes_only_what_it_must() -> None:
+    a, b, c, d, e = _ids(5)
+    # Unrelated organisations keep id order.
+    assert purge.children_first([a, b, c], {}) == [a, b, c]
+    # A chain e -> d -> a (a is the grandparent): deepest first, the rest in place.
+    parents = {d: a, e: d}
+    assert purge.children_first([a, b, c, d, e], parents) == [b, c, e, d, a]
+    # Two children and a parent: the siblings in id order, then the parent.
+    assert purge.children_first([a, b, c], {b: a, c: a}) == [b, c, a]
+    # Whatever the input order, the same answer; and it is always a permutation.
+    for shuffled in ([e, d, c, b, a], [c, a, e, b, d]):
+        assert purge.children_first(shuffled, parents) == purge.children_first(
+            purge.distinct(shuffled), parents
+        )
+        assert sorted(purge.children_first(purge.distinct(shuffled), parents)) == [a, b, c, d, e]
+
+
+def test_a_parent_that_is_not_selected_or_that_is_itself_waits_for_nothing() -> None:
+    a, b, outside = [*_ids(2), uuid.UUID(int=99 << 100)]
+    assert purge.children_first([a, b], {a: outside, b: None}) == [a, b]
+    assert purge.children_first([a, b], {a: a}) == [a, b], "an organisation that names itself"
+
+
+def test_a_loop_of_parents_has_no_order_and_is_refused() -> None:
+    a, b, c = _ids(3)
+    with pytest.raises(purge.Refusal, match="forms a loop"):
+        purge.children_first([a, b], {a: b, b: a})
+    with pytest.raises(purge.Refusal, match=str(b)):
+        purge.children_first([a, b, c], {a: b, b: c, c: b})  # c and b loop; a hangs off b
+    assert purge.children_first([a, b, c], {a: b, b: c}) == [a, b, c]
+
+
 def test_the_selection_rules_report_every_problem_not_just_the_first() -> None:
     nil = uuid.UUID(int=0)
     problems = purge.check_selection([nil, ORG_A], [ORG_A], confirm_count=5)
