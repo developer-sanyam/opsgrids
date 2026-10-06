@@ -1962,7 +1962,9 @@ Two correctness fixes, **no migration, no new key, no event change, no consumer 
 * **product.** `POST /api/v1/products/activations` answers **409 `subscription_managed`** (`errors[0].code`)
   for a product a subscription has ever fed (live, suspended, cancelled, or dropped from a bundle by a
   downgrade). `DELETE /api/v1/products/activations/{key}` answers the same while the product's own
-  subscription is serving it. Hand-only and fresh organizations are unaffected (201 as before).
+  subscription is serving it. Hand-only and fresh organizations are unaffected (201 as before). A stop
+  that names a member its subscription never fed (a deferred rung-up the stop applied) writes no row for
+  that member, so the owner is not refused a product no subscription ever entitled.
 
 Deploy `product` and `subscription` in either order; product first closes the hand-activation hole
 sooner. Rollback is the images; nothing written depends on the new code.
@@ -1984,22 +1986,38 @@ refuses.
 dropped before this fix.** Both leave the same picture: a subscription that is `cancelled` or
 `suspended` beside an activation that is still on. **Read-only. Nothing in this release repairs
 anything, and the owner decides what to do with each row** (a repair is a one-off product-side write
-and a console re-fold, deliberately not shipped). Run on the box, as the owner:
+and a console re-fold, deliberately not shipped).
+
+"Still on" means what the gateway means by it (`Activation.entitles`): `active`, or a `trial` that has
+not lapsed (a lapsed trial keeps `status = 'trial'` and stops entitling by the clock alone), and not
+deactivated. And a product another subscription **still feeds** is on for a good reason: a subscription
+keeps one row per organization and product for ever, so a customer who moved from a standalone CRM to
+a suite leaves a `cancelled` standalone row beside a live suite. Queries 1 and 2 leave those out, so
+what they list is "nothing live from a subscription keeps this on". Run on the box, as the owner:
 
 ```bash
 docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids \
   -v ON_ERROR_STOP=1 <<'SQL'
 SET default_transaction_read_only = on;
 
--- 1. The standalone case: the subscription is cancelled or suspended and its product is still on.
+-- 1. The standalone case: the subscription is cancelled or suspended and its product is still on,
+--    with no other subscription's live source (a suite's, say) keeping it on.
 SELECT s.organization_id, s.product_key, s.state AS subscription_state, s.cancel_at, s.suspended_at,
        a.status AS activation_status, a.trial_ends_at, a.activated_at, a.state_occurred_at
 FROM subscription.subscriptions s
 JOIN product.activations a
   ON a.organization_id = s.organization_id AND a.product_key = s.product_key
 WHERE s.state IN ('cancelled', 'suspended')
-  AND a.status IN ('active', 'trial')
   AND a.deactivated_at IS NULL
+  AND (a.status = 'active'
+       OR (a.status = 'trial' AND (a.trial_ends_at IS NULL OR a.trial_ends_at > now())))
+  AND NOT EXISTS (
+    SELECT 1 FROM product.activation_sources live
+    WHERE live.organization_id = a.organization_id AND live.product_key = a.product_key
+      AND (live.status = 'active'
+           OR (live.status = 'trial' AND (live.trial_ends_at IS NULL OR live.trial_ends_at > now())))
+      AND live.source_product_key <> s.product_key
+      AND (live.source_subscription_id IS NOT NULL OR live.state_occurred_at IS NOT NULL))
 ORDER BY s.organization_id, s.product_key;
 
 -- 2. The bundle case: a cancelled or suspended suite whose member is still on, with nothing
@@ -2014,12 +2032,14 @@ JOIN product.activations a
   ON a.organization_id = fed.organization_id AND a.product_key = fed.product_key
 WHERE s.state IN ('cancelled', 'suspended')
   AND s.product_key <> a.product_key
-  AND a.status IN ('active', 'trial')
   AND a.deactivated_at IS NULL
+  AND (a.status = 'active'
+       OR (a.status = 'trial' AND (a.trial_ends_at IS NULL OR a.trial_ends_at > now())))
   AND NOT EXISTS (
     SELECT 1 FROM product.activation_sources live
     WHERE live.organization_id = a.organization_id AND live.product_key = a.product_key
-      AND live.status IN ('active', 'trial')
+      AND (live.status = 'active'
+           OR (live.status = 'trial' AND (live.trial_ends_at IS NULL OR live.trial_ends_at > now())))
       AND live.source_product_key <> s.product_key
       AND (live.source_subscription_id IS NOT NULL OR live.state_occurred_at IS NOT NULL))
 ORDER BY s.organization_id, s.product_key, a.product_key;
@@ -2036,18 +2056,20 @@ ORDER BY s.organization_id, s.product_key;
 SQL
 ```
 
-Rows from 1 and 2 are either an owner's hand activation or a dropped stop; `a.activated_by` and the
-`product.audit_logs` rows for the activation (`action = 'product.activated'`, with the `manual` cause)
-say which:
+A row from 1 or 2 is a candidate, not a verdict: it is either an owner's hand activation or a dropped
+stop, and `a.activated_by` and the `product.audit_logs` rows for the activation
+(`action = 'product.activated'`, with the `manual` cause) say which:
 
 ```sql
 SELECT at, action, acting_as, actor_id, after FROM product.audit_logs
 WHERE organization_id = :org AND entity = 'activation' ORDER BY at DESC LIMIT 20;
 ```
 
-Every organization the first two list is serving a product its subscription has ended. Whether to
-switch it off, leave it as a gift, or re-subscribe the customer is the owner's call per organization;
-until then the gate stops it spreading.
+Each organization the first two list is a row to investigate: product shows the product on, and no
+live subscription's source is what keeps it on. Whether to switch it off, leave it as a gift, or
+re-subscribe the customer is the owner's call per organization; until then the gate stops it spreading.
+The queries are pinned by `services/subscription/tests/test_runbook_audit_queries.py`, which runs this
+section's SQL as written against seeded rows, so edit the two together.
 
 ### Operator MFA: mandatory rollout, the MFA reseal, and the one-off codes
 
