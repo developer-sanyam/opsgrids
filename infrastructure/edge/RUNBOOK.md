@@ -1314,6 +1314,23 @@ scheduled change emits **no event**, so the
 account list does not show it — the Change plan card (the live pricing read) does. Product access follows a
 change that has taken effect within about **15 minutes**.
 
+### Customer plan change on the dashboard (ADR-0032)
+
+`app.opsgrids.com/subscriptions` reads `GET /api/v1/subscriptions/plan-summaries` (each row's plan and
+any scheduled change) and, in **Change plan**, `.../{id}/plan-options` and
+`POST .../{id}/change-plan/preview` before the customer confirms. The customer's own rule is unchanged: a
+trial moves now and free, a paid **upgrade** moves now with a prorated invoice raised by the billing run, a
+paid **downgrade** waits for the period end (no credit), an equal price moves now. The customer write now
+refuses a version catalog no longer offers (**422 `not_offerable`**) and a stale confirm (**409
+`state_changed`**). Prices shown are only the organization's own negotiated price, to someone who may read
+its invoices — never a list price.
+
+Deploy order: **catalog before subscription** (catalog must admit `subscription` on
+`/internal/v1/organizations/{id}/offerable-versions`), then the dashboard. If subscription goes first, every
+customer change-plan and the plan reads answer **503 `catalog_unavailable`** and change nothing, and the
+table shows no plan line; check catalog's logs for 401s from caller `subscription`. No migration; no gateway
+route change (the paths sit under `/api/v1/subscriptions`).
+
 ### Staff add product and extend trial (ADR-0031): deploy the consumers first
 
 Two more console controls on the account page, on the same claim table and the same rules as Change plan:
