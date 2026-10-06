@@ -2423,6 +2423,43 @@ quiet. A narrower repair is an engineer's hand job: restore into the scratch dat
 children (the reverse of the order `--explain` prints), then its users and memberships. The
 `auth.audit_logs` rows above say when each organisation was purged and how many rows it had.
 
+### Rotating the JWT signing key: the up-to-30-second window
+
+The policy is ADR-0000 §2: only `auth-service` holds the private key, `jwt-ed25519.pem`, and
+every other service and gateway verifies through `GET /.well-known/jwks.json`. This is what a
+rotation does to the verifiers, so nobody mistakes it for an outage.
+
+- **What happens.** Each verifier fetches the JWKS lazily and keeps it. PyJWT 2.14 and later
+  (GHSA-2gx3-rcp4-g85q) will not fetch it again for **30 seconds after that verifier's last
+  successful fetch** just because a token carries a `kid` it has not seen. A token signed with
+  the new key that reaches a verifier inside that window is answered **`401`**
+  (`application/problem+json`, `WWW-Authenticate: Bearer error="invalid_token"`,
+  `Retry-After: 30`, `errors[0].code = signing_key_unavailable`), not a 500. The first one after
+  the window ends makes the verifier fetch the JWKS and verifies, with no restart of anything.
+  The 30 seconds is PyJWT's default and is kept on purpose (`JWKS_REFRESH_COOLDOWN_SECONDS` in
+  `platform_core.auth`): turning it off would let anyone who can send a made-up `kid` make every
+  verifier call `auth-service` on every request.
+- **What you see.** A burst of 401s on requests made with new-key tokens, for at most 30 seconds
+  per verifier, and one `WARNING auth.jwks.signing_key_unavailable` line per verifier process
+  with the `kid` and `reason=signing_key_not_found` (at most one a minute per `kid`; `suppressed`
+  counts the rest). It carries no token and no key material. Anything longer than about a
+  minute is not this: either the new `kid` is not in `auth-service`'s JWKS (`curl` it and look),
+  or a verifier cannot reach it (`reason=jwks_unreachable`).
+- **Why token lifetimes cover it.** Access tokens live 15 minutes and refresh tokens 7 days.
+  Nothing a client holds expires inside 30 seconds, so a client that retries after the
+  `Retry-After` always reaches a verifier that has the key, and nobody has to sign in again.
+  Tokens signed before the switch are unaffected at a verifier that already holds the old key.
+- **What to do about it.** Switch signing during a quiet period, and expect the 401s. One caveat
+  the clients cannot hide: the web client's silent refresh retries a request once, and a second
+  401 sends the user to the sign-in screen, so a person whose refresh lands inside the window is
+  asked to sign in again. And note that `auth-service` currently publishes **only the key it
+  signs with** (`build_jwks([pair])`), not the two-key overlap ADR-0000 §2 describes, so a swap
+  retires the old key at once for any verifier that does not already hold it. Treat a rotation
+  as a drill with that in mind until the overlap exists.
+
+The behaviour is pinned by `libs/platform-core/tests/test_jwks_key_rotation.py`, which runs a
+real JWKS server and a real `PyJWKClient`.
+
 ### Deploying from the pipeline
 
 `.github/workflows/deploy.yml` runs the same two scripts a laptop does — `ssh-deploy.sh` for the
