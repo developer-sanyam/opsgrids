@@ -1317,17 +1317,19 @@ export async function getWarehousesMap(params: { signal?: AbortSignal } = {}): P
  * slice was built against.
  *
  * Confirmed against the landed backend (`services/operations/app/api/routes.py`): the list route
- * returns `Page[LocationOut]` like every other list here, not a bare array — `listLocations` below
- * fetches it at `FULL_PAGE` (200, the offset endpoint's own max `size`) and unwraps `.items`, the
- * same "whole working set in one page" pattern `getWarehouseById` already uses in this file. A
- * warehouse holding more than 200 locations would silently lose the rest of its tree; there is no
- * pagination or virtualisation in the tree UI to fall back on, so that ceiling is a real one, just
- * not one F1 needs to solve (per the plan, warehouses this phase serves are dozens of locations).
+ * returns `Page[LocationOut]` like every other list here, not a bare array. `listLocations` below
+ * fetches it at `FULL_PAGE` (200, the offset endpoint's own max `size`) and, for a warehouse with
+ * more locations than that, the pages after the first, so what it returns is the whole tree. A
+ * tree is rendered whole or not at all: a screen that was handed 200 of 350 locations would draw a
+ * tree whose parents are missing, and say "every location" about the 200.
  */
 
 /**
- * A warehouse's whole location tree — `GET /warehouses/{warehouse_id}/locations`, fetched at
- * `FULL_PAGE` and unwrapped, since a tree is rendered whole or not at all.
+ * A warehouse's whole location tree — `GET /warehouses/{warehouse_id}/locations`, every page of it
+ * at `FULL_PAGE` and unwrapped. The server orders by pick sequence then code, which is a total
+ * order within a warehouse (the code is unique), so the pages tile the tree. A location added
+ * between two page requests can shift one into the page already read; the result is de-duplicated
+ * by id so it is never listed twice.
  */
 export async function listLocations(
   warehouseId: string,
@@ -1336,12 +1338,22 @@ export async function listLocations(
   if (USE_FIXTURES) {
     return settle(LOCATIONS[warehouseId] ?? []);
   }
-  const query = buildQuery({ size: FULL_PAGE });
-  const page = await apiRequest<Page<LocationOut>>(
-    `/operations/warehouses/${encodeURIComponent(warehouseId)}/locations${query}`,
-    { signal: params.signal },
+  const path = `/operations/warehouses/${encodeURIComponent(warehouseId)}/locations`;
+  const first = await apiRequest<Page<LocationOut>>(`${path}${buildQuery({ size: FULL_PAGE })}`, {
+    signal: params.signal,
+  });
+  const pageCount = Math.ceil(first.total / FULL_PAGE);
+  if (!(pageCount > 1)) return first.items;
+  const rest = await Promise.all(
+    Array.from({ length: pageCount - 1 }, (_, i) =>
+      apiRequest<Page<LocationOut>>(`${path}${buildQuery({ page: i + 2, size: FULL_PAGE })}`, {
+        signal: params.signal,
+      }),
+    ),
   );
-  return page.items;
+  const byId = new Map<string, LocationOut>();
+  for (const location of [first, ...rest].flatMap((page) => page.items)) byId.set(location.id, location);
+  return [...byId.values()];
 }
 
 /** `POST /warehouses/{warehouse_id}/locations` — `operations.inventory.location.write`. 409 on a
