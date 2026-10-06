@@ -105,11 +105,95 @@ export interface Subscription {
   current_period_start: string | null;
   current_period_end: string | null;
   cancel_at: string | null;
+  /** A plan change waiting for the next period: the version it moves to. Null when none waits. */
+  pending_plan_version_id?: string | null;
   currency: string;
   /** What this subscription switches on — the product itself, or a bundle's members. */
   entitled_products: string[];
   items: SubscriptionItem[];
   dunning: Dunning | null;
+}
+
+/** `ExpectedState` — the subscription as a preview saw it; sent back with the change. */
+export interface ExpectedState {
+  state: string;
+  plan_version_id: string;
+  pending_plan_version_id: string | null;
+}
+
+/** `PlanPriceOut` — one component of the organisation's own negotiated price. Integer minor units. */
+export interface PlanPrice {
+  kind: string;
+  amount_minor: number | null;
+  unit: string | null;
+  unit_price_micros: number | null;
+  meter_key: string | null;
+}
+
+/**
+ * `PlanRefOut` — a plan as the customer may see it. `amount_visible` is true only for a price
+ * negotiated for this organisation, shown to someone who may read its invoices; a public (list)
+ * price is never sent (pricing is agreed per client).
+ */
+export interface PlanRef {
+  plan_version_id: string;
+  plan_id: string | null;
+  plan_name: string | null;
+  version_no: number | null;
+  billing_interval: string | null;
+  negotiated: boolean;
+  amount_visible: boolean;
+  currency: string | null;
+  recurring_minor: number | null;
+  prices: PlanPrice[] | null;
+}
+
+/** `PlanOptionOut` — one plan the picker offers, and whether this subscription can take it. */
+export interface PlanOption extends PlanRef {
+  is_current: boolean;
+  is_pending: boolean;
+  /** `current`, `cadence`, `currency` or `bundle`; null when it can be chosen. */
+  blocked_code: string | null;
+  blocked_reason: string | null;
+}
+
+/** `PlanOptionsOut` — the Change plan picker, from live reads. */
+export interface PlanOptions {
+  subscription_id: string;
+  product_key: string;
+  state: string;
+  /** `state` or `bundle` when this subscription cannot change plan at all. */
+  change_blocked_code: string | null;
+  current: PlanRef | null;
+  pending: PlanRef | null;
+  pending_effective_at: string | null;
+  options: PlanOption[];
+}
+
+/** `SubscriptionPlanSummaryOut` — one row's plan line. */
+export interface SubscriptionPlanSummary {
+  subscription_id: string;
+  current: PlanRef | null;
+  pending: PlanRef | null;
+  pending_effective_at: string | null;
+}
+
+/** `ChangePlanPreviewOut` — what a change would do, as the server computes it. No amount. */
+export interface PlanChangePreview {
+  expected: ExpectedState;
+  action: "switch" | "withdraw_scheduled";
+  direction: "upgrade" | "downgrade" | "equal" | null;
+  effective: "now" | "next_period" | null;
+  effective_at: string | null;
+  would_clear_pending: boolean;
+  entitled_added: string[];
+  entitled_removed: string[];
+  usage_priced: boolean;
+  usage_closed_now: boolean;
+  paid: boolean;
+  prorated_charge_now: boolean;
+  refusal_code: string | null;
+  refusal_detail: string | null;
 }
 
 /** `InvoiceLineOut`. */
