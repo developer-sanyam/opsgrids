@@ -65,6 +65,42 @@ Live-only screens (no fixture twin), all built so that no failure in them can br
   picks the tab. The 3-D page (`/warehouses/:id/3d`) has a floor selector (`?floor=`): a floor with a
   published layout is drawn from its real placements, anything else keeps the auto-arranged layout
   and its banner.
+- **Floor layout editor** (`/warehouses/:id/floors/:floorId`) — places a floor's locations, draws the
+  walk graph, validates and publishes a draft. An empty canvas says so, with the count of unplaced
+  locations and two ways forward: **Auto-arrange** puts every unplaced location onto the canvas in
+  one step (grouped by parent — a band per zone, then a row per depth, siblings together, an aisle
+  between parents — sized by kind and ordered by pick sequence then code, beneath anything already
+  placed), and **Place** adds one into the first free spot and selects it, bringing it into view and
+  leaving keyboard focus on the next Place button. Both leave the draft unsaved; *Undo* is offered
+  until the next edit.
+  **Which locations are "unplaced".** A location records its floor only when a layout is published
+  (`Location.floor_id`), publishing a floor writes that floor onto every location it places, and
+  Find stock and put-away guidance read a location on two published floors as being on whichever was
+  published last. So "unplaced" means on no floor and not on this draft: the editor reads the
+  published layout of each *other* floor of the warehouse and sets the locations they hold apart.
+  Auto-arrange and the Unplaced list never include them; they are listed beneath, under their floor,
+  and each is placed only by "Place here too" after a confirmation. Until those reads have landed
+  (or if one fails) nothing is offered and Auto-arrange is off, with a Try again — it will not guess.
+  A location only in another floor's unpublished draft is not counted: it is not on that floor yet.
+  The warehouse's locations are read in full, every page (`listLocations`), so "all N" and "every
+  location is on the floor" are about the whole tree.
+  Limits worth knowing: footprints are schematic defaults by kind (edit them in the selection panel),
+  and never nest, because the server rejects overlapping footprints — a rack is not drawn around
+  its bins. Auto-arrange adds no walk nodes (one per location with no edges between them would fail
+  the connectivity check on every one); *Place* still adds its location's node. The editor says how
+  many placed locations have no walk node, and *Try a route* lists only those that have one. *Check
+  for problems* reads the saved draft, not unsaved edits. Past 1,000 m (the server's coordinate
+  bound) what does not fit stays unplaced, and the note says how many. Nothing on the server stops a
+  location being placed on two floors' drafts; the editor's separation is the only guard.
+  **Touch.** Zoom is the canvas's width. A tap selects, adds a walk node or connects one, and a
+  finger that moves is never a tap. With **Edit by touch** off (the default) the browser pans the
+  plan and the page as it does anywhere. On, the canvas holds the touch so a drag on the *selected*
+  shape moves it (or resizes it, from its handle) and every other drag pans the plan — by script,
+  not by the browser: Chrome ignores `touch-action` on shapes inside an SVG, so it cannot be given
+  to the selected shape alone. A pen is treated as a finger. Resize handles and walk nodes are drawn
+  a few screen pixels across wherever the plan is scaled down to fit, and on a device with a coarse
+  pointer the selected shape's handle (and every node, while connecting) has a 44px target. The zoomed
+  canvas is a tab stop, so the arrow keys pan it. There is no pinch gesture of its own.
 - **Find stock** — a card on the Stock page and on item, lot and roll detail. It asks
   `GET /inventory/locate` only when clicked and groups the bins by warehouse and floor.
 - **Put-away details** — on a storage put-away's ledger row. The worker's GPS fix is behind "Show

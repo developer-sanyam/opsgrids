@@ -97,9 +97,11 @@ async def get_source(
 
 
 async def sources_for(
-    session: AsyncSession, org_id: uuid.UUID, product_key: str
+    session: AsyncSession, org_id: uuid.UUID, product_key: str, *, fresh: bool = False
 ) -> list[ActivationSource]:
-    """Every source of one activation — what `_recompute` ORs together."""
+    """Every source of one activation — what `_recompute` ORs together. `fresh` overwrites rows
+    this session has already loaded, for a read taken after waiting on the activation lock, which
+    must see what committed while it waited (the hand-activation gate)."""
     stmt = (
         select(ActivationSource)
         .where(
@@ -108,6 +110,8 @@ async def sources_for(
         )
         .order_by(ActivationSource.source_product_key)
     )
+    if fresh:
+        stmt = stmt.execution_options(populate_existing=True)
     return list((await session.execute(stmt)).scalars().all())
 
 

@@ -86,6 +86,14 @@ async def _with_sources(
 async def activate(
     payload: ActivateIn, session: SessionDep, ctx: ActivationWrite, request: Request
 ) -> ActivationOut:
+    """Turn a product on by hand, for an organization no subscription has fed.
+
+    A product a subscription has ever fed (live, suspended, cancelled, or removed from a bundle by
+    a downgrade) is managed by that subscription and is refused with 409 `subscription_managed`
+    (`errors[0].code`): a hand activation would undo a cancellation or a suspension. Refusals
+    leave nothing written. 422 for a bundle or a product that has not launched, 404 for an unknown
+    key.
+    """
     activation = await services.activate(
         session,
         ctx,
@@ -104,5 +112,10 @@ async def activate(
 async def deactivate(
     product_key: str, session: SessionDep, ctx: ActivationWrite, request: Request
 ) -> ActivationOut:
+    """Turn a hand-activated product off.
+
+    Refused with 409 `subscription_managed` (`errors[0].code`) while the product's own
+    subscription is serving it, and with 422 while a bundle that includes it still does.
+    """
     activation = await services.deactivate(session, ctx, product_key=product_key, request=request)
     return await _with_sources(session, ctx, activation)

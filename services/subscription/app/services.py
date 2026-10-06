@@ -209,6 +209,7 @@ def _transition(
     note: str | None = None,
     audit_before: dict[str, Any] | None = None,
     audit_after: dict[str, Any] | None = None,
+    emit_event: bool = True,
 ) -> None:
     """Apply one validated transition: move the state, write the append-only row, stage the event.
 
@@ -233,6 +234,11 @@ def _transition(
     `audit_before`/`audit_after` add facts to the audit row's before/after for a move whose state
     alone does not say what changed — a trial extension stays `trial`, and its row names the end
     it moved from and to.
+
+    `emit_event=False` writes the transition row and the audit row and stages **no event**. Only a
+    transition that a second event in the same transaction supersedes may be silent: see
+    `apply_pending_change`'s `silent`, whose lapsed change is folded into the stop event that
+    follows it. Every other caller leaves it on — an applied transition is announced.
     """
     subscription.state = decision.to_state
 
@@ -269,6 +275,8 @@ def _transition(
         acting_as=actor.get("id") if actor.get("type") == "operator" else None,
         request=request,
     )
+    if not emit_event:
+        return
     payload = _lifecycle_payload(subscription)
     if extra:
         payload.update(extra)
@@ -2419,7 +2427,11 @@ async def schedule_closing_usage(
 
 
 async def apply_pending_change(
-    session: AsyncSession, subscription: Subscription, *, boundary: datetime
+    session: AsyncSession,
+    subscription: Subscription,
+    *,
+    boundary: datetime,
+    silent: bool = False,
 ) -> bool:
     """Apply a downgrade that was waiting for this roll (addendum §4). True if one was applied.
 
@@ -2435,6 +2447,19 @@ async def apply_pending_change(
     scheduled before the direction was stored has none and keeps the old label, `downgraded`,
     exactly as it always did — nothing already waiting changes meaning. The operator's note, when
     the change had one, is the applied transition's audit reason; it is not put on the event.
+
+    **`silent` is for a stop** (`apply_lapsed_change`): the change is applied in full (pin, items,
+    entitled products, the pending state resolved, the transition row and the audit row written)
+    but the `upgraded`/`downgraded` event is not staged. The stop (`cancelled`, `suspended`) is
+    staged in the same transaction, so the two events would carry the same `occurred_at` (the
+    transaction's start), and the consumers' ordering guards drop an event that does not advance
+    what a subscription already reflects (`product.services.project_subscription`,
+    `console.domain._is_stale`). Delivery order of two tied events is not defined: when
+    `upgraded` folded first, `cancelled` was dropped, and cancelled is terminal, so nothing ever
+    repaired it and the product stayed entitled. The stop event carries the final pin and
+    `entitled_products`, which is everything the consumers would have learned from the first
+    one. It is the shape of the suspended branch below: the change takes effect, the record of it
+    is written, no event.
     """
     change = subscription.pending_change
     if not change:
@@ -2487,6 +2512,7 @@ async def apply_pending_change(
             from_plan_version_id=from_pin,
             to_plan_version_id=to_pin,
             note=note,
+            emit_event=not silent,
         )
     await session.flush()
     return True
@@ -2504,6 +2530,13 @@ async def apply_lapsed_change(
     final review). So the stop applies it first, at the boundary: usage up to it closes at the
     old pin, and the stop closes the rest at the new one. The rolls the run makes later find no
     change waiting and price at the new pin, as they would have.
+
+    **The change is applied silently.** Every caller stages its stop event in this same
+    transaction, and an `upgraded`/`downgraded` event beside it would tie it on `occurred_at`; a
+    consumer that folded the first would drop the stop (see `apply_pending_change`). The stop event
+    carries the final pin and `entitled_products`, so nothing is lost by not announcing the change
+    first: the transition and audit rows still record it. The billing run's own application, at a
+    renewal boundary, is not a stop and still announces its change.
     """
     if (
         not subscription.pending_change
@@ -2523,7 +2556,7 @@ async def apply_lapsed_change(
     )
     if boundary > at:
         return
-    await apply_pending_change(session, subscription, boundary=boundary)
+    await apply_pending_change(session, subscription, boundary=boundary, silent=True)
 
 
 async def claim_billing_period(

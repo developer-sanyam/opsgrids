@@ -31,9 +31,18 @@ from app.config import settings
 from app.main import app
 from app.models import PLATFORM_ORG, SCHEMA
 from platform_core.db import TENANT_GUC, get_directory_session, get_session
+from platform_core.testing import cross_service_schema_lock
 
 #: Tenant-scoped tables only — the catalogue survives.
 TENANT_TABLES = ("activations", "activation_sources", "audit_logs", "outbox", "processed_events")
+
+#: This suite is not parallel-safe against `services/subscription/tests/test_stop_event_folds.py`,
+#: which folds subscription's real events through this service's real consumer
+#: (`tests/fold_envelopes.py`), so it holds live rows in *this* schema while it runs. The `TRUNCATE`
+#: below would delete them mid-test. `make test-services` runs the two services concurrently, so the
+#: two suites take this advisory lock against each other; see `platform_core.testing`. Every other
+#: service is untouched and stays fully parallel.
+CROSS_SERVICE_LOCK_HOLDER = "services/product/tests"
 
 
 def _connect_args() -> dict:
@@ -56,21 +65,25 @@ async def session(org_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
     cfg = settings()
     tables = ", ".join(f'"{SCHEMA}"."{t}"' for t in TENANT_TABLES)
 
-    admin = create_async_engine(cfg.admin_dsn, connect_args=_connect_args())
-    async with admin.begin() as conn:
-        await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
-    await admin.dispose()
+    # The whole fixture — the truncation *and* the test that runs under it — holds the
+    # cross-service lock (see `CROSS_SERVICE_LOCK_HOLDER`): the rows this test then writes are in
+    # the schema the sibling suite is reading, so the exclusion lasts as long as the test does.
+    async with cross_service_schema_lock(cfg.app_dsn, SCHEMA, holder=CROSS_SERVICE_LOCK_HOLDER):
+        admin = create_async_engine(cfg.admin_dsn, connect_args=_connect_args())
+        async with admin.begin() as conn:
+            await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
+        await admin.dispose()
 
-    engine = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
-    maker = async_sessionmaker(engine, expire_on_commit=False)
-    async with maker() as s:
+        engine = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as s:
 
-        @event.listens_for(s.sync_session, "after_begin")
-        def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
-            connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
+            @event.listens_for(s.sync_session, "after_begin")
+            def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+                connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
 
-        yield s
-    await engine.dispose()
+            yield s
+        await engine.dispose()
 
 
 @pytest_asyncio.fixture
@@ -84,21 +97,24 @@ async def platform_session() -> AsyncIterator[AsyncSession]:
     """
     cfg = settings()
     tables = ", ".join(f'"{SCHEMA}"."{t}"' for t in TENANT_TABLES)
-    admin = create_async_engine(cfg.admin_dsn, connect_args=_connect_args())
-    async with admin.begin() as conn:
-        await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
-    await admin.dispose()
+    async with cross_service_schema_lock(cfg.app_dsn, SCHEMA, holder=CROSS_SERVICE_LOCK_HOLDER):
+        admin = create_async_engine(cfg.admin_dsn, connect_args=_connect_args())
+        async with admin.begin() as conn:
+            await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
+        await admin.dispose()
 
-    engine = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
-    maker = async_sessionmaker(engine, expire_on_commit=False)
-    async with maker() as s:
+        engine = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as s:
 
-        @event.listens_for(s.sync_session, "after_begin")
-        def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
-            connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{PLATFORM_ORG}', true)")
+            @event.listens_for(s.sync_session, "after_begin")
+            def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+                connection.exec_driver_sql(
+                    f"SELECT set_config('{TENANT_GUC}', '{PLATFORM_ORG}', true)"
+                )
 
-        yield s
-    await engine.dispose()
+            yield s
+        await engine.dispose()
 
 
 @pytest_asyncio.fixture
