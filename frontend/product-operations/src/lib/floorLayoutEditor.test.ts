@@ -4,7 +4,6 @@ import type { LayoutGeometryOut, LocationKind, LocationOut } from "@/api/types";
 import { overlappingPlacements } from "@/test-utils/floorOverlap";
 import {
   ARRANGED_LABEL_FONT_MM,
-  DEFAULT_FOOTPRINT_MM,
   MAX_COORDINATE_MM,
   arrangeUnplaced,
   editorStateToGeometryIn,
@@ -15,7 +14,6 @@ import {
   labelFontSizeMm,
   labelWidthMm,
   locationNodeCode,
-  nextGridPosition,
   nextJunctionCode,
   statesEqual,
   unplacedLocations,
@@ -129,15 +127,6 @@ describe("statesEqual", () => {
   });
 });
 
-describe("nextGridPosition", () => {
-  it("packs left to right, top to bottom, six per row", () => {
-    expect(nextGridPosition(0)).toEqual({ x: 0, y: 0 });
-    expect(nextGridPosition(5)).toEqual({ x: 5 * 1500, y: 0 });
-    expect(nextGridPosition(6)).toEqual({ x: 0, y: 1500 });
-    expect(nextGridPosition(7)).toEqual({ x: 1500, y: 1500 });
-  });
-});
-
 describe("locationNodeCode", () => {
   it("is stable for the same location id", () => {
     expect(locationNodeCode("11111111-2222-3333-4444-555555555555")).toBe(
@@ -176,12 +165,6 @@ describe("unplacedLocations", () => {
 describe("euclideanDistanceMm", () => {
   it("computes and rounds the straight-line distance", () => {
     expect(euclideanDistanceMm({ x: 0, y: 0 }, { x: 3000, y: 4000 })).toBe(5000);
-  });
-});
-
-describe("DEFAULT_FOOTPRINT_MM", () => {
-  it("matches the server's own default (LocationPlacementIn.width_mm/depth_mm)", () => {
-    expect(DEFAULT_FOOTPRINT_MM).toBe(1000);
   });
 });
 

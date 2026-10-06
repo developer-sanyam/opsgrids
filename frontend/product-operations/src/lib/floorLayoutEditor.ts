@@ -55,12 +55,6 @@ export interface EditorState {
 
 export const EMPTY_STATE: EditorState = { placements: [], nodes: [], edges: [] };
 
-/** The server's own default footprint (`LocationPlacementIn.width_mm`/`depth_mm` default 1000). */
-export const DEFAULT_FOOTPRINT_MM = 1000;
-/** Grid spacing for a newly-added location, and the canvas's default zoom-to-fit margin. */
-const GRID_CELL_MM = 1500;
-const GRID_COLUMNS = 6;
-
 /** The server's bound on every placement coordinate (`LocationPlacementIn.x_mm`/`y_mm`, `le=1_000_000`). */
 export const MAX_COORDINATE_MM = 1_000_000;
 
@@ -137,14 +131,6 @@ export function statesEqual(a: EditorState, b: EditorState): boolean {
       .sort((x, y) => `${x.fromCode}\u0000${x.toCode}`.localeCompare(`${y.fromCode}\u0000${y.toCode}`)),
   });
   return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b));
-}
-
-/** Where a newly-added location lands: simple left-to-right, top-to-bottom grid packing so it
- *  never stacks exactly on top of an existing placement. The user drags it from there. */
-export function nextGridPosition(existingCount: number): { x: number; y: number } {
-  const row = Math.floor(existingCount / GRID_COLUMNS);
-  const col = existingCount % GRID_COLUMNS;
-  return { x: col * GRID_CELL_MM, y: row * GRID_CELL_MM };
 }
 
 /** The walk node "for" a location — stable across saves (derived from the location's own id, not
