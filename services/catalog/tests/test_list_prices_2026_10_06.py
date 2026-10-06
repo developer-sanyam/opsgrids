@@ -535,8 +535,104 @@ class TestTheMigration:
         finally:
             await _clear()  # or the fixture's `upgrade head` would be refused the same way
 
+    async def test_an_open_public_draft_stops_the_whole_migration_and_is_named(
+        self, yesterday: AsyncClient, platform_session: AsyncSession, org_a: uuid.UUID
+    ) -> None:
+        """The owner left a re-price of Revenue as a draft (v2) on the Plans page. Numbered above
+        it, the new versions would supersede it the moment it was published — it would be live on
+        paper and never sell. So nothing is applied, and the error says which draft to resolve."""
+        op = operator_principal()
+        revenue = await _plan(platform_session, "crm", "revenue")
+        support = await _plan(platform_session, "support", "support")
+        finance = await _plan(platform_session, "finance", "finance")
+        async with platform_session.begin():
+            public_draft = await services.create_version(
+                platform_session,
+                op,
+                revenue,
+                VersionCreateIn(
+                    currency="INR",
+                    prices=[PriceIn(kind="flat", amount_minor=260000, currency="INR")],
+                ),
+                request=None,
+            )
+            other_draft = await services.create_version(
+                platform_session,
+                op,
+                support,
+                VersionCreateIn(
+                    currency="INR",
+                    prices=[PriceIn(kind="flat", amount_minor=99000, currency="INR")],
+                ),
+                request=None,
+            )
+            draft_ids = (public_draft.id, other_draft.id)
+            # A draft negotiated for one organization is its own audience: never in the way.
+            bespoke_draft = await services.create_version(
+                platform_session,
+                op,
+                finance,
+                VersionCreateIn(
+                    currency="INR",
+                    restricted_to_org_id=org_a,
+                    prices=[PriceIn(kind="flat", amount_minor=200000, currency="INR")],
+                ),
+                request=None,
+            )
+            bespoke_id = bespoke_draft.id
+        before = await _snapshot()
+
+        with pytest.raises(RuntimeError, match="nothing applied") as err:
+            await _alembic(command.upgrade, LP.revision)
+        assert type(err.value).__name__ == "OpenDraftError"
+        assert "crm/revenue v2" in str(err.value) and "support/support v2" in str(err.value)
+        assert "finance" not in str(err.value), "a bespoke draft is not in the way"
+        assert await _current() == BEFORE
+        assert await _ours_present() == 0
+        assert await _snapshot() == before
+
+        # Resolved the way the error says — the drafts deleted — it applies.
+        async with platform_session.begin():
+            for version_id in draft_ids:
+                version = await services.require_version_for_update(platform_session, version_id)
+                await services.delete_draft_version(platform_session, op, version, request=None)
+        await _alembic(command.upgrade, LP.revision)
+        assert await _ours_present() == 22
+
+        # The bespoke draft, numbered below the new public versions, is still its own audience's
+        # newest: publishing it takes effect.
+        async with platform_session.begin():
+            version = await services.require_version_for_update(platform_session, bespoke_id)
+            published = await services.publish_version(platform_session, op, version, request=None)
+            assert (published.version_no, published.state) == (2, "published")
+
+    async def test_a_source_at_another_price_than_the_split_assumed_is_applied_and_warned(
+        self,
+        yesterday: AsyncClient,
+        platform_session: AsyncSession,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        engage = await _plan(platform_session, "engage", "engage")
+        await _publish(
+            platform_session,
+            engage,
+            VersionCreateIn(
+                currency="INR", prices=[PriceIn(kind="flat", amount_minor=99900, currency="INR")]
+            ),
+        )
+        capsys.readouterr()
+        await _alembic(command.upgrade, LP.revision)
+        assert await _ours_present() == 22
+        err = capsys.readouterr().err
+        assert "engage sold at 99900 paise, not the 149900 paise" in err, err
+
+    async def test_seeded_minor_is_what_the_seeds_sold(self) -> None:
+        assert {k: LP.SEEDED_MINOR[k] for k, _c, _m, _y in LP.NEW_PRICES} == {
+            k: amount for (k, _c), amount in _seeded_prices().items()
+        }
+
     async def test_retired_withdrawn_and_missing_plans_are_skipped(
-        self, yesterday: AsyncClient
+        self, yesterday: AsyncClient, capsys: pytest.CaptureFixture[str]
     ) -> None:
         await _query("UPDATE catalog.plans SET state = 'retired' WHERE code = 'pulseboard'")
         await _query(
@@ -547,7 +643,14 @@ class TestTheMigration:
         )
         await _query("UPDATE catalog.plans SET code = 'storefront-old' WHERE code = 'storefront'")
 
+        capsys.readouterr()
         await _alembic(command.upgrade, LP.revision)
+
+        # Each skip is in the migrate output — the RUNBOOK tells the operator to read it there.
+        err = capsys.readouterr().err
+        assert "plan pulseboard/pulseboard is retired; skipped" in err, err
+        assert "plan support/support has no published public version; skipped" in err, err
+        assert "no plan storefront/storefront; skipped" in err, err
 
         assert [v["version_no"] for v in await _versions("pulseboard", "pulseboard")] == [1]
         support = await _versions("support", "support")

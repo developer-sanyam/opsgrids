@@ -96,12 +96,14 @@ async def _draft(
     currency: str = "INR",
     org: uuid.UUID | None = None,
     products: ProductSnapshot | None = None,
+    interval: str = "month",
 ):
     return await services.create_version(
         session,
         OWNER,
         plan,
         VersionCreateIn(
+            billing_interval=interval,
             currency=currency,
             restricted_to_org_id=org,
             prices=prices
@@ -776,6 +778,62 @@ class TestPublishValidation:
         assert refused.json()["errors"][0]["field"] == "prices.0.amount_minor"
         assert allowed.status_code == 200, allowed.text
         assert allowed.json()["state"] == "published"
+
+    async def test_a_draft_a_newer_published_version_already_supersedes_cannot_be_published(
+        self, client: AsyncClient, platform_session: AsyncSession
+    ) -> None:
+        """Two monthly drafts: v3 is published first. Published, v2 would be live on paper — an
+        audit row, a `published` event — and never offered or shown as the price, because the
+        newest version per audience, cadence and currency is what sells (ADR-0035). Refused with
+        the version to start from instead, and it stays a draft."""
+        async with platform_session.begin():
+            plan = await _plan(platform_session)
+            await _published(platform_session, plan)
+            stale = await _draft(
+                platform_session, plan, prices=[_price(kind="flat", amount_minor=120_000)]
+            )
+            newer = await _draft(
+                platform_session, plan, prices=[_price(kind="flat", amount_minor=130_000)]
+            )
+            stale_id, newer_id = stale.id, newer.id
+        async with platform_session.begin():
+            fresh = await services.require_version_for_update(platform_session, newer_id)
+            await services.publish_version(platform_session, OWNER, fresh, request=None)
+        with acting(OWNER):
+            refused = await client.post(
+                f"{BASE}/versions/{stale_id}/publish", json={"reason": REASON}, headers=key()
+            )
+        assert refused.status_code == 422, refused.text
+        (problem,) = refused.json()["errors"]
+        assert (problem["field"], problem["code"]) == ("version_no", "superseded")
+        assert "v3" in problem["message"] and "v2" in problem["message"]
+        async with platform_session.begin():
+            assert (await services.require_version(platform_session, stale_id)).state == "draft"
+
+    @pytest.mark.parametrize("differs", ["cadence", "audience", "withdrawn"])
+    async def test_a_newer_version_that_does_not_supersede_it_does_not_block_it(
+        self, platform_session: AsyncSession, org_a: uuid.UUID, differs: str
+    ) -> None:
+        """Only what `offerable_versions` treats as superseding refuses: a yearly version beside a
+        monthly draft, a public one above a bespoke draft, and a withdrawn one are not."""
+        async with platform_session.begin():
+            plan = await _plan(platform_session)
+            draft = await _draft(
+                platform_session, plan, org=org_a if differs == "audience" else None
+            )
+            newer = await _draft(
+                platform_session, plan, interval="year" if differs == "cadence" else "month"
+            )
+            draft_id, newer_id = draft.id, newer.id
+        async with platform_session.begin():
+            fresh = await services.require_version_for_update(platform_session, newer_id)
+            await services.publish_version(platform_session, OWNER, fresh, request=None)
+            if differs == "withdrawn":
+                await services.withdraw_version(platform_session, OWNER, fresh, request=None)
+        async with platform_session.begin():
+            fresh = await services.require_version_for_update(platform_session, draft_id)
+            published = await services.publish_version(platform_session, OWNER, fresh, request=None)
+            assert published.state == "published"
 
 
 # --------------------------------------------------------------------- the trigger

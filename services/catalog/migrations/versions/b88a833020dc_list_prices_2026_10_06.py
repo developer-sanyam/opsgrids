@@ -32,10 +32,18 @@ every existing subscription, superseded for anything new (ADR-0004 §2, ADR-0029
 
 **Refused, not repriced.** A source whose sheet is not exactly one flat INR price, or that has a
 paid seat class, stops the migration (it raises, and the whole transaction rolls back): re-pricing
-it as one flat line would silently drop part of what it sells. **Skipped, with a warning:** a plan
-that does not exist (a database whose definitional tables were cleared — the test suite does
-this), a retired plan, and a plan with no published public version (withdrawn on purpose;
-publishing here would put it back on sale).
+it as one flat line would silently drop part of what it sells. **So does an open public draft** on
+a plan it would re-price: the new versions would be numbered above the draft, and everything that
+decides what sells takes the newest version per audience and cadence — so the draft, published
+later, would be live on paper (its audit row and event say so) and never offered or shown as the
+price. Every plan is checked before anything is inserted, and the error names every open draft;
+delete each on the Plans page (or publish it first, knowing this release supersedes it at once)
+and re-run. A bespoke draft is its own audience and is not in the way. **Skipped, with a
+warning:** a plan that does not exist (a database whose definitional tables were cleared — the
+test suite does this), a retired plan, and a plan with no published public version (withdrawn on
+purpose; publishing here would put it back on sale). A source whose flat amount is not the price
+the split was computed from (`SEEDED_MINOR`) is applied but warned about: the owner re-priced it
+since, and the warning is the cue to check the table still holds.
 
 **Idempotent.** Every id is `uuid5` of this migration's own namespace, the product key, the
 cadence and the row kind; a version whose id already exists is left alone, children included.
@@ -70,7 +78,12 @@ down_revision: str | None = "b7e4d2a9c613"  # pragma: allowlist secret
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-log = logging.getLogger("alembic.runtime.migration")
+#: The root logger, deliberately. `migrations/env.py` runs `fileConfig(alembic.ini)`, which names
+#: only root and disables every other logger that already exists — `alembic.runtime.migration`
+#: always, and this module's own when it was imported before (a test, a second run in one
+#: process) — so a warning sent anywhere else is dropped and the migrate output never shows it.
+#: Root is configured there (WARNING, to stderr) and never disabled.
+log = logging.getLogger()
 
 # Fixed so a rerun of this file always names the same rows, in this database or any other. Its own
 # namespace, as `53f1a7a8b99d` chose, so these ids cannot collide with a row another migration owns.
@@ -104,6 +117,22 @@ NEW_PRICES: tuple[tuple[str, str, int, int], ...] = (
 #: What all eleven together cost: the owner's yearly number, and a twelfth of it a month.
 MONTHLY_TOTAL_MINOR = 2500000
 YEARLY_TOTAL_MINOR = 30000000
+
+#: What each plan's public flat price was when the split was computed — the seeds' placeholders,
+#: which the split is proportional to. A source at another amount is warned about, not refused.
+SEEDED_MINOR: dict[str, int] = {
+    "crm": 199900,
+    "hrms": 199900,
+    "itsm": 199900,
+    "finance": 249900,
+    "operations": 249900,
+    "engage": 149900,
+    "marketing": 149900,
+    "projects": 149900,
+    "pulseboard": 149900,
+    "storefront": 149900,
+    "support": 149900,
+}
 
 
 def amount_for(product_key: str, cadence: str) -> int:
@@ -142,6 +171,30 @@ class SourceShapeError(RuntimeError):
     """The plan's current public version sells something one flat price cannot replace."""
 
 
+class OpenDraftError(RuntimeError):
+    """A plan this migration re-prices has a public draft its new versions would supersede."""
+
+
+def _open_public_drafts(conn: sa.Connection, plan_id: str) -> list[int]:
+    """The `version_no` of every public draft of the plan, never one of ours."""
+    return [
+        int(n)
+        for n in conn.execute(
+            sa.text(
+                """
+                SELECT version_no FROM catalog.plan_versions
+                WHERE plan_id = CAST(:plan AS uuid)
+                  AND restricted_to_org_id IS NULL
+                  AND state = 'draft'
+                  AND id <> ALL(CAST(:ours AS uuid[]))
+                ORDER BY version_no
+                """
+            ),
+            {"plan": plan_id, "ours": list(VERSION_IDS.values())},
+        ).scalars()
+    ]
+
+
 def _source_version(conn: sa.Connection, plan_id: str) -> tuple[str, str] | None:
     """The plan's newest published public version (id, currency), never one of ours."""
     row = conn.execute(
@@ -169,16 +222,29 @@ def _check_source_shape(
     cannot re-price as one flat INR line without losing part of it."""
     prices = conn.execute(
         sa.text(
-            "SELECT kind, currency FROM catalog.prices WHERE plan_version_id = CAST(:v AS uuid)"
+            """
+            SELECT kind, currency, amount_minor FROM catalog.prices
+            WHERE plan_version_id = CAST(:v AS uuid)
+            """
         ),
         {"v": source_id},
     ).all()
-    if source_currency != CURRENCY or [(k, c) for k, c in prices] != [("flat", CURRENCY)]:
+    if source_currency != CURRENCY or [(k, c) for k, c, _a in prices] != [("flat", CURRENCY)]:
         raise SourceShapeError(
             f"{product_key}: the current public version {source_id} is not one flat {CURRENCY} "
-            f"price (currency {source_currency}, prices {[(k, c) for k, c in prices]}); "
-            "re-pricing it as one flat line would drop part of what it sells. Re-price it on the "
-            "Plans page instead."
+            f"price (currency {source_currency}, prices {[(k, c) for k, c, _a in prices]}); "
+            "re-pricing it as one flat line would drop part of what it sells. Publish a version "
+            "that is exactly one flat INR price on the Plans page, or withdraw this plan's public "
+            "versions so it is skipped, then re-run."
+        )
+    amount = prices[0][2]
+    if amount != SEEDED_MINOR[product_key]:
+        log.warning(
+            "list prices 2026-10-06: %s sold at %s paise, not the %s paise the split was computed "
+            "from; applying the table anyway — check it with the owner",
+            product_key,
+            amount,
+            SEEDED_MINOR[product_key],
         )
     seats = conn.execute(
         sa.text(
@@ -193,7 +259,9 @@ def _check_source_shape(
     if paid:
         raise SourceShapeError(
             f"{product_key}: the current public version {source_id} has paid seat classes "
-            f"{paid}; a flat plan cannot carry them. Re-price it on the Plans page instead."
+            f"{paid}; a flat plan cannot carry them. Publish a version with only free seat "
+            "classes on the Plans page, or withdraw this plan's public versions so it is "
+            "skipped, then re-run."
         )
     features = conn.execute(
         sa.text(
@@ -302,6 +370,10 @@ def _insert_version(
 
 def upgrade() -> None:
     conn = op.get_bind()
+    # Two passes: every plan is checked — source shape, open drafts — before anything is inserted,
+    # so a refusal names every plan in the way at once and the transaction has nothing to undo.
+    pending: list[tuple[str, str, str, list[str], list[str], list[str]]] = []
+    drafts: list[str] = []
     for product_key, code, _monthly, _yearly in NEW_PRICES:
         plan = conn.execute(
             sa.text(
@@ -343,6 +415,22 @@ def upgrade() -> None:
         feature_keys, seat_codes = _check_source_shape(
             conn, product_key, source_id, source_currency
         )
+        open_drafts = _open_public_drafts(conn, plan_id)
+        if open_drafts:
+            drafts.append(f"{product_key}/{code} " + ", ".join(f"v{n}" for n in open_drafts))
+        pending.append((product_key, plan_id, source_id, missing, feature_keys, seat_codes))
+
+    if drafts:
+        raise OpenDraftError(
+            "list prices 2026-10-06: nothing applied — open public draft(s) on "
+            + "; ".join(drafts)
+            + ". The new versions would be numbered above each draft, so publishing it later "
+            "would never take effect: the newest version per cadence is what is offered and shown "
+            "as the price. Delete each draft on the Plans page (or publish it first, knowing this "
+            "release supersedes it at once), then re-run."
+        )
+
+    for product_key, plan_id, source_id, missing, feature_keys, seat_codes in pending:
         for cadence in missing:
             _insert_version(
                 conn,
