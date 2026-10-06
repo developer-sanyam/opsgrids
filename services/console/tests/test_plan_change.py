@@ -481,6 +481,55 @@ class TestPlanOptions:
         assert asked.url.params["product_key"] == PRODUCT
         assert str(org_id) in asked.url.path
 
+    async def test_after_a_reprice_staff_see_the_new_monthly_and_yearly_and_only_the_month_fits(
+        self, client: AsyncClient, upstreams: FakeUpstreams, org_id: uuid.UUID
+    ) -> None:
+        """The 2026-10-06 list prices (ADR-0035): the plan the subscription is on (v1, the old
+        monthly price) is superseded, so catalog offers v2 (the new yearly price) and v3 (the new
+        monthly one). Staff may switch a monthly subscription to v3; v2 is a different cadence."""
+        sub_id, current, yearly, monthly = (uuid.uuid4() for _ in range(4))
+        _stub_directory(upstreams, org_id)
+        _stub_subscription(upstreams, org_id, subscription_id=sub_id, current=current)
+
+        def _flat(amount_minor: int) -> list[dict[str, Any]]:
+            return [
+                {
+                    "id": str(uuid.uuid4()),
+                    "kind": "flat",
+                    "amount_minor": amount_minor,
+                    "currency": "INR",
+                }
+            ]
+
+        upstreams.json(
+            "GET",
+            f"/internal/v1/organizations/{org_id}/offerable-versions",
+            {
+                "versions": [
+                    self._offered(
+                        yearly,
+                        plan_name="People",
+                        version_no=2,
+                        billing_interval="year",
+                        prices=_flat(3000000),
+                    ),
+                    self._offered(monthly, plan_name="People", version_no=3, prices=_flat(300000)),
+                ]
+            },
+        )
+        _stub_plan_version(upstreams, current, _version_doc(current, amount_minor=199900))
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            response = await client.get(_urls(org_id)["options"], params={"product_key": PRODUCT})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["subscription"]["billing_interval"] == "month"
+        by_id = {o["plan_version_id"]: o for o in body["options"]}
+        assert set(by_id) == {str(yearly), str(monthly)}, "the old version is no longer offered"
+        assert by_id[str(monthly)]["blocked_code"] is None
+        assert by_id[str(monthly)]["recurring_minor"] == 300000
+        assert by_id[str(yearly)]["blocked_code"] == "cadence"
+        assert by_id[str(yearly)]["recurring_minor"] == 3000000
+
     @pytest.mark.parametrize("state", ["past_due", "suspended", "cancelled"])
     async def test_a_subscription_that_cannot_change_says_so_up_front(
         self, client: AsyncClient, upstreams: FakeUpstreams, org_id: uuid.UUID, state: str

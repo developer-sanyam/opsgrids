@@ -686,6 +686,21 @@ async def _ensure_publishable(
         features=features,
         allow_zero_amounts=allow_zero_amounts,
     )
+    newer = await selectors.superseding_version_no(session, fresh)
+    if newer is not None:
+        # Published, it would be superseded at once: live on paper (audit row, event), never
+        # offered and never shown as the price — a re-price that silently does nothing. Reachable
+        # whenever a draft outlives a newer publish (two drafts, or a release that publishes
+        # versions above an open one, ADR-0035).
+        problems.append(
+            domain.PublishProblem(
+                "version_no",
+                "superseded",
+                f"v{newer} of this plan is already published for the same audience, cadence and "
+                f"currency, so v{fresh.version_no} would never be offered or shown as the price; "
+                f"delete this draft and start a new one from v{newer}",
+            )
+        )
     plan = fresh.plan
     if snapshot is not None and FEATURE_BUNDLED_PRODUCTS not in features:
         # ADR-0030 §3: whether this product is a bundle is the registry's to say, so publishing

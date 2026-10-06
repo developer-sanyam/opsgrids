@@ -501,6 +501,46 @@ class TestAddProductOptions:
         )
         assert asked == ["finance", "projects", "suite"], "catalog is asked only for candidates"
 
+    async def test_a_reprice_offers_the_new_monthly_and_the_yearly_version_both_takeable(
+        self, client: AsyncClient, upstreams: FakeUpstreams, org_id: uuid.UUID
+    ) -> None:
+        """The 2026-10-06 list prices (ADR-0035): a product the organization does not have yet may
+        be added on the new monthly price or the new yearly one — one cadence per subscription
+        binds a change of plan, not the first pin."""
+        _stub_directory(upstreams, org_id)
+        _stub_subscriptions(upstreams, org_id, [])
+        _stub_public_plans(upstreams, [_public("finance", "Finance")])
+        yearly, monthly = uuid.uuid4(), uuid.uuid4()
+
+        def _flat(amount_minor: int) -> list[dict[str, Any]]:
+            return [
+                {
+                    "id": str(uuid.uuid4()),
+                    "kind": "flat",
+                    "amount_minor": amount_minor,
+                    "currency": "INR",
+                }
+            ]
+
+        upstreams.json(
+            "GET",
+            f"/internal/v1/organizations/{org_id}/offerable-versions",
+            {
+                "versions": [
+                    _offered("finance", yearly, billing_interval="year", prices=_flat(3750000)),
+                    _offered("finance", monthly, prices=_flat(375000)),
+                ]
+            },
+        )
+        with as_principal(operator_principal(roles=["billing_ops"])):
+            response = await client.get(_urls(org_id)["options"])
+        assert response.status_code == 200, response.text
+        (finance,) = response.json()["products"]
+        by_id = {v["plan_version_id"]: v for v in finance["versions"]}
+        assert by_id[str(monthly)]["blocked_code"] is None
+        assert by_id[str(yearly)]["blocked_code"] is None
+        assert by_id[str(yearly)]["billing_interval"] == "year"
+
     async def test_a_product_a_live_bundle_already_entitles_names_the_bundle(
         self, client: AsyncClient, upstreams: FakeUpstreams, org_id: uuid.UUID
     ) -> None:

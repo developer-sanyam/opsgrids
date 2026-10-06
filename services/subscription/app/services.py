@@ -346,7 +346,8 @@ async def subscribe(
     *,
     request: Request | None = None,
 ) -> Subscription:
-    """A customer starts a subscription for one product. Bundles are refused here."""
+    """A customer starts a subscription for one product. Bundles are refused here, and so is a
+    version that is not on offer to the organization now (`not_offerable`, see `SubscribeIn`)."""
     return await _subscribe(
         session,
         organization_id=ctx.organization_id,
@@ -357,6 +358,7 @@ async def subscribe(
         plan_version_id=payload.plan_version_id,
         trial_requested=payload.trial_days,
         request=request,
+        enforce_offerable=True,
     )
 
 
@@ -438,6 +440,7 @@ async def _subscribe(
     request: Request | None,
     note: str | None = None,
     operator_rules: bool = False,
+    enforce_offerable: bool = False,
 ) -> Subscription:
     """Start a subscription pinned to a validated catalog version.
 
@@ -445,7 +448,11 @@ async def _subscribe(
     ADR-0004 §4), its length the version's and not the caller's. One subscription per product per
     organization: an existing one — in any state, `cancelled` included — is a 409
     `already_subscribed`, not a second row. `operator_rules` adds the staff path's refusals
-    (`one_time`, `org_currency_mismatch`; see `subscribe_as_operator`).
+    (`one_time`, `org_currency_mismatch`; see `subscribe_as_operator`). `enforce_offerable` (the
+    customer path) refuses a version outside catalog's offerable set with `not_offerable`: a
+    superseded version stays published for the subscribers pinned to it, and without this a
+    customer could start on it by id — a stale page, or a guess from `version_no` — at a price the
+    catalogue has moved past, kept for good because nothing re-pins a subscription.
     """
     from app import selectors
 
@@ -455,6 +462,10 @@ async def _subscribe(
 
     version = _validate_new_pin(await catalog.get_plan_version(plan_version_id), organization_id)
     _require_product(version, product_key)
+    if enforce_offerable:
+        offered = await catalog.offerable_versions(organization_id, product_key)
+        if version.id not in {v.plan_version_id for v in offered}:
+            raise domain.CodedRefusal(domain.CODE_NOT_OFFERABLE, domain.NOT_OFFERABLE_DETAIL)
     if operator_rules:
         if version.billing_interval == domain.INTERVAL_ONE_TIME:
             raise domain.CodedRefusal(

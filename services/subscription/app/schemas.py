@@ -158,6 +158,12 @@ class SubscribeIn(BaseModel):
 
     A bundle cannot be bought here — it is sold by the platform team through the operator path
     (docs/commerce-packaging.md).
+
+    The version must be **on offer** to the organization now — catalog's offerable set, the same
+    one change-plan enforces (ADR-0034 §3): a version a newer one of its plan has superseded is
+    refused with 422 `not_offerable` even though it is still published (its existing subscribers
+    stay pinned to it), so a stale page or a direct call cannot start anyone on a price the
+    catalogue has moved past (ADR-0035).
     """
 
     product_key: str = Field(min_length=1, max_length=40)

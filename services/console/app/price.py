@@ -17,11 +17,17 @@ next transition for that subscription, so MRR self-heals once the endpoint is li
 
 Documented response shape (from catalog's plan-version internal read):
 
-    {"id": "...", "plan_id": "...", "billing_interval": "monthly", "currency": "INR",
+    {"id": "...", "plan_id": "...", "billing_interval": "month", "currency": "INR",
      "prices": [{"kind": "flat", "amount_minor": 50000, "currency": "INR", ...}, ...]}
 
-MRR is the sum of the **flat** prices' `amount_minor`; usage- and seat-priced components are not
-recurring revenue and are excluded here.
+The resolved number is **monthly** recurring revenue: the sum of the **flat** prices'
+`amount_minor` for one billing period, brought to one month by the version's `billing_interval`
+(`_monthly_minor`). A yearly version's flat price buys twelve months, so it contributes a twelfth
+of it — counting it whole would show a yearly subscriber's annual fee as a month's revenue, and
+inflate every MRR figure (the org snapshot, the platform total, the series, the "Per month"
+column) twelvefold for each one. A `one_time` version has no recurring period at all (the billing
+run never bills it) and contributes nothing. Usage- and seat-priced components are not recurring
+revenue and are excluded here.
 """
 
 from __future__ import annotations
@@ -45,15 +51,35 @@ PriceResolver = Callable[[str], Awaitable[tuple[int, str | None]]]
 CATALOG_AUDIENCE = "catalog"
 
 
+#: How many months one billing period of each cadence covers. Catalog's cadences are `month`,
+#: `year` and `one_time` (`schemas.VersionCreateIn`); a document without one predates the field
+#: and was monthly.
+MONTHS_PER_PERIOD: dict[str, int] = {"month": 1, "year": 12}
+ONE_TIME = "one_time"
+
+
+def _monthly_minor(period_minor: int, billing_interval: str | None) -> int:
+    """One period's recurring amount as a month's, in integer minor units (ADR-0000 §8).
+
+    A yearly amount is divided by twelve, rounded half up to the nearest minor unit — integer
+    arithmetic only, never a float. `one_time` is not recurring: 0.
+    """
+    if billing_interval == ONE_TIME:
+        return 0
+    months = MONTHS_PER_PERIOD.get(billing_interval or "month", 1)
+    return (period_minor * 2 + months) // (months * 2)
+
+
 def _flat_total(document: dict[str, Any]) -> tuple[int, str | None]:
-    """Sum the flat prices in a plan-version document. Recurring revenue only."""
+    """The monthly recurring revenue one plan-version document is worth: its flat prices for one
+    billing period, brought to a month by its cadence (`_monthly_minor`)."""
     amount = 0
     currency: str | None = document.get("currency")
     for price in document.get("prices", []):
         if price.get("kind") == "flat":
-            amount += int(price.get("amount_minor", 0))
+            amount += int(price.get("amount_minor") or 0)
             currency = price.get("currency") or currency
-    return amount, currency
+    return _monthly_minor(amount, document.get("billing_interval")), currency
 
 
 async def resolve_plan_price(

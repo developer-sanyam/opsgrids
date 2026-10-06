@@ -222,6 +222,30 @@ async def latest_version_no(session: AsyncSession, plan_id: uuid.UUID) -> int:
     return int(highest or 0)
 
 
+async def superseding_version_no(session: AsyncSession, version: PlanVersion) -> int | None:
+    """The newest **published** version of the same plan that would supersede `version` the moment
+    it is published, or None.
+
+    Superseding is `offerable_versions`' rule: a higher-numbered published version with the same
+    audience, cadence and currency. Every read of "what this plan sells now" takes that newest
+    one, so a draft numbered below it would be published and still never be offered or shown as
+    the price. `IS NOT DISTINCT FROM` on the audience so two public (NULL) versions compare equal.
+    """
+    newer = (
+        await session.execute(
+            select(func.max(PlanVersion.version_no)).where(
+                PlanVersion.plan_id == version.plan_id,
+                PlanVersion.state == VERSION_PUBLISHED,
+                PlanVersion.version_no > version.version_no,
+                PlanVersion.restricted_to_org_id.is_not_distinct_from(version.restricted_to_org_id),
+                PlanVersion.billing_interval == version.billing_interval,
+                PlanVersion.currency == version.currency,
+            )
+        )
+    ).scalar_one_or_none()
+    return int(newer) if newer is not None else None
+
+
 async def clone_source(
     session: AsyncSession, plan_id: uuid.UUID, *, restricted_to_org_id: uuid.UUID | None
 ) -> PlanVersion | None:

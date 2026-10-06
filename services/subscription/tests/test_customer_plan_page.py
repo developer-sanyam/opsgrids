@@ -192,6 +192,8 @@ class TestAuthorization:
         sub_id = await _subscribe(session, catalog, org_id, make_version(amount_minor=1000))
         target = catalog.add(make_version(amount_minor=2000))
         before = await _counts(admin_session, org_id)
+        # Subscribing asked catalog what is on offer (ADR-0035); count only the refused calls.
+        catalog.offerable_calls = 0
         _as(org_id, perms)
         preview = await _preview(client, sub_id, target.id)
         options = await client.get(f"/api/v1/subscriptions/{sub_id}/plan-options")

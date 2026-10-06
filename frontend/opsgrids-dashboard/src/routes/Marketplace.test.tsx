@@ -126,6 +126,59 @@ describe("MarketplacePage", () => {
     expect((await screen.findByRole("status")).textContent).toContain("14-day trial begins now");
   });
 
+  /** A published, flat-priced version as the customer plan read returns it (no amount). */
+  const version = (id: string, version_no: number, billing_interval: string, restricted_to_org_id: string | null = null) => ({
+    id,
+    version_no,
+    state: "published",
+    billing_interval,
+    currency: "INR",
+    restricted_to_org_id,
+    published_at: "2026-10-06T00:00:00Z",
+    prices: [{ id: `${id}-p`, kind: "flat", amount_minor: null, currency: "INR", unit: null, unit_price_micros: null, meter_key: null }],
+    features: [],
+  });
+
+  it("a re-priced product starts its trial on the newest public monthly version, never the old or the yearly one", async () => {
+    // The catalogue after the 2026-10-06 list prices: v1 (the old monthly price) stays published
+    // for everyone already pinned to it, v2 is the new yearly price, v3 the new monthly one — and
+    // a negotiated v4 for this organisation is not a list price.
+    const repriced = [
+      {
+        ...plans[0],
+        versions: [version("ver-1", 1, "month"), version("ver-2", 2, "year"), version("ver-3", 3, "month"), version("ver-4", 4, "month", "org-1")],
+      },
+    ];
+    const user = userEvent.setup();
+    arrange();
+    vi.mocked(api.listPlans).mockResolvedValue(repriced as never);
+    render(
+      <MemoryRouter>
+        <MarketplacePage />
+      </MemoryRouter>,
+    );
+    await user.click(await screen.findByRole("button", { name: "Start 14-day trial" }));
+
+    await waitFor(() => expect(api.startTrial).toHaveBeenCalledWith("operations", "ver-3"));
+  });
+
+  it("a plan with no public monthly version starts on its newest flat version, which the server still offers", async () => {
+    // The subscribe write refuses a superseded version (`not_offerable`), so the oldest of two
+    // yearly versions would only fail to start.
+    const yearlyOnly = [{ ...plans[0], versions: [version("ver-1", 1, "year"), version("ver-2", 2, "year")] }];
+    const user = userEvent.setup();
+    arrange();
+    vi.mocked(api.listPlans).mockResolvedValue(yearlyOnly as never);
+    render(
+      <MemoryRouter>
+        <MarketplacePage />
+      </MemoryRouter>,
+    );
+    await user.click(await screen.findByRole("button", { name: "Start 14-day trial" }));
+
+    await waitFor(() => expect(api.startTrial).toHaveBeenCalledWith("operations", "ver-2"));
+  });
+
   it("an entitled product on trial gets an Open link to its own host", async () => {
     arrange({
       subscriptions: [

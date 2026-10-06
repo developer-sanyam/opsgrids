@@ -31,18 +31,24 @@ function productHost(key: string): string | undefined {
 const PRICING_CONTACT_EMAIL = "info@opsgrids.com";
 
 /**
- * The plan version a trial pins to: the first published version with a flat price. The API
- * never tells this app what that price is — pricing is agreed per client — but the same
- * published, flat-priced version is still what `startTrial` needs and still what decides
- * whether a product can be started at all.
+ * The plan version a trial pins to: in the first plan with a published, flat-priced version, the
+ * **newest public monthly** one — the catalogue's current list price. Publishing a new price
+ * leaves the old version published (subscriptions stay pinned to it), so "the first one" would
+ * start every new trial on a price the catalogue has moved past; a yearly version is its own
+ * cadence and is never what a trial starts on. A plan with no public monthly version falls back
+ * to its newest published flat one — never the oldest: the server refuses a superseded version
+ * (`not_offerable`), so the oldest would only fail. The API never tells this app what the price
+ * is — pricing is agreed per client — but this version is still what `startTrial` needs and still
+ * what decides whether a product can be started at all.
  */
 function trialOffer(plans: Plan[]): PlanVersion | null {
+  const newest = (versions: PlanVersion[]): PlanVersion | undefined =>
+    versions.reduce<PlanVersion | undefined>((best, v) => (best === undefined || v.version_no > best.version_no ? v : best), undefined);
   for (const plan of plans) {
-    for (const version of plan.versions) {
-      if (version.state !== "published") continue;
-      const hasFlatPrice = version.prices.some((p) => p.kind === "flat");
-      if (hasFlatPrice) return version;
-    }
+    const flat = plan.versions.filter((v) => v.state === "published" && v.prices.some((p) => p.kind === "flat"));
+    if (flat.length === 0) continue;
+    const monthly = flat.filter((v) => v.billing_interval === "month" && v.restricted_to_org_id === null);
+    return newest(monthly) ?? newest(flat) ?? null;
   }
   return null;
 }
