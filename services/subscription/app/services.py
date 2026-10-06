@@ -64,6 +64,7 @@ from app.registry import ProductRegistry
 from app.schemas import (
     CatalogPlanVersion,
     ChangePlanIn,
+    ChangePlanPreviewIn,
     ChangePlanPreviewOut,
     ExpectedState,
     OperatorChangePlanIn,
@@ -549,9 +550,16 @@ async def change_plan(
     request: Request | None = None,
 ) -> Subscription:
     """A customer re-pins their own subscription. A bundle subscription — or a move onto a
-    bundle rung — is the platform team's to make, so both are refused here."""
+    bundle rung — is the platform team's to make, so both are refused here.
+
+    When it lands is the customer path's own rule (no forced timing): a trial with nothing claimed
+    moves now and free; a paid **upgrade** moves now and claims a prorated charge for the rest of
+    the period; a paid **downgrade** waits for the next period (no credit); an equal-price change
+    moves now with no proration. The target must be on offer to this organization now
+    (`not_offerable` otherwise) unless it is the pin already in force, which withdraws a waiting
+    change. `payload.expected`, when sent, is the preview's picture of the subscription."""
     if subscription.entitled_products != [subscription.product_key]:
-        raise ForbiddenProblem("a bundle's plan is changed by the OpsGrids team")
+        raise ForbiddenProblem(BUNDLE_CHANGE_DETAIL)
     return await _change_plan(
         session,
         organization_id=ctx.organization_id,
@@ -561,6 +569,45 @@ async def change_plan(
         subscription=subscription,
         plan_version_id=payload.plan_version_id,
         request=request,
+        expected=payload.expected,
+        enforce_offerable=True,
+    )
+
+
+#: Why a customer cannot change a bundle subscription's plan themselves.
+BUNDLE_CHANGE_DETAIL = "a bundle's plan is changed by the OpsGrids team"
+
+
+async def preview_change_plan(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    catalog: PlanCatalog,
+    subscription: Subscription,
+    payload: ChangePlanPreviewIn,
+) -> ChangePlanPreviewOut:
+    """What the customer's own `change_plan` would do to this subscription right now — the same
+    evaluation the write runs (no forced timing, no registry, the offerable set enforced), so the
+    confirm screen's sentence and the write cannot disagree. Writes nothing and locks nothing.
+
+    A refusal is an answer (`refusal_code`), including `bundle` for a bundle subscription the
+    write refuses with a 403: the customer is allowed to ask, the answer is that the OpsGrids team
+    makes that change. Only "no such version" (404) and an unreachable catalog (503) raise.
+    """
+    if subscription.entitled_products != [subscription.product_key]:
+        return ChangePlanPreviewOut(
+            expected=_expected_of(subscription),
+            refusal_code=domain.CODE_BUNDLE,
+            refusal_detail=BUNDLE_CHANGE_DETAIL,
+        )
+    return await _preview_change_plan(
+        session,
+        organization_id=ctx.organization_id,
+        catalog=catalog,
+        registry=None,
+        subscription=subscription,
+        plan_version_id=payload.plan_version_id,
+        forced_timing=None,
+        enforce_offerable=True,
     )
 
 
@@ -609,21 +656,55 @@ async def preview_change_plan_as_operator(
     A refusal is an *answer* (`refusal_code`), not an error; only "no such version" (404) and an
     unreachable catalog (503) raise.
     """
-    expected = ExpectedState(
+    return await _preview_change_plan(
+        session,
+        organization_id=payload.organization_id,
+        catalog=catalog,
+        registry=registry,
+        subscription=subscription,
+        plan_version_id=payload.plan_version_id,
+        forced_timing="next_period",
+        enforce_offerable=False,
+    )
+
+
+def _expected_of(subscription: Subscription) -> ExpectedState:
+    return ExpectedState(
         state=subscription.state,
         plan_version_id=subscription.plan_version_id,
         pending_plan_version_id=subscription.pending_plan_version_id,
     )
+
+
+async def _preview_change_plan(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    catalog: PlanCatalog,
+    registry: ProductRegistry | None,
+    subscription: Subscription,
+    plan_version_id: uuid.UUID,
+    forced_timing: str | None,
+    enforce_offerable: bool,
+) -> ChangePlanPreviewOut:
+    """The preview both paths share: `_evaluate_change_plan` without locks, turned into an answer.
+
+    Every field is read off the evaluation the write itself runs — `prorated_charge_now` is the
+    write's own `_claim_proration` condition (a paid upgrade that applies now) — so nothing here is
+    a second opinion about direction, timing or money.
+    """
+    expected = _expected_of(subscription)
     try:
         change = await _evaluate_change_plan(
             session,
-            organization_id=payload.organization_id,
+            organization_id=organization_id,
             catalog=catalog,
             registry=registry,
             subscription=subscription,
-            plan_version_id=payload.plan_version_id,
-            forced_timing="next_period",
+            plan_version_id=plan_version_id,
+            forced_timing=forced_timing,
             lock_claims=False,
+            enforce_offerable=enforce_offerable,
         )
     except domain.CodedNotFound:
         raise
@@ -633,9 +714,17 @@ async def preview_change_plan_as_operator(
             refusal_code=getattr(exc, "code", "refused"),
             refusal_detail=exc.detail,
         )
+    except ForbiddenProblem as exc:
+        # The customer path's bundle refusal (`_check_bundle` with no registry): a target that
+        # declares a bundle is sold by the OpsGrids team. An answer, not a permission failure —
+        # the caller's own permission was checked before this ran.
+        return ChangePlanPreviewOut(
+            expected=expected, refusal_code=domain.CODE_BUNDLE, refusal_detail=exc.detail
+        )
 
     current = subscription.entitled_products
     withdrawing = change.action == _ACT_WITHDRAW
+    applying = change.action == _ACT_APPLY
     direction_label = {1: "upgrade", -1: "downgrade", 0: "equal"}[change.direction]
     return ChangePlanPreviewOut(
         expected=expected,
@@ -647,7 +736,9 @@ async def preview_change_plan_as_operator(
         entitled_added=[m for m in change.members if m not in current],
         entitled_removed=[m for m in current if m not in change.members],
         usage_priced=change.usage_priced,
-        usage_closed_now=change.action == _ACT_APPLY and change.usage_closed_now,
+        usage_closed_now=applying and change.usage_closed_now,
+        paid=change.paid,
+        prorated_charge_now=applying and change.paid and change.direction > 0,
     )
 
 
@@ -710,17 +801,25 @@ async def _evaluate_change_plan(
     plan_version_id: uuid.UUID,
     forced_timing: str | None,
     lock_claims: bool,
+    enforce_offerable: bool = False,
 ) -> _PlanChange:
     """Decide what a change-plan would do, or raise the refusal it would get.
 
     **Error precedence is deliberate.** Every refusal that is a property of the request or of the
     subscription's *state* — a past_due subscription, an unknown version, another product's, a
-    different currency or cadence — comes before `billing_catching_up`, which is the one refusal
-    that is transient. A subscription that will never be allowed to change must not be told to
-    "try again shortly" (and while the billing run is off, that message is indefinite).
+    different currency or cadence, a version no longer on offer — comes before
+    `billing_catching_up`, which is the one refusal that is transient. A subscription that will
+    never be allowed to change must not be told to "try again shortly" (and while the billing run
+    is off, that message is indefinite).
 
     `lock_claims` is False for the preview: the "has the run claimed the due period" check then
     reads the claim row instead of taking `FOR UPDATE` on it.
+
+    `enforce_offerable` (the customer path, ADR-0032): the target must be in catalog's offerable
+    set for this organization now — not a superseded, withdrawn or retired-plan version that is
+    still published and pinnable by id. Checked after the subscription's own refusals, and never
+    for the pin already in force (a withdrawal of a waiting change keeps what they have). Console
+    enforces the same set on the staff path itself (ADR-0029 §8).
     """
     from app import selectors
 
@@ -784,6 +883,10 @@ async def _evaluate_change_plan(
         or (old_version.billing_interval if old_version else None)
     )
     domain.assert_same_cadence(current_interval, new_version.billing_interval)
+    if enforce_offerable:
+        offered = await catalog.offerable_versions(organization_id, subscription.product_key)
+        if new_version.id not in {v.plan_version_id for v in offered}:
+            raise domain.CodedRefusal(domain.CODE_NOT_OFFERABLE, domain.NOT_OFFERABLE_DETAIL)
     # The transient refusal comes last (see the docstring).
     await assert_billing_caught_up(session, subscription, lock=lock_claims)
     direction = domain.plan_change_direction(
@@ -853,6 +956,7 @@ async def _change_plan(
     forced_timing: str | None = None,
     note: str | None = None,
     expected: ExpectedState | None = None,
+    enforce_offerable: bool = False,
 ) -> Subscription:
     """Re-pin a subscription to a different published version — an upgrade or a downgrade.
 
@@ -879,6 +983,7 @@ async def _change_plan(
         plan_version_id=plan_version_id,
         forced_timing=forced_timing,
         lock_claims=True,
+        enforce_offerable=enforce_offerable,
     )
     new_version = change.new_version
     members = change.members

@@ -532,6 +532,21 @@ async def pending_lifecycle_claim(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def scheduled_change_effective_at(
+    session: AsyncSession, subscription: Subscription
+) -> datetime | None:
+    """When the change waiting on this subscription applies, for a customer to read: the end of
+    the claimed period while a renewal or conversion claim is pending, else the end of the current
+    period — the same boundary the write schedules against (`services._evaluate_change_plan`) and
+    the billing run applies at (`services.apply_lapsed_change`). None when nothing is waiting."""
+    if subscription.pending_plan_version_id is None:
+        return None
+    claim = await pending_lifecycle_claim(session, subscription.organization_id, subscription.id)
+    if claim is not None and claim.period_end is not None:
+        return claim.period_end
+    return subscription.current_period_end
+
+
 async def max_claimed_usage_end(
     session: AsyncSession, organization_id: uuid.UUID, subscription_id: uuid.UUID
 ) -> datetime | None:

@@ -69,6 +69,9 @@ class CatalogPlanVersion(BaseModel):
     id: uuid.UUID
     plan_id: uuid.UUID
     product_key: str | None = None
+    #: The plan's display name, which catalog's pin lookup carries beside the version. Read only to
+    #: label a subscription's own plan on the customer's Subscriptions page.
+    plan_name: str | None = None
     version_no: int
     state: str
     billing_interval: str
@@ -82,7 +85,45 @@ class CatalogPlanVersion(BaseModel):
         return [(f.feature_key, f.value) for f in self.features]
 
 
+class CatalogOfferableVersion(BaseModel):
+    """One row of catalog's offerable-versions read: a plan version an organization may be moved
+    onto right now — an active plan's published version, public or negotiated for exactly that
+    organization, and the newest of its plan for its audience, cadence and currency (catalog's
+    `selectors.offerable_versions`). Carries amounts: this service decides what a tenant sees."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    plan_id: uuid.UUID
+    plan_code: str
+    plan_name: str
+    product_key: str
+    plan_version_id: uuid.UUID
+    version_no: int
+    state: str
+    billing_interval: str
+    currency: str
+    restricted_to_org_id: uuid.UUID | None = None
+    published_at: datetime | None = None
+    prices: list[CatalogPrice] = Field(default_factory=list)
+    features: list[CatalogFeature] = Field(default_factory=list)
+
+
 # --------------------------------------------------------------------- customer input
+
+
+class ExpectedState(BaseModel):
+    """What the caller believes the subscription is, compared under the row lock.
+
+    A preview and the confirm that follows it are two requests; a customer's own change, a period
+    roll or dunning can all move the subscription in between. A mismatch is a 409 `state_changed`
+    — the caller re-reads and decides again, rather than confirming something they never saw.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: str = Field(min_length=1, max_length=20)
+    plan_version_id: uuid.UUID
+    pending_plan_version_id: uuid.UUID | None = None
 
 
 class SubscribeIn(BaseModel):
@@ -109,7 +150,25 @@ class SubscribeIn(BaseModel):
 
 class ChangePlanIn(BaseModel):
     """Re-pin a subscription to a different published version. The old pin is preserved on the
-    transition row — never overwritten in history (ADR-0004 §2)."""
+    transition row — never overwritten in history (ADR-0004 §2).
+
+    The version must be one catalog offers this organization now (422 `not_offerable` otherwise),
+    or the pin the subscription is already on — which withdraws a change that is waiting.
+    `expected` is the state the customer's preview was computed from (`ChangePlanPreviewOut.
+    expected`); when sent, it is compared under the row lock and a mismatch is a 409
+    `state_changed`, so a confirm never applies a change the customer did not see. Optional, so a
+    caller that predates the preview keeps working.
+    """
+
+    plan_version_id: uuid.UUID
+    expected: ExpectedState | None = None
+
+
+class ChangePlanPreviewIn(BaseModel):
+    """The customer's question behind the Change plan confirm: *what would this change do?*
+    Read-only, and answered by the same evaluation the write runs."""
+
+    model_config = ConfigDict(extra="forbid")
 
     plan_version_id: uuid.UUID
 
@@ -144,21 +203,6 @@ class OperatorSubscribeIn(BaseModel):
     @classmethod
     def _note_is_not_blank(cls, value: str | None) -> str | None:
         return _strip_note(value)
-
-
-class ExpectedState(BaseModel):
-    """What the caller believes the subscription is, compared under the row lock.
-
-    A preview and the confirm that follows it are two requests; a customer's own change, a period
-    roll or dunning can all move the subscription in between. A mismatch is a 409 `state_changed`
-    — the operator re-reads and decides again, rather than confirming something they never saw.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    state: str = Field(min_length=1, max_length=20)
-    plan_version_id: uuid.UUID
-    pending_plan_version_id: uuid.UUID | None = None
 
 
 class OperatorChangePlanIn(BaseModel):
@@ -274,14 +318,109 @@ class ChangePlanPreviewOut(BaseModel):
     #: current version has a usage price. An equal-price switch is "no proration", not "nothing
     #: charged", whenever this is set.
     usage_closed_now: bool = False
+    #: The time since this period began is paid time — an active subscription, or a trial whose
+    #: conversion the billing run has already claimed. False for a trial with nothing claimed,
+    #: where any change applies now and moves no money.
+    paid: bool = False
+    #: Applying this raises a **prorated charge now** for the rest of the current period: a paid
+    #: upgrade on the customer's own change-plan (the difference between the new and the old
+    #: recurring price, priced and invoiced by the billing run; no amount is known until then).
+    #: Never true on the staff path, which defers every paid change to the next period.
+    prorated_charge_now: bool = False
     #: Set (with `refusal_detail`) when the write would be refused. The preview still answers 200:
     #: a refusal is an answer to "what would happen", not a failure of the question.
     refusal_code: str | None = None
     refusal_detail: str | None = None
 
 
+# --------------------------------------------------------------------- customer plan reads
+#
+# What the customer's Subscriptions page shows about plans (ADR-0032). **Amounts are the
+# organization's own agreed prices only**: a version negotiated for exactly this organization
+# (`restricted_to_org_id` = the caller's organization), and only to a caller who may read this
+# organization's invoices. A public (list) price is never sent to a tenant here, whether or not
+# the organization is on it — the owner's rule since 2026-09-24 (pricing is agreed per client;
+# catalog's tenant reads carry no amounts). `amount_visible` says which case a row is, so a screen
+# never has to guess why a price is missing.
+
+
+class PlanPriceOut(BaseModel):
+    """One priced component of the organization's own agreed price, integer minor units."""
+
+    kind: str
+    amount_minor: int | None = None
+    unit: str | None = None
+    unit_price_micros: int | None = None
+    meter_key: str | None = None
+
+
+class PlanRefOut(BaseModel):
+    """A plan version, as the customer may see it."""
+
+    plan_version_id: uuid.UUID
+    plan_id: uuid.UUID | None = None
+    plan_name: str | None = None
+    version_no: int | None = None
+    billing_interval: str | None = None
+    #: Negotiated for this organization alone (an audience-of-one version, ADR-0004 §2).
+    negotiated: bool = False
+    #: True when `currency`, `recurring_minor` and `prices` are filled in: the version is this
+    #: organization's own negotiated price and the caller may read its invoices. False for a
+    #: public version — whose amounts are never sent to a tenant — or a caller without that right.
+    amount_visible: bool = False
+    currency: str | None = None
+    #: Flat plus per-seat at quantity one, usage excluded — for display only. The preview decides
+    #: direction; the billing run prices.
+    recurring_minor: int | None = None
+    prices: list[PlanPriceOut] | None = None
+
+
+class PlanOptionOut(PlanRefOut):
+    """One plan the customer may pick in Change plan, and whether this subscription can take it."""
+
+    is_current: bool = False
+    is_pending: bool = False
+    #: Why this subscription cannot take it: `cadence` or `currency` (one cadence and one currency
+    #: per subscription), or `current` (it is the plan already in force). Null when it can.
+    blocked_code: str | None = None
+    blocked_reason: str | None = None
+
+
+class PlanOptionsOut(BaseModel):
+    """Everything the Change plan dialog's first step needs, from live reads.
+
+    `options` is catalog's offerable set for this organization (active plans, published versions,
+    public or negotiated for it, the newest per plan, audience, cadence and currency) — never a
+    superseded, withdrawn or retired-plan version — with the current pin marked even when it is
+    no longer on offer itself.
+    """
+
+    subscription_id: uuid.UUID
+    product_key: str
+    state: str
+    #: `state` (only a trial or an active subscription changes plan) or `bundle` (a bundle's plan
+    #: is changed by the OpsGrids team). Null when a change may be asked for.
+    change_blocked_code: str | None = None
+    current: PlanRefOut | None = None
+    pending: PlanRefOut | None = None
+    #: When the waiting change applies: the end of the period it waits for.
+    pending_effective_at: datetime | None = None
+    options: list[PlanOptionOut] = Field(default_factory=list)
+
+
+class SubscriptionPlanSummaryOut(BaseModel):
+    """The plan line of one row on the Subscriptions page: what it is on, and what it moves to."""
+
+    subscription_id: uuid.UUID
+    current: PlanRefOut | None = None
+    pending: PlanRefOut | None = None
+    pending_effective_at: datetime | None = None
+
+
 class CancelIn(BaseModel):
-    """Cancel a subscription. Immediate for the MVP; `reason` is recorded on the transition."""
+    """Cancel a subscription. Immediate and terminal: access ends now, and a cancelled
+    subscription cannot be reopened or replaced (one row per product per organization). `reason`
+    is the customer's own words, recorded as the audit row's reason."""
 
     reason: str | None = Field(default=None, max_length=200)
 

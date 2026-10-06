@@ -2,7 +2,7 @@
   "components": {
     "schemas": {
       "CancelIn": {
-        "description": "Cancel a subscription. Immediate for the MVP; `reason` is recorded on the transition.",
+        "description": "Cancel a subscription. Immediate and terminal: access ends now, and a cancelled\nsubscription cannot be reopened or replaced (one row per product per organization). `reason`\nis the customer's own words, recorded as the audit row's reason.",
         "properties": {
           "reason": {
             "anyOf": [
@@ -21,8 +21,18 @@
         "type": "object"
       },
       "ChangePlanIn": {
-        "description": "Re-pin a subscription to a different published version. The old pin is preserved on the\ntransition row \u2014 never overwritten in history (ADR-0004 \u00a72).",
+        "description": "Re-pin a subscription to a different published version. The old pin is preserved on the\ntransition row \u2014 never overwritten in history (ADR-0004 \u00a72).\n\nThe version must be one catalog offers this organization now (422 `not_offerable` otherwise),\nor the pin the subscription is already on \u2014 which withdraws a change that is waiting.\n`expected` is the state the customer's preview was computed from (`ChangePlanPreviewOut.\nexpected`); when sent, it is compared under the row lock and a mismatch is a 409\n`state_changed`, so a confirm never applies a change the customer did not see. Optional, so a\ncaller that predates the preview keeps working.",
         "properties": {
+          "expected": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExpectedState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "plan_version_id": {
             "format": "uuid",
             "title": "Plan Version Id",
@@ -33,6 +43,148 @@
           "plan_version_id"
         ],
         "title": "ChangePlanIn",
+        "type": "object"
+      },
+      "ChangePlanPreviewIn": {
+        "additionalProperties": false,
+        "description": "The customer's question behind the Change plan confirm: *what would this change do?*\nRead-only, and answered by the same evaluation the write runs.",
+        "properties": {
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_version_id"
+        ],
+        "title": "ChangePlanPreviewIn",
+        "type": "object"
+      },
+      "ChangePlanPreviewOut": {
+        "description": "What a change-plan would do right now, without an amount.\n\n**No amount, deliberately.** A paid change is priced by the billing run from catalog and the\nsubscription's items when it claims the period; there is no quote to read until then, and\ninventing one here would be a second pricing implementation that could disagree with the first\ninvoice. What *is* knowable, and what an operator needs to decide, is the direction, when it\nlands, what it replaces, and which products it adds or removes.",
+        "properties": {
+          "action": {
+            "default": "switch",
+            "enum": [
+              "switch",
+              "withdraw_scheduled"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "upgrade",
+                  "downgrade",
+                  "equal"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "effective": {
+            "anyOf": [
+              {
+                "enum": [
+                  "now",
+                  "next_period"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective"
+          },
+          "effective_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective At"
+          },
+          "entitled_added": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entitled Added",
+            "type": "array"
+          },
+          "entitled_removed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entitled Removed",
+            "type": "array"
+          },
+          "expected": {
+            "$ref": "#/components/schemas/ExpectedState"
+          },
+          "paid": {
+            "default": false,
+            "title": "Paid",
+            "type": "boolean"
+          },
+          "prorated_charge_now": {
+            "default": false,
+            "title": "Prorated Charge Now",
+            "type": "boolean"
+          },
+          "refusal_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refusal Code"
+          },
+          "refusal_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refusal Detail"
+          },
+          "usage_closed_now": {
+            "default": false,
+            "title": "Usage Closed Now",
+            "type": "boolean"
+          },
+          "usage_priced": {
+            "default": false,
+            "title": "Usage Priced",
+            "type": "boolean"
+          },
+          "would_clear_pending": {
+            "default": false,
+            "title": "Would Clear Pending",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "expected"
+        ],
+        "title": "ChangePlanPreviewOut",
         "type": "object"
       },
       "DunningOut": {
@@ -106,6 +258,41 @@
         "title": "DunningOut",
         "type": "object"
       },
+      "ExpectedState": {
+        "additionalProperties": false,
+        "description": "What the caller believes the subscription is, compared under the row lock.\n\nA preview and the confirm that follows it are two requests; a customer's own change, a period\nroll or dunning can all move the subscription in between. A mismatch is a 409 `state_changed`\n\u2014 the caller re-reads and decides again, rather than confirming something they never saw.",
+        "properties": {
+          "pending_plan_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Plan Version Id"
+          },
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "state": {
+            "maxLength": 20,
+            "minLength": 1,
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "plan_version_id"
+        ],
+        "title": "ExpectedState",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -117,6 +304,383 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "PlanOptionOut": {
+        "description": "One plan the customer may pick in Change plan, and whether this subscription can take it.",
+        "properties": {
+          "amount_visible": {
+            "default": false,
+            "title": "Amount Visible",
+            "type": "boolean"
+          },
+          "billing_interval": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Billing Interval"
+          },
+          "blocked_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocked Code"
+          },
+          "blocked_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocked Reason"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "is_current": {
+            "default": false,
+            "title": "Is Current",
+            "type": "boolean"
+          },
+          "is_pending": {
+            "default": false,
+            "title": "Is Pending",
+            "type": "boolean"
+          },
+          "negotiated": {
+            "default": false,
+            "title": "Negotiated",
+            "type": "boolean"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          },
+          "plan_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Name"
+          },
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "prices": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PlanPriceOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prices"
+          },
+          "recurring_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recurring Minor"
+          },
+          "version_no": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version No"
+          }
+        },
+        "required": [
+          "plan_version_id"
+        ],
+        "title": "PlanOptionOut",
+        "type": "object"
+      },
+      "PlanOptionsOut": {
+        "description": "Everything the Change plan dialog's first step needs, from live reads.\n\n`options` is catalog's offerable set for this organization (active plans, published versions,\npublic or negotiated for it, the newest per plan, audience, cadence and currency) \u2014 never a\nsuperseded, withdrawn or retired-plan version \u2014 with the current pin marked even when it is\nno longer on offer itself.",
+        "properties": {
+          "change_blocked_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Blocked Code"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanRefOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/PlanOptionOut"
+            },
+            "title": "Options",
+            "type": "array"
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanRefOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending_effective_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Effective At"
+          },
+          "product_key": {
+            "title": "Product Key",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "subscription_id": {
+            "format": "uuid",
+            "title": "Subscription Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subscription_id",
+          "product_key",
+          "state"
+        ],
+        "title": "PlanOptionsOut",
+        "type": "object"
+      },
+      "PlanPriceOut": {
+        "description": "One priced component of the organization's own agreed price, integer minor units.",
+        "properties": {
+          "amount_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Minor"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "meter_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meter Key"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "unit_price_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Price Micros"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "PlanPriceOut",
+        "type": "object"
+      },
+      "PlanRefOut": {
+        "description": "A plan version, as the customer may see it.",
+        "properties": {
+          "amount_visible": {
+            "default": false,
+            "title": "Amount Visible",
+            "type": "boolean"
+          },
+          "billing_interval": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Billing Interval"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "negotiated": {
+            "default": false,
+            "title": "Negotiated",
+            "type": "boolean"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          },
+          "plan_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Name"
+          },
+          "plan_version_id": {
+            "format": "uuid",
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "prices": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PlanPriceOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prices"
+          },
+          "recurring_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recurring Minor"
+          },
+          "version_no": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version No"
+          }
+        },
+        "required": [
+          "plan_version_id"
+        ],
+        "title": "PlanRefOut",
         "type": "object"
       },
       "ServiceInfo": {
@@ -317,6 +881,53 @@
         "title": "SubscriptionOut",
         "type": "object"
       },
+      "SubscriptionPlanSummaryOut": {
+        "description": "The plan line of one row on the Subscriptions page: what it is on, and what it moves to.",
+        "properties": {
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanRefOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanRefOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending_effective_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Effective At"
+          },
+          "subscription_id": {
+            "format": "uuid",
+            "title": "Subscription Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subscription_id"
+        ],
+        "title": "SubscriptionPlanSummaryOut",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -451,6 +1062,32 @@
         ]
       }
     },
+    "/api/v1/subscriptions/plan-summaries": {
+      "get": {
+        "description": "One row per subscription `GET /subscriptions` returns \u2014 the same scoped selector \u2014 with its\nplan's name, cadence and version, the plan a scheduled change moves it to, and when. An amount\nonly for this organization's own negotiated price, and only to a caller who may read its\ninvoices; never a list price. 503 `catalog_unavailable` when catalog cannot be read: the page\nstill has `GET /subscriptions` and renders without the plan line.",
+        "operationId": "list_plan_summaries_api_v1_subscriptions_plan_summaries_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SubscriptionPlanSummaryOut"
+                  },
+                  "title": "Response List Plan Summaries Api V1 Subscriptions Plan Summaries Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The plan each of this organization's subscriptions is on, and any scheduled change",
+        "tags": [
+          "subscription"
+        ]
+      }
+    },
     "/api/v1/subscriptions/{subscription_id}": {
       "get": {
         "operationId": "get_subscription_api_v1_subscriptions__subscription_id__get",
@@ -549,6 +1186,7 @@
     },
     "/api/v1/subscriptions/{subscription_id}/change-plan": {
       "post": {
+        "description": "When it lands is decided by the server, never asked for: a trial moves now and free; a paid\nupgrade moves now with a prorated charge for the rest of the period; a paid downgrade waits for\nthe next period; an equal-price change moves now. Ask `.../change-plan/preview` first and send\nits `expected` back. Refusals carry `errors[0].code`: 409 `state_changed`,\n`billing_catching_up`; 422 `state`, `cadence`, `currency`, `already_pinned`,\n`product_mismatch`, `not_published`, `not_offerable`; 404 `not_found`; 403 for a bundle.",
         "operationId": "change_plan_api_v1_subscriptions__subscription_id__change_plan_post",
         "parameters": [
           {
@@ -595,6 +1233,104 @@
           }
         },
         "summary": "Re-pin a subscription to a different published version (upgrade or downgrade)",
+        "tags": [
+          "subscription"
+        ]
+      }
+    },
+    "/api/v1/subscriptions/{subscription_id}/change-plan/preview": {
+      "post": {
+        "description": "The confirm screen's server-computed answer, from the evaluation `change-plan` itself runs:\ndirection, whether it applies `now` or at the `next_period` (and when), whether a prorated\ncharge is raised now, what it replaces, the products it adds or removes \u2014 and the `expected`\nstate to send back with the write. **No amount**: a paid change is priced by the billing run\nwhen it claims the period. A refusal is part of the answer (`refusal_code`); only a missing\nsubscription or version (404) and an unreachable catalog (503) are errors.\n\nA POST because it carries a body, but a read: no row is written or locked, and no audit or\noutbox row is staged. Same permission as the write it previews.",
+        "operationId": "preview_change_plan_api_v1_subscriptions__subscription_id__change_plan_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subscription_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Subscription Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePlanPreviewIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangePlanPreviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What changing this subscription's plan would do \u2014 read-only, writes nothing",
+        "tags": [
+          "subscription"
+        ]
+      }
+    },
+    "/api/v1/subscriptions/{subscription_id}/plan-options": {
+      "get": {
+        "description": "Catalog's offerable set for this organization and product \u2014 active plans' published\nversions, public or negotiated for it, the newest per plan, audience, cadence and currency;\nnever a superseded, withdrawn or retired-plan version \u2014 each marked with whether this\nsubscription can take it, and the plan in force marked. Same permission as changing the plan.\nAn amount only for this organization's own negotiated price, and only to a caller who may read\nits invoices; never a list price.",
+        "operationId": "get_plan_options_api_v1_subscriptions__subscription_id__plan_options_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subscription_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Subscription Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanOptionsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The plans this subscription could move to \u2014 the Change plan picker",
         "tags": [
           "subscription"
         ]

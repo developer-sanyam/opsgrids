@@ -88,6 +88,14 @@ CODE_CLAIM_IN_FLIGHT = "claim_in_flight"
 CODE_TRIAL_CAP = "trial_cap"
 #: 422: a trial "extension" that ends no later than the trial already does, or not in the future.
 CODE_TRIAL_NOT_EXTENDED = "trial_not_extended"
+#: 422: a customer's change-plan to a version catalog no longer offers this organization — a newer
+#: version replaced it, it was withdrawn, or its plan was retired (ADR-0032). The same code and rule
+#: console enforces on the staff path (ADR-0029 §8).
+CODE_NOT_OFFERABLE = "not_offerable"
+NOT_OFFERABLE_DETAIL = (
+    "that plan version is no longer on offer for this organization: a newer version has replaced "
+    "it, it was withdrawn, or its plan was retired. Choose again from the plans on offer now."
+)
 
 
 class CodedRefusal(BusinessRuleProblem):
