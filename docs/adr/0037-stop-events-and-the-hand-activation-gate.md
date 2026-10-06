@@ -64,9 +64,15 @@ cancelled subscription never emits again, so nothing would switch it back off.
    its subscription has only the time, and one without a time has only the id.
 3. **Fresh organizations and hand-only organizations still activate (201).** A hand activation never
    writes provenance, so the gate never closes on one: activate, deactivate and reactivate, with or
-   without `trial_days`, all work for an organization no subscription has fed. A subscription whose
-   first event has not folded yet is allowed through, and the fold then overwrites the row: the
-   subscription wins in either order (race-tested both ways).
+   without `trial_days`, all work for an organization no subscription has fed. A **standalone**
+   subscription whose first event has not folded yet is allowed through, and the fold then overwrites
+   the row, because its own source is the very row the hand activation wrote: the subscription wins in
+   either order (race-tested both ways). A **bundle** is different: it writes a row of its own for each
+   member (`source_product_key = 'suite'`), so a hand activation of a member made before the suite's
+   first event folded is not overwritten and outlives the suite's cancel. From the suite's first fold
+   the gate refuses a second one. That is known leak (e) below, pinned by a test, found by the audit's
+   query 2, and not closed here: closing it means the fold retiring a hand row, a policy change on
+   legitimate gifts that is the owner's to make.
 4. **No "trial already used" rule.** It would be bypassed by omitting `trial_days`, and it is not what
    this closes: the hole is a hand activation over a subscription's row, not a second trial.
 5. **Deactivation of a live subscription-fed own source is refused too (409 `subscription_managed`).**
@@ -83,7 +89,24 @@ cancelled subscription never emits again, so nothing would switch it back off.
    that already hand-activated after a cancel or a suspend are found by a **read-only** audit query
    documented in the RUNBOOK (and listed with the stop-event victims of defect 1, which look the same:
    a cancelled or suspended subscription beside an entitled activation). A repair is a one-off product-side
-   write plus a console re-fold, and is deliberately not shipped.
+   write plus a console re-fold, and is deliberately not shipped. The queries list a row only when nothing
+   a subscription still feeds keeps the product on: a customer who moved from a standalone product to a
+   suite keeps a `cancelled` standalone row beside a live suite (a subscription keeps one row per
+   organization and product for ever), and that product is correctly on. "On" is the gateway's own
+   meaning (`active`, or a trial that has not lapsed). The queries are run as written, against seeded
+   rows, by `subscription/tests/test_runbook_audit_queries.py`.
+8. **A stop writes no source for a member its subscription never fed.** Decision 1 means a stop that
+   applies a lapsed rung-up (duo to trio, `next_period`) names the *new* pin's members, including one
+   the subscription never entitled. Product's fold used to write a row for every named member whatever
+   the state, which made a `suspended` activation and source with subscription provenance for a product
+   the organization never had, and the gate then refused the owner that product. `project_subscription`
+   now skips a member with no row when the event de-entitles and the source already has rows: there is
+   nothing to switch off, and the rows it does have carry the watermark, so an older event is still
+   dropped. A stop that is the first event its source hears has no rows to carry the watermark and
+   nothing says what was held, so it writes all its members as before (that needs the stop to overtake
+   every earlier event of its subscription; the member then stays a suspended, subscription-managed row). The alternative, having subscription name
+   only the members it held before the change, would make the stop's payload disagree with the pin it
+   carries for every consumer, console included.
 
 ## Consequences
 
@@ -114,6 +137,8 @@ cancelled subscription never emits again, so nothing would switch it back off.
   column until its first event, so it looks like a hand activation to the gate.
   (d) An organization with no subscription provenance can still self-grant any launched product, trial
   or not. That is the "no subscription" case, not a bypass of a cancel.
+  (e) A hand activation of a bundle **member** made before the suite's first event folded (decision 3)
+  outlives the suite's cancel. Query 2 of the audit lists it.
 
 ## Alternatives rejected
 

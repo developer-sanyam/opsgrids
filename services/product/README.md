@@ -38,7 +38,15 @@ is serving it.
 The test is one property, `ActivationSource.is_subscription_managed`: `source_subscription_id IS
 NOT NULL OR state_occurred_at IS NOT NULL`. The fold stamps both on every row it touches and a
 hand activation never does, so a hand-only or fresh organization is never refused. It is read over
-every source of the activation after the activation lock is taken, so it cannot race a fold.
+every source of the activation after the activation lock is taken, so it cannot race a fold that is
+already in flight. It cannot see a subscription whose first event has not folded: a standalone
+subscription's fold then overwrites the hand row (the subscription wins), but a **bundle** writes its
+own row per member, so a hand activation of a member made before the suite's first fold is not
+overwritten and outlives the suite's cancel (ADR-0037, known leak (e); audit query 2 finds it).
+
+A stop event that names a member its source has no row for (a lapsed rung-up the stop applied
+silently) writes no row for that member: there is nothing to switch off, and a subscription-managed
+row for a product the subscription never fed would refuse the owner it.
 
 Organizations that hand-activated **before** this gate, after a cancel or a suspend, are found
 with the read-only audit queries in the edge RUNBOOK ("Stop events and the hand-activation gate").
