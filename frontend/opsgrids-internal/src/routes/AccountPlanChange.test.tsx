@@ -468,6 +468,9 @@ describe("the preview and the confirm", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Review change" }));
     expect(await within(dialog).findByText("cannot change from a month plan to a year one mid-subscription")).toBeTruthy();
     expect(within(dialog).getByText(/keeps one billing cadence/)).toBeTruthy();
+    // Never advice to cancel: a cancelled subscription cannot be replaced (ADR-0035).
+    expect(within(dialog).getByText(/Do not cancel to get there/)).toBeTruthy();
+    expect(within(dialog).queryByText(/cancelling and subscribing again/)).toBeNull();
     expect(screen.queryByRole("dialog", { name: "Confirm plan change" })).toBeNull();
     expect(w.changeSpy).not.toHaveBeenCalled();
   });

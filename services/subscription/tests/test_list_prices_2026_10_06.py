@@ -188,7 +188,12 @@ class TestAnExistingSubscriber:
         )
         assert customer.status_code == 422, customer.text
         assert _code(customer) == domain.CODE_CADENCE
-        assert "cancel and subscribe" in customer.json()["detail"]
+        # Never advice to cancel: a cancelled subscription cannot be replaced, so following it
+        # would lose the product (it used to say "cancel and subscribe to the new plan instead").
+        detail = customer.json()["detail"]
+        assert "cannot be replaced" in detail and "cancel and subscribe" not in detail
+        preview_detail = preview.json()["refusal_detail"]
+        assert "cannot be replaced" in preview_detail, preview_detail
 
         staff = await client.post(
             f"/internal/v1/subscriptions/{sub_id}/change-plan",

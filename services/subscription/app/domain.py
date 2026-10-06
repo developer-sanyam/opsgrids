@@ -858,23 +858,33 @@ class CadenceChangeRefused(CodedRefusal):
     """A plan change to a different billing cadence, or to `one_time` (review round 2, B1).
 
     A monthly period and a yearly one are not two prices for one thing a proration can net: the
-    periods do not line up, and pricing one against the other mis-bills one side. The path is
-    cancel and subscribe again.
+    periods do not line up, and pricing one against the other mis-bills one side. There is no path
+    to another cadence yet, and the sentence says so rather than send anyone to cancel: a cancelled
+    subscription cannot be replaced (`already_subscribed`), so cancelling to resubscribe would
+    lose the product (ADR-0035).
     """
 
     def __init__(self, detail: str) -> None:
         super().__init__(CODE_CADENCE, detail)
 
 
+#: Why cancelling is not the way round a cadence refusal. Shared by both sentences below.
+_NO_CANCEL_ROUTE = (
+    "moving between billing cadences is not possible yet, and cancelling does not open a way — a "
+    "cancelled subscription cannot be replaced"
+)
+
+
 def assert_same_cadence(current: str | None, target: str | None) -> None:
     if target == INTERVAL_ONE_TIME or target not in _INTERVAL_DAYS:
         raise CadenceChangeRefused(
-            f"cannot change to a {target or 'unknown'} plan: cancel and subscribe to it instead"
+            f"cannot change to a {target or 'unknown'} plan: a subscription is billed monthly or "
+            f"yearly; {_NO_CANCEL_ROUTE}"
         )
     if current != target:
         raise CadenceChangeRefused(
-            f"cannot change from a {current or 'unknown'} plan to a {target} one mid-subscription:"
-            " cancel and subscribe to the new plan instead"
+            f"cannot change from a {current or 'unknown'} plan to a {target} one: a subscription "
+            f"keeps its billing cadence; {_NO_CANCEL_ROUTE}"
         )
 
 

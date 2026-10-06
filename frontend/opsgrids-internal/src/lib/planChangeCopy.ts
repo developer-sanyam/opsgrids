@@ -84,7 +84,7 @@ export function refusalGuidance(code: string | null): string | null {
     case "state":
       return "Only a trial or an active subscription can change plan. A past-due or suspended one has to be put right first.";
     case "cadence":
-      return "A subscription keeps one billing cadence. Moving to a different one means cancelling and subscribing again.";
+      return "A subscription keeps one billing cadence, and moving it to another is not possible yet. Do not cancel to get there: a cancelled subscription cannot be replaced, so the customer would lose the product.";
     case "currency":
       return "A subscription keeps one currency.";
     case "already_pinned":
