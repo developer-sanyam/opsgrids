@@ -1,12 +1,12 @@
 """list prices of 2026-10-06: a monthly and a yearly version of every public flat plan
 
 The owner's decision of 2026-10-06 (ADR-0035, `docs/adr/0035-list-prices-2026-10-06.md`): every
-product together costs **INR 3,00,000 a year**, and the monthly price is that divided by twelve —
-**INR 25,000 a month** — split across the eleven products in proportion to what each public flat
-plan cost until today (the placeholders `e1f2a3b4c5d6`, `10e6b62d9ac7` and `53f1a7a8b99d` seeded).
-The split lives in `NEW_PRICES` below as integer paise (ADR-0000 §8): the yearly amounts sum to
-exactly 30,000,000 paise and the monthly ones, each exactly a twelfth of its yearly amount, to
-exactly 2,500,000.
+product together costs **INR 30,000 a month or INR 3,00,000 a year** — the yearly price
+deliberately the cheaper one, ten months' price for twelve — split across the eleven products in
+proportion to what each public flat plan cost until today (the placeholders `e1f2a3b4c5d6`,
+`10e6b62d9ac7` and `53f1a7a8b99d` seeded). The split lives in `NEW_PRICES` below as integer paise
+(ADR-0000 §8): the monthly amounts sum to exactly 3,000,000 paise and the yearly ones, each exactly
+ten times its monthly amount, to exactly 30,000,000.
 
 **Shape.** For each of the eleven public flat base plans — found by `(product_key, code)`, the
 plan's own unique key — two new **published, public** versions are inserted: a **yearly** one at
@@ -102,24 +102,25 @@ YEAR = "year"
 #: Inserted in this order, so the monthly version is the newest (see the module docstring).
 CADENCES: tuple[str, ...] = (YEAR, MONTH)
 
-#: (product_key, code, monthly paise, yearly paise) — the split of 2026-10-06. Integer minor units
-#: only. The monthly amount is exactly the yearly one divided by twelve.
+#: (product_key, code, monthly paise, yearly paise) — the owner's split of 2026-10-06. Integer minor
+#: units only. The yearly amount is ten times the monthly one: a year is two months cheaper than
+#: twelve monthly periods, which is the owner's choice, not a rounding.
 NEW_PRICES: tuple[tuple[str, str, int, int], ...] = (
-    ("crm", "revenue", 250000, 3000000),
-    ("engage", "engage", 187500, 2250000),
-    ("finance", "finance", 312500, 3750000),
-    ("hrms", "people", 250000, 3000000),
-    ("itsm", "it", 250000, 3000000),
-    ("marketing", "marketing", 187500, 2250000),
-    ("operations", "inventory", 312500, 3750000),
-    ("projects", "projects", 187500, 2250000),
-    ("pulseboard", "pulseboard", 187500, 2250000),
-    ("storefront", "storefront", 187500, 2250000),
-    ("support", "support", 187500, 2250000),
+    ("crm", "revenue", 300000, 3000000),
+    ("engage", "engage", 225000, 2250000),
+    ("finance", "finance", 375000, 3750000),
+    ("hrms", "people", 300000, 3000000),
+    ("itsm", "it", 300000, 3000000),
+    ("marketing", "marketing", 225000, 2250000),
+    ("operations", "inventory", 375000, 3750000),
+    ("projects", "projects", 225000, 2250000),
+    ("pulseboard", "pulseboard", 225000, 2250000),
+    ("storefront", "storefront", 225000, 2250000),
+    ("support", "support", 225000, 2250000),
 )
 
-#: What all eleven together cost: the owner's yearly number, and a twelfth of it a month.
-MONTHLY_TOTAL_MINOR = 2500000
+#: What all eleven together cost, the owner's two numbers: INR 30,000 a month, INR 3,00,000 a year.
+MONTHLY_TOTAL_MINOR = 3000000
 YEARLY_TOTAL_MINOR = 30000000
 
 #: What each plan's public flat price was when the split was computed — the seeds' placeholders,

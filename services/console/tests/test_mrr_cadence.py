@@ -54,8 +54,8 @@ def _doc(version_id: str, interval: str | None, *amounts: int) -> dict[str, Any]
 DOCS: dict[str, dict[str, Any]] = {
     # crm on the 2026-10-06 yearly list price: INR 30,000 a year.
     YEARLY: _doc(YEARLY, "year", 3000000),
-    # crm on the 2026-10-06 monthly list price: INR 2,500 a month.
-    MONTHLY: _doc(MONTHLY, "month", 250000),
+    # crm on the 2026-10-06 monthly list price: INR 3,000 a month (a year is ten of them).
+    MONTHLY: _doc(MONTHLY, "month", 300000),
     ONE_TIME: _doc(ONE_TIME, "one_time", 50000),
     # A document from before `billing_interval` was part of it: monthly, as everything then was.
     LEGACY: _doc(LEGACY, None, 50000),
@@ -84,7 +84,7 @@ class TestTheResolvedPriceIsMonthly:
     @pytest.mark.parametrize(
         ("version_id", "expected"),
         [
-            (MONTHLY, 250000),
+            (MONTHLY, 300000),
             (YEARLY, 250000),
             (ODD_YEARLY, 83333),
             (LEGACY, 50000),
@@ -102,8 +102,8 @@ class TestTheResolvedPriceIsMonthly:
 
         assert _monthly_minor(102, "year") == 9, "8.5 rounds up"
         assert _monthly_minor(101, "year") == 8, "8.42 rounds down"
-        assert _monthly_minor(3750000, "year") == 312500
-        assert _monthly_minor(187500, "month") == 187500
+        assert _monthly_minor(3750000, "year") == 312500, "Finance's yearly list price"
+        assert _monthly_minor(375000, "month") == 375000, "Finance's monthly list price"
 
     async def test_an_unresolvable_version_is_still_zero(self) -> None:
         assert await _resolver()(str(uuid.uuid4())) == (0, None)
@@ -136,20 +136,20 @@ class TestAYearlySubscriberInMrr:
         org_b: uuid.UUID,
     ) -> None:
         resolver = _resolver()
-        # Org A: crm on the yearly list price. Org B: crm on the monthly one. Same product, same
-        # money per month — so the same MRR.
+        # Org A: crm on the yearly list price. Org B: crm on the monthly one. Same product; the
+        # year is the cheaper option (ten months' price), so its MRR is the lower of the two.
         await _fold(_activated(org_id, "crm", YEARLY), resolver)
         await _fold(_activated(org_b, "crm", MONTHLY), resolver)
 
         states = {s.organization_id: s for s in await selectors.all_org_states(directory_session)}
         assert states[org_id].mrr_minor == 250000, "INR 30,000 a year is INR 2,500 a month"
-        assert states[org_b].mrr_minor == 250000
+        assert states[org_b].mrr_minor == 300000, "INR 3,000 a month, as listed"
         assert states[org_id].subscription_states["crm"]["amount_minor"] == 250000, (
             "the admin 'Per month' column reads this entry"
         )
 
         metrics = await selectors.platform_metrics(directory_session)
-        assert metrics["mrr_minor"] == 500000, "not 3,250,000: the year is not a month's revenue"
+        assert metrics["mrr_minor"] == 550000, "not 3,300,000: the year is not a month's revenue"
 
         logged = (
             (
@@ -163,7 +163,7 @@ class TestAYearlySubscriberInMrr:
         assert logged == [250000], "the revenue log the MRR series replays carries the same"
 
         series = await selectors.metrics_series(directory_session, months=1)
-        assert list(series["mrr_minor"].values()) == [500000]
+        assert list(series["mrr_minor"].values()) == [550000]
 
     async def test_a_one_time_version_adds_nothing_to_mrr(
         self, engine_ready: None, directory_session: AsyncSession, org_id: uuid.UUID

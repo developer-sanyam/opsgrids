@@ -70,7 +70,7 @@ def _repriced(catalog: FakeCatalog) -> tuple[CatalogPlanVersion, ...]:
     plan_id = uuid.uuid4()
     old = catalog.add(_revenue(plan_id, 1, 199900, "month"))
     yearly = catalog.add(_revenue(plan_id, 2, 3000000, "year"))
-    monthly = catalog.add(_revenue(plan_id, 3, 250000, "month"))
+    monthly = catalog.add(_revenue(plan_id, 3, 300000, "month"))
     return old, yearly, monthly
 
 
@@ -112,7 +112,7 @@ async def _subscribe_before_the_reprice(
         )
         sub_id = sub.id
     yearly = catalog.add(_revenue(plan_id, 2, 3000000, "year"))
-    monthly = catalog.add(_revenue(plan_id, 3, 250000, "month"))
+    monthly = catalog.add(_revenue(plan_id, 3, 300000, "month"))
     return sub_id, (old, yearly, monthly)
 
 
@@ -162,7 +162,7 @@ class TestAnExistingSubscriber:
         assert by_id[str(yearly.id)]["blocked_code"] == domain.CODE_CADENCE
         assert by_id[str(yearly.id)]["billing_interval"] == "year"
         # A list price is never sent to a tenant, old or new (ADR-0034 §5).
-        assert "250000" not in response.text and "3000000" not in response.text
+        assert "300000" not in response.text and "3000000" not in response.text
         assert "199900" not in response.text
 
     async def test_a_monthly_subscription_cannot_switch_to_the_yearly_version(
