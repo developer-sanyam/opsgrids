@@ -140,7 +140,7 @@ async def get_plan_version(version_id: uuid.UUID, session: SessionDep) -> Intern
 #: it, which predates this and returns one version by id.
 #:
 #: * `console` — the staff plan switch and Add product pickers (ADR-0029, ADR-0031).
-#: * `subscription` — the customer's own change-plan (ADR-0032): it enforces this set on the write
+#: * `subscription` — the customer's own change-plan (ADR-0033): it enforces this set on the write
 #:   and builds the customer's picker from it. It already holds the unfiltered pin lookup above
 #:   (every amount of any version by id), so this widens nothing it could not already read; it
 #:   decides what of an amount a tenant may see (`app/plan_options.py`) and never passes this

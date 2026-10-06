@@ -89,7 +89,7 @@ CODE_TRIAL_CAP = "trial_cap"
 #: 422: a trial "extension" that ends no later than the trial already does, or not in the future.
 CODE_TRIAL_NOT_EXTENDED = "trial_not_extended"
 #: 422: a customer's change-plan to a version catalog no longer offers this organization — a newer
-#: version replaced it, it was withdrawn, or its plan was retired (ADR-0032). The same code and rule
+#: version replaced it, it was withdrawn, or its plan was retired (ADR-0033). The same code and rule
 #: console enforces on the staff path (ADR-0029 §8).
 CODE_NOT_OFFERABLE = "not_offerable"
 NOT_OFFERABLE_DETAIL = (

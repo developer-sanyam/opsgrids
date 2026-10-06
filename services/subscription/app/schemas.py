@@ -335,7 +335,7 @@ class ChangePlanPreviewOut(BaseModel):
 
 # --------------------------------------------------------------------- customer plan reads
 #
-# What the customer's Subscriptions page shows about plans (ADR-0032). **Amounts are the
+# What the customer's Subscriptions page shows about plans (ADR-0033). **Amounts are the
 # organization's own agreed prices only**: a version negotiated for exactly this organization
 # (`restricted_to_org_id` = the caller's organization), and only to a caller who may read this
 # organization's invoices. A public (list) price is never sent to a tenant here, whether or not

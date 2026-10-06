@@ -18,7 +18,7 @@ resolved refuses the subscribe.
 
 The second read, `offerable_versions`, is catalog's own answer to "which versions may this
 organization be moved onto now" (active plans, published, public or negotiated for it, superseded
-versions dropped). The customer's change-plan enforces it, not only shows it (ADR-0032): a picker
+versions dropped). The customer's change-plan enforces it, not only shows it (ADR-0033): a picker
 loaded before a newer version was published, or a direct call naming any published id, would
 otherwise pin a price the catalogue has moved past. It carries amounts; what a tenant may see of
 them is decided here, in `app/plan_options.py`, never passed through.

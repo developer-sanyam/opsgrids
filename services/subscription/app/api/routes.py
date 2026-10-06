@@ -12,7 +12,7 @@ Both are floored at `ORG`: a subscription is an account-level resource, not one 
 narrower grant has no business managing it. Every route runs through `get_tenant_session`, the
 tenancy chokepoint, and every list carries a negative-authz test (ADR-0003 §3).
 
-The plan reads behind the Subscriptions page (ADR-0032) follow the same split: the per-row plan
+The plan reads behind the Subscriptions page (ADR-0033) follow the same split: the per-row plan
 line is a read (`activation.read`), the Change plan picker and its preview are part of changing a
 plan (`activation.write`). Neither shows a list price; an amount appears only for the
 organization's own negotiated price, to a caller who may read its invoices (`app/plan_options.py`).

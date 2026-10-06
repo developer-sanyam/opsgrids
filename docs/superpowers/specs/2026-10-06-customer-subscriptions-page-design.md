@@ -1,7 +1,7 @@
 # Customer Subscriptions page — plan change that says when, plans on offer, and a status-aware table
 
 **Status:** built on `fix/customer-subscriptions-page` (stacked on `main`), not deployed
-**Decision record:** [ADR-0032](../../adr/0032-customer-plan-change-and-plan-visibility.md)
+**Decision record:** [ADR-0033](../../adr/0033-customer-plan-change-and-plan-visibility.md)
 **Services:** `subscription`, `catalog`, `frontend/opsgrids-dashboard` (`routes/Subscriptions.tsx`)
 
 Fixes `app.opsgrids.com/subscriptions` as observed on 2026-10-06 in the owner's organization, after the
@@ -81,7 +81,7 @@ One row per subscription `GET /subscriptions` returns (same `ctx.apply` selector
 `current_period_end` — the boundary the write and the billing run use). Registered before
 `/subscriptions/{subscription_id}`. One catalog lookup per distinct pin.
 
-### 3.6 Which amounts a tenant sees (ADR-0032 §5)
+### 3.6 Which amounts a tenant sees (ADR-0033 §5)
 
 `plan_options.amount_visible`: the version is restricted to the caller's organization **and** the caller
 holds `core.billing.invoice.read` at ORG. A public version's amount is never sent — including the public

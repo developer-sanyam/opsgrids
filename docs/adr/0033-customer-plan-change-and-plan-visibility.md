@@ -1,4 +1,4 @@
-# ADR-0032 — The customer's own plan change: preview, offerable plans, and which prices a tenant sees
+# ADR-0033 — The customer's own plan change: preview, offerable plans, and which prices a tenant sees
 
 **Status:** Proposed for owner sign-off — built on `fix/customer-subscriptions-page`, not deployed ·
 **Date:** 2026-10-06 · **Services:** `subscription`, `catalog`, `frontend/opsgrids-dashboard` ·

@@ -815,7 +815,7 @@ async def _evaluate_change_plan(
     `lock_claims` is False for the preview: the "has the run claimed the due period" check then
     reads the claim row instead of taking `FOR UPDATE` on it.
 
-    `enforce_offerable` (the customer path, ADR-0032): the target must be in catalog's offerable
+    `enforce_offerable` (the customer path, ADR-0033): the target must be in catalog's offerable
     set for this organization now — not a superseded, withdrawn or retired-plan version that is
     still published and pinnable by id. Checked after the subscription's own refusals, and never
     for the pin already in force (a withdrawal of a waiting change keeps what they have). Console
