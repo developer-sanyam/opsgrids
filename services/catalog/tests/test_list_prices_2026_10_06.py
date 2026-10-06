@@ -315,7 +315,7 @@ def _internal(caller: str = "console") -> dict[str, str]:
 
 def _trial_offer(plans: list[dict[str, Any]]) -> dict[str, Any] | None:
     """The dashboard Marketplace's `trialOffer`, line for line: in the first plan with a published
-    flat-priced version, the newest public monthly one (else the first such version)."""
+    flat-priced version, the newest public monthly one (else the newest such version)."""
     for plan in plans:
         flat = [
             v
@@ -329,9 +329,7 @@ def _trial_offer(plans: list[dict[str, Any]]) -> dict[str, Any] | None:
             for v in flat
             if v["billing_interval"] == "month" and v["restricted_to_org_id"] is None
         ]
-        if not monthly:
-            return flat[0]
-        return max(monthly, key=lambda v: v["version_no"])
+        return max(monthly or flat, key=lambda v: v["version_no"])
     return None
 
 

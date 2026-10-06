@@ -14,6 +14,10 @@ exact shape (one plan: v1 the old monthly price, v2 the new yearly one, v3 the n
   and a new subscription, which is not built (a cancelled row cannot be replaced yet).
 * **A new subscription can start on either cadence**: the customer path (the dashboard's Start
   trial) and the staff Add product path both accept the yearly version, and its period is a year.
+* **…but never on the old price.** v1 stays published for the subscribers pinned to it, so the
+  customer subscribe write enforces catalog's offerable set the way change-plan does: v1 by id —
+  from a dashboard tab loaded before the deploy, or a guess from `version_no` — is refused
+  `not_offerable` and nothing is created.
 * **A yearly subscription is billed one period a year** by the billing run.
 """
 
@@ -263,6 +267,93 @@ class TestANewSubscriber:
         assert sub.current_period_start is not None and sub.current_period_end is not None
         assert sub.current_period_end - sub.current_period_start == timedelta(days=days)
         assert [i.price_id for i in sub.items] == [version.prices[0].id]
+
+    @pytest.mark.parametrize("trial_days", [14, None], ids=["trial", "paid"])
+    async def test_the_customer_path_refuses_the_old_price_by_id(
+        self,
+        client: AsyncClient,
+        catalog: FakeCatalog,
+        org_id: uuid.UUID,
+        trial_days: int | None,
+    ) -> None:
+        """v1 is still published (its subscribers stay pinned to it) and the customer's own plan
+        read still lists its id. A dashboard tab loaded before the deploy posts exactly this body;
+        so does anyone who reads `version_no`. Started on v1, a customer would keep the old price
+        for good — nothing re-pins a subscription."""
+        old, _yearly, _monthly = _repriced(catalog)
+        _as(org_id)
+        response = await client.post(
+            "/api/v1/subscriptions",
+            json={"product_key": PRODUCT, "plan_version_id": str(old.id), "trial_days": trial_days},
+        )
+        assert response.status_code == 422, response.text
+        assert _code(response) == domain.CODE_NOT_OFFERABLE
+        assert catalog.offerable_calls == 1
+
+        listed = await client.get("/api/v1/subscriptions")
+        assert listed.status_code == 200 and listed.json() == [], "nothing was created"
+
+    async def test_a_price_negotiated_for_this_organization_is_still_taken(
+        self,
+        client: AsyncClient,
+        session: AsyncSession,
+        catalog: FakeCatalog,
+        org_id: uuid.UUID,
+        other_org: uuid.UUID,
+    ) -> None:
+        """The offerable set keeps the newest version per audience: a bespoke version for this
+        organization is its own audience, so a newer public price does not supersede it — and
+        another organization's bespoke version is still a plain 404, never `not_offerable`."""
+        old, _yearly, _monthly = _repriced(catalog)
+        ours = catalog.add(
+            make_version(
+                product_key=PRODUCT,
+                currency="INR",
+                amount_minor=150000,
+                plan_id=old.plan_id,
+                version_no=4,
+                restricted_to_org_id=org_id,
+            )
+        )
+        theirs = catalog.add(
+            make_version(
+                product_key=PRODUCT,
+                currency="INR",
+                amount_minor=100000,
+                plan_id=old.plan_id,
+                version_no=5,
+                restricted_to_org_id=other_org,
+            )
+        )
+        _as(org_id)
+        refused = await client.post(
+            "/api/v1/subscriptions",
+            json={"product_key": PRODUCT, "plan_version_id": str(theirs.id), "trial_days": 14},
+        )
+        assert refused.status_code == 404, refused.text
+        assert _code(refused) == domain.CODE_NOT_FOUND
+
+        response = await client.post(
+            "/api/v1/subscriptions",
+            json={"product_key": PRODUCT, "plan_version_id": str(ours.id), "trial_days": 14},
+        )
+        assert response.status_code == 201, response.text
+        sub = await _read(session, uuid.UUID(response.json()["id"]))
+        assert sub.plan_version_id == ours.id
+
+    async def test_an_unreachable_catalog_refuses_rather_than_guesses(
+        self, client: AsyncClient, catalog: FakeCatalog, org_id: uuid.UUID
+    ) -> None:
+        _old, _yearly, monthly = _repriced(catalog)
+        catalog.offerable_down = True
+        _as(org_id)
+        response = await client.post(
+            "/api/v1/subscriptions",
+            json={"product_key": PRODUCT, "plan_version_id": str(monthly.id), "trial_days": 14},
+        )
+        assert response.status_code == 503, response.text
+        listed = await client.get("/api/v1/subscriptions")
+        assert listed.json() == [], "nothing was created"
 
     async def test_staff_add_product_accepts_the_yearly_version(
         self,
