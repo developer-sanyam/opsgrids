@@ -5,14 +5,16 @@ on:
   push:
     branches: [main]
 
-# A newer push to a pull request makes the older run's result irrelevant, so it is cancelled
-# rather than left to burn runner minutes. A push to main is never cancelled and never queued
-# behind another: its group is its own commit, so every main commit gets its own complete run
-# (deploy.yml ships what a *finished green* main run proved, and a cancelled run proves
-# nothing). The pull-request group is the PR's merge ref, so two PRs never cancel each other.
+# A newer push to the same ref makes the older run's result irrelevant, so it is cancelled
+# rather than left to burn runner minutes — on `main` as well as on a pull request. A full run
+# bills about 95 minutes, so letting every superseded `main` run finish costs about 40 more per
+# commit in a burst of merges and can leave the newest run queued behind them for runners,
+# while gaining nothing: deploy.yml plans from the commit the box last served, not from the previous
+# commit, so a commit whose run was cancelled is still part of the next deploy. The group is
+# the ref: a PR's merge ref, or `refs/heads/main`, so two PRs never cancel each other.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   # Tests run against the production database engine — never SQLite. The domain leans on

@@ -150,10 +150,11 @@ def test_head_to_head_deploys_nothing(git_repo: GitRepo) -> None:
 
 
 def test_a_run_for_a_commit_the_box_has_already_passed_deploys_nothing(git_repo: GitRepo) -> None:
-    """CI runs on main are no longer cancelled when a newer push lands, so the run for commit A
-    can finish after commit B (built on A) has deployed. The box then reports B as its last good
-    ref. B is not an ancestor of A, which used to read as "no usable base" and deploy everything
-    from A — rolling production back to it."""
+    """The run for commit A can still finish after commit B (built on A) has deployed: someone
+    re-runs an old run from the Actions tab, or A's run completed a moment before B's push
+    would have cancelled it. The box then reports B as its last good ref. B is not an ancestor
+    of A, which used to read as "no usable base" and deploy everything from A — rolling
+    production back to it."""
     base = _baseline(git_repo)
     older = git_repo.commit_from(base, {"services/checkout/app.py": "v2\n"}, "older main commit")
     newer = git_repo.commit_from(older, {"frontend/product-hrms/src/index.ts": "v2\n"}, "newer")

@@ -63,11 +63,12 @@ else
 	# never deployed: CI cancels a superseded run on main, a deploy fails, several commits are
 	# pushed at once. With no usable base (a new box, a rewritten history) deploy everything.
 	base="${BASE:-}"
-	# The box is already at this commit, or at one built on it: nothing to deploy. CI no longer
-	# cancels a superseded run on main (every main commit gets its own complete run), so a run
-	# for an older commit can finish after a newer one has already deployed — and without this
-	# the check below reads that as "no usable base" and deploys *everything* from the older
-	# commit, a rollback nobody asked for. Equal is the re-run case, which the diff handles too.
+	# The box is already at this commit, or at one built on it: nothing to deploy. CI cancels a
+	# superseded run on main, but not one that had already finished, and nothing stops someone
+	# re-running an old run from the Actions tab — so a run for an older commit can still end
+	# after a newer one has deployed. Without this the check below reads that as "no usable
+	# base" and deploys *everything* from the older commit, a rollback nobody asked for. Equal
+	# is the re-run case, which the diff handles too.
 	if [ -n "$base" ] && git cat-file -e "${base}^{commit}" 2>/dev/null &&
 		git merge-base --is-ancestor HEAD "$base" 2>/dev/null; then
 		echo "plan: the box already serves ${base} (this commit or a newer one): nothing to deploy" >&2

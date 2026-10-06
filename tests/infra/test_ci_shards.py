@@ -294,13 +294,16 @@ def test_the_tests_job_takes_its_matrix_and_shard_count_from_the_changes_job() -
     assert jobs["changes"]["outputs"]["test_shard_count"]
 
 
-def test_a_push_to_main_is_never_cancelled_and_never_queued_behind_another() -> None:
+def test_a_superseded_run_is_cancelled_on_main_as_well_as_on_a_pull_request() -> None:
+    # A full run bills ~95 minutes; letting every superseded main run finish cost ~40 more per
+    # commit in a burst of merges and bought nothing, because deploy.yml plans from the commit
+    # the box last served rather than from the previous commit (docs/adr/0040-faster-ci.md).
     concurrency = _workflow()["concurrency"]
-    assert "pull_request" in str(concurrency["cancel-in-progress"])
+    assert concurrency["cancel-in-progress"] is True, "unconditional: not just for pull requests"
     group = str(concurrency["group"])
-    # main's group is its own commit, so two pushes to main never share one.
-    assert "github.sha" in group
     assert "github.ref" in group
+    # A per-commit group would give every push its own group, so nothing would ever be cancelled.
+    assert "github.sha" not in group
 
 
 def test_every_frontend_package_is_in_exactly_one_test_and_build_leg() -> None:
