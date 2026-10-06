@@ -432,11 +432,11 @@ class TestTheLeaseOutlivesTheCall:
         late create landed after the sweep's lookup found nothing. A configuration that allows
         that no longer starts."""
         with pytest.raises(ValidationError, match="charge_reclaim_after_seconds"):
-            Settings(charge_reclaim_after_seconds=100, provider_call_timeout_seconds=30)
+            Settings(charge_reclaim_after_seconds=100, provider_call_timeout_seconds=45)
         with pytest.raises(ValidationError, match="charge_reclaim_after_seconds"):
             Settings(charge_reclaim_after_seconds=300, provider_call_timeout_seconds=200)
-        ok = Settings(charge_reclaim_after_seconds=120, provider_call_timeout_seconds=30)
-        assert ok.charge_reclaim_after_seconds == 120
+        ok = Settings(charge_reclaim_after_seconds=150, provider_call_timeout_seconds=45)
+        assert ok.charge_reclaim_after_seconds == 150
 
     def test_the_defaults_satisfy_it(self) -> None:
         cfg = settings()

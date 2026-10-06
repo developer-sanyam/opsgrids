@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.location.deleted/v1",
+  "title": "operations.inventory.location.deleted",
+  "description": "A location was soft-deleted. It held no stock and had no ledger history.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "location_id",
+    "warehouse_id"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "location_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "warehouse_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

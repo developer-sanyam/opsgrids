@@ -1,6 +1,121 @@
 {
   "components": {
     "schemas": {
+      "CheckoutConfirmIn": {
+        "additionalProperties": false,
+        "description": "`POST /payment/checkouts/{charge_id}/confirm` (Razorpay) \u2014 the three fields Checkout's\ncallback hands the browser. **Proof of nothing**: the server checks the signature as a\nprecondition, then asks Razorpay what happened. Missing or blank fields are a 400.",
+        "properties": {
+          "razorpay_order_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Razorpay Order Id"
+          },
+          "razorpay_payment_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Razorpay Payment Id"
+          },
+          "razorpay_signature": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Razorpay Signature"
+          }
+        },
+        "title": "CheckoutConfirmIn",
+        "type": "object"
+      },
+      "CheckoutCustomerIn": {
+        "additionalProperties": false,
+        "description": "Who is paying, as the provider's checkout needs it (Cashfree requires a phone on every\nOrder). **Passed through to the provider and nowhere else** \u2014 never stored, logged, audited or\nput in an event. A phone is 10 digits, or `+` and 8-15 digits.",
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "maxLength": 16,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          }
+        },
+        "title": "CheckoutCustomerIn",
+        "type": "object"
+      },
+      "CollectionWiresOut": {
+        "description": "Per provider, whether a merchant's adapter talks to the provider for real (`live`) or runs\non the in-process stub (`stub`: a checkout cannot be paid for real).",
+        "properties": {
+          "cashfree": {
+            "enum": [
+              "stub",
+              "live"
+            ],
+            "title": "Cashfree",
+            "type": "string"
+          },
+          "razorpay": {
+            "enum": [
+              "stub",
+              "live"
+            ],
+            "title": "Razorpay",
+            "type": "string"
+          }
+        },
+        "required": [
+          "razorpay",
+          "cashfree"
+        ],
+        "title": "CollectionWiresOut",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -16,7 +131,7 @@
       },
       "MerchantAccountIn": {
         "additionalProperties": false,
-        "description": "`PUT /payment/collections/merchant-account` \u2014 connect the organization's Razorpay account,\nor rotate its credentials in place. The key id is public (the browser gets it); the key secret\nand webhook secret are sealed on arrival and never returned \u2014 only a masked hint of each.",
+        "description": "`PUT /payment/collections/merchant-account` \u2014 connect the organization's payment-provider\naccount, or rotate its credentials in place (same provider and mode only: switching is\ndisconnect, then connect). Needs a session that signed in with a one-time code.\n\n* **Razorpay**: `key_id` (`rzp_test_\u2026` / `rzp_live_\u2026`, public \u2014 Checkout is opened with it; the\n  mode is read from it, so `mode` is not sent), `key_secret`, `webhook_secret` (the one set on\n  the webhook in Razorpay's dashboard).\n* **Cashfree**: `key_id` is the App ID, `key_secret` the Secret Key (it also signs webhooks, so\n  there is no `webhook_secret`), and `mode` is `sandbox` or `production` \u2014 an App ID does not\n  say which.\n\nSecrets are sealed on arrival and never returned \u2014 only a masked hint of each.",
         "properties": {
           "key_id": {
             "maxLength": 64,
@@ -32,35 +147,75 @@
             "type": "string",
             "writeOnly": true
           },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sandbox",
+                  "production"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
           "provider": {
-            "const": "razorpay",
             "default": "razorpay",
+            "enum": [
+              "razorpay",
+              "cashfree"
+            ],
             "title": "Provider",
             "type": "string"
           },
           "webhook_secret": {
-            "format": "password",
-            "maxLength": 128,
-            "minLength": 8,
-            "title": "Webhook Secret",
-            "type": "string",
-            "writeOnly": true
+            "anyOf": [
+              {
+                "format": "password",
+                "maxLength": 128,
+                "minLength": 8,
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Secret"
           }
         },
         "required": [
           "key_id",
-          "key_secret",
-          "webhook_secret"
+          "key_secret"
         ],
         "title": "MerchantAccountIn",
         "type": "object"
       },
       "MerchantAccountOut": {
-        "description": "The organization's payment-provider connection as an admin may see it: masked secrets\nonly, and the webhook URL path to register at the provider (`?account=` names this account).",
+        "description": "The organization's payment-provider connection as an admin may see it: masked secrets\nonly, the webhook URL to register at the provider (`?account=` names this account), whether\nthe credentials have been verified, and when a webhook last arrived.",
         "properties": {
           "configured": {
             "title": "Configured",
             "type": "boolean"
+          },
+          "connection_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unverified",
+                  "verified",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection State"
           },
           "created_at": {
             "anyOf": [
@@ -108,6 +263,29 @@
             ],
             "title": "Key Secret Masked"
           },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "last_webhook_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Webhook At"
+          },
           "live_keys_allowed": {
             "title": "Live Keys Allowed",
             "type": "boolean"
@@ -150,6 +328,18 @@
             ],
             "title": "Rotated At"
           },
+          "verified_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified At"
+          },
           "webhook_events": {
             "items": {
               "type": "string"
@@ -179,6 +369,17 @@
             ],
             "title": "Webhook Secret Masked"
           },
+          "webhook_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Url"
+          },
           "wire": {
             "enum": [
               "stub",
@@ -186,14 +387,171 @@
             ],
             "title": "Wire",
             "type": "string"
+          },
+          "wires": {
+            "$ref": "#/components/schemas/CollectionWiresOut"
           }
         },
         "required": [
           "configured",
           "live_keys_allowed",
-          "wire"
+          "wire",
+          "wires"
         ],
         "title": "MerchantAccountOut",
+        "type": "object"
+      },
+      "PlatformCheckoutIn": {
+        "additionalProperties": false,
+        "description": "`POST /payment/checkouts` \u2014 open (or reopen) the checkout for one invoice.",
+        "properties": {
+          "customer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CheckoutCustomerIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "invoice_id": {
+            "format": "uuid",
+            "title": "Invoice Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "invoice_id"
+        ],
+        "title": "PlatformCheckoutIn",
+        "type": "object"
+      },
+      "PlatformCheckoutOut": {
+        "description": "What the browser needs to open the provider's checkout, and what it will charge.\n`amount_minor` and `currency` are the invoice's own charge's. `client_action` is provider-shaped\nand tagged by `type`: `{\"type\": \"razorpay_checkout\", \"key_id\", \"order_id\", \"openable\"}` (the\n**public** key id and the Order id \u2014 never the secret) or `{\"type\": \"cashfree_checkout\",\n\"payment_session_id\", \"mode\", \"openable\"}`. `openable` is False on a stub provider: the Order\nis a local stand-in no real checkout would accept. The session token is never stored;\nreopening fetches it again. `test_mode` is true when the provider that owns the charge runs on\ntest / sandbox credentials (a Razorpay `rzp_test_` key on a live wire, or Cashfree's sandbox):\nthe checkout takes the provider's test cards and no real money moves. False on live\ncredentials and on a stub.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "charge_id": {
+            "format": "uuid",
+            "title": "Charge Id",
+            "type": "string"
+          },
+          "client_action": {
+            "additionalProperties": true,
+            "title": "Client Action",
+            "type": "object"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "test_mode": {
+            "title": "Test Mode",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "charge_id",
+          "provider",
+          "client_action",
+          "amount_minor",
+          "currency",
+          "expires_at",
+          "test_mode"
+        ],
+        "title": "PlatformCheckoutOut",
+        "type": "object"
+      },
+      "PlatformCheckoutStatusOut": {
+        "description": "The state of one checkout, as the server knows it. `paid` is true only for a **captured**\npayment \u2014 one the provider reported, by a status check or a signed webhook; never because a\nbrowser said so. `provider_checked` is false when the provider could not be asked this time\n(the state shown is then the last one recorded). A failed checkout with `failure_reason`\n`checkout_expired` is one nobody paid before it expired. `test_mode` is as on\n`PlatformCheckoutOut`: the owning provider runs on test / sandbox credentials, so `paid` means\npaid with a test instrument.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "charge_id": {
+            "format": "uuid",
+            "title": "Charge Id",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "paid": {
+            "title": "Paid",
+            "type": "boolean"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_checked": {
+            "default": true,
+            "title": "Provider Checked",
+            "type": "boolean"
+          },
+          "state": {
+            "enum": [
+              "created",
+              "authorized",
+              "captured",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "test_mode": {
+            "title": "Test Mode",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "charge_id",
+          "provider",
+          "state",
+          "paid",
+          "amount_minor",
+          "currency",
+          "expires_at",
+          "test_mode"
+        ],
+        "title": "PlatformCheckoutStatusOut",
         "type": "object"
       },
       "ReconciliationOut": {
@@ -344,6 +702,19 @@
       },
       "ServiceInfo": {
         "properties": {
+          "mode": {
+            "enum": [
+              "stub",
+              "test",
+              "live"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
           "schema_name": {
             "title": "Schema Name",
             "type": "string"
@@ -351,11 +722,18 @@
           "service": {
             "title": "Service",
             "type": "string"
+          },
+          "test_keys_allowed": {
+            "title": "Test Keys Allowed",
+            "type": "boolean"
           }
         },
         "required": [
           "service",
-          "schema_name"
+          "schema_name",
+          "provider",
+          "mode",
+          "test_keys_allowed"
         ],
         "title": "ServiceInfo",
         "type": "object"
@@ -449,12 +827,176 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/payment/checkouts": {
+      "post": {
+        "description": "Open the provider's hosted checkout for one invoice. The amount is the invoice's own\ncharge's, never the body's; a second request for an invoice with an open checkout returns that\ncheckout (at the provider it was created under). **404** if the organization has no charge for\nthe invoice, **409** if it is already paid (`invoice_already_paid`) or cannot be opened right\nnow (each with its own code), **422** for what could never be paid online.\n\nThe Order handed back is always the one the charge **records**: it is recorded before this\nanswers, a reopen fetches it by its id, and an Order the call made that the charge does not\nrecord is never handed out (a 409 `checkout_in_progress` instead; the next request gets the\nrecorded one).",
+        "operationId": "open_checkout_api_v1_payment_checkouts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformCheckoutIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformCheckoutOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "The organization has no payable charge for this invoice."
+          },
+          "409": {
+            "description": "Refused, with a stable machine code in `errors[0].code`: `invoice_already_paid` (field `invoice_id`; the invoice is paid \u2014 the only 409 that means paid), `checkout_in_progress` (another request holds the checkout; try again in a moment), `previous_checkout_not_closable` (the expired checkout could not be closed yet; try again shortly), `previous_checkout_payment_in_flight` (a payment on a previous checkout is still being processed; try again in a few minutes), `checkout_not_supported` (the provider has no hosted checkout)."
+          },
+          "422": {
+            "description": "Could never be paid online, refused before any provider call, with `errors[0] = {field, code, message}`: `phone_required` (field `customer.phone`), `customer_details_required` (field `customer`), `currency_unsupported`, `amount_below_minimum` and `nothing_to_pay` (field `invoice_id`). A malformed body is a 422 with the framework's own field errors."
+          }
+        },
+        "summary": "Open (or reopen) the checkout for an invoice",
+        "tags": [
+          "checkout"
+        ]
+      }
+    },
+    "/api/v1/payment/checkouts/{charge_id}": {
+      "get": {
+        "description": "Read-through status: while the checkout is open the provider is asked, server to server, what\nhappened to its Order, and the answer reconciled like a signed webhook's. What the return page\npolls. `paid` is true only for a captured payment. A checkout closed as `checkout_expired` is\nstill asked about inside its late-capture window: a payment made on its Order after it closed is\nrecorded, and the answer is `paid: true`.",
+        "operationId": "get_checkout_api_v1_payment_checkouts__charge_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "charge_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Charge Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformCheckoutStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The state of one checkout (asks the provider while it is open)",
+        "tags": [
+          "checkout"
+        ]
+      }
+    },
+    "/api/v1/payment/checkouts/{charge_id}/confirm": {
+      "post": {
+        "description": "Razorpay's Checkout hands the browser `{payment_id, order_id, signature}`. This checks the\nsignature \u2014 `HMAC-SHA256(order_id|payment_id)` under the key secret, in constant time \u2014 and that\nthe Order is this checkout's; a missing field, a mismatch or a signature that is not the digest\nis a **400 and nothing is marked paid**. Only then does it ask Razorpay (`order_payments`) and\nreconcile the answer. The callback proves nothing: `paid` is true only if that answer shows a\ncaptured payment.",
+        "operationId": "confirm_checkout_api_v1_payment_checkouts__charge_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "charge_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Charge Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutConfirmIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformCheckoutStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Razorpay: verify Checkout's callback signature, then ask Razorpay what happened",
+        "tags": [
+          "checkout"
+        ]
+      }
+    },
     "/api/v1/payment/collections/merchant-account": {
       "delete": {
+        "description": "Refused (409 `disconnect-blocked`, saying what is outstanding) while the provider may still\nmove money for the account \u2014 an open payment, a cancelled or expired one its provider can\nstill take, a pending refund \u2014 unless `force` is set.",
         "operationId": "delete_merchant_account_api_v1_payment_collections_merchant_account_delete",
+        "parameters": [
+          {
+            "description": "Disconnect even though payments or refunds on the account have not settled. Audited with what was outstanding.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Disconnect even though payments or refunds on the account have not settled. Audited with what was outstanding.",
+              "title": "Force",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Disconnect the organization's payment-provider account",
@@ -482,6 +1024,7 @@
         ]
       },
       "put": {
+        "description": "Database only: the credentials are checked for shape and sealed, and the account is\n`unverified` until `POST \u2026/merchant-account/verify` asks the provider.",
         "operationId": "put_merchant_account_api_v1_payment_collections_merchant_account_put",
         "requestBody": {
           "content": {
@@ -515,7 +1058,29 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Connect the organization's Razorpay account, or rotate its credentials",
+        "summary": "Connect the organization's Razorpay or Cashfree account, or rotate its credentials",
+        "tags": [
+          "collections"
+        ]
+      }
+    },
+    "/api/v1/payment/collections/merchant-account/verify": {
+      "post": {
+        "description": "Claim (open the key secret, in a short transaction), probe (one authenticated, read-only\nrequest to the provider, with no transaction open, within `collections_call_timeout_seconds`),\nrecord (`verified_at` or `last_error_code`, re-checked under the row lock, audited). A provider\nthat refuses the credentials is recorded and then answered 422 `credentials-rejected`; one\nthat cannot be reached records nothing and is a 503.",
+        "operationId": "verify_merchant_account_api_v1_payment_collections_merchant_account_verify_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MerchantAccountOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ask the provider whether the connected account's credentials work",
         "tags": [
           "collections"
         ]
@@ -545,6 +1110,7 @@
     },
     "/api/v1/payment/info": {
       "get": {
+        "description": "The service, the provider new checkouts go to and what it runs on: `mode` is `test` when that\nprovider is on test / sandbox credentials (a staging box under `PAYMENT_ALLOW_TEST_KEYS`).\nNames and modes only \u2014 never a key or any part of one.",
         "operationId": "info_api_v1_payment_info_get",
         "responses": {
           "200": {
@@ -561,6 +1127,73 @@
         "summary": "What this service is",
         "tags": [
           "payment"
+        ]
+      }
+    },
+    "/api/v1/webhooks/cashfree": {
+      "post": {
+        "description": "Ingest one Cashfree PG webhook. The body is read raw \u2014 the signature is\n`base64(HMAC-SHA256(secret, timestamp + body))` over exactly these bytes and the\n`x-webhook-timestamp` header \u2014 and capped before it is touched. A missing secret, header or\nmatch is a 400 with nothing recorded (fail closed).",
+        "operationId": "cashfree_webhook_api_v1_webhooks_cashfree_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookAck"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Cashfree webhook \u2014 signature-verified, idempotent, reconciling (404 unless enabled)",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    },
+    "/api/v1/webhooks/collections": {
+      "post": {
+        "description": "One merchant's webhook, from whichever provider **the account row** names (Razorpay or\nCashfree) \u2014 never from this path or the body. The body is read raw \u2014 the signature is over\nexactly these bytes. An unknown or removed account, a bad signature and an unparseable\naccount id all answer the same 400, so a prober learns nothing about which accounts exist.",
+        "operationId": "collections_webhook_api_v1_webhooks_collections_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Account",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookAck"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A tenant's payment-provider webhook \u2014 per-merchant signature, idempotent, reconciling",
+        "tags": [
+          "webhooks"
         ]
       }
     },
@@ -588,7 +1221,7 @@
     },
     "/api/v1/webhooks/razorpay/collections": {
       "post": {
-        "description": "One merchant's Razorpay webhook. The body is read raw \u2014 the signature is over exactly\nthese bytes. An unknown or removed account, a bad signature and an unparseable account id all\nanswer the same 400, so a prober learns nothing about which accounts exist.",
+        "description": "Kept forever: every Razorpay merchant registered this path. The same handler as\n`/webhooks/collections`; the provider is the account row's, so a delivery here for a Cashfree\naccount is verified as Cashfree's.",
         "operationId": "merchant_webhook_api_v1_webhooks_razorpay_collections_post",
         "parameters": [
           {
@@ -625,7 +1258,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "A tenant's Razorpay webhook \u2014 per-merchant signature, idempotent, reconciling",
+        "summary": "The original path of a tenant's webhook \u2014 an alias of /webhooks/collections",
         "tags": [
           "webhooks"
         ]

@@ -173,7 +173,7 @@ class TestCadence:
         amount = 100000 if have == "month" else 1100000
         subscription_id, _ = await _subscribe(session, catalog, org_id, amount, interval=have)
         target = await _version(catalog, 1100000 if want == "year" else 100000, want)
-        with pytest.raises(domain.CadenceChangeRefused, match="cancel and subscribe"):
+        with pytest.raises(domain.CadenceChangeRefused, match="keeps its billing cadence"):
             await _change(session, catalog, org_id, subscription_id, target.id)
 
     async def test_a_change_to_one_time_is_refused(

@@ -17,7 +17,8 @@ make relay SERVICE=payment            # outbox relay
   (`max_amount_minor`) and multi-day eMandate activation (`activated_at`) as first-class fields.
 - **`charges`** — one collection attempt against an invoice. Idempotent on a **platform-supplied**
   `idempotency_key` (Razorpay has none). Small state machine: `created → authorized → captured |
-  failed`.
+  failed`. `provider` is the provider the charge was created under, for life; `flow` is `debit` (the
+  machine debits a mandate) or `checkout` (a person pays in the provider's hosted page; ADR-0032).
 - **`refunds`** — append-only (a correction is a new row).
 - **`provider_events`** — the append-only webhook inbox and the reconciliation source of truth,
   idempotent on `provider_event_id` — Razorpay's `X-Razorpay-Event-Id` **header** (its body has no
@@ -32,10 +33,28 @@ survives the post-migration grant re-apply. Every business table is tenant-scope
 
 `app/providers/base.py` is a `PaymentProvider` Protocol designed against the **more constrained**
 provider, Razorpay — mandate caps, a pre-debit notice, multi-day activation, and no native
-idempotency key — so a later Stripe adapter fits inside it. `app/providers/razorpay.py` is the
-adapter: request/response mapping, signature verification, the state machine and idempotency are
-**real and tested**; only the outbound HTTP is **stubbed** (no keys in dev — deterministic fake
-ids, state driven by injected webhook fixtures). A test asserts no keys or network are needed.
+idempotency key — so another adapter fits inside it. Two adapters exist, **Razorpay** and
+**Cashfree**, and `ProviderContract` (lookup before create) is the contract for the order-then-charge
+shape; a checkout and a direct (mandate) debit have sibling contracts (ADR-0032).
+
+* **What an adapter can do is declared, not guessed**: `ProviderCapabilities` (currencies, minimum,
+  debit shape, mandate needs, checkout support, header-signed webhooks, wire) is read before a
+  call, so a charge that could only fail at the provider fails here, with no call.
+* **One wire layer for both** (`providers/wire.py`): a three-way error taxonomy
+  (`ProviderTransient` unknown outcome, `ProviderRejected` nothing created, `ProviderMisconfigured`
+  the platform's own key), an overall monotonic call deadline, and a credentials latch.
+* **Switches, all defaulting to the stub**: `PAYMENT_PROVIDER` (`razorpay` | `cashfree`; **new**
+  charges only, an existing row keeps its provider), `PAYMENT_WIRE` (`stub` | `live`) and
+  `CASHFREE_ENV` (`stub` | `sandbox` | `production`). Keys never switch the network on; start-up
+  refuses wrong combinations (a test key on a production box among them). Without a switch the adapters
+  are the in-process stubs: deterministic fake ids, state driven by injected fixtures, no network.
+* **Phase A has no mandate debit.** A debit whose adapter needs a mandate and has none usable fails as
+  `no_mandate` before any call; the direct-debit shape is declared and tested against a fake, wired to
+  no caller. INR only, 100 paise minimum.
+
+Nothing here has been run against a real provider. `tools/payments_smoke_razorpay.py` and
+`tools/payments_smoke_cashfree.py` are the owner-run, opt-in tools that settle what the design assumed
+(RUNBOOK, "Payments: turning a provider on"); every automated test needs no network and no key.
 
 ## Publishes
 
@@ -60,9 +79,18 @@ ids, state driven by injected webhook fixtures). A test asserts no keys or netwo
 
 ## Endpoints
 
+- `POST /api/v1/payment/checkouts`, `GET /api/v1/payment/checkouts/{charge_id}`,
+  `POST /api/v1/payment/checkouts/{charge_id}/confirm` — the platform checkout (ADR-0032): open or
+  reopen the checkout for one invoice, read its status (the provider is asked while it is open), and
+  Razorpay's signed confirm. All need `core.product.activation.write` at `ORG`; the amount is the
+  invoice's own; **the browser is never evidence**; another organization's charge is a 404. A poller
+  (`app/checkout/cron.py`) resolves what nobody is told, because the webhooks below are private.
 - `POST /api/v1/webhooks/razorpay` — the provider webhook. **Signature-guarded, not token-guarded**
-  (a provider carries no platform token); admin-gateway routes it as a public path and payment
-  verifies the HMAC signature before recording or acting on anything. A permanent condition in a
+  (a provider carries no platform token); it is **routed to payment but deliberately not public** in
+  app-gateway in this release (owner decision, ADR-0032), and payment verifies the HMAC signature
+  before recording or acting on anything. A Cashfree sibling (`/webhooks/cashfree`) exists in the
+  service, is a 404 unless Cashfree is enabled, and has no gateway route at all. Both store a
+  **redacted** body (no name, email, phone, VPA or card detail): the inbox is append-only. A permanent condition in a
   signed webhook (a charge that is not ours, an outcome the state machine forbids, another amount
   or currency, a payment id other than the charge's) is recorded, audited `payment.webhook.ignored`
   and answered **200** — a retry could not change it. `failed → captured` is legal for a failure the

@@ -139,6 +139,60 @@
         "title": "CancelIn",
         "type": "object"
       },
+      "CashfreeOrderCheckoutSessionOut": {
+        "description": "What the browser's `Cashfree({mode}).checkout({paymentSessionId})` needs (ADR-0033). The\nsession id is fetched from Cashfree for this response by payment and never stored anywhere;\nreopening the checkout fetches it again. No credential, and no customer detail: the phone\nCashfree requires went to it server to server.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "sandbox",
+              "production"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "openable": {
+            "title": "Openable",
+            "type": "boolean"
+          },
+          "order_number": {
+            "title": "Order Number",
+            "type": "string"
+          },
+          "payment_session_id": {
+            "title": "Payment Session Id",
+            "type": "string"
+          },
+          "provider": {
+            "const": "cashfree",
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_order_id": {
+            "title": "Provider Order Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "payment_session_id",
+          "mode",
+          "provider_order_id",
+          "amount_minor",
+          "currency",
+          "openable",
+          "order_number"
+        ],
+        "title": "CashfreeOrderCheckoutSessionOut",
+        "type": "object"
+      },
       "CategorySpend": {
         "description": "One category's share of committed spend \u2014 grouped from purchase orders. Mirrors the\nSPA's `CategorySpend`.",
         "properties": {
@@ -1380,6 +1434,168 @@
           "order_version"
         ],
         "title": "CreatePickTasksIn",
+        "type": "object"
+      },
+      "CursorPage_LedgerRowOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LedgerRowOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[LedgerRowOut]",
+        "type": "object"
+      },
+      "CursorPage_LotGenealogyOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LotGenealogyOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[LotGenealogyOut]",
+        "type": "object"
+      },
+      "CursorPage_LotOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LotOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[LotOut]",
+        "type": "object"
+      },
+      "CursorPage_RollEventOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RollEventOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[RollEventOut]",
+        "type": "object"
+      },
+      "CursorPage_RollOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RollOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[RollOut]",
+        "type": "object"
+      },
+      "CursorPage_StockRowOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StockRowOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CursorPage[StockRowOut]",
         "type": "object"
       },
       "DiscrepancyResolveIn": {
@@ -2772,6 +2988,401 @@
         "title": "LayoutVersionOut",
         "type": "object"
       },
+      "LedgerRowOut": {
+        "properties": {
+          "balance_after": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Balance After",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "location_code": {
+            "title": "Location Code",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "move_id": {
+            "title": "Move Id",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "occurred_on": {
+            "format": "date",
+            "title": "Occurred On",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "reference_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Id"
+          },
+          "reference_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Type"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "move_id",
+          "kind",
+          "reason",
+          "reference_type",
+          "reference_id",
+          "note",
+          "occurred_on",
+          "inventory_item_id",
+          "sku",
+          "uom",
+          "location_id",
+          "location_code",
+          "status",
+          "lot_id",
+          "roll_id",
+          "quantity",
+          "balance_after",
+          "created_at",
+          "created_by"
+        ],
+        "title": "LedgerRowOut",
+        "type": "object"
+      },
+      "LocateOut": {
+        "description": "`GET /inventory/locate`. An empty `results` is a valid answer. `truncated` is true when\nmore bins matched than are returned (the cap is far above a real warehouse's spread of one\nitem; it exists to bound the query).",
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/LocateRowOut"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "title": "LocateOut",
+        "type": "object"
+      },
+      "LocatePlacementOut": {
+        "description": "Where a bin sits on a floor's published layout, in integer millimetres. `source` is `own`\nwhen the bin itself is placed, `ancestor` when it is not and this is the nearest placed\ncontainer above it (a rack standing for its bins).",
+        "properties": {
+          "ancestor_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ancestor Location Id"
+          },
+          "depth_mm": {
+            "title": "Depth Mm",
+            "type": "integer"
+          },
+          "height_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height Mm"
+          },
+          "layout_version_id": {
+            "title": "Layout Version Id",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "own",
+              "ancestor"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "width_mm": {
+            "title": "Width Mm",
+            "type": "integer"
+          },
+          "x_mm": {
+            "title": "X Mm",
+            "type": "integer"
+          },
+          "y_mm": {
+            "title": "Y Mm",
+            "type": "integer"
+          },
+          "z_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Z Mm"
+          }
+        },
+        "required": [
+          "layout_version_id",
+          "x_mm",
+          "y_mm",
+          "z_mm",
+          "width_mm",
+          "depth_mm",
+          "height_mm",
+          "source",
+          "ancestor_location_id"
+        ],
+        "title": "LocatePlacementOut",
+        "type": "object"
+      },
+      "LocateRowOut": {
+        "description": "One bin holding stock of the item, in one status (`quantity` sums its lots and rolls).\n\n`placement` is `null` with a `placement_reason`: `unplaced` (the warehouse has a published\nlayout and this bin, nor any container above it, is on it), `no_published_layout` (the\nwarehouse has none), or `no_permission` (the caller may read stock but not layouts, so no\ngeometry \u2014 and no floor \u2014 is returned).",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "floor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Floor Id"
+          },
+          "floor_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Floor Name"
+          },
+          "kind": {
+            "enum": [
+              "zone",
+              "aisle",
+              "rack",
+              "shelf",
+              "bin",
+              "staging",
+              "pack_station",
+              "dock",
+              "receiving",
+              "returns",
+              "quarantine"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "placement": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocatePlacementOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "placement_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unplaced",
+                  "no_published_layout",
+                  "no_permission"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Placement Reason"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD",
+              "QUARANTINE",
+              "DAMAGED",
+              "REJECTED",
+              "WIP",
+              "IN_TRANSIT",
+              "AT_JOB_WORKER",
+              "BLOCKED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          },
+          "warehouse_name": {
+            "title": "Warehouse Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "warehouse_id",
+          "warehouse_name",
+          "floor_id",
+          "floor_name",
+          "location_id",
+          "code",
+          "name",
+          "kind",
+          "path",
+          "quantity",
+          "status",
+          "placement",
+          "placement_reason"
+        ],
+        "title": "LocateRowOut",
+        "type": "object"
+      },
       "LocationIn": {
         "additionalProperties": false,
         "description": "`POST /warehouses/{warehouse_id}/locations`. `parent_id`, when given, must name an\nexisting location in the same warehouse. `barcode`, when given, must be unique across every\nlive location in the organization.",
@@ -3283,6 +3894,501 @@
         "title": "LocationPlacementOut",
         "type": "object"
       },
+      "LotGenealogyIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/lots/{id}/genealogy` \u2014 this lot's material went into `child_lot_id`.",
+        "properties": {
+          "child_lot_id": {
+            "format": "uuid",
+            "title": "Child Lot Id",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "relation": {
+            "enum": [
+              "BLEND",
+              "REWORK",
+              "DERIVED"
+            ],
+            "title": "Relation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "child_lot_id",
+          "relation"
+        ],
+        "title": "LotGenealogyIn",
+        "type": "object"
+      },
+      "LotGenealogyOut": {
+        "properties": {
+          "child_lot_id": {
+            "title": "Child Lot Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "move_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Move Id"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "parent_lot_id": {
+            "title": "Parent Lot Id",
+            "type": "string"
+          },
+          "relation": {
+            "enum": [
+              "SPLIT",
+              "MERGE",
+              "BLEND",
+              "REWORK",
+              "DERIVED"
+            ],
+            "title": "Relation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "parent_lot_id",
+          "child_lot_id",
+          "relation",
+          "move_id",
+          "note",
+          "created_at"
+        ],
+        "title": "LotGenealogyOut",
+        "type": "object"
+      },
+      "LotIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/lots`. `lot_no` is generated (`LOT-` + 8 hex) when omitted.",
+        "properties": {
+          "attributes": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "title": "Attributes",
+            "type": "object"
+          },
+          "expires_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires On"
+          },
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "lot_no": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._/-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot No"
+          },
+          "manufactured_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manufactured On"
+          },
+          "quality_status": {
+            "default": "PENDING",
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "ON_HOLD",
+              "REJECTED"
+            ],
+            "title": "Quality Status",
+            "type": "string"
+          },
+          "received_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received On"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "source_type": {
+            "anyOf": [
+              {
+                "maxLength": 30,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Type"
+          },
+          "supplier_lot_no": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supplier Lot No"
+          }
+        },
+        "required": [
+          "inventory_item_id"
+        ],
+        "title": "LotIn",
+        "type": "object"
+      },
+      "LotOut": {
+        "properties": {
+          "attributes": {
+            "additionalProperties": true,
+            "title": "Attributes",
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires On"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "lot_no": {
+            "title": "Lot No",
+            "type": "string"
+          },
+          "manufactured_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manufactured On"
+          },
+          "on_hand_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "On Hand Qty",
+            "type": "string"
+          },
+          "quality_status": {
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "ON_HOLD",
+              "REJECTED"
+            ],
+            "title": "Quality Status",
+            "type": "string"
+          },
+          "received_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received On"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "source_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Type"
+          },
+          "supplier_lot_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supplier Lot No"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "lot_no",
+          "supplier_lot_no",
+          "inventory_item_id",
+          "sku",
+          "uom",
+          "manufactured_on",
+          "received_on",
+          "expires_on",
+          "quality_status",
+          "source_type",
+          "source_id",
+          "attributes",
+          "on_hand_qty",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "LotOut",
+        "type": "object"
+      },
+      "LotPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /inventory/lots/{id}` \u2014 only what can change after the fact. The item and the\ninternal lot number never do (the ledger already refers to them).",
+        "properties": {
+          "attributes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attributes"
+          },
+          "expires_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires On"
+          },
+          "manufactured_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manufactured On"
+          },
+          "quality_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "PENDING",
+                  "APPROVED",
+                  "ON_HOLD",
+                  "REJECTED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality Status"
+          },
+          "received_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received On"
+          },
+          "supplier_lot_no": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supplier Lot No"
+          }
+        },
+        "title": "LotPatch",
+        "type": "object"
+      },
+      "LotTraceOut": {
+        "description": "A lot with every lot it came from (`ancestors`, nearest first) and everything that came\nof it (`descendants`).",
+        "properties": {
+          "ancestors": {
+            "items": {
+              "$ref": "#/components/schemas/TraceNodeOut"
+            },
+            "title": "Ancestors",
+            "type": "array"
+          },
+          "descendants": {
+            "items": {
+              "$ref": "#/components/schemas/TraceNodeOut"
+            },
+            "title": "Descendants",
+            "type": "array"
+          },
+          "lot": {
+            "$ref": "#/components/schemas/LotOut"
+          }
+        },
+        "required": [
+          "lot",
+          "ancestors",
+          "descendants"
+        ],
+        "title": "LotTraceOut",
+        "type": "object"
+      },
       "OfferIn": {
         "additionalProperties": false,
         "description": "`POST /fulfilment/tasks/{id}/offers` \u2014 a dispatcher offering a task to one worker. Also the\nmanual-override path when auto-assignment already made a live, not-yet-accepted offer: a\ncaller holding `operations.fulfilment.task.override` withdraws it and offers to whoever this\ncall names instead; a caller without it gets the same 409 F3 has always given a second offer\nattempt.",
@@ -3297,6 +4403,131 @@
           "worker_id"
         ],
         "title": "OfferIn",
+        "type": "object"
+      },
+      "OpeningLineIn": {
+        "additionalProperties": false,
+        "properties": {
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "location_id": {
+            "format": "uuid",
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "status": {
+            "default": "AVAILABLE",
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD",
+              "QUARANTINE",
+              "DAMAGED",
+              "REJECTED",
+              "WIP",
+              "BLOCKED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "unit_cost_currency": {
+            "anyOf": [
+              {
+                "maxLength": 3,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Cost Currency"
+          },
+          "unit_cost_minor": {
+            "anyOf": [
+              {
+                "maximum": 1000000000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Cost Minor"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "location_id",
+          "quantity"
+        ],
+        "title": "OpeningLineIn",
+        "type": "object"
+      },
+      "OpeningStockIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/stock/opening` \u2014 bring existing stock onto the books, per location, lot\nand roll. A single `opening` move; all lines post or none do.",
+        "properties": {
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/OpeningLineIn"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Lines",
+            "type": "array"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "occurred_on": {
+            "format": "date",
+            "title": "Occurred On",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "title": "OpeningStockIn",
         "type": "object"
       },
       "OperationalAlertOut": {
@@ -3421,12 +4652,27 @@
           "checkout": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/OrderCheckoutSessionOut"
+                "discriminator": {
+                  "mapping": {
+                    "cashfree": "#/components/schemas/CashfreeOrderCheckoutSessionOut",
+                    "razorpay": "#/components/schemas/RazorpayOrderCheckoutSessionOut"
+                  },
+                  "propertyName": "provider"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/RazorpayOrderCheckoutSessionOut"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CashfreeOrderCheckoutSessionOut"
+                  }
+                ]
               },
               {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Checkout"
           },
           "collection": {
             "$ref": "#/components/schemas/OrderCollectionOut"
@@ -3437,63 +4683,6 @@
           "checkout"
         ],
         "title": "OrderCheckoutOut",
-        "type": "object"
-      },
-      "OrderCheckoutSessionOut": {
-        "description": "Exactly what the browser needs to open the provider's hosted Checkout \u2014 the **public** key\nid and the provider Order id \u2014 plus the prefill it may show. Never a secret.",
-        "properties": {
-          "amount_minor": {
-            "title": "Amount Minor",
-            "type": "integer"
-          },
-          "currency": {
-            "title": "Currency",
-            "type": "string"
-          },
-          "key_id": {
-            "title": "Key Id",
-            "type": "string"
-          },
-          "mode": {
-            "enum": [
-              "test",
-              "live"
-            ],
-            "title": "Mode",
-            "type": "string"
-          },
-          "openable": {
-            "title": "Openable",
-            "type": "boolean"
-          },
-          "order_number": {
-            "title": "Order Number",
-            "type": "string"
-          },
-          "prefill": {
-            "$ref": "#/components/schemas/CheckoutPrefillOut"
-          },
-          "provider": {
-            "title": "Provider",
-            "type": "string"
-          },
-          "provider_order_id": {
-            "title": "Provider Order Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "provider",
-          "key_id",
-          "provider_order_id",
-          "amount_minor",
-          "currency",
-          "mode",
-          "openable",
-          "order_number",
-          "prefill"
-        ],
-        "title": "OrderCheckoutSessionOut",
         "type": "object"
       },
       "OrderCollectionOut": {
@@ -4081,6 +5270,32 @@
           "payment_term": {
             "title": "Payment Term",
             "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "provider_wire": {
+            "anyOf": [
+              {
+                "enum": [
+                  "stub",
+                  "live"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Wire"
           },
           "total_minor": {
             "title": "Total Minor",
@@ -5829,6 +7044,153 @@
         "title": "PoLineItem",
         "type": "object"
       },
+      "PublishedLayoutOut": {
+        "description": "`GET /floors/{floor_id}/published-layout` \u2014 what is live on a floor, never a draft.\n`published` is false (with no placements) when the floor has no published layout.",
+        "properties": {
+          "floor_id": {
+            "title": "Floor Id",
+            "type": "string"
+          },
+          "floor_name": {
+            "title": "Floor Name",
+            "type": "string"
+          },
+          "layout_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layout Version Id"
+          },
+          "placements": {
+            "items": {
+              "$ref": "#/components/schemas/PublishedPlacementOut"
+            },
+            "title": "Placements",
+            "type": "array"
+          },
+          "published": {
+            "title": "Published",
+            "type": "boolean"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "floor_id",
+          "warehouse_id",
+          "floor_name",
+          "published",
+          "layout_version_id",
+          "placements"
+        ],
+        "title": "PublishedLayoutOut",
+        "type": "object"
+      },
+      "PublishedPlacementOut": {
+        "description": "One location on a floor's *published* layout, with the identity a map needs \u2014 so a viewer\nnever has to fetch the location tree beside it. Integer millimetres throughout.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "depth_mm": {
+            "title": "Depth Mm",
+            "type": "integer"
+          },
+          "height_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height Mm"
+          },
+          "kind": {
+            "enum": [
+              "zone",
+              "aisle",
+              "rack",
+              "shelf",
+              "bin",
+              "staging",
+              "pack_station",
+              "dock",
+              "receiving",
+              "returns",
+              "quarantine"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "width_mm": {
+            "title": "Width Mm",
+            "type": "integer"
+          },
+          "x_mm": {
+            "title": "X Mm",
+            "type": "integer"
+          },
+          "y_mm": {
+            "title": "Y Mm",
+            "type": "integer"
+          },
+          "z_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Z Mm"
+          }
+        },
+        "required": [
+          "location_id",
+          "code",
+          "name",
+          "kind",
+          "parent_id",
+          "x_mm",
+          "y_mm",
+          "z_mm",
+          "width_mm",
+          "depth_mm",
+          "height_mm"
+        ],
+        "title": "PublishedPlacementOut",
+        "type": "object"
+      },
       "PurchaseOrderIn": {
         "additionalProperties": false,
         "description": "`POST /purchase-orders`. `status`, `number`, `received_date` and `received_qty` are\nserver-owned and never accepted here: the number is assigned by `services.next_po_number`,\nstatus always starts `draft`, and receiving is its own endpoint. `raised_by_id` is always\n`ctx.subject_ref` \u2014 never the client's word for who is calling.",
@@ -6218,6 +7580,427 @@
         "title": "PurchaseOrderReceiptOut",
         "type": "object"
       },
+      "PutawayDetailOut": {
+        "description": "`GET /inventory/putaway/{move_id}` \u2014 what is recorded about a put-away. `has_location`\nsays a fix exists; the fix itself is only ever returned by the audited reveal.",
+        "properties": {
+          "captured_at": {
+            "format": "date-time",
+            "title": "Captured At",
+            "type": "string"
+          },
+          "has_location": {
+            "title": "Has Location",
+            "type": "boolean"
+          },
+          "matched_suggestion": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Suggestion"
+          },
+          "move_id": {
+            "title": "Move Id",
+            "type": "string"
+          },
+          "to_location": {
+            "$ref": "#/components/schemas/PutawayToOut"
+          },
+          "worker_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worker Id"
+          }
+        },
+        "required": [
+          "move_id",
+          "to_location",
+          "worker_id",
+          "captured_at",
+          "matched_suggestion",
+          "has_location"
+        ],
+        "title": "PutawayDetailOut",
+        "type": "object"
+      },
+      "PutawayFromOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name"
+        ],
+        "title": "PutawayFromOut",
+        "type": "object"
+      },
+      "PutawayIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/putaway` \u2014 store stock from a receiving or staging bin into the bin whose\nbarcode the worker scanned.\n\n`to_barcode` takes the shape a location's barcode is stored in (printable ASCII, no space, no\n`/`, 1-64 characters): a scanner's trailing CR/LF is a 422 here \u2014 the apps trim it. The server\nresolves it to a bin (a worker holds no `location.read`). `suggested_location_id` is only what\nthe device *showed*; whether the scan matched the server's own rule is computed server-side.\nAn id that is unknown, deleted or another tenant's is ignored, not refused (warning\n`suggestion_ignored`), so a put-away queued offline is never parked over a stale suggestion.\n\nThe GPS fix is audit evidence, never a location of record, and it never blocks the move: a fix\nthe server cannot use (unpaired, out of range, negative accuracy) is dropped with a warning in\nthe response, and the stock still moves. `captured_at` is the device's claim of when the fix\nwas taken; it is replaced by the receipt time when absurd. None of the geo is part of the\nidempotency hash \u2014 a retry that differs only in geo replays the original.",
+        "properties": {
+          "accuracy_m": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accuracy M"
+          },
+          "captured_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Captured At"
+          },
+          "from_location_id": {
+            "format": "uuid",
+            "title": "From Location Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "lat_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lat Micro"
+          },
+          "lng_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lng Micro"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "occurred_on": {
+            "format": "date",
+            "title": "Occurred On",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "suggested_location_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Location Id"
+          },
+          "to_barcode": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[!-.0-~]+$",
+            "title": "To Barcode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "from_location_id",
+          "to_barcode",
+          "quantity"
+        ],
+        "title": "PutawayIn",
+        "type": "object"
+      },
+      "PutawayLocationOut": {
+        "description": "`POST /inventory/putaway/{move_id}/location:reveal` \u2014 the one response that carries a\nworker's coordinates. Nulls when the capture holds no fix. Sent `Cache-Control: no-store`;\nevery successful call writes an audit row.",
+        "properties": {
+          "accuracy_m": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accuracy M"
+          },
+          "captured_at": {
+            "format": "date-time",
+            "title": "Captured At",
+            "type": "string"
+          },
+          "lat_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lat Micro"
+          },
+          "lng_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lng Micro"
+          }
+        },
+        "required": [
+          "lat_micro",
+          "lng_micro",
+          "accuracy_m",
+          "captured_at"
+        ],
+        "title": "PutawayLocationOut",
+        "type": "object"
+      },
+      "PutawayOut": {
+        "description": "The put-away's receipt: the move, the two bins, whether the scan matched the server's\nsuggestion (`null` when it had none) and whether a fix was kept. **No coordinates.**\n\n`warnings` says what was adjusted without failing the request: `geo_dropped:<reason>`,\n`captured_at_adjusted`, `suggestion_ignored` (the `suggested_location_id` was not one of the\ncaller's bins; it was not stored), `geo_not_recorded` (the capture row could not be written;\nthe move stands).",
+        "properties": {
+          "from_location": {
+            "$ref": "#/components/schemas/PutawayFromOut"
+          },
+          "geo_recorded": {
+            "title": "Geo Recorded",
+            "type": "boolean"
+          },
+          "matched_suggestion": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Suggestion"
+          },
+          "move_id": {
+            "title": "Move Id",
+            "type": "string"
+          },
+          "replayed": {
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "to_location": {
+            "$ref": "#/components/schemas/PutawayToOut"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "move_id",
+          "replayed",
+          "from_location",
+          "to_location",
+          "matched_suggestion",
+          "geo_recorded",
+          "warnings"
+        ],
+        "title": "PutawayOut",
+        "type": "object"
+      },
+      "PutawaySuggestOut": {
+        "description": "`GET /inventory/putaway/suggest` \u2014 `null` when the warehouse has no storable bin to offer:\nnone is free, or none carries a barcode (a bin a scan cannot resolve is never suggested).",
+        "properties": {
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PutawaySuggestionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "suggestion"
+        ],
+        "title": "PutawaySuggestOut",
+        "type": "object"
+      },
+      "PutawaySuggestionOut": {
+        "description": "The bin the server would store the item in. `barcode` is that bin's own scannable label: a\nworker holds no `location.read`, so this is how the device compares a scanned label with the\nsuggestion; the caller already holds `stock.transfer`. A bin with no barcode is never offered\n(a put-away resolves its destination by barcode alone), so it is always set; the type stays\nnullable for clients built against the earlier contract.",
+        "properties": {
+          "barcode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Barcode"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "holds_item",
+              "empty_bin"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "location_id",
+          "code",
+          "barcode",
+          "name",
+          "path",
+          "reason"
+        ],
+        "title": "PutawaySuggestionOut",
+        "type": "object"
+      },
+      "PutawayToOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "zone",
+              "aisle",
+              "rack",
+              "shelf",
+              "bin",
+              "staging",
+              "pack_station",
+              "dock",
+              "receiving",
+              "returns",
+              "quarantine"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "kind"
+        ],
+        "title": "PutawayToOut",
+        "type": "object"
+      },
       "QuoteIn": {
         "additionalProperties": false,
         "description": "`POST /orders/quote`. Read-only \u2014 posts nothing, creates no order.",
@@ -6407,6 +8190,64 @@
         "title": "QuoteOut",
         "type": "object"
       },
+      "RazorpayOrderCheckoutSessionOut": {
+        "description": "Exactly what the browser needs to open Razorpay's hosted Checkout \u2014 the **public** key id\nand the provider Order id \u2014 plus the prefill it may show. Never a secret.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "key_id": {
+            "title": "Key Id",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "test",
+              "live"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "openable": {
+            "title": "Openable",
+            "type": "boolean"
+          },
+          "order_number": {
+            "title": "Order Number",
+            "type": "string"
+          },
+          "prefill": {
+            "$ref": "#/components/schemas/CheckoutPrefillOut"
+          },
+          "provider": {
+            "const": "razorpay",
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_order_id": {
+            "title": "Provider Order Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "key_id",
+          "provider_order_id",
+          "amount_minor",
+          "currency",
+          "mode",
+          "openable",
+          "order_number",
+          "prefill"
+        ],
+        "title": "RazorpayOrderCheckoutSessionOut",
+        "type": "object"
+      },
       "ReceiveIn": {
         "additionalProperties": false,
         "description": "`POST /purchase-orders/{id}/receive`. The body is optional \u2014 an empty POST receives as of\ntoday \u2014 so this schema exists only to validate `received_date` when one is sent.",
@@ -6485,6 +8326,709 @@
           }
         },
         "title": "ReservationReleaseIn",
+        "type": "object"
+      },
+      "RollEventOut": {
+        "properties": {
+          "detail": {
+            "additionalProperties": true,
+            "title": "Detail",
+            "type": "object"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "move_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Move Id"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "related_roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Related Roll Id"
+          },
+          "secondary_qty": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Qty"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "related_roll_id",
+          "move_id",
+          "quantity",
+          "secondary_qty",
+          "detail",
+          "occurred_at"
+        ],
+        "title": "RollEventOut",
+        "type": "object"
+      },
+      "RollIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/rolls` \u2014 register a roll. It holds no stock until an opening (or a later\nreceipt) posts into its bucket. `primary_qty` is in the item's own UOM (82.5 m); the measured\nsecondary quantity is a separate fact with its own unit (14.8 kg), never derived.",
+        "properties": {
+          "grade": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grade"
+          },
+          "gsm": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 100000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gsm"
+          },
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "primary_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Primary Qty",
+            "type": "string"
+          },
+          "roll_no": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._/-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll No"
+          },
+          "secondary_qty": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Qty"
+          },
+          "secondary_uom": {
+            "anyOf": [
+              {
+                "maxLength": 10,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Uom"
+          },
+          "shade": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shade"
+          },
+          "width_mm": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 100000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width Mm"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "primary_qty"
+        ],
+        "title": "RollIn",
+        "type": "object"
+      },
+      "RollMergeIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/rolls:merge` \u2014 n rolls of one item, lot and shade, all in the named bucket,\ninto one new roll holding their combined quantity.",
+        "properties": {
+          "location_id": {
+            "format": "uuid",
+            "title": "Location Id",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "occurred_on": {
+            "format": "date",
+            "title": "Occurred On",
+            "type": "string"
+          },
+          "roll_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "minItems": 2,
+            "title": "Roll Ids",
+            "type": "array"
+          },
+          "roll_no": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._/-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll No"
+          },
+          "status": {
+            "default": "AVAILABLE",
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD",
+              "QUARANTINE",
+              "DAMAGED",
+              "REJECTED",
+              "WIP",
+              "BLOCKED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "roll_ids",
+          "location_id"
+        ],
+        "title": "RollMergeIn",
+        "type": "object"
+      },
+      "RollMergeOut": {
+        "properties": {
+          "move": {
+            "$ref": "#/components/schemas/StockMoveOut"
+          },
+          "result": {
+            "$ref": "#/components/schemas/RollOut"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/RollOut"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "move",
+          "result",
+          "sources"
+        ],
+        "title": "RollMergeOut",
+        "type": "object"
+      },
+      "RollOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "grade": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grade"
+          },
+          "gsm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gsm"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "lot_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot No"
+          },
+          "on_hand_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "On Hand Qty",
+            "type": "string"
+          },
+          "parent_roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Roll Id"
+          },
+          "primary_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Primary Qty",
+            "type": "string"
+          },
+          "roll_no": {
+            "title": "Roll No",
+            "type": "string"
+          },
+          "secondary_qty": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Qty"
+          },
+          "secondary_uom": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Uom"
+          },
+          "shade": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shade"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "ACTIVE",
+              "SPLIT",
+              "MERGED"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "width_mm": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width Mm"
+          }
+        },
+        "required": [
+          "id",
+          "roll_no",
+          "inventory_item_id",
+          "sku",
+          "uom",
+          "lot_id",
+          "lot_no",
+          "state",
+          "primary_qty",
+          "secondary_qty",
+          "secondary_uom",
+          "width_mm",
+          "gsm",
+          "shade",
+          "grade",
+          "parent_roll_id",
+          "on_hand_qty",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "RollOut",
+        "type": "object"
+      },
+      "RollPatch": {
+        "additionalProperties": false,
+        "description": "`PATCH /inventory/rolls/{id}` \u2014 re-measure or re-classify. The primary quantity is not\neditable: how much is physically there is the ledger's to say (use a count).",
+        "properties": {
+          "grade": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grade"
+          },
+          "gsm": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 100000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gsm"
+          },
+          "secondary_qty": {
+            "anyOf": [
+              {
+                "examples": [
+                  "82.5"
+                ],
+                "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Qty"
+          },
+          "secondary_uom": {
+            "anyOf": [
+              {
+                "maxLength": 10,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secondary Uom"
+          },
+          "shade": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shade"
+          },
+          "width_mm": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 100000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width Mm"
+          }
+        },
+        "title": "RollPatch",
+        "type": "object"
+      },
+      "RollSplitIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/rolls/{id}:split` \u2014 one roll into n. The children's quantities must add\nup exactly to what the roll's bucket holds; the roll's measured weight is apportioned in\nproportion (floor, remainder to the last child).",
+        "properties": {
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/SplitChildIn"
+            },
+            "maxItems": 50,
+            "minItems": 2,
+            "title": "Children",
+            "type": "array"
+          },
+          "location_id": {
+            "format": "uuid",
+            "title": "Location Id",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "occurred_on": {
+            "format": "date",
+            "title": "Occurred On",
+            "type": "string"
+          },
+          "status": {
+            "default": "AVAILABLE",
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD",
+              "QUARANTINE",
+              "DAMAGED",
+              "REJECTED",
+              "WIP",
+              "BLOCKED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "location_id",
+          "children"
+        ],
+        "title": "RollSplitIn",
+        "type": "object"
+      },
+      "RollSplitOut": {
+        "properties": {
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/RollOut"
+            },
+            "title": "Children",
+            "type": "array"
+          },
+          "move": {
+            "$ref": "#/components/schemas/StockMoveOut"
+          },
+          "parent": {
+            "$ref": "#/components/schemas/RollOut"
+          }
+        },
+        "required": [
+          "move",
+          "parent",
+          "children"
+        ],
+        "title": "RollSplitOut",
+        "type": "object"
+      },
+      "RollTraceOut": {
+        "description": "A roll with the rolls it came from and the rolls that came of it, and its lot \u2014 so the\nwalk child -> parent -> lot -> source document is one response. `lot_trace` is the lot's own\nancestry (where that lot came from).",
+        "properties": {
+          "ancestors": {
+            "items": {
+              "$ref": "#/components/schemas/TraceNodeOut"
+            },
+            "title": "Ancestors",
+            "type": "array"
+          },
+          "descendants": {
+            "items": {
+              "$ref": "#/components/schemas/TraceNodeOut"
+            },
+            "title": "Descendants",
+            "type": "array"
+          },
+          "lot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LotOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lot_ancestors": {
+            "items": {
+              "$ref": "#/components/schemas/TraceNodeOut"
+            },
+            "title": "Lot Ancestors",
+            "type": "array"
+          },
+          "roll": {
+            "$ref": "#/components/schemas/RollOut"
+          }
+        },
+        "required": [
+          "roll",
+          "lot",
+          "ancestors",
+          "descendants",
+          "lot_ancestors"
+        ],
+        "title": "RollTraceOut",
         "type": "object"
       },
       "RouteOut": {
@@ -6769,6 +9313,38 @@
         "title": "SpendPoint",
         "type": "object"
       },
+      "SplitChildIn": {
+        "additionalProperties": false,
+        "properties": {
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "roll_no": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._/-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll No"
+          }
+        },
+        "required": [
+          "quantity"
+        ],
+        "title": "SplitChildIn",
+        "type": "object"
+      },
       "StatusSlice": {
         "description": "One slice of the PO-status donut \u2014 grouped by status. Mirrors the SPA's `StatusSlice`.",
         "properties": {
@@ -6965,6 +9541,138 @@
         "title": "StockBalanceOut",
         "type": "object"
       },
+      "StockMoveLineOut": {
+        "properties": {
+          "balance_after": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Balance After",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "ledger_entry_id": {
+            "title": "Ledger Entry Id",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ledger_entry_id",
+          "inventory_item_id",
+          "location_id",
+          "status",
+          "lot_id",
+          "roll_id",
+          "quantity",
+          "balance_after"
+        ],
+        "title": "StockMoveLineOut",
+        "type": "object"
+      },
+      "StockMoveOut": {
+        "description": "The move a stock operation posted. `replayed` is true when an `Idempotency-Key` matched an\nearlier request: nothing new was written and this is that request's result.",
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/StockMoveLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "move_id": {
+            "title": "Move Id",
+            "type": "string"
+          },
+          "occurred_on": {
+            "format": "date",
+            "title": "Occurred On",
+            "type": "string"
+          },
+          "reference_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Id"
+          },
+          "reference_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Type"
+          },
+          "replayed": {
+            "title": "Replayed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "move_id",
+          "kind",
+          "reference_type",
+          "reference_id",
+          "occurred_on",
+          "replayed",
+          "lines"
+        ],
+        "title": "StockMoveOut",
+        "type": "object"
+      },
       "StockMovementOut": {
         "description": "One row of an item's ledger, with its move's kind/reason/reference. Append-only, newest\nfirst. `quantity_delta` / `on_hand_after` are the whole-unit figures the API always returned;\n`quantity` / `balance_after` are exact. `balance_after` is the balance of the row's own\nbucket (`location_id` + `status`), which for a single-location item is its on-hand.",
         "properties": {
@@ -7070,7 +9778,6 @@
           "reference_type": {
             "anyOf": [
               {
-                "const": "purchase_order",
                 "type": "string"
               },
               {
@@ -7113,6 +9820,356 @@
           "created_by"
         ],
         "title": "StockMovementOut",
+        "type": "object"
+      },
+      "StockRowOut": {
+        "description": "One bucket of stock: an item at a location, in a status, optionally in a lot / on a roll.",
+        "properties": {
+          "available_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Available Qty",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "item_name": {
+            "title": "Item Name",
+            "type": "string"
+          },
+          "location_code": {
+            "title": "Location Code",
+            "type": "string"
+          },
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "location_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "zone",
+                  "aisle",
+                  "rack",
+                  "shelf",
+                  "bin",
+                  "staging",
+                  "pack_station",
+                  "dock",
+                  "receiving",
+                  "returns",
+                  "quarantine"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Kind"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "lot_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot No"
+          },
+          "on_hand_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "On Hand Qty",
+            "type": "string"
+          },
+          "reserved_qty": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Reserved Qty",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "roll_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll No"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD",
+              "QUARANTINE",
+              "DAMAGED",
+              "REJECTED",
+              "WIP",
+              "IN_TRANSIT",
+              "AT_JOB_WORKER",
+              "BLOCKED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "warehouse_code": {
+            "title": "Warehouse Code",
+            "type": "string"
+          },
+          "warehouse_id": {
+            "title": "Warehouse Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "inventory_item_id",
+          "sku",
+          "item_name",
+          "uom",
+          "warehouse_id",
+          "warehouse_code",
+          "location_id",
+          "location_code",
+          "location_kind",
+          "status",
+          "lot_id",
+          "lot_no",
+          "roll_id",
+          "roll_no",
+          "on_hand_qty",
+          "reserved_qty",
+          "available_qty"
+        ],
+        "title": "StockRowOut",
+        "type": "object"
+      },
+      "StockStatusChangeIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/stock/status-changes` \u2014 move stock between statuses where it sits (e.g.\nAVAILABLE -> QUALITY_HOLD): one paired move, physical total unchanged (ADR-0014 \u00a74).",
+        "properties": {
+          "from_status": {
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD",
+              "QUARANTINE",
+              "DAMAGED",
+              "REJECTED",
+              "WIP",
+              "BLOCKED"
+            ],
+            "title": "From Status",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "location_id": {
+            "format": "uuid",
+            "title": "Location Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "occurred_on": {
+            "format": "date",
+            "title": "Occurred On",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "to_status": {
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD",
+              "QUARANTINE",
+              "DAMAGED",
+              "REJECTED",
+              "WIP",
+              "BLOCKED"
+            ],
+            "title": "To Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "location_id",
+          "from_status",
+          "to_status",
+          "quantity"
+        ],
+        "title": "StockStatusChangeIn",
+        "type": "object"
+      },
+      "StockTransferIn": {
+        "additionalProperties": false,
+        "description": "`POST /inventory/stock/transfers` \u2014 bin to bin inside one warehouse, immediate.",
+        "properties": {
+          "from_location_id": {
+            "format": "uuid",
+            "title": "From Location Id",
+            "type": "string"
+          },
+          "inventory_item_id": {
+            "format": "uuid",
+            "title": "Inventory Item Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          },
+          "occurred_on": {
+            "format": "date",
+            "title": "Occurred On",
+            "type": "string"
+          },
+          "quantity": {
+            "examples": [
+              "82.5"
+            ],
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "roll_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roll Id"
+          },
+          "status": {
+            "default": "AVAILABLE",
+            "enum": [
+              "AVAILABLE",
+              "QUALITY_HOLD",
+              "QUARANTINE",
+              "DAMAGED",
+              "REJECTED",
+              "WIP",
+              "BLOCKED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "to_location_id": {
+            "format": "uuid",
+            "title": "To Location Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "inventory_item_id",
+          "from_location_id",
+          "to_location_id",
+          "quantity"
+        ],
+        "title": "StockTransferIn",
         "type": "object"
       },
       "SupplierIn": {
@@ -7527,6 +10584,81 @@
         "title": "ThroughputOut",
         "type": "object"
       },
+      "TraceNodeOut": {
+        "description": "One lot or roll reached by a trace. `from_id` is the node it was reached from (so the\nlist is a tree, root excluded); `relation` / `move_id` say how and by which move.",
+        "properties": {
+          "depth": {
+            "title": "Depth",
+            "type": "integer"
+          },
+          "from_id": {
+            "title": "From Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "lot_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot No"
+          },
+          "move_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Move Id"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "relation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relation"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "depth",
+          "from_id",
+          "relation",
+          "move_id"
+        ],
+        "title": "TraceNodeOut",
+        "type": "object"
+      },
       "UomOut": {
         "description": "One entry in the organization's UOM directory (ADR-0014 Phase 1). `is_system` marks a\nunit seeded from the fixed registry; a caller cannot tell the two apart except by this flag \u2014\nboth are equally usable as an item's `uom`.",
         "properties": {
@@ -7890,7 +11022,7 @@
       },
       "WarehouseIn": {
         "additionalProperties": false,
-        "description": "`POST /warehouses`. `code` is immutable once created \u2014 it never appears on\n`WarehousePatch`.",
+        "description": "`POST /warehouses`. `code` is immutable once created \u2014 it never appears on\n`WarehousePatch`. `lat_micro`/`lng_micro` place the site on a map: integers (never floats),\ngiven together or not at all, latitude within +-90 degrees and longitude within +-180.",
         "properties": {
           "code": {
             "maxLength": 40,
@@ -7898,6 +11030,28 @@
             "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Code",
             "type": "string"
+          },
+          "lat_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lat Micro"
+          },
+          "lng_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lng Micro"
           },
           "location": {
             "default": "",
@@ -7919,8 +11073,81 @@
         "title": "WarehouseIn",
         "type": "object"
       },
-      "WarehouseOut": {
-        "description": "A stocking location. Reference data behind the warehouse names the POs and inventory\nrows carry.",
+      "WarehouseMapOut": {
+        "properties": {
+          "sites": {
+            "items": {
+              "$ref": "#/components/schemas/WarehouseMapSiteOut"
+            },
+            "title": "Sites",
+            "type": "array"
+          },
+          "without_coordinates": {
+            "items": {
+              "$ref": "#/components/schemas/WarehouseMapUnplacedOut"
+            },
+            "title": "Without Coordinates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sites",
+          "without_coordinates"
+        ],
+        "title": "WarehouseMapOut",
+        "type": "object"
+      },
+      "WarehouseMapSiteOut": {
+        "description": "One placed site on the warehouses map \u2014 `GET /warehouses/map`. These are *site*\ncoordinates (a business address), not a worker's position.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "floor_count": {
+            "title": "Floor Count",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lat_micro": {
+            "title": "Lat Micro",
+            "type": "integer"
+          },
+          "lng_micro": {
+            "title": "Lng Micro",
+            "type": "integer"
+          },
+          "location": {
+            "title": "Location",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "stocked_location_count": {
+            "title": "Stocked Location Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "location",
+          "lat_micro",
+          "lng_micro",
+          "floor_count",
+          "stocked_location_count"
+        ],
+        "title": "WarehouseMapSiteOut",
+        "type": "object"
+      },
+      "WarehouseMapUnplacedOut": {
+        "description": "A warehouse with no coordinates yet \u2014 listed beside the map so it can be placed.",
         "properties": {
           "code": {
             "title": "Code",
@@ -7945,13 +11172,86 @@
           "name",
           "location"
         ],
+        "title": "WarehouseMapUnplacedOut",
+        "type": "object"
+      },
+      "WarehouseOut": {
+        "description": "A stocking location. Reference data behind the warehouse names the POs and inventory\nrows carry. `lat_micro`/`lng_micro` are the *site's* position on a map in integer\nmicro-degrees (10^-6), both set or both null.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lat_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lat Micro"
+          },
+          "lng_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lng Micro"
+          },
+          "location": {
+            "title": "Location",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "location"
+        ],
         "title": "WarehouseOut",
         "type": "object"
       },
       "WarehousePatch": {
         "additionalProperties": false,
-        "description": "`PATCH /warehouses/{id}`. A rename cascades to `purchase_orders.warehouse` and\n`inventory_items.warehouse` in the same transaction \u2014 those columns are denormalised copies\nof `name`, not a join.",
+        "description": "`PATCH /warehouses/{id}`. A rename cascades to `purchase_orders.warehouse` and\n`inventory_items.warehouse` in the same transaction \u2014 those columns are denormalised copies\nof `name`, not a join.\n\n`lat_micro`/`lng_micro` are checked against the **merged** state (a patch that sets only the\nlatitude is checked against the persisted longitude \u2014 `app.inventory.services\n.update_warehouse`); an explicit `null` for both clears the site's position.",
         "properties": {
+          "lat_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lat Micro"
+          },
+          "lng_micro": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lng Micro"
+          },
           "location": {
             "anyOf": [
               {
@@ -10112,6 +13412,49 @@
         ]
       }
     },
+    "/api/v1/operations/floors/{floor_id}/published-layout": {
+      "get": {
+        "operationId": "read_published_layout_api_v1_operations_floors__floor_id__published_layout_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "floor_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Floor Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishedLayoutOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What is live on a floor: the published layout's placements with their locations",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
     "/api/v1/operations/fulfilment/offers/{offer_id}/accept": {
       "post": {
         "operationId": "accept_offer_api_v1_operations_fulfilment_offers__offer_id__accept_post",
@@ -12088,6 +15431,984 @@
         ]
       }
     },
+    "/api/v1/operations/inventory/ledger": {
+      "get": {
+        "operationId": "list_ledger_api_v1_operations_inventory_ledger_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "item_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Item Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "location_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Location Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lot_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lot Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "roll_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Roll Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(opening|receipt|adjustment|count|relocation|issue)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "AVAILABLE",
+                    "QUALITY_HOLD",
+                    "QUARANTINE",
+                    "DAMAGED",
+                    "REJECTED",
+                    "WIP",
+                    "IN_TRANSIT",
+                    "AT_JOB_WORKER",
+                    "BLOCKED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To Date"
+            }
+          },
+          {
+            "description": "Opaque cursor from the previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 300,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque cursor from the previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_LedgerRowOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The organization-wide stock ledger, newest first",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/locate": {
+      "get": {
+        "operationId": "locate_stock_api_v1_operations_inventory_locate_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "inventory_item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Inventory Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lot_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lot Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "roll_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Roll Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "warehouse_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warehouse Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Where is this item (lot, roll)? Bins holding it, with their place on the floor plan",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/lots": {
+      "get": {
+        "operationId": "list_lots_api_v1_operations_inventory_lots_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "item_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Item Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "quality_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "PENDING",
+                    "APPROVED",
+                    "ON_HOLD",
+                    "REJECTED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Quality Status"
+            }
+          },
+          {
+            "description": "Lot number prefix",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 60,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lot number prefix",
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expires_before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expires Before"
+            }
+          },
+          {
+            "description": "Opaque cursor from the previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 300,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque cursor from the previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_LotOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Lots, newest first (cursor-paginated)",
+        "tags": [
+          "inventory"
+        ]
+      },
+      "post": {
+        "operationId": "create_lot_api_v1_operations_inventory_lots_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LotIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LotOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register a lot",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/lots/{lot_id}": {
+      "get": {
+        "operationId": "read_lot_api_v1_operations_inventory_lots__lot_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lot_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LotOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One lot",
+        "tags": [
+          "inventory"
+        ]
+      },
+      "patch": {
+        "operationId": "update_lot_api_v1_operations_inventory_lots__lot_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lot_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LotPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LotOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a lot's supplier number, dates, quality status or attributes",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/lots/{lot_id}/genealogy": {
+      "get": {
+        "operationId": "list_lot_genealogy_api_v1_operations_inventory_lots__lot_id__genealogy_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lot_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lot Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque cursor from the previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 300,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque cursor from the previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_LotGenealogyOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The genealogy edges touching a lot, newest first",
+        "tags": [
+          "inventory"
+        ]
+      },
+      "post": {
+        "operationId": "link_lots_api_v1_operations_inventory_lots__lot_id__genealogy_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lot_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LotGenealogyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LotGenealogyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record that this lot's material went into another lot",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/lots/{lot_id}/trace": {
+      "get": {
+        "operationId": "trace_lot_api_v1_operations_inventory_lots__lot_id__trace_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lot_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LotTraceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backward and forward trace of a lot through the genealogy",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/putaway": {
+      "post": {
+        "operationId": "putaway_stock_api_v1_operations_inventory_putaway_post",
+        "parameters": [
+          {
+            "description": "Required. Retrying with the same key replays the first result instead of putting stock away again; reusing it for a different request is a 409. The server namespaces it, so it is at most 120 characters.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required. Retrying with the same key replays the first result instead of putting stock away again; reusing it for a different request is a 409. The server namespaces it, so it is at most 120 characters.",
+              "maxLength": 120,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutawayIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutawayOut"
+                }
+              }
+            },
+            "description": "Replay: this `Idempotency-Key` already stored this put-away. The body is the original receipt with `replayed: true` and no warnings, and nothing is stored again: no second move, capture, audit row or event. The GPS fix, `captured_at` and `suggested_location_id` are not part of what the key is compared on, so a retry that differs only there is answered with the original; any other difference is a 409."
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutawayOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Store stock from a receiving or staging bin into the bin whose barcode was scanned",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/putaway/suggest": {
+      "get": {
+        "description": "A bin already holding the item (this lot, when given), else the first empty one, in a\npicker's walk order (pick sequence, then code). Only bins with a barcode are offered, because a\nput-away resolves its destination by barcode alone; when none qualifies the suggestion is\n`null`.",
+        "operationId": "suggest_putaway_api_v1_operations_inventory_putaway_suggest_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "inventory_item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Inventory Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "warehouse_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Warehouse Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lot_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lot Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutawaySuggestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Where to store an item: a bin already holding it, else the first empty one",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/putaway/{move_id}": {
+      "get": {
+        "operationId": "read_putaway_api_v1_operations_inventory_putaway__move_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "move_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Move Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutawayDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What is recorded about a put-away (never the GPS fix)",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/putaway/{move_id}/location:reveal": {
+      "post": {
+        "operationId": "reveal_putaway_location_api_v1_operations_inventory_putaway__move_id__location_reveal_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "move_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Move Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutawayLocationOut"
+                }
+              }
+            },
+            "description": "The fix recorded with the put-away (nulls when the device gave none). Every successful call writes an audit row, and the response is never cacheable.",
+            "headers": {
+              "Cache-Control": {
+                "description": "A worker's position must not sit in a browser or proxy cache.",
+                "schema": {
+                  "enum": [
+                    "no-store"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reveal the GPS fix recorded with a put-away (audited every time)",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
     "/api/v1/operations/inventory/reconcile": {
       "post": {
         "operationId": "reconcile_inventory_api_v1_operations_inventory_reconcile_post",
@@ -12186,6 +16507,939 @@
         "summary": "Give back all or part of a reservation's open remainder (ADR-0014 \u00a711)",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/rolls": {
+      "get": {
+        "operationId": "list_rolls_api_v1_operations_inventory_rolls_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "item_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Item Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lot_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lot Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "ACTIVE",
+                    "SPLIT",
+                    "MERGED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shade",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shade"
+            }
+          },
+          {
+            "in": "query",
+            "name": "grade",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 20,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Grade"
+            }
+          },
+          {
+            "description": "Roll number prefix",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 60,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Roll number prefix",
+              "title": "Q"
+            }
+          },
+          {
+            "description": "Opaque cursor from the previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 300,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque cursor from the previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_RollOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rolls, newest first (cursor-paginated)",
+        "tags": [
+          "inventory"
+        ]
+      },
+      "post": {
+        "operationId": "create_roll_api_v1_operations_inventory_rolls_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RollOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register a roll (it holds no stock until an opening posts into it)",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/rolls/{roll_id}": {
+      "get": {
+        "operationId": "read_roll_api_v1_operations_inventory_rolls__roll_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "roll_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Roll Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RollOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One roll",
+        "tags": [
+          "inventory"
+        ]
+      },
+      "patch": {
+        "operationId": "update_roll_api_v1_operations_inventory_rolls__roll_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "roll_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Roll Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RollOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Re-measure or re-classify a roll",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/rolls/{roll_id}/events": {
+      "get": {
+        "operationId": "list_roll_events_api_v1_operations_inventory_rolls__roll_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "roll_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Roll Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque cursor from the previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 300,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque cursor from the previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_RollEventOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A roll's history, newest first",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/rolls/{roll_id}/trace": {
+      "get": {
+        "operationId": "trace_roll_api_v1_operations_inventory_rolls__roll_id__trace_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "roll_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Roll Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RollTraceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backward and forward trace of a roll \u2014 parents, children, lot and the lot's origin",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/rolls/{roll_id}:split": {
+      "post": {
+        "operationId": "split_roll_api_v1_operations_inventory_rolls__roll_id__split_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "roll_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Roll Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollSplitIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RollSplitOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Split a roll into n rolls whose quantities add up exactly",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/rolls:merge": {
+      "post": {
+        "operationId": "merge_rolls_api_v1_operations_inventory_rolls_merge_post",
+        "parameters": [
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollMergeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RollMergeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Merge rolls of one item, lot and shade into one new roll",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/stock": {
+      "get": {
+        "operationId": "list_stock_api_v1_operations_inventory_stock_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "item_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Item Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "warehouse_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warehouse Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "location_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Location Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lot_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lot Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "roll_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Roll Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "AVAILABLE",
+                    "QUALITY_HOLD",
+                    "QUARANTINE",
+                    "DAMAGED",
+                    "REJECTED",
+                    "WIP",
+                    "IN_TRANSIT",
+                    "AT_JOB_WORKER",
+                    "BLOCKED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_empty",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Empty",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Opaque cursor from the previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 300,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque cursor from the previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_StockRowOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stock by bucket \u2014 filter by item, warehouse, location, lot, roll or status",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/stock/opening": {
+      "post": {
+        "operationId": "post_opening_stock_api_v1_operations_inventory_stock_opening_post",
+        "parameters": [
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpeningStockIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockMoveOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post opening stock per location, lot and roll",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/stock/status-changes": {
+      "post": {
+        "operationId": "change_stock_status_api_v1_operations_inventory_stock_status_changes_post",
+        "parameters": [
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StockStatusChangeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockMoveOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Move stock between statuses where it sits (e.g. AVAILABLE -> QUALITY_HOLD)",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/api/v1/operations/inventory/stock/transfers": {
+      "post": {
+        "operationId": "transfer_stock_api_v1_operations_inventory_stock_transfers_post",
+        "parameters": [
+          {
+            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StockTransferIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockMoveOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Move stock bin to bin inside one warehouse",
+        "tags": [
+          "inventory"
         ]
       }
     },
@@ -13199,6 +18453,40 @@
       }
     },
     "/api/v1/operations/locations/{location_id}": {
+      "delete": {
+        "operationId": "delete_location_api_v1_operations_locations__location_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "location_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Location Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete a location \u2014 refused while it holds stock or has ledger history",
+        "tags": [
+          "inventory"
+        ]
+      },
       "patch": {
         "operationId": "update_location_api_v1_operations_locations__location_id__patch",
         "parameters": [
@@ -13736,7 +19024,7 @@
     },
     "/api/v1/operations/orders/{order_id}/payments/checkout": {
       "post": {
-        "description": "Returns what the browser needs to open the provider's own hosted checkout. The amount is\nthe order's stored total \u2014 nothing the browser sends is read. Opening a checkout records\nnothing about payment on the order: it is paid when the provider says so.",
+        "description": "Returns what the browser needs to open the provider's own hosted checkout. The amount is\nthe order's stored total \u2014 nothing the browser sends is read. Opening a checkout records\nnothing about payment on the order: it is paid when the provider says so.\n\nA provider that needs the paying customer on every Order (Cashfree) makes payment answer the\nfirst call `payer-required`; the order's own customer phone is then sent, server to server \u2014\nthe only time operations sends it to payment, and never to a provider that does not need it.\nAn order with no phone is a 422 `phone-required`: a phone is never invented.",
         "operationId": "start_order_checkout_api_v1_operations_orders__order_id__payments_checkout_post",
         "parameters": [
           {
@@ -15258,6 +20546,27 @@
           }
         },
         "summary": "Add a warehouse",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/warehouses/map": {
+      "get": {
+        "operationId": "warehouses_map_api_v1_operations_warehouses_map_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarehouseMapOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The org's warehouses for a map: placed sites and the ones with no coordinates yet",
         "tags": [
           "operations"
         ]

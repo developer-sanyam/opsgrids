@@ -186,7 +186,9 @@ service that owns it.
 > event's time, so a stale trio event cannot re-add it. A hand activation is the product's own
 > source, shared with its standalone subscription exactly as the two always shared the row; a
 > hand deactivation of a product a bundle still feeds is refused rather than answered with a 200
-> that changes nothing. Details: [commerce-packaging.md](../commerce-packaging.md).
+> that changes nothing. A hand activation of a product a subscription has fed, in any status, is
+> refused too (409 `subscription_managed`, [ADR-0037](0037-stop-events-and-the-hand-activation-gate.md)).
+> Details: [commerce-packaging.md](../commerce-packaging.md).
 >
 > **Concurrency.** Both the recompute and the watermark are read-then-write, so each fold holds
 > transaction-scoped advisory locks — on the source first, then on every activation it feeds now
@@ -524,6 +526,21 @@ many times, and from however many processes, it is made, and the declared timeou
 The stub passes it today; the live adapter's test module subclasses it and passes it unchanged
 before it can merge. `test_provider_contract.py` also runs each check against an adapter broken
 in the way the check guards against, and requires it to fail.
+
+> **Amended 2026-10-06 by [ADR-0032](0032-payment-provider-seam-and-checkout.md).** `ProviderContract`
+> is the contract for an adapter of the *order-then-charge* shape (Razorpay) and is unchanged; an
+> adapter of another shape is held to its own sibling contract (`CheckoutContract`,
+> `DirectDebitContract`). The overall per-call deadline asked for below is built
+> (`providers/wire.py`). The platform's Razorpay Orders are created with `payment_capture: true`.
+> Whether Razorpay rejects a duplicate `receipt` is unverified; the adapter looks a receipt up once
+> more after any 400 on an Order create. The call timeout's default is now 45 s.
+>
+> **Amended again 2026-10-06 (ADR-0032, "Sandbox facts").** The Razorpay sandbox **accepts** a
+> duplicate `receipt` (a second Order) and its receipt search can miss an Order created seconds
+> earlier, so `ensure_order`'s lookup is best-effort, not proof. A checkout's recorded Order is
+> fetched by its id and is the only one handed out; `ProviderContract` is unchanged (it runs against
+> the stub's exact receipt index), and a live order-then-charge debit (Phase B) must record the
+> Order id before it creates the payment.
 
 ## Addendum (2026-09-24) — webhook identity and permanent conditions (PAY-A)
 

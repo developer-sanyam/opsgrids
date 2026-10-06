@@ -125,6 +125,15 @@ function currentPriceFor(sub: FixtureSubscription | undefined): ProductCurrentPr
   };
 }
 
+/** The fixtures-mode stand-in for the subscription service's `trial_max_ends_at`: its default cap
+ *  of 90 days from the trial's start (ADR-0031). The live console never computes this — it shows
+ *  what the subscription service states. */
+export const FIXTURE_TRIAL_CAP_DAYS = 90;
+
+export function fixtureTrialCap(trialStart: string): string {
+  return new Date(Date.parse(trialStart) + FIXTURE_TRIAL_CAP_DAYS * 86_400_000).toISOString();
+}
+
 function baseProductPricing(organizationId: string, productKey: string, productName: string): ProductPricing {
   const sub = subscriptionsForOrg(organizationId).find((s) => s.product_key === productKey);
   const key = `${organizationId}:${productKey}`;
@@ -136,8 +145,15 @@ function baseProductPricing(organizationId: string, productKey: string, productN
           id: sub.subscription_id,
           state: sub.state,
           plan_version_id: sub.plan_version_id,
+          plan_name: planVersionById(sub.plan_version_id)?.plan_name ?? null,
           trial_ends_at: sub.trial_ends_at,
           current_period_end: sub.current_period_end,
+          pending_plan_version_id: null,
+          pending_plan_name: null,
+          cancel_at: null,
+          entitled_products: planVersionById(sub.plan_version_id)?.bundled_products ?? [productKey],
+          current_period_start: sub.created_at,
+          trial_max_ends_at: sub.state === "trial" ? fixtureTrialCap(sub.created_at) : null,
         }
       : null,
     current_price: currentPriceFor(sub),
@@ -234,6 +250,23 @@ export function applyFixturePrice(organizationId: string, request: SetPriceReque
       hasSubscription && request.apply_to_subscription ? (product.subscription?.id ?? null) : null,
     effective,
   };
+}
+
+/**
+ * Edit one product's live pricing entry in place — how the plan-switch fixtures (`planChange.ts`)
+ * make a switch visible to the next read, the same round trip the live gateway gives. Returns
+ * false when the organization or the product has no entry to edit.
+ */
+export function editProductPricing(
+  organizationId: string,
+  productKey: string,
+  edit: (product: ProductPricing) => void,
+): boolean {
+  const entry = ensurePricing(organizationId);
+  const product = entry?.products.find((p) => p.product_key === productKey);
+  if (!product) return false;
+  edit(product);
+  return true;
 }
 
 /** Test-only: fixtures modules are singletons for the app's lifetime, but a test suite needs each

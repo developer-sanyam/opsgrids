@@ -38,6 +38,7 @@ from platform_core.db import (
     get_session,
     init_engine,
 )
+from platform_core.testing import cross_service_schema_lock
 
 #: Cleared between tests. `processed_events` too, so an idempotency test starts from a clean ledger.
 TENANT_TABLES = (
@@ -47,7 +48,17 @@ TENANT_TABLES = (
     "audit_logs",
     "outbox",
     "processed_events",
+    "idempotency_keys",
 )
+
+
+#: This suite is not parallel-safe against `services/subscription/tests/test_stop_event_folds.py`,
+#: which folds subscription's real events through this service's real consumer
+#: (`tests/fold_envelopes.py`), so it holds live rows in *this* schema while it runs. The `TRUNCATE`
+#: in `_clean` would delete them mid-test. `make test-services` runs the two services concurrently,
+#: so the two suites take this advisory lock against each other; see `platform_core.testing`. Every
+#: other service is untouched and stays fully parallel.
+CROSS_SERVICE_LOCK_HOLDER = "services/console/tests"
 
 
 def _connect_args() -> dict:
@@ -71,14 +82,20 @@ def org_c() -> uuid.UUID:
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean() -> AsyncIterator[None]:
-    """Truncate the projection and platform tables before each test, on the admin role."""
+    """Truncate the projection and platform tables before each test, on the admin role.
+
+    The test that follows runs under the cross-service lock too (see `CROSS_SERVICE_LOCK_HOLDER`):
+    the rows it writes are in the schema the sibling suite is reading, so the exclusion has to last
+    as long as the test does, not only as long as the `TRUNCATE`.
+    """
     cfg = settings()
     tables = ", ".join(f'"{SCHEMA}"."{t}"' for t in TENANT_TABLES)
-    admin = create_async_engine(cfg.admin_dsn, connect_args=_connect_args())
-    async with admin.begin() as conn:
-        await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
-    await admin.dispose()
-    yield
+    async with cross_service_schema_lock(cfg.app_dsn, SCHEMA, holder=CROSS_SERVICE_LOCK_HOLDER):
+        admin = create_async_engine(cfg.admin_dsn, connect_args=_connect_args())
+        async with admin.begin() as conn:
+            await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
+        await admin.dispose()
+        yield
 
 
 @pytest_asyncio.fixture

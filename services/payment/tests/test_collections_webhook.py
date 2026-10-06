@@ -350,7 +350,14 @@ class TestSignature:
         merchant_providers: MerchantProviders,
         org_id: uuid.UUID,
     ) -> None:
-        account_id, opened, _ = await _open(client, org_id)
+        account_id, opened, order_id = await _open(client, org_id)
+        # An account with an open checkout cannot be disconnected (ADR-0033): cancel it first.
+        cancelled = await client.post(
+            f"{internal_base(org_id, order_id)}/charges/{opened['collection']['id']}/cancel",
+            headers=operations_token(),
+            json={},
+        )
+        assert cancelled.status_code == 200, cancelled.text
         with as_principal(
             principal_for(org_id, ["operations.payments.merchant_account.write:ORG"])
         ):

@@ -42,6 +42,7 @@ from platform_core.db import TENANT_GUC, get_session
 from tests.helpers import ctx_for
 
 TENANT_TABLES = (
+    "putaway_captures",
     "channel_sync_logs",
     "channel_order_imports",
     "channel_sku_mappings",
@@ -67,11 +68,15 @@ TENANT_TABLES = (
     "fulfilment_settings",
     "purchase_order_lines",
     "purchase_orders",
+    "roll_events",
+    "lot_genealogy",
     "inventory_discrepancies",
     "inventory_reservations",
     "inventory_balances",
     "inventory_ledger",
     "inventory_moves",
+    "rolls",
+    "lots",
     "uom_conversions",
     "item_variants",
     "item_attributes",

@@ -64,6 +64,13 @@ class ServiceSettings(BaseSettings):
         # `""` as a key, at which point the provider believed it could reach the network.
         # Every optional secret in the platform is typed `| None` on exactly that promise.
         env_ignore_empty=True,
+        # A refused setting must never print what it was given. Without this, pydantic puts
+        # `input_value=<the whole merged settings input>` into `str(ValidationError)` — read from
+        # the environment as plain strings, not `SecretStr` — and shortens it to its head and its
+        # tail, so whichever secret is the last field set (a provider key secret, the PII key)
+        # lands in the start-up crash on stdout, in the terminal scrollback and in any log pasted
+        # into a ticket. The message still names the variable; only the value is withheld.
+        hide_input_in_errors=True,
     )
 
     # --- identity of this process -------------------------------------------------

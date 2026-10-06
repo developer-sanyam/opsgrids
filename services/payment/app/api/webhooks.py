@@ -14,8 +14,20 @@ back). Everything else that is wrong with an authentic webhook is permanent — 
 ours, an outcome the state machine forbids, another amount or currency — and is recorded, audited
 and answered **200** (`services.ingest_webhook`), because a retry could not change it.
 
-Mounted under `/api/v1` so its public path is `/api/v1/webhooks/razorpay`, which is exactly what
-the admin-gateway forwards, body and signature header untouched.
+Mounted under `/api/v1` so its path is `/api/v1/webhooks/razorpay`, which is what the gateway
+forwards, body and signature header untouched. **Deliberately not public on the app gateway today**
+(owner decision, ADR-0032): platform billing learns outcomes by polling the provider
+(`app/checkout/cron.py`), and a public path is a separate, owner-gated change that also touches the
+gateway's public-path lists, both route tables and their parity tests. Everything on this side — the
+signature check, the idempotent inbox, the payload redaction, the body cap — is built and tested so
+that change is only a route-table edit.
+
+**Cashfree** has its own route (`/webhooks/cashfree`) with the same ack rules. It signs a timestamp
+header plus the body (`x-webhook-timestamp`, `x-webhook-signature`), carries its delivery id in
+`x-idempotency-header` (read under both documented spellings; the real one is for the smoke tool to
+confirm), has no secret of its own — the API Secret Key signs — and answers **404 unless Cashfree is
+enabled** here (it is the default provider, or `CASHFREE_ENV` is `sandbox` / `production`), so a
+public route could never run on an unconfigured box.
 """
 
 from __future__ import annotations
@@ -30,12 +42,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import services
-from app.deps import get_provider
+from app.config import settings
+from app.deps import cashfree_provider, razorpay_provider
 from app.providers.base import PaymentProvider
 from app.schemas import WebhookAck
 from platform_core.config import ServiceSettings
 from platform_core.db import get_session
-from platform_core.errors import UpstreamUnavailableProblem
+from platform_core.errors import NotFoundProblem, PayloadTooLargeProblem, UpstreamUnavailableProblem
 from platform_core.logging import get_logger
 
 log = get_logger("payment.webhooks")
@@ -66,7 +79,15 @@ TRANSIENT_DATABASE_ERRORS: tuple[type[BaseException], ...] = (
 )
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-ProviderDep = Annotated[PaymentProvider, Depends(get_provider)]
+#: Each route is bound to **its own** adapter, never to whichever provider is the default now: a
+#: Razorpay delivery is verified with Razorpay's secret and a Cashfree one with Cashfree's, whatever
+#: `PAYMENT_PROVIDER` says (ADR-0032).
+ProviderDep = Annotated[PaymentProvider, Depends(razorpay_provider)]
+CashfreeProviderDep = Annotated[PaymentProvider, Depends(cashfree_provider)]
+
+#: The largest platform webhook body this service will buffer, enforced **before** the signature is
+#: checked. Provider bodies are a few kilobytes; the merchant route holds the same ceiling.
+MAX_WEBHOOK_BODY_BYTES = 256 * 1024
 
 #: Razorpay's signature header. Case-insensitive at the HTTP layer; read via `.get`.
 SIGNATURE_HEADER = "X-Razorpay-Signature"
@@ -76,6 +97,45 @@ SIGNATURE_HEADER = "X-Razorpay-Signature"
 #: treats it accordingly — a delivery id, validated, with a digest of the body's own identifying
 #: fields as the fallback when it is absent or unusable.
 EVENT_ID_HEADER = "X-Razorpay-Event-Id"
+
+#: Cashfree's signature and delivery-id headers. The id is documented as `x-idempotency-header` (a
+#: payload hash, stable across retries, on webhook versions 2025-01-01 and later) and appears as
+#: `x-idempotency-key` in some samples: both are read, and — being unsigned — treated as a delivery
+#: id and nothing more, exactly like Razorpay's.
+CASHFREE_SIGNATURE_HEADER = "x-webhook-signature"
+CASHFREE_EVENT_ID_HEADERS = ("x-idempotency-header", "x-idempotency-key")
+
+
+async def read_capped_body(request: Request, limit: int) -> bytes:
+    """The raw body, refused (413) above `limit` bytes — before any signature work, and never by
+    buffering it first: from the declared length when there is one, and otherwise (a chunked body
+    carries none) by counting the stream as it arrives and stopping at the first byte over."""
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > limit:
+        raise PayloadTooLargeProblem("webhook body too large")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            raise PayloadTooLargeProblem("webhook body too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _capped_body(request: Request) -> bytes:
+    return await read_capped_body(request, MAX_WEBHOOK_BODY_BYTES)
+
+
+def cashfree_enabled() -> bool:
+    """Whether this deployment can have a Cashfree webhook at all: Cashfree is the provider new
+    charges go to, or its environment is switched to `sandbox` / `production`. False on the stub
+    with another default — the route is then a 404, whatever a caller sends."""
+    cfg = settings()
+    return bool(
+        getattr(cfg, "payment_provider", "razorpay") == "cashfree"
+        or getattr(cfg, "cashfree_env", "stub") in ("sandbox", "production")
+    )
 
 
 @router.post(
@@ -88,10 +148,10 @@ async def razorpay_webhook(
 ) -> WebhookAck:
     """Ingest one Razorpay webhook. The body is read raw — the signature is over exactly these
     bytes, so it must not be re-serialized before verification."""
-    body = await request.body()
+    body = await _capped_body(request)
     signature = request.headers.get(SIGNATURE_HEADER)
     event_id = request.headers.get(EVENT_ID_HEADER)
-    settings: ServiceSettings = request.app.state.settings
+    app_settings: ServiceSettings = request.app.state.settings
 
     try:
         async with session.begin():
@@ -100,7 +160,7 @@ async def razorpay_webhook(
                 provider,
                 signature=signature,
                 body=body,
-                is_production=settings.is_production,
+                is_production=app_settings.is_production,
                 event_id=event_id,
                 request=request,
             )
@@ -113,6 +173,49 @@ async def razorpay_webhook(
         raise UpstreamUnavailableProblem("temporarily unable to record the webhook") from exc
     log.info(
         "razorpay.webhook",
+        provider_event_id=ack.provider_event_id,
+        duplicate=ack.duplicate,
+        reconciled=ack.reconciled,
+        ignored_reason=ack.ignored_reason,
+    )
+    return ack
+
+
+@router.post(
+    "/cashfree",
+    response_model=WebhookAck,
+    summary="Cashfree webhook — signature-verified, idempotent, reconciling (404 unless enabled)",
+)
+async def cashfree_webhook(
+    request: Request, session: SessionDep, provider: CashfreeProviderDep
+) -> WebhookAck:
+    """Ingest one Cashfree PG webhook. The body is read raw — the signature is
+    `base64(HMAC-SHA256(secret, timestamp + body))` over exactly these bytes and the
+    `x-webhook-timestamp` header — and capped before it is touched. A missing secret, header or
+    match is a 400 with nothing recorded (fail closed)."""
+    if not cashfree_enabled():
+        raise NotFoundProblem("Not found")
+    body = await _capped_body(request)
+    headers = request.headers
+    event_id = next((headers[name] for name in CASHFREE_EVENT_ID_HEADERS if name in headers), None)
+    app_settings: ServiceSettings = request.app.state.settings
+    try:
+        async with session.begin():
+            ack = await services.ingest_webhook(
+                session,
+                provider,
+                signature=headers.get(CASHFREE_SIGNATURE_HEADER),
+                body=body,
+                is_production=app_settings.is_production,
+                event_id=event_id,
+                request=request,
+                headers={k.lower(): v for k, v in headers.items()},
+            )
+    except TRANSIENT_DATABASE_ERRORS as exc:
+        log.error("cashfree.webhook.unavailable", error=type(exc).__name__)
+        raise UpstreamUnavailableProblem("temporarily unable to record the webhook") from exc
+    log.info(
+        "cashfree.webhook",
         provider_event_id=ack.provider_event_id,
         duplicate=ack.duplicate,
         reconciled=ack.reconciled,

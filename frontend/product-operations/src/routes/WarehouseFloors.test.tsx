@@ -11,6 +11,7 @@ import { AuthContext, PermissionProvider } from "@opsgrids/client";
 import type { AuthContextValue, MeOut } from "@opsgrids/client";
 
 import type { WarehouseFloorOut, WarehouseOut } from "@/api/types";
+import { renderRoutes } from "@/test-utils/renderRoutes";
 import { WarehouseFloorsPage } from "./WarehouseFloors";
 
 const getWarehouseById = vi.fn();
@@ -107,6 +108,23 @@ describe("WarehouseFloorsPage", () => {
 
     const table = await screen.findByRole("table", { name: /Floors in Bhiwandi DC/ });
     expect(table.textContent).toContain("Ground");
+  });
+
+  it("opens a floor's published plan from its row, ahead of the layout editor", async () => {
+    const user = userEvent.setup();
+    getWarehouseById.mockResolvedValue(WAREHOUSE);
+    listWarehouseFloors.mockResolvedValue([GROUND]);
+    const { where } = renderRoutes(
+      [
+        { path: "/warehouses/:id/floors", element: <WarehouseFloorsPage /> },
+        { path: "/warehouses/:id/floors/:floorId/view", element: <h1>Floor view</h1> },
+      ],
+      "/warehouses/wh-1/floors",
+      [],
+    );
+
+    await user.click(await screen.findByRole("button", { name: "View floor Ground" }));
+    await waitFor(() => expect(where().pathname).toBe("/warehouses/wh-1/floors/floor-1/view"));
   });
 
   it("shows the load error with a retry", async () => {

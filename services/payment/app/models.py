@@ -101,6 +101,18 @@ CHARGE_STATES = (
     CHARGE_EXPIRED,
 )
 
+# --- charge flows (ADR-0032) ----------------------------------------------------------------
+#: How a platform charge is collected. `debit`: OpsGrids debits the customer's saved mandate (the
+#: billing run, the dunning ladder) — the only flow before Phase A, and the stuck-charge sweep's.
+#: `checkout`: the customer pays an invoice themselves in the provider's hosted checkout. A
+#: checkout charge is `created` with **no provider payment** until the customer pays, exactly
+#: like a merchant collection — so the stuck-charge sweep must never resume it (it would "retry"
+#: a payment nobody has made, fail it as `attempts_exhausted` and suspend a customer who has not
+#: yet paid). A column with a server default rather than a backfill.
+FLOW_DEBIT = "debit"
+FLOW_CHECKOUT = "checkout"
+FLOWS = (FLOW_DEBIT, FLOW_CHECKOUT)
+
 # --- payees (ADR-0024 §8) --------------------------------------------------------------
 #: Who the money is for. `platform`: OpsGrids collecting its own subscription charge from a
 #: tenant (everything that existed before collections). `merchant`: a tenant's customer paying the
@@ -109,6 +121,11 @@ CHARGE_STATES = (
 PAYEE_PLATFORM = "platform"
 PAYEE_MERCHANT = "merchant"
 PAYEES = (PAYEE_PLATFORM, PAYEE_MERCHANT)
+
+#: Which wire made a merchant collection's provider Order (`Charge.order_wire`): the in-process
+#: stand-in, or the provider itself.
+ORDER_WIRE_STUB = "stub"
+ORDER_WIRE_LIVE = "live"
 
 # --- merchant account states -----------------------------------------------------------
 MERCHANT_ACCOUNT_ACTIVE = "active"
@@ -206,6 +223,7 @@ class Mandate(Base, TenantBase):
         Index(
             "uq_mandates_org_provider_mandate_id",
             "organization_id",
+            "provider",
             "provider_mandate_id",
             unique=True,
             postgresql_where=text("provider_mandate_id IS NOT NULL"),
@@ -235,27 +253,51 @@ class MerchantAccount(Base, TenantBase):
 
     __tablename__ = "merchant_accounts"
 
-    #: `razorpay` — the only provider this platform has an adapter for.
+    #: `razorpay` or `cashfree` (ADR-0033). **Fixed for the life of the row**, like `mode`: every
+    #: charge taken into this account names it, and its keys are what reaches the provider for it.
     provider: Mapped[str] = mapped_column(String(40), nullable=False)
-    #: The provider's public key id (`rzp_test_…` / `rzp_live_…`). What the browser is given.
+    #: The provider's public key id — a Razorpay key id (`rzp_test_…` / `rzp_live_…`, what the
+    #: browser is given) or a Cashfree App ID (`x-client-id`; never sent to a browser).
     key_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    #: `test` or `live`, derived from `key_id` and never set independently of it.
+    #: `test` or `live`: derived from a Razorpay key id; the merchant's own choice of Sandbox or
+    #: Production for Cashfree, whose App ID does not say.
     mode: Mapped[str] = mapped_column(String(8), nullable=False)
-    #: Sealed. NULL only once the account is removed (the secrets are wiped, not kept).
+    #: Sealed. NULL only once the account is removed (the secrets are wiped, not kept). For
+    #: Cashfree this is the Secret Key, which also signs every webhook.
     key_secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     key_secret_masked: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    #: Sealed; Razorpay only (a merchant-chosen webhook secret). Always NULL for Cashfree.
     webhook_secret_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     webhook_secret_masked: Mapped[str] = mapped_column(String(16), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=MERCHANT_ACCOUNT_ACTIVE)
     #: When the credentials were last replaced in place (the row, and so the webhook URL, kept).
     rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When the provider last accepted these credentials (`POST …/merchant-account/verify`). Reset
+    #: to NULL whenever the credentials change: a verification is of the keys it probed.
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The stable code of the last failed verification (`credentials_rejected`, or the provider's
+    #: own code) — never its message. NULL once verified, or when never tried.
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
 
     __table_args__ = (
         CheckConstraint("status in ('active', 'removed')", name="status"),
         CheckConstraint("mode in ('test', 'live')", name="mode"),
+        CheckConstraint("provider in ('razorpay', 'cashfree')", name="provider"),
+        # Every live account holds the key secret it calls the provider with; a removed one holds
+        # none (wiped, not kept).
         CheckConstraint(
-            "(status = 'active') = (key_secret_enc IS NOT NULL AND webhook_secret_enc IS NOT NULL)",
-            name="secrets_present_iff_active",
+            "(status = 'active') = (key_secret_enc IS NOT NULL)",
+            name="key_secret_present_iff_active",
+        ),
+        # A Razorpay account's webhooks are signed with a secret of their own...
+        CheckConstraint(
+            "provider <> 'razorpay' OR status <> 'active' OR webhook_secret_enc IS NOT NULL",
+            name="razorpay_active_has_webhook_secret",
+        ),
+        # ...and a Cashfree account has none: its Secret Key signs them.
+        CheckConstraint(
+            "provider <> 'cashfree' OR webhook_secret_enc IS NULL",
+            name="cashfree_has_no_webhook_secret",
         ),
         # One live account per organization. Partial, so a removed row stays as history and a
         # new one can be connected beside it.
@@ -354,6 +396,24 @@ class Charge(Base, TenantBase):
     reference_type: Mapped[str | None] = mapped_column(String(40))
     reference_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
 
+    # --- how a platform charge is collected (ADR-0032) ---------------------------------------
+    #: `debit` or `checkout` — see `FLOW_CHECKOUT`. Merchant charges are always `debit`-flow rows
+    #: with their own lifecycle; the column is meaningful for platform charges.
+    flow: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=FLOW_DEBIT, server_default=FLOW_DEBIT
+    )
+    #: When an unpaid checkout stops being payable. Set exactly for `checkout` charges (it is also
+    #: the Order's own expiry at Cashfree). The poller closes a checkout past it that nothing paid.
+    checkout_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    #: Which wire made a merchant collection's provider Order, recorded with the Order:
+    #: `stub` — the in-process stand-in, so no customer can ever pay it and no real provider holds
+    #: it — or `live`. Null on a platform charge, and on a collection recorded before this was
+    #: kept, which is treated as possibly real. What lets a stub test checkout be cancelled,
+    #: expired and disconnected from once the wire is live, without asking a provider that has
+    #: never heard of it (ADR-0033 §8).
+    order_wire: Mapped[str | None] = mapped_column(String(8))
+
     refunds: Mapped[list[Refund]] = relationship(back_populates="charge")
 
     __table_args__ = (
@@ -369,6 +429,16 @@ class Charge(Base, TenantBase):
             name="state",
         ),
         CheckConstraint("payee in ('platform', 'merchant')", name="payee"),
+        CheckConstraint("flow in ('debit', 'checkout')", name="flow"),
+        CheckConstraint(
+            "order_wire IS NULL OR (payee = 'merchant' AND order_wire in ('stub', 'live'))",
+            name="order_wire",
+        ),
+        # A checkout is a platform charge with an expiry; nothing else is a checkout.
+        CheckConstraint(
+            "flow = 'debit' OR (payee = 'platform' AND checkout_expires_at IS NOT NULL)",
+            name="checkout_flow_shape",
+        ),
         # A merchant charge always names its account and what it is for; a platform charge never
         # does — so neither can be mistaken for the other by a query that forgets `payee`.
         CheckConstraint(
@@ -406,10 +476,13 @@ class Charge(Base, TenantBase):
                 "payee = 'merchant' AND state IN ('created', 'authorized', 'failed')"
             ),
         ),
-        # The webhook reconciles a charge by its provider payment id, under a bound tenant.
+        # The webhook reconciles a charge by its provider payment id, under a bound tenant. Scoped
+        # to the provider (ADR-0032): two providers' id spaces are unrelated, and a Cashfree
+        # `cf_payment_id` that happens to equal a Razorpay one must not be a conflict.
         Index(
             "uq_charges_org_provider_payment_id",
             "organization_id",
+            "provider",
             "provider_payment_id",
             unique=True,
             postgresql_where=text("provider_payment_id IS NOT NULL"),
@@ -419,6 +492,7 @@ class Charge(Base, TenantBase):
         Index(
             "uq_charges_org_provider_order_id",
             "organization_id",
+            "provider",
             "provider_order_id",
             unique=True,
             postgresql_where=text("provider_order_id IS NOT NULL"),
@@ -428,6 +502,29 @@ class Charge(Base, TenantBase):
             "ix_charges_unresolved",
             "created_at",
             postgresql_where=text("state = 'created' AND provider_payment_id IS NULL"),
+        ),
+        # The poller's discovery (ADR-0032): charges that have a provider Order and no terminal
+        # state, by provider and flow.
+        Index(
+            "ix_charges_poll",
+            "state",
+            "provider",
+            "flow",
+            postgresql_where=text(
+                "provider_order_id IS NOT NULL AND state IN ('created', 'authorized')"
+            ),
+        ),
+        # At most one *open* checkout per invoice: a second "pay now" returns the first, never a
+        # second Order the customer could pay as well.
+        Index(
+            "uq_charges_open_checkout",
+            "organization_id",
+            "invoice_id",
+            unique=True,
+            postgresql_where=text(
+                "flow = 'checkout' AND state IN ('created', 'authorized')"
+                " AND invoice_id IS NOT NULL"
+            ),
         ),
     )
 
@@ -491,6 +588,7 @@ class Refund(Base, TenantBase):
         Index(
             "uq_refunds_org_provider_refund_id",
             "organization_id",
+            "provider",
             "provider_refund_id",
             unique=True,
             postgresql_where=text("provider_refund_id IS NOT NULL"),
@@ -516,8 +614,11 @@ class ProviderEvent(Base, TenantBase):
     and record nothing. The evidence is kept here, and the conflict is audited and logged for an
     operator.
 
-    Storing the raw `payload` and `signature` makes reconciliation replayable and auditable: if a
-    projection is ever found wrong, the truth is the provider's own bytes, kept here unaltered.
+    Storing the `payload` and `signature` makes reconciliation replayable and auditable. The
+    payload is the provider's body **after redaction** (ADR-0032): the table is append-only, so a
+    payer's name, email, phone, UPI id or card detail must never be written to it. What is kept is
+    an allow-list that still reads back as the provider's envelope (`_meta.webhook_version` records
+    the shape), enough to replay a reconciliation, never enough to identify who paid.
     """
 
     __tablename__ = "provider_events"
@@ -561,8 +662,13 @@ class ProviderEvent(Base, TenantBase):
 
     __table_args__ = (
         CheckConstraint("payee in ('platform', 'merchant')", name="payee"),
+        # Scoped to the provider (ADR-0032): an event id is only unique within the provider that
+        # issued it, and one platform now has two of them.
         UniqueConstraint(
-            "organization_id", "provider_event_id", name="uq_provider_events_org_event_id"
+            "organization_id",
+            "provider",
+            "provider_event_id",
+            name="uq_provider_events_org_event_id",
         ),
         Index("ix_provider_events_org_charge", "organization_id", "charge_id"),
         # Created NOT VALID by the migration, so a database that already holds a row keyed '' (the

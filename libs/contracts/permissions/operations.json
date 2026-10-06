@@ -236,9 +236,45 @@
       "resource": "location"
     },
     {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Register and edit lots, and link them in the genealogy",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "lot"
+    },
+    {
+      "action": "location_read",
+      "default_scope": "ORG",
+      "description": "See the GPS position a worker's device reported when they put stock away \u2014 every reveal is audited",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "putaway"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Register and re-measure rolls, and split or merge them",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "roll"
+    },
+    {
       "action": "adjust",
       "default_scope": "ORG",
       "description": "Adjust or count an item's stock on hand",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "stock"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See stock by location, lot and roll, the stock ledger, and lot/roll traces",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "inventory",
@@ -257,6 +293,15 @@
       "action": "reserve",
       "default_scope": "ORG",
       "description": "Reserve stock for a demand, and release a reservation's open remainder",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "stock"
+    },
+    {
+      "action": "transfer",
+      "default_scope": "ORG",
+      "description": "Move stock between bins in a warehouse, and into a hold status (quality hold, quarantine, damaged, rejected, blocked); releasing stock out of a hold also needs stock.adjust",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "inventory",
@@ -582,7 +627,23 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.lot.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.putaway.location_read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.roll.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.stock.adjust",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.stock.read",
           "scope": "ORG"
         },
         {
@@ -591,6 +652,10 @@
         },
         {
           "code": "operations.inventory.stock.reserve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.stock.transfer",
           "scope": "ORG"
         },
         {
@@ -693,7 +758,7 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and closes cycle counts and approves the discrepancies they raise (ADR-0026). Takes and refunds orders' online payments and reads the payment reconciliation. Does not create or rename warehouses, or connect or change the organization's payment-provider account \u2014 those stay with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
+      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers lots and rolls, splits and merges rolls, moves stock between bins and statuses, and reads stock and the ledger (ADR-0014 Phase 1). Takes and refunds orders' online payments and reads the payment reconciliation. Does not create or rename warehouses, or connect or change the organization's payment-provider account \u2014 those stay with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
       "grants": [
         {
           "code": "operations.automation.alert.manage",
@@ -788,11 +853,27 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.lot.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.roll.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.stock.adjust",
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.stock.read",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.stock.reserve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.stock.transfer",
           "scope": "ORG"
         },
         {
@@ -883,7 +964,7 @@
     {
       "code": "OPERATIONS_WORKER",
       "cross_product": false,
-      "description": "The picker/packer role the worker PWA authenticates as (plan F3). Sees the task board and the worker roster read-only, executes only the tasks offered or accepted to them (`task.execute` tops out at OWN \u2014 even this role cannot execute another worker's task), sets their own presence, and confirms packages. Counts lines in whichever count session is open for their warehouse (ADR-0026) \u2014 never opens, reviews or closes one; that stays with the dispatcher (`OPERATIONS_MANAGER`). Does not offer, reassign or override a task either.",
+      "description": "The picker/packer role the worker PWA authenticates as (plan F3). Sees the task board and the worker roster read-only, executes only the tasks offered or accepted to them (`task.execute` tops out at OWN \u2014 even this role cannot execute another worker's task), sets their own presence, and confirms packages. Counts lines in whichever count session is open for their warehouse (ADR-0026) \u2014 never opens, reviews or closes one; that stays with the dispatcher (`OPERATIONS_MANAGER`). Moves stock between bins, puts stock on hold (a status change *into* quality hold, quarantine, damaged, rejected or blocked) but cannot release it back to available \u2014 that needs stock adjustment \u2014 and reads stock by location, lot and roll; does not register, split or merge lots or rolls. Does not offer, reassign or override a task either.",
       "grants": [
         {
           "code": "operations.fulfilment.pack.execute",
@@ -915,6 +996,14 @@
         },
         {
           "code": "operations.inventory.count.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.stock.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.stock.transfer",
           "scope": "ORG"
         }
       ],

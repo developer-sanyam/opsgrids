@@ -12,7 +12,9 @@ captured or authorised payment is recorded instead (the money moved), and only a
 nothing paid is expired. A payment that lands after that is still recorded by its webhook
 (`captured_after_expired`). A provider that cannot be asked leaves the checkout for the next tick
 (its lease lapses first); an account that is no longer connected has nothing to ask, and the
-checkout is expired directly.
+checkout is expired directly. So is one whose Order the stub made (`charges.order_wire`): nothing
+can have been paid into it, so a stub that no longer remembers it is "no payments", and a live
+provider is never asked about it (`services._stub_order_payments`).
 
 Runs beside the stuck-charge sweep in `payment-worker` / the API's folded worker
 (`app/worker.py`, `app/main.py`).

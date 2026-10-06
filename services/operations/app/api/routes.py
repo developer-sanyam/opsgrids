@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, Path, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,10 +53,16 @@ from app.models import (
 )
 from app.orders import selectors as order_selectors
 from app.orders import services as order_services
-from app.orders.payment_client import CollectionsClient, get_collections_client
+from app.orders.payment_client import (
+    CollectionsClient,
+    PayerRequired,
+    PhoneRequired,
+    get_collections_client,
+)
 from app.schemas import (
     AssignmentOfferOut,
     CancelIn,
+    CashfreeOrderCheckoutSessionOut,
     ChannelConfigPatch,
     ChannelConnectIn,
     ChannelHealthCheckOut,
@@ -104,7 +110,6 @@ from app.schemas import (
     OperationalAlertOut,
     OrderCancelIn,
     OrderCheckoutOut,
-    OrderCheckoutSessionOut,
     OrderCollectionOut,
     OrderHandoverIn,
     OrderHoldIn,
@@ -120,12 +125,14 @@ from app.schemas import (
     PackagingMaterialOut,
     PickConfirmIn,
     PickTaskOut,
+    PublishedLayoutOut,
     PurchaseOrderIn,
     PurchaseOrderOut,
     PurchaseOrderPatch,
     PurchaseOrderReceiptOut,
     QuoteIn,
     QuoteOut,
+    RazorpayOrderCheckoutSessionOut,
     ReceiveIn,
     ReconcileOut,
     ReservationReleaseIn,
@@ -151,6 +158,7 @@ from app.schemas import (
     WarehouseFloorOut,
     WarehouseFloorPatch,
     WarehouseIn,
+    WarehouseMapOut,
     WarehouseOut,
     WarehousePatch,
     WorkerIn,
@@ -1260,6 +1268,18 @@ async def list_warehouses(
     return Page.build([inv_selectors.warehouse_out(w) for w in rows], total=total, params=params)
 
 
+# Registered **before** `/operations/warehouses/{warehouse_id}` below: a static segment after a
+# parameterised one is matched as the parameter and answered 422.
+@router.get(
+    "/operations/warehouses/map",
+    response_model=WarehouseMapOut,
+    summary="The org's warehouses for a map: placed sites and the ones with no coordinates yet",
+    dependencies=[Entitled],
+)
+async def warehouses_map(session: SessionDep, ctx: WarehouseRead) -> WarehouseMapOut:
+    return await inv_selectors.warehouse_map(session, ctx.organization_id)
+
+
 @router.post(
     "/operations/warehouses",
     response_model=WarehouseOut,
@@ -1276,6 +1296,8 @@ async def create_warehouse(
         code=payload.code,
         name=payload.name,
         location=payload.location,
+        lat_micro=payload.lat_micro,
+        lng_micro=payload.lng_micro,
         request=request,
     )
     return inv_selectors.warehouse_out(warehouse)
@@ -1680,6 +1702,19 @@ async def compute_route(
     )
 
 
+@router.get(
+    "/operations/floors/{floor_id}/published-layout",
+    response_model=PublishedLayoutOut,
+    summary="What is live on a floor: the published layout's placements with their locations",
+    dependencies=[Entitled],
+)
+async def read_published_layout(
+    floor_id: uuid.UUID, session: SessionDep, ctx: LayoutRead
+) -> PublishedLayoutOut:
+    floor = await _get_floor_or_404(session, ctx, floor_id)
+    return await wh_selectors.published_layout(session, ctx.organization_id, floor)
+
+
 # ------------------------------------------------------------------ orders (ADR-0024, ADR-0025)
 
 
@@ -1982,7 +2017,32 @@ async def order_payments(
         online_payments_configured=configured,
         mode=listed.get("mode"),
         wire=listed.get("wire", "stub"),
+        provider=listed.get("provider"),
+        provider_wire=listed.get("provider_wire"),
         collections=_collections(listed.get("collections", [])),
+    )
+
+
+def _payer(order: Order) -> dict[str, str | None]:
+    """The order's customer, as a provider that needs one is sent it (ADR-0033). Built only after
+    payment asked for it; never logged, audited or kept by operations either."""
+    if not order.customer_phone.strip():
+        raise PhoneRequired(
+            "Add the customer's phone number to this order to take an online payment with this "
+            "payment provider (10 digits, or + and the country code)"
+        )
+    return {"name": order.customer_name or None, "phone": order.customer_phone}
+
+
+def _checkout_session(
+    raw: dict[str, Any], order: Order
+) -> RazorpayOrderCheckoutSessionOut | CashfreeOrderCheckoutSessionOut:
+    if raw.get("provider") == "cashfree":
+        return CashfreeOrderCheckoutSessionOut(**raw, order_number=order.number)
+    return RazorpayOrderCheckoutSessionOut(
+        **raw,
+        order_number=order.number,
+        prefill=CheckoutPrefillOut(name=order.customer_name, contact=order.customer_phone),
     )
 
 
@@ -2001,13 +2061,27 @@ async def start_order_checkout(
 ) -> OrderCheckoutOut:
     """Returns what the browser needs to open the provider's own hosted checkout. The amount is
     the order's stored total — nothing the browser sends is read. Opening a checkout records
-    nothing about payment on the order: it is paid when the provider says so."""
+    nothing about payment on the order: it is paid when the provider says so.
+
+    A provider that needs the paying customer on every Order (Cashfree) makes payment answer the
+    first call `payer-required`; the order's own customer phone is then sent, server to server —
+    the only time operations sends it to payment, and never to a provider that does not need it.
+    An order with no phone is a 422 `phone-required`: a phone is never invented."""
     order, blocker, _ = await _order_for_payment(session, ctx, order_id)
     if blocker is not None:
         raise ConflictProblem(blocker)
-    opened = await collections.checkout(
-        ctx.organization_id, order.id, amount_minor=order.total_minor, currency=order.currency
-    )
+    try:
+        opened = await collections.checkout(
+            ctx.organization_id, order.id, amount_minor=order.total_minor, currency=order.currency
+        )
+    except PayerRequired:
+        opened = await collections.checkout(
+            ctx.organization_id,
+            order.id,
+            amount_minor=order.total_minor,
+            currency=order.currency,
+            payer=_payer(order),
+        )
     collection = OrderCollectionOut.model_validate(opened["collection"])
     async with session.begin():
         await order_services._bind_tenant(session, ctx.organization_id)
@@ -2015,15 +2089,7 @@ async def start_order_checkout(
             session, ctx, order, charge_id=collection.id, request=request
         )
     raw_checkout = opened.get("checkout")
-    checkout = (
-        OrderCheckoutSessionOut(
-            **raw_checkout,
-            order_number=order.number,
-            prefill=CheckoutPrefillOut(name=order.customer_name, contact=order.customer_phone),
-        )
-        if isinstance(raw_checkout, dict)
-        else None
-    )
+    checkout = _checkout_session(raw_checkout, order) if isinstance(raw_checkout, dict) else None
     return OrderCheckoutOut(collection=collection, checkout=checkout)
 
 

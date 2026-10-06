@@ -40,12 +40,20 @@ required=$(sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' .env.example)
 # off-box bucket exists, and `backup.sh` still takes the local dump and exits non-zero until
 # one is configured — so the gap shows up in cron's mail every night rather than nowhere.
 optional_empty="PII_DECRYPT_KEYS SENTRY_DSN BACKUP_S3_ENDPOINT BACKUP_S3_ACCESS_KEY_ID BACKUP_S3_SECRET_ACCESS_KEY"
-# Email and payments may be unconfigured on a box that is being stood up: the services are
-# inert without them (notification logs, payment reaches no network) and each is warned about
-# below. WhatsApp is optional until a Meta app exists. COMPOSE_PROFILES empty means core only.
+# Email and payments may be unconfigured on a box that is being stood up: the services run
+# without them (notification logs, payment runs on its in-process stub and reaches no network)
+# and each is warned about below. WhatsApp is optional until a Meta app exists. COMPOSE_PROFILES
+# empty means core only.
 # OPS_ALERT_EMAIL is the same shape: ops-monitor still runs and still logs `ops.alert.firing`
 # with nothing configured, it just pages nobody — warned about below, not refused.
 optional_empty="$optional_empty SMTP_HOST SMTP_USERNAME SMTP_PASSWORD RAZORPAY_KEY_ID RAZORPAY_KEY_SECRET OPS_ALERT_EMAIL"
+# The payment provider switches and Cashfree's credentials (ADR-0032). All are COMMENTED in
+# `.env.example`, so none is a required key; listed here so a box that uncomments one and leaves it
+# empty still deploys — an empty value is the safe default (stub, no live keys), exactly as
+# `env_ignore_empty` reads it in the service. What a non-empty value may be is checked below.
+# PAYMENT_ALLOW_TEST_KEYS (staging only) is never required either; when it is on it is warned
+# about loudly, below.
+optional_empty="$optional_empty PAYMENT_PROVIDER PAYMENT_WIRE PAYMENT_ALLOW_LIVE_KEYS PAYMENT_ALLOW_TEST_KEYS CASHFREE_ENV CASHFREE_APP_ID CASHFREE_SECRET_KEY"
 # Empty means "derive from COMPOSE_PROFILES" (`OpsMonitorSettings`'s own `expected_api_containers`/
 # `expected_dlq_queues`) — a perfectly valid state for every box, not a placeholder to fill in;
 # set explicitly only to narrow or override that computed list. SMTP_USE_SSL false is also the
@@ -272,6 +280,25 @@ if [ -z "$placeholder" ]; then ok "no placeholder values"; else
 secret_problems=$(secret_strength_problems)
 if [ -z "$secret_problems" ]; then ok "secrets are long enough and distinct"; else
 	while IFS= read -r problem; do bad "$problem"; done <<<"$secret_problems"
+fi
+
+# The payment provider switches and keys, checked the way `payment` checks them at start-up
+# (ADR-0032): a box that would crash-loop the payment service — and with it the stuck-charge sweep
+# and the charge poller — is refused here, with the variable named and never a value.
+# shellcheck disable=SC1091  # sourced, not executed — see the file's own header
+. ./lib/payment-switches.sh
+payment_problems=$(payment_switch_problems)
+if [ -z "$payment_problems" ]; then ok "payment provider switches are consistent"; else
+	while IFS= read -r problem; do bad "$problem"; done <<<"$payment_problems"
+fi
+# PAYMENT_ALLOW_TEST_KEYS — the staging override. Never required and never a failure on its own
+# (the rules above refuse it beside live money), but LOUD on every deploy while it is on, so a box
+# that takes test payments is never mistaken for one that collects real money. Names only.
+if payment_test_keys_allowed; then
+	echo "  warn  !!! PAYMENT_ALLOW_TEST_KEYS is ON: payments run in TEST MODE on this box (ENVIRONMENT=production" >&2
+	echo "        notwithstanding). Provider test cards and sandbox VPAs pay invoices and NO REAL MONEY MOVES." >&2
+	echo "        Correct ONLY for a box with no real paying customers (staging). To turn it off: RUNBOOK.md," >&2
+	echo "        'Payments: test mode on a staging box'." >&2
 fi
 
 # EDGE_RESERVED_IP is allowed empty (a box with no floating IP yet), but if it is set it must be
@@ -545,10 +572,14 @@ else
 	fi
 fi
 
-if [ -z "${RAZORPAY_KEY_ID:-}" ]; then
-	echo "  warn  RAZORPAY_KEY_ID empty: payments are inert. Trials end in past_due, never active." >&2
+# Keys never switch the network on: the wire is `stub` unless PAYMENT_WIRE=live (Razorpay) or
+# CASHFREE_ENV=sandbox|production (Cashfree). So this says what the box will actually do.
+if [ "${PAYMENT_WIRE:-stub}" = live ] || [ "${CASHFREE_ENV:-stub}" != stub ]; then
+	ok "a payment provider wire is switched on (PAYMENT_WIRE=${PAYMENT_WIRE:-stub}, CASHFREE_ENV=${CASHFREE_ENV:-stub}, default provider ${PAYMENT_PROVIDER:-razorpay})"
 else
-	ok "payment provider keys present"
+	echo "  warn  payment runs on its in-process stub (PAYMENT_WIRE=stub, CASHFREE_ENV=stub): no provider is called," >&2
+	echo "        so an invoice cannot be paid and a trial that ends is never collected (it ends in past_due)." >&2
+	echo "        Keys alone change nothing — see RUNBOOK.md, 'Payments: turning a provider on'." >&2
 fi
 
 # ops-monitor (C10) always runs and always checks; this is only about whether a firing check

@@ -209,8 +209,148 @@ What Phase 1 adds is the way out, and the numbers to act on it:
 So the resolution a stocktake screen offers is concrete: read `errors[0].reservations`, call
 `:release` on the one(s) blocking the count (in full or in part), then retry the count.
 
+## Lots, rolls and stock operations (Phase 1 backend, migration `b7d41e92c05a`)
+
+The kernel has always carried `lot_id`/`roll_id` in the bucket key; Phase 1 gives them tables and
+HTTP. All of it lives in `app/inventory/` (`tracking_*`, `stock_ops`, `api`, `pagination`).
+
+| Table | What it is | Writable by the app role |
+|---|---|---|
+| `lots` | batch of one item: internal + supplier lot no., dates, quality status, source document, flat attributes | yes |
+| `rolls` | one physical roll: primary measured quantity (the item's UOM) + secondary (e.g. 82.5 m / 14.8 kg), width, GSM, shade, grade, `parent_roll_id`, state `ACTIVE`/`SPLIT`/`MERGED` | yes |
+| `roll_events` | a roll's history (created, opening, split, merged, moved, status changed, re-measured) | INSERT only |
+| `lot_genealogy` | parent -> child lot edges | INSERT only |
+
+`inventory_ledger`, `inventory_balances` and `inventory_discrepancies` now have **organization-scoped**
+foreign keys to `lots`/`rolls` (`(organization_id, lot_id)` -> `lots (organization_id, id)`), so a bucket
+cannot name another tenant's lot even if a query forgot the filter. `post_move` checks the same thing
+first and answers 404/422 instead of an `IntegrityError`: the lot and roll exist in this organization, belong
+to the line's item, agree with each other, and a `SPLIT`/`MERGED` roll cannot receive stock.
+
+### Operations (all through `post_move`, all take `Idempotency-Key`, all audit + emit an event)
+
+| Route | Permission | Move |
+|---|---|---|
+| `POST /operations/inventory/stock/opening` | `inventory.stock.adjust` | `opening`, one line per location/status/lot/roll |
+| `POST /operations/inventory/stock/transfers` | `inventory.stock.transfer` | `relocation` (`bin_transfer`), same warehouse only |
+| `POST /operations/inventory/stock/status-changes` | `inventory.stock.transfer`; **plus `inventory.stock.adjust` to move stock out of a hold** (REJECTED, DAMAGED, QUARANTINE, QUALITY_HOLD, BLOCKED) into AVAILABLE or WIP — 403 otherwise | paired `relocation` (`status_change`); never to `IN_TRANSIT`/`AT_JOB_WORKER` |
+| `POST /operations/inventory/rolls/{id}:split` | `inventory.roll.write` | `relocation` (`roll_split`): parent out, n children in |
+| `POST /operations/inventory/rolls:merge` | `inventory.roll.write` | `relocation` (`roll_merge`): n sources out, one result in |
+| `POST/PATCH /operations/inventory/lots`, `POST .../lots/{id}/genealogy` | `inventory.lot.write` | no stock |
+| `POST/PATCH /operations/inventory/rolls` | `inventory.roll.write` | no stock |
+| `DELETE /operations/locations/{id}` | `inventory.location.write` | refused while the location holds stock or has **any** ledger history, is a default bin, has children, or is an item's home bin |
+
+Reads (all `inventory.stock.read`, ORG, **cursor-paginated** — `?cursor=&limit=`, response
+`{items, next_cursor}`): `GET .../stock` (by item/warehouse/location/lot/roll/status),
+`GET .../ledger` (item, location, lot, roll, kind, status, `from_date`/`to_date` on the move's business
+date), `GET .../lots`, `.../lots/{id}`, `.../lots/{id}/genealogy`, `.../lots/{id}/trace`, `GET .../rolls`,
+`.../rolls/{id}`, `.../rolls/{id}/events`, `.../rolls/{id}/trace`. A cursor is opaque, validated on every
+request (422 when malformed) and carries no tenant or scope — it only moves the window.
+
+### Rules worth knowing
+
+- **Split.** The children's quantities (decimal strings) must add up to **exactly** what the roll's bucket
+  holds (422 with both numbers otherwise). The roll's measured secondary quantity is apportioned in
+  proportion to the children's primary quantities: every child but the last gets
+  `floor(secondary * child / total)` in milli-units, **the last takes the remainder**, so the children's weights
+  always sum to the parent's. 82.5 m / 14.8 kg into 50 + 32.5 gives 8.969 kg + 5.831 kg. An unweighed roll gives
+  unweighed children. Children inherit item, lot, width, GSM, shade and grade, and are numbered `<parent>-1…`
+  unless named. A roll splits once: the second of two racing splits finds it `SPLIT` and gets 409.
+- **Merge.** Same item, same lot, same shade, all `ACTIVE`, all holding stock in the named bucket, or 422/409.
+  Width, GSM and grade survive only where every source agrees; the result's weight is the sum of the sources'
+  weights only if every source was weighed in one unit.
+- **Reserved stock** cannot be transferred, status-changed, split or merged away: the kernel refuses with
+  `InsufficientStock` and `errors[0].reservations` (ADR-0014 §11) — release the reservation, then retry.
+- **Idempotency.** Keyed split/merge derive the ids of the rolls they create from `(organization, key)`, so a
+  retry rebuilds identical ledger lines and the kernel replays it (200, `replayed: true`); the same key with a
+  different request is 409. Replays stage no further audit rows or events.
+- **One bucket.** A roll is split or merged only when it lives in one bucket: its total stock across *all*
+  buckets must equal what the named bucket holds, else 409 `roll_in_several_buckets` naming where the rest is.
+  Consolidate first (transfer / status change). The check runs under `FOR UPDATE` on all the roll's balance rows.
+- **Derived child numbers** (`<parent>-1…`) longer than 60 characters are a 422 `too_long`: name the children.
+- **Concurrency.** Lock order is roll -> balance, everywhere. Split/merge take roll rows `FOR UPDATE` (id order),
+  then the roll's balances; `post_move` takes every roll its lines name `FOR SHARE` (id order) before its first
+  balance lock, so a transfer racing a split queues on the roll and loses with 409/`INSUFFICIENT_STOCK`, never a
+  deadlock. `post_move` takes the location rows `FOR KEY SHARE` (id order) so a post and a `delete_location`
+  serialise. A keyed retry is looked up before the roll/lot state is validated, so it replays even after what
+  it created has since been split again.
+- **Traces.** Lot and roll traces are recursive CTEs over `lot_genealogy` and over `rolls.parent_roll_id` +
+  `roll_events` `MERGE_RESULT` rows, filtered by organization at every step, depth-capped at 25. A split/merge
+  inside one lot leaves a self-edge in `lot_genealogy` as evidence tied to the move; the trace skips
+  self-edges. `BLEND`/`REWORK`/`DERIVED` links between two lots are what it follows, and creating one that would
+  close a loop is refused (under a per-organization advisory lock) by an **uncapped** reachability check — the
+  25-hop cap is for display only.
+- **Tracking flags.** A lot can only be registered for an item with `track_lot`, a roll for one with
+  `track_roll`; opening stock for a tracked item must name its lot/roll, and for an untracked item must not.
+
+### Migrations `b7d41e92c05a` and `c4a8e1f6d273`
+
+`b7d41e92c05a` creates the four tables (ENABLE + FORCE RLS, `tenant_isolation`, tenant-leading indexes),
+backfills, and adds the bucket foreign keys **`NOT VALID`** (last, under `lock_timeout = 5s`).
+`c4a8e1f6d273` validates the keys and builds the keyset indexes on the ledger/balances/moves with
+`CREATE INDEX CONCURRENTLY` (in `autocommit_block`), so neither blocks stock posts for longer than a lock
+acquisition; it is a separate revision so a failed build resumes on re-run rather than stranding a half-applied
+first revision. **Existing data:** if any ledger/balance/discrepancy/count-line row already names a lot or roll
+(the kernel allowed it, nothing in the product could set one), the upgrade creates a `LEGACY-…` placeholder
+lot/roll per distinct (organization, item, id) instead of refusing — an id shared by several items gets one
+placeholder each and each item's rows are re-pointed at its own, so no item is stranded; no quantity changes.
+**Downgrade** drops the tables and constraints (the ids stay on the ledger as plain UUIDs) but refuses when any
+non-placeholder lot or roll exists, unless `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1`; the supported rollback is
+code-only (RUNBOOK, "Inventory Phase 1 rollback"). Verified by `tests/test_migration_lots_rolls.py` (real alembic:
+orphan ids, shared ids, validated keys and valid indexes, resume after an interrupted build, lock timeout, FK
+enforcement incl. cross-tenant, RLS, append-only privileges, refusing downgrade, down and up again).
+
+### Deferred
+
+`uom_conversions` (per-item box = 12 pcs) already exists as a table but has **no API and is not applied in
+quantity handling**: wiring a container unit through opening, transfer and split touches the item master's UOM
+rules, and a half-applied conversion is worse than none. It lands with the receiving slice (Phase 2), where
+`box` quantities first appear on a document.
+
+## Storage put-away, warehouse coordinates and the map reads
+
+*Built on `feat/warehouse-map-putaway`, not deployed.* Migration `d7a3c9e5b184` (down_revision
+`c4a8e1f6d273`; it is re-pointed if another inventory stack merges first). Design:
+[`docs/superpowers/specs/2026-10-05-warehouse-map-putaway-design.md`](../superpowers/specs/2026-10-05-warehouse-map-putaway-design.md);
+decisions: [ADR-0028](../adr/0028-putaway-gps-captures.md) and the 2026-10-05 amendment to
+[ADR-0014](../adr/0014-inventory-and-manufacturing.md) §12; rollout, rollback and the purge:
+RUNBOOK, "Warehouse map and storage put-away".
+
+| Table / column | What it is | Writable by the app role |
+|---|---|---|
+| `warehouses.lat_micro`, `lng_micro` | the *site's* position, integer micro-degrees (no float), both set or both empty, range-checked | yes |
+| `putaway_captures` | one row per put-away move: the scanned bin, the suggested bin, the worker (nullable), the actor, the GPS fix when the device gave one, `captured_at` (device's claim) and `created_at` (server) | INSERT only; deleted only by `tools/purge_putaway_captures.py` as the admin role |
+
+A **storage put-away** is a `relocation` move with `reference_type` `putaway`: stock out of a `receiving` or
+`staging` bin, into a storable bin (`bin` or `shelf`) of the same warehouse, found by **scanning the bin's
+barcode** (resolved server-side, so a worker without `location.read` can still do it). The bin is the location of
+record; the GPS fix is proof, never the location. `bin_transfer` and its `operations.inventory.stock.transferred`
+event are unchanged; a put-away stages `operations.inventory.putaway.recorded` instead (no coordinates).
+
+| Route | Permission | Notes |
+|---|---|---|
+| `POST /operations/inventory/putaway` | `inventory.stock.transfer` (ORG) | `Idempotency-Key` required (stored `putaway:<key>`); source must be `receiving`/`staging` (422 `source_not_receiving_or_staging`); unknown, foreign or deleted barcode is one identical 404; bad geo is dropped with a warning, never blocks the move; geo is not in the request hash, so a retry with different geo replays the original |
+| `GET /operations/inventory/putaway/suggest` | `inventory.stock.transfer` | the bin already holding the item, else the empty storable bin with the lowest `pick_sequence`; no capacity logic. A bin with no barcode is never suggested, and the suggestion carries the bin's own `barcode` (a worker holds no `location.read`, so this is how the device learns the label to scan; a bin's `code` is not a label) |
+| `GET /operations/inventory/putaway/{move_id}` | `inventory.stock.read` | bin, worker, time, `matched_suggestion`, `has_location`; **never coordinates**; 404 once the capture is purged |
+| `POST /operations/inventory/putaway/{move_id}/location:reveal` | `inventory.putaway.location_read` (ORG, ADMIN only) **and a session that gave a one-time code** (`amr` includes `otp`) | the only response that carries coordinates; POST only, `Cache-Control: no-store`; one `entity.sensitive_read` audit row per successful call. A session without `otp` (an administrator with no authenticator, or a single-sign-on or social-login session) is a 403 and writes nothing. The code requirement was added in review beyond the owner's D3 text and is an open owner decision (ADR-0028) |
+| `GET /operations/inventory/locate` | `inventory.stock.read` | bins holding an item/lot/roll with their placement on the *published* layout (own or nearest placed ancestor); geometry only with `warehouse.layout.read`; at most 500 bins, `truncated: true` when more matched |
+| `GET /operations/floors/{floor_id}/published-layout` | `warehouse.layout.read` | published placements only; draft data never appears |
+| `GET /operations/warehouses/map` | `inventory.warehouse.read` (as the warehouse list) | sites with coordinates, and those without |
+
+**Stock rows say where they are.** `GET /operations/inventory/stock` rows carry a nullable `location_kind` (one of the
+`LocationKind` values): the kind of the row's location. Workers already hold `stock.read`, so this exposes nothing new;
+the worker app's put-away picker uses it to offer only stock in `receiving` or `staging` bins, the only sources the
+server accepts (D1).
+
+**Retention.** Captures are kept 30 days from `created_at`, then erased by the admin-run
+`tools/purge_putaway_captures.py` (dry run unless `--apply`; counts only). It is not an in-app job: the app role
+cannot delete the rows.
+
+**Limitation.** The order engine reserves only at `item.home_location_id` (`orders/services.py`), so stock put away
+into any other bin is not seen by order accept until multi-location allocation exists; that is why put-away is
+restricted to `receiving`/`staging` sources.
+
 ## Not in Phase 0
 
-HTTP APIs and screens for locations, lots, rolls and multi-location moves (the kernel supports
-them; nothing but reservation release exposes them yet), per-item `uom_conversions`, costing
-layers, and every later phase. See [plan.md](plan.md).
+Costing layers and every later phase (lots, rolls, multi-location moves and locations got their HTTP
+APIs in Phase 1 — see above). See [plan.md](plan.md).

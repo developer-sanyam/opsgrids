@@ -615,8 +615,836 @@ not fail the check. Changing a product's `status` on the box is exactly the edit
 this fail, so run it after that too.
 
 Bundles are sold only through subscription's operator routes (`POST /internal/v1/subscriptions`,
-`…/{id}/change-plan`, service token); the customer route answers 403. A trial's length is the
+`…/{id}/change-plan`, a service token minted by **console** — a token from any other service is
+refused, ADR-0029); the customer route answers 403. A trial's length is the
 plan version's `trial_days` feature (14 when absent), never the customer's.
+
+### Inventory Phase 1 (lots, rolls, stock operations): migration and the `operations` permission reconcile
+
+Two migrations (operations), both part of the ordinary `migrate` step; nothing else to run.
+`b7d41e92c05a` creates `lots`, `rolls`, `roll_events`, `lot_genealogy`, backfills placeholders, and
+adds organization-scoped foreign keys from the ledger, balances and discrepancies to them
+**`NOT VALID`**; `c4a8e1f6d273` then validates those keys and builds the eight read-path indexes on
+`inventory_ledger`/`inventory_balances`/`inventory_moves` with `CREATE INDEX CONCURRENTLY`.
+Before it, take the nightly backup (`make edge-backup`) **and write down the row counts**:
+
+```sql
+SELECT (SELECT count(*) FROM operations.inventory_ledger)   AS ledger,
+       (SELECT count(*) FROM operations.inventory_balances) AS balances,
+       (SELECT count(*) FROM operations.inventory_moves)    AS moves;
+```
+
+**What stalls, and for how long.** The first revision sets `lock_timeout = 5s` and takes its
+write-blocking lock on the ledger/balances/discrepancies only for the instant the `NOT VALID` keys
+are created (last, just before commit) — so an unlucky deploy that cannot get the lock in five
+seconds *fails* (re-run it once the long transaction is gone) rather than queueing every stock
+post behind it. The backfill reads the ledger once per table (a sequential scan: expect seconds
+per million rows, no write blocking). The second revision validates and indexes without blocking
+reads or writes, but it scans/sorts the whole ledger: expect minutes on a ledger of tens of
+millions of rows, and `migrate` simply takes that long. If it fails part-way (a long transaction
+holding off a `CONCURRENTLY` build, say) the first revision is already committed: fix the cause and
+re-run `make deploy` / `alembic upgrade head` — it resumes at the second revision, and an
+interrupted index build's `INVALID` leftover is dropped and rebuilt automatically.
+
+**Pre-check.** Nothing in the product could set a lot or roll id before this release, so expect
+all of these to be zero. If any is not, the migration creates a `LEGACY-…` placeholder lot/roll
+per distinct (organization, item, id) instead of refusing, and never changes a quantity:
+
+```sql
+SELECT 'ledger' AS t, count(*) FROM operations.inventory_ledger
+ WHERE lot_id IS NOT NULL OR roll_id IS NOT NULL
+UNION ALL SELECT 'balances', count(*) FROM operations.inventory_balances
+ WHERE lot_id IS NOT NULL OR roll_id IS NOT NULL
+UNION ALL SELECT 'discrepancies', count(*) FROM operations.inventory_discrepancies
+ WHERE lot_id IS NOT NULL OR roll_id IS NOT NULL
+UNION ALL SELECT 'count_lines', count(*) FROM operations.count_lines
+ WHERE lot_id IS NOT NULL OR roll_id IS NOT NULL;
+
+-- Lot or roll ids used with more than one item (a lot belongs to one item):
+SELECT 'lot' AS kind, lot_id AS id, count(DISTINCT inventory_item_id) AS items FROM (
+    SELECT lot_id, inventory_item_id FROM operations.inventory_ledger WHERE lot_id IS NOT NULL
+    UNION SELECT lot_id, inventory_item_id FROM operations.inventory_balances WHERE lot_id IS NOT NULL
+    UNION SELECT lot_id, inventory_item_id FROM operations.inventory_discrepancies WHERE lot_id IS NOT NULL
+    UNION SELECT lot_id, inventory_item_id FROM operations.count_lines WHERE lot_id IS NOT NULL
+) s GROUP BY lot_id HAVING count(DISTINCT inventory_item_id) > 1
+UNION ALL
+SELECT 'roll', roll_id, count(DISTINCT inventory_item_id) FROM (
+    SELECT roll_id, inventory_item_id FROM operations.inventory_ledger WHERE roll_id IS NOT NULL
+    UNION SELECT roll_id, inventory_item_id FROM operations.inventory_balances WHERE roll_id IS NOT NULL
+    UNION SELECT roll_id, inventory_item_id FROM operations.inventory_discrepancies WHERE roll_id IS NOT NULL
+    UNION SELECT roll_id, inventory_item_id FROM operations.count_lines WHERE roll_id IS NOT NULL
+) s GROUP BY roll_id HAVING count(DISTINCT inventory_item_id) > 1;
+```
+
+An id shared by several items is handled, not refused: the first claimant keeps the id, every other
+item gets its own placeholder with a new deterministic id, and that item's ledger, balance,
+discrepancy and count-line rows are re-pointed at it (the one place the migration rewrites a row it
+did not create), so no item is left holding stock that cannot be moved.
+
+**Inventory Phase 1 rollback.** A **code-only rollback leaves the schema in place** — the new
+tables, keys and indexes stay, and the previous API ignores them (it never writes a lot or roll id;
+`remote.sh migrate` skips the `operations` schema with the `SKIPPED` warning above). That is the
+supported rollback. **Never `alembic downgrade` past `b7d41e92c05a`** (`downgrade -2`,
+`downgrade 665e44e243d7`) once real lots or rolls exist: it drops `lots`, `rolls`, `roll_events` and
+`lot_genealogy` — every lot, roll, split, merge and trace. The migration enforces this: its
+`downgrade()` refuses, with a message, when any lot or roll other than its own `LEGACY-…`
+placeholders exists, unless `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1` is set in the environment of
+the `alembic` command — which you do only after a fresh backup and a decision to throw that data
+away. (`downgrade -1`, which only drops the second revision's indexes, is harmless.)
+
+**Reconcile the `operations` permissions after the API is deployed** (ADR-0007; same order as
+every permission rollout: manifests committed → service that enforces them deployed → reconcile
+→ only then the UI that assumes them). Four codes are new: `operations.inventory.lot.write`,
+`operations.inventory.roll.write`, `operations.inventory.stock.read`,
+`operations.inventory.stock.transfer`. `OPERATIONS_ADMIN` (`all()`) and `OPERATIONS_MANAGER`
+get all four; `OPERATIONS_WORKER` gets `stock.read` and `stock.transfer`; `OPERATIONS_USER` gets
+none of them. Releasing stock *out of* a hold status (REJECTED, DAMAGED, QUARANTINE,
+QUALITY_HOLD, BLOCKED into AVAILABLE or WIP) additionally needs the existing
+`operations.inventory.stock.adjust`, which `OPERATIONS_MANAGER` and `OPERATIONS_ADMIN` carry and
+`OPERATIONS_WORKER` does not — a worker can put stock on hold but cannot release it. Roles an organization authored itself are never touched (ADR-0007 §4) — the
+reconcile prints `memberships_without` so an operator can see who still lacks them.
+
+```bash
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations          # dry run
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+```
+
+Until it runs, every new route answers 403 for every non-owner in every existing organization
+(a brand-new organization is fine); the existing item-level inventory screens are unaffected.
+It is a fleet write — every organization's permission version bumps — so, as always, outside
+peak hours and never as part of `make deploy`.
+
+### Warehouse map and storage put-away: migration, rollout, the 30-day purge, the Maps key
+
+The warehouse-map release (design: `docs/superpowers/specs/2026-10-05-warehouse-map-putaway-design.md`;
+decisions: [ADR-0028](../../docs/adr/0028-putaway-gps-captures.md) and the addendum to ADR-0014 §12) adds
+a site map and a 2-D/3-D floor view to Inventory (`ops.opsgrids.com`), a "find stock" search, and a
+**Put away** screen to the worker app (`worker.opsgrids.com`): a worker scans the destination bin's
+label and the device's GPS fix is recorded as proof. The bin is the location of record; the fix is
+audit evidence, kept 30 days. **There is no new `.env` key to add before this deploy** — the Google
+Maps key is optional (see "The Google Maps key" below), so nothing here makes preflight refuse a box
+that does not have it.
+
+**What migrates.** One revision, `d7a3c9e5b184` (operations; it follows `c4a8e1f6d273`), part of the
+ordinary `migrate` step, nothing else to run. It adds two nullable columns and three named CHECKs to
+`warehouses` (`lat_micro`, `lng_micro`: a site's position as integer micro-degrees, both set or both
+empty) and creates `putaway_captures`: **append-only** (`UPDATE` and `DELETE` are revoked from the app
+role `opsgrids_operations`; row-level security on and forced). Everything is additive: `warehouses` is
+a handful of rows and the new table is empty, so the `lock_timeout = 5s` lock is instantaneous; there
+is no backfill; the ledger is untouched (a put-away is an ordinary `relocation` move whose
+`reference_type` is the free-text `putaway`, so no DDL was needed). The previous API ignores the new
+columns and table. Another inventory stack shares the previous head; whichever merges second re-points
+this revision's `down_revision`, so confirm `alembic heads` shows **one** head at release time and use
+the revision id `alembic current` prints on the box rather than this page's.
+
+**Rollout order** (staged by the owner; merging deploys nothing):
+
+1. Backend PR reviewed and squash-merged.
+2. Owner-approved `make deploy` (`migrate` is additive: old and new code both run against the new schema).
+3. **Verify the migration, changing nothing.** On the box, from `infrastructure/edge/`:
+
+   ```bash
+   docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T operations alembic current
+   docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+   SELECT to_regclass('operations.putaway_captures') IS NOT NULL                          AS table_present,
+          has_table_privilege('opsgrids_operations', 'operations.putaway_captures', 'INSERT') AS app_can_insert,
+          has_table_privilege('opsgrids_operations', 'operations.putaway_captures', 'UPDATE') AS app_can_update,
+          has_table_privilege('opsgrids_operations', 'operations.putaway_captures', 'DELETE') AS app_can_delete,
+          (SELECT count(*) FROM operations.putaway_captures)                              AS captures,
+          (SELECT count(*) FROM operations.warehouses WHERE lat_micro IS NOT NULL)        AS sites_with_coordinates;"
+   ```
+
+   `alembic current` must print the revision with `(head)`; the query must print `t|t|f|f|0|0` on a
+   first deploy. **`app_can_update` or `app_can_delete` true is a stop**: the table is no longer
+   append-only. Then run one synthetic put-away in a test organization (the new bundles are not
+   published until step 5, so through the API with an ADMIN's token: from a receiving or staging bin
+   to a rack bin, by the bin's barcode) and read it back: `GET …/inventory/putaway/{move_id}` shows
+   the bin and **no coordinates**; an ADMIN's `POST …/inventory/putaway/{move_id}/location:reveal`,
+   **from a session that gave a one-time code** (see "The reveal needs a one-time code", below), writes
+   exactly one new audit row, whose `fields` are the *names* `lat_micro`, `lng_micro`, `accuracy_m`:
+
+   ```sql
+   SELECT count(*) FROM operations.audit_logs
+    WHERE action = 'entity.sensitive_read' AND entity = 'inventory_move' AND entity_id = '<move_id>';
+   ```
+
+   In an organization that existed before this release the reveal answers **403 until step 4**: that
+   403 is the expected negative result (it writes no audit row, so the count stays 0); repeat the
+   reveal once step 4 has run. Each successful reveal adds exactly one row (two reveals, two rows).
+   A 403 whose body says `Additional authentication required: otp` is a different refusal, not a
+   missing reconcile: the session had no one-time code.
+4. **Reconcile the `operations` permissions** (ADR-0007; the same order as every permission rollout:
+   the code that enforces them deployed, then reconcile, then the UI that assumes them). One code is
+   new: `operations.inventory.putaway.location_read` — **ADMIN only** (`OPERATIONS_ADMIN` through
+   `all()`; no other role template includes it; owner decision D3). Putting stock away needs the
+   existing `operations.inventory.stock.transfer`, reconciled by the Phase 1 rollout, so workers
+   need nothing new.
+
+   ```bash
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations          # dry run
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+   ```
+
+   A fleet write (every organization's permission version bumps), so outside peak hours and never as
+   part of `make deploy`.
+5. **Publish the bundles**, operations first, then the worker app:
+
+   ```bash
+   make edge-web HOST=deploy@<ip> CONFIRM=edge.opsgrids.com APP=operations
+   make edge-web HOST=deploy@<ip> CONFIRM=edge.opsgrids.com APP=worker
+   ```
+
+   Each is one symlink swap with no restart, and each is undone the same way
+   (`make edge-web-rollback … APP=operations`).
+
+**The reveal needs a one-time code, and an administrator without one gets a 403.** Showing a worker's
+position takes the permission **and** a session that gave a one-time code (`amr` includes `otp`,
+ADR-0023). This was added in review, beyond what the owner approved for D3, and is an **open owner
+decision: keep it, or revert to permission plus audit only** (ADR-0028, "Owner decision"; the revert is one
+line). It is `otp` alone and not the `{otp, stepup}` pair the CRM reveals use, because the operations SPA
+has no step-up prompt. The failure mode: an `OPERATIONS_ADMIN` who has no authenticator enrolled, whose
+session started before they enrolled one, or who signed in through single sign-on or a social login
+(those sessions carry `sso` / `oauth`, never `otp`) is refused with **403** and the body
+`Additional authentication required: otp`. Nothing is revealed and no audit row is written; the drawer says
+it could not show the location. Tell this 403 from the one a missed reconcile gives by the body: that one reads
+`Missing permission: operations.inventory.putaway.location_read` (step 4). The remedy for the person is to
+enrol an authenticator on the dashboard's Security page and sign in again with a code. It is not an outage
+and not a reason to roll back. The administrator's synthetic check in step 3 has to come from such a session
+too.
+
+**The Google Maps key (optional, set by the owner).** The Google Cloud project, billing, the spend
+cap and the key in the box's `.env` are the owner's, separate from this release, and **the release does
+not wait for them.** `publish-web.sh` reads `VITE_GOOGLE_MAPS_API_KEY` from the box's `.env` for
+`APP=operations` **only** (never `worker`, never any other app) and bakes it into the bundle. If the
+line is absent, empty or malformed it prints a loud `WARNING` and publishes the bundle **without the
+map**: the sites page shows a table of warehouses, the warehouse dialog takes latitude and longitude by
+hand, and nothing else changes. To turn the map on later, add the line to the box's `.env` (keep mode
+600) and publish operations again — a key added after a publish does nothing to a bundle already live:
+
+```bash
+ssh deploy@<ip>
+cd /srv/opsgrids/repo/infrastructure/edge
+printf 'VITE_GOOGLE_MAPS_API_KEY=%s\n' '<the key>' >> .env && stat -c '%a' .env      # prints 600
+# then, from your laptop:
+make edge-web HOST=deploy@<ip> CONFIRM=edge.opsgrids.com APP=operations
+```
+
+With a key, the audited reveal also draws the worker's position on a Google map, and the browser asks
+Google for the tiles around it, so **Google learns the viewport position** (street level for a good fix).
+Without a key the reveal is text only and nothing is sent to Google; that is the way to keep a worker's
+position out of a third party's hands (ADR-0028).
+
+The key is **not a server secret**: it ships inside the bundle, so every visitor of `ops.opsgrids.com`
+receives it. It must be restricted in the Google Cloud console — HTTP referrers limited to
+`https://ops.opsgrids.com/*`, the API list limited to the Maps APIs the app calls, a budget and a quota
+cap — and it must never be a server-side key. The build log says whether a key was found and how long
+it is; it never prints it. **No Caddy change ships with this release:** `ops` and `worker` send no
+`Content-Security-Policy` or `Permissions-Policy` today (a test pins that), so the map loads and the
+worker's location prompt works without an allow-list. CSP hardening is a separate release and will have
+to allow the Google Maps origins when it lands. For local development, put the key in
+`frontend/product-operations/.env.local` (untracked); with none, the app runs map-less.
+
+**Limitation (c): the order engine reserves only at the item's home bin.** `accept_order` reserves
+each line at `inventory_items.home_location_id` (`orders/services.py`, `_reserve_lines_for`) and
+nowhere else; there is no multi-location allocation yet. So stock that has been put away into any
+other bin **is not seen by order accept**: if the home bin does not hold the quantity, the accept is
+refused as insufficient stock although the warehouse holds it. Storage put-away is therefore allowed
+only **from `receiving` or `staging` bins** (a 422 otherwise, error code
+`source_not_receiving_or_staging`; owner decision D1), and an item whose home bin is one of those kinds
+drops out of what orders can reserve as soon as it is put away. Know this before telling a warehouse to
+start putting stock away: the way back is an ordinary bin transfer to the item's home bin, and the
+limitation lifts when multi-location allocation exists. Also, on `main` today a goods receipt lands in
+the item's home bin (`receive_into_home`; kind `bin`, not `receiving`), so stock reaches a
+receiving/staging bin only through opening stock posted there, an explicit bin transfer, or Phase 2
+receipts (not yet merged): until then the Put away screen has little to offer a warehouse that has not
+set up receiving or staging bins. Both are tracked in `docs/backlog.md`.
+
+**The 30-day purge (owner decision D3).** A capture holds a worker's GPS fix. It is kept **30 days**
+from the server's `created_at`, then erased by an **admin-run procedure, not an in-app job**: the app
+role cannot delete the rows, and erasure is a decision a person takes. Coordinates are not PII under
+ADR-0000, so they are stored in plaintext; the controls are the ADMIN-only permission, a one-time-code
+session, the audit row on every reveal, and this erasure (ADR-0028). The tool is
+`tools/purge_putaway_captures.py`. It connects as `opsgrids_admin` (the only role that can delete), is a **read-only dry run unless `--apply`**,
+prints **counts only** (never a coordinate, a worker or a move), and takes `--organization-id <uuid>`
+to confine it to one organization; the 30-day window is deliberately not an option. On the box, from
+`infrastructure/edge/`, run it the way `remote.sh reconcile-permissions` runs its tool, from the
+`operations` image:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T \
+  -e PYTHONPATH=/app -v "$(cd ../.. && pwd)/tools:/opt/tools:ro" \
+  operations python /opt/tools/purge_putaway_captures.py            # dry run
+# the same command with `--apply` appended deletes; add `--organization-id <uuid>` to confine either
+```
+
+Read the dry run first: `eligible` is what `--apply` deletes, `retained` is what stays, and `database`
+names the host and database it is aimed at. Keep the printed output with the change record; the purge
+writes no audit row of its own. It is safe to re-run and to interrupt (it deletes in batches, one
+transaction each). **Run it weekly** (a recommendation; it is the owner's calendar entry, nothing runs
+it for you): a capture becomes eligible 30 days after it is written and goes at the next run, so the
+real retention is 30 days plus the gap between runs. After a purge, the reveal of a purged capture
+answers 404 (the UI says "capture expired") and the put-away itself — the move, the bin, the ledger,
+the audit rows — is untouched. The rows survive in backups taken before the purge until those age out
+(`docs/engage-erasure-and-unsubscribe.md` says the same of every delete in this database, with the WAL
+and dead-tuple caveats). The tool purges by age and organization only; a narrower erasure (one worker)
+is a hand-run `DELETE` as `opsgrids_admin` after a backup, and an owner decision.
+
+**Rollback.** **Code-only; the schema stays.** `make edge-rollback` redeploys the previous ref and
+`remote.sh migrate` then skips `operations` with the loud `SKIPPED` warning, leaving the schema as this
+release made it; the previous API ignores the new columns and table. Roll the **bundles** back first
+(`make edge-web-rollback … APP=operations`, then `APP=worker`; one symlink each) so no screen calls a
+route the older API does not have (by design the worker app parks a put-away the server answers 4xx
+as "needs attention" instead of losing it). Put-aways already posted stay in the ledger as ordinary
+relocations with `reference_type` `putaway`, and their captures stay. To turn only the map off, remove
+the `VITE_GOOGLE_MAPS_API_KEY` line from the box's `.env` and publish operations again. **Never
+`alembic downgrade` past `d7a3c9e5b184`** (`downgrade -1`, `downgrade c4a8e1f6d273`) once captures
+exist: it drops `putaway_captures` and the warehouse columns — every put-away's proof and every site's
+map position. The migration enforces this: its `downgrade()` refuses, with a message, when any capture
+row exists **or any warehouse has coordinates** (so a fully purged table alone does not lift the
+refusal), unless `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1` is set in the environment of the `alembic`
+command — which you do only after a fresh backup and a decision to throw that data away. On a database
+that never held either, it reverses completely.
+
+**Roll back when** any of these is true after the deploy (counts and key names only, never a value):
+
+- the migration failed, or `alembic current` is not the head;
+- the put-away error rate (5xx on `…/inventory/putaway`) is above what the same hours looked like
+  before the release;
+- a **coordinate key** is found where none may be. Both counts must be **0** (the reveal's own audit
+  row lists field *names* in an array, which these do not match). A **site's** position is approved
+  data and legitimately appears as `lat_micro` / `lng_micro` keys in the `before` and `after` of a
+  `warehouse.updated` audit row (`entity = 'warehouse'`) every time someone sets, changes or clears a
+  warehouse's location, so the audit query leaves the `warehouse` entity out: it stays at 0 after the
+  owner's first "Set location", and a hit in any *other* row (a put-away's `inventory_move` rows
+  above all) is a worker coordinate that must not be there. The outbox needs no such exception: a
+  `warehouse.updated` event lists the changed field *names* only.
+
+  ```sql
+  SELECT (SELECT count(*) FROM operations.audit_logs
+           WHERE entity <> 'warehouse'
+             AND (jsonb_path_exists(after,  '$.**.lat_micro') OR jsonb_path_exists(after,  '$.**.lng_micro')
+               OR jsonb_path_exists(before, '$.**.lat_micro') OR jsonb_path_exists(before, '$.**.lng_micro'))) AS audit_rows,
+         (SELECT count(*) FROM operations.outbox
+           WHERE jsonb_path_exists(payload, '$.**.lat_micro') OR jsonb_path_exists(payload, '$.**.lng_micro')) AS outbox_rows;
+  ```
+
+  and `make edge-logs HOST=… CONFIRM=… SERVICE=operations TAIL=5000 | grep -c -E 'lat_micro|lng_micro'`
+  must print 0 too (a hit may be a coordinate in a log: read it with care, it is personal data);
+- **a reveal without an audit row**: every successful `…/location:reveal` (200) must have exactly one
+  `entity.sensitive_read` row (`entity = 'inventory_move'`, `entity_id` the move) in
+  `operations.audit_logs` at that moment, for that actor. A 403 or a 404 writes none, by design;
+- **the proof is not being kept** (see "A put-away whose proof was not kept", next): `putaway.capture_failed`
+  appears for every put-away since the deploy, or the query below keeps returning rows. Roll the **bundles**
+  back so workers stop putting stock away with no proof, then fix the cause.
+
+**A put-away whose proof was not kept does not look like a failure.** The capture row is written in a
+savepoint after the stock has moved. If that write fails (a missing grant, a constraint, a database
+error), the move **stands**, the response is a **201** with the warning `geo_not_recorded`, and the service
+logs one `putaway.capture_failed` line (move id and the error's class name, never a value). Nothing a
+rollback trigger above watches would notice it: not a 5xx on `…/inventory/putaway`, not a coordinate, not a
+reveal. **No alert fires on it:** `ops-monitor`'s six checks are not log-based, so this is a check someone
+runs, as `payment.invoice.collected_twice` is. After the deploy, and once a day for the first week:
+
+```bash
+make edge-logs HOST=… CONFIRM=… SERVICE=operations TAIL=5000 | grep -c 'putaway.capture_failed'   # 0
+```
+
+and, because logs rotate and this does not, the durable form, from the same `psql` as step 3 (a role that
+bypasses row-level security): the put-aways inside the purge window that have no capture row.
+
+```sql
+SELECT count(*) AS putaways_without_capture
+  FROM operations.inventory_moves m
+ WHERE m.reference_type = 'putaway'
+   AND m.created_at > now() - interval '29 days'
+   AND NOT EXISTS (SELECT 1 FROM operations.putaway_captures c
+                    WHERE c.organization_id = m.organization_id AND c.move_id = m.id);
+```
+
+Both must be **0**. A hit means a put-away happened and its proof (who, which bin, the fix) was lost; the
+move itself is correct. The log line names the move and the error class: `grep putaway.capture_failed`
+beside it, then re-run step 3's privilege query (`app_can_insert` must be `t`) and read the error class.
+The 29 days keep the window inside the 30-day purge, so a capture the purge removed is never counted.
+Captures erased by hand (see the purge section) do show up here as hits, so check a hit against that
+record first. A rate of one in a long while is a database blip to read; every put-away since the deploy is
+the rollback trigger above. Wiring `putaway.capture_failed` to an alert is a follow-up
+(`docs/backlog.md`).
+
+### Plans & prices in the console: catalog migration, rollout, what to watch
+
+The Plans & prices release (design: `docs/superpowers/specs/2026-10-06-admin-plans-page-design.md`;
+decision: [ADR-0030](../../docs/adr/0030-catalog-operator-writes.md)) gives the staff console a real
+catalogue page over catalog's existing `/api/v1/admin/catalog` prefix. **No route table changes** (the
+paths stay under the existing `staff_only` prefix, so admin-gateway and Caddy are not recreated) and **no
+new `.env` key**.
+
+**What migrates.** One catalog revision, `b7e4d2a9c613` (follows `c5f1e8a2b7d4`), in the ordinary
+`migrate` step. It replaces the body of `catalog.forbid_published_version_update()` (published rows may
+now take exactly one change, `state` to `grandfathered`; grandfathered rows take none; a draft cannot
+become grandfathered), extends `catalog.forbid_frozen_version_child_mutation()` and adds one
+`trg_<table>_frozen_no_insert` trigger each on `prices`, `features` and `seat_classes` (nothing can be
+added under a frozen version), and creates `catalog.idempotency_keys` (empty, RLS on and forced). All are
+instantaneous; nothing is backfilled.
+
+**Rollout order** (owner-approved deploy; merging deploys nothing): catalog first (migration + API), then
+notification (two new subscribable catalog events; harmless if it lags), subscription (lets a scheduled plan
+change be withdrawn back to a current pin whose version has been withdrawn; if it lags, that one request is
+refused `not_published` until it lands), console (the `not_offerable` wording names withdraw), then the
+console frontend.
+Old console builds keep working against the new catalog because the old stub made no catalog calls.
+
+**Verify, changing nothing.** On the box, from `infrastructure/edge/`:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T catalog alembic current
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT to_regclass('catalog.idempotency_keys') IS NOT NULL                         AS claims_table,
+       (SELECT relforcerowsecurity FROM pg_class WHERE oid = 'catalog.idempotency_keys'::regclass) AS rls_forced,
+       (SELECT count(*) FROM catalog.plan_versions WHERE state = 'grandfathered')     AS withdrawn;"
+```
+
+`alembic current` must print `b7e4d2a9c613 (head)`; the query prints `t|t|0` on a first deploy. Then, as
+an `owner`, open `admin.opsgrids.com/plans`: the table loads (public plans), a plan opens, a version's
+sheet opens. As `billing_ops` the same pages load with no actions; as `support` the page shows a notice.
+
+**The one irreversible step is publish.** Prove the write path without creating anything permanent: open
+an **existing** plan, use *New draft* on its current version, create the draft, then **delete the draft** —
+do not publish it. Do not create a smoke-test plan: a plan cannot be deleted (only retired), its
+`(product`, `code)` is burned for good, an unregistered product key is refused with 422 `unknown_product`,
+and an active plan under a real product shows in every one of that product's customers' plan list. If a
+plan was created by mistake, retire it with a reason. Publishing freezes a version for good; withdrawing
+afterwards keeps it pinned by anyone already on it. Publishing also needs product-service up (it is asked
+whether the product is a bundle); a 503 on publish means retry once it is back.
+
+**What to watch.** A 409 "Idempotency-Key was already used for a different request" means a client reused
+a key — the console mints one per dialog open, so a stream of them is a client bug, not an operator one.
+A 422 on publish lists every problem in `errors[]`; the commonest is a zero amount the owner must
+acknowledge or a usage price missing its meter. **Retiring a plan does not yet stop a subscription pinning
+one of its versions by id** (subscription does not read plan state — a later slice that needs catalog's
+internal version read to carry the plan's state too); until then, withdraw the specific version as well
+when it must stop selling. The console's **Change plan** already refuses a retired plan's versions and
+withdrawn ones (`not_offerable`, see "Staff plan switching" below). Withdrawing a plan's newest version puts
+the published version before it back on offer there, so withdraw that one too if it must stop selling.
+
+**Withdrawing does not cancel a plan change already scheduled onto the version.** A downgrade deferred to
+the next period re-pins at renewal without asking catalog, so it lands on the withdrawn version anyway.
+Before withdrawing a version that must stop selling, list the subscriptions scheduled onto it (read-only):
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT id, organization_id FROM subscription.subscriptions
+ WHERE pending_plan_version_id = '<version id>';"
+```
+
+Each row is a customer whose scheduled change has to be dealt with by hand (with the owner) until
+subscription re-validates a pending pin when it applies it.
+
+**Rollback.** Roll the console and catalog images back; the migration can stay (old catalog code ignores
+the claims table and never withdraws). If it must go: `alembic downgrade c5f1e8a2b7d4` on catalog — a
+version withdrawn meanwhile stays `grandfathered`.
+
+### Payments: turning a provider on
+
+The payments release (design: `docs/superpowers/specs/2026-10-06-payments-phase-a-design.md`; decisions:
+[ADR-0032](../../docs/adr/0032-payment-provider-seam-and-checkout.md)) lets an organization's owner pay one
+of OpsGrids' own invoices in **Razorpay's or Cashfree's hosted checkout**. It is **Phase A only**: a
+customer-present checkout. **There is no saved mandate and no automatic recurring debit**, and the platform's
+provider webhooks stay **private**, so the platform learns that an invoice was paid by **asking the
+provider** (a poller in `payment`, every 30 s per open checkout), never by being told.
+
+**Deploying this release changes nothing on the box.** Every switch defaults to the in-process stub, no
+key is required, and a box with no key set passes preflight (with the warning that payment runs on its
+stub). Turning a provider on is a separate, deliberate sequence, below.
+
+**What migrates.** One additive revision, `c7d8e9f0a1b2` (payment; it follows `a8c1d2e3f4b5`), part of
+the ordinary `migrate` step: two columns on `charges` (`flow`, default `debit`, and `checkout_expires_at`),
+two CHECKs, a partial index for the poller, a partial unique index that allows one open checkout per
+invoice, and five unique keys **widened** to include `provider` (names kept). No rewrite, no backfill.
+Every existing charge is a `debit`, as it always was. The previous API ignores the new columns. **Its
+downgrade refuses while a checkout charge exists**: the previous code would resume one as a stuck debit and
+suspend a customer who has not yet paid, so a rollback of the *code* after checkouts exist needs the
+checkouts resolved first. Confirm `alembic heads` shows **one** head at release time (another payment
+migration may share the previous head; whichever merges second re-points its `down_revision`), and use the
+revision `alembic current` prints on the box rather than this page's. Verify, changing nothing:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T payment alembic current
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT (SELECT count(*) FROM information_schema.columns
+         WHERE table_schema = 'payment' AND table_name = 'charges'
+           AND column_name IN ('flow', 'checkout_expires_at'))         AS new_columns,
+       to_regclass('payment.uq_charges_open_checkout') IS NOT NULL     AS open_checkout_index,
+       (SELECT count(*) FROM payment.charges WHERE flow <> 'debit')    AS checkout_charges;"
+```
+
+`alembic current` must print the revision with `(head)`, and the query `2|t|0` on a first deploy.
+
+**The variables** (all optional; set in the box's `.env`, passed to `payment` and `payment-worker` by
+`compose.prod.yml`; preflight checks the combination and prints **names, never values**):
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PAYMENT_PROVIDER` | `razorpay` | The provider for **new** invoices' charges. An existing charge keeps the provider it was created under, for life. |
+| `PAYMENT_WIRE` | `stub` | `live` lets the **Razorpay** adapter call Razorpay. `stub`: no socket is opened **whatever keys are set**. |
+| `CASHFREE_ENV` | `stub` | `stub`, `sandbox` or `production`. The one switch for Cashfree's network and environment. |
+| `PAYMENT_ALLOW_LIVE_KEYS` | `false` | Without `true`, `rzp_live_` keys and `CASHFREE_ENV=production` are refused at start-up. |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | empty | Both or neither. |
+| `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY` | empty | Both or neither. The secret also verifies Cashfree webhooks. |
+
+`payment` **refuses to start** (and preflight fails first) on: one key of a pair; a live key without
+`PAYMENT_ALLOW_LIVE_KEYS`; `PAYMENT_WIRE=live` or `CASHFREE_ENV=sandbox|production` without both
+credentials; a **`rzp_test_` pair on a live wire when `ENVIRONMENT=production`**; **Cashfree `sandbox` on
+a production box**; `CASHFREE_ENV=production` with test-shaped keys; and `PAYMENT_PROVIDER=cashfree`
+on a production box without `CASHFREE_ENV=production`. The reason is the same each time: a public test
+card paying a real invoice is a free subscription.
+
+**What that means for rehearsal: by default this box cannot be run against test or sandbox keys.**
+Test-mode checkouts are rehearsed on a developer's machine (the stub, or the smoke tools below), and the
+first key a box *with paying customers* ever holds is a live one. **The exception is a staging box with no
+real paying customers**: `PAYMENT_ALLOW_TEST_KEYS=true` lets the test pair and the sandbox run there,
+loudly. The owner decided on 2026-10-06 that the edge box is such a box: see the next section,
+"Payments: test mode on a staging box", which replaces step 4 below while it applies.
+
+**Order of steps** (owner decisions throughout; nothing here is done by the deploy):
+
+1. Merge the PR and `make deploy` (additive migration; the stub is still in force). Verify the
+   migration as above.
+2. **At the provider (the owner).** Complete the account's business verification; generate a **test**
+   key pair and a **live** key pair (Razorpay: Account & Settings → API Keys; Cashfree: Developers →
+   API Keys, a sandbox App ID and a production one). **Do not register any webhook**: the platform's
+   webhooks stay private in this phase and the checkout works without one. Check whether the account
+   restricts which IP addresses may call its API, and if it does, allow the box's public address (the
+   repository cannot know the account's settings).
+3. **Settle the unknowns, on your own machine, with test keys.** The design was written with no
+   keys; `tools/payments_smoke_razorpay.py` and `tools/payments_smoke_cashfree.py` ask each provider what
+   it really does, in test mode / sandbox, and print only statuses, error codes, booleans and field
+   *names*. They are **opt-in** (`--confirm`), refuse to run in CI, under pytest or when `ENVIRONMENT`
+   names a deployed environment, refuse a key that is not provably test/sandbox, read the keys **only
+   from the process environment** (never `.env`, never an argument), and are never run by `make`:
+
+   ```bash
+   # from the repository root, on your laptop. `uv run`, NOT `make` (make re-exports the root .env).
+   # Paste each value at the silent prompt `read -rs` gives: it is not echoed and, unlike a typed
+   # `export NAME=value`, it never lands in the shell history.
+   read -rs RAZORPAY_KEY_ID && export RAZORPAY_KEY_ID              # rzp_test_… only (test mode)
+   read -rs RAZORPAY_KEY_SECRET && export RAZORPAY_KEY_SECRET
+   uv run python tools/payments_smoke_razorpay.py plan                # prints what it would do; calls nothing
+   uv run python tools/payments_smoke_razorpay.py probe --confirm
+
+   read -rs CASHFREE_APP_ID && export CASHFREE_APP_ID              # sandbox only (TEST…)
+   read -rs CASHFREE_SECRET_KEY && export CASHFREE_SECRET_KEY
+   uv run python tools/payments_smoke_cashfree.py probe --confirm
+   ```
+
+   Compare each printed line with section 12 of the design. `payments <order_id>` (after paying a test
+   Order by hand with the provider's test card or VPA) prints which fields a payment carries, and
+   `refund` / `webhook-listen` settle the refund idempotency and Cashfree's webhook headers. **If any
+   answer differs from what the design assumed, stop and tell engineering before step 4**: the adapters
+   were written to fail safe on each unknown, but a surprise is a reason to look, not to proceed.
+
+   **Razorpay's `probe` was run on 2026-10-06** and four answers differed from the design; the adapter
+   was corrected for each (ADR-0032, "Sandbox facts"), so the same output from a rerun is now expected,
+   not a reason to stop: a duplicate `receipt` is **accepted** (a second Order, no `400`); the receipt
+   search answered `count: 0` for an Order created seconds earlier (and once `429`); `payment_capture`
+   is not echoed on the Order; a bad key is `401` with `error.code = BAD_REQUEST_ERROR`. What changed:
+   a checkout's Order id is recorded before the customer sees it and is the only id a browser is ever
+   handed, a reopen fetches that Order by its id (`GET /orders/{id}`), and the poller searches the
+   receipt for a stray duplicate before it closes a checkout.
+   Unset the variables when done (`unset RAZORPAY_KEY_SECRET CASHFREE_SECRET_KEY`); never paste a key
+   into chat, a ticket or a shell history file.
+4. **Put the live keys on the box.** Edit `.env` on the box (same rules as "5. Secrets": nothing goes
+   through git, chat or CI): the key pair, `PAYMENT_ALLOW_LIVE_KEYS=true`, `PAYMENT_WIRE=live` (Razorpay)
+   or `CASHFREE_ENV=production` (Cashfree), and `PAYMENT_PROVIDER` for the provider new invoices should
+   use. Then `make edge-preflight HOST=… CONFIRM=…` (it must pass without a payment line failing), and
+   recreate `payment` and, when the `split-workers` profile is on, `payment-worker`:
+
+   ```bash
+   docker compose -f compose.prod.yml --env-file .env up -d payment payment-worker
+   ```
+
+   (With the default folded workers the poller runs inside `payment` itself, so recreating `payment`
+   is enough.) Confirm it started: `make edge-logs HOST=… CONFIRM=… SERVICE=payment TAIL=100` shows
+   `payment.charge_poller.started` and **no** `payment.provider.credentials_rejected`.
+5. **One small, real checkout.** From a test organization, owned by someone on the team, open the
+   checkout for its smallest invoice and pay it. Watch it become paid (the status route answers
+   `paid: true`; the invoice's subscription activates). The poller notices within the poll interval
+   even if the browser is closed. Then refund it at the provider's dashboard; there is no refund
+   endpoint for platform charges in this release.
+
+**Watching it.** Everything is in `payment`'s log (`make edge-logs … SERVICE=payment`); this release adds
+no `ops-monitor` check, so someone has to look for the first week:
+
+| Log event | Level | Means |
+|---|---|---|
+| `payment.provider.credentials_rejected` | error | The platform's own key was refused. **No charge is failed and no attempt is consumed** until a call succeeds again, and the latch holds for 15 minutes. Check the keys and the switches, then restart `payment`. Further refusals inside the window log `…_again` at warning, so one outage is one line. |
+| `payment.charge.poll_unavailable`, `payment.charge.poll_timeout` | warning | The provider could not be asked. Nothing changes; the next tick asks again. Many in a row means the provider (or the box's egress) is down. |
+| `payment.charge.checkout_expired` | info | A checkout nobody paid inside its day closed (`failure_reason = checkout_expired`). No `commerce.payment.failed` is emitted and dunning is not involved. It is still asked about every 10 minutes for five days (`CHECKOUT_LATE_CAPTURE_WINDOW_SECONDS`), because the customer can still pay its Order. `order=false` means no Order was ever made for it (every open failed at the provider); nothing can have been paid on it. |
+| `payment.checkout.expiry_deferred` | info | A checkout past its expiry was kept open because the provider reports a payment still in progress on it. It closes once that payment resolves, or an hour later (`CHECKOUT_INFLIGHT_GRACE_SECONDS`). |
+| `payment.checkout.expired_with_attempt_in_flight` | warning | The hour passed and the provider still reported an unresolved attempt (or a capture that could not be applied: look for `payment.charge.sync_not_applied`). Closed, and still asked about for five days. |
+| `payment.charge.captured_after_local_failure` | error | A payment arrived for a checkout the platform had already closed (it expired). The poller, the status page or the customer's confirm found it; it is recorded and the invoice is paid. Read the audit row of the same name, and check `payment.invoice.collected_twice`: the customer may have paid a second checkout too. |
+| `payment.charge.uncollectable` | error | An invoice's charge can never be collected online: its currency is not INR, or it is below the provider's minimum (Rs 1, e.g. a small proration). It is recorded `failed`, but **no `commerce.payment.failed` is sent**, so the subscription is not put into dunning over it. Settle the invoice by hand (write it off, or carry it to the next invoice). |
+| `payment.invoice.collected_twice` | error | The existing double-collection alarm (see "Payments: an invoice collected twice"); it applies to checkouts too. |
+| `payment.checkout.stray_order_found` | error | A payment attempt sits on a **second** Order carrying a checkout's receipt (a create whose answer was lost, then retried; Razorpay accepts a duplicate receipt). That Order's id was never handed to anyone, so this should not happen: look. Read the `statuses`: a `captured` one is recorded against the checkout (audit row `payment.checkout.stray_order_payment`, naming both Orders) and the invoice is paid; one that cannot be applied leaves a `payment.charge.sync_not_applied` row naming the stray Order. Check `payment.invoice.collected_twice` and both Orders on the provider's dashboard. |
+| `payment.checkout.unrecorded_order_withheld` | error | A checkout open came back with an Order its charge does not record; the customer got a 409 `checkout_in_progress` instead of it, and their next click is handed the recorded one. Rare (two Orders for one checkout, or a call that outlived its lease); look for `payment.checkout.order_id_mismatch` beside it. |
+| `payment.checkout.stray_search_unavailable`, `payment.checkout.stray_search_timeout` | warning | The search for a stray Order could not be had (often a `429`). Best-effort: the checkout's own Order was asked, so nothing waits on it; the five-day late window searches again. |
+
+```sql
+-- the state of every checkout, by provider
+SELECT provider, state, failure_reason, count(*)
+FROM payment.charges WHERE flow = 'checkout' GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+```
+
+**A platform debit with no mandate fails as `no_mandate`, with no provider call.** That is the intended
+Phase A behaviour: invoices are collected by checkout, and dunning's retry of a charge that needs a
+mandate will fail the same way until Phase B. Seeing `failure_reason = 'no_mandate'` on a debit is not an
+incident.
+
+**Rolling back** is two variables and a restart; there is no migration to undo:
+
+```bash
+# in the box's .env:  PAYMENT_PROVIDER=razorpay   PAYMENT_WIRE=stub   CASHFREE_ENV=stub
+docker compose -f compose.prod.yml --env-file .env up -d payment payment-worker
+```
+
+Existing rows keep their provider; new invoices stop being offered a live checkout (`openable` is false on
+a stub). **A checkout still open at the real provider stays payable there**, and while the wire is the stub
+nothing here can tell whether it was paid: the stub says it cannot answer for an Order it never made, the
+poller records "could not be asked", and **no checkout is expired on that**. A customer who clicks "Pay"
+on such a checkout in the window gets a 503: the stub refuses to make a stand-in Order for a checkout that
+already has a real one. Prefer to let open checkouts
+resolve (`CHECKOUT_TTL_SECONDS`, a day) before turning the wire off, and check the provider's dashboard for
+money taken in the window. Turning the wire back on reconciles them. Switching only `PAYMENT_PROVIDER` is
+the gentler rollback when the other provider is healthy: open checkouts keep being polled through the
+provider they were created under.
+
+**Tenant collections are separate.** A merchant's own Razorpay keys, and `COLLECTIONS_WIRE` /
+`COLLECTIONS_ALLOW_LIVE_KEYS`, are not changed by any of the above, and `PAYMENT_WIRE` never switches them.
+In this release a merchant account's provider and mode can no longer be changed in place (a `409`): the
+merchant disconnects and reconnects. The Razorpay sandbox facts above apply to a merchant's account too:
+a collection already records its Order id before the customer sees it and never asks Razorpay again once
+it does, so a duplicate Order is never shown; but nothing searches a merchant's account for a stray
+duplicate, and a lost create retried after the lease can leave one there (unpayable, since nobody has its
+id). That is unchanged by this release.
+
+### Payments: test mode on a staging box
+
+**Owner decision, 2026-10-06.** The edge box runs `ENVIRONMENT=production` (every compose service does),
+but it is a **staging server with no real paying customers**, and its payments are to run on **Razorpay
+test keys** (`rzp_test_…`) and **Cashfree sandbox keys**. By default `payment` refuses exactly that on a
+box that says `production` (previous section: a public test card would pay a real invoice).
+`PAYMENT_ALLOW_TEST_KEYS=true` is the explicit, opt-in override ([ADR-0032](../../docs/adr/0032-payment-provider-seam-and-checkout.md),
+"Staging test mode"). **Never set it on a box where real customers pay.** Everything else in the previous
+section still applies (Phase A only, no webhook to register, the poller learns outcomes); this section
+replaces its step 4 while the box is in test mode.
+
+**What the flag does, and what it refuses.**
+
+* It lets `rzp_test_` keys run with `PAYMENT_WIRE=live`, and `CASHFREE_ENV=sandbox` run (also as
+  `PAYMENT_PROVIDER=cashfree`), although `ENVIRONMENT=production`. Nothing else is relaxed.
+* It is **refused** — `payment` will not start, and preflight fails first — beside
+  `PAYMENT_ALLOW_LIVE_KEYS=true`, beside **any** live-shaped key (`rzp_live_…`, a `cfsk_ma_prod_…` Cashfree
+  secret, even with its wire off), and beside `CASHFREE_ENV=production`. A box runs on test keys or on
+  live money, **never both**.
+* It is **loud**: `payment` logs one WARNING `payment.test_mode.enabled` every time it starts (the mode,
+  the environment and which providers run on test credentials; never a key); preflight prints a
+  `warn  !!! PAYMENT_ALLOW_TEST_KEYS is ON …` block on every deploy (a warning, never a failure);
+  `/api/v1/payment/info` answers `"mode": "test"`; and every platform checkout answer —
+  `POST /payment/checkouts`, `GET /payment/checkouts/{id}` and the confirm — carries
+  `"test_mode": true` (the dashboard shows a test-mode notice from it).
+
+**Turning it on.** Generate the keys in each provider's **test** environment (Razorpay: switch the
+dashboard to *Test Mode*, then Account & Settings → API Keys; Cashfree: the *Sandbox* dashboard →
+Developers → API Keys — the App ID starts `TEST`, the secret `cfsk_ma_test_`). Edit `.env` on the box
+(same rules as "5. Secrets": nothing goes through git, chat or CI; paste each value, never type it into a
+shell history). **Exactly these lines**, with the dashboard's values in place of the `<…>`:
+
+```bash
+PAYMENT_ALLOW_TEST_KEYS=true
+PAYMENT_PROVIDER=razorpay
+RAZORPAY_KEY_ID=<the rzp_test_ key id>
+RAZORPAY_KEY_SECRET=<its key secret>
+PAYMENT_WIRE=live
+CASHFREE_APP_ID=<the sandbox App ID, TEST...>
+CASHFREE_SECRET_KEY=<the sandbox secret key, cfsk_ma_test_...>
+CASHFREE_ENV=sandbox
+```
+
+`PAYMENT_PROVIDER` is the provider new invoices' checkouts open at: `razorpay` or `cashfree`, either
+works in test mode. One provider alone is fine too: leave the other's pair empty and its switch at `stub`
+(`PAYMENT_WIRE=stub`, or `CASHFREE_ENV=stub`), but then `PAYMENT_PROVIDER` must name the one that is on.
+`PAYMENT_ALLOW_LIVE_KEYS` must be **absent or `false`**. Then:
+
+```bash
+make edge-preflight HOST=… CONFIRM=…
+#   expect: "ok    payment provider switches are consistent", the "warn  !!! PAYMENT_ALLOW_TEST_KEYS is ON"
+#   block, a payment wire "switched on" line, and no FAIL row
+docker compose -f compose.prod.yml --env-file .env up -d payment payment-worker   # on the box, as in step 4
+make edge-logs HOST=… CONFIRM=… SERVICE=payment TAIL=100
+#   expect: payment.test_mode.enabled (warning) and payment.charge_poller.started; no
+#   payment.provider.credentials_rejected
+docker compose -f compose.prod.yml --env-file .env exec -T payment python -c \
+  "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/api/v1/payment/info').read().decode())"
+#   expect: "mode":"test" and "test_keys_allowed":true (provider names and modes only, never a key)
+```
+
+Then take one checkout end to end from a test organization: open it, pay with the provider's published
+**test** card or sandbox UPI id, and watch the status answer `paid: true` with `test_mode: true`.
+
+**Turning it off** (back to the default; do it before any real customer could pay on this box). In **one**
+edit of `.env`, remove the flag *and* take the test keys off the wires — removing only the flag while a
+`rzp_test_` pair is on a live wire, or the sandbox is on, makes `payment` refuse to start (preflight
+catches it first):
+
+```bash
+# delete PAYMENT_ALLOW_TEST_KEYS (or set it to false), and set:
+PAYMENT_PROVIDER=razorpay
+PAYMENT_WIRE=stub
+CASHFREE_ENV=stub
+# and empty both test pairs: RAZORPAY_KEY_ID=, RAZORPAY_KEY_SECRET=, CASHFREE_APP_ID=, CASHFREE_SECRET_KEY=
+```
+
+Then `make edge-preflight …` (the test-mode warning is gone) and the same `docker compose … up -d payment
+payment-worker`. To go live afterwards follow the previous section's step 4 with **live** keys and
+`PAYMENT_ALLOW_LIVE_KEYS=true`; the two flags are never on together.
+
+**What test mode leaves behind.** Invoices paid in test mode are marked paid (their subscriptions
+activated) with test money. `test_mode` describes the provider's credentials **now**, not when a charge
+was made, and no row records it, so **note the moment you turn test mode off**: every checkout charge
+created before it on this box was test money. Let open test checkouts resolve first (a day,
+`CHECKOUT_TTL_SECONDS`): once the wire is the stub, or on live keys, the platform can no longer ask about a
+test-mode Order (it answers "could not be asked" and expires nothing), exactly as the previous section's
+rollback describes.
+
+```sql
+-- the checkouts this box took before test mode was turned off (replace the instant)
+SELECT provider, state, failure_reason, count(*)
+FROM payment.charges
+WHERE flow = 'checkout' AND created_at < '2026-10-06T00:00:00Z'
+GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+```
+
+### Merchant connect: Cashfree for tenant online payments
+
+The merchant-connect release (design: `docs/superpowers/specs/2026-10-06-merchant-cashfree-design.md`;
+decision: [ADR-0033](../../docs/adr/0033-merchant-connect-collections-seam.md)) lets an organization
+connect **either** its own Razorpay **or** its own Cashfree account in Operations → Payment settings,
+and take an order's online payment through that provider's hosted checkout, opened by staff inside
+Operations (there is no payment link and no storefront checkout in this release). Money goes to the
+merchant's own account; the platform never holds it. **Nothing here can move real money until the
+owner turns it on**: a merchant's Cashfree runs on the in-process stub until `COLLECTIONS_CASHFREE_WIRE`
+says `live`, and a Production account needs `COLLECTIONS_ALLOW_LIVE_KEYS=true` as well.
+
+**What migrates.** Two revisions (payment), part of the ordinary `migrate` step.
+`d9e0f1a2b3c4` follows the payments Phase A head `c7d8e9f0a1b2`: on `payment.merchant_accounts` it
+replaces the two-secret CHECK (a Cashfree account holds one secret: its Secret Key also signs webhooks)
+with `key_secret_present_iff_active`, `razorpay_active_has_webhook_secret`,
+`cashfree_has_no_webhook_secret` and `provider in ('razorpay','cashfree')`, and adds `verified_at` and
+`last_error_code` (nullable). Every existing row satisfies all four CHECKs; no backfill, no append-only
+table touched. The downgrade **refuses** while any Cashfree account exists. `e2f3a4b5c6d7` follows it:
+`payment.charges.order_wire` (nullable, `stub` | `live`, CHECK-ed; NULL on every existing row) records
+which wire made a collection's provider Order, so a stub test checkout never holds up a disconnect or
+gets asked about at the real provider. If payments Phase A received a review fix with its own revision,
+confirm `alembic heads` shows **one** head and re-point `d9e0f1a2b3c4`'s `down_revision`.
+
+**Deploy order** (staged by the owner; merging deploys nothing): migrate payment, then `payment`, then
+`app-gateway` (the neutral webhook path `/api/v1/webhooks/collections` must be public — POST only,
+256 KiB cap — before any merchant registers it; the original `/api/v1/webhooks/razorpay/collections`
+stays as an alias), then `operations`, then the Operations app (`make edge-web APP=operations`) and the
+edge routes. `payment` and `operations` ship together: operations relays the provider-shaped checkout
+session and sends a customer phone only when payment asks for one.
+
+**The switches** (`.env`, owner decisions, both default to the safe side):
+
+| Variable | Meaning |
+|---|---|
+| `COLLECTIONS_CASHFREE_WIRE` | `stub` (default): a merchant's Cashfree account runs on the fake; a checkout cannot be paid for real (the UI says so). `live`: calls `sandbox.cashfree.com` or `api.cashfree.com`, as the merchant chose when connecting, with that merchant's own keys. **Sandbox first.** |
+| `COLLECTIONS_ALLOW_LIVE_KEYS` | Also covers Cashfree **Production** (and, as before, `rzp_live_…`). |
+
+`COLLECTIONS_WIRE=razorpay` keeps meaning exactly what it meant (Razorpay live); it says nothing about
+Cashfree. No prod config change without the owner's approval.
+
+**Verify after the deploy, changing nothing.** From `infrastructure/edge/`:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T payment alembic current
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT provider, status, count(*) FROM payment.merchant_accounts GROUP BY 1, 2 ORDER BY 1, 2;"
+curl -s -o /dev/null -w '%{http_code}\n' -X POST 'https://app.opsgrids.com/api/v1/webhooks/collections?account=00000000-0000-0000-0000-000000000000' -d '{}'
+```
+
+`alembic current` prints `e2f3a4b5c6d7 (head)`; the counts are what they were before (Razorpay rows
+only); the `curl` prints **400** (reached payment, refused the unsigned body) — a **401** means the
+gateway does not know the path (the policy, `routes.prod.json` and the image disagree: stop).
+
+**What a merchant does in their own Cashfree dashboard** (owner: send this to a merchant who asks):
+
+1. Sign in to Operations with an authenticator code — connecting, replacing, checking and
+   disconnecting a payment account all need a session that gave a one-time code (a password-only
+   or SSO session is refused with a sentence saying so). The role needs
+   `operations.payments.merchant_account.write`.
+2. Payment settings → choose **Cashfree** → Connect: the **App ID** and **Secret Key** from Cashfree →
+   Developers → API Keys, for the environment chosen (**Sandbox** or **Production**; an App ID does not
+   say which, so the merchant picks — mismatched-looking keys are refused). There is no webhook secret.
+3. **Check connection**. "Verified" means Cashfree accepted the keys; "Check failed" with
+   `credentials_rejected` almost always means Sandbox keys with Production chosen, or the reverse.
+   While the platform still runs Cashfree on the stub (`COLLECTIONS_CASHFREE_WIRE=stub`) there is
+   nobody to ask: the button is disabled, the server refuses the check (409
+   `verification-unavailable`, nothing recorded) and the account stays "Not checked". **After the owner
+   turns the wire on, every merchant presses Check connection** — nothing was checked before then.
+4. Cashfree → Developers → Webhooks → add the **Webhook URL** shown on the page (copy button) as a
+   Payment Gateway endpoint, **webhook version 2025-01-01 or later**, subscribed to
+   `PAYMENT_SUCCESS_WEBHOOK`, `PAYMENT_FAILED_WEBHOOK`, `PAYMENT_USER_DROPPED_WEBHOOK`,
+   `REFUND_STATUS_WEBHOOK`. On a public HTTPS box every Cashfree Order also names that URL as its
+   `notify_url`; the dashboard endpoint is the belt to those braces. "Last webhook received" on the
+   page shows whether deliveries arrive. A missing webhook is slower for payments — staff's status
+   checks and the post-checkout poll still settle them — but **a refund's outcome arrives only by
+   webhook**, and a pending refund holds up a disconnect until it does. The dashboard endpoint receives
+   every Order on the Cashfree account, the merchant's own website's included: those are recorded as
+   ignored, and of their `order_tags` only the platform's own ids are ever kept.
+5. **Production only:** Cashfree → Developers → Whitelisting → add `ops.opsgrids.com`, or Cashfree
+   refuses to open its checkout there. Cashfree's own KYC must be complete for Production.
+6. Every order collected with Cashfree needs the **customer's phone** on the order (10 digits, or `+`
+   and the country code). An order without one is refused with "add the customer's phone" — the
+   platform never invents one, and the phone goes to Cashfree server to server and is not stored,
+   logged or audited by payment.
+
+**Switching provider** is: Disconnect, Connect the other provider, register the **new** webhook URL
+there. Disconnect is refused (409 `disconnect-blocked`, saying what is outstanding) while the provider
+may still move money for the account: an open online payment (cancel it from its order); a cancelled or
+expired one whose provider Order can still be paid (a Cashfree Order until its own expiry — up to a day
+after it was opened — and any provider for 20 minutes after the cancel, for a UPI request approved
+late); a refund still pending at the provider. Waiting clears all of these. "Disconnect anyway" (`force`)
+goes ahead regardless; the audit row `payment.merchant_account.removed` then records what was
+outstanding (`after.forced`), and each of those is settled in the old provider's own dashboard — an
+order paid after it stays unpaid here, a refund that fails stays refunded here. A refund of a payment
+taken through the old account is made in that provider's own dashboard. A checkout opened while the
+wire was still the stub never holds anything up once cancelled, and is never reopened once the wire is
+live (409 "cancel it and start a new one").
+
+**Rollback.** Set `COLLECTIONS_CASHFREE_WIRE=stub` (no data changes; checkouts become not-payable, with
+the UI saying so; webhooks still verify). A checkout opened while the wire was live is not reopened on
+the stub: it answers 503 "try again" until the wire is back, because the stub must never stand in for an
+Order a customer may have paid (the recorded-Order rule, ADR-0032). **Do not roll the `payment` image back once a Cashfree row
+exists** — the previous code would build a Razorpay adapter from Cashfree keys — and the migration's
+downgrade refuses while one exists.
+
+**What only a live sandbox settles** (owner-run, with the owner's chosen sandbox credentials; never
+from CI): the real signature timestamp format and a dashboard "Test" delivery; the delivery-id header
+name (`x-idempotency-header`, read as `x-idempotency-key` too); whether `notify_url` is delivered with
+no dashboard endpoint and keeps its `?account=` query; the probe's `404` vs `401` (`GET /pg/orders/<random>`);
+whether Get Order returns `payment_session_id` on reopen (if not, a reopened checkout answers 409
+"cancel it and start a new one"); `refund_id` charset and refund statuses; `x-api-version` 2025-01-01
+acceptance; fee-bearing amounts; `POST /pg/simulate` for SUCCESS / FAILED / PENDING / USER_DROPPED; the
+`_modal` checkout and domain whitelisting; a `+`-prefixed international phone.
+
+**Log lines to watch** (`docker compose … logs payment`): `payment.merchant_account.verification`
+(`connection_state`, `error_code`), `payment.merchant_account.removed_with_outstanding` (a forced
+disconnect, with its counts: someone now owes those payments and refunds a look in the provider's
+dashboard), `payment.collection.stub_order_unknown` (a stub Order the stub no longer remembers, treated
+as unpaid — expected on the stub wire after a restart), `payment.collection.webhook_bad_signature` (a burst for one
+`account_id` is someone probing it, or a merchant who re-keyed without updating the platform),
+`payment.collections_webhook` (`ignored_reason`, `duplicate`), `payment.collection.checkout`
+(`provider`, `reopened`), `payment.collection.provider_refused` (the provider's stable code only).
 
 ### The billing run: first deploy, watching it, and what to do when it complains
 
@@ -829,6 +1657,420 @@ in force for that date; insert the rate (a new row, never an edit) or unset the 
 **Tax.** `BILLING_TAX_CODE` / `BILLING_TAX_JURISDICTION` in `.env` choose the `tax_rates` row;
 empty (the default) writes no tax line. Insert the rate row **before** setting the code.
 
+### Staff plan switching (ADR-0029): the billing run must be on, and what to check first
+
+The console's **Change plan** control (`/api/v1/admin/organizations/{id}/plan-options`,
+`.../subscriptions/{product_key}/plan-change:preview` and `.../plan-change`; owner and billing_ops) lets
+staff move a subscription to another plan. A **trial** switches immediately. A **paying** subscription
+switches at its **next billing period**, and an **equal-price** change applies at once — staff cannot force
+"now, prorated"; for goodwill sooner, use *Grant credit*. An equal-price change that applies now on a paying,
+usage-priced subscription is not free: the usage metered so far is closed at the current plan's usage rates
+and invoiced by the billing run (the confirm says so when it happens).
+
+Only versions catalog **offers the organization now** can be chosen: a version superseded by a newer one,
+withdrawn on the Plans page (ADR-0030), or of a retired plan, is refused **422 `not_offerable`** even if an
+operator's open dialog still lists it (the dialog then reloads the list). Withdrawing a scheduled change back to
+the current pin is always allowed, even when that pin's version has since been withdrawn. If
+catalog cannot be reached the confirm answers **503 `catalog_unavailable`** and nothing is claimed or changed.
+
+**"Next billing period" only happens while the billing run is running.** The change is stored as a
+pending change and applied when the run claims the next period. So, before the first staff switch on the
+box, confirm from the section above that:
+
+```bash
+# Expect `True`, then the cutover instant, then `None`. `BILLING_RUN_ENABLED` defaults to false.
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T subscription-worker \
+  python -c 'from app.config import settings; s = settings(); print(s.billing_run_enabled, s.billing_run_not_before, s.billing_run_not_before_invalid)'
+```
+
+* `BILLING_RUN_ENABLED=true` and a valid `BILLING_RUN_NOT_BEFORE`. With the run **off**, a scheduled change
+  waits indefinitely, and a change on any subscription whose period is already due is refused with
+  **409 `billing_catching_up`** — which is indefinite then, not "try again shortly".
+* `/health/billing-run` is not climbing (`overdue`, `failing_permanent`). A permanently failing claim also
+  freezes that subscription's plan changes until a person fixes the claim.
+
+Deploy order: **catalog and subscription first, then console** (it runs the migration for
+`console.idempotency_keys`) **and the `opsgrids-internal` frontend**. The admin-gateway is not recreated.
+Rollback is the console and frontend images; the other changes are additive and written rows stay.
+
+What to read when an operator reports a problem:
+
+```sql
+-- console: the claim and its outcome for one staff action (the Idempotency-Key the operator's browser sent)
+SELECT key, status, response, created_at, updated_at FROM console.idempotency_keys
+WHERE organization_id = :org ORDER BY created_at DESC LIMIT 20;
+-- console: every attempt leaves an intent row, then exactly one outcome row
+SELECT at, action, reason, acting_as, after FROM console.audit_logs
+WHERE organization_id = :org AND action LIKE 'subscription.plan_change%' ORDER BY at DESC;
+-- subscription: the scheduled change itself, and its operator
+SELECT id, state, plan_version_id, pending_plan_version_id, pending_change
+FROM subscription.subscriptions WHERE organization_id = :org;
+```
+
+A claim stuck `in_progress` is a request that died mid-call: after 60 seconds a retry with the same key
+reconciles it from a live read. `unknown` means the answer was lost; the operator sees **503
+`outcome_unknown`**, and repeating the same request is safe. A failed **preview** is never `outcome_unknown`
+(it is a read): it answers **503 `preview_unavailable`**, nothing was changed. The operator's reason is on the
+audit rows above (console's, and subscription's `audit_logs.reason`) and **not** on the
+`commerce.subscription.*` event — a customer org's own notification templates render that payload. A
+scheduled change emits **no event**, so the
+account list does not show it — the Change plan card (the live pricing read) does. Product access follows a
+change that has taken effect within about **15 minutes**.
+
+### Customer plan change on the dashboard (ADR-0034)
+
+`app.opsgrids.com/subscriptions` reads `GET /api/v1/subscriptions/plan-summaries` (each row's plan and
+any scheduled change) and, in **Change plan**, `.../{id}/plan-options` and
+`POST .../{id}/change-plan/preview` before the customer confirms. The customer's own rule is unchanged: a
+trial moves now and free, a paid **upgrade** moves now with a prorated invoice raised by the billing run, a
+paid **downgrade** waits for the period end (no credit), an equal price moves now. The customer write now
+refuses a version catalog no longer offers (**422 `not_offerable`**) and a stale confirm (**409
+`state_changed`**, including one that crosses a billing-run roll or claim). While a change **staff
+scheduled** (Set price, the staff plan switch) waits, every customer change answers **422
+`scheduled_by_opsgrids`** and the dashboard tells them to contact OpsGrids — change or withdraw it from
+console. Cancelling clears a waiting change (audit `commerce.subscription.scheduled_change_cancelled`).
+Prices shown are only the organization's own negotiated price, to someone who may read its invoices —
+never a list price.
+
+Deploy order: **catalog before subscription** (catalog must admit `subscription` on
+`/internal/v1/organizations/{id}/offerable-versions`), then the dashboard. If subscription goes first, every
+customer change-plan and the plan reads answer **503 `catalog_unavailable`** and change nothing, and the
+table shows no plan line; check catalog's logs for 401s from caller `subscription`. No migration; no gateway
+route change (the paths sit under `/api/v1/subscriptions`).
+
+### List prices 2026-10-06 (ADR-0035): the pricing change, and who pays what
+
+**The pricing change of 2026-10-06.** Every product together now lists at **INR 30,000 a month or
+INR 3,00,000 a year** — the owner's two numbers; the year is deliberately the cheaper option, ten
+months' price for twelve — split across the eleven products by their old prices: Revenue, People and
+IT INR 3,000 / 30,000; Finance and Inventory INR 3,750 / 37,500; Engage, Marketing, Projects,
+PulseBoard, Storefront and Support INR 2,250 / 22,500 (month / year; table in
+`docs/superpowers/specs/2026-10-06-list-prices-design.md`). **Existing subscriptions keep the price
+they are pinned to until staff switch them** — nothing re-pins anyone, and a trial already running
+converts at the price it started on.
+
+**What migrates.** One catalog revision, `b88a833020dc` (follows `b7e4d2a9c613`), in the ordinary
+`migrate` step: for each of the eleven public flat plans it inserts a published yearly version and
+then a published monthly one (22 rows plus their prices). Inserts only, instantaneous, no new `.env`
+key, no route change. It checks every plan first and **aborts the whole migration** (and so the
+deploy step; nothing is applied) when:
+
+* a plan's current public version is not exactly one flat INR price (`... is not one flat INR
+  price`) or has a paid seat class (`... has paid seat classes`). The only two ways past it, both the
+  owner's call: publish a version of that plan that is exactly one flat INR price with free seats on
+  the Plans page (the migration then stacks on it), or withdraw that plan's public versions so it is
+  skipped;
+* a plan has an **open public draft** (`nothing applied — open public draft(s) on crm/revenue v2`).
+  The new versions would be numbered above it, and a draft published below them never sells. Delete
+  each named draft on the Plans page (or publish it first, knowing this release supersedes it at
+  once), then re-run. A bespoke draft does not block.
+
+It **warns** (stderr, `WARNI [root] list prices 2026-10-06: ...`) and carries on for a retired plan, a
+plan whose public versions were all withdrawn, or a missing plan (each skipped), and for a source
+selling at another amount than the split was computed from (applied anyway — stop and ask the owner
+whether the table still holds). The pre-deploy check below finds all of these before the deploy does.
+
+**Before deploying, read-only.** On the box, from `infrastructure/edge/`:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT p.product_key || '/' || p.code, p.state,
+  (SELECT string_agg(pr.kind || ':' || pr.currency || ':' || coalesce(pr.amount_minor::text, '-'), ',')
+     FROM catalog.prices pr WHERE pr.plan_version_id = cur.id) AS prices,
+  (SELECT count(*) FROM catalog.seat_classes sc
+     WHERE sc.plan_version_id = cur.id AND sc.price_id IS NOT NULL) AS paid_seats,
+  (SELECT string_agg('v' || d.version_no, ',' ORDER BY d.version_no) FROM catalog.plan_versions d
+     WHERE d.plan_id = p.id AND d.state = 'draft' AND d.restricted_to_org_id IS NULL) AS public_drafts
+FROM catalog.plans p
+LEFT JOIN LATERAL (
+  SELECT v.id FROM catalog.plan_versions v
+  WHERE v.plan_id = p.id AND v.state = 'published' AND v.restricted_to_org_id IS NULL
+  ORDER BY v.version_no DESC LIMIT 1) cur ON true
+WHERE (p.product_key, p.code) IN (('crm','revenue'),('hrms','people'),('itsm','it'),
+    ('finance','finance'),('operations','inventory'),('engage','engage'),('marketing','marketing'),
+    ('projects','projects'),('pulseboard','pulseboard'),('storefront','storefront'),('support','support'))
+ORDER BY 1;
+SELECT 'live yearly subscriptions', count(*) FROM subscription.subscriptions
+ WHERE billing_interval = 'year' AND state <> 'cancelled';"
+```
+
+Go ahead only when it prints all eleven plans, each `active`, with exactly `flat:INR:199900` (crm,
+hrms, itsm), `flat:INR:249900` (finance, operations) or `flat:INR:149900` (the other six), `0` paid
+seats and nothing in the last column — e.g. `crm/revenue|active|flat:INR:199900|0|`. Any other line is
+the abort or warning above, found early. The last line should be `live yearly subscriptions|0`: a
+yearly subscription console already folded keeps showing its full yearly price as monthly revenue
+until its next transition (console now counts a twelfth; nothing re-folds an old snapshot), so if it
+is not 0, note those organizations' MRR as overstated until then.
+
+**Deploy order: catalog's migration last.** Subscription (the customer subscribe write now refuses a
+superseded version, `422 not_offerable`), console (MRR counts a yearly price as a twelfth) and the
+dashboard (a trial starts on the newest public monthly version) must be running before the new
+versions exist — in one release that is simply the normal deploy; if staged, catalog goes last. A
+dashboard tab opened before the deploy still posts the old version: the server refuses it (`Couldn't
+start ...: that plan version is no longer on offer ...`) and a reload fixes it. Old catalog code
+reads the new rows fine.
+
+**No event is emitted** for the 22 versions (like every seeded plan), so a notification automation
+rule on `catalog.plan_version.published`, if one exists, does not fire: announce the price change by
+hand.
+
+**Verify, changing nothing.** On the box, from `infrastructure/edge/`:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T catalog alembic current
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+SELECT billing_interval, count(*), sum(amount_minor) FROM (
+  SELECT DISTINCT ON (p.id, v.billing_interval) v.billing_interval, pr.amount_minor
+  FROM catalog.plans p
+  JOIN catalog.plan_versions v ON v.plan_id = p.id
+  JOIN catalog.prices pr ON pr.plan_version_id = v.id AND pr.kind = 'flat'
+  WHERE v.state = 'published' AND v.restricted_to_org_id IS NULL
+    AND (p.product_key, p.code) IN (('crm','revenue'),('hrms','people'),('itsm','it'),
+        ('finance','finance'),('operations','inventory'),('engage','engage'),('marketing','marketing'),
+        ('projects','projects'),('pulseboard','pulseboard'),('storefront','storefront'),('support','support'))
+  ORDER BY p.id, v.billing_interval, v.version_no DESC) newest
+GROUP BY billing_interval ORDER BY 1;"
+```
+
+`alembic current` must print `b88a833020dc (head)`; the query must print exactly `month|11|3000000`
+and `year|11|30000000` (paise). Fewer than 11 means a plan was skipped — read the migrate output
+(`WARNI [root] list prices 2026-10-06: ... skipped`). Then in the console, a customer's **Change plan**
+lists the new monthly price and the yearly one blocked ("cadence"); **Add product** offers both.
+
+**A skipped plan is not retried by itself**: alembic records the revision as applied. Once the plan is
+active again with a published public version, and **only while `b88a833020dc` is still catalog's
+head**, re-run it — it adds only the versions that are missing:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T catalog alembic stamp b7e4d2a9c613
+docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T catalog alembic upgrade head
+```
+
+After a later catalog revision has landed, stamping back would re-run that one too: publish the
+plan's two versions by hand on the Plans page instead, at the table's amounts.
+
+**Moving a customer to the new price** is the staff **Change plan** to the new monthly version
+(ADR-0029: a trial switches now and free; a paying subscription switches at its next period). **A
+monthly subscription cannot be moved to yearly** — every write refuses `cadence`. **Never advise a
+customer to cancel to get there**: a cancelled subscription cannot be replaced (`already_subscribed`),
+so they would lose the product. A new product can be added on yearly with **Add product**.
+
+**The old prices.** The old versions stay published (existing subscribers are pinned to them), and
+nothing new can start on them: no screen offers them and the customer subscribe write refuses them
+(`not_offerable`). Withdrawing them on the Plans page is not needed.
+
+**Rollback.** Roll the images back and **leave the migration**: older catalog code reads the new rows
+(the old dashboard would then start new trials on the old price again — the old subscription code
+accepts it). The downgrade **refuses** while the new versions exist;
+`OPSGRIDS_ALLOW_LIST_PRICE_DOWNGRADE=1` (this migration's own switch, not the shared destructive one)
+makes it delete them, which breaks everything that names one. Only if every line of this prints `0`
+(read-only):
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -Atc "
+WITH lp AS (
+  SELECT v.id FROM catalog.plan_versions v
+  JOIN catalog.prices pr ON pr.plan_version_id = v.id AND pr.kind = 'flat'
+  WHERE v.restricted_to_org_id IS NULL
+    AND (v.billing_interval, pr.amount_minor) IN (('month',225000),('month',300000),('month',375000),
+        ('year',2250000),('year',3000000),('year',3750000)))
+SELECT 'subscriptions', count(*) FROM subscription.subscriptions
+ WHERE plan_version_id IN (SELECT id FROM lp) OR pending_plan_version_id IN (SELECT id FROM lp)
+UNION ALL
+SELECT 'billing_periods', count(*) FROM subscription.billing_periods
+ WHERE plan_version_id IN (SELECT id FROM lp) OR from_plan_version_id IN (SELECT id FROM lp)
+UNION ALL
+SELECT 'transitions', count(*) FROM subscription.subscription_transitions
+ WHERE from_plan_version_id IN (SELECT id FROM lp) OR to_plan_version_id IN (SELECT id FROM lp)
+UNION ALL
+SELECT 'invoice_lines', count(*) FROM billing.invoice_lines WHERE plan_version_id IN (SELECT id FROM lp);"
+```
+
+A billing period still waiting to be billed against one of these versions would fail on every retry
+once it is gone, and an invoice line naming one could no longer be reconstructed (ADR-0000 §9). So any
+non-zero line — even a past transition or an old invoice — means the versions are part of the record:
+never delete them; rolling the code back is the rollback.
+
+### Staff add product and extend trial (ADR-0031): deploy the consumers first
+
+Two more console controls on the account page, on the same claim table and the same rules as Change plan:
+
+* **Add product** (`GET /api/v1/admin/organizations/{id}/add-product-options`, `POST .../subscriptions`;
+  owner and billing_ops) gives an organization a product it has **no subscription row for in any state** —
+  a cancelled one cannot be re-added yet (409 `already_subscribed`). A **trial by default**. A **paid** start
+  bills at once: subscription claims the first period immediately and **no payment mandate is checked**,
+  so a failed charge opens dunning; the operator must tick that, or the API answers 422
+  `charge_not_acknowledged`. A `one_time` plan (422 `one_time`) and a currency other than the
+  organization's live subscriptions' (422 `org_currency_mismatch`) are refused, and so is a version
+  catalog no longer offers the organization (422 `not_offerable`; a catalogue outage is 503
+  `catalog_unavailable`, which changed nothing).
+* **Extend trial** (`POST .../subscriptions/{product_key}/extend-trial`; **owner only**) moves a trial's end
+  to an absolute instant — the operator picks the last day in **IST**. Refused with 409 `state_changed` if
+  the trial end moved since it was read (which is also why a repeat never adds the time twice), 422
+  `not_trial`, `claim_in_flight` (the billing run is already pricing the conversion), `trial_not_extended`,
+  or `trial_cap`. **The cap is 90 days from the trial's start** (`MAX_TOTAL_TRIAL_DAYS` in
+  `services/subscription/app/domain.py`, an owner-adjustable default; changing it is a code change and a
+  subscription redeploy).
+
+Extend trial emits a **new event, `commerce.subscription.trial_extended`**, which product (the activation's
+trial end) and console (the account's trial end) must consume. **Deploy order:**
+
+1. **product** and **console** — their consumers bind the new routing key. A consumer bound before the
+   producer exists simply receives nothing.
+2. **subscription** — now it can emit `trial_extended`. Deployed before step 1, the event lands in queues
+   not bound to it: product keeps the old trial end and a customer whose old end has passed stays locked
+   out until the next lifecycle event.
+3. the **opsgrids-internal** frontend (and **notification**, whose catalogue now lists the key so a rule
+   can be written for it; nothing fires by default).
+
+No migration (console reuses `console.idempotency_keys`; actions `add_product`, `extend_trial`). The
+admin-gateway is not recreated. Rollback: the console and frontend images; consumers binding an extra key
+are harmless, and written rows stay.
+
+Checks after deploying, before the first staff use:
+
+```bash
+# Every consuming queue carries the new binding (on the box; rabbitmqctl, the broker's own CLI).
+docker compose -f compose.prod.yml --env-file .env exec -T rabbitmq \
+  rabbitmqctl list_bindings source_name destination_name routing_key | grep trial_extended
+# Expect three rows: product.events, console.events and notification.events (notification binds
+# every key in its SUBSCRIBABLE_EVENTS). Only the first two until notification is redeployed in
+# step 3 — and product.events or console.events missing at any point means stop.
+```
+
+```sql
+-- console: the claims and outcomes for one organization's staff actions
+SELECT key, action, status, response, updated_at FROM console.idempotency_keys
+WHERE organization_id = :org ORDER BY created_at DESC LIMIT 20;
+SELECT at, action, reason, acting_as, after FROM console.audit_logs
+WHERE organization_id = :org AND (action LIKE 'subscription.add_product%' OR action LIKE 'subscription.trial_extension%')
+ORDER BY at DESC;
+-- subscription: the extension itself (a trial -> trial transition) and its operator
+SELECT occurred_at, from_state, to_state, reason, actor FROM subscription.subscription_transitions
+WHERE organization_id = :org AND reason = 'trial_extended' ORDER BY occurred_at DESC;
+```
+
+### Stop events and the hand-activation gate (ADR-0037): what changed, and the read-only audit
+
+Two correctness fixes, **no migration, no new key, no event change, no consumer binding**:
+
+* **subscription.** A cancel, an operator suspend or a dunning suspend that finds a pending plan
+  change whose boundary has passed applies it **without staging** its `upgraded`/`downgraded` event
+  (the transition and audit rows are still written; the stop event carries the final pin). Before this,
+  the two events tied on `occurred_at`, and product and console could fold the first and drop the stop,
+  leaving a cancelled subscription's product entitled for good.
+* **product.** `POST /api/v1/products/activations` answers **409 `subscription_managed`** (`errors[0].code`)
+  for a product a subscription has ever fed (live, suspended, cancelled, or dropped from a bundle by a
+  downgrade). `DELETE /api/v1/products/activations/{key}` answers the same while the product's own
+  subscription is serving it. Hand-only and fresh organizations are unaffected (201 as before). A stop
+  that names a member its subscription never fed (a deferred rung-up the stop applied) writes no row for
+  that member, so the owner is not refused a product no subscription ever entitled.
+
+Deploy `product` and `subscription` in either order; product first closes the hand-activation hole
+sooner. Rollback is the images; nothing written depends on the new code.
+
+**What to check afterwards.** A refused hand activation shows in the product log as
+`product.activate.subscription_managed` (organization, product, the source keys). If the owner reports
+the new message for a product they believe they never subscribed to, read that organization's rows:
+
+```sql
+SELECT product_key, source_product_key, status, source_subscription_id, state_occurred_at
+FROM product.activation_sources WHERE organization_id = :org ORDER BY product_key, source_product_key;
+```
+
+Any row with either of the last two columns set is a subscription's. A row with both NULL is a hand
+activation (or an activation from before `a6b1c8d3e9f2` that no event has touched since) and never
+refuses.
+
+**The audit: organizations that already hand-activated after a cancel or a suspend, or whose stop was
+dropped before this fix.** Both leave the same picture: a subscription that is `cancelled` or
+`suspended` beside an activation that is still on. **Read-only. Nothing in this release repairs
+anything, and the owner decides what to do with each row** (a repair is a one-off product-side write
+and a console re-fold, deliberately not shipped).
+
+"Still on" means what the gateway means by it (`Activation.entitles`): `active`, or a `trial` that has
+not lapsed (a lapsed trial keeps `status = 'trial'` and stops entitling by the clock alone), and not
+deactivated. And a product another subscription **still feeds** is on for a good reason: a subscription
+keeps one row per organization and product for ever, so a customer who moved from a standalone CRM to
+a suite leaves a `cancelled` standalone row beside a live suite. Queries 1 and 2 leave those out, so
+what they list is "nothing live from a subscription keeps this on". Run on the box, as the owner:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids \
+  -v ON_ERROR_STOP=1 <<'SQL'
+SET default_transaction_read_only = on;
+
+-- 1. The standalone case: the subscription is cancelled or suspended and its product is still on,
+--    with no other subscription's live source (a suite's, say) keeping it on.
+SELECT s.organization_id, s.product_key, s.state AS subscription_state, s.cancel_at, s.suspended_at,
+       a.status AS activation_status, a.trial_ends_at, a.activated_at, a.state_occurred_at
+FROM subscription.subscriptions s
+JOIN product.activations a
+  ON a.organization_id = s.organization_id AND a.product_key = s.product_key
+WHERE s.state IN ('cancelled', 'suspended')
+  AND a.deactivated_at IS NULL
+  AND (a.status = 'active'
+       OR (a.status = 'trial' AND (a.trial_ends_at IS NULL OR a.trial_ends_at > now())))
+  AND NOT EXISTS (
+    SELECT 1 FROM product.activation_sources live
+    WHERE live.organization_id = a.organization_id AND live.product_key = a.product_key
+      AND (live.status = 'active'
+           OR (live.status = 'trial' AND (live.trial_ends_at IS NULL OR live.trial_ends_at > now())))
+      AND live.source_product_key <> s.product_key
+      AND (live.source_subscription_id IS NOT NULL OR live.state_occurred_at IS NOT NULL))
+ORDER BY s.organization_id, s.product_key;
+
+-- 2. The bundle case: a cancelled or suspended suite whose member is still on, with nothing
+--    subscription-fed (another subscription's live source) keeping it on. A member another live
+--    subscription still feeds is correctly on and is not listed.
+SELECT DISTINCT s.organization_id, s.product_key AS subscription_key, s.state AS subscription_state,
+       a.product_key AS member, a.status AS activation_status, a.trial_ends_at
+FROM subscription.subscriptions s
+JOIN product.activation_sources fed
+  ON fed.organization_id = s.organization_id AND fed.source_product_key = s.product_key
+JOIN product.activations a
+  ON a.organization_id = fed.organization_id AND a.product_key = fed.product_key
+WHERE s.state IN ('cancelled', 'suspended')
+  AND s.product_key <> a.product_key
+  AND a.deactivated_at IS NULL
+  AND (a.status = 'active'
+       OR (a.status = 'trial' AND (a.trial_ends_at IS NULL OR a.trial_ends_at > now())))
+  AND NOT EXISTS (
+    SELECT 1 FROM product.activation_sources live
+    WHERE live.organization_id = a.organization_id AND live.product_key = a.product_key
+      AND (live.status = 'active'
+           OR (live.status = 'trial' AND (live.trial_ends_at IS NULL OR live.trial_ends_at > now())))
+      AND live.source_product_key <> s.product_key
+      AND (live.source_subscription_id IS NOT NULL OR live.state_occurred_at IS NOT NULL))
+ORDER BY s.organization_id, s.product_key, a.product_key;
+
+-- 3. Console's side of defect 1: an organization whose console snapshot still counts a product as
+--    live that subscription says is cancelled or suspended.
+SELECT s.organization_id, s.product_key, s.state AS subscription_state,
+       c.subscription_states -> s.product_key ->> 'state' AS console_state
+FROM subscription.subscriptions s
+JOIN console.org_commercial_state c ON c.organization_id = s.organization_id
+WHERE s.state IN ('cancelled', 'suspended')
+  AND c.subscription_states -> s.product_key ->> 'state' IS DISTINCT FROM s.state
+ORDER BY s.organization_id, s.product_key;
+SQL
+```
+
+A row from 1 or 2 is a candidate, not a verdict: it is either an owner's hand activation or a dropped
+stop, and `a.activated_by` and the `product.audit_logs` rows for the activation
+(`action = 'product.activated'`, with the `manual` cause) say which:
+
+```sql
+SELECT at, action, acting_as, actor_id, after FROM product.audit_logs
+WHERE organization_id = :org AND entity = 'activation' ORDER BY at DESC LIMIT 20;
+```
+
+Each organization the first two list is a row to investigate: product shows the product on, and no
+live subscription's source is what keeps it on. Whether to switch it off, leave it as a gift, or
+re-subscribe the customer is the owner's call per organization; until then the gate stops it spreading.
+The queries are pinned by `services/subscription/tests/test_runbook_audit_queries.py`, which runs this
+section's SQL as written against seeded rows, so edit the two together.
+
 ### Operator MFA: mandatory rollout, the MFA reseal, and the one-off codes
 
 The security review of the operator-MFA slice made a second factor mandatory for every staff
@@ -958,6 +2200,228 @@ owner through `POST /auth/operator/staff/{id}/mfa:reset` (which also wipes the f
 member's MFA lock has no admin endpoint by design — it would need a new permission and a
 cross-service membership check to guard a fifteen-minute wait — so expiry *is* the unlock. The lock
 refuses recovery codes as well as authenticator codes, so there is nothing to do but wait.
+
+### Removing test organisations
+
+The box has collected organisations nobody wants: every end-to-end and smoke run, every demo and
+every half-finished signup left one behind, with its users, subscriptions, invoices and audit trail
+spread over thirty-odd service schemas. There is no in-app way to delete an organisation (a
+tenant's data is append-only and audited by design), so this is the one sanctioned way:
+`tools/purge_test_orgs.py`, **run by the owner, on the box, after a backup** (ADR-0036). It is not
+part of a deploy, is not run by the pipeline and is not run for you: not by a deploy, not by CI,
+not by an agent. The only thing that ever deletes here is a command the owner typed.
+
+**It never chooses for you.** With no ids it only *lists*, with a hint ("LIKELY TEST": a name or
+slug like `e2e-…`, `smoke`, `buyer-…`, `test`, `demo`; every member on a throwaway mail domain;
+or "idle": no active subscription and no captured payment). The hint is printed beside a name and
+is never an input to a deletion. You name the ids; it deletes those and nothing else.
+
+**What goes, for each organisation you name** (one database transaction per organisation, so a
+stop part-way leaves each one whole or untouched): every row in every service schema carrying its
+`organization_id` (found from the catalog when it runs, not from a list, so a service added next
+month is covered), the rows that hang off those by a foreign key, its sessions, its memberships,
+and the organisation row itself. A **user** goes with it only if every membership they had was in
+the organisations you are removing, they are not flagged `is_staff` and you did not name them with
+`--keep-user`; a user who belongs to any organisation that stays is never touched (only the
+membership goes). **What stays**, and is reported rather than hidden: `processed_events` (a
+per-consumer idempotency ledger with no organisation on it), the global catalogue, plan versions
+restricted to a removed organisation (a published plan version is immutable), operator accounts,
+and the rows in `auth.audit_logs` that are filed under the platform's nil organisation but name a
+removed organisation or one of its removed users (operator actions on it, and authentication events
+with no active organisation, which carry the user's id, IP address and user agent). Those last two
+are counted per organisation in `left_in_place` (the audit rows as
+`auth.audit_logs.platform_rows_naming_removed`): they are the platform's own audit trail, not the
+organisation's, and the tool does not delete them. A removed user is gone from every table except
+those.
+The append-only tables (refunds, provider events, invoices' ledgers, audit trails) are emptied for
+the organisation by lifting each one's delete guard **by name, inside that organisation's
+transaction, only on tables where it has rows**, and putting it back before the commit; nothing is
+switched off globally and no superuser is used. It connects as `opsgrids_admin`, the owner of every
+table and the only role that can read an organisation across every schema.
+
+It prints **counts only**: per table, per organisation, and a summary. Never a row, an email, a
+name or a connection string. The listing in step 1 is the one exception: it prints organisation
+names to your own terminal, because you cannot choose by id alone. Each purged organisation also
+leaves one counts-only row in `auth.audit_logs` under the platform's nil organisation, written in
+the same transaction.
+
+**Run it when the box is quiet** (a few minutes; no service needs to be stopped). Lifting a guard
+takes a lock that keeps writers off that table until the organisation's transaction ends, and a
+lock it cannot get in ten seconds fails that organisation cleanly instead of queueing behind
+traffic.
+
+**Let the events drain, before and after.** A consumer folds an event into its projection without
+checking that the organisation still exists (no foreign key crosses a schema, and the consumers
+run inside the API containers), so an event still queued or sitting in an outbox when you delete
+can recreate rows for the removed organisation afterwards: the console's organisation list and
+revenue are where it shows. So right after a smoke or end-to-end run, and again before step 5,
+check that nothing is in flight: `make edge-status` (from your laptop) shows the outbox and
+dead-letter checks green, and this prints nothing when every queue is empty:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T rabbitmq \
+  rabbitmqctl -q list_queues --no-table-headers name messages | awk '$2 > 0'
+```
+
+Step 6 runs the command once more after a few minutes. Do **not** requeue a dead letter that
+names a removed organisation (`tools/dlq.py`) for the same reason.
+
+**Run it on the box, not through a tunnel.** The tool decides whether a database is live from the
+DSN it is given: `ENVIRONMENT` of `production`, `staging` or `uat`, a host that is not a loopback
+name, or no host at all (a unix socket). An `ssh -L` tunnel to the box's Postgres is a loopback
+address, so a laptop shell pointed at one with `ENVIRONMENT=local` would not be asked for
+`--i-know-this-is-the-live-database`; do not do that. Flags are matched in full (a shortened one
+is an error, not a guess), `--confirm-count` may be given once, and every `--keep-file` and
+`--ids-file` you repeat is read.
+
+From `infrastructure/edge/` on the box, define this once per shell. It is the invocation
+`reconcile-permissions` and the put-away purge use, each from a service image, here the `account`
+one; `ENVIRONMENT` there is `production`, which is why `--apply` will ask for
+`--i-know-this-is-the-live-database`:
+
+```bash
+ssh deploy@<ip>
+cd /srv/opsgrids/repo/infrastructure/edge
+mkdir -p ~/purge
+PURGE() {
+  docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T \
+    -e PYTHONPATH=/app -v "$(cd ../.. && pwd)/tools:/opt/tools:ro" -v "$HOME/purge:/opt/purge:ro" \
+    account python /opt/tools/purge_test_orgs.py "$@"
+}
+```
+
+**1. Look.** Read-only; prints every organisation with its id, name, slug, created and last-active
+dates, member count, subscriptions by state, captured payments and the hint:
+
+```bash
+PURGE                       # the table, for you to read
+PURGE --candidates > ~/purge/candidates.txt   # only the LIKELY TEST rows, as a file to edit
+```
+
+**2. Choose.** First write down **your own** organisations, the ones that must never go, in
+`~/purge/keep.txt` (one id per line, `#` comments allowed). A kept id is refused outright and its
+members are never treated as orphans. Then decide what to remove: open `candidates.txt`, **delete
+every line you want to keep**, and save it as `~/purge/ids.txt`, or skip the file and repeat
+`--org-id <uuid>`. The tool also refuses the platform's nil-UUID organisation, refuses to remove
+every organisation, and refuses to remove an organisation whose child organisation would stay (name
+the child as well and it goes first; a loop of parent links is refused).
+
+**3. Back up.** From your laptop, and read its output for `database: …/opsgrids-<stamp>.sql.gz (N
+bytes)` and that it uploaded off the box:
+
+```bash
+make edge-backup HOST=deploy@<ip> CONFIRM=<EDGE_HOST>
+```
+
+The tool cannot see your backup, so `--i-took-a-backup` is an attestation that you did. Note the
+file name; it is what step 6's restore needs. **Optional but worth it:** rehearse the whole thing on
+the restore drill's scratch database first (see "Restore from backup", steps 1 and 2: the database
+is `opsgrids_restore`), by adding
+`-e DATABASE_URL="postgresql+asyncpg://opsgrids_app:${OPSGRIDS_DB_PASSWORD}@postgres:5432/opsgrids_restore"`
+(after `set -a; . ./.env; set +a`) to the `PURGE` function. It proves the backup restores and shows
+the real counts with nothing at stake.
+
+**4. Dry run.** Same command as the delete, without `--apply`. It runs the same statements as
+`SELECT count(*)` in a read-only transaction, so `would_delete` is what `--apply` deletes, table by
+table:
+
+```bash
+PURGE --ids-file /opt/purge/ids.txt --keep-file /opt/purge/keep.txt
+```
+
+Read, in this order: `organisations_remaining` (are your own still there?), each organisation's
+`live_signals` (an organisation with an active subscription or captured payments, or members you do
+not recognise, is not what you meant to remove: stop and look it up by id), its `users` block
+(`deleted` against `kept_shared_with_another_organization` and `kept_protected`), any
+`left_in_place`, and the lines about what lives outside the database. `PURGE --explain` prints every
+table, what selects its rows and the order (children first) if you want to see the plan itself, and
+then the tables it does **not** reach (the global catalogue, the platform's keys and operator
+accounts, tax tables; nothing that has an `organization_id`).
+
+Names in the listing and in `candidates.txt` are whatever the person who signed up typed, so the
+tool prints them with every non-printable character replaced by `?` and cut at 80 characters, and
+refuses an ids file that has one in it. If it refuses your file, open it and look at the line it
+names: someone's organisation name put it there.
+
+**5. Apply.** All of the flags are required, and each one refuses before anything connects if it is
+missing: `--confirm-count N` must equal the number of organisations you named, `--i-took-a-backup`
+says you did step 3, and `--i-know-this-is-the-live-database` says you know this one is live.
+Organisations are processed in id order, except that a sub-organisation always goes before its
+parent when you selected both (the dry run printed them in that order), and it stops at the first
+failure:
+
+```bash
+PURGE --ids-file /opt/purge/ids.txt --keep-file /opt/purge/keep.txt \
+  --apply --confirm-count <N> --i-took-a-backup --i-know-this-is-the-live-database
+```
+
+Exit `0` is done, `1` is a failure part-way (the JSON line names the organisation, the SQLSTATE and
+the table or constraint, never a value; each organisation is wholly deleted or untouched, so read
+the output, fix the cause and run the same command again, it skips what is already gone), `2` is a
+refusal before anything was written. Add `--keep-orphan-users` to remove memberships only and keep
+every account.
+
+**6. Verify.** Wait a few minutes for the queues to drain again (the check in "Let the events
+drain"), then run the **same command again**. Normally it is a no-op: every id is `already-clean`
+and `organisations_deleted` is `0`. If an id now has rows and is `deleted`, a late event recreated
+projection rows for it after the purge (usually in `console`), and this run removed them; that is
+not a tool error. Repeat until it is a no-op. Then:
+
+```bash
+PURGE                                       # what is left; your own organisations are all there
+make edge-status HOST=deploy@<ip> CONFIRM=<EDGE_HOST>   # from your laptop; ops-monitor stays green
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -c \
+  "select at, entity_id, after from auth.audit_logs where action = 'organization.purged' order by at"
+```
+
+Sign in to the dashboard as yourself and open a product; the console's organisation list and MRR
+now exclude what you removed.
+
+**7. Outside the database.** The tool prints, per organisation and from the tables it had rows in,
+what it did not touch, and never touches any of it:
+
+- **Object storage (MinIO).** Uploaded images are keyed `<organization>/<asset>` in the public
+  bucket; the tool prints the prefix (`<S3_PUBLIC_BUCKET>/<org-uuid>/`) when the organisation had
+  assets. The `account` container is not given the bucket's name, so the tool cannot print it: it
+  is `S3_PUBLIC_BUCKET` in `.env`, `opsgrids-public` unless you renamed it, and the `ls` below
+  shows the buckets that exist. Remove the prefix with the root credential `minio-init` already
+  carries, listing first:
+
+  ```bash
+  MC='docker compose -f compose.prod.yml --env-file .env run --rm --no-deps -T --entrypoint mc minio-init'
+  $MC ls  "og/"                               # the bucket names
+  $MC ls  "og/<bucket>/<org-uuid>/"
+  $MC rm --recursive --force "og/<bucket>/<org-uuid>/"
+  ```
+
+  Skip it if no such line was printed: there were no assets. A wrong bucket name removes nothing
+  (the listing comes back empty), and the images stay world-readable.
+- **Payment and messaging providers.** Mandates, orders and a connected merchant account stay in the
+  Razorpay or Cashfree dashboard, and a connected WhatsApp number or email sender stays registered
+  with Meta or the mail provider; revoke them there if they were real. Two things are lost with the
+  rows and need a hand if the thing was real: a WhatsApp number's registration PIN is sealed only in
+  `notification.w1_numbers`, so reset its two-step verification PIN in Meta's dashboard before
+  anyone has to re-register the number; and a mail connection's app password or API key is gone
+  from the database but stays valid at the provider, so revoke it there.
+- **DNS and certificates.** A custom domain an organisation pointed at the box is yours to remove at
+  the registrar; Caddy keeps any certificate it issued until it expires. The same goes for the
+  SPF, DKIM and return-path records of a sending domain it verified
+  (`notification.email_domains`): they stay in your DNS and at the mail provider.
+- **RabbitMQ** has nothing per organisation to remove, but see "Let the events drain": a late event
+  recreates rows, and the re-run in step 6 removes them. **Redis** keys are caches and rate-limit
+  counters on TTLs, except `pv:<organization_id>` (the permission-version counter), which has no
+  TTL and stays: one tiny key per organisation that ever had a grant change, never read again.
+  Remove it with `DEL pv:<org-uuid>` in `redis-cli` if you want it gone. **Web bundles** are not
+  per organisation.
+
+**If it was wrong.** Nothing the tool does can be undone by the tool: **the backup is the undo.**
+Stop writing, restore it as in "Restore from backup", "the real thing" (`gunzip -c <chosen>.sql.gz
+| psql … -d opsgrids`, then `remote.sh migrate` and `remote.sh health`), and accept that anything
+written since the backup is lost, which is why you run this right after one and when the box is
+quiet. A narrower repair is an engineer's hand job: restore into the scratch database
+(`opsgrids_restore`) and copy the one organisation's rows back table by table, parents before
+children (the reverse of the order `--explain` prints), then its users and memberships. The
+`auth.audit_logs` rows above say when each organisation was purged and how many rows it had.
 
 ### Deploying from the pipeline
 
@@ -1178,8 +2642,12 @@ make edge-web-rollback HOST=deploy@<ip> CONFIRM=edge.opsgrids.com
 ```
 
 **A migration** is the one thing rollback does not undo for you. `make edge-rollback` runs
-`alembic upgrade head` at the *older* ref, which is a no-op — it does not downgrade. If the
-schema change is what broke things:
+`remote.sh migrate` at the *older* ref, and it does **not** downgrade. For a service whose
+database is already at a revision the older image does not contain, `migrate` used to stop on
+alembic's "Can't locate revision"; it now **skips that service with a loud `!!! <svc>: SKIPPED`
+warning on stderr** and carries on, leaving the schema exactly as the newer release made it (see
+`infrastructure/edge/lib/migration-revisions.sh`). Read those lines: they are the list of schemas
+now ahead of the code. If the schema change is what broke things:
 
 ```bash
 ssh deploy@<ip>

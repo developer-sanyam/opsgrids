@@ -20,6 +20,7 @@ import {
 } from "@/ui";
 import type { Column, SelectOption } from "@/ui";
 import { ArrowRightIcon, MapPinIcon, PlusIcon, useToast } from "@opsgrids/ui";
+import { DeleteLocationDialog } from "@/forms/DeleteLocationDialog";
 import { LocationFormDialog } from "@/forms/LocationFormDialog";
 
 /** Every location in the warehouse as "Parent location" options for the create dialog — indented
@@ -45,6 +46,7 @@ export function WarehouseLocationsPage() {
   const canWrite = useCan("operations.inventory.location.write", "ORG");
   const [creatingUnderParentId, setCreatingUnderParentId] = useState<string | null | undefined>(undefined);
   const [editing, setEditing] = useState<LocationOut | null>(null);
+  const [deleting, setDeleting] = useState<LocationOut | null>(null);
 
   const warehouseLoader = () => getWarehouseById(id);
   const warehouseState = useAsync(warehouseLoader, [id]);
@@ -116,6 +118,14 @@ export function WarehouseLocationsPage() {
               label: "Print labels",
               onSelect: () => navigate(`/warehouses/${id}/locations/labels?zone=${r.location.id}`),
               hidden: r.location.kind !== "zone",
+            },
+            {
+              label: "Delete",
+              tone: "danger",
+              onSelect: () => setDeleting(r.location),
+              hidden: !canWrite,
+              disabled: r.location.is_default,
+              disabledReason: "A warehouse's default bin holds stock for items with no other place and can't be deleted.",
             },
           ]}
         />
@@ -228,6 +238,18 @@ export function WarehouseLocationsPage() {
           onSaved={(location) => {
             setEditing(null);
             toast.success(`${location.name} saved.`);
+            locationsState.reload();
+          }}
+        />
+      ) : null}
+
+      {deleting ? (
+        <DeleteLocationDialog
+          location={deleting}
+          onClose={() => setDeleting(null)}
+          onDeleted={(location) => {
+            setDeleting(null);
+            toast.success(`${location.name} deleted.`);
             locationsState.reload();
           }}
         />

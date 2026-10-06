@@ -98,3 +98,22 @@ class TestPlaceholderRefusal:
         """The defaults exist so `make run` works; the guard is for real deployments."""
         cfg = _Settings(environment="local")
         assert not cfg.is_production
+
+
+class TestARefusalNeverPrintsWhatItWasGiven:
+    """A refusal is a crash at start-up, printed to stdout and pasted into tickets. pydantic puts
+    the whole settings input into a `ValidationError` unless told not to, and the environment
+    hands it **plain strings**, not `SecretStr`s — so the tail of whatever secret happened to be
+    the last field set would be in that crash. The message names the variable, never a value."""
+
+    def test_the_input_is_not_in_the_error(self) -> None:
+        marker = "LEAKMARKER0123456789abcdef"  # pragma: allowlist secret
+        with pytest.raises(ValueError, match="pii_encryption_key") as raised:
+            # The broker URL, password and all, is the last value given: the tail pydantic used to
+            # print.
+            _production(
+                pii_encryption_key="short", rabbitmq_url=f"amqp://opsgrids:{marker}@broker:5672/"
+            )
+        text = str(raised.value)
+        assert marker not in text
+        assert "input_value" not in text

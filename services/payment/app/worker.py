@@ -1,4 +1,5 @@
-"""The worker process: the charge consumers and the stuck-charge sweep, side by side.
+"""The worker process: the charge consumers, the stuck-charge sweep and the charge poller, side by
+side.
 
 The stuck-charge sweep (`app/cron.py`) is what resumes a charge whose process died between
 calling the provider and recording what it said (D3). The consumers mark their event processed
@@ -21,8 +22,9 @@ from __future__ import annotations
 import asyncio
 
 from app import consumers
+from app.checkout.cron import build_poller
 from app.collections.cron import build_expiry_sweep
-from app.config import settings
+from app.config import announce_test_mode, settings
 from app.cron import build_sweep
 from app.supervise import run_supervised
 from platform_core.db import (
@@ -39,6 +41,8 @@ log = get_logger("payment.worker")
 
 async def main() -> None:
     cfg = settings()
+    # The `split-workers` rollback runs the poller here, so test mode is announced here too.
+    announce_test_mode(cfg)
     engine = init_engine(cfg)
     # Consumers run NOBYPASSRLS: the per-message tenant GUC only means something if row-level
     # security can bind this role (ADR-0002).
@@ -50,15 +54,17 @@ async def main() -> None:
 
     sweep = build_sweep()
     expiry = build_expiry_sweep()
+    poller = build_poller()
     log.info(
         "payment.worker.starting",
         queue="payment.events",
-        sweeps=["stuck_charge", "collection_expiry"],
+        sweeps=["stuck_charge", "collection_expiry", "charge_poller"],
     )
     await run_supervised(
         consumer=consumers.consumer.run(),
         stuck_charge=sweep.run(),
         collection_expiry=expiry.run(),
+        charge_poller=poller.run(),
     )
 
 

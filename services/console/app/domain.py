@@ -23,7 +23,7 @@ import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 # Subscription routing keys this service folds. Bound by the consumer; listed here so the set is
@@ -37,6 +37,10 @@ SUBSCRIPTION_EVENTS: tuple[str, ...] = (
     "commerce.subscription.past_due",
     "commerce.subscription.suspended",
     "commerce.subscription.cancelled",
+    # Staff moved a trial's end later (ADR-0031). Folded like any transition — the snapshot's
+    # trial end moves — and recorded in `revenue_events` under its own kind, so it is never
+    # counted as a trial start (`TRIAL_STARTED_KIND` below, and `selectors.platform_metrics`).
+    "commerce.subscription.trial_extended",
 )
 INVOICE_EVENTS: tuple[str, ...] = (
     "commerce.invoice.finalized",
@@ -112,6 +116,98 @@ def pricing_request_fingerprint(
         sort_keys=True,
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def plan_change_fingerprint(
+    *,
+    organization_id: str,
+    product_key: str,
+    subscription_id: str,
+    plan_version_id: str,
+    expected_state: str,
+    expected_plan_version_id: str,
+    expected_pending_plan_version_id: str | None,
+) -> str:
+    """A stable digest of what a plan-change request *decided*, for the `Idempotency-Key` claim.
+
+    The same key with a different digest is a 409 — never a replay of someone else's answer.
+    Every field that decides what happens is in it: where, to which version, and the state the
+    operator confirmed against. Deliberately **not** in it: `reason` (free text an operator may
+    phrase slightly differently on a retry, which should stay a replay — the same call
+    `pricing_request_fingerprint` makes) and `timing` (`auto` and `next_period` are the same rule,
+    ADR-0029, so they are the same request).
+    """
+    material = json.dumps(
+        {
+            "action": "plan_change",
+            "organization_id": organization_id,
+            "product_key": product_key,
+            "subscription_id": subscription_id,
+            "plan_version_id": plan_version_id,
+            "expected": {
+                "state": expected_state,
+                "plan_version_id": expected_plan_version_id,
+                "pending_plan_version_id": expected_pending_plan_version_id,
+            },
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def add_product_fingerprint(
+    *, organization_id: str, product_key: str, plan_version_id: str, trial: bool
+) -> str:
+    """A stable digest of what an Add product request *decided* (ADR-0031): where, which product,
+    which version, and whether it starts as a trial. Not in it: the reason (rephrasing on a retry
+    is still a replay) and the paid-add acknowledgement (a precondition, not a decision)."""
+    material = json.dumps(
+        {
+            "action": "add_product",
+            "organization_id": organization_id,
+            "product_key": product_key,
+            "plan_version_id": plan_version_id,
+            "trial": trial,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def extend_trial_fingerprint(
+    *,
+    organization_id: str,
+    product_key: str,
+    subscription_id: str,
+    new_trial_ends_at: datetime,
+    expected_trial_ends_at: datetime,
+) -> str:
+    """A stable digest of an Extend trial request (ADR-0031): which subscription, the absolute new
+    end, and the end the operator saw. Instants are normalised to UTC first, so the same moment
+    written in IST and in UTC is the same request. The reason is excluded, as everywhere."""
+    material = json.dumps(
+        {
+            "action": "extend_trial",
+            "organization_id": organization_id,
+            "product_key": product_key,
+            "subscription_id": subscription_id,
+            "new_trial_ends_at": new_trial_ends_at.astimezone(UTC).isoformat(),
+            "expected_trial_ends_at": expected_trial_ends_at.astimezone(UTC).isoformat(),
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def recurring_list_price_minor(prices: Sequence[dict[str, Any]]) -> int:
+    """One period's recurring list price for **display**: flat and per-seat components at quantity
+    one, usage ignored — the same rule subscription uses to classify a change's direction
+    (`services._list_price_minor`), restated here because console cannot import another service's
+    code. It labels a plan in the picker; it never decides direction (subscription's preview does)
+    and never prices anything."""
+    return sum(
+        int(p.get("amount_minor") or 0) for p in prices if p.get("kind") in ("flat", "per_seat")
+    )
 
 
 def _is_stale(entry: dict[str, Any], occurred_at: str | None) -> bool:

@@ -353,7 +353,8 @@ export interface StockMovementOut {
   balance_after: Qty;
   location_id: string;
   status: StockStatus;
-  reference_type: "purchase_order" | null;
+  /** A free vocabulary (`purchase_order`, `bin_transfer`, `putaway`, ...), not a single literal. */
+  reference_type: string | null;
   reference_id: string | null;
   note: string;
   occurred_on: string;
@@ -363,25 +364,65 @@ export interface StockMovementOut {
 
 /* ------------------------------- warehouses ------------------------------ */
 
-/** A stocking location. Reference data behind the warehouse names POs and inventory carry. */
+/**
+ * A stocking location. Reference data behind the warehouse names POs and inventory carry.
+ *
+ * `lat_micro` / `lng_micro` are the *site's* position as integer micro-degrees (degrees x 10^6),
+ * given together or not at all. Optional on the type because the shape is constructed as a literal
+ * in many places; the server always sends both, `null` until a position is set.
+ */
 export interface WarehouseOut {
+  id: string;
+  code: string;
+  name: string;
+  location: string;
+  lat_micro?: number | null;
+  lng_micro?: number | null;
+}
+
+/** `POST /warehouses`. `code` is immutable once created. The two coordinates are paired. */
+export interface WarehouseIn {
+  code: string;
+  name: string;
+  location?: string;
+  lat_micro?: number | null;
+  lng_micro?: number | null;
+}
+
+/** `PATCH /warehouses/{id}`. `code` never appears — it is immutable. The server checks the
+ *  *merged* state of the coordinates; an explicit `null` for both clears the position. */
+export interface WarehousePatch {
+  name?: string;
+  location?: string;
+  lat_micro?: number | null;
+  lng_micro?: number | null;
+}
+
+/** One warehouse with a position on `GET /operations/warehouses/map`. These are *site*
+ *  coordinates (approved for display), never a worker's. */
+export interface WarehouseMapSiteOut {
+  id: string;
+  code: string;
+  name: string;
+  location: string;
+  lat_micro: number;
+  lng_micro: number;
+  floor_count: number;
+  stocked_location_count: number;
+}
+
+/** A warehouse the map cannot place yet — it has no position. */
+export interface WarehouseUnlocatedOut {
   id: string;
   code: string;
   name: string;
   location: string;
 }
 
-/** `POST /warehouses`. `code` is immutable once created. */
-export interface WarehouseIn {
-  code: string;
-  name: string;
-  location?: string;
-}
-
-/** `PATCH /warehouses/{id}`. `code` never appears — it is immutable. */
-export interface WarehousePatch {
-  name?: string;
-  location?: string;
+/** `GET /operations/warehouses/map` — `operations.inventory.warehouse.read`. */
+export interface WarehouseMapOut {
+  sites: WarehouseMapSiteOut[];
+  without_coordinates: WarehouseUnlocatedOut[];
 }
 
 /* -------------------------------- locations -------------------------------- */
@@ -651,15 +692,22 @@ export interface OrderPaymentsOut {
   collect_blocked_reason: string | null;
   online_payments_configured: boolean;
   mode: "test" | "live" | null;
-  /** `stub`: no provider call leaves the platform — a checkout cannot be paid for real. */
+  /** `stub`: no Razorpay call leaves the platform. Kept for older servers; `provider_wire` is
+   *  the connected provider's own. */
   wire: "stub" | "razorpay";
+  /** The connected account's provider, and whether a checkout with it can be paid for real. */
+  provider?: CollectionsProvider | null;
+  provider_wire?: "stub" | "live" | null;
   collections: OrderCollectionOut[];
 }
 
+/** The payment providers a merchant can connect (ADR-0033). */
+export type CollectionsProvider = "razorpay" | "cashfree";
+
 /** What the browser needs to open Razorpay's hosted Checkout — the **public** key id and the
  *  provider Order id. There is no secret here, and there never will be. */
-export interface OrderCheckoutSessionOut {
-  provider: string;
+export interface RazorpayOrderCheckoutSessionOut {
+  provider: "razorpay";
   key_id: string;
   provider_order_id: string;
   amount_minor: number;
@@ -669,6 +717,26 @@ export interface OrderCheckoutSessionOut {
   order_number: string;
   prefill: { name: string; contact: string };
 }
+
+/** What `Cashfree({mode}).checkout({paymentSessionId})` needs. The session id is fetched from
+ *  Cashfree for this one response and is never stored; no key, no customer detail (the phone
+ *  went to Cashfree server to server). */
+export interface CashfreeOrderCheckoutSessionOut {
+  provider: "cashfree";
+  payment_session_id: string;
+  mode: "sandbox" | "production";
+  provider_order_id: string;
+  amount_minor: number;
+  currency: string;
+  openable: boolean;
+  order_number: string;
+  /** Never sent for Cashfree: no key reaches the browser, and the payer is not prefilled here. */
+  key_id?: never;
+  prefill?: never;
+}
+
+/** The browser's handle, by provider. */
+export type OrderCheckoutSessionOut = RazorpayOrderCheckoutSessionOut | CashfreeOrderCheckoutSessionOut;
 
 export interface OrderCheckoutOut {
   collection: OrderCollectionOut;
@@ -680,30 +748,46 @@ export interface OrderRefundIn {
   reason: string;
 }
 
-/** `GET/PUT /payment/collections/merchant-account` — the organization's own Razorpay account. */
+/** `unverified` (never checked, or changed since), `verified`, or `failed` (the provider refused
+ *  the credentials: `last_error_code`). */
+export type ConnectionState = "unverified" | "verified" | "failed";
+
+/** `GET/PUT /payment/collections/merchant-account` — the organization's own payment-provider
+ *  account (Razorpay or Cashfree, ADR-0033). */
 export interface MerchantAccountOut {
   configured: boolean;
   id?: string | null;
-  provider?: string | null;
+  provider?: CollectionsProvider | null;
+  /** A Razorpay key id, or a Cashfree App ID. */
   key_id?: string | null;
+  /** `test` / `live` — for Cashfree, Sandbox / Production. */
   mode?: "test" | "live" | null;
   key_secret_masked?: string | null;
+  /** Razorpay only: a Cashfree account has no webhook secret (its Secret Key signs deliveries). */
   webhook_secret_masked?: string | null;
-  /** Path (with `?account=`) to register as the webhook URL in the Razorpay dashboard. */
+  /** Path (with `?account=`) to register as the webhook URL in the provider's dashboard. */
   webhook_path?: string | null;
+  /** The absolute URL to register, from the platform's own public address. */
+  webhook_url?: string | null;
   webhook_events: string[];
   rotated_at?: string | null;
   created_at?: string | null;
+  connection_state?: ConnectionState | null;
+  verified_at?: string | null;
+  last_error_code?: string | null;
+  /** When a webhook from this account's provider last arrived (since connecting). */
+  last_webhook_at?: string | null;
   live_keys_allowed: boolean;
   wire: "stub" | "razorpay";
+  /** Per provider: whether a merchant's checkout can be paid for real (`live`) or only on the stub. */
+  wires?: Record<CollectionsProvider, "stub" | "live">;
 }
 
-export interface MerchantAccountIn {
-  provider: "razorpay";
-  key_id: string;
-  key_secret: string;
-  webhook_secret: string;
-}
+/** `PUT /payment/collections/merchant-account` — Razorpay's shape or Cashfree's. Needs a session
+ *  that signed in with a one-time code. */
+export type MerchantAccountIn =
+  | { provider: "razorpay"; key_id: string; key_secret: string; webhook_secret: string }
+  | { provider: "cashfree"; key_id: string; key_secret: string; mode: "sandbox" | "production" };
 
 export interface ReconciliationRowOut {
   charge_id: string;
@@ -1117,6 +1201,34 @@ export interface LayoutGeometryOut {
   placements: LocationPlacementOut[];
   walk_nodes: WalkNodeOut[];
   walk_edges: WalkEdgeOut[];
+}
+
+/** One location on a floor's *published* layout (`GET /operations/floors/{floor_id}/published-layout`).
+ *  Millimetres throughout. `z_mm` / `height_mm` are `null` when the layout never set them. */
+export interface PublishedPlacementOut {
+  location_id: string;
+  code: string;
+  name: string;
+  kind: LocationKind;
+  parent_id: string | null;
+  x_mm: number;
+  y_mm: number;
+  z_mm: number | null;
+  width_mm: number;
+  depth_mm: number;
+  height_mm: number | null;
+}
+
+/** `GET /operations/floors/{floor_id}/published-layout` — `operations.warehouse.layout.read`.
+ *  Only ever the published version: `published: false` with no placements when the floor has none.
+ *  A draft never appears here. */
+export interface PublishedLayoutOut {
+  floor_id: string;
+  warehouse_id: string;
+  floor_name: string;
+  published: boolean;
+  layout_version_id: string | null;
+  placements: PublishedPlacementOut[];
 }
 
 /** One problem `POST /layout-versions/{id}/validate` (or a refused publish) found. */

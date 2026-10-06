@@ -37,6 +37,7 @@ export type { ComboboxCopy, ComboboxOption } from "./components/Combobox";
 export { CommandMenu } from "./components/CommandMenu";
 export type { CommandMenuItem } from "./components/CommandMenu";
 export { ConfirmDialog } from "./components/ConfirmDialog";
+export { CopyField } from "./components/CopyField";
 export { DataTable } from "./components/DataTable";
 export type { Column, TableSelection } from "./components/DataTable";
 export { DateRangeField } from "./components/DateRangeField";

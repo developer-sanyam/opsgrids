@@ -24,7 +24,10 @@ from httpx import AsyncClient
 from app.config import settings
 from app.main import app
 from app.providers.base import PaymentSnapshot
+from app.providers.cashfree_collections import CashfreeCollectionsProvider
+from app.providers.cashfree_fake import CashfreeFakeWire
 from app.providers.razorpay import RazorpayProvider
+from app.providers.razorpay_collections import RazorpayCollectionsProvider
 from platform_core.auth import Principal, get_principal
 from platform_core.internal_auth import mint_service_token
 
@@ -48,20 +51,45 @@ class MerchantProviders:
     key id (so what a test records at "the provider" is still there on the next call), built with
     whatever webhook secret the service opened — so a signature check really is against the
     merchant's own sealed secret. Records every key secret it was handed, to prove the sealed key
-    round-trips and never leaks anywhere else."""
+    round-trips and never leaks anywhere else.
+
+    A Cashfree account (ADR-0033) gets the real `CashfreeCollectionsProvider` over one stateful
+    `CashfreeFakeWire` per App ID (`cashfree_wires`), the wire `COLLECTIONS_CASHFREE_WIRE=stub` runs
+    on: what a test makes "the customer" do there (`wire.pay(...)`) is what a status check finds."""
 
     adapters: dict[tuple[str, str], RazorpayProvider] = field(default_factory=dict)
     key_secrets_seen: list[str] = field(default_factory=list)
+    cashfree_wires: dict[str, CashfreeFakeWire] = field(default_factory=dict)
+    #: `(provider, mode)` of every adapter built, in order.
+    built: list[tuple[str, str]] = field(default_factory=list)
+    #: Build Cashfree adapters as the live wire would (`is_live`), still over the fake: their
+    #: Orders are recorded as made live (`order_wire = live`), i.e. ones a customer could pay.
+    cashfree_live: bool = False
 
-    def __call__(self, key_id: str, key_secret: str, webhook_secret: str) -> RazorpayProvider:
+    def __call__(
+        self,
+        key_id: str,
+        key_secret: str,
+        webhook_secret: str,
+        *,
+        provider: str = "razorpay",
+        mode: str = "test",
+    ) -> Any:
         if key_secret:
             self.key_secrets_seen.append(key_secret)
+        self.built.append((provider, mode))
+        if provider == "cashfree":
+            wire = self.cashfree_wires.setdefault(key_id, CashfreeFakeWire())
+            live = "production" if mode == "live" else "sandbox"
+            return CashfreeCollectionsProvider(
+                wire=wire, secret_key=key_secret, mode=live if self.cashfree_live else "stub"
+            )
         adapter = self.adapters.get((key_id, webhook_secret))
         if adapter is None:
             # Share the stub's account state across adapters for one key id — the same Razorpay
             # account, whatever secret this call was built with.
             existing = next((a for (k, _), a in self.adapters.items() if k == key_id), None)
-            adapter = RazorpayProvider(
+            adapter = RazorpayCollectionsProvider(
                 key_id=key_id, key_secret=key_secret or None, webhook_secret=webhook_secret
             )
             if existing is not None:
@@ -103,14 +131,22 @@ class MerchantProviders:
 
 
 def principal_for(
-    org_id: uuid.UUID, perms: list[str], *, entitlements: list[str] | None = None
+    org_id: uuid.UUID,
+    perms: list[str],
+    *,
+    entitlements: list[str] | None = None,
+    amr: list[str] | None = None,
 ) -> Principal:
+    """A tenant admin. Signed in with a one-time code (`amr=["otp"]`) unless a test says
+    otherwise: connecting, rotating, verifying and disconnecting need it (ADR-0033); a test of that
+    rule passes `amr=["pwd"]`."""
     return Principal(
         sub=uuid.uuid4(),
         organization_id=org_id,
         membership_id=uuid.uuid4(),
         perms=perms,
         entitlements=entitlements if entitlements is not None else ["operations"],
+        amr=amr if amr is not None else ["pwd", "otp"],
     )
 
 

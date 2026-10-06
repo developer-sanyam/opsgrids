@@ -2,16 +2,17 @@
 
 This module is the OpenAPI surface: a change here is a change to the published contract. Two
 internal surfaces meet payment — the service-to-service charge create (billing calls it after
-finalize) and the provider webhook (Razorpay calls it, signature-guarded). There is deliberately
-**no customer surface**: a person never creates a charge directly, so no `/api/v1/payment/*`
-write exists.
+finalize) and the provider webhooks (signature-guarded, private). The one **customer surface** is
+the platform checkout (ADR-0032): a person who may activate products opens, reads and confirms the
+checkout for one invoice. A person still never creates a charge directly: the amount is always the
+invoice's own charge's, never a request field.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -19,6 +20,14 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 class ServiceInfo(BaseModel):
     service: str
     schema_name: str
+    #: The provider new platform charges and checkouts go to (`PAYMENT_PROVIDER`).
+    provider: str
+    #: What that provider runs on: `stub` (no provider is called), `test` (test / sandbox
+    #: credentials: test cards pay, no real money moves) or `live`.
+    mode: Literal["stub", "test", "live"]
+    #: Whether this deployment lets test credentials run although it says `production`
+    #: (`PAYMENT_ALLOW_TEST_KEYS`, a staging box only).
+    test_keys_allowed: bool
 
 
 # --------------------------------------------------------------------- charge create (internal)
@@ -73,6 +82,10 @@ class UsableMandateOut(BaseModel):
     amount_minor: int
     usable: bool
     mandate_id: uuid.UUID | None = None
+    #: The provider the mandate is held at, and the provider the question was asked of (the
+    #: configured default for new charges). Additive (ADR-0032): a mandate at another provider does
+    #: not count, because a Razorpay token cannot be debited through Cashfree.
+    provider: str | None = None
 
 
 # --------------------------------------------------------------------- webhook (provider)
@@ -126,37 +139,71 @@ COLLECTION_WEBHOOK_EVENTS = (
 
 
 class MerchantAccountIn(BaseModel):
-    """`PUT /payment/collections/merchant-account` — connect the organization's Razorpay account,
-    or rotate its credentials in place. The key id is public (the browser gets it); the key secret
-    and webhook secret are sealed on arrival and never returned — only a masked hint of each."""
+    """`PUT /payment/collections/merchant-account` — connect the organization's payment-provider
+    account, or rotate its credentials in place (same provider and mode only: switching is
+    disconnect, then connect). Needs a session that signed in with a one-time code.
+
+    * **Razorpay**: `key_id` (`rzp_test_…` / `rzp_live_…`, public — Checkout is opened with it; the
+      mode is read from it, so `mode` is not sent), `key_secret`, `webhook_secret` (the one set on
+      the webhook in Razorpay's dashboard).
+    * **Cashfree**: `key_id` is the App ID, `key_secret` the Secret Key (it also signs webhooks, so
+      there is no `webhook_secret`), and `mode` is `sandbox` or `production` — an App ID does not
+      say which.
+
+    Secrets are sealed on arrival and never returned — only a masked hint of each."""
 
     model_config = ConfigDict(extra="forbid")
 
-    provider: Literal["razorpay"] = "razorpay"
+    provider: Literal["razorpay", "cashfree"] = "razorpay"
     key_id: str = Field(min_length=1, max_length=64)
     key_secret: SecretStr = Field(min_length=8, max_length=128)
-    webhook_secret: SecretStr = Field(min_length=8, max_length=128)
+    webhook_secret: SecretStr | None = Field(default=None, min_length=8, max_length=128)
+    mode: Literal["sandbox", "production"] | None = None
+
+
+class CollectionWiresOut(BaseModel):
+    """Per provider, whether a merchant's adapter talks to the provider for real (`live`) or runs
+    on the in-process stub (`stub`: a checkout cannot be paid for real)."""
+
+    razorpay: Literal["stub", "live"]
+    cashfree: Literal["stub", "live"]
 
 
 class MerchantAccountOut(BaseModel):
     """The organization's payment-provider connection as an admin may see it: masked secrets
-    only, and the webhook URL path to register at the provider (`?account=` names this account)."""
+    only, the webhook URL to register at the provider (`?account=` names this account), whether
+    the credentials have been verified, and when a webhook last arrived."""
 
     configured: bool
     id: uuid.UUID | None = None
     provider: str | None = None
     key_id: str | None = None
+    #: `test` / `live` — for Cashfree, Sandbox / Production.
     mode: Literal["test", "live"] | None = None
     key_secret_masked: str | None = None
+    #: Razorpay only; None for a Cashfree account, which has no webhook secret of its own.
     webhook_secret_masked: str | None = None
+    #: The neutral webhook path (`/api/v1/webhooks/collections?account=<id>`).
     webhook_path: str | None = None
+    #: The absolute webhook URL, from the platform's public base (`APP_BASE_URL`).
+    webhook_url: str | None = None
     webhook_events: list[str] = Field(default_factory=lambda: list(COLLECTION_WEBHOOK_EVENTS))
     rotated_at: datetime | None = None
     created_at: datetime | None = None
-    #: Whether this deployment accepts `rzp_live_…` keys at all (`COLLECTIONS_ALLOW_LIVE_KEYS`).
+    #: `unverified` (never checked, or changed since), `verified` (the provider accepted these
+    #: credentials at `verified_at`) or `failed` (it refused them: `last_error_code`).
+    connection_state: Literal["unverified", "verified", "failed"] | None = None
+    verified_at: datetime | None = None
+    last_error_code: str | None = None
+    #: When the platform last received a webhook from this account's provider (since connecting).
+    last_webhook_at: datetime | None = None
+    #: Whether this deployment accepts live keys at all (`COLLECTIONS_ALLOW_LIVE_KEYS`): Razorpay
+    #: `rzp_live_…`, Cashfree Production.
     live_keys_allowed: bool
-    #: `stub` when no provider call leaves this platform (checkouts cannot be paid for real).
+    #: `stub` when no Razorpay call leaves this platform. Kept as it always was for existing
+    #: clients; `wires` says it per provider.
     wire: Literal["stub", "razorpay"]
+    wires: CollectionWiresOut
 
 
 class CollectionRefundOut(BaseModel):
@@ -201,12 +248,12 @@ class CollectionOut(BaseModel):
     updated_at: datetime
 
 
-class CheckoutSessionOut(BaseModel):
-    """Everything the browser needs to open the provider's own hosted Checkout — and nothing a
-    browser must not have: the **public** key id and the provider Order id. The amount is the
-    Order's (fixed server-side from the order's own total); Checkout charges exactly it."""
+class RazorpayCheckoutSessionOut(BaseModel):
+    """Everything the browser needs to open Razorpay's own hosted Checkout — and nothing a browser
+    must not have: the **public** key id and the provider Order id. The amount is the Order's
+    (fixed server-side from the order's own total); Checkout charges exactly it."""
 
-    provider: str
+    provider: Literal["razorpay"]
     key_id: str
     provider_order_id: str
     amount_minor: int
@@ -214,6 +261,28 @@ class CheckoutSessionOut(BaseModel):
     mode: Literal["test", "live"]
     #: False on the stub wire: the Order id is a local stand-in no real Checkout would accept.
     openable: bool
+
+
+class CashfreeCheckoutSessionOut(BaseModel):
+    """What the browser's `Cashfree({mode}).checkout({paymentSessionId})` needs. The session id is
+    the provider's, fetched for this response and **never stored**: reopening fetches it again.
+    No credential, and no customer detail (the phone went to Cashfree server to server)."""
+
+    provider: Literal["cashfree"]
+    payment_session_id: str = Field(repr=False)
+    #: The SDK's own word for the environment.
+    mode: Literal["sandbox", "production"]
+    provider_order_id: str
+    amount_minor: int
+    currency: str
+    #: False on the stub: the session is a local stand-in no real checkout would accept.
+    openable: bool
+
+
+#: The browser's handle, by provider.
+CheckoutSessionOut = Annotated[
+    RazorpayCheckoutSessionOut | CashfreeCheckoutSessionOut, Field(discriminator="provider")
+]
 
 
 class CheckoutOut(BaseModel):
@@ -229,17 +298,35 @@ class ReferenceCollectionsOut(BaseModel):
     merchant_account_configured: bool
     mode: Literal["test", "live"] | None = None
     wire: Literal["stub", "razorpay"]
+    #: The connected account's provider, and whether its wire is live — None when not connected.
+    provider: str | None = None
+    provider_wire: Literal["stub", "live"] | None = None
     collections: list[CollectionOut]
+
+
+class PayerIn(BaseModel):
+    """Internal: who is paying, from the order — sent by operations **only** when payment asks
+    for it (a provider that requires a customer on every Order, Cashfree). Passed through to the
+    provider and nowhere else: never stored, logged, audited or put in an event."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=160, repr=False)
+    email: str | None = Field(default=None, max_length=254, repr=False)
+    phone: str | None = Field(default=None, max_length=32, repr=False)
 
 
 class CheckoutIn(BaseModel):
     """Internal (operations → payment): open or reuse the checkout for one order. The amount is
-    the order's own stored total, sent by the service that owns the order — never a browser."""
+    the order's own stored total, sent by the service that owns the order — never a browser.
+    `payer` is the order's customer, for a provider that needs one (a request without it is then
+    answered 422 `payer-required`, and operations sends it again with one)."""
 
     model_config = ConfigDict(extra="forbid")
 
     amount_minor: int = Field(gt=0)
     currency: str = Field(pattern=r"^[A-Z]{3}$")
+    payer: PayerIn | None = Field(default=None, repr=False)
 
 
 class CollectionActorIn(BaseModel):
@@ -291,3 +378,84 @@ class ReconciliationOut(BaseModel):
     mismatched: int
     unchecked: int
     rows: list[ReconciliationRowOut]
+
+
+# ===================================================================== platform checkout
+# (ADR-0032). A customer paying one of OpsGrids' own invoices in the provider's hosted checkout.
+# The amount, the currency and the subscription are never in a request: they are read from the
+# invoice's own charge.
+
+
+class CheckoutCustomerIn(BaseModel):
+    """Who is paying, as the provider's checkout needs it (Cashfree requires a phone on every
+    Order). **Passed through to the provider and nowhere else** — never stored, logged, audited or
+    put in an event. A phone is 10 digits, or `+` and 8-15 digits."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=100)
+    email: str | None = Field(default=None, max_length=254)
+    phone: str | None = Field(default=None, max_length=16)
+
+
+class PlatformCheckoutIn(BaseModel):
+    """`POST /payment/checkouts` — open (or reopen) the checkout for one invoice."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    invoice_id: uuid.UUID
+    customer: CheckoutCustomerIn | None = None
+
+
+class PlatformCheckoutOut(BaseModel):
+    """What the browser needs to open the provider's checkout, and what it will charge.
+    `amount_minor` and `currency` are the invoice's own charge's. `client_action` is provider-shaped
+    and tagged by `type`: `{"type": "razorpay_checkout", "key_id", "order_id", "openable"}` (the
+    **public** key id and the Order id — never the secret) or `{"type": "cashfree_checkout",
+    "payment_session_id", "mode", "openable"}`. `openable` is False on a stub provider: the Order
+    is a local stand-in no real checkout would accept. The session token is never stored;
+    reopening fetches it again. `test_mode` is true when the provider that owns the charge runs on
+    test / sandbox credentials (a Razorpay `rzp_test_` key on a live wire, or Cashfree's sandbox):
+    the checkout takes the provider's test cards and no real money moves. False on live
+    credentials and on a stub."""
+
+    charge_id: uuid.UUID
+    provider: str
+    client_action: dict[str, Any]
+    amount_minor: int
+    currency: str
+    expires_at: datetime
+    test_mode: bool
+
+
+class PlatformCheckoutStatusOut(BaseModel):
+    """The state of one checkout, as the server knows it. `paid` is true only for a **captured**
+    payment — one the provider reported, by a status check or a signed webhook; never because a
+    browser said so. `provider_checked` is false when the provider could not be asked this time
+    (the state shown is then the last one recorded). A failed checkout with `failure_reason`
+    `checkout_expired` is one nobody paid before it expired. `test_mode` is as on
+    `PlatformCheckoutOut`: the owning provider runs on test / sandbox credentials, so `paid` means
+    paid with a test instrument."""
+
+    charge_id: uuid.UUID
+    provider: str
+    state: Literal["created", "authorized", "captured", "failed"]
+    paid: bool
+    amount_minor: int
+    currency: str
+    expires_at: datetime | None
+    failure_reason: str | None = None
+    provider_checked: bool = True
+    test_mode: bool
+
+
+class CheckoutConfirmIn(BaseModel):
+    """`POST /payment/checkouts/{charge_id}/confirm` (Razorpay) — the three fields Checkout's
+    callback hands the browser. **Proof of nothing**: the server checks the signature as a
+    precondition, then asks Razorpay what happened. Missing or blank fields are a 400."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    razorpay_payment_id: str | None = Field(default=None, max_length=64)
+    razorpay_order_id: str | None = Field(default=None, max_length=64)
+    razorpay_signature: str | None = Field(default=None, max_length=128)

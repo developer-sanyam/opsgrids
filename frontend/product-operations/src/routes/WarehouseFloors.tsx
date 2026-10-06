@@ -47,6 +47,10 @@ export function WarehouseFloorsPage() {
           label={f.name || `Floor ${f.floor_number}`}
           actions={[
             {
+              label: "View floor",
+              onSelect: () => navigate(`/warehouses/${id}/floors/${f.id}/view`),
+            },
+            {
               label: "Edit layout",
               onSelect: () => navigate(`/warehouses/${id}/floors/${f.id}`),
             },

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.stock.status_changed/v1",
+  "title": "operations.inventory.stock.status_changed",
+  "description": "Stock moved between statuses where it sits (a paired `relocation` move, reference_type `status_change`); the physical total is unchanged.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "move_id",
+    "inventory_item_id",
+    "location_id",
+    "from_status",
+    "to_status",
+    "lot_id",
+    "roll_id",
+    "quantity"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "move_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "inventory_item_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "location_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "from_status": {
+      "type": "string"
+    },
+    "to_status": {
+      "type": "string"
+    },
+    "lot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "roll_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "quantity": {
+      "type": "string",
+      "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+    }
+  }
+}

@@ -24,11 +24,13 @@ dunning facts the customer needs to be told on the same event the projection rea
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -62,7 +64,14 @@ from app.registry import ProductRegistry
 from app.schemas import (
     CatalogPlanVersion,
     ChangePlanIn,
+    ChangePlanPreviewIn,
+    ChangePlanPreviewOut,
+    CustomerChangePlanPreviewOut,
+    CustomerExpectedState,
+    ExpectedState,
     OperatorChangePlanIn,
+    OperatorChangePlanPreviewIn,
+    OperatorExtendTrialIn,
     OperatorSubscribeIn,
     PaymentOutcome,
     SubscribeIn,
@@ -106,20 +115,35 @@ def _list_price_minor(version: CatalogPlanVersion) -> int:
 
 
 def _validate_new_pin(
-    version: CatalogPlanVersion | None, organization_id: uuid.UUID
+    version: CatalogPlanVersion | None,
+    organization_id: uuid.UUID,
+    *,
+    current_pin: uuid.UUID | None = None,
 ) -> CatalogPlanVersion:
     """A pin a customer may actually subscribe to: it exists, is published, and is theirs to see.
 
     A bespoke version negotiated for another organization is refused with the same 404 a
     nonexistent one gets, so its existence is never disclosed — the audience-of-one rule from
     ADR-0004 §2, defended here the way catalog defends its own read.
+
+    `current_pin` is the version the subscription is already on. Pointing a change-plan back at it
+    is not a new pin — it keeps the one they have (or withdraws a scheduled change) — so it need
+    not still be published: a version withdrawn on catalog's Plans page (`grandfathered`,
+    ADR-0030) stays the pin of everyone already on it, and they must still be able to stay.
     """
     if version is None:
-        raise NotFoundProblem("No such plan version")
-    if version.state != VERSION_PUBLISHED:
-        raise BusinessRuleProblem("that plan version is not published and cannot be subscribed to")
+        raise domain.CodedNotFound(domain.CODE_NOT_FOUND, "No such plan version")
     if version.restricted_to_org_id is not None and version.restricted_to_org_id != organization_id:
-        raise NotFoundProblem("No such plan version")
+        # The same body a nonexistent version gets, code included: another organization's
+        # negotiated price must not be distinguishable from no such version. Decided before the
+        # state check, so that holds whatever its state — a draft prepared for someone else must
+        # not answer `not_published` and so confirm it exists.
+        raise domain.CodedNotFound(domain.CODE_NOT_FOUND, "No such plan version")
+    if version.state != VERSION_PUBLISHED and version.id != current_pin:
+        raise domain.CodedRefusal(
+            domain.CODE_NOT_PUBLISHED,
+            "that plan version is not published and cannot be subscribed to",
+        )
     return version
 
 
@@ -182,6 +206,10 @@ def _transition(
     from_plan_version_id: uuid.UUID | None,
     to_plan_version_id: uuid.UUID | None,
     extra: dict[str, Any] | None = None,
+    note: str | None = None,
+    audit_before: dict[str, Any] | None = None,
+    audit_after: dict[str, Any] | None = None,
+    emit_event: bool = True,
 ) -> None:
     """Apply one validated transition: move the state, write the append-only row, stage the event.
 
@@ -194,6 +222,23 @@ def _transition(
     They ride the same event the projection consumes rather than a second one, because a customer
     being told "we will retry on Tuesday" and their access being kept on are the same fact
     arriving in two services, and two events would let one land without the other.
+
+    `note` is a person's reason, in words. It is **not** the transition's `reason`: that column is
+    sixty characters of machine code (`decide` types the event from it, and a free-text word could
+    name the wrong event). The note is the audit row's `reason` (text, unbounded here) and nothing
+    else: it is **never put on the event**. The event is stamped with the customer's organization,
+    and notification renders a customer org's own templates from the whole payload — a rule on
+    `commerce.subscription.*` with `{{note}}` in its body would mail staff's internal reason to the
+    customer. Staff read the why on the audit trail, which is where it stays.
+
+    `audit_before`/`audit_after` add facts to the audit row's before/after for a move whose state
+    alone does not say what changed — a trial extension stays `trial`, and its row names the end
+    it moved from and to.
+
+    `emit_event=False` writes the transition row and the audit row and stages **no event**. Only a
+    transition that a second event in the same transaction supersedes may be silent: see
+    `apply_pending_change`'s `silent`, whose lapsed change is folded into the stop event that
+    follows it. Every other caller leaves it on — an applied transition is announced.
     """
     subscription.state = decision.to_state
 
@@ -218,12 +263,20 @@ def _transition(
         action=decision.event_type,
         entity="subscription",
         entity_id=subscription.id,
-        before={"state": decision.from_state} if decision.from_state else None,
-        after={"state": decision.to_state, "plan_version_id": str(subscription.plan_version_id)},
-        reason=decision.reason,
+        before=(
+            {"state": decision.from_state, **(audit_before or {})} if decision.from_state else None
+        ),
+        after={
+            "state": decision.to_state,
+            "plan_version_id": str(subscription.plan_version_id),
+            **(audit_after or {}),
+        },
+        reason=note or decision.reason,
         acting_as=actor.get("id") if actor.get("type") == "operator" else None,
         request=request,
     )
+    if not emit_event:
+        return
     payload = _lifecycle_payload(subscription)
     if extra:
         payload.update(extra)
@@ -250,10 +303,13 @@ def _require_product(version: CatalogPlanVersion, product_key: str) -> None:
     it could be pinned under any key and entitle whatever that key's members are.
     """
     if version.product_key is None:
-        raise BusinessRuleProblem("that plan version names no product and cannot be pinned")
+        raise domain.CodedRefusal(
+            domain.CODE_PRODUCT_MISMATCH, "that plan version names no product and cannot be pinned"
+        )
     if version.product_key != product_key:
-        raise BusinessRuleProblem(
-            f"plan version belongs to product {version.product_key!r}, not {product_key!r}"
+        raise domain.CodedRefusal(
+            domain.CODE_PRODUCT_MISMATCH,
+            f"plan version belongs to product {version.product_key!r}, not {product_key!r}",
         )
 
 
@@ -285,7 +341,9 @@ async def _check_bundle(
         elif entry.status == "soon":
             problems.append(f"{member!r} has not launched")
     if problems:
-        raise BusinessRuleProblem("cannot sell this bundle: " + "; ".join(problems))
+        raise domain.CodedRefusal(
+            domain.CODE_BUNDLE, "cannot sell this bundle: " + "; ".join(problems)
+        )
 
 
 async def subscribe(
@@ -296,7 +354,8 @@ async def subscribe(
     *,
     request: Request | None = None,
 ) -> Subscription:
-    """A customer starts a subscription for one product. Bundles are refused here."""
+    """A customer starts a subscription for one product. Bundles are refused here, and so is a
+    version that is not on offer to the organization now (`not_offerable`, see `SubscribeIn`)."""
     return await _subscribe(
         session,
         organization_id=ctx.organization_id,
@@ -307,6 +366,7 @@ async def subscribe(
         plan_version_id=payload.plan_version_id,
         trial_requested=payload.trial_days,
         request=request,
+        enforce_offerable=True,
     )
 
 
@@ -318,7 +378,22 @@ async def subscribe_as_operator(
     *,
     request: Request | None = None,
 ) -> Subscription:
-    """The platform team opens a subscription for a customer — the one path that sells a bundle."""
+    """The platform team opens a subscription for a customer — the one path that sells a bundle,
+    and console's "Add product" (ADR-0031).
+
+    Stricter than the customer path in two ways a staff surface needs (the customer path is left
+    as it was — see ADR-0031, "Not changed"): a `one_time` version is refused (it has no period
+    and the run never bills it, so it would be a free subscription), and so is a currency other
+    than the one the organization's live subscriptions are billed in (console sums one currency
+    per organization). Serialised per organization with a transaction-scoped advisory lock, so two
+    staff adds racing each other cannot both pass the currency check, or both pass the
+    one-row-per-product check and leave one of them to the unique index.
+    """
+    domain.assert_free_text_allowed(payload.note)
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"{payload.organization_id}:operator-subscribe"},
+    )
     return await _subscribe(
         session,
         organization_id=payload.organization_id,
@@ -330,7 +405,34 @@ async def subscribe_as_operator(
         # "A trial" means the version's own trial; the cap below makes that exact.
         trial_requested=domain.MAX_TRIAL_DAYS if payload.trial else None,
         request=request,
+        note=payload.note,
+        operator_rules=True,
     )
+
+
+async def _assert_org_currency(
+    session: AsyncSession, organization_id: uuid.UUID, currency: str
+) -> None:
+    """Refuse a currency the organization's other **live** subscriptions are not billed in.
+
+    Live is every state but `cancelled`: a past-due or suspended subscription still bills (or will
+    again). One currency per organization is what console's MRR assumes — it sums amounts and
+    takes the first currency — so a mixed-currency add would corrupt every figure for the account.
+    """
+    from app import selectors
+
+    live = {
+        s.currency.upper()
+        for s in await selectors.list_by_organization(session, organization_id)
+        if s.state != STATE_CANCELLED
+    }
+    if live and currency not in live:
+        billed = ", ".join(sorted(live))
+        raise domain.CodedRefusal(
+            domain.CODE_ORG_CURRENCY_MISMATCH,
+            f"this organization's subscriptions are billed in {billed}; a {currency} plan cannot "
+            "be added beside them",
+        )
 
 
 async def _subscribe(
@@ -344,21 +446,42 @@ async def _subscribe(
     plan_version_id: uuid.UUID,
     trial_requested: int | None,
     request: Request | None,
+    note: str | None = None,
+    operator_rules: bool = False,
+    enforce_offerable: bool = False,
 ) -> Subscription:
     """Start a subscription pinned to a validated catalog version.
 
     A trial opens in `trial` with an end date (a subscription state, never a separate object —
     ADR-0004 §4), its length the version's and not the caller's. One subscription per product per
-    organization: an existing one is a conflict, not a second row.
+    organization: an existing one — in any state, `cancelled` included — is a 409
+    `already_subscribed`, not a second row. `operator_rules` adds the staff path's refusals
+    (`one_time`, `org_currency_mismatch`; see `subscribe_as_operator`). `enforce_offerable` (the
+    customer path) refuses a version outside catalog's offerable set with `not_offerable`: a
+    superseded version stays published for the subscribers pinned to it, and without this a
+    customer could start on it by id — a stale page, or a guess from `version_no` — at a price the
+    catalogue has moved past, kept for good because nothing re-pins a subscription.
     """
     from app import selectors
 
     existing = await selectors.get_by_product(session, organization_id, product_key)
     if existing is not None:
-        raise ConflictProblem(f"this organization already has a subscription for {product_key!r}")
+        raise _already_subscribed(product_key, existing.state)
 
     version = _validate_new_pin(await catalog.get_plan_version(plan_version_id), organization_id)
     _require_product(version, product_key)
+    if enforce_offerable:
+        offered = await catalog.offerable_versions(organization_id, product_key)
+        if version.id not in {v.plan_version_id for v in offered}:
+            raise domain.CodedRefusal(domain.CODE_NOT_OFFERABLE, domain.NOT_OFFERABLE_DETAIL)
+    if operator_rules:
+        if version.billing_interval == domain.INTERVAL_ONE_TIME:
+            raise domain.CodedRefusal(
+                domain.CODE_ONE_TIME,
+                "a one_time plan has no billing period and would never be invoiced; "
+                "choose a monthly or yearly plan",
+            )
+        await _assert_org_currency(session, organization_id, version.currency.upper())
 
     features = version.feature_pairs()
     # Read off the pinned version and nothing else — never the request body.
@@ -387,7 +510,14 @@ async def _subscribe(
     # load (async forbids one), and populated for the response the route serializes.
     _append_items(subscription, version)
     session.add(subscription)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        # A concurrent subscribe for the same product won the unique index between the check
+        # above and this insert: the same answer the check gives, not a 500.
+        if "uq_subscription_org_product" in str(exc.orig):
+            raise _already_subscribed(product_key, None) from exc
+        raise
     if to_state == STATE_ACTIVE and subscription.current_period_end is not None:
         # A subscription that starts paid owes its first period now (review round 3): nothing
         # else ever charges it — the run charges a period when it *opens* a later one.
@@ -412,9 +542,23 @@ async def _subscribe(
         request=request,
         from_plan_version_id=None,
         to_plan_version_id=version.id,
+        note=note,
     )
     await session.flush()
     return subscription
+
+
+def _already_subscribed(product_key: str, state: str | None) -> domain.CodedConflict:
+    """409 `already_subscribed`: one row per product per organization, whatever its state."""
+    if state == STATE_CANCELLED:
+        detail = (
+            f"this organization's {product_key!r} subscription was cancelled; a cancelled "
+            "subscription cannot be reopened or replaced yet"
+        )
+    else:
+        suffix = f" ({state})" if state else ""
+        detail = f"this organization already has a subscription for {product_key!r}{suffix}"
+    return domain.CodedConflict(domain.CODE_ALREADY_SUBSCRIBED, detail)
 
 
 async def change_plan(
@@ -427,9 +571,18 @@ async def change_plan(
     request: Request | None = None,
 ) -> Subscription:
     """A customer re-pins their own subscription. A bundle subscription — or a move onto a
-    bundle rung — is the platform team's to make, so both are refused here."""
+    bundle rung — is the platform team's to make, so both are refused here.
+
+    When it lands is the customer path's own rule (no forced timing): a trial with nothing claimed
+    moves now and free; a paid **upgrade** moves now and claims a prorated charge for the rest of
+    the period; a paid **downgrade** waits for the next period (no credit); an equal-price change
+    moves now with no proration. The target must be on offer to this organization now
+    (`not_offerable` otherwise) unless it is the pin already in force, which withdraws a waiting
+    change. A change the OpsGrids team scheduled is not the customer's to withdraw or replace
+    (`scheduled_by_opsgrids`). `payload.expected`, when sent, is the preview's picture of the
+    subscription, compared under the row lock."""
     if subscription.entitled_products != [subscription.product_key]:
-        raise ForbiddenProblem("a bundle's plan is changed by the OpsGrids team")
+        raise ForbiddenProblem(BUNDLE_CHANGE_DETAIL)
     return await _change_plan(
         session,
         organization_id=ctx.organization_id,
@@ -439,7 +592,59 @@ async def change_plan(
         subscription=subscription,
         plan_version_id=payload.plan_version_id,
         request=request,
+        expected=payload.expected,
+        enforce_offerable=True,
+        respect_operator_schedule=True,
     )
+
+
+#: Why a customer cannot change a bundle subscription's plan themselves.
+BUNDLE_CHANGE_DETAIL = "a bundle's plan is changed by the OpsGrids team"
+
+
+async def preview_change_plan(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    catalog: PlanCatalog,
+    subscription: Subscription,
+    payload: ChangePlanPreviewIn,
+) -> CustomerChangePlanPreviewOut:
+    """What the customer's own `change_plan` would do to this subscription right now — the same
+    evaluation the write runs (no forced timing, no registry, the offerable set enforced), so the
+    confirm screen's sentence and the write cannot disagree. Writes nothing and locks nothing.
+
+    A refusal is an answer (`refusal_code`), including `bundle` for a bundle subscription the
+    write refuses with a 403: the customer is allowed to ask, the answer is that the OpsGrids team
+    makes that change. Only "no such version" (404) and an unreachable catalog (503) raise.
+
+    `expected` is read **before** the evaluation: anything the billing run moves after it — a
+    claim, a roll — then differs from the live row at the confirm, which refuses it, rather than
+    being folded silently into an answer the customer confirms.
+    """
+    expected = await _customer_expected_of(session, subscription)
+    if subscription.entitled_products != [subscription.product_key]:
+        return CustomerChangePlanPreviewOut(
+            expected=expected,
+            refusal_code=domain.CODE_BUNDLE,
+            refusal_detail=BUNDLE_CHANGE_DETAIL,
+        )
+    answer = await _preview_change_plan(
+        session,
+        organization_id=ctx.organization_id,
+        catalog=catalog,
+        registry=None,
+        subscription=subscription,
+        plan_version_id=payload.plan_version_id,
+        forced_timing=None,
+        enforce_offerable=True,
+        respect_operator_schedule=True,
+    )
+    fields = answer.model_dump(exclude={"expected"})
+    if not answer.paid:
+        # Free and now whichever way it goes: the comparison is not needed, and would only tell a
+        # trialist how a public plan's list price compares with an amount they can see.
+        fields["direction"] = None
+    return CustomerChangePlanPreviewOut(expected=expected, **fields)
 
 
 async def change_plan_as_operator(
@@ -451,7 +656,10 @@ async def change_plan_as_operator(
     *,
     request: Request | None = None,
 ) -> Subscription:
-    """The platform team re-pins a subscription — how a bundle moves between rungs."""
+    """The platform team re-pins a subscription — how a bundle moves between rungs, and how staff
+    switch a plan. `note` is the operator's reason in words; `expected` is the caller's picture of
+    the subscription, refused with a 409 `state_changed` if it no longer holds."""
+    domain.assert_free_text_allowed(payload.note)
     return await _change_plan(
         session,
         organization_id=payload.organization_id,
@@ -462,55 +670,279 @@ async def change_plan_as_operator(
         plan_version_id=payload.plan_version_id,
         request=request,
         forced_timing=payload.timing,
+        note=payload.note,
+        expected=payload.expected,
     )
 
 
-async def _change_plan(
+async def preview_change_plan_as_operator(
+    session: AsyncSession,
+    catalog: PlanCatalog,
+    registry: ProductRegistry,
+    subscription: Subscription,
+    payload: OperatorChangePlanPreviewIn,
+) -> ChangePlanPreviewOut:
+    """What `change_plan_as_operator` would do to this subscription right now. Writes nothing and
+    takes no row lock: it is the same `_evaluate_change_plan` the write runs, so the preview and
+    the write cannot disagree about direction, timing or refusal.
+
+    Always evaluated as the staff path is — `timing="next_period"` — because staff never force a
+    paid change to apply now (ADR-0029): a trial switches immediately and free, a paying
+    subscription switches at its next period, and an equal-price change applies now at no charge.
+    A refusal is an *answer* (`refusal_code`), not an error; only "no such version" (404) and an
+    unreachable catalog (503) raise.
+    """
+    return await _preview_change_plan(
+        session,
+        organization_id=payload.organization_id,
+        catalog=catalog,
+        registry=registry,
+        subscription=subscription,
+        plan_version_id=payload.plan_version_id,
+        forced_timing="next_period",
+        enforce_offerable=False,
+    )
+
+
+def _expected_of(subscription: Subscription) -> ExpectedState:
+    return ExpectedState(
+        state=subscription.state,
+        plan_version_id=subscription.plan_version_id,
+        pending_plan_version_id=subscription.pending_plan_version_id,
+    )
+
+
+async def _customer_expected_of(
+    session: AsyncSession, subscription: Subscription
+) -> CustomerExpectedState:
+    """The customer's fuller picture: `_expected_of` plus the period end and the billing run's
+    pending claim — the inputs `_evaluate_change_plan` decides timing and money from."""
+    from app import selectors
+
+    claim = await selectors.pending_lifecycle_claim(
+        session, subscription.organization_id, subscription.id
+    )
+    return CustomerExpectedState(
+        **_expected_of(subscription).model_dump(),
+        current_period_end=subscription.current_period_end,
+        lifecycle_claim_id=claim.id if claim is not None else None,
+    )
+
+
+async def _preview_change_plan(
     session: AsyncSession,
     *,
     organization_id: uuid.UUID,
-    actor: dict[str, Any],
     catalog: PlanCatalog,
     registry: ProductRegistry | None,
     subscription: Subscription,
     plan_version_id: uuid.UUID,
-    request: Request | None,
-    forced_timing: str | None = None,
-) -> Subscription:
-    """Re-pin a subscription to a different published version — an upgrade or a downgrade.
+    forced_timing: str | None,
+    enforce_offerable: bool,
+    respect_operator_schedule: bool = False,
+) -> ChangePlanPreviewOut:
+    """The preview both paths share: `_evaluate_change_plan` without locks, turned into an answer.
 
-    The previous pin is preserved on the transition row, never overwritten: the version a past
-    invoice was computed against still exists and is still named, exactly as ADR-0004 §2 requires.
-    An upgrade and a downgrade are the same state (`active`/`trial` unchanged), told apart by
-    whether the new list price is higher — which decides only the event, not the money.
+    Every field is read off the evaluation the write itself runs — `prorated_charge_now` is the
+    write's own `_claim_proration` condition (a paid upgrade that applies now) — so nothing here is
+    a second opinion about direction, timing or money.
+    """
+    expected = _expected_of(subscription)
+    try:
+        change = await _evaluate_change_plan(
+            session,
+            organization_id=organization_id,
+            catalog=catalog,
+            registry=registry,
+            subscription=subscription,
+            plan_version_id=plan_version_id,
+            forced_timing=forced_timing,
+            lock_claims=False,
+            enforce_offerable=enforce_offerable,
+            respect_operator_schedule=respect_operator_schedule,
+        )
+    except domain.CodedNotFound:
+        raise
+    except (BusinessRuleProblem, ConflictProblem) as exc:
+        return ChangePlanPreviewOut(
+            expected=expected,
+            refusal_code=getattr(exc, "code", "refused"),
+            refusal_detail=exc.detail,
+        )
+    except ForbiddenProblem as exc:
+        # The customer path's bundle refusal (`_check_bundle` with no registry): a target that
+        # declares a bundle is sold by the OpsGrids team. An answer, not a permission failure —
+        # the caller's own permission was checked before this ran.
+        return ChangePlanPreviewOut(
+            expected=expected, refusal_code=domain.CODE_BUNDLE, refusal_detail=exc.detail
+        )
+
+    current = subscription.entitled_products
+    withdrawing = change.action == _ACT_WITHDRAW
+    applying = change.action == _ACT_APPLY
+    direction_label = {1: "upgrade", -1: "downgrade", 0: "equal"}[change.direction]
+    return ChangePlanPreviewOut(
+        expected=expected,
+        action="withdraw_scheduled" if withdrawing else "switch",
+        direction=None if withdrawing else direction_label,
+        effective="next_period" if change.action == _ACT_SCHEDULE else "now",
+        effective_at=change.effective_at if change.action == _ACT_SCHEDULE else None,
+        would_clear_pending=subscription.pending_change is not None,
+        entitled_added=[m for m in change.members if m not in current],
+        entitled_removed=[m for m in current if m not in change.members],
+        usage_priced=change.usage_priced,
+        usage_closed_now=applying and change.usage_closed_now,
+        paid=change.paid,
+        prorated_charge_now=applying and change.paid and change.direction > 0,
+    )
+
+
+async def _assert_expected(
+    session: AsyncSession, subscription: Subscription, expected: ExpectedState
+) -> None:
+    """The caller's picture of the subscription must still be the subscription's own — compared
+    under the row lock, before anything is decided. Anything that moved it in between (a customer's
+    own change, dunning, another operator) is a conflict the caller re-reads and decides again,
+    not a change they confirm blind.
+
+    The customer's picture (`CustomerExpectedState`) also names the period end and the billing
+    run's pending claim, because state, pin and pending do not move when the run claims or records
+    a renewal, or claims a trial's conversion — yet each changes when a scheduled change lands or
+    whether a switch is charged. The run's claim and record take this same row lock, so the claim
+    read here cannot change before this transaction ends."""
+    from app import selectors
+
+    stale = (
+        subscription.state != expected.state
+        or subscription.plan_version_id != expected.plan_version_id
+        or subscription.pending_plan_version_id != expected.pending_plan_version_id
+    )
+    if not stale and isinstance(expected, CustomerExpectedState):
+        claim = await selectors.pending_lifecycle_claim(
+            session, subscription.organization_id, subscription.id
+        )
+        stale = (
+            subscription.current_period_end != expected.current_period_end
+            or (claim.id if claim is not None else None) != expected.lifecycle_claim_id
+        )
+    if stale:
+        raise domain.CodedConflict(
+            domain.CODE_STATE_CHANGED,
+            "this subscription changed since you looked at it; refresh and review it again",
+        )
+
+
+#: What an evaluated change-plan does. `withdraw`: the target is the pin the subscription is on and
+#: a change is waiting, so the waiting change is cancelled. `schedule`: the target waits for the
+#: next period (nothing about entitlement or money changes now). `apply`: the pin moves now.
+_ACT_WITHDRAW = "withdraw"
+_ACT_SCHEDULE = "schedule"
+_ACT_APPLY = "apply"
+
+
+@dataclass(frozen=True)
+class _PlanChange:
+    """The evaluated outcome of a proposed change-plan — shared by the write and the preview."""
+
+    action: str
+    new_version: CatalogPlanVersion
+    members: list[str]
+    direction: int
+    #: `upgrade` or `downgrade` (the machine reason the event is typed from); None for a withdraw.
+    reason: str | None
+    claim: BillingPeriod | None
+    paid: bool
+    #: When a scheduled change lands: the end of the period it waits for.
+    effective_at: datetime | None
+    usage_priced: bool
+    #: Applying it now closes the usage metered so far on the current pin, at that pin's usage
+    #: rates — the `schedule_closing_usage` the apply branch calls before the pin moves, decided by
+    #: the same rule (paid time since the period began, and a usage price on the current version).
+    usage_closed_now: bool = False
+
+
+def _has_usage_price(version: CatalogPlanVersion | None) -> bool:
+    return version is not None and any(p.kind == "usage" for p in version.prices)
+
+
+async def _evaluate_change_plan(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    catalog: PlanCatalog,
+    registry: ProductRegistry | None,
+    subscription: Subscription,
+    plan_version_id: uuid.UUID,
+    forced_timing: str | None,
+    lock_claims: bool,
+    enforce_offerable: bool = False,
+    respect_operator_schedule: bool = False,
+) -> _PlanChange:
+    """Decide what a change-plan would do, or raise the refusal it would get.
+
+    **Error precedence is deliberate.** Every refusal that is a property of the request or of the
+    subscription's *state* — a past_due subscription, an unknown version, another product's, a
+    different currency or cadence, a version no longer on offer — comes before
+    `billing_catching_up`, which is the one refusal that is transient. A subscription that will
+    never be allowed to change must not be told to "try again shortly" (and while the billing run
+    is off, that message is indefinite).
+
+    `lock_claims` is False for the preview: the "has the run claimed the due period" check then
+    reads the claim row instead of taking `FOR UPDATE` on it.
+
+    `enforce_offerable` (the customer path, ADR-0034): the target must be in catalog's offerable
+    set for this organization now — not a superseded, withdrawn or retired-plan version that is
+    still published and pinnable by id. Checked after the subscription's own refusals, and never
+    for the pin already in force (a withdrawal of a waiting change keeps what they have). Console
+    enforces the same set on the staff path itself (ADR-0029 §8).
+
+    `respect_operator_schedule` (the customer path, ADR-0034 §6): while a change the OpsGrids team
+    scheduled is waiting, the customer may not withdraw it, replace it or supersede it — every
+    target is refused `scheduled_by_opsgrids`, right after the version is known to exist. Staff
+    change or withdraw their own scheduled change on the staff path.
     """
     from app import selectors
 
-    # Held for the whole change (review round 2, fix M4): the billing run's claim and record lock
-    # the same row, so a change can never interleave with a claim it would then misprice.
-    await selectors.lock_subscription(
-        session, subscription.organization_id, subscription.id, skip_locked=False
-    )
-    await assert_billing_caught_up(session, subscription)
     # Only a trial or a paid-up subscription changes plan. `past_due -> past_due` is a legal edge
     # for the billing run's renewal, and `decide` would therefore accept a self-edge re-pin from
     # `past_due` — so the rule is stated here, explicitly, rather than left to the state machine:
     # a customer who owes money does not move to a dearer plan until they have paid.
     if subscription.state not in (STATE_TRIAL, STATE_ACTIVE):
-        raise BusinessRuleProblem(
+        raise domain.CodedRefusal(
+            domain.CODE_STATE,
             f"a {subscription.state} subscription cannot change plan; "
-            "only a trial or an active one can"
+            "only a trial or an active one can",
         )
     new_version = _validate_new_pin(
-        await catalog.get_plan_version(plan_version_id), organization_id
+        await catalog.get_plan_version(plan_version_id),
+        organization_id,
+        current_pin=subscription.plan_version_id,
     )
+    if respect_operator_schedule and (
+        domain.pending_scheduled_by(subscription.pending_change) == domain.SCHEDULED_BY_OPSGRIDS
+    ):
+        raise domain.CodedRefusal(
+            domain.CODE_SCHEDULED_BY_OPSGRIDS, domain.SCHEDULED_BY_OPSGRIDS_DETAIL
+        )
     if new_version.id == subscription.plan_version_id:
-        if subscription.pending_change is not None:
-            # Back to the pin they are on: the waiting downgrade is withdrawn.
-            _clear_pending_change(session, subscription, actor=actor, request=request)
-            await session.flush()
-            return subscription
-        raise BusinessRuleProblem("the subscription is already pinned to that plan version")
+        if subscription.pending_change is None:
+            raise domain.CodedRefusal(
+                domain.CODE_ALREADY_PINNED,
+                "the subscription is already pinned to that plan version",
+            )
+        # Back to the pin they are on: the waiting change is withdrawn.
+        await assert_billing_caught_up(session, subscription, lock=lock_claims)
+        return _PlanChange(
+            action=_ACT_WITHDRAW,
+            new_version=new_version,
+            members=subscription.entitled_products,
+            direction=0,
+            reason=None,
+            claim=None,
+            paid=subscription.state == STATE_ACTIVE,
+            effective_at=None,
+            usage_priced=_has_usage_price(new_version),
+        )
     # A change-plan moves along one product's ladder. Re-pinning a `suite` subscription to an
     # `hrms` version would change what the row is *for* while keeping its key — and with
     # bundles, silently change which products it entitles.
@@ -522,8 +954,10 @@ async def _change_plan(
     if new_version.currency.upper() != subscription.currency:
         # One currency per subscription for now (ADR-0004 defaults). A cross-currency change is a
         # cancel-and-resubscribe decision, not a silent re-pin.
-        raise BusinessRuleProblem(
-            f"cannot change currency from {subscription.currency} to {new_version.currency.upper()}"
+        raise domain.CodedRefusal(
+            domain.CODE_CURRENCY,
+            f"cannot change currency from {subscription.currency} "
+            f"to {new_version.currency.upper()}",
         )
 
     old_version = await catalog.get_plan_version(subscription.plan_version_id)
@@ -535,6 +969,12 @@ async def _change_plan(
         or (old_version.billing_interval if old_version else None)
     )
     domain.assert_same_cadence(current_interval, new_version.billing_interval)
+    if enforce_offerable:
+        offered = await catalog.offerable_versions(organization_id, subscription.product_key)
+        if new_version.id not in {v.plan_version_id for v in offered}:
+            raise domain.CodedRefusal(domain.CODE_NOT_OFFERABLE, domain.NOT_OFFERABLE_DETAIL)
+    # The transient refusal comes last (see the docstring).
+    await assert_billing_caught_up(session, subscription, lock=lock_claims)
     direction = domain.plan_change_direction(
         _list_price_minor(new_version),
         new_version.billing_interval,
@@ -553,11 +993,96 @@ async def _change_plan(
     paid = subscription.state == STATE_ACTIVE or claim is not None
 
     # PAID-UPGRADE TIMING (fix round 1): an operator-forced next-period re-pin overrides the
-    # ordinary direction-based rule below entirely — a staff price change on a paying
-    # subscription always waits for the next period, whichever way it moves the price, never
-    # prorating an upgrade in immediately the way a customer's own change-plan does. `direction
-    # != 0` guards the no-op case (an equal-price switch moves no money regardless, m8 below).
-    if forced_timing == "next_period" and paid and direction != 0:
+    # ordinary direction-based rule entirely — a staff price change on a paying subscription
+    # always waits for the next period, whichever way it moves the price, never prorating an
+    # upgrade in immediately the way a customer's own change-plan does. `direction != 0` guards the
+    # no-op case (an equal-price switch moves no money regardless).
+    #
+    # ADR-0005 addendum §4. A paid **downgrade waits for the next period** whoever asks — the
+    # customer paid for this one — and is applied by the billing run when it claims a period not
+    # yet claimed.
+    schedule = paid and direction != 0 and (forced_timing == "next_period" or direction < 0)
+    # A claimed period keeps the snapshot it was claimed with, so a change made while a claim is
+    # pending lands at the end of *that* period (`apply_lapsed_change` uses the same boundary).
+    boundary = (
+        claim.period_end
+        if claim is not None and claim.period_end is not None
+        else subscription.current_period_end
+    )
+    # Mirrors the apply branch's `schedule_closing_usage`: usage since the period began is paid
+    # time on an active subscription, and on a trial from its claimed conversion; it closes at the
+    # current pin, so it is billed only when that pin has a usage price.
+    usage_paid_time = subscription.state == STATE_ACTIVE or (
+        claim is not None and claim.kind == domain.KIND_TRIAL_CONVERSION
+    )
+    return _PlanChange(
+        action=_ACT_SCHEDULE if schedule else _ACT_APPLY,
+        new_version=new_version,
+        members=members,
+        direction=direction,
+        reason=reason,
+        claim=claim,
+        paid=paid,
+        effective_at=boundary,
+        usage_priced=_has_usage_price(new_version) or _has_usage_price(old_version),
+        usage_closed_now=not schedule and usage_paid_time and _has_usage_price(old_version),
+    )
+
+
+async def _change_plan(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    actor: dict[str, Any],
+    catalog: PlanCatalog,
+    registry: ProductRegistry | None,
+    subscription: Subscription,
+    plan_version_id: uuid.UUID,
+    request: Request | None,
+    forced_timing: str | None = None,
+    note: str | None = None,
+    expected: ExpectedState | None = None,
+    enforce_offerable: bool = False,
+    respect_operator_schedule: bool = False,
+) -> Subscription:
+    """Re-pin a subscription to a different published version — an upgrade or a downgrade.
+
+    The previous pin is preserved on the transition row, never overwritten: the version a past
+    invoice was computed against still exists and is still named, exactly as ADR-0004 §2 requires.
+    An upgrade and a downgrade are the same state (`active`/`trial` unchanged), told apart by
+    whether the new list price is higher — which decides only the event, not the money.
+    """
+    from app import selectors
+
+    # Held for the whole change (review round 2, fix M4): the billing run's claim and record lock
+    # the same row, so a change can never interleave with a claim it would then misprice.
+    await selectors.lock_subscription(
+        session, subscription.organization_id, subscription.id, skip_locked=False
+    )
+    if expected is not None:
+        await _assert_expected(session, subscription, expected)
+    change = await _evaluate_change_plan(
+        session,
+        organization_id=organization_id,
+        catalog=catalog,
+        registry=registry,
+        subscription=subscription,
+        plan_version_id=plan_version_id,
+        forced_timing=forced_timing,
+        lock_claims=True,
+        enforce_offerable=enforce_offerable,
+        respect_operator_schedule=respect_operator_schedule,
+    )
+    new_version = change.new_version
+    members = change.members
+
+    if change.action == _ACT_WITHDRAW:
+        _clear_pending_change(session, subscription, actor=actor, request=request, note=note)
+        await session.flush()
+        return subscription
+
+    assert change.reason is not None  # only a withdraw has none
+    if change.action == _ACT_SCHEDULE:
         _schedule_downgrade(
             session,
             subscription,
@@ -565,27 +1090,16 @@ async def _change_plan(
             members,
             actor=actor,
             request=request,
-            reason=reason,
+            reason=change.reason,
+            note=note,
+            effective_at=change.effective_at,
         )
         await session.flush()
         return subscription
 
-    # ADR-0005 addendum §4. A paid **downgrade waits for the next period** — the customer paid for
-    # this one — and is applied by the billing run when it claims a period not yet claimed.
-    if paid and direction < 0:
-        _schedule_downgrade(
-            session,
-            subscription,
-            new_version,
-            members,
-            actor=actor,
-            request=request,
-        )
-        await session.flush()
-        return subscription
-
+    claim = change.claim
     decision = domain.decide(
-        from_state=subscription.state, to_state=subscription.state, reason=reason
+        from_state=subscription.state, to_state=subscription.state, reason=change.reason
     )
 
     at = _wall()
@@ -603,12 +1117,22 @@ async def _change_plan(
         else None,
     )
 
+    # A change that applies now supersedes any change that was waiting — and says so on the audit
+    # trail, so a scheduled change never disappears without a row naming who replaced it.
+    if subscription.pending_change is not None:
+        _clear_pending_change(
+            session,
+            subscription,
+            actor=actor,
+            request=request,
+            note=note,
+            superseded_by=new_version.id,
+        )
     subscription.plan_version_id = new_version.id
     subscription.billing_interval = new_version.billing_interval
     # Re-snapshotted with the pin, in the same transaction: the event below carries the new
     # member set, and product-service diffs it against what this source entitled before.
     subscription.entitled_products_snapshot = members
-    # An upgrade supersedes any downgrade that was waiting.
     subscription.pending_change = None
     subscription.pending_plan_version_id = None
 
@@ -624,11 +1148,12 @@ async def _change_plan(
         request=request,
         from_plan_version_id=from_pin,
         to_plan_version_id=new_version.id,
+        note=note,
     )
     # A paid upgrade is charged **now**, for the rest of the period it falls in: the prorated
     # difference between the new and the old recurring price. An equal-price switch moves no
     # money and raises no proration (round 2, m8). Claimed in the change's own transaction.
-    if paid and direction > 0:
+    if change.paid and change.direction > 0:
         await _claim_proration(
             session,
             subscription,
@@ -664,17 +1189,25 @@ def _schedule_downgrade(
     actor: dict[str, Any],
     request: Request | None,
     reason: str = domain.REASON_DOWNGRADE,
+    note: str | None = None,
+    effective_at: datetime | None = None,
 ) -> None:
     """Pin a re-pin to the next period (addendum §4). Nothing about entitlement or money changes
     now — the customer keeps what they paid for until the period ends — so this is an audit row,
     not a transition or an event; the transition is written when the run applies it.
 
-    `reason` (fix round 1, PAID-UPGRADE TIMING) is `REASON_DOWNGRADE` for every call site this
-    function has ever had except one: an operator-forced `timing="next_period"` on what would
-    otherwise be an immediate, prorated upgrade (`_change_plan`, below) also schedules through
-    here, and needs its own action name so the audit trail does not call a deferred price
-    *increase* a "downgrade".
+    `reason` is the machine reason the change will be typed from when the run applies it:
+    `downgrade` or `upgrade` (fix round 1, PAID-UPGRADE TIMING — an operator-forced
+    `timing="next_period"` on what would otherwise be an immediate, prorated upgrade also
+    schedules through here). It is stored with the pending change, so the event the run emits at
+    the roll is labelled by direction, and it is the audit row's action name too, so the trail does
+    not call a deferred price *increase* a "downgrade". `note` is the operator's reason in words:
+    it becomes the audit row's `reason`, and rides the pending change (subscription's own row) to
+    the audit row written when it is applied — never onto an event.
+
+    A second scheduled change replaces the first; the replaced one is named in `before`.
     """
+    replaced = subscription.pending_plan_version_id
     subscription.pending_change = {
         "plan_version_id": str(version.id),
         "billing_interval": version.billing_interval,
@@ -682,6 +1215,8 @@ def _schedule_downgrade(
         "entitled_products": members,
         "requested_at": datetime.now(UTC).isoformat(),
         "actor": actor,
+        "reason": reason,
+        **({"note": note} if note else {}),
     }
     subscription.pending_plan_version_id = version.id
     action = (
@@ -689,6 +1224,7 @@ def _schedule_downgrade(
         if reason == domain.REASON_DOWNGRADE
         else "commerce.subscription.change_scheduled"
     )
+    effective = effective_at or subscription.current_period_end
     record_audit(
         session,
         AuditLog,
@@ -697,14 +1233,17 @@ def _schedule_downgrade(
         action=action,
         entity="subscription",
         entity_id=subscription.id,
-        before={"plan_version_id": str(subscription.plan_version_id)},
+        before={
+            "plan_version_id": str(subscription.plan_version_id),
+            **({"pending_plan_version_id": str(replaced)} if replaced else {}),
+        },
         after={
             "pending_plan_version_id": str(version.id),
-            "effective_at": subscription.current_period_end.isoformat()
-            if subscription.current_period_end
-            else None,
+            "effective_at": effective.isoformat() if effective else None,
+            "reason_code": reason,
         },
-        reason=reason,
+        reason=note or reason,
+        acting_as=actor.get("id") if actor.get("type") == "operator" else None,
         request=request,
     )
 
@@ -715,20 +1254,41 @@ def _clear_pending_change(
     *,
     actor: dict[str, Any],
     request: Request | None,
+    note: str | None = None,
+    superseded_by: uuid.UUID | None = None,
+    cancelled: bool = False,
 ) -> None:
+    """Drop the change that is waiting for the next period, and say so on the audit trail.
+
+    Three ways it happens: withdrawn (a change back to the pin the subscription is on),
+    superseded (a change that applies now replaces it), or cancelled with the subscription (a
+    cancelled subscription never reaches the period it waited for). Each is its own action, and
+    each names who did it — a scheduled change must never vanish without a row saying who ended it.
+    """
     before = subscription.pending_plan_version_id
     subscription.pending_change = None
     subscription.pending_plan_version_id = None
+    if cancelled:
+        action = "commerce.subscription.scheduled_change_cancelled"
+    elif superseded_by is not None:
+        action = "commerce.subscription.change_superseded"
+    else:
+        action = "commerce.subscription.downgrade_withdrawn"
     record_audit(
         session,
         AuditLog,
         organization_id=subscription.organization_id,
         actor_id=uuid.UUID(actor["id"]) if actor.get("type") == "user" else None,
-        action="commerce.subscription.downgrade_withdrawn",
+        action=action,
         entity="subscription",
         entity_id=subscription.id,
         before={"pending_plan_version_id": str(before) if before else None},
-        after={"plan_version_id": str(subscription.plan_version_id)},
+        after={
+            "plan_version_id": str(subscription.plan_version_id),
+            **({"superseded_by_plan_version_id": str(superseded_by)} if superseded_by else {}),
+        },
+        reason=note,
+        acting_as=actor.get("id") if actor.get("type") == "operator" else None,
         request=request,
     )
 
@@ -746,18 +1306,35 @@ async def cancel(
     and when?" stays a `SELECT`."""
     from app import selectors
 
+    # A customer's words must not borrow a reason only the machinery writes: `decide` types the
+    # event from the transition reason, so "renew" here used to emit a `renewed` event for a
+    # cancellation. The words now ride as a note, and the transition keeps its own machine code.
+    domain.assert_free_text_allowed(reason)
     # The row lock the billing run's claim and record take (review round 2, fix M4): a cancel
     # never computes its closing usage from a period a concurrent record is about to roll.
     await selectors.lock_subscription(
         session, subscription.organization_id, subscription.id, skip_locked=False
     )
     decision = domain.decide(
-        from_state=subscription.state, to_state=STATE_CANCELLED, reason=reason or "customer_cancel"
+        from_state=subscription.state, to_state=STATE_CANCELLED, reason="customer_cancel"
     )
     # Never refused for a lagging run (final review): a customer can always leave. A period due
     # and unclaimed at the cancel is simply never opened — the run bills the closing usage only.
     subscription.cancel_at = datetime.now(UTC)
     await apply_lapsed_change(session, subscription, at=subscription.cancel_at)
+    # A change still waiting is for a period this subscription will now never reach: the billing
+    # run never rolls a cancelled row, so left in place it would sit on the row for good — and the
+    # customer's plan line would go on saying "changes to X on D" after the confirm told them it
+    # will not happen. Cleared here, in the cancel's transaction, with its own audit row.
+    if subscription.pending_change is not None or subscription.pending_plan_version_id is not None:
+        _clear_pending_change(
+            session,
+            subscription,
+            actor=_customer_actor(ctx),
+            request=request,
+            note="subscription_cancelled",
+            cancelled=True,
+        )
     # Usage bills in arrears at the next roll, which a cancelled subscription never reaches: the
     # cancellation claims its own closing period (addendum, review fix 5).
     await schedule_closing_usage(session, subscription, at=subscription.cancel_at)
@@ -774,6 +1351,7 @@ async def cancel(
         request=request,
         from_plan_version_id=subscription.plan_version_id,
         to_plan_version_id=subscription.plan_version_id,
+        note=reason.strip() if reason and reason.strip() else None,
     )
     await session.flush()
     return subscription
@@ -795,16 +1373,15 @@ async def suspend(
     """
     from app import selectors
 
-    if reason is not None and reason.strip().lower() in domain.RESERVED_REASONS:
-        raise BusinessRuleProblem(
-            f"{reason!r} is a reason only the platform's own machinery records; "
-            "describe the operator's reason in words of your own"
-        )
+    domain.assert_free_text_allowed(reason)
     await selectors.lock_subscription(
         session, subscription.organization_id, subscription.id, skip_locked=False
     )
+    # The transition's `reason` is a short machine code (a 60-character column, and the event is
+    # typed from it); the operator's words ride as the note — a 200-character reason used to be a
+    # 500 here.
     decision = domain.decide(
-        from_state=subscription.state, to_state=STATE_SUSPENDED, reason=reason or "operator_suspend"
+        from_state=subscription.state, to_state=STATE_SUSPENDED, reason="operator_suspend"
     )
     # An operator suspension overrides the ladder rather than racing it: the window is over
     # because a human said so, and a sweep must not later "suspend" an already suspended
@@ -821,6 +1398,7 @@ async def suspend(
         request=request,
         from_plan_version_id=subscription.plan_version_id,
         to_plan_version_id=subscription.plan_version_id,
+        note=reason.strip() if reason and reason.strip() else None,
     )
     await session.flush()
     return subscription
@@ -848,25 +1426,24 @@ async def reactivate(
     calling the same `charge_uncovered_remainder` the dunning-recovery resume calls: a period
     that rolled while suspended was not charged (the customer was not served), and the rest of
     the current one, from now, is — never a second, operator-only rule for the same situation.
-    Anyone with the billing-ops role may lift a suspension whoever placed it; the reason and the
-    operator's id are on the transition row either way.
+    Anyone with the billing-ops role may lift a suspension whoever placed it; the operator's id is
+    on the transition row and their words are the audit row's reason (never the event's).
     """
     from app import selectors
 
-    if reason.strip().lower() in domain.RESERVED_REASONS:
-        raise BusinessRuleProblem(
-            f"{reason!r} is a reason only the platform's own machinery records; "
-            "describe the operator's reason in words of your own"
-        )
+    domain.assert_free_text_allowed(reason)
     await selectors.lock_subscription(
         session, subscription.organization_id, subscription.id, skip_locked=False
     )
     if subscription.state != STATE_SUSPENDED:
-        raise ConflictProblem(
+        raise domain.CodedConflict(
+            domain.CODE_STATE,
             f"cannot reactivate a subscription that is {subscription.state}: "
-            "only a suspended one can be reactivated"
+            "only a suspended one can be reactivated",
         )
-    decision = domain.decide(from_state=subscription.state, to_state=STATE_ACTIVE, reason=reason)
+    decision = domain.decide(
+        from_state=subscription.state, to_state=STATE_ACTIVE, reason="operator_reactivate"
+    )
     subscription.suspended_at = None
     _transition(
         session,
@@ -876,8 +1453,93 @@ async def reactivate(
         request=request,
         from_plan_version_id=subscription.plan_version_id,
         to_plan_version_id=subscription.plan_version_id,
+        note=reason.strip() or None,
     )
     await charge_uncovered_remainder(session, subscription, at=datetime.now(UTC))
+    await session.flush()
+    return subscription
+
+
+async def extend_trial_as_operator(
+    session: AsyncSession,
+    subscription: Subscription,
+    payload: OperatorExtendTrialIn,
+    *,
+    request: Request | None = None,
+) -> Subscription:
+    """Move a trialling subscription's end later — console's owner-only "Extend trial" (ADR-0031).
+
+    Under the row lock the billing run's claim takes, in this order:
+
+    1. **The operator's picture still holds** — `expected_trial_ends_at` is the end now
+       (409 `state_changed` otherwise). This is what makes a retry safe: the target is absolute,
+       so a second attempt after the first landed finds the end already moved and adds nothing.
+    2. **It is a trial** (422 `not_trial`).
+    3. **The run has not claimed its conversion** (422 `claim_in_flight`): `record_billing_period`
+       voids a claimed conversion whose trial end moved (`still_due_for`), so extending under a
+       pending claim would turn an invoice already being priced into a void.
+    4. **The new end is later, in the future, and within `MAX_TOTAL_TRIAL_DAYS` of the trial's
+       start** (422 `trial_not_extended` / `trial_cap`; `domain.trial_extension_refusal`).
+
+    Then one `trial -> trial` transition typed `trial_extended` — never `trial_started`, which
+    console counts and notification rules fire on — carrying the lifecycle payload (whose
+    `trial_ends_at` is the new end, which product's projection folds) plus
+    `previous_trial_ends_at`. Nothing about money moves: the trial was free and stays free, and the
+    run converts it at the new end exactly as it would have at the old one.
+    """
+    from app import selectors
+
+    domain.assert_free_text_allowed(payload.note)
+    await selectors.lock_subscription(
+        session, subscription.organization_id, subscription.id, skip_locked=False
+    )
+    if subscription.trial_ends_at != payload.expected_trial_ends_at:
+        raise domain.CodedConflict(
+            domain.CODE_STATE_CHANGED,
+            "this subscription's trial end changed since you looked at it; refresh and review it "
+            "again",
+        )
+    if subscription.state != STATE_TRIAL:
+        raise domain.CodedRefusal(
+            domain.CODE_NOT_TRIAL,
+            f"a {subscription.state} subscription is not trialling; only a trial can be extended",
+        )
+    claim = await selectors.pending_lifecycle_claim(
+        session, subscription.organization_id, subscription.id
+    )
+    if claim is not None:
+        raise domain.CodedRefusal(
+            domain.CODE_CLAIM_IN_FLIGHT,
+            "billing has already claimed this trial's conversion and is pricing it; the trial can "
+            "no longer be extended",
+        )
+    new_end = payload.new_trial_ends_at.astimezone(UTC)
+    refusal = domain.trial_extension_refusal(
+        trial_started_at=subscription.current_period_start,
+        current_trial_ends_at=subscription.trial_ends_at,
+        new_trial_ends_at=new_end,
+        now=_wall(),
+    )
+    if refusal is not None:
+        raise domain.CodedRefusal(*refusal)
+
+    previous = subscription.trial_ends_at
+    subscription.trial_ends_at = new_end
+    _transition(
+        session,
+        subscription,
+        domain.decide(
+            from_state=STATE_TRIAL, to_state=STATE_TRIAL, reason=domain.REASON_TRIAL_EXTENDED
+        ),
+        actor=_operator_actor(payload.operator_id),
+        request=request,
+        from_plan_version_id=subscription.plan_version_id,
+        to_plan_version_id=subscription.plan_version_id,
+        extra={"previous_trial_ends_at": previous.isoformat() if previous else None},
+        note=payload.note,
+        audit_before={"trial_ends_at": previous.isoformat() if previous else None},
+        audit_after={"trial_ends_at": new_end.isoformat()},
+    )
     await session.flush()
     return subscription
 
@@ -1326,10 +1988,20 @@ async def suspend_for_dunning(
     return subscription
 
 
-async def require_subscription(session: AsyncSession, subscription_id: uuid.UUID) -> Subscription:
+async def require_subscription(
+    session: AsyncSession,
+    subscription_id: uuid.UUID,
+    *,
+    organization_id: uuid.UUID | None = None,
+) -> Subscription:
+    """The subscription, or a 404. `organization_id` (the `/internal` routes, which are told the
+    tenant by the payload) filters the query on it too, so a wrong pairing is a 404 even if the RLS
+    net were ever missing."""
     from app import selectors
 
-    subscription = await selectors.get_subscription(session, subscription_id)
+    subscription = await selectors.get_subscription(
+        session, subscription_id, organization_id=organization_id
+    )
     if subscription is None:
         # Invisible under RLS unless the transaction is bound to its organization — so another
         # tenant's id is a 404, never a disclosure.
@@ -1500,19 +2172,28 @@ async def _insert_period(session: AsyncSession, values: dict[str, Any]) -> None:
     )
 
 
-class BillingCatchingUp(ConflictProblem):
+class BillingCatchingUp(domain.CodedConflict):
     """A plan change while a period or trial end is due and not yet claimed.
 
     Deciding money against a period the run has not claimed yet — pricing a proration against a
     period that has not been opened — is how the earlier rounds' defects were made. So a change
     waits for the run (review round 3, fix M3). A cancellation never does (final review): leaving
     must always work, and a cancel against an unopened period bills only its closing usage.
+
+    Code `billing_catching_up`. Transient only while the billing run is running: with
+    `BILLING_RUN_ENABLED=false` nothing ever claims the due period, so this is indefinite there and
+    an operator surface must say so rather than "try again shortly".
     """
 
     title = "Billing is catching up"
 
+    def __init__(self, detail: str) -> None:
+        super().__init__(domain.CODE_BILLING_CATCHING_UP, detail)
 
-async def assert_billing_caught_up(session: AsyncSession, subscription: Subscription) -> None:
+
+async def assert_billing_caught_up(
+    session: AsyncSession, subscription: Subscription, *, lock: bool = True
+) -> None:
     """409 if a period or a trial end is due for the subscription and the run has not claimed it.
 
     Due is decided on the stored boundaries against the wall clock; claimed means a claim row of
@@ -1520,6 +2201,9 @@ async def assert_billing_caught_up(session: AsyncSession, subscription: Subscrip
     this refuses plan changes on every overdue subscription — the runbook says so. A claim that
     fails permanently stays pending; once its own period has ended too, the subscription is more
     than one period behind and its plan changes are refused until a person fixes the claim.
+
+    `lock=False` is the read-only preview's: it asks whether the claim row exists without taking
+    `FOR UPDATE` on it.
     """
     from app import selectors
 
@@ -1541,7 +2225,8 @@ async def assert_billing_caught_up(session: AsyncSession, subscription: Subscrip
         raise BillingCatchingUp("billing is catching up on this subscription — try again shortly")
     if due is None or not due.billable:
         return
-    claimed = await selectors.lock_billing_period(
+    find = selectors.lock_billing_period if lock else selectors.find_billing_period
+    claimed = await find(
         session, subscription.organization_id, subscription.id, due.kind, due.start
     )
     if claimed is None:
@@ -1742,18 +2427,47 @@ async def schedule_closing_usage(
 
 
 async def apply_pending_change(
-    session: AsyncSession, subscription: Subscription, *, boundary: datetime
+    session: AsyncSession,
+    subscription: Subscription,
+    *,
+    boundary: datetime,
+    silent: bool = False,
 ) -> bool:
     """Apply a downgrade that was waiting for this roll (addendum §4). True if one was applied.
 
     Called by the run's claim, in the claim's transaction, before the period is snapshotted — so
     the new period is priced at the lower plan and rolled on its cadence. It is the moment the
-    downgrade *happens*, so it is the moment the transition and its `downgraded` event are
-    written; a suspended subscription takes the pin without an event (no edge, nothing served).
+    change *happens*, so it is the moment the transition and its event are written; a suspended
+    subscription takes the pin without an event (no edge, nothing served).
+
+    **The event is labelled by the change's direction**, which the schedule stored with it: a
+    deferred price increase (a staff change on a paying subscription) emits `upgraded` here, not
+    `downgraded`. Every consumer folds the two identically (they read the payload's state, pin and
+    members) so the label is for the humans and the reports that read it. A pending change
+    scheduled before the direction was stored has none and keeps the old label, `downgraded`,
+    exactly as it always did — nothing already waiting changes meaning. The operator's note, when
+    the change had one, is the applied transition's audit reason; it is not put on the event.
+
+    **`silent` is for a stop** (`apply_lapsed_change`): the change is applied in full (pin, items,
+    entitled products, the pending state resolved, the transition row and the audit row written)
+    but the `upgraded`/`downgraded` event is not staged. The stop (`cancelled`, `suspended`) is
+    staged in the same transaction, so the two events would carry the same `occurred_at` (the
+    transaction's start), and the consumers' ordering guards drop an event that does not advance
+    what a subscription already reflects (`product.services.project_subscription`,
+    `console.domain._is_stale`). Delivery order of two tied events is not defined: when
+    `upgraded` folded first, `cancelled` was dropped, and cancelled is terminal, so nothing ever
+    repaired it and the product stayed entitled. The stop event carries the final pin and
+    `entitled_products`, which is everything the consumers would have learned from the first
+    one. It is the shape of the suspended branch below: the change takes effect, the record of it
+    is written, no event.
     """
     change = subscription.pending_change
     if not change:
         return False
+    reason = change.get("reason")
+    if reason not in (domain.REASON_UPGRADE, domain.REASON_DOWNGRADE):
+        reason = domain.REASON_DOWNGRADE
+    note = change.get("note")
     # The period that is ending was consumed on the old pin: its usage is closed there, at the
     # old rate, before the pin moves — and the renewal about to be claimed then carries no usage
     # window, so the new (lower) rate never prices usage from before the change (round 2, M3).
@@ -1778,9 +2492,11 @@ async def apply_pending_change(
         _billing_audit(
             session,
             subscription,
-            "commerce.subscription.downgrade_applied",
+            "commerce.subscription.downgrade_applied"
+            if reason == domain.REASON_DOWNGRADE
+            else "commerce.subscription.change_applied",
             {"from": str(from_pin), "to": str(to_pin)},
-            reason=domain.REASON_DOWNGRADE,
+            reason=note or reason,
         )
     else:
         _transition(
@@ -1789,12 +2505,14 @@ async def apply_pending_change(
             domain.decide(
                 from_state=subscription.state,
                 to_state=subscription.state,
-                reason=domain.REASON_DOWNGRADE,
+                reason=reason,
             ),
             actor=_BILLING_ACTOR,
             request=None,
             from_plan_version_id=from_pin,
             to_plan_version_id=to_pin,
+            note=note,
+            emit_event=not silent,
         )
     await session.flush()
     return True
@@ -1812,6 +2530,13 @@ async def apply_lapsed_change(
     final review). So the stop applies it first, at the boundary: usage up to it closes at the
     old pin, and the stop closes the rest at the new one. The rolls the run makes later find no
     change waiting and price at the new pin, as they would have.
+
+    **The change is applied silently.** Every caller stages its stop event in this same
+    transaction, and an `upgraded`/`downgraded` event beside it would tie it on `occurred_at`; a
+    consumer that folded the first would drop the stop (see `apply_pending_change`). The stop event
+    carries the final pin and `entitled_products`, so nothing is lost by not announcing the change
+    first: the transition and audit rows still record it. The billing run's own application, at a
+    renewal boundary, is not a stop and still announces its change.
     """
     if (
         not subscription.pending_change
@@ -1831,7 +2556,7 @@ async def apply_lapsed_change(
     )
     if boundary > at:
         return
-    await apply_pending_change(session, subscription, boundary=boundary)
+    await apply_pending_change(session, subscription, boundary=boundary, silent=True)
 
 
 async def claim_billing_period(

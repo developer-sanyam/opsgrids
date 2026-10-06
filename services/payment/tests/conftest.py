@@ -12,12 +12,14 @@ no row in any other service — a bare UUID is a whole tenant.
 
 from __future__ import annotations
 
+import os
 import sys
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -28,11 +30,27 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # may be on the path in a given process.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.config import settings
-from app.main import app
-from app.models import SCHEMA
-from app.providers.razorpay import RazorpayProvider
-from platform_core.db import (
+# **Hermetic by construction** (ADR-0032). The Makefile exports the developer's root `.env` into
+# `make test`, and a developer may well hold Razorpay or Cashfree test keys there. Keys never switch
+# the network on (the wire is chosen by an explicit switch), but the switches themselves could come
+# from that file too — so they are pinned here, in the process environment, before any settings are
+# read, and the process environment beats `.env`. A test that wants another value builds its own
+# `Settings` or monkeypatches one; none of them can reach a real provider, and
+# `_no_real_transport` below fails the one that tries.
+for _name, _value in (
+    ("PAYMENT_PROVIDER", "razorpay"),
+    ("PAYMENT_WIRE", "stub"),
+    ("CASHFREE_ENV", "stub"),
+    ("COLLECTIONS_WIRE", "stub"),
+    ("COLLECTIONS_CASHFREE_WIRE", "stub"),
+):
+    os.environ[_name] = _value
+
+from app.config import settings  # noqa: E402
+from app.main import app  # noqa: E402
+from app.models import SCHEMA  # noqa: E402
+from app.providers.razorpay import RazorpayProvider  # noqa: E402
+from platform_core.db import (  # noqa: E402
     TENANT_GUC,
     dispose_engine,
     dispose_outbox_engine,
@@ -54,6 +72,34 @@ PAYMENT_TABLES = (
     "outbox",
     "processed_events",
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail any test that opens a real HTTP connection. `httpx.MockTransport` (every scripted wire
+    here) and `ASGITransport` (the app under test) are not `HTTPTransport`, so only a request that
+    would actually leave the machine trips this — a provider wire built live by mistake, or a
+    developer `.env` that switched one on."""
+
+    def _refuse(self: object, request: httpx.Request, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError(f"a test tried to open a real HTTP connection to {request.url.host}")
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _refuse)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _refuse)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_provider_state() -> Any:
+    """The credentials latch and the cached provider registry are process-wide; a test that trips
+    or fills them must not leak into the next."""
+    from app import deps
+    from app.providers.wire import CREDENTIALS
+
+    CREDENTIALS.reset()
+    deps.reset_providers()
+    yield
+    CREDENTIALS.reset()
+    deps.reset_providers()
 
 
 def _connect_args() -> dict:

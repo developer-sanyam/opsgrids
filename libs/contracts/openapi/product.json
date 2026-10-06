@@ -345,6 +345,7 @@
         ]
       },
       "post": {
+        "description": "Turn a product on by hand, for an organization no subscription has fed.\n\nA product a subscription has ever fed (live, suspended, cancelled, or removed from a bundle by\na downgrade) is managed by that subscription and is refused with 409 `subscription_managed`\n(`errors[0].code`): a hand activation would undo a cancellation or a suspension. Refusals\nleave nothing written. 422 for a bundle or a product that has not launched, 404 for an unknown\nkey.",
         "operationId": "activate_api_v1_products_activations_post",
         "requestBody": {
           "content": {
@@ -386,6 +387,7 @@
     },
     "/api/v1/products/activations/{product_key}": {
       "delete": {
+        "description": "Turn a hand-activated product off.\n\nRefused with 409 `subscription_managed` (`errors[0].code`) while the product's own\nsubscription is serving it, and with 422 while a bundle that includes it still does.",
         "operationId": "deactivate_api_v1_products_activations__product_key__delete",
         "parameters": [
           {

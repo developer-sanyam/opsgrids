@@ -252,6 +252,24 @@ class ActivationSource(Base, TenantBase):
             return self.trial_ends_at is None or self.trial_ends_at > datetime.now(UTC)
         return False
 
+    @property
+    def is_subscription_managed(self) -> bool:
+        """Whether a subscription has ever written this row, in **any** status.
+
+        The fold records the providing subscription's id and the event's time on every row it
+        touches (`project_subscription`), and nothing else does: a hand activation leaves both
+        NULL, and `activate()` keeps whatever a fold already put there. So either being set is
+        provenance that a subscription fed this source, and it stays set after the subscription
+        is cancelled, suspended or the member tombstoned `removed` by a downgrade — which is the
+        point. A cancelled subscription never emits again, so the row is the only memory of it,
+        and a hand activation over that row would switch the product back on with nothing left to
+        switch it off. Either column, because an event from before the id was carried has only
+        the time, and one without a time (a unit-test envelope) has only the id.
+
+        A fresh organization and a hand-only one have neither, and stay free to activate.
+        """
+        return self.source_subscription_id is not None or self.state_occurred_at is not None
+
 
 class OutboxEvent(Base, OutboxMixin):
     """Domain events staged in the same transaction as the change they describe."""

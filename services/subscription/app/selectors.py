@@ -36,6 +36,7 @@ from app.models import (
     PERIOD_VOID_PENDING,
     PERIOD_VOIDED,
     STATE_ACTIVE,
+    STATE_CANCELLED,
     STATE_PAST_DUE,
     STATE_SUSPENDED,
     STATE_TRIAL,
@@ -54,27 +55,38 @@ def _with_items(stmt: Select[Any]) -> Select[Any]:
 async def list_subscriptions(session: AsyncSession, ctx: ScopeContext) -> list[Subscription]:
     """Every subscription this organization holds.
 
-    Scoped through `ctx.apply` for the single enforcement point the convention requires; at the
-    `ORG` floor these routes run under, that is the identity filter, and the tenant binding plus
-    RLS is what actually isolates one organization from another.
+    Filtered on the caller's organization explicitly — at the `ORG` floor these routes run under,
+    `ctx.apply` is the identity filter, and RLS is the net, not the licence to skip the filter —
+    and scoped through `ctx.apply` for the single enforcement point the convention requires.
     """
     stmt = ctx.apply(
-        _with_items(select(Subscription).order_by(Subscription.product_key)),
+        _with_items(
+            select(Subscription)
+            .where(Subscription.organization_id == ctx.organization_id)
+            .order_by(Subscription.product_key)
+        ),
         owner_col=Subscription.organization_id,
     )
     return list((await session.execute(stmt)).scalars().all())
 
 
 async def get_subscription(
-    session: AsyncSession, subscription_id: uuid.UUID
+    session: AsyncSession,
+    subscription_id: uuid.UUID,
+    *,
+    organization_id: uuid.UUID | None = None,
 ) -> Subscription | None:
     """One subscription by id, with its items.
 
-    No explicit organization filter is needed to keep tenants apart: the row is invisible under
-    RLS unless the transaction is bound to its organization, so another org's id simply resolves
-    to None — a 404, never a disclosure.
+    The row is invisible under RLS unless the transaction is bound to its organization, so another
+    org's id resolves to None — a 404, never a disclosure. A caller that is told the organization
+    by its payload rather than by a principal (the console's `/internal` routes) passes it as
+    `organization_id` too, so the query filters on it and RLS is the net, not the only guard
+    (CLAUDE.md).
     """
     stmt = _with_items(select(Subscription).where(Subscription.id == subscription_id))
+    if organization_id is not None:
+        stmt = stmt.where(Subscription.organization_id == organization_id)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -471,6 +483,24 @@ async def lock_billing_period(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def find_billing_period(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    subscription_id: uuid.UUID,
+    kind: str,
+    period_start: datetime,
+) -> BillingPeriod | None:
+    """`lock_billing_period` without the lock — the read-only plan-change preview asks whether
+    the run has claimed a due period, and must not hold a row to find out."""
+    stmt = select(BillingPeriod).where(
+        BillingPeriod.organization_id == organization_id,
+        BillingPeriod.subscription_id == subscription_id,
+        BillingPeriod.kind == kind,
+        BillingPeriod.period_start == period_start,
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def lock_billing_period_by_id(
     session: AsyncSession,
     organization_id: uuid.UUID,
@@ -505,6 +535,23 @@ async def pending_lifecycle_claim(
         .limit(1)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def scheduled_change_effective_at(
+    session: AsyncSession, subscription: Subscription
+) -> datetime | None:
+    """When the change waiting on this subscription applies, for a customer to read: the end of
+    the claimed period while a renewal or conversion claim is pending, else the end of the current
+    period — the same boundary the write schedules against (`services._evaluate_change_plan`) and
+    the billing run applies at (`services.apply_lapsed_change`). None when nothing is waiting, and
+    for a cancelled subscription, which never reaches another period (a row cancelled before
+    `services.cancel` cleared its waiting change still carries one)."""
+    if subscription.pending_plan_version_id is None or subscription.state == STATE_CANCELLED:
+        return None
+    claim = await pending_lifecycle_claim(session, subscription.organization_id, subscription.id)
+    if claim is not None and claim.period_end is not None:
+        return claim.period_end
+    return subscription.current_period_end
 
 
 async def max_claimed_usage_end(

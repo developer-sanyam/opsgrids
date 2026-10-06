@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import {
   deleteInventoryItem,
@@ -29,6 +29,7 @@ import {
   SectionHeader,
   Skeleton,
   StockPill,
+  Tabs,
   Tag,
 } from "@/ui";
 import type { Column, StockLevel } from "@/ui";
@@ -36,7 +37,22 @@ import { ArrowRightIcon, BoxIcon, LayersIcon, PlusIcon, TagIcon, useToast } from
 import { InventoryItemFormDialog } from "@/forms/InventoryItemFormDialog";
 import { ItemAttributeFormDialog } from "@/forms/ItemAttributeFormDialog";
 import { ItemVariantFormDialog } from "@/forms/ItemVariantFormDialog";
+import { OpeningStockDialog } from "@/forms/OpeningStockDialog";
 import { StockAdjustmentDialog } from "@/forms/StockAdjustmentDialog";
+import {
+  ItemLedgerPanel,
+  ItemLocationsPanel,
+  ItemLotsPanel,
+  ItemRollsPanel,
+} from "@/tracking/ItemTabs";
+
+const ITEM_TABS = [
+  { id: "overview", label: "Overview" },
+  { id: "locations", label: "Locations" },
+  { id: "lots", label: "Lots" },
+  { id: "rolls", label: "Rolls" },
+  { id: "ledger", label: "Ledger" },
+];
 
 const KIND_FILTERS: { value: StockMovementKind | "all"; label: string }[] = [
   { value: "all", label: "All movements" },
@@ -82,6 +98,11 @@ export function InventoryItemDetailPage() {
   const toast = useToast();
   const [editing, setEditing] = useState(false);
   const [adjusting, setAdjusting] = useState(false);
+  const [openingStock, setOpeningStock] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const requestedTab = params.get("tab") ?? "overview";
+  const tab = ITEM_TABS.some((t) => t.id === requestedTab) ? requestedTab : "overview";
+  const setTab = (next: string) => setParams(next === "overview" ? {} : { tab: next }, { replace: true });
   const [deleting, setDeleting] = useState(false);
   const [kind, setKind] = useState<StockMovementKind | "all">("all");
   const [page, setPage] = useState(1);
@@ -283,6 +304,9 @@ export function InventoryItemDetailPage() {
           <div className="flex flex-wrap items-center gap-2">
             <Can permission="operations.inventory.stock.adjust" scope="ORG">
               <Button onClick={() => setAdjusting(true)}>Adjust stock</Button>
+              <Button variant="outline" onClick={() => setOpeningStock(true)}>
+                Opening stock
+              </Button>
             </Can>
             <Can permission="operations.inventory.item.write" scope="ORG">
               <Button variant="outline" onClick={() => setEditing(true)}>
@@ -327,159 +351,169 @@ export function InventoryItemDetailPage() {
         <span className="text-xs text-muted">Last updated {formatDate(item.updated_at)}</span>
       </Card>
 
-      <Card className="p-2 sm:p-4">
-        <div className="px-3 pt-2 pb-3 flex flex-col gap-3">
-          <SectionHeader title="Stock Movements" subtitle="Newest first. Append-only — no row can be edited or deleted." />
-          <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
-            {KIND_FILTERS.map((f) => (
-              <Pill
-                key={f.value}
-                active={kind === f.value}
-                onClick={() => {
-                  setKind(f.value);
-                  setPage(1);
-                }}
-              >
-                {f.label}
-              </Pill>
-            ))}
-          </div>
-        </div>
-        {movementsState.status === "loading" ? (
-          <div className="flex flex-col gap-3 p-3">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-12 w-full rounded-tile" />
-            ))}
-          </div>
-        ) : null}
-        {movementsState.status === "error" ? (
-          <ErrorState message={problemMessage(movementsState.error)} onRetry={movementsState.reload} />
-        ) : null}
-        {movementsState.status === "success" ? (
-          <>
-            <DataTable
-              columns={columns}
-              rows={movementsState.data.items}
-              rowKey={(m) => m.id}
-              caption={`Stock movements for ${item.name}`}
-              emptyState={
-                <EmptyState
-                  icon={<LayersIcon className="size-6" />}
-                  title="No stock movements yet"
-                  description="Movements appear here once stock is received, adjusted or counted."
+      <Tabs label="Item sections" items={ITEM_TABS} value={tab} onChange={setTab} activation="manual">
+        {tab === "overview" ? (
+          <div className="flex flex-col gap-6">
+          <Card className="p-2 sm:p-4">
+            <div className="px-3 pt-2 pb-3 flex flex-col gap-3">
+              <SectionHeader title="Stock Movements" subtitle="Newest first. Append-only — no row can be edited or deleted." />
+              <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
+                {KIND_FILTERS.map((f) => (
+                  <Pill
+                    key={f.value}
+                    active={kind === f.value}
+                    onClick={() => {
+                      setKind(f.value);
+                      setPage(1);
+                    }}
+                  >
+                    {f.label}
+                  </Pill>
+                ))}
+              </div>
+            </div>
+            {movementsState.status === "loading" ? (
+              <div className="flex flex-col gap-3 p-3">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <Skeleton key={i} className="h-12 w-full rounded-tile" />
+                ))}
+              </div>
+            ) : null}
+            {movementsState.status === "error" ? (
+              <ErrorState message={problemMessage(movementsState.error)} onRetry={movementsState.reload} />
+            ) : null}
+            {movementsState.status === "success" ? (
+              <>
+                <DataTable
+                  columns={columns}
+                  rows={movementsState.data.items}
+                  rowKey={(m) => m.id}
+                  caption={`Stock movements for ${item.name}`}
+                  emptyState={
+                    <EmptyState
+                      icon={<LayersIcon className="size-6" />}
+                      title="No stock movements yet"
+                      description="Movements appear here once stock is received, adjusted or counted."
+                    />
+                  }
                 />
-              }
-            />
-            <Pagination
-              page={movementsState.data.page}
-              pages={movementsState.data.pages}
-              total={movementsState.data.total}
-              size={movementsState.data.size}
-              noun="movements"
-              onPageChange={setPage}
-            />
-          </>
-        ) : null}
-      </Card>
+                <Pagination
+                  page={movementsState.data.page}
+                  pages={movementsState.data.pages}
+                  total={movementsState.data.total}
+                  size={movementsState.data.size}
+                  noun="movements"
+                  onPageChange={setPage}
+                />
+              </>
+            ) : null}
+          </Card>
 
-      <Card className="p-2 sm:p-4">
-        <div className="px-3 pt-2 pb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <SectionHeader
-            title="Attributes"
-            subtitle="Typed facts about this item — GSM, width, shade, composition…"
-          />
-          <Can permission="operations.inventory.item.write" scope="ORG">
-            <Button
-              size="sm"
-              variant="outline"
-              leadingIcon={<PlusIcon className="size-4" />}
-              onClick={() => setAddingAttribute(true)}
-            >
-              Add attribute
-            </Button>
-          </Can>
-        </div>
-        {attributesState.status === "loading" ? (
-          <div className="flex flex-col gap-3 p-3">
-            {Array.from({ length: 2 }).map((_, i) => (
-              <Skeleton key={i} className="h-12 w-full rounded-tile" />
-            ))}
-          </div>
-        ) : null}
-        {attributesState.status === "error" ? (
-          <ErrorState message={problemMessage(attributesState.error)} onRetry={attributesState.reload} />
-        ) : null}
-        {attributesState.status === "success" ? (
-          <DataTable
-            columns={attributeColumns}
-            rows={attributesState.data}
-            rowKey={(a) => a.id}
-            caption={`Attributes for ${item.name}`}
-            emptyState={
-              <EmptyState
-                icon={<TagIcon className="size-6" />}
-                title="No attributes yet"
-                description="Record GSM, width, shade or any other fact this item's category needs."
-                action={
-                  <Can permission="operations.inventory.item.write" scope="ORG">
-                    <Button size="sm" onClick={() => setAddingAttribute(true)}>
-                      Add attribute
-                    </Button>
-                  </Can>
+          <Card className="p-2 sm:p-4">
+            <div className="px-3 pt-2 pb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <SectionHeader
+                title="Attributes"
+                subtitle="Typed facts about this item — GSM, width, shade, composition…"
+              />
+              <Can permission="operations.inventory.item.write" scope="ORG">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  leadingIcon={<PlusIcon className="size-4" />}
+                  onClick={() => setAddingAttribute(true)}
+                >
+                  Add attribute
+                </Button>
+              </Can>
+            </div>
+            {attributesState.status === "loading" ? (
+              <div className="flex flex-col gap-3 p-3">
+                {Array.from({ length: 2 }).map((_, i) => (
+                  <Skeleton key={i} className="h-12 w-full rounded-tile" />
+                ))}
+              </div>
+            ) : null}
+            {attributesState.status === "error" ? (
+              <ErrorState message={problemMessage(attributesState.error)} onRetry={attributesState.reload} />
+            ) : null}
+            {attributesState.status === "success" ? (
+              <DataTable
+                columns={attributeColumns}
+                rows={attributesState.data}
+                rowKey={(a) => a.id}
+                caption={`Attributes for ${item.name}`}
+                emptyState={
+                  <EmptyState
+                    icon={<TagIcon className="size-6" />}
+                    title="No attributes yet"
+                    description="Record GSM, width, shade or any other fact this item's category needs."
+                    action={
+                      <Can permission="operations.inventory.item.write" scope="ORG">
+                        <Button size="sm" onClick={() => setAddingAttribute(true)}>
+                          Add attribute
+                        </Button>
+                      </Can>
+                    }
+                  />
                 }
               />
-            }
-          />
-        ) : null}
-      </Card>
+            ) : null}
+          </Card>
 
-      <Card className="p-2 sm:p-4">
-        <div className="px-3 pt-2 pb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <SectionHeader title="Variants" subtitle="Purchasable/stockable variants of this item." />
-          <Can permission="operations.inventory.item.write" scope="ORG">
-            <Button
-              size="sm"
-              variant="outline"
-              leadingIcon={<PlusIcon className="size-4" />}
-              onClick={() => setAddingVariant(true)}
-            >
-              Add variant
-            </Button>
-          </Can>
-        </div>
-        {variantsState.status === "loading" ? (
-          <div className="flex flex-col gap-3 p-3">
-            {Array.from({ length: 2 }).map((_, i) => (
-              <Skeleton key={i} className="h-12 w-full rounded-tile" />
-            ))}
-          </div>
-        ) : null}
-        {variantsState.status === "error" ? (
-          <ErrorState message={problemMessage(variantsState.error)} onRetry={variantsState.reload} />
-        ) : null}
-        {variantsState.status === "success" ? (
-          <DataTable
-            columns={variantColumns}
-            rows={variantsState.data}
-            rowKey={(v) => v.id}
-            caption={`Variants of ${item.name}`}
-            emptyState={
-              <EmptyState
-                icon={<BoxIcon className="size-6" />}
-                title="No variants yet"
-                description="Add a size, shade or length cut with its own SKU."
-                action={
-                  <Can permission="operations.inventory.item.write" scope="ORG">
-                    <Button size="sm" onClick={() => setAddingVariant(true)}>
-                      Add variant
-                    </Button>
-                  </Can>
+          <Card className="p-2 sm:p-4">
+            <div className="px-3 pt-2 pb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <SectionHeader title="Variants" subtitle="Purchasable/stockable variants of this item." />
+              <Can permission="operations.inventory.item.write" scope="ORG">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  leadingIcon={<PlusIcon className="size-4" />}
+                  onClick={() => setAddingVariant(true)}
+                >
+                  Add variant
+                </Button>
+              </Can>
+            </div>
+            {variantsState.status === "loading" ? (
+              <div className="flex flex-col gap-3 p-3">
+                {Array.from({ length: 2 }).map((_, i) => (
+                  <Skeleton key={i} className="h-12 w-full rounded-tile" />
+                ))}
+              </div>
+            ) : null}
+            {variantsState.status === "error" ? (
+              <ErrorState message={problemMessage(variantsState.error)} onRetry={variantsState.reload} />
+            ) : null}
+            {variantsState.status === "success" ? (
+              <DataTable
+                columns={variantColumns}
+                rows={variantsState.data}
+                rowKey={(v) => v.id}
+                caption={`Variants of ${item.name}`}
+                emptyState={
+                  <EmptyState
+                    icon={<BoxIcon className="size-6" />}
+                    title="No variants yet"
+                    description="Add a size, shade or length cut with its own SKU."
+                    action={
+                      <Can permission="operations.inventory.item.write" scope="ORG">
+                        <Button size="sm" onClick={() => setAddingVariant(true)}>
+                          Add variant
+                        </Button>
+                      </Can>
+                    }
+                  />
                 }
               />
-            }
-          />
+            ) : null}
+          </Card>
+          </div>
         ) : null}
-      </Card>
+        {tab === "locations" ? <ItemLocationsPanel item={item} onChanged={itemState.reload} /> : null}
+        {tab === "lots" ? <ItemLotsPanel item={item} onChanged={itemState.reload} /> : null}
+        {tab === "rolls" ? <ItemRollsPanel item={item} onChanged={itemState.reload} /> : null}
+        {tab === "ledger" ? <ItemLedgerPanel item={item} onChanged={itemState.reload} /> : null}
+      </Tabs>
 
       {editing ? (
         <InventoryItemFormDialog
@@ -500,6 +534,19 @@ export function InventoryItemDetailPage() {
           onSaved={(saved) => {
             setAdjusting(false);
             toast.success(`Stock adjusted — ${formatQty(saved.on_hand_qty)} ${saved.uom} on hand.`);
+            itemState.reload();
+            movementsState.reload();
+          }}
+        />
+      ) : null}
+
+      {openingStock ? (
+        <OpeningStockDialog
+          item={item}
+          onClose={() => setOpeningStock(false)}
+          onSaved={() => {
+            setOpeningStock(false);
+            toast.success("Opening stock posted.");
             itemState.reload();
             movementsState.reload();
           }}

@@ -21,6 +21,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
+from app import domain
 from app.inventory import ledger, quantity
 from app.inventory import selectors as inv_selectors
 from app.inventory.ledger import MoveLine
@@ -64,6 +65,7 @@ EVT_WAREHOUSE_UPDATED = "operations.inventory.warehouse.updated"
 EVT_WAREHOUSE_DELETED = "operations.inventory.warehouse.deleted"
 EVT_LOCATION_CREATED = "operations.inventory.location.created"
 EVT_LOCATION_UPDATED = "operations.inventory.location.updated"
+EVT_LOCATION_DELETED = "operations.inventory.location.deleted"
 #: Kind and the capacity columns (ADR-0024 §5's "capacity columns" — max weight, max volume,
 #: storage type). Changing any of these on a location that already has ledger history needs
 #: `layout.publish`, not plain `location.write`.
@@ -95,6 +97,17 @@ def _duplicate(field: str, message: str) -> ConflictProblem:
     return ConflictProblem(
         message, errors=[{"field": field, "code": "duplicate", "message": message}]
     )
+
+
+def _check_site_coordinates(lat_micro: int | None, lng_micro: int | None) -> None:
+    """A warehouse's coordinates, as they will be stored: both set or both null, each in range. The
+    HTTP schema checks a create body; a PATCH is checked here against the *merged* state, and so is
+    any caller that does not come through the schema."""
+    if errors := domain.site_coordinate_errors(lat_micro, lng_micro):
+        raise ValidationProblem(
+            errors[0][1],
+            errors=[{"field": f, "code": "invalid_coordinates", "message": m} for f, m in errors],
+        )
 
 
 async def _home_for(session: AsyncSession, org_id: uuid.UUID, warehouse_name: str) -> Location:
@@ -224,11 +237,15 @@ async def create_warehouse(
     code: str,
     name: str,
     location: str = "",
+    lat_micro: int | None = None,
+    lng_micro: int | None = None,
     request: Request | None = None,
 ) -> Warehouse:
     """Create a warehouse (stocking location) and its default bin. `name` is a unique join key too
     — it is what `inventory_items.warehouse` and `purchase_orders.warehouse` carry — so a
-    duplicate name is refused exactly like a duplicate code."""
+    duplicate name is refused exactly like a duplicate code. `lat_micro`/`lng_micro` place the
+    site on a map (micro-degrees, both or neither)."""
+    _check_site_coordinates(lat_micro, lng_micro)
     if await inv_selectors.get_warehouse_by_code(session, ctx.organization_id, code):
         raise _duplicate("code", f"A warehouse coded {code!r} already exists")
     if await inv_selectors.get_warehouse_by_name(session, ctx.organization_id, name):
@@ -240,6 +257,8 @@ async def create_warehouse(
         code=code,
         name=name,
         location=location,
+        lat_micro=lat_micro,
+        lng_micro=lng_micro,
     )
     session.add(warehouse)
     await session.flush()
@@ -292,11 +311,20 @@ async def update_warehouse(
     *,
     request: Request | None = None,
 ) -> Warehouse:
-    """Patch `name`/`location`. `code` is immutable — `WarehousePatch` carries no such field.
-    A rename cascades to the denormalised `warehouse` string on every live purchase order and
-    inventory item in the same transaction, or every existing row keeps the stale name. Stock is
-    unaffected: it sits at locations, which a rename does not touch."""
+    """Patch `name`/`location`/the site's coordinates. `code` is immutable — `WarehousePatch`
+    carries no such field. A rename cascades to the denormalised `warehouse` string on every live
+    purchase order and inventory item in the same transaction, or every existing row keeps the
+    stale name. Stock is unaffected: it sits at locations, which a rename does not touch.
+
+    Coordinates are validated against the **merged** state: a patch that sets only the latitude is
+    checked against the longitude already stored, so a lone half can never be persisted; an
+    explicit `null` for both clears the site's position."""
     changes = payload.model_dump(exclude_unset=True)
+    if "lat_micro" in changes or "lng_micro" in changes:
+        _check_site_coordinates(
+            changes.get("lat_micro", warehouse.lat_micro),
+            changes.get("lng_micro", warehouse.lng_micro),
+        )
     if "name" in changes and changes["name"] != warehouse.name:
         existing = await inv_selectors.get_warehouse_by_name(
             session, ctx.organization_id, changes["name"]
@@ -584,6 +612,110 @@ async def update_location(
         actor=_actor(ctx),
     )
     return location
+
+
+async def delete_location(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    location_id: uuid.UUID,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Soft-delete a location. Refused (409) while it is its warehouse's default bin, still has
+    child locations, is an item's home bin, or holds — or has *ever* held — stock: a location
+    with ledger history is part of the record of where stock was, and deleting it would leave
+    history naming a place that no longer exists. Such a location can be renamed or left unused.
+
+    The location row is taken `FOR UPDATE` before the history check, and `post_move` takes the
+    rows it posts into `FOR SHARE`, so a deletion and a concurrent first post into the same
+    location serialise: the deletion sees the stock, or the post finds the location gone.
+    """
+    org_id = ctx.organization_id
+    location = (
+        await session.execute(
+            select(Location)
+            .where(
+                Location.organization_id == org_id,
+                Location.id == location_id,
+                Location.deleted_at.is_(None),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if location is None:
+        raise NotFoundProblem("That location is not part of this organization")
+    if location.is_default:
+        raise ConflictProblem(
+            f"{location.code} is its warehouse's default bin, which holds stock for items that "
+            "have no other place; it cannot be deleted"
+        )
+    children = (
+        await session.execute(
+            select(func.count())
+            .select_from(Location)
+            .where(
+                Location.organization_id == org_id,
+                Location.parent_id == location.id,
+                Location.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    if children:
+        raise ConflictProblem(
+            f"{location.code} still has {children} location(s) inside it; delete or move them first"
+        )
+    homed = (
+        await session.execute(
+            select(func.count())
+            .select_from(InventoryItem)
+            .where(
+                InventoryItem.organization_id == org_id,
+                InventoryItem.home_location_id == location.id,
+                InventoryItem.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    if homed:
+        raise ConflictProblem(
+            f"{location.code} is the home bin of {homed} inventory item(s); give them another "
+            "warehouse first"
+        )
+    if await inv_selectors.location_has_ledger_history(session, org_id, location.id):
+        raise ConflictProblem(
+            f"{location.code} holds or has held stock, so its history is kept; "
+            "a location with ledger history cannot be deleted"
+        )
+
+    location.deleted_at = datetime.now(UTC)
+    location.updated_by = str(ctx.principal.sub)
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=org_id,
+        actor_id=ctx.principal.sub,
+        action="location.deleted",
+        entity="location",
+        entity_id=location.id,
+        before={"code": location.code, "warehouse_id": str(location.warehouse_id)},
+        after={"deleted_at": location.deleted_at},
+        request=request,
+    )
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=org_id,
+        event_type=EVT_LOCATION_DELETED,
+        aggregate_type="location",
+        aggregate_id=location.id,
+        payload={
+            "organization_id": str(org_id),
+            "location_id": str(location.id),
+            "warehouse_id": str(location.warehouse_id),
+        },
+        actor=_actor(ctx),
+    )
 
 
 # ------------------------------------------------------------------ item categories

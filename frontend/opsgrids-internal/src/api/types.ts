@@ -282,8 +282,23 @@ export interface PricingSubscriptionRef {
   id: string;
   state: string;
   plan_version_id: string;
+  /** The pinned plan's display name ("Growth") — null when catalog no longer knows the version. */
+  plan_name: string | null;
   trial_ends_at: string | null;
   current_period_end: string | null;
+  /** The version waiting for the next period, when a change is scheduled. A scheduled change emits
+   *  no event, so it never reaches the commercial projection — this live composite is the only
+   *  place it shows. */
+  pending_plan_version_id: string | null;
+  pending_plan_name: string | null;
+  cancel_at: string | null;
+  /** What the subscription switches on — one key, or a bundle's members. */
+  entitled_products: string[];
+  /** When the current period — for a trial, the trial itself — began. UTC. */
+  current_period_start: string | null;
+  /** While trialling: the latest the trial may be extended to, stated by the subscription service
+   *  from its own cap (ADR-0031). Null for any other state. UTC. */
+  trial_max_ends_at: string | null;
 }
 
 /** What this organization is paying right now for one product — `null` until a price has ever
@@ -354,6 +369,229 @@ export interface SetPriceResult {
   plan_version_id: string;
   applied_to_subscription_id: string | null;
   effective: PricingEffect;
+}
+
+/* ------------------------------ plan switching (console) ------------------------------ */
+/* Verified field-for-field against `services/console/app/schemas.py`'s "staff plan switching"
+ * models (ADR-0029). The server decides direction and timing; nothing here computes either. */
+
+/** The state the operator saw — the live state a preview returns, sent back with the confirm.
+ *  The subscription compares it under its row lock; a mismatch is a 409 `state_changed`. */
+export interface ExpectedState {
+  state: string;
+  plan_version_id: string;
+  pending_plan_version_id: string | null;
+}
+
+/** One priced component of a plan option. Integer minor units, or integer micros for a usage rate
+ *  — never a float. */
+export interface PlanOptionPrice {
+  kind: "flat" | "per_seat" | "usage" | string;
+  amount_minor: number | null;
+  currency: string;
+  unit: string | null;
+  unit_price_micros: number | null;
+  meter_key: string | null;
+}
+
+/** One plan version the picker may offer, and whether this subscription can take it. */
+export interface PlanOption {
+  plan_id: string;
+  plan_name: string;
+  plan_version_id: string;
+  version_no: number;
+  billing_interval: "month" | "year" | "one_time" | string;
+  currency: string;
+  /** Negotiated for this organization alone. */
+  is_bespoke: boolean;
+  /** Flat plus per-seat at quantity one, for display only — the preview decides direction. */
+  recurring_minor: number;
+  prices: PlanOptionPrice[];
+  bundled_products: string[] | null;
+  trial_days: number | null;
+  is_current: boolean;
+  is_pending: boolean;
+  /** `currency` or `cadence` when this subscription cannot take the version; null when it can. */
+  blocked_code: "currency" | "cadence" | string | null;
+  blocked_reason: string | null;
+}
+
+export interface PlanOptionsSubscription {
+  id: string;
+  state: string;
+  plan_version_id: string;
+  plan_name: string | null;
+  pending_plan_version_id: string | null;
+  pending_plan_name: string | null;
+  currency: string;
+  billing_interval: string | null;
+  trial_ends_at: string | null;
+  current_period_end: string | null;
+  /** `state` when the subscription cannot change plan at all (past_due, suspended, cancelled). */
+  change_blocked_code: "state" | string | null;
+}
+
+/** `GET /api/v1/admin/organizations/{id}/plan-options?product_key=`. `owner` and `billing_ops`. */
+export interface PlanOptions {
+  organization_id: string;
+  product_key: string;
+  subscription: PlanOptionsSubscription;
+  options: PlanOption[];
+}
+
+/** `auto`: the server decides from the subscription's state and the change's direction.
+ *  `next_period` states the same rule explicitly. There is deliberately no `now`: staff do not
+ *  force a paying subscription to switch immediately (goodwill is a comp credit). */
+export type PlanChangeTiming = "auto" | "next_period";
+
+export interface PlanChangePreviewRequest {
+  plan_version_id: string;
+  timing: PlanChangeTiming;
+}
+
+export type PlanChangeDirection = "upgrade" | "downgrade" | "equal";
+export type PlanChangeEffective = "now" | "next_period";
+
+/** `POST .../subscriptions/{product_key}/plan-change:preview` — subscription's own answer, no
+ *  amount (a paid change is priced by the billing run when it claims the period). */
+export interface PlanChangePreview {
+  expected: ExpectedState;
+  action: "switch" | "withdraw_scheduled";
+  direction: PlanChangeDirection | null;
+  effective: PlanChangeEffective | null;
+  /** When a `next_period` change lands — the end of the current period, UTC. */
+  effective_at: string | null;
+  would_clear_pending: boolean;
+  entitled_added: string[];
+  entitled_removed: string[];
+  /** A usage-priced component is involved; direction compares the recurring part only. */
+  usage_priced: boolean;
+  /** Applying now closes the usage metered so far at the **current** plan's usage rates, as its
+   *  own invoice the billing run raises; usage from then on is priced on the new plan. When set,
+   *  an equal-price switch is "no proration", never "nothing is charged". */
+  usage_closed_now: boolean;
+  /** Set when the confirm would be refused (`not_offerable`: the catalogue no longer offers this
+   *  version to this organization — superseded by a newer one, or its plan retired). */
+  refusal_code: string | null;
+  refusal_detail: string | null;
+}
+
+/** `POST .../subscriptions/{product_key}/plan-change` body. The `Idempotency-Key` header is
+ *  required and travels separately. */
+export interface PlanChangeRequest {
+  plan_version_id: string;
+  timing: PlanChangeTiming;
+  /** Why — required, 1-500 characters, kept on the audit trail only (never on the subscription's
+   *  event, which the customer org's own notification templates can render). */
+  reason: string;
+  expected: ExpectedState;
+}
+
+/** What the change did, read back off subscription's own response. */
+export interface PlanChangeResult {
+  effective: PlanChangeEffective;
+  state: string;
+  plan_version_id: string;
+  pending_plan_version_id: string | null;
+  effective_at: string | null;
+  /** True when this is the recorded result of an earlier request with the same key. */
+  replayed: boolean;
+}
+
+/* ------------------------- add product, extend trial (console) ------------------------- */
+/* Verified field-for-field against `services/console/app/schemas.py`'s "staff add product" and
+ * "staff extend trial" models (ADR-0031). */
+
+/** One plan version the Add product picker may offer. Amounts are integer minor units. */
+export interface AddProductOption {
+  plan_id: string;
+  plan_name: string;
+  plan_version_id: string;
+  version_no: number;
+  billing_interval: "month" | "year" | "one_time" | string;
+  currency: string;
+  is_bespoke: boolean;
+  /** Flat plus per-seat at quantity one — display only. */
+  recurring_minor: number;
+  prices: PlanOptionPrice[];
+  bundled_products: string[] | null;
+  /** The version's own trial length; null means the platform default. */
+  trial_days: number | null;
+  /** False when the version sells no trial — only a paid add is possible. */
+  offers_trial: boolean;
+  /** A bundle's members the organization already pays for through another subscription. */
+  overlapping_products: string[];
+  /** `org_currency_mismatch` or `one_time` when the organization cannot take it; null when it can. */
+  blocked_code: "org_currency_mismatch" | "one_time" | string | null;
+  blocked_reason: string | null;
+}
+
+export interface AddProductCandidate {
+  product_key: string;
+  product_name: string;
+  /** The live subscriptions (by product key — a bundle) that already entitle the organization to
+   *  this product. Adding it on its own bills both, with no credit. */
+  entitled_through: string[];
+  versions: AddProductOption[];
+}
+
+/** A product the organization already has a row for, in any state — never offered. */
+export interface ExistingSubscriptionRef {
+  product_key: string;
+  state: string;
+}
+
+/** `GET /api/v1/admin/organizations/{id}/add-product-options`. `owner` and `billing_ops`. */
+export interface AddProductOptions {
+  organization_id: string;
+  /** The currency the organization's live subscriptions are billed in, when there is one. */
+  currency: string | null;
+  existing: ExistingSubscriptionRef[];
+  products: AddProductCandidate[];
+}
+
+/** `POST /api/v1/admin/organizations/{id}/subscriptions` body. The `Idempotency-Key` header is
+ *  required and travels separately. A paid add (`trial: false`) is refused unless
+ *  `acknowledge_immediate_charge` is true: its first period is claimed for payment at once. */
+export interface AddProductRequest {
+  product_key: string;
+  plan_version_id: string;
+  trial: boolean;
+  acknowledge_immediate_charge: boolean;
+  reason: string;
+}
+
+/** What was opened, read back off the subscription service's own answer. */
+export interface AddProductResult {
+  subscription_id: string;
+  product_key: string;
+  state: string;
+  plan_version_id: string;
+  currency: string;
+  trial_ends_at: string | null;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  entitled_products: string[];
+  /** True for a paid add: its first period was claimed for billing in the same transaction. */
+  charge_claimed: boolean;
+  replayed: boolean;
+}
+
+/** `POST .../subscriptions/{product_key}/extend-trial` body — **absolute** instants, both with a
+ *  zone. `expected_trial_ends_at` is the end the operator saw, sent back exactly as it was read. */
+export interface ExtendTrialRequest {
+  new_trial_ends_at: string;
+  expected_trial_ends_at: string;
+  reason: string;
+}
+
+export interface ExtendTrialResult {
+  subscription_id: string;
+  product_key: string;
+  state: string;
+  trial_ends_at: string | null;
+  previous_trial_ends_at: string | null;
+  replayed: boolean;
 }
 
 /* ----------------------------- shared UI vocabulary ------------------------------ */

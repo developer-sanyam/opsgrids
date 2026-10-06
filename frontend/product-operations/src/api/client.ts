@@ -106,6 +106,7 @@ import type {
   PickTaskOut,
   PickTaskStatus,
   PoStatus,
+  PublishedLayoutOut,
   PurchaseOrderIn,
   PurchaseOrderOut,
   PurchaseOrderPatch,
@@ -137,6 +138,7 @@ import type {
   WarehouseFloorOut,
   WarehouseFloorPatch,
   WarehouseIn,
+  WarehouseMapOut,
   WarehouseOut,
   WarehousePatch,
   WorkerWorkloadOut,
@@ -1229,6 +1231,8 @@ export async function createWarehouse(input: WarehouseIn): Promise<WarehouseOut>
       code: input.code,
       name: input.name,
       location: input.location ?? "",
+      ...(input.lat_micro !== undefined ? { lat_micro: input.lat_micro } : {}),
+      ...(input.lng_micro !== undefined ? { lng_micro: input.lng_micro } : {}),
     };
     WAREHOUSES.push(warehouse);
     return settle(warehouse);
@@ -1252,6 +1256,8 @@ export async function updateWarehouse(id: string, patch: WarehousePatch): Promis
       ...current,
       ...(patch.name !== undefined ? { name: patch.name } : {}),
       ...(patch.location !== undefined ? { location: patch.location } : {}),
+      ...(patch.lat_micro !== undefined ? { lat_micro: patch.lat_micro } : {}),
+      ...(patch.lng_micro !== undefined ? { lng_micro: patch.lng_micro } : {}),
     };
     WAREHOUSES[index] = updated;
     if (patch.name !== undefined && patch.name !== current.name) {
@@ -1291,6 +1297,16 @@ export async function deleteWarehouse(id: string): Promise<void> {
   await apiRequest<undefined>(`/operations/warehouses/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+/**
+ * `GET /operations/warehouses/map` — `operations.inventory.warehouse.read`. The warehouses that
+ * have a position (with floor and stocked-bin counts) and, separately, those that do not, so the
+ * sites map can offer "Set location" for each. **Live only** — no fixture twin: fixture warehouses
+ * carry no floors or stock to count, and an invented answer would be a second implementation.
+ */
+export async function getWarehousesMap(params: { signal?: AbortSignal } = {}): Promise<WarehouseMapOut> {
+  return apiRequest<WarehouseMapOut>("/operations/warehouses/map", { signal: params.signal });
+}
+
 /* -------------------------------- locations -------------------------------- */
 /**
  * Fulfilment plan F1 (`docs/fulfilment/plan.md`). These wire types and calls are hand-rolled
@@ -1301,17 +1317,19 @@ export async function deleteWarehouse(id: string): Promise<void> {
  * slice was built against.
  *
  * Confirmed against the landed backend (`services/operations/app/api/routes.py`): the list route
- * returns `Page[LocationOut]` like every other list here, not a bare array — `listLocations` below
- * fetches it at `FULL_PAGE` (200, the offset endpoint's own max `size`) and unwraps `.items`, the
- * same "whole working set in one page" pattern `getWarehouseById` already uses in this file. A
- * warehouse holding more than 200 locations would silently lose the rest of its tree; there is no
- * pagination or virtualisation in the tree UI to fall back on, so that ceiling is a real one, just
- * not one F1 needs to solve (per the plan, warehouses this phase serves are dozens of locations).
+ * returns `Page[LocationOut]` like every other list here, not a bare array. `listLocations` below
+ * fetches it at `FULL_PAGE` (200, the offset endpoint's own max `size`) and, for a warehouse with
+ * more locations than that, the pages after the first, so what it returns is the whole tree. A
+ * tree is rendered whole or not at all: a screen that was handed 200 of 350 locations would draw a
+ * tree whose parents are missing, and say "every location" about the 200.
  */
 
 /**
- * A warehouse's whole location tree — `GET /warehouses/{warehouse_id}/locations`, fetched at
- * `FULL_PAGE` and unwrapped, since a tree is rendered whole or not at all.
+ * A warehouse's whole location tree — `GET /warehouses/{warehouse_id}/locations`, every page of it
+ * at `FULL_PAGE` and unwrapped. The server orders by pick sequence then code, which is a total
+ * order within a warehouse (the code is unique), so the pages tile the tree. A location added
+ * between two page requests can shift one into the page already read; the result is de-duplicated
+ * by id so it is never listed twice.
  */
 export async function listLocations(
   warehouseId: string,
@@ -1320,12 +1338,22 @@ export async function listLocations(
   if (USE_FIXTURES) {
     return settle(LOCATIONS[warehouseId] ?? []);
   }
-  const query = buildQuery({ size: FULL_PAGE });
-  const page = await apiRequest<Page<LocationOut>>(
-    `/operations/warehouses/${encodeURIComponent(warehouseId)}/locations${query}`,
-    { signal: params.signal },
+  const path = `/operations/warehouses/${encodeURIComponent(warehouseId)}/locations`;
+  const first = await apiRequest<Page<LocationOut>>(`${path}${buildQuery({ size: FULL_PAGE })}`, {
+    signal: params.signal,
+  });
+  const pageCount = Math.ceil(first.total / FULL_PAGE);
+  if (!(pageCount > 1)) return first.items;
+  const rest = await Promise.all(
+    Array.from({ length: pageCount - 1 }, (_, i) =>
+      apiRequest<Page<LocationOut>>(`${path}${buildQuery({ page: i + 2, size: FULL_PAGE })}`, {
+        signal: params.signal,
+      }),
+    ),
   );
-  return page.items;
+  const byId = new Map<string, LocationOut>();
+  for (const location of [first, ...rest].flatMap((page) => page.items)) byId.set(location.id, location);
+  return [...byId.values()];
 }
 
 /** `POST /warehouses/{warehouse_id}/locations` — `operations.inventory.location.write`. 409 on a
@@ -2160,6 +2188,21 @@ export async function publishLayoutVersion(versionId: string): Promise<LayoutVer
   });
 }
 
+/**
+ * `GET /operations/floors/{floor_id}/published-layout` — `operations.warehouse.layout.read`. A floor's
+ * *published* placements only (a draft never leaks), each with its location's code, name, kind and
+ * parent. `published: false` with no placements when the floor has no published version; 404 for a
+ * floor that is missing or belongs to another organization.
+ */
+export async function getPublishedLayout(
+  floorId: string,
+  params: { signal?: AbortSignal } = {},
+): Promise<PublishedLayoutOut> {
+  return apiRequest<PublishedLayoutOut>(`/operations/floors/${encodeURIComponent(floorId)}/published-layout`, {
+    signal: params.signal,
+  });
+}
+
 /** `GET /warehouse-floors/{floor_id}/route?from_location_id=&to_location_id=` —
  *  `operations.warehouse.layout.read`. The shortest walk path between two locations on the
  *  floor's **published** layout. 404 when there is no published layout or either location has no
@@ -2342,13 +2385,14 @@ export async function insightDiscrepancyTrend(days = 30): Promise<DiscrepancyTre
 
 /* ------------------------------------ online payment (ADR-0024 A4, Fulfilment F10) ------------------------------------ */
 /**
- * An order's online payment, and the organization's own Razorpay connection. No fixture-mode
- * branch (the dispatch section's precedent): every function calls the real endpoint.
+ * An order's online payment, and the organization's own payment-provider connection (Razorpay or
+ * Cashfree, ADR-0033). No fixture-mode branch (the dispatch section's precedent): every function
+ * calls the real endpoint.
  *
- * Nothing here can mark an order paid. `startOrderCheckout` returns what Razorpay's hosted
- * Checkout needs (a public key id and an Order id); whether the customer then paid is asked of
- * the provider server-side by `syncOrderPayment`, which sends no body at all — the Checkout
- * callback's payment id and signature are never sent anywhere.
+ * Nothing here can mark an order paid. `startOrderCheckout` returns what the provider's hosted
+ * checkout needs (Razorpay: a public key id and an Order id; Cashfree: a payment session id);
+ * whether the customer then paid is asked of the provider server-side by `syncOrderPayment`,
+ * which sends no body at all — whatever the checkout's callback says is never sent anywhere.
  */
 
 /** `GET /operations/orders/{id}/payments` — `operations.orders.order.read`. */
@@ -2407,9 +2451,21 @@ export async function saveMerchantAccount(input: MerchantAccountIn): Promise<Mer
   return apiRequest<MerchantAccountOut>("/payment/collections/merchant-account", { method: "PUT", body: input });
 }
 
-/** `DELETE /payment/collections/merchant-account` — `operations.payments.merchant_account.write:ORG`. */
-export async function removeMerchantAccount(): Promise<void> {
-  await apiRequest<undefined>("/payment/collections/merchant-account", { method: "DELETE" });
+/** `DELETE /payment/collections/merchant-account` — `operations.payments.merchant_account.write:ORG`
+ *  and a one-time-code session. Refused (409, with the count) while an online payment is open. */
+/** `DELETE /payment/collections/merchant-account`. A 409 `disconnect-blocked` says what the provider
+ *  may still do for the account (an open payment, a cancelled one it can still take, a pending
+ *  refund); `force` disconnects anyway, and the server audits what was outstanding. */
+export async function removeMerchantAccount(options: { force?: boolean } = {}): Promise<void> {
+  const query = options.force ? "?force=true" : "";
+  await apiRequest<undefined>(`/payment/collections/merchant-account${query}`, { method: "DELETE" });
+}
+
+/** `POST /payment/collections/merchant-account/verify` — the server asks the provider, with the
+ *  account's own keys, whether they work, and records the answer. A 422 `credentials-rejected`
+ *  means the provider refused them (recorded too); a 503 that it could not be asked. */
+export async function verifyMerchantAccount(): Promise<MerchantAccountOut> {
+  return apiRequest<MerchantAccountOut>("/payment/collections/merchant-account/verify", { method: "POST" });
 }
 
 /** `GET /payment/collections/reconciliation` — `operations.payments.reconciliation.read:ORG`.

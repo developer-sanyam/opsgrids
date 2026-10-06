@@ -13,9 +13,20 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    AliasPath,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+
+from app.domain import price_sort_key
 
 
 class ServiceInfo(BaseModel):
@@ -35,6 +46,8 @@ class ServiceInfo(BaseModel):
 class PriceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    #: The row id, so a seat class's `price_id` can be joined to the price it is charged at.
+    id: uuid.UUID
     kind: str
     amount_minor: int | None = None
     currency: str
@@ -78,15 +91,46 @@ class PlanVersionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    #: The plan this version belongs to, and its name, product and state — so a screen holding
+    #: only a version (a picker, a pinned subscription) can say what it is without a second read.
+    #: Read off the eagerly loaded `PlanVersion.plan` (`selectors._with_children`).
+    plan_id: uuid.UUID
+    plan_name: str | None = Field(
+        default=None, validation_alias=AliasChoices("plan_name", AliasPath("plan", "name"))
+    )
+    product_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("product_key", AliasPath("plan", "product_key")),
+    )
+    plan_state: str | None = Field(
+        default=None, validation_alias=AliasChoices("plan_state", AliasPath("plan", "state"))
+    )
     version_no: int
     state: str
     billing_interval: str
     currency: str
     restricted_to_org_id: uuid.UUID | None = None
     published_at: datetime | None = None
+    #: Deterministic: flat, then per-seat, then usage, ties broken by id (`domain.price_sort_key`).
     prices: list[PriceOut] = Field(default_factory=list)
+    #: Sorted by `feature_key`.
     features: list[FeatureOut] = Field(default_factory=list)
     seat_classes: list[SeatClassOut] = Field(default_factory=list)
+
+    @field_validator("prices", mode="after")
+    @classmethod
+    def _sort_prices(cls, prices: list[PriceOut]) -> list[PriceOut]:
+        return sorted(
+            prices,
+            key=lambda p: price_sort_key(
+                p.kind, p.unit, p.meter_key, p.amount_minor, p.unit_price_micros, str(p.id)
+            ),
+        )
+
+    @field_validator("features", mode="after")
+    @classmethod
+    def _sort_features(cls, features: list[FeatureOut]) -> list[FeatureOut]:
+        return sorted(features, key=lambda f: f.feature_key)
 
 
 class PlanOut(BaseModel):
@@ -200,6 +244,36 @@ class InternalPlanVersionOut(BaseModel):
     #: The seat classes this version sells. A subscription that wants per-class seat counts
     #: needs them at pin time, and a pin is the only moment they are guaranteed to be read.
     seat_classes: list[SeatClassOut] = Field(default_factory=list)
+
+
+class OfferableVersionOut(BaseModel):
+    """One plan version an organization may be switched onto, with everything a staff picker needs
+    in one row — the plan's identity beside the version's, which `PlanVersionOut` lacks.
+
+    Carries amounts, so it is for the service-token internal read behind console's own role gate
+    and for nothing else: the tenant read (`TenantPlanVersionOut`) is amount-free on purpose and
+    is never reused for this.
+    """
+
+    plan_id: uuid.UUID
+    plan_code: str
+    plan_name: str
+    product_key: str
+    plan_version_id: uuid.UUID
+    version_no: int
+    state: str
+    billing_interval: str
+    currency: str
+    #: NULL for a public version; this organization's id for one negotiated for it (never another
+    #: organization's — those are not returned at all).
+    restricted_to_org_id: uuid.UUID | None = None
+    published_at: datetime | None = None
+    prices: list[InternalPriceOut] = Field(default_factory=list)
+    features: list[FeatureOut] = Field(default_factory=list)
+
+
+class OfferableVersionsOut(BaseModel):
+    versions: list[OfferableVersionOut] = Field(default_factory=list)
 
 
 class InternalPlanVersionNameOut(BaseModel):
@@ -346,3 +420,145 @@ class VersionCreateIn(BaseModel):
     prices: list[PriceIn] = Field(default_factory=list)
     features: list[FeatureIn] = Field(default_factory=list)
     seat_classes: list[SeatClassIn] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------- operator Plans & prices page
+#
+# The `/admin/catalog` reads (owner and billing_ops) and the reason-carrying write bodies (owner
+# only, `Idempotency-Key` required). Spec: docs/superpowers/specs/2026-10-06-admin-plans-page-
+# design.md. The authoring inputs above stay as they are for the service-level callers (console's
+# bespoke-price endpoint builds a `VersionCreateIn` itself); the HTTP route takes these.
+
+#: Why an operator made this change. Stored on the audit row (`AuditLog.reason`), never in an event
+#: payload: it may name a customer negotiation. Trimmed, 3 to 500 characters.
+Reason = Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=500)]
+
+#: Every product key on this platform is this shape (`hrms`, `crm`, `storefront`, …) — the same
+#: pattern `console_internal` enforces on its path parameter.
+PRODUCT_KEY_PATTERN = r"^[a-z][a-z0-9_-]{0,39}$"
+
+Audience = Literal["public", "restricted", "all"]
+
+
+class ReasonIn(BaseModel):
+    """The body of a write that carries nothing but its justification (publish's flag aside)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: Reason
+
+
+class PublishIn(ReasonIn):
+    """Publishing is irreversible. `allow_zero_amounts` is the explicit acknowledgement a zero
+    flat, per-seat or usage amount needs — without it a zero is refused as a likely typo."""
+
+    allow_zero_amounts: bool = False
+
+
+class AdminPlanCreateIn(PlanCreateIn):
+    """`POST /admin/catalog/plans`. The product key must be a registered, non-platform product."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    product_key: str = Field(min_length=1, max_length=40, pattern=PRODUCT_KEY_PATTERN)
+    code: str = Field(min_length=1, max_length=60, pattern=r"^[a-z0-9][a-z0-9_-]{0,59}$")
+    reason: Reason
+
+
+class AdminPlanPatchIn(PlanPatchIn):
+    """`PATCH /admin/catalog/plans/{id}` — presentation only, with a reason."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: Reason
+
+
+class AdminVersionCreateIn(VersionCreateIn):
+    """`POST /admin/catalog/plans/{id}/versions`. The console always sends the **whole** sheet —
+    prices, features and seat classes — prefilled from the latest version; an empty sheet still
+    clones the latest version of the same audience, as `VersionCreateIn` always has.
+    `extra="forbid"` so a misspelt key (`feature` for `features`) is refused, not dropped."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: Reason
+
+
+class VersionCountsOut(BaseModel):
+    """How many versions a plan has, by state, for its **public** audience — and how many
+    audience-of-one (bespoke or partner) versions sit beside them, in any state."""
+
+    draft: int = 0
+    published: int = 0
+    grandfathered: int = 0
+    bespoke: int = 0
+
+
+class VersionSummaryOut(BaseModel):
+    """One version without its sheet — the plan detail lists these and the screen fetches a
+    version's prices, features and seat classes only when it is opened (`GET /versions/{id}`)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    plan_id: uuid.UUID
+    version_no: int
+    state: str
+    billing_interval: str
+    currency: str
+    restricted_to_org_id: uuid.UUID | None = None
+    published_at: datetime | None = None
+    created_at: datetime
+    price_count: int = 0
+    feature_count: int = 0
+
+
+class PlanListItemOut(BaseModel):
+    """One row of the Plans & prices table."""
+
+    id: uuid.UUID
+    product_key: str
+    code: str
+    name: str
+    state: str
+    sort_order: int
+    created_at: datetime
+    counts: VersionCountsOut
+    #: The newest published public version, with its sheet — what the plan sells today. NULL
+    #: when nothing public is published (a new plan, or one only sold bespoke).
+    current: PlanVersionOut | None = None
+    #: The highest version number on the plan, any audience — the number the next draft follows.
+    latest_version_no: int = 0
+
+
+class PlanListOut(BaseModel):
+    items: list[PlanListItemOut]
+    #: Pass back as `cursor` for the next page; NULL on the last page.
+    next_cursor: str | None = None
+
+
+class PlanDetailOut(BaseModel):
+    """`GET /admin/catalog/plans/{id}` — the plan, its counts, and one page of version summaries,
+    newest first, filtered to an audience."""
+
+    id: uuid.UUID
+    product_key: str
+    code: str
+    name: str
+    state: str
+    sort_order: int
+    created_at: datetime
+    updated_at: datetime
+    counts: VersionCountsOut
+    latest_version_no: int = 0
+    versions: list[VersionSummaryOut]
+    next_cursor: str | None = None
+
+
+class DeletedVersionOut(BaseModel):
+    """What `DELETE /admin/catalog/versions/{id}` removed — a draft, never anything published."""
+
+    id: uuid.UUID
+    plan_id: uuid.UUID
+    version_no: int
+    deleted: Literal[True] = True

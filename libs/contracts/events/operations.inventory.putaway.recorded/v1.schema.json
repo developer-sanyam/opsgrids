@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.putaway.recorded/v1",
+  "title": "operations.inventory.putaway.recorded",
+  "description": "Stock stored from a receiving or staging bin into the bin a worker scanned (a `relocation` move, reference_type `putaway`). Carries whether a GPS fix was kept (`has_location`) and whether the scanned bin was the one the server suggested (`matched_suggestion`, null when it suggested none) — never the coordinates themselves.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "move_id",
+    "inventory_item_id",
+    "from_location_id",
+    "to_location_id",
+    "status",
+    "lot_id",
+    "roll_id",
+    "quantity",
+    "matched_suggestion",
+    "has_location"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "move_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "inventory_item_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "from_location_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "to_location_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "status": {
+      "type": "string"
+    },
+    "lot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "roll_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "quantity": {
+      "type": "string",
+      "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+    },
+    "matched_suggestion": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "has_location": {
+      "type": "boolean"
+    }
+  }
+}

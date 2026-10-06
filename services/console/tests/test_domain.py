@@ -474,6 +474,35 @@ class TestCommercialSeries:
         assert series["trials_started"] == {"2026-01": 1, "2026-02": 0}
         assert series["trial_conversions"] == {"2026-01": 0, "2026-02": 1}
 
+    def test_a_trial_extension_is_not_a_trial_start(self) -> None:
+        """ADR-0031: `trial_extended` is a `trial -> trial` move of its own kind. It replays
+        through the fold (MRR stays zero) and counts as neither a start nor a conversion."""
+        events = [
+            _event(
+                TRIAL_STARTED_KIND,
+                to_state="trial",
+                from_state=None,
+                occurred_at="2026-01-05T00:00:00+00:00",
+            ),
+            _event(
+                "commerce.subscription.trial_extended",
+                to_state="trial",
+                from_state="trial",
+                occurred_at="2026-01-19T00:00:00+00:00",
+            ),
+            _event(
+                ACTIVATED_KIND,
+                to_state="active",
+                from_state="trial",
+                amount_minor=50000,
+                occurred_at="2026-02-05T00:00:00+00:00",
+            ),
+        ]
+        series = commercial_series(events, ["2026-01", "2026-02"])
+        assert series["trials_started"] == {"2026-01": 1, "2026-02": 0}
+        assert series["trial_conversions"] == {"2026-01": 0, "2026-02": 1}
+        assert series["mrr_minor"] == {"2026-01": 0, "2026-02": 50000}
+
     def test_a_stale_transition_is_excluded_from_every_count(self) -> None:
         """A DLQ replay recorded with `stale=True` must not be double-counted as a second
         trial-conversion or churn, even though it still moves through the replay."""

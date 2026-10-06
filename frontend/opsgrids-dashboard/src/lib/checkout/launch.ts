@@ -1,0 +1,49 @@
+/**
+ * Open the provider's payment window for a checkout, by the `client_action` the server chose.
+ *
+ * The SDK is inherently provider-specific, so this is the one place the dashboard branches on the
+ * provider (recorded against ADR-0004 §6 in the design doc). Both branches end the same way: the
+ * caller is told how long it is worth waiting on the server, and nothing else.
+ */
+import { confirmRazorpay } from "@/api/payment";
+import type { OpenableCheckout } from "@/api/payment";
+
+import { openCashfree } from "./cashfree";
+import { openRazorpay } from "./razorpay";
+
+/**
+ * - `wait`: a payment may be under way — poll the server for the full window.
+ * - `glance`: the customer closed the window without paying, as far as the browser saw — ask the
+ *   server once, in case a UPI app finished the payment out of sight.
+ *
+ * Both providers' own reports are read only for this hint, never as proof of anything.
+ */
+export type LaunchOutcome = { wait: "full" } | { wait: "glance"; failed: boolean };
+
+/**
+ * `onOpened` fires once the provider's window is actually up — not while its script is loading.
+ * Only an openable checkout can get here: a stub's (`openable: false`) has no action to open.
+ */
+export async function launchCheckout(
+  session: OpenableCheckout,
+  description: string,
+  onOpened?: () => void,
+): Promise<LaunchOutcome> {
+  const action = session.action;
+  if (action.type === "cashfree_checkout") {
+    const outcome = await openCashfree(action, onOpened);
+    return outcome === "completed" ? { wait: "full" } : { wait: "glance", failed: false };
+  }
+
+  const outcome = await openRazorpay(session, action, description, onOpened);
+  if (outcome.kind !== "completed") return { wait: "glance", failed: outcome.kind === "failed" };
+  if (outcome.fields) {
+    try {
+      await confirmRazorpay(session.chargeId, outcome.fields);
+    } catch {
+      // A refused or failed confirm proves nothing either way (a 400 is a signature mismatch,
+      // which the server has already declined to act on); the status read below decides.
+    }
+  }
+  return { wait: "full" };
+}

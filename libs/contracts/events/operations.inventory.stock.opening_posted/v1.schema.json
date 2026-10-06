@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.stock.opening_posted/v1",
+  "title": "operations.inventory.stock.opening_posted",
+  "description": "Opening stock was posted as one `opening` move; the per-line detail is on `operations.inventory.stock.posted` with the same move id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "move_id",
+    "line_count"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "move_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "line_count": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

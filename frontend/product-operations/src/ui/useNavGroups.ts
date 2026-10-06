@@ -1,6 +1,11 @@
+import { useLocation } from "react-router-dom";
+
+import { useCan } from "@opsgrids/client";
 import {
   AlertTriangleIcon,
+  BoxIcon,
   CheckSquareIcon,
+  ColumnsIcon,
   ClipboardCheckIcon,
   ClipboardListIcon,
   CreditCardIcon,
@@ -8,8 +13,11 @@ import {
   FolderIcon,
   HomeIcon,
   LayersIcon,
+  MapPinIcon,
   PackageIcon,
   PlugIcon,
+  ReceiptIcon,
+  TagIcon,
   TruckIcon,
   UsersIcon,
   WarehouseIcon,
@@ -21,6 +29,13 @@ import type { NavEntry, NavGroup } from "@opsgrids/ui";
 // folded into the purchase order detail page's own "Mark as received" action; Reports,
 // Integrations, Team and Settings have no backend yet and were removed rather than left as
 // ComingSoon placeholders.
+const STOCK_ENTRIES: NavEntry[] = [
+  { to: "/inventory/stock", label: "Stock", icon: BoxIcon },
+  { to: "/inventory/lots", label: "Lots", icon: TagIcon },
+  { to: "/inventory/rolls", label: "Rolls", icon: ColumnsIcon },
+  { to: "/inventory/ledger", label: "Stock Ledger", icon: ReceiptIcon },
+];
+
 const GROUPS: NavGroup[] = [
   {
     title: "Main Menu",
@@ -38,13 +53,38 @@ const GROUPS: NavGroup[] = [
       { to: "/counting", label: "Cycle Counts", icon: CheckSquareIcon },
       { to: "/suppliers", label: "Suppliers", icon: FactoryIcon },
       { to: "/warehouses", label: "Warehouses", icon: WarehouseIcon },
-      // The organization's own Razorpay account and payment reconciliation (ADR-0024 A4).
+      { to: "/warehouses/map", label: "Warehouse Map", icon: MapPinIcon },
+      // The organization's own payment-provider account (Razorpay or Cashfree) and payment
+      // reconciliation (ADR-0024 A4, ADR-0033).
       { to: "/settings/payments", label: "Online Payments", icon: CreditCardIcon },
     ],
   },
 ];
 
-/** This product's navigation, for `AppShell`'s `nav` prop. */
+/**
+ * This product's navigation, for `AppShell`'s `nav` prop.
+ *
+ * Stock, Lots, Rolls and the Stock Ledger sit under Inventory and appear only for a caller who
+ * can read stock — hiding the link is presentation; every endpoint behind them refuses the call
+ * on its own.
+ */
 export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
-  return { groups: GROUPS, pinned: [] };
+  const canReadStock = useCan("operations.inventory.stock.read", "ORG");
+  const { pathname } = useLocation();
+  // "Warehouses" is active for every screen under /warehouses (locations, floors, 3D) — except the
+  // map, which has an entry of its own: there it matches the exact path only, so one screen never
+  // lights two entries.
+  const base = GROUPS.map((group) => ({
+    ...group,
+    items: group.items.map((entry) =>
+      entry.to === "/warehouses" ? { ...entry, end: pathname === "/warehouses/map" } : entry,
+    ),
+  }));
+  if (!canReadStock) return { groups: base, pinned: [] };
+  const groups = base.map((group) => {
+    const at = group.items.findIndex((entry) => entry.to === "/inventory");
+    if (at === -1) return group;
+    return { ...group, items: [...group.items.slice(0, at + 1), ...STOCK_ENTRIES, ...group.items.slice(at + 1)] };
+  });
+  return { groups, pinned: [] };
 }

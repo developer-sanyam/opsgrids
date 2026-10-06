@@ -32,8 +32,15 @@ function product(overrides: Partial<ProductPricing> = {}): ProductPricing {
       id: "sub_1",
       state: "active",
       plan_version_id: "pv_crm_scale_v1",
+      plan_name: "Scale",
       trial_ends_at: null,
       current_period_end: "2026-09-30T23:59:59Z",
+      pending_plan_version_id: null,
+      pending_plan_name: null,
+      cancel_at: null,
+      entitled_products: ["crm"],
+      current_period_start: "2026-09-01T00:00:00Z",
+      trial_max_ends_at: null,
     },
     current_price: {
       plan_version_id: "pv_crm_scale_v1",
@@ -89,6 +96,19 @@ describe("table states", () => {
     await waitFor(() => expect(screen.getByText("OpsGrids CRM")).toBeTruthy());
   });
 
+  it("re-reads when a sibling says the account changed, so a product just added shows its plan", async () => {
+    mockAuth(["owner"]);
+    const getPricing = vi
+      .spyOn(client, "getOrganizationPricing")
+      .mockResolvedValue(pricing([product({ subscription: null, current_price: null })]));
+    const { rerender } = render(<ClientPricingCard org={org()} refreshSignal={0} />);
+    expect(await screen.findByText("Not subscribed")).toBeTruthy();
+    getPricing.mockResolvedValue(pricing([product()]));
+    rerender(<ClientPricingCard org={org()} refreshSignal={1} />);
+    await waitFor(() => expect(screen.queryByText("Not subscribed")).toBeNull());
+    expect(getPricing).toHaveBeenCalledTimes(2);
+  });
+
   it("renders the error state with the message verbatim, and retries on demand", async () => {
     mockAuth(["owner"]);
     const spy = vi
@@ -124,8 +144,15 @@ describe("table states", () => {
             id: "sub_2",
             state: "trial",
             plan_version_id: "pv_crm_growth_v2",
+            plan_name: "Growth",
             trial_ends_at: trialEnd,
             current_period_end: trialEnd,
+            pending_plan_version_id: null,
+            pending_plan_name: null,
+            cancel_at: null,
+            entitled_products: ["crm"],
+            current_period_start: "2026-09-01T00:00:00Z",
+            trial_max_ends_at: null,
           },
         }),
       ]),

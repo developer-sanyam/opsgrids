@@ -366,3 +366,81 @@ class TestTheGucIsLoadBearing:
                     state="active",
                     trial_ends_at=None,
                 )
+
+
+class TestTrialExtended:
+    """`commerce.subscription.trial_extended` (ADR-0031): staff moved a trial's end later. The
+    projection must take the new end, or a customer whose old end passed stays locked out while
+    the trial they were promised is still running."""
+
+    def test_the_consumer_binds_it(self) -> None:
+        from app.consumers import SUBSCRIPTION_EVENTS, consumer
+
+        assert "commerce.subscription.trial_extended" in SUBSCRIPTION_EVENTS
+        assert "commerce.subscription.trial_extended" in consumer._handlers
+
+    async def test_a_lapsed_trial_is_entitled_again_until_its_new_end(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        started = datetime.now(UTC) - timedelta(days=15)
+        lapsed = datetime.now(UTC) - timedelta(hours=1)
+        await project_subscription_event(
+            _envelope(
+                org_id,
+                event_type="commerce.subscription.trial_started",
+                state="trial",
+                trial_ends_at=lapsed.isoformat(),
+                occurred_at=started,
+            )
+        )
+        async with session.begin():
+            activation = await selectors.get_activation(session, org_id, "hrms")
+        assert activation is not None and activation.entitles is False
+
+        new_end = datetime.now(UTC) + timedelta(days=10)
+        envelope = _envelope(
+            org_id,
+            event_type="commerce.subscription.trial_extended",
+            state="trial",
+            trial_ends_at=new_end.isoformat(),
+            occurred_at=datetime.now(UTC),
+        )
+        envelope["payload"]["previous_trial_ends_at"] = lapsed.isoformat()
+        await project_subscription_event(envelope)
+        async with session.begin():
+            session.expire_all()
+            activation = await selectors.get_activation(session, org_id, "hrms")
+            keys = await selectors.entitlements_for(session, org_id)
+        assert activation is not None
+        assert activation.status == "trial" and activation.trial_ends_at == new_end
+        assert activation.entitles is True
+        assert "hrms" in keys
+
+    async def test_a_stale_extension_does_not_undo_a_later_conversion(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """Delivered after the conversion that followed it, the extension is older and dropped —
+        the ordering guard every lifecycle event already gets."""
+        t_extended = datetime.now(UTC) - timedelta(minutes=5)
+        t_converted = datetime.now(UTC) - timedelta(minutes=1)
+        await project_subscription_event(
+            _envelope(
+                org_id,
+                event_type="commerce.subscription.activated",
+                state="active",
+                occurred_at=t_converted,
+            )
+        )
+        await project_subscription_event(
+            _envelope(
+                org_id,
+                event_type="commerce.subscription.trial_extended",
+                state="trial",
+                trial_ends_at=(datetime.now(UTC) + timedelta(days=3)).isoformat(),
+                occurred_at=t_extended,
+            )
+        )
+        async with session.begin():
+            session.expire_all()
+            activation = await selectors.get_activation(session, org_id, "hrms")
+        assert activation is not None and activation.status == "active"

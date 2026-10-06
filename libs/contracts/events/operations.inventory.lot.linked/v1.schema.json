@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.lot.linked/v1",
+  "title": "operations.inventory.lot.linked",
+  "description": "A genealogy edge was recorded: the parent lot's material went into the child lot.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "parent_lot_id",
+    "child_lot_id",
+    "relation"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "parent_lot_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "child_lot_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "relation": {
+      "enum": [
+        "BLEND",
+        "REWORK",
+        "DERIVED"
+      ]
+    }
+  }
+}

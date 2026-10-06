@@ -183,6 +183,21 @@ async def build_pricing_view(
                     is_bespoke=version_doc.get("restricted_to_org_id") is not None,
                 )
 
+        # A scheduled change is visible only here: it emits no event, so console's projection
+        # never learns of it. Named best-effort — a name outage must not blank the screen.
+        pending_id = (
+            uuid.UUID(str(sub["pending_plan_version_id"]))
+            if sub is not None and sub.get("pending_plan_version_id")
+            else None
+        )
+        pending_plan_name: str | None = None
+        if pending_id is not None:
+            try:
+                pending_doc = await _get_plan_version(settings, pending_id, client=client)
+            except CatalogError:
+                pending_doc = None
+            pending_plan_name = pending_doc.get("plan_name") if pending_doc else None
+
         history_rows = await selectors.pricing_history(directory_session, organization_id, key)
 
         products.append(
@@ -197,6 +212,14 @@ async def build_pricing_view(
                         plan_name=current_plan_name,
                         trial_ends_at=sub.get("trial_ends_at"),
                         current_period_end=sub.get("current_period_end"),
+                        pending_plan_version_id=pending_id,
+                        pending_plan_name=pending_plan_name,
+                        cancel_at=sub.get("cancel_at"),
+                        entitled_products=list(
+                            sub.get("entitled_products") or [str(sub["product_key"])]
+                        ),
+                        current_period_start=sub.get("current_period_start"),
+                        trial_max_ends_at=sub.get("trial_max_ends_at"),
                     )
                     if sub is not None
                     else None

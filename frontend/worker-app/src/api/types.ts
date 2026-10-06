@@ -253,3 +253,128 @@ export interface CountLineAddIn {
   count_method: CountMethod;
   scanned_barcode?: string;
 }
+
+// ------------------------------------------------------------------ storage put-away (ADR-0014 §12)
+// Storage put-away is the move from a receiving or staging bin into its storage bin, recorded by
+// scanning the destination bin's label. It is not ADR-0025's "putaway task" (the order-cancel
+// reversal). The worker's GPS fix rides on the request as integer micro-degrees and is never
+// echoed back: `PutawayOut` carries no coordinates, and only the audited admin reveal does.
+
+/** The envelope the keyset-paginated reads return. No total; page until `next_cursor` is null. */
+export interface CursorPage<T> {
+  items: T[];
+  next_cursor: string | null;
+}
+
+export type StockStatus =
+  | "AVAILABLE"
+  | "QUALITY_HOLD"
+  | "QUARANTINE"
+  | "DAMAGED"
+  | "REJECTED"
+  | "WIP"
+  | "IN_TRANSIT"
+  | "AT_JOB_WORKER"
+  | "BLOCKED";
+
+/** Mirrors the server's `LocationKind` — what a location is for. Only `receiving` and `staging` are
+ *  places storage put-away may start from (spec decision D1). */
+export type LocationKind =
+  | "zone"
+  | "aisle"
+  | "rack"
+  | "shelf"
+  | "bin"
+  | "staging"
+  | "pack_station"
+  | "dock"
+  | "receiving"
+  | "returns"
+  | "quarantine";
+
+/** Mirrors `StockRowOut` — one bucket of stock: an item at a location, in a status, optionally in
+ *  a lot / on a roll. `GET /operations/inventory/stock`, `operations.inventory.stock.read`. */
+export interface StockRowOut {
+  id: string;
+  inventory_item_id: string;
+  sku: string;
+  item_name: string;
+  uom: string;
+  warehouse_id: string;
+  warehouse_code: string;
+  location_id: string;
+  location_code: string;
+  /** The kind of `location_id`. Absent or `null` from a server that predates it, so nothing may
+   *  assume it is there: see `canPutAwayFrom`. */
+  location_kind?: LocationKind | null | undefined;
+  status: StockStatus;
+  lot_id: string | null;
+  lot_no: string | null;
+  roll_id: string | null;
+  roll_no: string | null;
+  on_hand_qty: Qty;
+  reserved_qty: Qty;
+  available_qty: Qty;
+}
+
+/** `POST /operations/inventory/putaway`. Every number here is an integer — coordinates are
+ *  micro-degrees (`Math.round(degrees * 1e6)`), never a float. `to_barcode` is the scanned bin
+ *  label; the server resolves it (a worker has no `location.read`). */
+export interface PutawayIn {
+  inventory_item_id: string;
+  from_location_id: string;
+  to_barcode: string;
+  quantity: Qty;
+  lot_id?: string;
+  roll_id?: string;
+  suggested_location_id?: string;
+  captured_at?: string;
+  lat_micro?: number;
+  lng_micro?: number;
+  accuracy_m?: number;
+  occurred_on?: string;
+  note?: string;
+}
+
+export interface PutawayFromLocationOut {
+  id: string;
+  code: string;
+  name: string;
+}
+
+export interface PutawayToLocationOut extends PutawayFromLocationOut {
+  kind: string;
+}
+
+/** `PutawayOut` — 201 fresh, 200 replay of the same `Idempotency-Key`. `warnings` are
+ *  machine-readable notes on what the server did not take as sent: `geo_dropped:<reason>`,
+ *  `captured_at_adjusted`, `suggestion_ignored` (the `suggested_location_id` was not one of the
+ *  caller's bins and was not stored), `geo_not_recorded`. The move itself is recorded in every case. */
+export interface PutawayOut {
+  move_id: string;
+  replayed: boolean;
+  from_location: PutawayFromLocationOut;
+  to_location: PutawayToLocationOut;
+  matched_suggestion: boolean | null;
+  geo_recorded: boolean;
+  warnings: string[];
+}
+
+export type PutawaySuggestionReason = "holds_item" | "empty_bin";
+
+export interface PutawaySuggestion {
+  location_id: string;
+  code: string;
+  /** The bin's own barcode label, `null` when it has none. A worker has no `location.read`, so this
+   *  is how a scanned label is matched to the suggestion. */
+  barcode: string | null;
+  name: string;
+  path: string;
+  reason: PutawaySuggestionReason;
+}
+
+/** `GET /operations/inventory/putaway/suggest` — `suggestion` is `null` when no storable bin in
+ *  the warehouse is a fit. */
+export interface PutawaySuggestionOut {
+  suggestion: PutawaySuggestion | null;
+}

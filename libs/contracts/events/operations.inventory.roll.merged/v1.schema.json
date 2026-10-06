@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.roll.merged/v1",
+  "title": "operations.inventory.roll.merged",
+  "description": "Several rolls of one item, lot and shade were merged into one new roll in a single stock move.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "source_roll_ids",
+    "result_roll_id",
+    "move_id"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "source_roll_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "result_roll_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "move_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

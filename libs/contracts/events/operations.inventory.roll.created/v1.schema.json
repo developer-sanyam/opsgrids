@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.roll.created/v1",
+  "title": "operations.inventory.roll.created",
+  "description": "A roll was registered. It holds no stock until an opening (or a receipt) posts into it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "roll_id",
+    "roll_no",
+    "inventory_item_id",
+    "lot_id"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "roll_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "roll_no": {
+      "type": "string"
+    },
+    "inventory_item_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "lot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    }
+  }
+}

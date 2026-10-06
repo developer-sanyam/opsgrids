@@ -3,7 +3,7 @@ import { Canvas } from "@react-three/fiber";
 import type { ThreeEvent } from "@react-three/fiber";
 import { Grid, Html, Instance, Instances, OrbitControls, Text } from "@react-three/drei";
 
-import type { LocationKind, LocationOut } from "@/api/types";
+import type { LocationKind } from "@/api/types";
 import { LOCATION_KIND_COLOR, resolveCssColor } from "@/data/locationKindColor";
 import { layoutBounds } from "@/lib/warehouseLayout";
 import type { WarehouseLayoutNode } from "@/lib/warehouseLayout";
@@ -11,8 +11,18 @@ import type { WarehouseLayoutNode } from "@/lib/warehouseLayout";
 interface Warehouse3DSceneProps {
   layout: WarehouseLayoutNode[];
   selectedId: string | null;
-  onSelect: (location: LocationOut) => void;
+  /** Every location a search is pointing at. Drawn in the accent with a wireframe and a floating
+   *  code, so a match is never told apart by colour alone. */
+  highlightIds?: ReadonlySet<string> | undefined;
+  onSelect: (locationId: string) => void;
 }
+
+/** More root labels than this is a wall of text; the hover tooltip names whatever you point at. */
+const MAX_ROOT_LABELS = 40;
+
+/** Drawn after every box. With depth testing off for the parts of a highlight that must always be
+ *  found, this is what keeps them on top of the boxes rather than at the mercy of draw order. */
+const HIGHLIGHT_RENDER_ORDER = 10;
 
 /** Every colour the scene draws with, resolved once from the live stylesheet (light or dark,
  *  whichever is active) rather than written as a literal — a three.js material needs an actual
@@ -38,17 +48,16 @@ function useSceneColors() {
 /**
  * The 3D canvas itself — `@react-three/fiber` + `@react-three/drei`, isolated in its own module
  * so `Warehouse3D.tsx` can lazy-import it only once WebGL is confirmed available (`hasWebGLSupport`)
- * and only inside its error boundary. Every box comes from `layout`, computed by
- * `computeWarehouseLayout` from real `listLocations` data — nothing here invents a position, a
- * size or a count.
+ * and only inside its error boundary. Every box comes from `layout` — computed by
+ * `computeWarehouseLayout` from real `listLocations` data, or by `placementsToSceneNodes` from a
+ * floor's published placements — nothing here invents a position, a size or a count.
  *
  * Boxes are instanced per kind (one `<Instances>` draw call per kind present, not one mesh per
  * location — Fulfilment F9's MVP brief, for a warehouse with hundreds of locations) with
- * per-instance position and scale. A stock-detail popover is deliberately not part of this: F1's
- * location data carries no stock or SKU field, and no live inventory-by-location endpoint exists
- * yet — the click handler opens the real fields this data has, in `Warehouse3D.tsx`'s drawer.
+ * per-instance position and scale. The click handler reports the location's id; the page that owns
+ * the scene opens its drawer, which reads the location's stock.
  */
-export function Warehouse3DScene({ layout, selectedId, onSelect }: Warehouse3DSceneProps) {
+export function Warehouse3DScene({ layout, selectedId, highlightIds, onSelect }: Warehouse3DSceneProps) {
   const colors = useSceneColors();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
@@ -62,7 +71,16 @@ export function Warehouse3DScene({ layout, selectedId, onSelect }: Warehouse3DSc
     return groups;
   }, [layout]);
 
-  const roots = useMemo(() => layout.filter((n) => n.location.parent_id === null), [layout]);
+  // The top of what is drawn: no parent at all, or a parent this layout does not place (a published
+  // floor often draws racks and bins but not the zone above them).
+  const roots = useMemo(() => {
+    const drawn = new Set(layout.map((n) => n.location.id));
+    return layout.filter((n) => n.location.parent_id === null || !drawn.has(n.location.parent_id));
+  }, [layout]);
+  const highlighted = useMemo(
+    () => (highlightIds ? layout.filter((n) => highlightIds.has(n.location.id)) : []),
+    [layout, highlightIds],
+  );
   const selectedNode = useMemo(() => layout.find((n) => n.location.id === selectedId) ?? null, [layout, selectedId]);
   const hoveredNode = useMemo(() => layout.find((n) => n.location.id === hoveredId) ?? null, [layout, hoveredId]);
 
@@ -72,6 +90,8 @@ export function Warehouse3DScene({ layout, selectedId, onSelect }: Warehouse3DSc
   const span = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ, bounds.maxY, 4);
   const gridSize = Math.ceil(span * 2 + 8);
   const cameraDistance = span * 1.4 + 6;
+  // A real floor is tens of metres across; labels sized for the 1-unit demo boxes would be specks.
+  const labelSize = Math.max(0.32, span / 60);
 
   return (
     <Canvas
@@ -101,7 +121,7 @@ export function Warehouse3DScene({ layout, selectedId, onSelect }: Warehouse3DSc
               scale={[node.size[0], node.size[1], node.size[2]]}
               onClick={(event: ThreeEvent<MouseEvent>) => {
                 event.stopPropagation();
-                onSelect(node.location);
+                onSelect(node.location.id);
               }}
               onPointerOver={(event: ThreeEvent<PointerEvent>) => {
                 event.stopPropagation();
@@ -113,6 +133,36 @@ export function Warehouse3DScene({ layout, selectedId, onSelect }: Warehouse3DSc
         </Instances>
       ))}
 
+      {highlighted.map((node) => (
+        <group key={node.location.id}>
+          <mesh position={[node.position[0], node.position[1], node.position[2]]}>
+            <boxGeometry args={[node.size[0] * 1.05, node.size[1] * 1.05, node.size[2] * 1.05]} />
+            <meshStandardMaterial color={colors.selection} transparent opacity={0.85} />
+          </mesh>
+          {/* The outline and the name do not depth-test: a match is always findable, even when a taller
+              neighbour (or a container drawn around it) would otherwise hide it. The filled box above
+              keeps its depth test, so the matched box itself still sits where it really is. */}
+          <mesh
+            position={[node.position[0], node.position[1], node.position[2]]}
+            renderOrder={HIGHLIGHT_RENDER_ORDER}
+          >
+            <boxGeometry args={[node.size[0] * 1.25, node.size[1] * 1.25, node.size[2] * 1.25]} />
+            <meshBasicMaterial color={colors.label} wireframe depthTest={false} />
+          </mesh>
+          <Text
+            position={[node.position[0], node.position[1] + node.size[1] / 2 + labelSize * 2, node.position[2]]}
+            fontSize={labelSize * 1.4}
+            color={colors.label}
+            anchorX="center"
+            anchorY="bottom"
+            renderOrder={HIGHLIGHT_RENDER_ORDER}
+            material-depthTest={false}
+          >
+            {`Found: ${node.location.code}`}
+          </Text>
+        </group>
+      ))}
+
       {selectedNode ? (
         <mesh position={[selectedNode.position[0], selectedNode.position[1], selectedNode.position[2]]}>
           <boxGeometry
@@ -122,11 +172,11 @@ export function Warehouse3DScene({ layout, selectedId, onSelect }: Warehouse3DSc
         </mesh>
       ) : null}
 
-      {roots.map((node) => (
+      {(roots.length <= MAX_ROOT_LABELS ? roots : []).map((node) => (
         <Text
           key={node.location.id}
           position={[node.position[0], node.position[1] + node.size[1] / 2 + 0.35, node.position[2]]}
-          fontSize={0.32}
+          fontSize={labelSize}
           color={colors.label}
           anchorX="center"
           anchorY="bottom"

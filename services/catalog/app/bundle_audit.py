@@ -3,8 +3,8 @@
 Catalog validates a bundle's members when the draft is authored, but the registry moves after
 that: a member's launch is rolled back to `soon`, a product is folded into the platform, a
 bundle is authored before the rule existed. This re-runs `domain.bundle_member_problems` over
-every published or grandfathered version that declares `bundled_products` and says what it
-finds:
+every published or grandfathered version that declares `bundled_products` — and flags a version
+of a registered bundle product that declares none (ADR-0030 §3) — and says what it finds:
 
 * on a plan that is still **active** (offered) a problem is an **error** — that rung is being
   sold with a member the registry cannot vouch for — and the run exits 1;
@@ -74,15 +74,21 @@ async def audit(session: AsyncSession, registry: ProductRegistry) -> AuditReport
     report = AuditReport()
     for version, plan in (await session.execute(stmt)).all():
         declared = {f.feature_key: f.value for f in version.features}
-        if FEATURE_BUNDLED_PRODUCTS not in declared:
+        entry = products.get(plan.product_key)
+        if FEATURE_BUNDLED_PRODUCTS in declared:
+            report.audited += 1
+            problems = domain.bundle_member_problems(
+                entry, plan.product_key, declared[FEATURE_BUNDLED_PRODUCTS], products
+            )
+        elif entry is not None and entry.is_bundle:
+            # A bundle product's version that names no members entitles only the bundle's own
+            # key, which routes nowhere (ADR-0030 §3) — frozen before publish refused it.
+            report.audited += 1
+            problems = [
+                f"{plan.product_key!r} is a bundle, but this version declares no bundled_products"
+            ]
+        else:
             continue
-        report.audited += 1
-        problems = domain.bundle_member_problems(
-            products.get(plan.product_key),
-            plan.product_key,
-            declared[FEATURE_BUNDLED_PRODUCTS],
-            products,
-        )
         if not problems:
             continue
         finding = Finding(

@@ -14,6 +14,7 @@ export {
   CheckboxGroup,
   Combobox,
   ConfirmDialog,
+  CopyField,
   DataTable,
   DeltaPill,
   DonutChart,
@@ -40,6 +41,7 @@ export {
   Stepper,
   StepperActions,
   Switch,
+  Tabs,
   Tag,
   TextArea,
   TextField,
@@ -56,6 +58,7 @@ export type {
   RowAction,
   SelectOption,
   StepItem,
+  TabItem,
   TableSelection,
 } from "@opsgrids/ui";
 

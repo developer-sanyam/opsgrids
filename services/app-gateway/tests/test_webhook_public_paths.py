@@ -36,6 +36,8 @@ PROD_ROUTES = Path(__file__).resolve().parents[3] / "infrastructure/edge/routes.
 WHATSAPP = "/api/v1/webhooks/whatsapp"
 RAZORPAY = "/api/v1/webhooks/razorpay"
 RAZORPAY_COLLECTIONS = "/api/v1/webhooks/razorpay/collections"
+#: The provider-neutral path of the same tenant webhook (ADR-0033; Cashfree merchants register it).
+COLLECTIONS = "/api/v1/webhooks/collections"
 #: Meta documents payloads up to 3 MB; the route says so in both tables.
 WHATSAPP_BODY_CAP = 3 * 1024 * 1024
 
@@ -260,8 +262,9 @@ class TestNothingElseIsPublic:
                     reached.add((method, route.prefix))
         # Pinned, not derived from the policy: every public webhook, by exact path and method.
         # Meta's WhatsApp callback; Facebook Login's deauthorize / data-deletion callbacks; and a
-        # tenant's own Razorpay webhook (tenant collections, ADR-0024 §8) — never the platform's
-        # own `/api/v1/webhooks/razorpay`, which stays routed-but-not-public.
+        # tenant's own payment-provider webhook (tenant collections, ADR-0024 §8) at its original
+        # Razorpay path and its provider-neutral one (ADR-0033) — never the platform's own
+        # `/api/v1/webhooks/razorpay`, which stays routed-but-not-public.
         assert reached == {
             ("GET", WHATSAPP),
             ("POST", WHATSAPP),
@@ -269,8 +272,58 @@ class TestNothingElseIsPublic:
             ("POST", f"{WHATSAPP}/data-deletion"),
             ("GET", f"{WHATSAPP}/data-deletion-status"),
             ("POST", RAZORPAY_COLLECTIONS),
+            ("POST", COLLECTIONS),
         }
         assert ("POST", RAZORPAY) not in reached
+
+
+class TestTheTenantCollectionsWebhook:
+    """A merchant's payment-provider webhook (ADR-0024 §8, ADR-0033), at both its paths."""
+
+    @pytest.mark.parametrize("path", [COLLECTIONS, RAZORPAY_COLLECTIONS])
+    async def test_a_signed_delivery_reaches_payment_with_its_headers_byte_for_byte(
+        self, http: AsyncClient, probe_upstream: _Upstream, routes_file: Path, path: str
+    ) -> None:
+        body = b'{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{}}'
+        headers = {
+            "Content-Type": "application/json",
+            "x-webhook-signature": "c2lnbmF0dXJl",
+            "x-webhook-timestamp": "1759745115000",
+            "x-idempotency-header": "dlv-1",
+            "X-Razorpay-Signature": "ab" * 32,
+        }
+        response = await http.post(f"{path}?account=acc-1", content=body, headers=headers)
+
+        assert response.status_code == 200
+        forwarded = probe_upstream.calls[0]
+        assert forwarded.url.path == path and forwarded.url.params["account"] == "acc-1"
+        assert forwarded.content == body
+        for name, value in headers.items():
+            assert forwarded.headers[name.lower()] == value
+        upstream = forwarded.url
+        if routes_file == PROD_ROUTES:
+            assert (upstream.host, upstream.port) == ("payment", 8000)
+        else:
+            assert (upstream.host, upstream.port) == ("localhost", 8163)
+
+    @pytest.mark.parametrize("method", ["GET", "PUT", "PATCH", "DELETE"])
+    async def test_only_post_is_public(
+        self, app: FastAPI, probe_upstream: _Upstream, method: str
+    ) -> None:
+        assert await call(app, method, COLLECTIONS, body=b"{}") == 401
+        assert probe_upstream.calls == []
+
+    def test_both_tables_cap_the_body_at_256_kib(self, routes_file: Path) -> None:
+        route = RouteTable.from_file(routes_file).resolve(COLLECTIONS)
+        assert route is not None and route.prefix == COLLECTIONS
+        assert route.max_body_bytes == 256 * 1024
+
+    async def test_a_body_over_the_cap_is_refused_before_payment_is_opened(
+        self, http: AsyncClient, probe_upstream: _Upstream
+    ) -> None:
+        response = await http.post(f"{COLLECTIONS}?account=a", content=b"x" * (256 * 1024 + 1))
+        assert response.status_code == 413
+        assert probe_upstream.calls == []
 
 
 class TestNoCredentialSurface:

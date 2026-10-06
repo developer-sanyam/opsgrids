@@ -176,31 +176,101 @@ def test_neither_the_wire_nor_the_adapter_reprs_a_secret() -> None:
     assert KEY_SECRET not in repr(provider._wire)
 
 
-def test_the_platform_provider_never_gets_a_wire_even_with_collections_live(
+def test_the_platform_wire_is_chosen_by_payment_wire_and_never_by_collections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The two switches are independent (ADR-0032). Before Phase A this pinned that the platform
+    provider never got a wire at all; now it gets one under `PAYMENT_WIRE=live` and **only**
+    then: `COLLECTIONS_WIRE` turning a merchant's wire on says nothing about the platform's, and
+    the platform's turning on says nothing about a merchant's."""
+
+    class _Secret:
+        def __init__(self, value: str) -> None:
+            self._value = value
+
+        def get_secret_value(self) -> str:
+            return self._value
+
     class _Cfg:
         collections_wire = "razorpay"
+        payment_provider = "razorpay"
+        payment_wire = "stub"
         razorpay_key_id = "rzp_test_Platform0001"
-        razorpay_key_secret = None
+        razorpay_key_secret = _Secret("platform-key-secret-0001")  # pragma: allowlist secret
+        razorpay_webhook_secret = _Secret("platform-hook-secret")  # pragma: allowlist secret
 
-        class razorpay_webhook_secret:
-            @staticmethod
-            def get_secret_value() -> str:
-                return "platform-hook-secret"
+        @staticmethod
+        def collections_wire_for(provider: str) -> str:
+            return "live" if provider == "razorpay" else "stub"
 
-    monkeypatch.setattr(deps, "settings", lambda: _Cfg())
-    deps._build.cache_clear()
+    cfg = _Cfg()
+    monkeypatch.setattr(deps, "settings", lambda: cfg)
+    deps.reset_providers()
     try:
-        platform = deps._build()
+        # Collections live, platform stub: the platform provider still has no wire.
+        platform = deps.provider_for("razorpay")
         assert isinstance(platform, RazorpayProvider) and platform.is_live is False
         merchant = deps._collections_provider(KEY_ID, KEY_SECRET, "hook-secret-0001")
         assert isinstance(merchant, CollectionsProvider)
         assert isinstance(merchant, RazorpayProvider) and merchant.is_live is True
+
+        # Platform live (and collections stub): the reverse.
+        cfg.payment_wire = "live"
+        cfg.collections_wire = "stub"
+        cfg.collections_wire_for = staticmethod(lambda provider: "stub")  # type: ignore[method-assign]
+        deps.reset_providers()
+        live_platform = deps.provider_for("razorpay")
+        assert isinstance(live_platform, RazorpayProvider) and live_platform.is_live is True
+        quiet_merchant = deps._collections_provider(KEY_ID, KEY_SECRET, "hook-secret-0001")
+        assert isinstance(quiet_merchant, RazorpayProvider) and quiet_merchant.is_live is False
     finally:
-        deps._build.cache_clear()
+        deps.reset_providers()
+
+
+def test_the_legacy_collections_wire_value_means_razorpay_live() -> None:
+    """`COLLECTIONS_WIRE=razorpay` — the only non-stub value there has ever been — keeps meaning
+    Razorpay live under the per-provider switch, so an environment that already says it cannot be
+    silently flipped to the stub by this release (checkouts would then be not-openable with no
+    error). A provider it does not name stays on the stub."""
+    from app.config import Settings
+
+    legacy = Settings(collections_wire="razorpay")
+    assert legacy.collections_wire_for("razorpay") == "live"
+    assert legacy.collections_wire_for("cashfree") == "stub"
+    assert Settings(collections_wire="stub").collections_wire_for("razorpay") == "stub"
 
 
 def test_collections_default_to_the_stub_wire() -> None:
     merchant = deps._collections_provider(KEY_ID, KEY_SECRET, "hook-secret-0001")
     assert isinstance(merchant, RazorpayProvider) and merchant.is_live is False
+
+
+class TestTheCashfreeStubAccounts:
+    """The in-process Cashfree a merchant's stub adapter runs on is a process-wide object: it is
+    keyed so that two organizations never share one, and it is bounded."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(deps, "_CASHFREE_STUB_WIRES", type(deps._CASHFREE_STUB_WIRES)())
+
+    def test_the_same_app_id_with_another_secret_is_another_account(self) -> None:
+        mine = deps._cashfree_stub_wire("TESTsharedapp01", "dev-only-secret-a")
+        again = deps._cashfree_stub_wire("TESTsharedapp01", "dev-only-secret-a")
+        theirs = deps._cashfree_stub_wire("TESTsharedapp01", "dev-only-secret-b")
+        assert mine is again and mine is not theirs
+        assert all("dev-only-secret" not in str(key) for key in deps._CASHFREE_STUB_WIRES)
+
+    def test_the_registry_and_each_request_log_are_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(deps, "_STUB_WIRES_MAX", 3)
+        first = deps._cashfree_stub_wire("TESTapp0", "dev-only-secret")
+        for n in range(1, 5):
+            deps._cashfree_stub_wire(f"TESTapp{n}", "dev-only-secret")
+        assert len(deps._CASHFREE_STUB_WIRES) == 3
+        assert deps._cashfree_stub_wire("TESTapp0", "dev-only-secret") is not first
+        wire = deps._cashfree_stub_wire("TESTlog", "dev-only-secret")
+        for _ in range(deps._STUB_LOG_MAX + 50):
+            with pytest.raises(ProviderCallError):
+                wire.request("GET", "/orders/none")
+        assert len(wire.requests) == deps._STUB_LOG_MAX

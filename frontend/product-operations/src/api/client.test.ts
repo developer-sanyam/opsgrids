@@ -372,6 +372,44 @@ describe("listLocations", () => {
     const { url } = requested(fetchMock);
     expect(url).toBe("/api/v1/operations/warehouses/wh-1/locations?size=200");
     expect(locations).toEqual([{ id: "loc-1" }]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads every page of a warehouse with more locations than one page holds", async () => {
+    const rows = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) => ({ id: `loc-${from + i}` }));
+    const fetchMock = vi.fn((url: string) => {
+      const page = new URL(url, "http://x").searchParams.get("page") ?? "1";
+      const items = page === "1" ? rows(0, 200) : rows(200, 150);
+      return Promise.resolve(jsonResponse({ items, total: 350, page: Number(page), size: 200, pages: 2 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const locations = await listLocations("wh-1");
+
+    expect(locations).toHaveLength(350);
+    expect(locations.map((l) => l.id)).toEqual(rows(0, 350).map((l) => l.id));
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/operations/warehouses/wh-1/locations?size=200",
+      "/api/v1/operations/warehouses/wh-1/locations?page=2&size=200",
+    ]);
+  });
+
+  it("lists a location once when one shifts into a page already read", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      const page = new URL(url, "http://x").searchParams.get("page") ?? "1";
+      const items =
+        page === "1"
+          ? Array.from({ length: 200 }, (_, i) => ({ id: `loc-${i}` }))
+          : [{ id: "loc-199" }, { id: "loc-200" }];
+      return Promise.resolve(jsonResponse({ items, total: 201, page: Number(page), size: 200, pages: 2 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const locations = await listLocations("wh-1");
+
+    expect(locations).toHaveLength(201);
+    expect(new Set(locations.map((l) => l.id)).size).toBe(201);
   });
 });
 

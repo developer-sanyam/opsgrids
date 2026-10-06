@@ -83,6 +83,8 @@ async def add_line(  # type: ignore[no-untyped-def]
     counted: str,
     count_method: str = "manual",
     status: str = "AVAILABLE",
+    lot_id: uuid.UUID | None = None,
+    roll_id: uuid.UUID | None = None,
     perms: list[str] | None = None,
 ):
     principal = principal_for(
@@ -95,6 +97,10 @@ async def add_line(  # type: ignore[no-untyped-def]
         "counted": counted,
         "count_method": count_method,
     }
+    if lot_id is not None:
+        body["lot_id"] = str(lot_id)
+    if roll_id is not None:
+        body["roll_id"] = str(roll_id)
     with as_principal(principal):
         return await client.post(
             f"/api/v1/operations/counting/sessions/{session_id}/lines", json=body
