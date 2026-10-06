@@ -961,6 +961,15 @@ services:
     environment:
       <<: *service-env
       CATALOG_SERVICE_URL: http://catalog:8000
+      # The payment consumer, the dunning sweep and the billing run run inside this API process
+      # (RUN_CONSUMERS_IN_API, ADR-0013's memory-budget erratum), so they need the same settings
+      # `subscription-worker` below carries — without them the run reads its kill switch as off
+      # and its billing and payment calls go to localhost. Keep the two blocks in step.
+      BILLING_SERVICE_URL: http://billing:8000
+      PAYMENT_SERVICE_URL: http://payment:8000
+      # The billing run's kill switch and cutover — see the runbook's "The billing run".
+      BILLING_RUN_ENABLED: ${BILLING_RUN_ENABLED:-false}
+      BILLING_RUN_NOT_BEFORE: ${BILLING_RUN_NOT_BEFORE:-}
     networks:
       - back
 
