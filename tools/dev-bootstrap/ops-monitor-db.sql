@@ -27,7 +27,14 @@ CREATE EXTENSION IF NOT EXISTS postgis_topology;
 CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;
 CREATE EXTENSION IF NOT EXISTS postgis_tiger_geocoder;
 
-\i /docker-entrypoint-initdb.d/20-init.sql
+-- `make ops-monitor-db` runs this inside the compose postgres container, where init-db.sql is
+-- mounted at /docker-entrypoint-initdb.d/20-init.sql. CI has no such container — its postgres is
+-- a service container and psql runs on the runner — so it passes `-v init_sql=<path>` instead.
+\if :{?init_sql}
+\else
+\set init_sql /docker-entrypoint-initdb.d/20-init.sql
+\endif
+\i :init_sql
 
 GRANT CREATE ON DATABASE opsgrids_mon TO opsgrids_admin;
 
