@@ -79,8 +79,13 @@ def npm_installed() -> list[dict[str, str]]:
     pnpm = shutil.which("pnpm")
     if pnpm is None:
         raise SystemExit("pnpm is not on PATH — install it (corepack enable) and run pnpm install")
+    # `-r` (the whole workspace) is explicit because pnpm decides what a bare `licenses list` at
+    # the workspace root covers, and it changed between 11.x releases: 11.21 listed every
+    # project's dependencies, 11.28 listed only the root's own (it has none in production) and
+    # answered with the plain sentence "No licenses in packages found", which is not JSON and
+    # failed this check on CI's newer pnpm while passing on a developer's older one.
     result = subprocess.run(  # noqa: S603 — a fixed argv, the binary resolved just above
-        [pnpm, "licenses", "list", "--prod", "--json"],
+        [pnpm, "licenses", "list", "--prod", "--json", "-r"],
         cwd=FRONTEND,
         check=False,
         capture_output=True,
@@ -89,12 +94,18 @@ def npm_installed() -> list[dict[str, str]]:
     if result.returncode != 0:
         # pnpm reports a wrong Node version or a missing install on stdout as often as stderr.
         raise SystemExit(f"pnpm licenses list failed:\n{result.stdout}{result.stderr}")
-    grouped: dict[str, list[dict[str, Any]]] = json.loads(result.stdout)
+    try:
+        grouped: dict[str, list[dict[str, Any]]] = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise SystemExit(f"pnpm licenses list did not print JSON:\n{result.stdout[:500]}") from None
     rows: list[dict[str, str]] = []
     for licence, packages in grouped.items():
         for package in packages:
             for version in package.get("versions", []):
                 rows.append({"Name": package["name"], "Version": version, "License": licence})
+    if not rows:
+        # A check that finds nothing to check has not passed anything.
+        raise SystemExit("pnpm licenses list reported no packages for the frontend workspace")
     return rows
 
 
