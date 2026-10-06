@@ -35,11 +35,12 @@ omission; it shows up as a flake in whichever suite happens to lose the race.
 
 from __future__ import annotations
 
+import os
 import zlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
-from sqlalchemy import text
+from sqlalchemy import make_url, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
@@ -59,6 +60,27 @@ DEFAULT_LOCK_TIMEOUT_S = 180.0
 
 #: SQLSTATE 55P03, `lock_not_available` — what `lock_timeout` raises when the wait runs out.
 _LOCK_NOT_AVAILABLE = "55P03"
+
+#: The database `make infra` creates and every developer's stack shares, which a test that
+#: truncates tables must never be pointed at by accident.
+SHARED_DEV_DATABASE = "opsgrids"
+
+
+def is_shared_dev_database(dsn: str) -> bool:
+    """Whether `dsn` names the one database a destructive test must refuse to touch.
+
+    That is the developer stack's shared `opsgrids`. The CI workflow's database is *also* called
+    `opsgrids`, because the workflow's postgres service container is created with that name — but
+    it is the job's own throwaway container, created for this run and discarded with it, so there
+    is nothing shared there to protect. A guard that compared the name alone failed every test
+    behind it on every CI run, which says nothing about the code under test. GitHub Actions sets
+    `GITHUB_ACTIONS=true` on its runners and nowhere else, so the exemption cannot be switched on
+    by a developer's own environment file.
+    """
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        return False
+    return make_url(dsn).database == SHARED_DEV_DATABASE
+
 
 #: Locks this *process* currently holds, key -> nesting depth. Two purposes, both about not
 #: deadlocking against ourselves: a re-entrant acquisition of a lock we already hold is a no-op
