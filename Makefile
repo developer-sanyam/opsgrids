@@ -197,18 +197,18 @@ shard-verify: ## Assert SHARDS=3 partitions the service list exactly (no service
 # .github/workflows/ci.yml; tests/infra/test_ci_shards.py keeps the two in step). The
 # migrations jobs shard by service and keep SHARDS=3; the tests shard by *item* — a service,
 # or part of one — so they have their own count and their own verifier.
-TEST_SHARDS ?= 5
+TEST_SHARDS ?= 6
 
 .PHONY: test-shard-verify
-test-shard-verify: ## Assert TEST_SHARDS=5 covers every service test file exactly once
+test-shard-verify: ## Assert TEST_SHARDS=6 covers every service test file exactly once
 	python3 tools/ci_shards.py verify $(TEST_SHARDS)
 
 .PHONY: test-shard-plan
-test-shard-plan: ## Show the test shards and their estimated seconds: make test-shard-plan [TEST_SHARDS=5]
+test-shard-plan: ## Show the test shards and their estimated seconds: make test-shard-plan [TEST_SHARDS=6]
 	@python3 tools/ci_shards.py summary $(TEST_SHARDS)
 
 .PHONY: test-shard
-test-shard: ## Tests for one shard of the service suites: make test-shard SHARD=1 SHARDS=5
+test-shard: ## Tests for one shard of the service suites: make test-shard SHARD=1 SHARDS=6
 	# CI splits the service tests across jobs rather than across processes, because on a
 	# 2-vCPU runner a second process makes both slower (see .github/workflows/ci.yml). Each
 	# shard gets its own runner and its own database, so the parallelism is real capacity.

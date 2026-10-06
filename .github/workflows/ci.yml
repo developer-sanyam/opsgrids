@@ -29,7 +29,7 @@ env:
   # that many shards cover every test file, and tests/infra/test_ci_shards.py proves this and
   # the Makefile's default agree. Changing it is changing the plan: run
   # `make test-shard-plan TEST_SHARDS=<n>` to see the estimate first.
-  TEST_SHARDS: 5
+  TEST_SHARDS: 6
 
 jobs:
   # Which halves of the repository this change can possibly affect. Runs without a checkout —
@@ -128,18 +128,22 @@ jobs:
           echo "test_plan=$(python3 tools/ci_shards.py digest "$TEST_SHARDS")" >> "$GITHUB_OUTPUT"
 
   # The backend was one job of thirteen serial steps and 637s — the whole pipeline's
-  # critical path. It is now three, because of a measurement: on a 2-vCPU runner, running
+  # critical path. It was split across jobs, because of a measurement: on a 2-vCPU runner, running
   # two processes made each three times slower and the step lost outright. The way to
   # parallelise on hardware that small is another runner, not another process — so the work
   # is split across jobs, each with its own machine and its own database, and `JOBS: 1`
   # keeps every job serial inside itself.
 
-  # Every check in this job runs even when an earlier one fails (`if: ${{ !cancelled() }}`).
-  # They are independent, and stopping at the first red row meant a pull request with three
-  # problems took three 30-minute round trips to learn about them one at a time. The job still
-  # fails if any step does; nothing is hidden, only no longer withheld.
+  # The backend's static checks used to be one job and, once lint stopped hiding the rest, 12
+  # minutes: 415s of cold mypy, 221s of repository-tooling tests and ~80s of everything else, one
+  # after another. They are independent, so they are three jobs that run at once.
+  #
+  # Every check in each job runs even when an earlier one fails (`if: ${{ !cancelled() }}`).
+  # Stopping at the first red row meant a pull request with three problems took three 30-minute
+  # round trips to learn about them one at a time. The job still fails if any step does;
+  # nothing is hidden, only no longer withheld.
   static:
-    name: Backend — lint, types, contracts
+    name: Backend — lint, boundaries, schemas
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.backend == 'true'
@@ -155,31 +159,6 @@ jobs:
           enable-cache: true
 
       - run: uv sync --frozen
-
-      # The single largest win in the pipeline: 219s to 14s, measured. `mypy --strict` with
-      # the pydantic plugin costs ~6s per service cold and ~0.3s incrementally, and nothing
-      # cached `.mypy_cache`, so every run re-analysed code that had not changed.
-      #
-      # Keyed on uv.lock, which pins the mypy version — an upgrade must not read a cache the
-      # previous version wrote. The rolling `github.sha` suffix saves a fresh entry each run
-      # while `restore-keys` recovers the most recent compatible one. mypy validates its own
-      # cache per file, so a partial hit recomputes that file rather than trusting it.
-      #
-      # Restore and save are separate steps because a cache step's own save only runs when the
-      # whole job succeeded: with the lint rows red (as they have been), the cache was never
-      # written and every run paid the cold ~219s again. mypy's cache is valid whatever the
-      # other checks said, so it is saved on every run that was not cancelled.
-      - name: Restore mypy caches
-        id: mypy-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            .mypy_cache
-            services/*/.mypy_cache
-          key: mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
-          restore-keys: |
-            mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
-            mypy-${{ runner.os }}-
 
       # Every check in this file is one make target, and `make gate` runs the same targets.
       # (Setup — installs, the database bootstrap — is not a check.) That is the whole
@@ -199,20 +178,6 @@ jobs:
         # import-linter per service: the layering in CLAUDE.md, and no import cycles.
         if: ${{ !cancelled() }}
         run: make boundaries
-
-      - name: Type check
-        # libs, every service, and the tooling. `mypy libs services` cannot run at all —
-        # each service exposes a top-level `app`, so they must be checked one process at
-        # a time.
-        if: ${{ !cancelled() }}
-        run: make typecheck-libs typecheck-services typecheck-tools
-
-      - name: Repository-tooling tests
-        # remote.sh's rebuild rule, ci-plan.sh's path logic, and the gate's own checkers
-        # (licence expressions, the audit allow-list's expiry, the port check). No database,
-        # no `make infra` — fits here, not in the tests job below.
-        if: ${{ !cancelled() }}
-        run: make test-infra
 
       - name: Shard arithmetic
         # Asserts the shards below partition the service list exactly. The failure this
@@ -245,6 +210,55 @@ jobs:
         if: ${{ !cancelled() }}
         run: make hadolint
 
+  types:
+    name: Backend — types
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    timeout-minutes: 20
+    env:
+      JOBS: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen
+
+      # The single largest win in this job: 415s cold to a fraction of that warm. `mypy --strict`
+      # with the pydantic plugin costs ~6s per service cold and ~0.3s incrementally, and nothing
+      # cached `.mypy_cache`, so every run re-analysed code that had not changed.
+      #
+      # Keyed on uv.lock, which pins the mypy version — an upgrade must not read a cache the
+      # previous version wrote. The rolling `github.sha` suffix saves a fresh entry each run
+      # while `restore-keys` recovers the most recent compatible one. mypy validates its own
+      # cache per file, so a partial hit recomputes that file rather than trusting it.
+      #
+      # Restore and save are separate steps because a cache step's own save only runs when the
+      # whole job succeeded: a red job never wrote the cache, so every run paid the cold cost
+      # again. mypy's cache is valid whatever the result was, so it is saved on every run that
+      # was not cancelled.
+      - name: Restore mypy caches
+        id: mypy-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .mypy_cache
+            services/*/.mypy_cache
+          key: mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
+          restore-keys: |
+            mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
+            mypy-${{ runner.os }}-
+
+      - name: Type check
+        # libs, every service, and the tooling. `mypy libs services` cannot run at all —
+        # each service exposes a top-level `app`, so they must be checked one process at
+        # a time.
+        run: make typecheck-libs typecheck-services typecheck-tools
+
       - name: Save mypy caches
         if: ${{ !cancelled() && steps.mypy-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
@@ -254,24 +268,49 @@ jobs:
             services/*/.mypy_cache
           key: mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
 
+  tooling:
+    name: Backend — tooling tests
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    timeout-minutes: 20
+    env:
+      JOBS: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen
+
+      - name: Repository-tooling tests
+        # remote.sh's rebuild rule, ci-plan.sh's path logic, the shard planner, and the gate's
+        # own checkers (licence expressions, the audit allow-list's expiry, the port check). No
+        # database, no `make infra` — fits here, not in the tests job below. ~220s on its own,
+        # which is why it is not a step of the lint job.
+        run: make test-infra
+
+  # One job, not three. With the database tuned (below) and two services migrated at a time, the
+  # whole round-trip and drift check take ~2 minutes — well inside the tests' critical path — and
+  # three jobs paid three container starts and three rounded-up minutes for it. `SHARDS: 1` is
+  # the same Makefile target with a single shard: every service.
   migrations:
-    name: Backend — migrations ${{ matrix.shard }}/3
+    name: Backend — migrations
     runs-on: ubuntu-latest
     needs: changes
     # Not for a change that is only docs: no migration can see it (see `changes`).
     if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.code == 'true'
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
     env:
       # Two services at a time: a migration is mostly the interpreter importing the app and
       # Alembic starting up, not database work, so a second process uses the second vCPU.
       # (The test jobs stay at 1: there the database server is the second busy process.)
       JOBS: 2
-      SHARD: ${{ matrix.shard }}
-      SHARDS: 3
+      SHARD: 1
+      SHARDS: 1
       # Narrows migration-shard / migration-check-shard to what this pull request could
       # affect (tools/filter-affected.sh). services_all=true — any non-pull_request event,
       # or a change outside a single services/<name>/ dir — makes this a no-op: every
@@ -440,6 +479,12 @@ jobs:
         # is mostly interpreter start-up, which the second vCPU takes half of.
         run: make migrate JOBS=2
 
+      - name: Start CPU sampling
+        # A measurement, not a check: how busy the two vCPUs really are while the tests run.
+        # The suite is run one item at a time because an earlier trial of two processes on this
+        # hardware lost; if the idle figure below is ever large, that trial is worth repeating.
+        run: nohup vmstat 5 > "$RUNNER_TEMP/vmstat.log" 2>&1 &
+
       - name: Service tests
         # Every item in this shard (tools/ci_shards.py: a service, or a part of one), unless
         # the `changes` job narrowed AFFECTED_SERVICES — see tools/filter-affected.sh and
@@ -465,6 +510,12 @@ jobs:
         # exercises the entrypoint, which is identical across services.
         if: ${{ !cancelled() && matrix.shard == 1 }}
         run: make smoke
+
+      - name: CPU use while the tests ran
+        if: ${{ !cancelled() }}
+        run: |
+          pkill vmstat || true
+          awk 'NR>3 { us+=$13; sy+=$14; id+=$15; wa+=$16; n++ } END { if (n) printf "vmstat, %d samples: user %.0f%% system %.0f%% idle %.0f%% iowait %.0f%%\n", n, us/n, sy/n, id/n, wa/n }' "$RUNNER_TEMP/vmstat.log"
 
       - name: Upload test timings
         # What `tools/ci_shards.py refresh` reads to re-balance the shards. Also on failure:
@@ -612,9 +663,10 @@ jobs:
         run: make frontend-boundaries
 
   # `packages` is every workspace package the leg owns, as pnpm path selectors relative to
-  # frontend/. Balanced by each package's measured vitest time (the 2026-10-06 main run), so a
-  # leg is ~a quarter of the 845s the tests took in one piece. A package missing from every leg
-  # would silently never be tested or built — tests/infra/test_ci_shards.py is what stops that.
+  # frontend/. Balanced by measured time per leg (first run: 326/201/197/299s, now moved so
+  # product-operations, which alone is most of a leg, has only product-support beside it). A
+  # package missing from every leg would silently never be tested or built —
+  # tests/infra/test_ci_shards.py is what stops that.
   frontend-tests:
     name: Frontend — tests and build ${{ matrix.leg }}/4
     runs-on: ubuntu-latest
@@ -627,14 +679,15 @@ jobs:
         include:
           - leg: 1
             packages: >-
-              ./product-operations ./product-support ./product-marketing ./product-finance
-              ./product-pulseboard ./opsgrids-visual ./opsgrids-config
+              ./product-operations ./product-support
           - leg: 2
             packages: >-
               ./product-engage ./product-hrms ./opsgrids-dashboard ./worker-app
+              ./product-pulseboard
           - leg: 3
             packages: >-
-              ./opsgrids-client ./product-storefront ./product-itsm
+              ./opsgrids-client ./product-storefront ./product-itsm ./product-marketing
+              ./product-finance ./opsgrids-visual ./opsgrids-config
           - leg: 4
             packages: >-
               ./product-crm ./opsgrids-ui ./opsgrids-internal ./product-projects
