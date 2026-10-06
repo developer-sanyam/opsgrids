@@ -238,7 +238,10 @@ async def preview_change_plan(
 
     A POST because it carries a body, but a read: no row is written or locked, and no audit or
     outbox row is staged. Same permission as the write it previews."""
-    subscription = await services.require_subscription(session, subscription_id)
+    # Filtered on the caller's organization as well as isolated by RLS (the net, not the licence).
+    subscription = await services.require_subscription(
+        session, subscription_id, organization_id=ctx.organization_id
+    )
     ctx.assert_can_touch(owner_id=None)
     return await services.preview_change_plan(session, ctx, catalog, subscription, payload)
 
@@ -260,7 +263,9 @@ async def get_plan_options(
     subscription can take it, and the plan in force marked. Same permission as changing the plan.
     An amount only for this organization's own negotiated price, and only to a caller who may read
     its invoices; never a list price."""
-    subscription = await services.require_subscription(session, subscription_id)
+    subscription = await services.require_subscription(
+        session, subscription_id, organization_id=ctx.organization_id
+    )
     ctx.assert_can_touch(owner_id=None)
     return await plan_options.plan_options(
         session,
