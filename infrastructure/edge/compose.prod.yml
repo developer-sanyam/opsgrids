@@ -1033,9 +1033,13 @@ services:
     networks:
       - back
 
-  # Inert without Razorpay keys, by design (payment/app/config.py): every charge path runs and
-  # nothing reaches the network. The webhook secret must still be a real value — production
-  # refuses the dev-only default — so it is generated on the box like every other secret.
+  # Runs on its in-process stub unless the owner switches a provider's wire on
+  # (payment/app/config.py, ADR-0032): every charge path runs and nothing reaches the network.
+  # **Keys alone change nothing** — PAYMENT_WIRE=live (Razorpay) or CASHFREE_ENV=sandbox|production
+  # (Cashfree) is what opens a socket, so credentials may sit in `.env` until the owner decides.
+  # The webhook secret must still be a real value — production refuses the dev-only default — so
+  # it is generated on the box like every other secret. Only `payment` and `payment-worker` get any
+  # of these keys (tests/infra/test_payment_env_wiring.py pins it).
   payment:
     <<: *service-common
     stop_grace_period: 30s
@@ -1048,6 +1052,23 @@ services:
       RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
       RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
       RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET}
+      # Which provider new platform charges go to, and whether each provider's wire is live. All
+      # default to the safe side (Razorpay, stub, stub, no live keys); the Cashfree credentials are
+      # optional-empty like the Razorpay pair. Rollback is PAYMENT_PROVIDER=razorpay and
+      # PAYMENT_WIRE=stub, then a restart of `payment` and `payment-worker` (RUNBOOK.md,
+      # 'Payments: turning a provider on').
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-razorpay}
+      PAYMENT_WIRE: ${PAYMENT_WIRE:-stub}
+      PAYMENT_ALLOW_LIVE_KEYS: ${PAYMENT_ALLOW_LIVE_KEYS:-false}
+      # STAGING ONLY: `true` lets Razorpay test keys (PAYMENT_WIRE=live) and CASHFREE_ENV=sandbox
+      # run although every service here says ENVIRONMENT=production — for a box with no real
+      # paying customers. Refused beside PAYMENT_ALLOW_LIVE_KEYS or any live key; `payment` logs a
+      # WARNING at start-up and preflight warns while it is on (RUNBOOK.md, 'Payments: test mode
+      # on a staging box').
+      PAYMENT_ALLOW_TEST_KEYS: ${PAYMENT_ALLOW_TEST_KEYS:-false}
+      CASHFREE_ENV: ${CASHFREE_ENV:-stub}
+      CASHFREE_APP_ID: ${CASHFREE_APP_ID:-}
+      CASHFREE_SECRET_KEY: ${CASHFREE_SECRET_KEY:-}
       # Tenant collections (ADR-0024 A4): each tenant's own Razorpay keys live sealed in the
       # database, not here. These two are the owner's switches: whether a tenant's adapter talks
       # to Razorpay at all (`stub` until turned on), and whether live (`rzp_live_`) keys may be
@@ -1057,13 +1078,15 @@ services:
     networks:
       - back
 
-  # Runs the charge consumers *and* the stuck-charge sweep (D3), supervised in one process —
-  # app/worker.py. A charge whose process died between the provider call and recording it is
-  # resumed only by that sweep (the consumer marks the event processed at claim time), so it
-  # must run wherever payment runs. Folded in here rather than a `payment-cron` container: no
-  # memory budget change. `bin/cron` still runs the sweep alone for local debugging.
+  # Runs the charge consumers, the stuck-charge sweep (D3) and the charge poller (ADR-0032),
+  # supervised in one process — app/worker.py. A charge whose process died between the provider
+  # call and recording it is resumed only by that sweep (the consumer marks the event processed at
+  # claim time), so it must run wherever payment runs; and while the provider webhooks are private
+  # the poller is the only thing that learns a checkout was paid. Folded in here rather than a
+  # `payment-cron` container: no memory budget change. `bin/cron` still runs the sweep alone for
+  # local debugging.
   #
-  # Off by default — see `account-worker`'s own comment. Both loops now run inside `payment`'s
+  # Off by default — see `account-worker`'s own comment. All the loops now run inside `payment`'s
   # own API process (`services/payment/app/main.py`); this container is the `split-workers`
   # rollback.
   payment-worker:

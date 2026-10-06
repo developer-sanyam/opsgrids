@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import selectors, services
-from app.deps import get_provider
+from app.deps import default_provider_name, get_provider
 from app.providers.base import PaymentProvider
 from app.schemas import ChargeIn, ChargeOut, UsableMandateOut
 from platform_core.auth import require_service_token
@@ -73,21 +73,27 @@ async def create_charge(
         charge, needs_call = await services.stage_charge(session, provider, payload)
 
     if needs_call:
-        # On a worker thread, bounded: a provider that does not answer in time leaves the charge
-        # `created` under its lease, and the stuck-charge sweep resumes it once the lease lapses.
-        result = await services.call_provider_charge_off_loop(provider, charge)
-        if result is not None:
+        # On a worker thread, bounded, under an overall deadline: a provider that does not answer in
+        # time leaves the charge `created` under its lease, and the stuck-charge sweep resumes it
+        # once the lease lapses. The call is made through the provider **the charge was created
+        # under**, which for a retried key is not necessarily today's default.
+        outcome = await services.attempt_provider_charge(
+            services.provider_for_charge(provider, charge), charge
+        )
+        if outcome.needs_record:
             async with session.begin():
                 await set_tenant(session, payload.organization_id)
                 if not settings.is_production:
                     await assert_tenant(session, payload.organization_id)
-                charge = await services.finalize_charge(
+                recorded = await services.record_charge_outcome(
                     session,
                     charge.id,
-                    result,
+                    outcome,
                     organization_id=payload.organization_id,
                     request=request,
                 )
+                if recorded is not None:
+                    charge = recorded
 
     result_out = ChargeOut.model_validate(charge)
     log.info(
@@ -127,8 +133,15 @@ async def usable_mandate(
         await set_tenant(session, organization_id)
         if not settings.is_production:
             await assert_tenant(session, organization_id)
+        # Only a mandate at the provider new charges go to counts: a Razorpay token cannot be
+        # debited through Cashfree, so after a default flip the customer authorises afresh.
+        asked_of = default_provider_name()
         mandate = await selectors.usable_mandate(
-            session, organization_id, currency=currency, amount_minor=amount_minor
+            session,
+            organization_id,
+            currency=currency,
+            amount_minor=amount_minor,
+            provider=asked_of,
         )
     return UsableMandateOut(
         organization_id=organization_id,
@@ -136,4 +149,5 @@ async def usable_mandate(
         amount_minor=amount_minor,
         usable=mandate is not None,
         mandate_id=mandate.id if mandate is not None else None,
+        provider=mandate.provider if mandate is not None else asked_of,
     )

@@ -75,8 +75,9 @@ from app.providers.base import (
     PaymentSnapshot,
     ProviderCallError,
     RefundResult,
+    best_attempt,
 )
-from app.providers.razorpay import best_attempt
+from app.providers.wire import ProviderTransient
 from app.schemas import WebhookAck
 from platform_core import pii
 from platform_core.audit import record_audit
@@ -94,8 +95,8 @@ from platform_core.logging import get_logger
 log = get_logger("payment.collections")
 
 #: Which of a merchant account's two sealed secrets — labels (and AAD parts), not credentials.
-KEY_SECRET = "key_secret"  # noqa: S105
-WEBHOOK_SECRET = "webhook_secret"  # noqa: S105
+KEY_SECRET = "key_secret"  # noqa: S105  # pragma: allowlist secret
+WEBHOOK_SECRET = "webhook_secret"  # noqa: S105  # pragma: allowlist secret
 
 
 class ProviderRefusedProblem(ProblemError):
@@ -192,10 +193,20 @@ async def set_merchant_account(
     now = _now()
     existing = await selectors.lock_live_merchant_account(session, organization_id)
     if existing is not None:
+        if existing.provider != provider or existing.mode != mode:
+            # **Provider and mode are fixed for the life of a row** (ADR-0032). Every charge taken
+            # into this account is pointed at it by `merchant_account_id`, and the keys are what
+            # reaches the provider for it (status checks, refunds): overwriting the provider or
+            # the mode in place would repoint every earlier charge at keys of another provider or
+            # of the other mode, where its Orders do not exist. A key id may change on rotation —
+            # within the same provider and mode. Switching is remove, then connect: a new row, a
+            # new account id, a new webhook URL.
+            raise ConflictProblem(
+                "A connected payment account's provider and mode cannot be changed; disconnect "
+                "it first, then connect the new one"
+            )
         before = {"provider": existing.provider, "key_id": existing.key_id, "mode": existing.mode}
-        existing.provider = provider
         existing.key_id = key_id
-        existing.mode = mode
         existing.key_secret_enc = _seal(organization_id, existing.id, KEY_SECRET, key_secret)
         existing.key_secret_masked = domain.mask_secret(key_secret)
         existing.webhook_secret_enc = _seal(
@@ -525,7 +536,14 @@ async def apply_observation(
 async def _off_loop[T](fn: Callable[[], T], *, what: str, organization_id: uuid.UUID) -> T:
     """Run one provider call on a worker thread, bounded by `collections_call_timeout_seconds`.
     A timeout or a transport failure is `ProviderUnreachableProblem` (unknown outcome; safe to
-    repeat); a provider refusal is `ProviderRefusedProblem` with its stable code only."""
+    repeat); a provider refusal is `ProviderRefusedProblem` with its stable code only.
+
+    **The live wire raises its transport failures already classified** (`HttpWire.request`: a
+    timeout, a connect error, a `5xx`, a `429` are all `ProviderTransient`), not as the
+    `httpx.HTTPError` they started as — so `ProviderTransient` is caught *before* the generic
+    `ProviderCallError`. Reported as a refusal instead, a create whose answer was merely lost would
+    release the call lease (`api/collections_internal.open_checkout`), and a retry could race the
+    create still landing."""
     timeout = settings().collections_call_timeout_seconds
     try:
         return await asyncio.wait_for(asyncio.to_thread(fn), timeout=timeout)
@@ -539,6 +557,15 @@ async def _off_loop[T](fn: Callable[[], T], *, what: str, organization_id: uuid.
         raise ProviderUnreachableProblem(
             "The payment provider did not answer in time; try again"
         ) from None
+    except ProviderTransient as exc:
+        log.warning(
+            "payment.collection.provider_unreachable",
+            call=what,
+            organization_id=str(organization_id),
+            error=type(exc).__name__,
+            code=exc.code,
+        )
+        raise ProviderUnreachableProblem("The payment provider could not be reached") from None
     except httpx.HTTPError as exc:
         log.warning(
             "payment.collection.provider_unreachable",
@@ -604,6 +631,20 @@ async def _account_for(session: AsyncSession, charge: Charge) -> MerchantAccount
         raise ConflictProblem(
             "This payment was taken into a payment provider account that is no longer "
             "connected; check it in that account's own dashboard"
+        )
+    if account.provider != charge.provider:
+        # Belt and braces behind the immutability of `merchant_accounts.provider`: a charge is only
+        # ever asked about, or refunded, with keys of the provider that took it. A mismatch would
+        # build one provider's adapter from another's credentials.
+        log.error(
+            "payment.collection.account_provider_mismatch",
+            organization_id=str(charge.organization_id),
+            charge_id=str(charge.id),
+            charge_provider=charge.provider,
+            account_provider=account.provider,
+        )
+        raise ConflictProblem(
+            "This payment was taken through a different payment provider than the one connected now"
         )
     return account
 
@@ -1439,7 +1480,7 @@ async def _insert_inbox_once(
         return event
     derived = charge_domain.derive_event_id(event)
     existing = await charge_selectors.get_provider_event(
-        session, organization_id, event.provider_event_id
+        session, organization_id, event.provider_event_id, provider=event.provider
     )
     if (
         derived is None

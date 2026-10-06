@@ -176,29 +176,68 @@ def test_neither_the_wire_nor_the_adapter_reprs_a_secret() -> None:
     assert KEY_SECRET not in repr(provider._wire)
 
 
-def test_the_platform_provider_never_gets_a_wire_even_with_collections_live(
+def test_the_platform_wire_is_chosen_by_payment_wire_and_never_by_collections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The two switches are independent (ADR-0032). Before Phase A this pinned that the platform
+    provider never got a wire at all; now it gets one under `PAYMENT_WIRE=live` and **only**
+    then: `COLLECTIONS_WIRE` turning a merchant's wire on says nothing about the platform's, and
+    the platform's turning on says nothing about a merchant's."""
+
+    class _Secret:
+        def __init__(self, value: str) -> None:
+            self._value = value
+
+        def get_secret_value(self) -> str:
+            return self._value
+
     class _Cfg:
         collections_wire = "razorpay"
+        payment_provider = "razorpay"
+        payment_wire = "stub"
         razorpay_key_id = "rzp_test_Platform0001"
-        razorpay_key_secret = None
+        razorpay_key_secret = _Secret("platform-key-secret-0001")  # pragma: allowlist secret
+        razorpay_webhook_secret = _Secret("platform-hook-secret")  # pragma: allowlist secret
 
-        class razorpay_webhook_secret:
-            @staticmethod
-            def get_secret_value() -> str:
-                return "platform-hook-secret"
+        @staticmethod
+        def collections_wire_for(provider: str) -> str:
+            return "live" if provider == "razorpay" else "stub"
 
-    monkeypatch.setattr(deps, "settings", lambda: _Cfg())
-    deps._build.cache_clear()
+    cfg = _Cfg()
+    monkeypatch.setattr(deps, "settings", lambda: cfg)
+    deps.reset_providers()
     try:
-        platform = deps._build()
+        # Collections live, platform stub: the platform provider still has no wire.
+        platform = deps.provider_for("razorpay")
         assert isinstance(platform, RazorpayProvider) and platform.is_live is False
         merchant = deps._collections_provider(KEY_ID, KEY_SECRET, "hook-secret-0001")
         assert isinstance(merchant, CollectionsProvider)
         assert isinstance(merchant, RazorpayProvider) and merchant.is_live is True
+
+        # Platform live (and collections stub): the reverse.
+        cfg.payment_wire = "live"
+        cfg.collections_wire = "stub"
+        cfg.collections_wire_for = staticmethod(lambda provider: "stub")  # type: ignore[method-assign]
+        deps.reset_providers()
+        live_platform = deps.provider_for("razorpay")
+        assert isinstance(live_platform, RazorpayProvider) and live_platform.is_live is True
+        quiet_merchant = deps._collections_provider(KEY_ID, KEY_SECRET, "hook-secret-0001")
+        assert isinstance(quiet_merchant, RazorpayProvider) and quiet_merchant.is_live is False
     finally:
-        deps._build.cache_clear()
+        deps.reset_providers()
+
+
+def test_the_legacy_collections_wire_value_means_razorpay_live() -> None:
+    """`COLLECTIONS_WIRE=razorpay` — the only non-stub value there has ever been — keeps meaning
+    Razorpay live under the per-provider switch, so an environment that already says it cannot be
+    silently flipped to the stub by this release (checkouts would then be not-openable with no
+    error). A provider it does not name stays on the stub."""
+    from app.config import Settings
+
+    legacy = Settings(collections_wire="razorpay")
+    assert legacy.collections_wire_for("razorpay") == "live"
+    assert legacy.collections_wire_for("cashfree") == "stub"
+    assert Settings(collections_wire="stub").collections_wire_for("razorpay") == "stub"
 
 
 def test_collections_default_to_the_stub_wire() -> None:

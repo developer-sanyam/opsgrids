@@ -2,16 +2,17 @@
 
 This module is the OpenAPI surface: a change here is a change to the published contract. Two
 internal surfaces meet payment — the service-to-service charge create (billing calls it after
-finalize) and the provider webhook (Razorpay calls it, signature-guarded). There is deliberately
-**no customer surface**: a person never creates a charge directly, so no `/api/v1/payment/*`
-write exists.
+finalize) and the provider webhooks (signature-guarded, private). The one **customer surface** is
+the platform checkout (ADR-0032): a person who may activate products opens, reads and confirms the
+checkout for one invoice. A person still never creates a charge directly: the amount is always the
+invoice's own charge's, never a request field.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -19,6 +20,14 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 class ServiceInfo(BaseModel):
     service: str
     schema_name: str
+    #: The provider new platform charges and checkouts go to (`PAYMENT_PROVIDER`).
+    provider: str
+    #: What that provider runs on: `stub` (no provider is called), `test` (test / sandbox
+    #: credentials: test cards pay, no real money moves) or `live`.
+    mode: Literal["stub", "test", "live"]
+    #: Whether this deployment lets test credentials run although it says `production`
+    #: (`PAYMENT_ALLOW_TEST_KEYS`, a staging box only).
+    test_keys_allowed: bool
 
 
 # --------------------------------------------------------------------- charge create (internal)
@@ -73,6 +82,10 @@ class UsableMandateOut(BaseModel):
     amount_minor: int
     usable: bool
     mandate_id: uuid.UUID | None = None
+    #: The provider the mandate is held at, and the provider the question was asked of (the
+    #: configured default for new charges). Additive (ADR-0032): a mandate at another provider does
+    #: not count, because a Razorpay token cannot be debited through Cashfree.
+    provider: str | None = None
 
 
 # --------------------------------------------------------------------- webhook (provider)
@@ -291,3 +304,84 @@ class ReconciliationOut(BaseModel):
     mismatched: int
     unchecked: int
     rows: list[ReconciliationRowOut]
+
+
+# ===================================================================== platform checkout
+# (ADR-0032). A customer paying one of OpsGrids' own invoices in the provider's hosted checkout.
+# The amount, the currency and the subscription are never in a request: they are read from the
+# invoice's own charge.
+
+
+class CheckoutCustomerIn(BaseModel):
+    """Who is paying, as the provider's checkout needs it (Cashfree requires a phone on every
+    Order). **Passed through to the provider and nowhere else** — never stored, logged, audited or
+    put in an event. A phone is 10 digits, or `+` and 8-15 digits."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=100)
+    email: str | None = Field(default=None, max_length=254)
+    phone: str | None = Field(default=None, max_length=16)
+
+
+class PlatformCheckoutIn(BaseModel):
+    """`POST /payment/checkouts` — open (or reopen) the checkout for one invoice."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    invoice_id: uuid.UUID
+    customer: CheckoutCustomerIn | None = None
+
+
+class PlatformCheckoutOut(BaseModel):
+    """What the browser needs to open the provider's checkout, and what it will charge.
+    `amount_minor` and `currency` are the invoice's own charge's. `client_action` is provider-shaped
+    and tagged by `type`: `{"type": "razorpay_checkout", "key_id", "order_id", "openable"}` (the
+    **public** key id and the Order id — never the secret) or `{"type": "cashfree_checkout",
+    "payment_session_id", "mode", "openable"}`. `openable` is False on a stub provider: the Order
+    is a local stand-in no real checkout would accept. The session token is never stored;
+    reopening fetches it again. `test_mode` is true when the provider that owns the charge runs on
+    test / sandbox credentials (a Razorpay `rzp_test_` key on a live wire, or Cashfree's sandbox):
+    the checkout takes the provider's test cards and no real money moves. False on live
+    credentials and on a stub."""
+
+    charge_id: uuid.UUID
+    provider: str
+    client_action: dict[str, Any]
+    amount_minor: int
+    currency: str
+    expires_at: datetime
+    test_mode: bool
+
+
+class PlatformCheckoutStatusOut(BaseModel):
+    """The state of one checkout, as the server knows it. `paid` is true only for a **captured**
+    payment — one the provider reported, by a status check or a signed webhook; never because a
+    browser said so. `provider_checked` is false when the provider could not be asked this time
+    (the state shown is then the last one recorded). A failed checkout with `failure_reason`
+    `checkout_expired` is one nobody paid before it expired. `test_mode` is as on
+    `PlatformCheckoutOut`: the owning provider runs on test / sandbox credentials, so `paid` means
+    paid with a test instrument."""
+
+    charge_id: uuid.UUID
+    provider: str
+    state: Literal["created", "authorized", "captured", "failed"]
+    paid: bool
+    amount_minor: int
+    currency: str
+    expires_at: datetime | None
+    failure_reason: str | None = None
+    provider_checked: bool = True
+    test_mode: bool
+
+
+class CheckoutConfirmIn(BaseModel):
+    """`POST /payment/checkouts/{charge_id}/confirm` (Razorpay) — the three fields Checkout's
+    callback hands the browser. **Proof of nothing**: the server checks the signature as a
+    precondition, then asks Razorpay what happened. Missing or blank fields are a 400."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    razorpay_payment_id: str | None = Field(default=None, max_length=64)
+    razorpay_order_id: str | None = Field(default=None, max_length=64)
+    razorpay_signature: str | None = Field(default=None, max_length=128)

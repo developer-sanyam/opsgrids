@@ -18,8 +18,12 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    CHARGE_AUTHORIZED,
     CHARGE_CAPTURED,
     CHARGE_CREATED,
+    CHARGE_FAILED,
+    FLOW_CHECKOUT,
+    FLOW_DEBIT,
     MANDATE_ACTIVE,
     PAYEE_PLATFORM,
     REFUND_FAILED,
@@ -128,12 +132,19 @@ async def captured_charges_for_invoice(
 
 
 async def get_provider_event(
-    session: AsyncSession, organization_id: uuid.UUID, provider_event_id: str
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    provider_event_id: str,
+    *,
+    provider: str,
 ) -> ProviderEvent | None:
-    """An inbox row by the provider's event id — the idempotency lookup for a webhook."""
+    """An inbox row by the provider's event id — the idempotency lookup for a webhook. The key is
+    `(organization, provider, event id)`: an event id is only unique within the provider that
+    issued it (ADR-0032)."""
     result = await session.execute(
         select(ProviderEvent).where(
             ProviderEvent.organization_id == organization_id,
+            ProviderEvent.provider == provider,
             ProviderEvent.provider_event_id == provider_event_id,
         )
     )
@@ -170,6 +181,9 @@ SWEEP_READER_CHARGE_COLUMNS: tuple[str, ...] = (
     # Both sweeps filter on it: the stuck-charge sweep reads platform charges only, the
     # collection expiry sweep (`app/collections/cron.py`) merchant ones only.
     "payee",
+    # The stuck-charge sweep resumes `debit` charges only; the poller (`due_pollable_charges`) reads
+    # `checkout` ones and authorized debits (ADR-0032).
+    "flow",
 )
 
 
@@ -201,6 +215,10 @@ async def due_stuck_charges(
         select(Charge.organization_id, Charge.id)
         .where(
             Charge.payee == PAYEE_PLATFORM,
+            # Never a checkout: that charge is `created` with no provider payment until the
+            # customer pays, and "resuming" it would fail it as `attempts_exhausted` and suspend a
+            # customer who has not yet paid (ADR-0032).
+            Charge.flow == FLOW_DEBIT,
             Charge.state == CHARGE_CREATED,
             Charge.provider_payment_id.is_(None),
             Charge.deleted_at.is_(None),
@@ -215,7 +233,12 @@ async def due_stuck_charges(
 
 
 async def usable_mandate(
-    session: AsyncSession, organization_id: uuid.UUID, *, currency: str, amount_minor: int
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    *,
+    currency: str,
+    amount_minor: int,
+    provider: str | None = None,
 ) -> Mandate | None:
     """A mandate that could authorize a debit of `amount_minor` in `currency` right now.
 
@@ -223,8 +246,12 @@ async def usable_mandate(
     bank-confirmed (`activated_at` set), the currency, and a cap that covers the amount — asked
     ahead of time, so the billing run can decide whether a trial that just ended is collectable
     (ADR-0013 §6). The most recently activated one wins when several qualify.
+
+    `provider` restricts the answer to mandates held at that provider: a Razorpay token cannot be
+    debited through Cashfree, so once the default provider is Cashfree a Razorpay mandate does not
+    count and the customer authorises afresh (ADR-0032). None keeps the older, unfiltered reading.
     """
-    result = await session.execute(
+    stmt = (
         select(Mandate)
         .where(
             Mandate.organization_id == organization_id,
@@ -236,6 +263,9 @@ async def usable_mandate(
         .order_by(Mandate.activated_at.desc())
         .limit(1)
     )
+    if provider is not None:
+        stmt = stmt.where(Mandate.provider == provider)
+    result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
 
@@ -255,3 +285,111 @@ async def refunded_total_for_charge(
         )
     )
     return int(result.scalar_one())
+
+
+# --------------------------------------------------------------------------- checkout (ADR-0032)
+
+
+async def platform_charges_for_invoice(
+    session: AsyncSession, organization_id: uuid.UUID, invoice_id: uuid.UUID
+) -> list[Charge]:
+    """Every platform charge of one invoice **within one organization**, oldest first — what a
+    "pay now" reads its amount from (the invoice's own `debit`-flow charge, raised when billing
+    finalized it), never the request body. Another organization's invoice is an empty list."""
+    result = await session.execute(
+        select(Charge)
+        .where(
+            Charge.organization_id == organization_id,
+            Charge.invoice_id == invoice_id,
+            Charge.payee == PAYEE_PLATFORM,
+            Charge.deleted_at.is_(None),
+        )
+        .order_by(Charge.created_at, Charge.id)
+    )
+    return list(result.scalars())
+
+
+async def get_checkout_charge(
+    session: AsyncSession, organization_id: uuid.UUID, charge_id: uuid.UUID
+) -> Charge | None:
+    """One checkout charge by id within one organization, or None — for a charge that is another
+    organization's, is not a checkout, or does not exist alike (a 404, never a disclosure)."""
+    result = await session.execute(
+        select(Charge).where(
+            Charge.organization_id == organization_id,
+            Charge.id == charge_id,
+            Charge.payee == PAYEE_PLATFORM,
+            Charge.flow == FLOW_CHECKOUT,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def lock_checkout_charge(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    charge_id: uuid.UUID,
+    *,
+    skip_locked: bool = False,
+) -> Charge | None:
+    """`get_checkout_charge`, row-locked and re-read from the database (see `lock_charge`)."""
+    stmt = (
+        select(Charge)
+        .where(
+            Charge.organization_id == organization_id,
+            Charge.id == charge_id,
+            Charge.payee == PAYEE_PLATFORM,
+            Charge.flow == FLOW_CHECKOUT,
+        )
+        .with_for_update(skip_locked=skip_locked)
+        .execution_options(populate_existing=True)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def due_pollable_charges(
+    session: AsyncSession, *, now: datetime, limit: int = 100
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """Every platform charge that has a provider Order and no terminal state, and is **due to be
+    asked about now**, as `(organization_id, charge_id)` — the poller's discovery (ADR-0032).
+
+    Two kinds, both of which nothing else will ever resolve while the webhook is private:
+
+    * a **checkout** the customer may have paid (`flow = 'checkout'`, `created` or `authorized`);
+    * a **debit** the provider authorised and has not yet reported captured (`flow = 'debit'`,
+      `authorized`). The stuck-charge sweep never looks at an `authorized` charge;
+    * a **closed checkout** that may still be paid (`flow = 'checkout'`, `failed` with no payment,
+      and a `next_attempt_at` still set): `expire_checkout_charge` leaves it set, and
+      `checkout.services.claim_poll` clears it once the late-capture window is over — which is what
+      retires it from here. The window itself is judged there, on the app role: this role is not
+      granted `checkout_expires_at` or `failure_reason`, and does not need them.
+
+    A `debit` charge that is merely `created` with an Order is the stuck-charge sweep's, not
+    this: its payment may never have been made, and asking about it is the sweep's lookup, with
+    its lease and its budget.
+
+    **The second cross-tenant read in this service**: run on the BYPASSRLS outbox role, through
+    the same column-scoped grant as `due_stuck_charges` (`migrations/env.py`) — every column read
+    here is in `SWEEP_READER_CHARGE_COLUMNS`.
+    """
+    stmt = (
+        select(Charge.organization_id, Charge.id)
+        .where(
+            Charge.payee == PAYEE_PLATFORM,
+            Charge.deleted_at.is_(None),
+            Charge.provider_order_id.is_not(None),
+            or_(
+                (Charge.flow == FLOW_CHECKOUT)
+                & Charge.state.in_((CHARGE_CREATED, CHARGE_AUTHORIZED)),
+                (Charge.flow == FLOW_DEBIT) & (Charge.state == CHARGE_AUTHORIZED),
+                (Charge.flow == FLOW_CHECKOUT)
+                & (Charge.state == CHARGE_FAILED)
+                & Charge.provider_payment_id.is_(None)
+                & Charge.next_attempt_at.is_not(None),
+            ),
+            or_(Charge.next_attempt_at.is_(None), Charge.next_attempt_at <= now),
+        )
+        .order_by(func.coalesce(Charge.next_attempt_at, Charge.created_at))
+        .limit(limit)
+    )
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]

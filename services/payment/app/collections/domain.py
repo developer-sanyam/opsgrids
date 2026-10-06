@@ -43,6 +43,7 @@ from app.models import (
     REFUND_PROCESSED,
 )
 from app.providers.base import PaymentSnapshot
+from app.providers.razorpay import redact_webhook_body
 
 # --- what a collection is for ---------------------------------------------------------------
 
@@ -284,58 +285,10 @@ def payment_error_code(parsed: dict[str, Any]) -> str | None:
 
 
 # --- webhook body redaction ------------------------------------------------------------------
-
-#: Top-level fields of a Razorpay webhook body that are kept. `account_id` is the merchant's
-#: own Razorpay account id — the business's, not a person's.
-_KEEP_TOP: tuple[str, ...] = ("id", "entity", "account_id", "event", "contains", "created_at")
-#: Fields of each entity (`payload.payment.entity`, `payload.order.entity`,
-#: `payload.refund.entity`, …) that are kept: identifiers, money, status and stable error codes.
-#: Everything else — `email`, `contact`, `card`, `vpa`, `bank`, `wallet`, `notes` (which a
-#: browser can set), `acquirer_data`, `error_description` (free text) — is dropped.
-_KEEP_ENTITY: tuple[str, ...] = (
-    "id",
-    "entity",
-    "order_id",
-    "payment_id",
-    "amount",
-    "amount_paid",
-    "amount_due",
-    "amount_refunded",
-    "currency",
-    "status",
-    "method",
-    "captured",
-    "refund_status",
-    "error_code",
-    "error_reason",
-    "error_source",
-    "error_step",
-    "receipt",
-    "attempts",
-    "created_at",
-    "speed_requested",
-    "speed_processed",
-)
-
-
-def redact_webhook_body(parsed: dict[str, Any]) -> dict[str, Any]:
-    """The merchant webhook as the inbox keeps it: reduced to what reconciliation reads, with
-    every field that could name the tenant's customer dropped by construction (an allow-list,
-    so a field Razorpay adds tomorrow is dropped too).
-
-    Keeps exactly what `domain.derive_event_id` is computed from — the event name, each
-    entity's id and `created_at` — so a redelivery of a stored event is still recognised as the
-    same event (`services._identity_of` re-derives it from the stored body)."""
-    kept: dict[str, Any] = {k: parsed[k] for k in _KEEP_TOP if k in parsed}
-    payload = parsed.get("payload")
-    reduced: dict[str, Any] = {}
-    if isinstance(payload, dict):
-        for name, wrapper in payload.items():
-            entity = wrapper.get("entity") if isinstance(wrapper, dict) else None
-            if isinstance(entity, dict):
-                reduced[str(name)] = {"entity": {k: entity[k] for k in _KEEP_ENTITY if k in entity}}
-    kept["payload"] = reduced
-    return kept
+# The allow-list itself lives with the adapter that knows Razorpay's payload shape
+# (`app.providers.razorpay.redact_webhook_body`): platform billing's inbox needs the very same
+# reduction since Phase A, and the two must never drift. Re-exported here, where collections
+# has always found it (see `__all__`).
 
 
 @dataclass(frozen=True, slots=True)

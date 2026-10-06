@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import uuid
 
-from app.config import settings
+from pydantic import SecretStr
+
+from app.providers import registry
 from app.providers.base import PaymentProvider
 from app.providers.razorpay import RazorpayProvider, build_provider
 from tests.helpers import razorpay_webhook_body
@@ -21,11 +23,40 @@ def _provider() -> RazorpayProvider:
 
 class TestNoKeysNoNetwork:
     def test_the_adapter_needs_no_keys(self) -> None:
-        """The development posture: Razorpay keys are absent, and the whole path still works
-        because the outbound HTTP is stubbed. This is the assertion the phase turns on."""
-        cfg = settings()
-        assert cfg.razorpay_key_id is None
-        assert cfg.razorpay_key_secret is None
+        """The development posture: no keys, and the whole path still works because the outbound
+        HTTP is stubbed. Asserted as **behaviour**, not as a fact about the environment: the old
+        form (`settings().razorpay_key_id is None`) went red the moment an owner put test keys in
+        `.env`, which the Makefile exports into the tests."""
+        provider = _provider()
+        assert provider.is_live is False
+        assert provider.capabilities.wire == "stub"
+        order = provider.ensure_order(
+            receipt="r-no-keys", amount_minor=1000, currency="INR", notes={}
+        )
+        assert order.provider_order_id.startswith("order_")
+        # No socket: `conftest._no_real_transport` would fail this test if one were opened.
+
+    def test_keys_in_the_environment_never_switch_the_network_on(self) -> None:
+        """A developer's `.env` may hold test keys. The wire is chosen by `PAYMENT_WIRE`, never by
+        whether keys exist: with the switch at `stub` the provider built from a configuration that
+        **has** keys is still the in-process stub."""
+
+        class _Cfg:
+            payment_wire = "stub"
+            razorpay_key_id = "rzp_test_HermeticKey01"
+            razorpay_key_secret = SecretStr(
+                "dev-only-hermetic-key-secret"
+            )  # pragma: allowlist secret
+            razorpay_webhook_secret = SecretStr(
+                "dev-only-hermetic-hook-secret"
+            )  # pragma: allowlist secret
+
+        provider = registry.build("razorpay", _Cfg())
+        assert isinstance(provider, RazorpayProvider) and provider.is_live is False
+        charge = provider.charge(
+            idempotency_key="k-keys", amount_minor=1000, currency="INR", mandate_id=None, notes={}
+        )
+        assert charge.provider_payment_id.startswith("pay_")
 
     def test_charge_and_mandate_run_with_no_keys_and_no_socket(self) -> None:
         """A charge and a mandate both complete with `key_id`/`key_secret` None — no network is

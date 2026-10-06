@@ -168,6 +168,8 @@ class TestTheMandateQuestion:
             "amount_minor": amount,
             "usable": False,
             "mandate_id": None,
+            # Additive (ADR-0032): the provider the question was asked of — the configured default.
+            "provider": "razorpay",
         }
 
     async def test_another_organizations_mandate_is_invisible(

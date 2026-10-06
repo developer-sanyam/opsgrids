@@ -6,10 +6,9 @@ themselves are the authority — this page exists so you can find the right one 
 **Every question an ADR left open is decided or recorded as waiting on demand** in
 [adr/open-questions-register.md](adr/open-questions-register.md). That page links each question
 to the ADR section that decides it and to the backlog item that builds it. Numbers are allocated in
-order and never reused. The next free number is **0032**, and it is reserved for the payment provider
-seam on `feat/payments-phase-a`; **0033** is reserved for merchant connect on `feat/merchant-cashfree`
-(0027 is allocated to the inventory Phase 9 work, which has not merged). This table was last brought
-up to date at 0019, apart from 0028–0031 below;
+order and never reused. The next free number is **0033**, which the merchant-connect work on
+`feat/merchant-cashfree` will take (0027 is allocated to the inventory Phase 9 work, which has not
+merged). This table was last brought up to date at 0019, apart from 0028–0032 below;
 [`adr/`](adr/) is the complete list.
 
 | ADR | Title | Header status | What exists today |
@@ -38,6 +37,7 @@ up to date at 0019, apart from 0028–0031 below;
 | [0029](adr/0029-staff-plan-control.md) | Staff plan control: what staff may change, and what every change is made of | Accepted 2026-10-06 | Built on `feat/admin-plan-switch` (hardening and plan switching), not deployed; cancel is a later release, add-product and extend-trial are ADR-0031 and the Plans page is ADR-0030. Amends ADR-0005 addendum §4 (a deferred change's event is labelled by direction) |
 | [0030](adr/0030-catalog-operator-writes.md) | Catalog operator surface: role-split reads, reasoned idempotent writes, withdraw | Accepted 2026-10-06 | Built on `feat/admin-plans-page` (the console Plans & prices page), not deployed. Retire and withdraw do not yet stop a pin by id or a scheduled change; both are deferred subscription work |
 | [0031](adr/0031-staff-add-product-and-trial-extension.md) | Staff Add product and Extend trial | Proposed 2026-10-06 (for owner sign-off) | Built on `feat/admin-add-product-trial`, not deployed. New event `commerce.subscription.trial_extended`; deploy its consumers first (RUNBOOK) |
+| [0032](adr/0032-payment-provider-seam-and-checkout.md) | Payment provider seam: Razorpay and Cashfree, one customer-present checkout, no mandate debit yet | Accepted 2026-10-06 | Built on `feat/payments-phase-a`, not merged or deployed: every switch defaults to the stub (`PAYMENT_PROVIDER`, `PAYMENT_WIRE`, `CASHFREE_ENV`), webhooks stay private and the platform polls; amends the ADR-0004 §6 addendum. Nothing is verified against a provider until the owner runs `tools/payments_smoke_*.py` |
 
 Several header status lines (0002, 0004, 0006, 0007, 0009, 0010, 0012) were written before the
 work they describe shipped. The "What exists today" column is the current fact. Correcting the

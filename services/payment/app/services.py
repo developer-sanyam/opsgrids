@@ -16,13 +16,16 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import json
 import uuid
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
+import httpx
 from sqlalchemy import func, literal, or_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
@@ -36,6 +39,8 @@ from app.models import (
     CHARGE_CAPTURED,
     CHARGE_CREATED,
     CHARGE_FAILED,
+    FLOW_CHECKOUT,
+    FLOW_DEBIT,
     INBOX_CONFLICT,
     INBOX_PROCESSED,
     MANDATE_ACTIVE,
@@ -48,7 +53,26 @@ from app.models import (
     ProviderEvent,
     Refund,
 )
-from app.providers.base import ChargeResult, MalformedWebhook, PaymentProvider, WebhookEvent
+from app.providers.base import (
+    ChargeResult,
+    DirectDebitProvider,
+    MalformedWebhook,
+    PaymentProvider,
+    PaymentSnapshot,
+    ProviderCallError,
+    ProviderCapabilities,
+    WebhookEvent,
+    capabilities_of,
+)
+from app.providers.wire import (
+    CREDENTIALS,
+    CREDENTIALS_LATCH_SECONDS,
+    ProviderMisconfigured,
+    ProviderRejected,
+    ProviderTransient,
+    call_deadline,
+    ensure_deadline,
+)
 from app.schemas import ChargeIn, WebhookAck
 from platform_core.audit import record_audit
 from platform_core.db import assert_tenant, set_tenant
@@ -81,6 +105,13 @@ class WebhookRejectedProblem(ProblemError):
     status_code = 400
     problem_type = "invalid-webhook"
     title = "Invalid webhook"
+
+
+def _actor(event: WebhookEvent) -> str:
+    """Who an audit row attributes a reconciled change to: `<provider>-webhook` for a signed
+    delivery, `<provider>-sync` for a server-to-server status check (the poller, a checkout's
+    read-through, a confirm)."""
+    return f"{event.provider}-{event.source}"
 
 
 def _provider_actor(provider: str) -> dict[str, Any]:
@@ -161,6 +192,34 @@ def _lease() -> timedelta:
     return timedelta(seconds=settings().charge_reclaim_after_seconds)
 
 
+def debit_refusal(
+    capabilities: ProviderCapabilities,
+    *,
+    amount_minor: int,
+    currency: str,
+    mandate: Mandate | None,
+) -> str | None:
+    """Why a debit **cannot succeed at this provider**, as a stable `charges.failure_reason` code —
+    or None when it may be attempted. Decided before any provider call, so a charge that could only
+    fail at the provider fails here, with no call made and no bank fee paid (ADR-0005 Q4; ADR-0032).
+
+    In order: a currency the provider does not take, an amount below its minimum (Razorpay: 100
+    paise — it is a `400` that would burn an attempt), and no usable mandate for a provider whose
+    debit needs one (`no_mandate`). A mandate that exists but cannot be debited by this build
+    (`supports_mandate_debit` is False for every live adapter in Phase A) is the same answer: the
+    customer pays by checkout instead. The legacy stub declares none of this and is never refused.
+    """
+    if capabilities.currencies is not None and currency.upper() not in capabilities.currencies:
+        return domain.FAILURE_UNSUPPORTED_CURRENCY
+    if amount_minor < capabilities.min_amount_minor:
+        return domain.FAILURE_AMOUNT_BELOW_MINIMUM
+    if capabilities.requires_mandate_for_debit and (
+        mandate is None or not capabilities.supports_mandate_debit
+    ):
+        return domain.FAILURE_NO_MANDATE
+    return None
+
+
 async def stage_charge(
     session: AsyncSession,
     provider: PaymentProvider,
@@ -179,6 +238,13 @@ async def stage_charge(
     invariant. The mandate id is persisted on the charge so the authority a debit ran under is a
     column, not a reconstruction.
 
+    **A charge the provider could not take is refused here, before any call** (`debit_refusal`):
+    a provider whose debit needs a mandate (`requires_mandate_for_debit` — every live adapter) and
+    an organization with no usable one fails as `no_mandate`; so does a currency or an amount below
+    the provider's minimum. The row is still written — it is the audit trail, and what dunning's
+    `commerce.payment.failed` is about — but it is born `failed`, makes no call, and returns
+    `needs_call=False`.
+
     Returns `(charge, needs_call)`, and `needs_call` is **the right to call the provider**, held
     by at most one caller at a time (D3):
 
@@ -191,7 +257,24 @@ async def stage_charge(
     * a charge that already has a provider payment, or has moved on, is never called again.
     """
     now = now or datetime.now(UTC)
-    await _require_usable_mandate(session, payload)
+    mandate = await _require_usable_mandate(session, payload)
+    capabilities = capabilities_of(provider)
+    if mandate is None and capabilities.requires_mandate_for_debit:
+        # ADR-0005 Q4: the instrument is resolved when the debit is made — the organization's
+        # current usable mandate **at this provider**.
+        mandate = await selectors.usable_mandate(
+            session,
+            payload.organization_id,
+            currency=payload.currency,
+            amount_minor=payload.amount_minor,
+            provider=provider.name,
+        )
+    refusal = debit_refusal(
+        capabilities,
+        amount_minor=payload.amount_minor,
+        currency=payload.currency,
+        mandate=mandate,
+    )
     charge_id = uuid.uuid4()
     stmt = (
         pg_insert(Charge)
@@ -201,7 +284,9 @@ async def stage_charge(
             invoice_id=payload.invoice_id,
             subscription_id=payload.subscription_id,
             product_key=payload.product_key,
-            mandate_id=payload.mandate_id,
+            mandate_id=mandate.id
+            if mandate is not None and refusal is None
+            else payload.mandate_id,
             provider=provider.name,
             amount_minor=payload.amount_minor,
             currency=payload.currency.upper(),
@@ -247,6 +332,27 @@ async def stage_charge(
             "invoice_id": str(charge.invoice_id) if charge.invoice_id else None,
         },
     )
+    if refusal is not None:
+        # Born failed: no provider call is ever made for it, and no attempt was spent.
+        charge.attempts = 0
+        charge.next_attempt_at = None
+        uncollectable = refusal in domain.UNCOLLECTABLE_REASONS
+        if uncollectable:
+            # Not announced: dunning would suspend a customer for an amount nothing can collect
+            # (see `domain.UNCOLLECTABLE_REASONS`). A person decides instead.
+            log.error(
+                "payment.charge.uncollectable",
+                charge_id=str(charge.id),
+                organization_id=str(charge.organization_id),
+                invoice_id=str(charge.invoice_id) if charge.invoice_id else None,
+                failure_reason=refusal,
+                amount_minor=charge.amount_minor,
+                currency=charge.currency,
+                hint="no provider can take this amount; settle the invoice by hand",
+            )
+        _fail_locally(session, charge, refusal, acting_as="billing", announce=not uncollectable)
+        await session.flush()
+        return charge, False
     return charge, True
 
 
@@ -278,8 +384,10 @@ async def claim_charge_lease(
             Charge.organization_id == organization_id,
             Charge.id == charge_id,
             # The platform's right-to-call lease only: a merchant charge is never debited by the
-            # platform's provider (`app/collections/` claims its own).
+            # platform's provider (`app/collections/` claims its own), and a checkout charge is
+            # never "called" at all — it is opened by the customer (`app/checkout/`).
             Charge.payee == PAYEE_PLATFORM,
+            Charge.flow == FLOW_DEBIT,
             Charge.state == CHARGE_CREATED,
             Charge.provider_payment_id.is_(None),
             Charge.deleted_at.is_(None),
@@ -307,10 +415,34 @@ async def claim_charge_lease(
 
 def _receipt(charge: Charge) -> str:
     """The provider Order's `receipt` for a charge: its own id. 36 characters, globally unique,
-    and fixed for the charge's life — Razorpay caps `receipt` at 40 characters and does not make
-    it unique, so the platform key (`invoice:<uuid>` is 44) would be refused, and a
-    per-organization key could collide across tenants on one merchant account."""
+    and fixed for the charge's life — Razorpay caps `receipt` at 40 characters, so the platform key
+    (`invoice:<uuid>` is 44) would be refused, and a per-organization key could collide across
+    tenants on one merchant account. Razorpay does **not** keep a receipt unique (a duplicate create
+    is accepted, observed 2026-10-06) and its receipt search can miss a fresh Order, so the receipt
+    is a best-effort handle for finding an Order whose id was never recorded, not an idempotency
+    key (`RazorpayProvider.ensure_order`). Cashfree calls the same handle the Order's `order_id`,
+    and does keep it unique."""
     return str(charge.id)
+
+
+def _call_direct_debit(provider: DirectDebitProvider, charge: Charge) -> ChargeResult:
+    """The debit path of a provider with **no Order step** (`debit_shape = "direct"`; Cashfree
+    subscriptions, Phase B): find a debit already made for this charge, create one only if none
+    was. Same invariant as the Order-then-charge path, one request shorter. Declared in Phase A —
+    no live adapter reaches it, because a debit needs a mandate and no mandate is debitable yet —
+    but the branch exists so that the first one that does is held to `DirectDebitContract`, not to
+    whatever this function happens to do."""
+    existing = provider.find_debit(charge_ref=_receipt(charge))
+    if existing is not None:
+        return existing
+    return provider.debit(
+        idempotency_key=charge.idempotency_key,
+        charge_ref=_receipt(charge),
+        mandate_id=str(charge.mandate_id) if charge.mandate_id else None,
+        amount_minor=charge.amount_minor,
+        currency=charge.currency,
+        notes=_notes_for_charge(charge),
+    )
 
 
 def call_provider_charge(provider: PaymentProvider, charge: Charge) -> ChargeResult:
@@ -322,40 +454,123 @@ def call_provider_charge(provider: PaymentProvider, charge: Charge) -> ChargeRes
     own id — `_receipt` — found by it if a previous call already made it), asks whether a payment
     already exists against that Order, and only if none does creates one. A call resumed after a
     crash between this and `finalize_charge` therefore lands on the payment the first call made,
-    never a second debit.
+    never a second debit. A provider with no Order step (`debit_shape = "direct"`) is the same
+    promise in two requests (`_call_direct_debit`).
+
+    **Only as good as the provider's receipt index.** The stub's is exact, so this holds there
+    (`ProviderContract`). Razorpay's live receipt search can miss an Order created seconds earlier
+    (ADR-0032, 2026-10-06), so a live order-then-charge debit — Phase B; no live adapter reaches
+    this today, a platform debit is refused `no_mandate` before any call — must record the Order id
+    in its own transaction before it creates the payment, and resume from the recorded id.
+
+    The whole call runs under an overall monotonic deadline (`provider_call_timeout_seconds`) that
+    the live wire clamps every request to — a per-request timeout alone restarts whenever bytes
+    arrive and a call makes several requests (ADR-0004 addendum, B5g caveat 1).
     """
-    notes = _notes_for_charge(charge)
-    order = provider.ensure_order(
-        receipt=_receipt(charge),
-        amount_minor=charge.amount_minor,
-        currency=charge.currency,
-        notes=notes,
-    )
-    existing = provider.find_payment(order_id=order.provider_order_id, charge_id=str(charge.id))
-    if existing is not None:
-        return existing
-    return provider.charge(
-        idempotency_key=charge.idempotency_key,
-        amount_minor=charge.amount_minor,
-        currency=charge.currency,
-        mandate_id=str(charge.mandate_id) if charge.mandate_id else None,
-        notes=notes,
-        order_id=order.provider_order_id,
-    )
+    with ensure_deadline(settings().provider_call_timeout_seconds):
+        if capabilities_of(provider).debit_shape == "direct":
+            return _call_direct_debit(cast(DirectDebitProvider, provider), charge)
+        notes = _notes_for_charge(charge)
+        order = provider.ensure_order(
+            receipt=_receipt(charge),
+            amount_minor=charge.amount_minor,
+            currency=charge.currency,
+            notes=notes,
+        )
+        existing = provider.find_payment(order_id=order.provider_order_id, charge_id=str(charge.id))
+        if existing is not None:
+            return existing
+        return provider.charge(
+            idempotency_key=charge.idempotency_key,
+            amount_minor=charge.amount_minor,
+            currency=charge.currency,
+            mandate_id=str(charge.mandate_id) if charge.mandate_id else None,
+            notes=notes,
+            order_id=order.provider_order_id,
+        )
 
 
-async def call_provider_charge_off_loop(
-    provider: PaymentProvider, charge: Charge
-) -> ChargeResult | None:
-    """`call_provider_charge` on a worker thread, bounded by `provider_call_timeout_seconds`, so a
-    slow provider never blocks the event loop. None means it did not answer in time: the charge
-    stays `created` and its lease expires into the stuck-charge sweep, whose lookup-before-create
-    finds whatever the abandoned call achieved (the thread cannot be cancelled, only left)."""
+def provider_for_charge(default: PaymentProvider, charge: Charge) -> PaymentProvider:
+    """The adapter that finishes **this charge**: the default when it is the provider the charge was
+    created under (so the adapter a caller or a test built keeps its own state), otherwise the
+    registry's adapter for the charge's own provider. A retry of an idempotency key must not send a
+    Razorpay charge to Cashfree because the default moved (ADR-0032)."""
+    if default.name == charge.provider:
+        return default
+    from app.deps import resolve_provider
+
+    return resolve_provider(charge.provider)
+
+
+#: What a provider call came to, as the service layer treats it (see `CallOutcome`).
+OUTCOME_RESULT = "result"
+OUTCOME_UNKNOWN = "unknown"
+OUTCOME_REJECTED = "rejected"
+OUTCOME_MISCONFIGURED = "misconfigured"
+
+
+@dataclass(frozen=True, slots=True)
+class CallOutcome:
+    """The three-way taxonomy at the seam (ADR-0032), plus success:
+
+    * `result` — the provider answered; `result` is what it said. Recorded (`finalize_charge`).
+    * `unknown` — a timeout, a connect failure, a `429`/`5xx`, an unreadable answer: the call may or
+      may not have landed. **Nothing is recorded and nothing is concluded**; the charge stays
+      `created` under its lease and the sweep's lookup-before-create finds whatever happened.
+    * `rejected` — the provider refused (any other `4xx`, an unbuilt debit): provably nothing was
+      created. The charge **fails**, with the provider's stable `code` as its reason, and dunning
+      proceeds.
+    * `misconfigured` — the platform's own credentials are wrong or not allowed. **Never the
+      charge's fault**: it is not failed, `commerce.payment.failed` is not emitted, and the attempt
+      the claim took is given back — an operator is paged instead (`CREDENTIALS` latch). Dunning a
+      paying tenant for the platform's bad key is the failure this exists to prevent.
+    """
+
+    kind: str
+    result: ChargeResult | None = None
+    code: str | None = None
+
+    @property
+    def needs_record(self) -> bool:
+        """Whether a short transaction must follow to record what happened."""
+        return self.kind != OUTCOME_UNKNOWN
+
+
+def _credentials_rejected(provider: str, code: str | None, charge: Charge | None = None) -> None:
+    """The first rejected-credentials answer trips the latch and pages (an `error` line an alert
+    matches on); later ones inside the window are a `warning`, so one outage is one page."""
+    fields: dict[str, Any] = {"provider": provider, "code": code}
+    if charge is not None:
+        fields["charge_id"] = str(charge.id)
+        fields["organization_id"] = str(charge.organization_id)
+    if CREDENTIALS.trip(provider):
+        log.error(
+            "payment.provider.credentials_rejected",
+            hint="the platform's own provider credentials were refused; check the keys and the "
+            "PAYMENT_WIRE / CASHFREE_ENV switch on the box. No charge is failed and no attempt "
+            "is consumed until a call succeeds again.",
+            **fields,
+        )
+    else:
+        log.warning("payment.provider.credentials_rejected_again", **fields)
+
+
+async def attempt_provider_charge(provider: PaymentProvider, charge: Charge) -> CallOutcome:
+    """`call_provider_charge` on a worker thread, bounded by `provider_call_timeout_seconds`, with
+    every way it can end classified (`CallOutcome`) — so a slow provider never blocks the event loop
+    and a failure is never mistaken for a different one.
+
+    The overall deadline starts here, with the caller's own wait, and follows the call onto the
+    thread. While the credentials latch is tripped no call is made at all."""
+    name = provider.name
+    if CREDENTIALS.tripped(name):
+        return CallOutcome(OUTCOME_MISCONFIGURED, code="credentials_rejected")
     timeout = settings().provider_call_timeout_seconds
     try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(call_provider_charge, provider, charge), timeout=timeout
-        )
+        with call_deadline(timeout):
+            result = await asyncio.wait_for(
+                asyncio.to_thread(call_provider_charge, provider, charge), timeout=timeout
+            )
     except TimeoutError:
         log.warning(
             "payment.charge.provider_timeout",
@@ -363,18 +578,104 @@ async def call_provider_charge_off_loop(
             organization_id=str(charge.organization_id),
             timeout_seconds=timeout,
         )
+        return CallOutcome(OUTCOME_UNKNOWN, code="timeout")
+    except ProviderMisconfigured as exc:
+        _credentials_rejected(name, exc.code, charge)
+        return CallOutcome(OUTCOME_MISCONFIGURED, code=exc.code)
+    except ProviderRejected as exc:
+        log.warning(
+            "payment.charge.provider_rejected",
+            charge_id=str(charge.id),
+            organization_id=str(charge.organization_id),
+            provider=name,
+            code=exc.code,
+            status=exc.status_code,
+        )
+        return CallOutcome(OUTCOME_REJECTED, code=exc.code or f"http_{exc.status_code}")
+    except NotImplementedError:
+        # An unbuilt debit (Phase B) reached the wire: nothing was created, and no retry would
+        # change that — a rejection, with a code that says what it is.
+        return CallOutcome(OUTCOME_REJECTED, code="debit_not_supported")
+    except (ProviderTransient, ProviderCallError, httpx.HTTPError) as exc:
+        log.warning(
+            "payment.charge.provider_unknown_outcome",
+            charge_id=str(charge.id),
+            organization_id=str(charge.organization_id),
+            provider=name,
+            error=type(exc).__name__,
+            code=getattr(exc, "code", None),
+        )
+        return CallOutcome(OUTCOME_UNKNOWN, code=getattr(exc, "code", None))
+    return CallOutcome(OUTCOME_RESULT, result=result)
+
+
+async def call_provider_charge_off_loop(
+    provider: PaymentProvider, charge: Charge
+) -> ChargeResult | None:
+    """`attempt_provider_charge`, reduced to the answer: the provider's result, or None for every
+    other outcome. Kept for callers (and tests) that only care whether the provider answered; the
+    three real callers use `attempt_provider_charge` and `record_charge_outcome`, which tell a
+    timeout from a rejection from a rejected key."""
+    return (await attempt_provider_charge(provider, charge)).result
+
+
+async def record_charge_outcome(
+    session: AsyncSession,
+    charge_id: uuid.UUID,
+    outcome: CallOutcome,
+    *,
+    organization_id: uuid.UUID,
+    request: Request | None = None,
+) -> Charge | None:
+    """The *third* act for any outcome that needs one, in its own transaction opened only after the
+    call returned. `result` is `finalize_charge`. `rejected` fails the charge (re-checked under the
+    row lock: a webhook may have moved it meanwhile) with `provider_rejected:<code>` as its reason
+    and stages `commerce.payment.failed`. `misconfigured` gives the claimed attempt back and holds
+    the next try off for the latch window — the charge stays `created`, nothing is announced.
+    `unknown` has nothing to record. None when something else resolved the charge first."""
+    if outcome.kind == OUTCOME_RESULT and outcome.result is not None:
+        return await finalize_charge(
+            session, charge_id, outcome.result, organization_id=organization_id, request=request
+        )
+    if outcome.kind == OUTCOME_UNKNOWN:
+        return await selectors.get_charge(session, organization_id, charge_id)
+    charge = await selectors.lock_charge(session, organization_id, charge_id)
+    if (
+        charge is None
+        or charge.payee != PAYEE_PLATFORM
+        or charge.state != CHARGE_CREATED
+        or charge.provider_payment_id is not None
+    ):
         return None
+    if outcome.kind == OUTCOME_REJECTED:
+        reason = (domain.FAILURE_PROVIDER_REJECTED_PREFIX + (outcome.code or "unknown"))[:200]
+        _fail_locally(session, charge, reason, acting_as="billing")
+    else:
+        charge.attempts = max(charge.attempts - 1, 0)
+        charge.lease_until = None
+        charge.next_attempt_at = datetime.now(UTC) + timedelta(seconds=CREDENTIALS_LATCH_SECONDS)
+        log.warning(
+            "payment.charge.attempt_returned",
+            charge_id=str(charge.id),
+            organization_id=str(charge.organization_id),
+            reason="credentials_rejected",
+        )
+    await session.flush()
+    return charge
 
 
 def lookup_provider_charge(provider: PaymentProvider, charge: Charge) -> ChargeResult | None:
-    """A **lookup only**: the charge's Order by its receipt, then a payment against it. Never
-    creates an Order or a payment — this is the stuck-charge sweep's final look at the attempt
-    budget, and its whole point is to find out whether the last attempt's create landed without
-    risking another."""
-    order = provider.find_order(receipt=_receipt(charge))
-    if order is None:
-        return None
-    return provider.find_payment(order_id=order.provider_order_id, charge_id=str(charge.id))
+    """A **lookup only**: the charge's Order by its receipt, then a payment against it (or, for a
+    provider with no Order step, the debit already made). Never creates an Order or a payment —
+    this is the stuck-charge sweep's final look at the attempt budget, and its whole point is to
+    find out whether the last attempt's create landed without risking another."""
+    with ensure_deadline(settings().provider_call_timeout_seconds):
+        if capabilities_of(provider).debit_shape == "direct":
+            return cast(DirectDebitProvider, provider).find_debit(charge_ref=_receipt(charge))
+        order = provider.find_order(receipt=_receipt(charge))
+        if order is None:
+            return None
+        return provider.find_payment(order_id=order.provider_order_id, charge_id=str(charge.id))
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,9 +694,10 @@ async def lookup_provider_charge_off_loop(
     """`lookup_provider_charge` on a worker thread, bounded like every provider call."""
     timeout = settings().provider_call_timeout_seconds
     try:
-        found = await asyncio.wait_for(
-            asyncio.to_thread(lookup_provider_charge, provider, charge), timeout=timeout
-        )
+        with call_deadline(timeout):
+            found = await asyncio.wait_for(
+                asyncio.to_thread(lookup_provider_charge, provider, charge), timeout=timeout
+            )
     except TimeoutError:
         log.warning(
             "payment.charge.final_lookup_timeout",
@@ -403,6 +705,9 @@ async def lookup_provider_charge_off_loop(
             organization_id=str(charge.organization_id),
             timeout_seconds=timeout,
         )
+        return LookupOutcome("unavailable")
+    except ProviderMisconfigured as exc:
+        _credentials_rejected(provider.name, exc.code, charge)
         return LookupOutcome("unavailable")
     except Exception:
         log.exception(
@@ -441,6 +746,18 @@ async def finalize_charge(
     charge = await selectors.lock_charge(session, organization_id, charge_id)
     if charge is None:  # pragma: no cover - defensive; staging committed before the call ran
         raise BusinessRuleProblem("charge vanished before its result could be recorded")
+    if result.provider != charge.provider:
+        # A payment made at one provider must never be recorded against a charge that belongs to
+        # another: it would bind an id of the wrong namespace, and every later lookup would ask
+        # the wrong provider about it. A defect in whoever routed the call (ADR-0032).
+        log.error(
+            "payment.charge.provider_mismatch",
+            charge_id=str(charge.id),
+            organization_id=str(charge.organization_id),
+            charge_provider=charge.provider,
+            result_provider=result.provider,
+        )
+        raise BusinessRuleProblem("the provider's result is not for this charge's provider")
 
     first_record = charge.provider_payment_id is None
     if first_record:
@@ -516,6 +833,7 @@ async def claim_stuck_charge(
     if (
         charge is None
         or charge.payee != PAYEE_PLATFORM
+        or charge.flow != FLOW_DEBIT
         or charge.state != CHARGE_CREATED
         or charge.provider_payment_id is not None
         or charge.deleted_at is not None
@@ -556,6 +874,7 @@ async def fail_exhausted_charge(
     if (
         charge is None
         or charge.payee != PAYEE_PLATFORM
+        or charge.flow != FLOW_DEBIT
         or charge.state != CHARGE_CREATED
         or charge.provider_payment_id is not None
     ):
@@ -565,10 +884,20 @@ async def fail_exhausted_charge(
     return charge
 
 
-def _fail_locally(session: AsyncSession, charge: Charge, reason: str) -> None:
-    """Fail a charge on this platform's own decision — `reason` is one of
-    `domain.LOCAL_FAILURE_REASONS`, which is what later lets a provider's late
-    `payment.captured` still be recorded (`_reconcile_charge`). Audited and announced."""
+def _fail_locally(
+    session: AsyncSession,
+    charge: Charge,
+    reason: str,
+    *,
+    acting_as: str = "stuck-charge-sweep",
+    announce: bool = True,
+) -> None:
+    """Fail a charge on this platform's own decision — `reason` is a stable code (one of
+    `domain.LOCAL_FAILURE_REASONS` when a provider's late `payment.captured` may still turn out to
+    be real, which is what lets `_reconcile_charge` record it; a refusal made before any call, like
+    `no_mandate`, can have no such payment). Audited, and announced (`commerce.payment.failed`)
+    unless `announce` is False — a refusal no checkout can cure (`domain.UNCOLLECTABLE_REASONS`)
+    must not start dunning. The audit row says which (`announced`)."""
     before = charge.state
     charge.state = CHARGE_FAILED
     charge.failure_reason = reason
@@ -578,14 +907,20 @@ def _fail_locally(session: AsyncSession, charge: Charge, reason: str) -> None:
         AuditLog,
         organization_id=charge.organization_id,
         actor_id=None,
-        acting_as="stuck-charge-sweep",
+        acting_as=acting_as,
         action="payment.charge.failed",
         entity="charge",
         entity_id=charge.id,
         before={"state": before},
-        after={"state": charge.state, "failure_reason": reason, "attempts": charge.attempts},
+        after={
+            "state": charge.state,
+            "failure_reason": reason,
+            "attempts": charge.attempts,
+            "announced": announce,
+        },
     )
-    _publish_payment_event(session, charge, domain.EVT_FAILED)
+    if announce:
+        _publish_payment_event(session, charge, domain.EVT_FAILED)
 
 
 async def create_charge(
@@ -677,6 +1012,24 @@ def _identity_of(provider: PaymentProvider, payload: dict[str, Any]) -> str | No
         return None
 
 
+def _stored_payload(
+    provider: PaymentProvider, event: WebhookEvent, headers: Mapping[str, str] | None
+) -> dict[str, Any] | None:
+    """What the inbox stores of this event, or None for the verbatim body (an adapter with no
+    redactor). The redacted body must still be readable by `provider.parse_webhook`
+    (`_identity_of` re-derives the event's identity from it); the adapters' allow-lists keep every
+    field that identity is built from. A header-signed adapter's webhook version is noted in a
+    `_meta` key the parser ignores — it is how a later payload-shape change would be recognised."""
+    redact = getattr(provider, "redact_webhook", None)
+    if not callable(redact):
+        return None
+    stored: dict[str, Any] = redact(event.raw)
+    version = (headers or {}).get("x-webhook-version")
+    if version:
+        stored["_meta"] = {"webhook_version": version[:20]}
+    return stored
+
+
 async def _insert_inbox(
     session: AsyncSession,
     *,
@@ -711,7 +1064,7 @@ async def _insert_inbox(
             disposition_reason=reason,
             payee=payee,
         )
-        .on_conflict_do_nothing(index_elements=["organization_id", "provider_event_id"])
+        .on_conflict_do_nothing(index_elements=["organization_id", "provider", "provider_event_id"])
         .returning(ProviderEvent.id)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
@@ -726,12 +1079,22 @@ async def ingest_webhook(
     is_production: bool,
     event_id: str | None = None,
     request: Request | None = None,
+    headers: Mapping[str, str] | None = None,
 ) -> WebhookAck:
     """Verify, record and reconcile a provider webhook — the reconciliation entry point.
 
     `event_id` is the delivery id the transport carried — Razorpay's `X-Razorpay-Event-Id` header,
     which its body does not repeat. It is **not** signed (the HMAC covers the body only), so it is a
     delivery id and nothing more; see `domain.resolve_event_id`.
+
+    `headers` are the request's headers, passed **only** to an adapter that declares
+    `signs_headers` (Cashfree signs a timestamp header plus the body, so its verification needs it).
+    A Razorpay delivery is verified exactly as before, from `signature` and `body` alone.
+
+    What is stored of a verified body is what the adapter's `redact_webhook` leaves of it — an
+    allow-list: the platform inbox is append-only, and a real payment entity carries an email, a
+    phone, a VPA and card hints that could then never be erased. (An adapter with no redactor, a
+    test double, stores the body as it always did.)
 
     Order is load-bearing:
 
@@ -765,7 +1128,15 @@ async def ingest_webhook(
        a transient failure rolls the whole transaction back, so the retry starts clean. Any other
        exception is a defect and propagates.
     """
-    if not provider.verify_webhook(signature=signature, body=body):
+    if capabilities_of(provider).signs_headers:
+        # Fails closed inside the adapter: no timestamp, no secret, no match — all False.
+        timestamp = (headers or {}).get("x-webhook-timestamp")
+        verified = cast(Any, provider).verify_webhook(
+            signature=signature, body=body, timestamp=timestamp
+        )
+    else:
+        verified = provider.verify_webhook(signature=signature, body=body)
+    if not verified:
         raise WebhookSignatureProblem("could not verify the webhook signature")
 
     try:
@@ -783,6 +1154,7 @@ async def ingest_webhook(
         # derived one took over. Worth a line — a proxy mangling the header would show up here.
         log.warning("payment.webhook.event_id_header_unusable", provider_event_id=resolved_id)
     event = dataclasses.replace(parsed, provider_event_id=resolved_id)
+    redacted = _stored_payload(provider, event, headers)
 
     organization_id = _organization_of(event)
     if organization_id is None:
@@ -817,6 +1189,7 @@ async def ingest_webhook(
                 signature=signature,
                 disposition=INBOX_PROCESSED,
                 reason=None,
+                payload=redacted,
             )
             if recorded_id is None:
                 # The key is already in the inbox. Almost always a re-delivery — but the delivery
@@ -824,7 +1197,7 @@ async def ingest_webhook(
                 # and not a different signed body someone filed under a delivery id they knew.
                 derived = domain.derive_event_id(event)
                 stored = await selectors.get_provider_event(
-                    session, organization_id, event.provider_event_id
+                    session, organization_id, event.provider_event_id, provider=event.provider
                 )
                 if (
                     derived is not None
@@ -848,6 +1221,7 @@ async def ingest_webhook(
                         signature=signature,
                         disposition=INBOX_PROCESSED,
                         reason=None,
+                        payload=redacted,
                     )
             if recorded_id is None:
                 # Already in the inbox: a re-delivery. Idempotent — do nothing the first receipt
@@ -868,6 +1242,7 @@ async def ingest_webhook(
             signature=signature,
             verdict=verdict,
             request=request,
+            payload=redacted,
         )
     except IntegrityError as exc:
         if not _is_provider_id_collision(exc):
@@ -880,6 +1255,7 @@ async def ingest_webhook(
             signature=signature,
             verdict=domain.WebhookNotApplied(INBOX_CONFLICT, domain.REASON_PROVIDER_ID_CONFLICT),
             request=request,
+            payload=redacted,
         )
 
     return WebhookAck(
@@ -1023,7 +1399,7 @@ def _record_provider_ids(
             AuditLog,
             organization_id=charge.organization_id,
             actor_id=None,
-            acting_as=f"{event.provider}-webhook",
+            acting_as=_actor(event),
             action="payment.charge.created",
             entity="charge",
             entity_id=charge.id,
@@ -1076,7 +1452,7 @@ def _capture_after_failure(
         AuditLog,
         organization_id=charge.organization_id,
         actor_id=None,
-        acting_as=f"{event.provider}-webhook",
+        acting_as=_actor(event),
         action=f"payment.charge.captured_after_{variant}",
         entity="charge",
         entity_id=charge.id,
@@ -1129,7 +1505,7 @@ async def _detect_double_collection(
         AuditLog,
         organization_id=charge.organization_id,
         actor_id=None,
-        acting_as=f"{event.provider}-webhook",
+        acting_as=_actor(event),
         action="payment.invoice.collected_twice",
         entity="invoice",
         entity_id=charge.invoice_id,
@@ -1186,6 +1562,28 @@ async def _reconcile_charge(
     if contradiction is not None:
         raise contradiction
 
+    if (
+        event.provider_order_id
+        and charge.provider_order_id
+        and event.provider_order_id != charge.provider_order_id
+    ):
+        # A charge's payments are made against its own Order. An event naming another Order is not
+        # about this charge, whatever `notes` it carries (a browser can stamp those): kept and
+        # flagged, the state untouched.
+        raise domain.order_id_conflict(charge.provider_order_id, event.provider_order_id)
+
+    if charge.flow == FLOW_CHECKOUT and event.outcome_state != CHARGE_CAPTURED:
+        # **Only a captured payment moves a checkout.** A customer pays an Order in checkout and may
+        # retry it: a failed or abandoned attempt is not the charge failing (it would otherwise be
+        # `commerce.payment.failed` — dunning, suspension — for a customer still mid-checkout), an
+        # authorization is not yet money, and binding either attempt's id would turn the attempt
+        # that finally succeeds into a `provider_id_conflict`. The checkout ends in `captured`, or
+        # in `checkout_expired` (`expire_checkout_charge`), and in nothing else.
+        if event.provider_order_id and charge.provider_order_id is None:
+            charge.provider_order_id = event.provider_order_id
+        await session.flush()
+        return False
+
     # What the charge held *before* this event could bind anything: "the same payment" means the
     # payment the charge already carried, not the one this very event is about to write onto it.
     held_payment_id = charge.provider_payment_id
@@ -1218,7 +1616,7 @@ async def _reconcile_charge(
                 AuditLog,
                 organization_id=charge.organization_id,
                 actor_id=None,
-                acting_as=f"{event.provider}-webhook",
+                acting_as=_actor(event),
                 action="payment.webhook.late_authorization",
                 entity="charge",
                 entity_id=charge.id,
@@ -1270,7 +1668,7 @@ async def _reconcile_charge(
         AuditLog,
         organization_id=charge.organization_id,
         actor_id=None,
-        acting_as=f"{event.provider}-webhook",
+        acting_as=_actor(event),
         action=f"payment.charge.{target}",
         entity="charge",
         entity_id=charge.id,
@@ -1282,6 +1680,106 @@ async def _reconcile_charge(
     if target == CHARGE_CAPTURED:
         await _detect_double_collection(session, charge, event, request=request)
     return True
+
+
+async def apply_payment_snapshot(
+    session: AsyncSession,
+    charge: Charge,
+    snapshot: PaymentSnapshot,
+    *,
+    request: Request | None = None,
+    stray_order_id: str | None = None,
+) -> bool:
+    """Reconcile a **server-to-server status check** — what the provider says, now, about one
+    payment on the charge's Order — through the very path a signed webhook takes
+    (`_reconcile_charge`: the amount and currency checks, the Order check, the provider-id binding,
+    the state machine, the audit row, the `commerce.payment.*` event, the double-collection check).
+    Attributed `<provider>-sync`. The poller, a checkout's read-through and a confirm call this;
+    **a customer's browser never does, and has no way to**: success is a captured payment found
+    here, not a thing a client says.
+
+    `stray_order_id` names the Order the payment was found on when it is **not** the one the charge
+    records — a duplicate carrying the charge's exact receipt (`providers.base.StrayPayment`). Its
+    identity is that receipt, which only this platform's own key can set on an Order and which the
+    adapter matched exactly, server to server; so the Order check is skipped for it (and the
+    recorded Order id is left alone). Everything else — the money, the payment id, the state
+    machine — is checked as for any other snapshot.
+
+    Returns whether a terminal outcome moved the charge. A status the neutral vocabulary asserts
+    nothing from (`created`, an attempt in progress) is a no-op. A permanent condition — another
+    amount, another Order, a payment that contradicts the record — is **kept and flagged, never
+    raised**: it is audited (`payment.charge.sync_not_applied`) and logged at error, the state is
+    untouched, and a person looks, exactly as for a webhook (`ingest_webhook`)."""
+    outcome = domain.SNAPSHOT_OUTCOMES.get(snapshot.status)
+    if outcome is None:
+        return False
+    # Read now: a SAVEPOINT rollback expires the ORM row, and touching an expired attribute in async
+    # code is an error rather than a reload.
+    charge_id = charge.id
+    organization_id = charge.organization_id
+    provider = charge.provider
+    event = WebhookEvent(
+        provider=provider,
+        provider_event_id="",
+        event_name=f"sync.payment.{snapshot.status}"[:80],
+        outcome_state=outcome,
+        organization_id=str(organization_id),
+        charge_id=str(charge_id),
+        provider_payment_id=snapshot.provider_payment_id,
+        failure_reason=snapshot.error_code,
+        provider_order_id=charge.provider_order_id if stray_order_id is None else None,
+        entity_id=snapshot.provider_payment_id,
+        amount_minor=snapshot.amount_minor,
+        currency=snapshot.currency,
+        source="sync",
+    )
+    verdict: domain.WebhookNotApplied | None = None
+    try:
+        async with session.begin_nested():
+            return await _reconcile_charge(session, charge, event, request=request)
+    except domain.WebhookNotApplied as caught:
+        verdict = caught
+    except IntegrityError as exc:
+        if not _is_provider_id_collision(exc):
+            raise
+        verdict = domain.WebhookNotApplied(INBOX_CONFLICT, domain.REASON_PROVIDER_ID_CONFLICT)
+    log.error(
+        "payment.charge.sync_not_applied",
+        charge_id=str(charge_id),
+        organization_id=str(organization_id),
+        provider=provider,
+        disposition=verdict.disposition,
+        reason=verdict.reason,
+    )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        acting_as=f"{provider}-sync",
+        action="payment.charge.sync_not_applied",
+        entity="charge",
+        entity_id=charge_id,
+        after={
+            "disposition": verdict.disposition,
+            "reason": verdict.reason,
+            "provider_payment_id": snapshot.provider_payment_id,
+            **({"stray_order_id": stray_order_id} if stray_order_id is not None else {}),
+            **verdict.facts,
+        },
+        request=request,
+    )
+    return False
+
+
+def refund_provider_key(refund_id: uuid.UUID) -> str:
+    """The provider-side idempotency key of one refund: `rfd` and 36 hex characters of a digest of
+    the refund's own id — 39 characters, alphanumeric only. Razorpay wants at least 10 characters
+    of `[A-Za-z0-9_-]` (the old `refund:<uuid>` was 43 characters with a `:`, neither), and
+    Cashfree's refund ids are 3-40 alphanumerics with no hyphen, so one shape serves both. Stable
+    per refund, so a retried call is the same refund. (Tenant collections keep their own
+    `rfd-<40 hex>`, Razorpay-only: `collections.domain.refund_idempotency_key`.)"""
+    return f"rfd{hashlib.sha256(str(refund_id).encode()).hexdigest()[:36]}"
 
 
 def _publish_payment_event(session: AsyncSession, charge: Charge, event_type: str) -> None:
@@ -1361,7 +1859,7 @@ async def create_refund(
 
     refund_id = uuid.uuid4()
     result = provider.refund(
-        idempotency_key=f"refund:{refund_id}",
+        idempotency_key=refund_provider_key(refund_id),
         provider_payment_id=charge.provider_payment_id,
         amount_minor=amount_minor,
         currency=charge.currency,

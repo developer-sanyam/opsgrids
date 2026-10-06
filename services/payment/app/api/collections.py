@@ -27,7 +27,12 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app.api.webhooks import EVENT_ID_HEADER, SIGNATURE_HEADER, TRANSIENT_DATABASE_ERRORS
+from app.api.webhooks import (
+    EVENT_ID_HEADER,
+    SIGNATURE_HEADER,
+    TRANSIENT_DATABASE_ERRORS,
+    read_capped_body,
+)
 from app.collections import selectors, services
 from app.config import settings
 from app.deps import CollectionsProviderFactory, get_collections_provider_factory
@@ -43,7 +48,7 @@ from app.services import WebhookSignatureProblem
 from platform_core.auth import Scope, ScopeContext, require, require_product
 from platform_core.config import ServiceSettings
 from platform_core.db import get_outbox_sessionmaker, get_session, get_tenant_session
-from platform_core.errors import PayloadTooLargeProblem, UpstreamUnavailableProblem
+from platform_core.errors import UpstreamUnavailableProblem
 from platform_core.logging import get_logger
 
 log = get_logger("payment.collections.api")
@@ -237,16 +242,7 @@ async def merchant_webhook(
     """One merchant's Razorpay webhook. The body is read raw — the signature is over exactly
     these bytes. An unknown or removed account, a bad signature and an unparseable account id all
     answer the same 400, so a prober learns nothing about which accounts exist."""
-    declared = request.headers.get("content-length")
-    if (
-        declared is not None
-        and declared.isdigit()
-        and int(declared) > MAX_COLLECTION_WEBHOOK_BODY_BYTES
-    ):
-        raise PayloadTooLargeProblem("webhook body too large")
-    body = await request.body()
-    if len(body) > MAX_COLLECTION_WEBHOOK_BODY_BYTES:
-        raise PayloadTooLargeProblem("webhook body too large")
+    body = await read_capped_body(request, MAX_COLLECTION_WEBHOOK_BODY_BYTES)
     try:
         account_id = uuid.UUID(account)
     except ValueError:

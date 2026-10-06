@@ -22,6 +22,18 @@ So the shape here encodes Razorpay's constraints as first-class:
   final check at the attempt budget uses, because that check must never create anything.
   `charge` still carries the idempotency key; a Stripe adapter forwards it to Stripe's native
   idempotency header and may answer the lookups trivially.
+
+  **Against real Razorpay the receipt lookup is best-effort, never proof** (sandbox, observed
+  2026-10-06 by the owner's smoke tool): `POST /orders` with a receipt that already exists is
+  *accepted* and makes a second Order, and `GET /orders?receipt=` for an Order created seconds
+  earlier returned none (one call a `429`). So "found nothing" does not mean "there is none", and an
+  Order whose id this platform has **recorded** is fetched by that id (`GET /orders/{id}`), never
+  searched for by receipt. Every path that hands an Order to a customer records its id first and
+  hands out only the recorded id (`checkout/services.py`); a duplicate an unknown-outcome retry
+  made is never shown to anyone, and the poller still searches for one before it closes a checkout
+  (`StrayPayment`). The debit shape below is held to `ProviderContract` against the stub, whose
+  receipt index is exact; a live order-then-charge debit (Phase B) must record the Order id before
+  it creates the payment, because the receipt lookup alone cannot stop a second Order.
 * **Every wire call is bounded.** The service runs `ensure_order` + `find_payment` + `charge` on a
   worker thread and stops waiting after `Settings.provider_call_timeout_seconds`; the thread cannot
   be cancelled. An adapter's own per-request connect and read timeouts, **summed over those three
@@ -32,16 +44,28 @@ So the shape here encodes Razorpay's constraints as first-class:
 * `verify_webhook` is signature-first: a provider callback is trusted because it carries the
   provider's HMAC over the raw body, never because it carries a session or a token.
 
-**The live adapter is bound by all of this (B5g).** The Razorpay adapter in `razorpay.py` keeps
-its wire stubbed; when it is given live keys it must implement the lookup-before-create contract
-above exactly as the stub models it — `ensure_order` finds the Order by `receipt` before it
-creates one, `find_order` never creates, `find_payment` finds a payment already made against an
-Order, `charge` is reached only after that lookup found none — and declare per-request timeouts
-(`request_timeouts_seconds`) whose sum stays inside `provider_call_timeout_seconds`. Nothing else
-in the platform re-checks it: a live adapter that "just creates" debits a customer twice after a
-crash between the call and its record. The definition of done is
-`tests/provider_contract.py::ProviderContract` — every adapter, the stub today and the live one
-later, subclasses it and must pass unchanged; the live adapter's PR does not merge red on it.
+**The live adapter is bound by all of this (B5g), by the contract for its shape (ADR-0032).** The
+Razorpay adapter has a stubbed wire by default and a live one (`razorpay_wire.RazorpayHttpWire`)
+behind `PAYMENT_WIRE=live`; when it is live it implements the lookup-before-create contract above
+as far as Razorpay allows — `ensure_order` searches for the Order by `receipt` before it creates one
+(best-effort: see above; and it looks once more after a `400`, a harmless recovery of an Order an
+earlier unknown-outcome create left behind — Razorpay does not refuse a duplicate receipt),
+`find_order` never creates, `find_payment` finds a payment already made against an Order, `charge`
+is reached only after that lookup found none — and declares per-request timeouts
+(`request_timeouts_seconds`) whose sum stays inside `provider_call_timeout_seconds`. Nothing else in
+the platform re-checks it: a live adapter that "just creates" debits a customer twice after a crash
+between the call and its record. Which contract is the definition of done depends on the adapter's
+**shape**, because one `ProviderContract` cannot describe both a processor that creates a payment
+against an Order (`debit_shape = "order_then_charge"`, Razorpay: `ProviderContract`, unchanged) and
+one that debits a saved mandate directly, with no Order step at all (`debit_shape = "direct"`,
+Cashfree subscriptions: `DirectDebitContract`, the sibling with the same invariants), and a
+customer-present checkout is a third (`CheckoutContract`). An adapter does not merge red on the
+contract for its shape.
+
+**Failures are classified at the seam** (`app/providers/wire.py`): a wire raises
+`ProviderTransient` (outcome unknown), `ProviderRejected` (provably nothing created) or
+`ProviderMisconfigured` (the platform's credentials), and the service layer treats the three
+differently — see there.
 
 **Webhook identity.** A provider's per-delivery event id is not always in the body — Razorpay
 carries it in the `X-Razorpay-Event-Id` header and its body has no top-level `id`. So
@@ -59,8 +83,10 @@ out of the database and the database's vocabulary out of the provider.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from datetime import datetime
+from typing import Any, Literal, Protocol, runtime_checkable
 
 
 class ProviderCallError(Exception):
@@ -97,11 +123,17 @@ class MandateResult:
 @dataclass(frozen=True, slots=True)
 class OrderResult:
     """A provider Order: what a payment is created against. `receipt` is the platform's charge
-    idempotency key — the handle the Order is found again by."""
+    idempotency key — the handle the Order is found again by (Cashfree: the merchant-chosen
+    `order_id`)."""
 
     provider: str
     provider_order_id: str
     receipt: str
+    #: What the customer's browser needs to open the provider's hosted checkout, when the provider
+    #: hands one back with the Order (Cashfree's `payment_session_id`). **In memory only**: never
+    #: stored, never logged — `repr=False` keeps it out of a traceback too — and re-fetched from
+    #: the provider when a checkout is reopened.
+    checkout_token: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +206,10 @@ class WebhookEvent:
     #: None when the body does not say — reconciliation then has nothing to compare.
     amount_minor: int | None = None
     currency: str | None = None
+    #: What put this observation in front of reconciliation: `webhook` (a signature-verified
+    #: delivery) or `sync` (a server-to-server status check — the poller, a checkout's read-through
+    #: and its confirm). Audit rows are attributed `<provider>-<source>`.
+    source: str = "webhook"
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +234,18 @@ class PaymentSnapshot:
     error_description: str | None = None
     #: Epoch seconds, the provider's own.
     created_at: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StrayPayment:
+    """A payment attempt on an Order that carries a charge's exact `receipt` but is **not** the
+    Order the charge records — a duplicate an unknown-outcome create left behind (Razorpay accepts
+    a duplicate receipt). Nobody was ever handed its id, so a customer should not be able to pay
+    it; the poller asks anyway before it closes a checkout (`checkout/services.record_poll`), and
+    one that moved money is recorded against the charge, loudly."""
+
+    provider_order_id: str
+    snapshot: PaymentSnapshot
 
 
 @runtime_checkable
@@ -297,24 +345,242 @@ class PaymentProvider(Protocol):
         """
         ...
 
+    def order_payments(self, *, order_id: str) -> list[PaymentSnapshot]:
+        """Every payment attempt against `order_id`, as the provider reports it now (Razorpay and
+        Cashfree both: `GET /orders/{id}/payments`). An Order this platform created has `receipt`
+        = the charge's own id, so every attempt on it belongs to that charge.
+
+        Promoted into the neutral interface for platform billing's checkout: the answer to this
+        call — or a signature-verified webhook — is the only thing that may ever move a charge to
+        `captured`. The customer's browser saying "paid" is never evidence (ADR-0024 §8,
+        ADR-0032).
+        """
+        ...
+
 
 @runtime_checkable
 class CollectionsProvider(PaymentProvider, Protocol):
-    """The seam tenant collections (`app/collections/`, ADR-0024 §8) holds: the same
-    `PaymentProvider` — one instance per merchant account, built from that account's own sealed
-    keys — plus the one question collections asks that platform billing never needed.
+    """The seam tenant collections (`app/collections/`, ADR-0024 §8) holds: a `PaymentProvider` —
+    one instance per merchant account, built from that account's own sealed keys.
 
     A collection's payment is made by the customer, in the provider's own hosted checkout, against
-    an Order this platform created; there is no server-side `charge`. So what collections needs
+    an Order this platform created; there is no server-side `charge`. What collections needs
     beyond Order creation (`ensure_order`, lookup-before-create by receipt) and refunds is to ask
-    the provider, server to server, what has happened to that Order: every payment attempt made
-    against it and its status. That answer — or a signature-verified webhook — is the only thing
-    that may ever move a collection to `captured`; the customer's browser saying "paid" is never
-    evidence.
+    the provider, server to server, what has happened to that Order (`order_payments`, which sits
+    on `PaymentProvider` now that platform checkout asks it too). That answer — or a
+    signature-verified webhook — is the only thing that may ever move a collection to `captured`.
     """
 
-    def order_payments(self, *, order_id: str) -> list[PaymentSnapshot]:
-        """Every payment attempt against `order_id`, as the provider reports it now (Razorpay:
-        `GET /orders/{id}/payments`). An Order this platform created has `receipt` = the charge's
-        own id, so every attempt on it belongs to that charge."""
+
+# --------------------------------------------------------------------------- capabilities
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCapabilities:
+    """What one adapter, as built, can and cannot do — read by the service layer **before** any
+    provider call, so a charge that could only fail at the provider fails here instead, with no
+    call made and no bank fee paid (ADR-0005 Q4, ADR-0032).
+
+    The defaults are the legacy stub's: it accepts any currency and amount, and "debits" with no
+    mandate (the development posture every older test depends on). A live adapter narrows them.
+    """
+
+    #: Accepted ISO currencies; None means any (the legacy stub).
+    currencies: frozenset[str] | None = None
+    #: The smallest amount, in minor units, the provider will take (Razorpay: 100 paise).
+    min_amount_minor: int = 0
+    #: `order_then_charge` (create an Order, then a payment against it — Razorpay) or `direct`
+    #: (debit a saved mandate with no Order step — Cashfree subscriptions). Picks the call path
+    #: (`services.call_provider_charge`) and the contract the adapter is held to.
+    debit_shape: Literal["order_then_charge", "direct"] = "order_then_charge"
+    #: A server-side debit needs a customer's saved mandate. When True and none is usable, the
+    #: charge fails as `no_mandate` with **no provider call** (ADR-0005 Q4).
+    requires_mandate_for_debit: bool = False
+    #: Whether this build can actually make the debit under a mandate. False for every live
+    #: adapter in Phase A (customer-present checkout only): a mandate then does not make a charge
+    #: debitable, and the charge fails as `no_mandate` rather than reaching an unbuilt call.
+    supports_mandate_debit: bool = True
+    #: Whether a customer can pay in the provider's hosted checkout (`CheckoutProvider`).
+    supports_checkout: bool = False
+    #: Whether opening a checkout needs the paying customer's details (Cashfree: a customer id and
+    #: a phone on every Order). When True a request without a usable phone is refused (422) before
+    #: any call — a phone is never invented.
+    requires_customer_details: bool = False
+    #: Whether the browser's checkout callback carries an HMAC the server can check as a
+    #: precondition for a status check (Razorpay: `HMAC(order_id|payment_id)`). Never evidence.
+    checkout_confirmation: bool = False
+    #: Whether `verify_webhook` needs the request's headers (Cashfree signs a timestamp header plus
+    #: the body), and so the route must pass them (`services.ingest_webhook(headers=...)`).
+    signs_headers: bool = False
+    #: The largest single debit a customer need not re-authenticate for, when the provider has one
+    #: (Razorpay cards and Cashfree UPI: Rs 15,000). Larger amounts go to checkout.
+    max_debit_without_afa_minor: int | None = None
+    #: `stub` (no socket is opened, whatever keys are present) or `live`.
+    wire: Literal["stub", "live"] = "stub"
+
+
+#: The capabilities of an adapter that declares none: a test double, or a stub built before this
+#: existed. Never refuses anything.
+LEGACY_CAPABILITIES = ProviderCapabilities()
+
+
+def capabilities_of(provider: object) -> ProviderCapabilities:
+    """`provider`'s declared capabilities, or the legacy ones for an adapter that declares none."""
+    declared = getattr(provider, "capabilities", None)
+    return declared if isinstance(declared, ProviderCapabilities) else LEGACY_CAPABILITIES
+
+
+#: What an adapter, as built, is running on: `stub` (no provider is called at all), `test` (a
+#: live wire on test / sandbox credentials: the provider's test cards pay, no real money moves) or
+#: `live` (real money).
+CredentialsMode = Literal["stub", "test", "live"]
+
+
+def credentials_mode_of(provider: object) -> CredentialsMode:
+    """`provider`'s declared `credentials_mode`, or `stub` for an adapter that declares none (a test
+    double, or an adapter built before this existed)."""
+    declared = getattr(provider, "credentials_mode", None)
+    if declared == "test":
+        return "test"
+    if declared == "live":
+        return "live"
+    return "stub"
+
+
+def in_test_mode(provider: object) -> bool:
+    """Whether `provider` runs on test / sandbox credentials — what a checkout's `test_mode`
+    reports. False for a stub (nothing is paid at all) and for live credentials."""
+    return credentials_mode_of(provider) == "test"
+
+
+# --------------------------------------------------------------------------- checkout
+
+#: 10 digits, or `+` and 8-15 digits for an international number — what a phone must look like to
+#: be passed to a provider that requires one (Cashfree's own rule, and a reasonable one for any).
+_PHONE = re.compile(r"^(?:[0-9]{10}|\+[0-9]{8,15})$")
+
+
+def valid_phone(phone: str | None) -> bool:
+    return bool(phone) and _PHONE.fullmatch(phone or "") is not None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CheckoutCustomer:
+    """Who is paying, as the browser's checkout needs it (Cashfree requires a customer id and a
+    10-digit phone on every order). **Passed through to the provider and nowhere else**: never
+    stored, never logged, never audited, never put in an event — `repr` is suppressed so a
+    traceback cannot print it."""
+
+    customer_id: str
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+
+    def __repr__(self) -> str:
+        return "CheckoutCustomer(...)"
+
+
+@dataclass(frozen=True, slots=True)
+class CheckoutRequest:
+    """One customer-present checkout to open: the Order's identity and money (from the platform's
+    own charge, never a body), when it stops being payable, and who is paying."""
+
+    receipt: str
+    amount_minor: int
+    currency: str
+    notes: dict[str, str]
+    expires_at: datetime
+    customer: CheckoutCustomer | None = None
+    #: Where the provider sends the browser back to (Cashfree). Never evidence of payment.
+    return_url: str | None = None
+    #: The Order id the charge **already records**, when it does (a reopened checkout). The adapter
+    #: then fetches **that Order by its id** and returns it, or refuses (`ProviderTransient`,
+    #: `recorded_order_not_found`) — it never searches by receipt (a receipt can name several
+    #: Orders, and the search can miss one that exists) and never creates another. An adapter that
+    #: cannot find an Order this charge already recorded is not looking at the account that made it
+    #: (the stub after a rollback from a live wire, another environment's keys), and a fresh Order
+    #: minted there under the same receipt would make that adapter the authority on a payment it
+    #: cannot see.
+    recorded_order_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CheckoutSession:
+    """An opened checkout: the Order and what the browser is handed to pay it. `client_action`
+    is provider-shaped (`{"type": "razorpay_checkout", ...}` / `{"type": "cashfree_checkout",
+    ...}`) and may hold a session token, so it is `repr=False` and never logged."""
+
+    order: OrderResult
+    client_action: dict[str, Any] = field(repr=False)
+
+
+@runtime_checkable
+class CheckoutProvider(Protocol):
+    """A provider a customer can pay in its own hosted checkout, against an Order this platform
+    creates (Phase A). The outcome comes back through `order_payments` or a signed webhook, never
+    from the browser."""
+
+    def ensure_checkout(self, request: CheckoutRequest) -> CheckoutSession:
+        """The Order the charge records (`request.recorded_order_id`, fetched by its id — never
+        made again), or, when it records none, the Order found by `request.receipt` (best-effort)
+        or else created; returned with what the browser needs."""
         ...
+
+
+# --------------------------------------------------------------------------- direct debit
+
+
+@runtime_checkable
+class DirectDebitProvider(Protocol):
+    """The shape of a provider whose debit is keyed by the merchant's own payment id on a saved
+    mandate, with no Order step (`debit_shape = "direct"`; Cashfree subscriptions). **Declared in
+    Phase A, implemented in Phase B**: no live adapter fulfils it yet, `DirectDebitContract`
+    (`tests/direct_debit_contract.py`) is the test the first one must pass, and
+    `services.call_provider_charge` already branches on it.
+
+    The invariants are `ProviderContract`'s, reworded for a debit with no Order: a lookup that
+    never creates, a debit created at most once per charge across any number of calls and
+    processes, per-request timeouts that sum inside the call budget, a forged signature that is
+    `False` and never raises, and no constant event id.
+    """
+
+    name: str
+    request_timeouts_seconds: tuple[float, ...]
+
+    def find_debit(self, *, charge_ref: str) -> ChargeResult | None:
+        """The debit already made for `charge_ref` (the charge's own id), or None. Never creates."""
+        ...
+
+    def debit(
+        self,
+        *,
+        idempotency_key: str,
+        charge_ref: str,
+        mandate_id: str | None,
+        amount_minor: int,
+        currency: str,
+        notes: dict[str, str],
+    ) -> ChargeResult:
+        """Debit the mandate for `charge_ref`. Only ever called after `find_debit` found none."""
+        ...
+
+    def verify_webhook(self, *, signature: str | None, body: bytes) -> bool: ...
+
+    def parse_webhook(self, *, body: bytes) -> WebhookEvent: ...
+
+
+# --------------------------------------------------------------------------- reading attempts
+
+#: Which attempt answers "what happened to this Order": money moved beats money held beats an
+#: attempt in progress beats an attempt that failed. Most recent first within a rank. The
+#: vocabulary is the neutral one every adapter maps its own statuses into.
+_PAYMENT_RANK = {"captured": 0, "refunded": 0, "authorized": 1, "created": 2, "failed": 3}
+
+
+def best_attempt(payments: list[PaymentSnapshot]) -> PaymentSnapshot | None:
+    """The attempt that says what happened to an Order: captured (or captured-then-refunded)
+    first, then authorized, then one still in progress, then the most recent failure."""
+    ranked = [p for p in payments if p.status in _PAYMENT_RANK]
+    if not ranked:
+        return None
+    return min(ranked, key=lambda p: (_PAYMENT_RANK[p.status], -(p.created_at or 0)))
