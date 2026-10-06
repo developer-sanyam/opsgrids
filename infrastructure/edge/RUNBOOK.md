@@ -2179,9 +2179,16 @@ PURGE --ids-file /opt/purge/ids.txt --keep-file /opt/purge/keep.txt
 ```
 
 Read, in this order: `organisations_remaining` (are your own still there?), each organisation's
-`users` block (`deleted` against `kept_shared_with_another_organization` and `kept_protected`), any
+`live_signals` (an organisation with an active subscription or captured payments, or members you do
+not recognise, is not what you meant to remove: stop and look it up by id), its `users` block
+(`deleted` against `kept_shared_with_another_organization` and `kept_protected`), any
 `left_in_place`, and the lines about what lives outside the database. `PURGE --explain` prints every
 table, what selects its rows and the order (children first) if you want to see the plan itself.
+
+Names in the listing and in `candidates.txt` are whatever the person who signed up typed, so the
+tool prints them with every non-printable character replaced by `?` and cut at 80 characters, and
+refuses an ids file that has one in it. If it refuses your file, open it and look at the line it
+names: someone's organisation name put it there.
 
 **5. Apply.** All of the flags are required, and each one refuses before anything connects if it is
 missing: `--confirm-count N` must equal the number of organisations you named, `--i-took-a-backup`

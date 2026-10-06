@@ -19,6 +19,7 @@ The real-Postgres half is `test_purge_test_orgs_db.py` (opt-in). Both load the t
 
 from __future__ import annotations
 
+import argparse
 import ast
 import json
 import re
@@ -245,6 +246,145 @@ def test_a_dry_run_cannot_be_asked_to_delete(capsys: pytest.CaptureFixture[str])
 def test_ids_files_allow_comments_and_blank_lines() -> None:
     text_ = f"# header\n\n{ORG_A}  # the first\n   {ORG_B}\n"
     assert purge.parse_ids(text_, source="f") == [ORG_A, ORG_B]
+
+
+#: Every character `str.splitlines` ends a line on besides `\n` and `\r\n`, plus the ones that
+#: repaint a terminal or reorder text, plus NUL: none may reach, or be accepted from, an ids file.
+SEPARATORS = [
+    pytest.param("\n", id="LF"),
+    pytest.param("\r", id="CR"),
+    pytest.param("\r\n", id="CRLF"),
+    pytest.param("\x0b", id="VT"),
+    pytest.param("\x0c", id="FF"),
+    pytest.param("\x1c", id="FS"),
+    pytest.param("\x1d", id="GS"),
+    pytest.param("\x1e", id="RS"),
+    pytest.param("\x85", id="NEL"),
+    pytest.param("\u2028", id="LS"),
+    pytest.param("\u2029", id="PS"),
+    pytest.param("\x1b[2J", id="ANSI-clear"),
+    pytest.param("\x1b]0;x\x07", id="OSC-title"),
+    pytest.param("\u202e", id="RLO"),
+    pytest.param("\u200b", id="ZWSP"),
+    pytest.param("\x00", id="NUL"),
+    pytest.param("\u00a0", id="NBSP"),
+]
+VICTIM = uuid.UUID("cccccccc-0000-0000-0000-00000000000c")
+
+
+@pytest.mark.parametrize("separator", SEPARATORS)
+def test_a_tenants_organisation_name_cannot_smuggle_an_id_into_the_candidates_file(
+    separator: str,
+) -> None:
+    """Signup is public and `organization_name` is length-checked only, so a stranger can name their
+    organisation `smoke test<separator><someone else's id> # x`. The candidates file is the owner's
+    to review and pass back with `--ids-file`: the attacker's own id may be in it (it is hinted),
+    and nothing else may be."""
+    attacker = _row(
+        id=ORG_B, name=f"smoke test{separator}{VICTIM} # x", slug=f"smoke{separator}{VICTIM}"
+    )
+    bystander = _row(id=VICTIM)  # a real customer: not hinted, so never in the file
+    out = purge.render_candidates([attacker, bystander])
+    assert purge.parse_ids(out, source="candidates") == [ORG_B]
+    assert set(out) - {"\n"} <= {c for c in out if c.isprintable()}, "a non-printable got through"
+    assert len(out.split("\n")) == 4, "one header block and one line for the one hinted row"
+
+
+@pytest.mark.parametrize("separator", SEPARATORS)
+def test_an_ids_file_with_a_hidden_line_break_is_refused_not_split(
+    separator: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A file written by an older copy of the tool, or edited by a stranger's text pasted in, may
+    hold what `splitlines` would split on. Reading it as the owner's eyes do (or not at all) is the
+    point: a refusal that names the line and the character, never the content."""
+    text_ = f"{ORG_A}  # a fine line\n{ORG_B}  # smoke{separator}{VICTIM} # x\n"
+    if separator in ("\n", "\r\n"):
+        # Real line breaks, as an editor shows them: the file is just two more honest lines.
+        assert purge.parse_ids(text_, source="f") == [ORG_A, ORG_B, VICTIM]
+        return
+    with pytest.raises(purge.Refusal) as refusal:
+        purge.parse_ids(text_, source="ids.txt")
+    message = str(refusal.value)
+    assert "ids.txt: line 2 contains U+" in message
+    assert str(VICTIM) not in message and "smoke" not in message
+
+
+def test_a_windows_edited_ids_file_and_a_byte_order_mark_are_fine() -> None:
+    text_ = f"\ufeff# header\r\n{ORG_A}  # one\r\n\r\n\t{ORG_B}\t# two\r\n"
+    assert purge.parse_ids(text_, source="f") == [ORG_A, ORG_B]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "{aaaaaaaa-0000-0000-0000-00000000000a}",
+        "urn:uuid:aaaaaaaa-0000-0000-0000-00000000000a",
+        "aaaaaaaa00000000000000000000000a",
+        "\u0660" * 8
+        + "-"
+        + "\u0660" * 4
+        + "-"
+        + "\u0660" * 4
+        + "-"
+        + "\u0660" * 4
+        + "-"
+        + "\u0660" * 12,
+        "aaaaaaaa-0000-0000-0000-00000000000a-extra",
+        "aaaaaaaa-0000-0000-0000-00000000000g",
+        "e2e-0920a",
+    ],
+)
+def test_only_the_canonical_ascii_form_is_an_organisation_id(line: str) -> None:
+    """`uuid.UUID` takes braces, a `urn:` prefix and any Unicode digit; a line that parses to an id
+    it does not visibly spell is not something to delete by."""
+    with pytest.raises(purge.Refusal, match="line 1 is not an organisation uuid"):
+        purge.parse_ids(line, source="f")
+    with pytest.raises(argparse.ArgumentTypeError, match="invalid uuid"):
+        purge.canonical_uuid(line)
+    assert purge.canonical_uuid(str(ORG_A).upper()) == ORG_A
+
+
+def test_a_non_canonical_org_id_is_refused_by_the_parser_before_anything_connects() -> None:
+    factory = Factory()
+    with pytest.raises(SystemExit) as exit_info:
+        purge.main(["--org-id", f"{{{ORG_A}}}"], cfg=LOCAL, engine_factory=factory)
+    assert exit_info.value.code == 2 and factory.dsns == []
+
+
+def test_a_file_that_is_not_utf8_is_a_refusal_not_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = tmp_path / "ids.txt"
+    bad.write_bytes(b"\xff\xfe" + str(ORG_A).encode())
+    _refused(["--ids-file", str(bad), *APPLY])
+    assert "cannot read" in capsys.readouterr().err
+
+
+def test_inert_leaves_a_real_name_alone_and_defuses_everything_else() -> None:
+    assert purge.inert("Sharma Textiles Pvt Ltd (Delhi) & Sons") == (
+        "Sharma Textiles Pvt Ltd (Delhi) & Sons"
+    )
+    assert purge.inert("\u0926\u0941\u0915\u093e\u0928 \u2014 caf\u00e9") == (
+        "\u0926\u0941\u0915\u093e\u0928 \u2014 caf\u00e9"
+    )
+    assert purge.inert(None) == ""
+    assert purge.inert("a\nb\rc\td\x1b[2Je\u2028f\u202eg\x00") == "a?b?c?d?[2Je?f?g?"
+    long = purge.inert("x" * 500)
+    assert len(long) == purge.DISPLAY_LIMIT and long.endswith("...")
+    assert purge.inert("x" * purge.DISPLAY_LIMIT) == "x" * purge.DISPLAY_LIMIT
+
+
+def test_the_listing_cannot_be_repainted_by_a_name() -> None:
+    hostile = _row(
+        id=ORG_B,
+        name="\x1b[2J\x1b[Hdelete me\u2028\u202e" + "x" * 300,
+        slug="s\x1b]0;pwned\x07",
+    )
+    listing = purge.render_listing([_row(), hostile], "box:5432/opsgrids", "production")
+    assert "\x1b" not in listing and "\u2028" not in listing and "\u202e" not in listing
+    assert all(len(line) < 400 for line in listing.split("\n"))
+    # One header block, the ruler, two rows and the footer: no name made a line of its own.
+    assert sum(1 for line in listing.split("\n") if str(ORG_B) in line) == 1
 
 
 def test_selection_is_sorted_and_deduplicated() -> None:
@@ -586,6 +726,7 @@ def test_output_lines_carry_counts_and_ids_only() -> None:
         [uuid.uuid4()],
         purge.UserReport(members=2, kept_shared=1, deleted=1),
         {"catalog.plan_versions.restricted_to_org_id": 1},
+        signals={"members": 2, "subscriptions": {"active": 1}, "captured_charges": 4},
     )
     line = purge._org_line(plan, "apply", "deleted")
     assert line["deleted"] == {"s.orders": 3}, "zero-row tables are not listed"
@@ -596,8 +737,14 @@ def test_output_lines_carry_counts_and_ids_only() -> None:
         "deleted",
         "rows",
         "users",
+        "live_signals",
         "left_in_place",
     }
+    assert line["live_signals"] == {
+        "members": 2,
+        "subscriptions": {"active": 1},
+        "captured_charges": 4,
+    }, "counts that say whether the organisation is live, beside every id"
     assert set(line["users"]) == {
         "members",
         "kept_shared_with_another_organization",

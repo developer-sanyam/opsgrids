@@ -348,6 +348,10 @@ async def test_a_dry_run_changes_nothing_and_says_exactly_what_apply_will_delete
     assert applied["deleted"] == dry_line["would_delete"], "the dry run is not what apply did"
     assert applied["users"] == dry_line["users"]
     assert done.rows == dry.rows and done.failed == 0
+    # The facts a name cannot fake are printed beside the id, and are the same before the delete.
+    assert dry_line["live_signals"]["members"] == 4
+    assert set(dry_line["live_signals"]) == {"members", "subscriptions", "captured_charges"}
+    assert applied["live_signals"] == dry_line["live_signals"]
 
 
 # ------------------------------------------------------------------------------------- apply
@@ -863,6 +867,7 @@ async def test_nothing_printed_is_a_name_an_address_a_row_or_a_connection_string
         "would_delete",
         "rows",
         "users",
+        "live_signals",
         "left_in_place",
     }
     allowed_summary = {
@@ -912,6 +917,36 @@ async def test_the_listing_shows_hints_without_selecting_anything(
     assert str(world.orgs["a"]) in candidates and str(world.orgs["real"]) not in candidates
     assert str(keep) not in candidates, "a kept organisation is never offered"
     assert "Nothing here is selected until you" in candidates
+
+
+@pytest.mark.parametrize("separator", ["\n", "\u2028", "\x85", "\x0b", "\r"])
+async def test_a_hostile_organisation_name_cannot_put_a_real_customers_id_in_the_candidates_file(
+    engine: AsyncEngine, world: World, separator: str
+) -> None:
+    """Signup is public: anyone can name their organisation `smoke test<line break><victim's id>`
+    (an organisation id is in every public image URL). Through the real listing and the real
+    `--candidates` path, the hostile organisation's own id may be offered (it is hinted) and the
+    customer's must not be, either in the file or when the owner passes the file back."""
+    real, b = world.orgs["real"], world.orgs["b"]
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE account.organizations SET name = :n WHERE id = :b"),
+            {"n": f"smoke test{separator}{real} # x", "b": b},
+        )
+    cfg = SimpleNamespace(environment="local", admin_dsn=REAL_DSN)
+    out: list[str] = []
+    assert await asyncio.to_thread(purge.main, ["--candidates"], cfg=cfg, out=out.append) == 0
+    selected = purge.parse_ids("\n".join(out), source="candidates")
+    assert b in selected and real not in selected
+    assert len(selected) == len(set(selected))
+
+    out.clear()
+    assert await asyncio.to_thread(purge.main, [], cfg=cfg, out=out.append) == 0
+    listing = "\n".join(out)
+    assert not any(c in listing for c in "\u2028\x85\x0b\r"), "a separator reached the terminal"
+    id_column = [parts[1] for line in listing.split("\n") if len(parts := line.split()) > 1]
+    assert id_column.count(str(real)) == 1, "the customer's id leads the customer's own row only"
+    assert id_column.count(str(b)) == 1, "and the hostile name did not make a row of its own"
 
 
 async def test_main_lists_dry_runs_and_applies_end_to_end(

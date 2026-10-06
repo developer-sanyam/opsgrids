@@ -92,12 +92,19 @@ restricted to a deleted organisation (`catalog.plan_versions.restricted_to_org_i
 plan version is immutable, CLAUDE.md). The plan versions are counted in the output as
 `left_in_place`; `processed_events` is named here and in the RUNBOOK.
 
-**What it prints: counts only.** One JSON line per organisation with the per-table row counts and
-a final summary; never a row, an email, a name or the connection string (only `host:port/database`
-so you can see where it is aimed). The one exception is the interactive listing in step 1, which
-prints organisation names to *your* terminal because you cannot choose an organisation by id
-alone. After the counts it prints, but does not act on, what lives outside the database (object
-storage under the organisation's prefix, provider-side objects, certificates, in-flight events).
+**What it prints: counts only.** One JSON line per organisation with the per-table row counts, a
+`live_signals` block (members, subscriptions by state, captured payments: the facts a name cannot
+fake, so an id that is a paying customer stands out in the dry run) and a final summary; never a
+row, an email, a name or the connection string (only `host:port/database` so you can see where it
+is aimed). The one exception is the interactive listing in step 1, which prints organisation names
+to *your* terminal because you cannot choose an organisation by id alone. **A name is a
+stranger's text** (signup is public), so the listing and the candidates file print it through
+`inert`: anything that is not a printable character, which includes every line break, escape and
+separator, becomes `?`, and it is cut to 80 characters. An ids file is read the same careful way:
+a line with a stray control or separator character in it is refused, and ids must be the
+canonical hyphenated form. After the counts it prints, but does not act on, what lives outside the
+database (object storage under the organisation's prefix, provider-side objects, certificates,
+in-flight events).
 
 **Safe to re-run and to interrupt.** One transaction per organisation: an interrupted run leaves
 each organisation either wholly deleted or untouched. Running it again for an organisation that is
@@ -589,18 +596,45 @@ class Refusal(Exception):
     """A rule that is not negotiable. The message names the rule, never a row."""
 
 
+#: An organisation id as the tool prints it and as `psql` shows it: ASCII hex, hyphenated. Stricter
+#: than `uuid.UUID`, which also takes braces, a `urn:` prefix and any Unicode digit (so a line made
+#: of Arabic-Indic numerals would parse to an id it does not look like).
+_ID_LINE = re.compile(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
+
+
+def canonical_uuid(value: str) -> uuid.UUID:
+    """An `--org-id`, `--keep` or `--keep-user` argument: the canonical form and nothing else."""
+    if not _ID_LINE.fullmatch(value.strip()):
+        raise argparse.ArgumentTypeError(f"invalid uuid {value!r}: expected 8-4-4-4-12 hex digits")
+    return uuid.UUID(value.strip())
+
+
 def parse_ids(text_: str, *, source: str) -> list[uuid.UUID]:
     """One uuid per line; `#` starts a comment; blank lines are ignored. A line that is not a uuid
-    is a refusal that names the line number, not the line."""
+    is a refusal that names the line number, not the line.
+
+    The file is read as the owner's own eyes read it, which is not how `str.splitlines` reads it:
+    that also splits on `\\x0b`, `\\x0c`, `\\x1c`-`\\x1e`, `\\x85`, U+2028 and U+2029, characters a
+    terminal or editor shows as nothing or as part of the line before. A candidates file carries
+    tenant-chosen organisation names in its comments, so a name could hold one of them and a second
+    id behind it. So lines end at `\\n` (and a CRLF file's `\\r`) only, and a line with any other
+    control, format or separator character in it, comment or not, is refused rather than guessed
+    at."""
     found: list[uuid.UUID] = []
-    for number, raw in enumerate(text_.splitlines(), start=1):
-        line = raw.split("#", 1)[0].strip()
+    for number, raw in enumerate(text_.removeprefix("\ufeff").split("\n"), start=1):
+        line = raw.removesuffix("\r")
+        stray = next((c for c in line if c != "\t" and not c.isprintable()), None)
+        if stray is not None:
+            raise Refusal(
+                f"{source}: line {number} contains U+{ord(stray):04X}, a control or separator "
+                "character; a file of ids is plain text, one id to a visible line"
+            )
+        line = line.split("#", 1)[0].strip()
         if not line:
             continue
-        try:
-            found.append(uuid.UUID(line))
-        except ValueError:
-            raise Refusal(f"{source}: line {number} is not an organisation uuid") from None
+        if not _ID_LINE.fullmatch(line):
+            raise Refusal(f"{source}: line {number} is not an organisation uuid")
+        found.append(uuid.UUID(line))
     return found
 
 
@@ -682,6 +716,9 @@ class OrgPlan:
     #: With nothing to delete: whether an earlier purge of this id left its audit row (so the id
     #: is "already clean") or nothing ever did (so it names no organisation: a typo).
     previously_purged: bool = False
+    #: Counts that say whether this looks like a live customer (see `_signals`); printed with the
+    #: dry run and the apply, so the owner's last look at an id is not a name a stranger chose.
+    signals: dict[str, Any] = field(default_factory=dict)
 
     @property
     def rows(self) -> int:
@@ -766,6 +803,49 @@ async def _left_in_place(conn: Conn, org: uuid.UUID) -> dict[str, int]:
     return found
 
 
+async def _signals(conn: Conn, org: uuid.UUID) -> dict[str, Any]:
+    """Members, subscriptions by state and captured payments for one organisation: counts a tenant
+    cannot dress up the way it can a name. The listing's hints are only as honest as the name behind
+    them, so the dry run shows these beside every id, and an organisation with a live subscription
+    or a captured payment among ids the owner thought were idle is plain to see."""
+    members = _t(MEMBERSHIPS)
+    member_count = (
+        await conn.execute(
+            text(f"SELECT count(*) FROM {members.sql} WHERE organization_id = :org"),  # noqa: S608
+            {"org": org},
+        )
+    ).scalar_one()
+    subscriptions: dict[str, int] = {}
+    subs = Table("subscription", "subscriptions")
+    if await _exists_table(conn, subs):
+        for state, n in await _grouped(
+            conn,
+            f"SELECT state, count(*) FROM {subs.sql} "  # noqa: S608
+            "WHERE organization_id = :org AND deleted_at IS NULL GROUP BY 1 ORDER BY 1",
+            {"org": org},
+        ):
+            subscriptions[str(state)] = int(n)
+    captured = 0
+    charges = Table("payment", "charges")
+    if await _exists_table(conn, charges):
+        captured = int(
+            (
+                await conn.execute(
+                    text(
+                        f"SELECT count(*) FROM {charges.sql} "  # noqa: S608
+                        "WHERE organization_id = :org AND state = 'captured'"
+                    ),
+                    {"org": org},
+                )
+            ).scalar_one()
+        )
+    return {
+        "members": int(member_count),
+        "subscriptions": subscriptions,
+        "captured_charges": captured,
+    }
+
+
 async def plan_org(
     conn: Conn,
     plan: Plan,
@@ -781,7 +861,13 @@ async def plan_org(
     params = _params(org, orphans)
     counts = {t: await _count(conn, plan.nodes[t], plan.nodes, params) for t in plan.order}
     op = OrgPlan(
-        org, counts, orphans, users, await _left_in_place(conn, org), processed=list(processed)
+        org,
+        counts,
+        orphans,
+        users,
+        await _left_in_place(conn, org),
+        processed=list(processed),
+        signals=await _signals(conn, org),
     )
     if not op.rows:
         op.previously_purged = await _was_purged(conn, org)
@@ -1121,6 +1207,23 @@ async def list_orgs(conn: Conn, keep: Iterable[uuid.UUID]) -> list[OrgRow]:
     return list(by_id.values())
 
 
+#: How much of a tenant-chosen name or slug the listing and the candidates file show.
+DISPLAY_LIMIT = 80
+
+
+def inert(value: str | None, limit: int = DISPLAY_LIMIT) -> str:
+    """A tenant-chosen string made safe to print and to write into a file the owner will read.
+
+    An organisation's name is typed by whoever signed up (`organization_name` is only length
+    checked), so it is data from a stranger, and it is printed where the owner decides what to
+    delete. Every character Python does not call printable (controls, escape, line and paragraph
+    separators, bidirectional overrides, zero-width and other format characters, exotic spaces) is
+    replaced by a visible `?`, and the result is cut to `limit`: it can neither end the line it is
+    on, repaint the terminal, nor read as something other than what it is."""
+    cleaned = "".join(c if c.isprintable() else "?" for c in value or "")
+    return cleaned if len(cleaned) <= limit else cleaned[: limit - 3] + "..."
+
+
 def _fmt_date(value: datetime | None) -> str:
     return value.strftime("%Y-%m-%d") if value else "-"
 
@@ -1150,8 +1253,8 @@ def render_listing(rows: Sequence[OrgRow], database: str, environment: str) -> s
         (
             str(i),
             str(r.id),
-            r.name,
-            r.slug,
+            inert(r.name),
+            inert(r.slug),
             _fmt_date(r.created_at),
             _fmt_date(r.last_active),
             str(r.members),
@@ -1188,14 +1291,20 @@ def render_listing(rows: Sequence[OrgRow], database: str, environment: str) -> s
 
 def render_candidates(rows: Sequence[OrgRow]) -> str:
     """The `LIKELY TEST` rows as an ids file to edit. Printing a file is not selecting: you review
-    it, delete the lines you want to keep, and pass what is left with --ids-file."""
+    it, delete the lines you want to keep, and pass what is left with --ids-file.
+
+    Only a hinted row is ever written, and the name and slug are tenant-chosen text, so they go
+    through `inert`: a name can no longer end its line and put another organisation's id on the
+    next one (`parse_ids` refuses such a file as a second defence)."""
     lines = [
         "# organisations whose name, slug or email domain looks like test data.",
         "# REVIEW EVERY LINE. Delete the ones you want to keep. Nothing here is selected until you",
         "# pass this file with --ids-file.",
     ]
     lines += [
-        f"{r.id}  # {r.name} ({r.slug})" for r in rows if r.hint == "LIKELY TEST" and not r.kept
+        f"{r.id}  # {inert(r.name)} ({inert(r.slug)})"
+        for r in rows
+        if r.hint == "LIKELY TEST" and not r.kept
     ]
     return "\n".join(lines)
 
@@ -1234,6 +1343,7 @@ def _org_line(op: OrgPlan, mode: str, status: str) -> dict[str, Any]:
             "kept_by_choice": op.users.kept_by_choice,
             "deleted": op.users.deleted,
         },
+        "live_signals": op.signals,
     }
     if op.left_in_place:
         line["left_in_place"] = op.left_in_place
@@ -1486,7 +1596,7 @@ def build_parser() -> argparse.ArgumentParser:
     sel.add_argument(
         "--org-id",
         action="append",
-        type=uuid.UUID,
+        type=canonical_uuid,
         default=[],
         metavar="UUID",
         help="an organisation to remove; repeatable",
@@ -1500,7 +1610,7 @@ def build_parser() -> argparse.ArgumentParser:
     sel.add_argument(
         "--keep",
         action="append",
-        type=uuid.UUID,
+        type=canonical_uuid,
         default=[],
         metavar="UUID",
         help="an organisation that must never be removed; repeatable",
@@ -1514,7 +1624,7 @@ def build_parser() -> argparse.ArgumentParser:
     sel.add_argument(
         "--keep-user",
         action="append",
-        type=uuid.UUID,
+        type=canonical_uuid,
         default=[],
         metavar="UUID",
         help="a user that is never deleted, even if left in no organisation",
@@ -1587,8 +1697,8 @@ def _read_ids(path: Path | None) -> list[uuid.UUID]:
     if path is None:
         return []
     try:
-        return parse_ids(path.read_text(), source=str(path))
-    except OSError as exc:
+        return parse_ids(path.read_text(encoding="utf-8"), source=str(path))
+    except (OSError, UnicodeDecodeError) as exc:
         raise Refusal(f"cannot read {path}: {type(exc).__name__}") from None
 
 
