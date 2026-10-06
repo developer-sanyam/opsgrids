@@ -1950,6 +1950,105 @@ SELECT occurred_at, from_state, to_state, reason, actor FROM subscription.subscr
 WHERE organization_id = :org AND reason = 'trial_extended' ORDER BY occurred_at DESC;
 ```
 
+### Stop events and the hand-activation gate (ADR-0037): what changed, and the read-only audit
+
+Two correctness fixes, **no migration, no new key, no event change, no consumer binding**:
+
+* **subscription.** A cancel, an operator suspend or a dunning suspend that finds a pending plan
+  change whose boundary has passed applies it **without staging** its `upgraded`/`downgraded` event
+  (the transition and audit rows are still written; the stop event carries the final pin). Before this,
+  the two events tied on `occurred_at`, and product and console could fold the first and drop the stop,
+  leaving a cancelled subscription's product entitled for good.
+* **product.** `POST /api/v1/products/activations` answers **409 `subscription_managed`** (`errors[0].code`)
+  for a product a subscription has ever fed (live, suspended, cancelled, or dropped from a bundle by a
+  downgrade). `DELETE /api/v1/products/activations/{key}` answers the same while the product's own
+  subscription is serving it. Hand-only and fresh organizations are unaffected (201 as before).
+
+Deploy `product` and `subscription` in either order; product first closes the hand-activation hole
+sooner. Rollback is the images; nothing written depends on the new code.
+
+**What to check afterwards.** A refused hand activation shows in the product log as
+`product.activate.subscription_managed` (organization, product, the source keys). If the owner reports
+the new message for a product they believe they never subscribed to, read that organization's rows:
+
+```sql
+SELECT product_key, source_product_key, status, source_subscription_id, state_occurred_at
+FROM product.activation_sources WHERE organization_id = :org ORDER BY product_key, source_product_key;
+```
+
+Any row with either of the last two columns set is a subscription's. A row with both NULL is a hand
+activation (or an activation from before `a6b1c8d3e9f2` that no event has touched since) and never
+refuses.
+
+**The audit: organizations that already hand-activated after a cancel or a suspend, or whose stop was
+dropped before this fix.** Both leave the same picture: a subscription that is `cancelled` or
+`suspended` beside an activation that is still on. **Read-only. Nothing in this release repairs
+anything, and the owner decides what to do with each row** (a repair is a one-off product-side write
+and a console re-fold, deliberately not shipped). Run on the box, as the owner:
+
+```bash
+docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids \
+  -v ON_ERROR_STOP=1 <<'SQL'
+SET default_transaction_read_only = on;
+
+-- 1. The standalone case: the subscription is cancelled or suspended and its product is still on.
+SELECT s.organization_id, s.product_key, s.state AS subscription_state, s.cancel_at, s.suspended_at,
+       a.status AS activation_status, a.trial_ends_at, a.activated_at, a.state_occurred_at
+FROM subscription.subscriptions s
+JOIN product.activations a
+  ON a.organization_id = s.organization_id AND a.product_key = s.product_key
+WHERE s.state IN ('cancelled', 'suspended')
+  AND a.status IN ('active', 'trial')
+  AND a.deactivated_at IS NULL
+ORDER BY s.organization_id, s.product_key;
+
+-- 2. The bundle case: a cancelled or suspended suite whose member is still on, with nothing
+--    subscription-fed (another subscription's live source) keeping it on. A member another live
+--    subscription still feeds is correctly on and is not listed.
+SELECT DISTINCT s.organization_id, s.product_key AS subscription_key, s.state AS subscription_state,
+       a.product_key AS member, a.status AS activation_status, a.trial_ends_at
+FROM subscription.subscriptions s
+JOIN product.activation_sources fed
+  ON fed.organization_id = s.organization_id AND fed.source_product_key = s.product_key
+JOIN product.activations a
+  ON a.organization_id = fed.organization_id AND a.product_key = fed.product_key
+WHERE s.state IN ('cancelled', 'suspended')
+  AND s.product_key <> a.product_key
+  AND a.status IN ('active', 'trial')
+  AND a.deactivated_at IS NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM product.activation_sources live
+    WHERE live.organization_id = a.organization_id AND live.product_key = a.product_key
+      AND live.status IN ('active', 'trial')
+      AND live.source_product_key <> s.product_key
+      AND (live.source_subscription_id IS NOT NULL OR live.state_occurred_at IS NOT NULL))
+ORDER BY s.organization_id, s.product_key, a.product_key;
+
+-- 3. Console's side of defect 1: an organization whose console snapshot still counts a product as
+--    live that subscription says is cancelled or suspended.
+SELECT s.organization_id, s.product_key, s.state AS subscription_state,
+       c.subscription_states -> s.product_key ->> 'state' AS console_state
+FROM subscription.subscriptions s
+JOIN console.org_commercial_state c ON c.organization_id = s.organization_id
+WHERE s.state IN ('cancelled', 'suspended')
+  AND c.subscription_states -> s.product_key ->> 'state' IS DISTINCT FROM s.state
+ORDER BY s.organization_id, s.product_key;
+SQL
+```
+
+Rows from 1 and 2 are either an owner's hand activation or a dropped stop; `a.activated_by` and the
+`product.audit_logs` rows for the activation (`action = 'product.activated'`, with the `manual` cause)
+say which:
+
+```sql
+SELECT at, action, acting_as, actor_id, after FROM product.audit_logs
+WHERE organization_id = :org AND entity = 'activation' ORDER BY at DESC LIMIT 20;
+```
+
+Every organization the first two list is serving a product its subscription has ended. Whether to
+switch it off, leave it as a gift, or re-subscribe the customer is the owner's call per organization;
+until then the gate stops it spreading.
+
 ### Operator MFA: mandatory rollout, the MFA reseal, and the one-off codes
 
 The security review of the operator-MFA slice made a second factor mandatory for every staff
