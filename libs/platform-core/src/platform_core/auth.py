@@ -22,6 +22,8 @@ LOCATION really does compare locations here — a scope that returns early is a 
 from __future__ import annotations
 
 import enum
+import threading
+import time
 import uuid
 from collections.abc import Callable
 from typing import Annotated, Any, Protocol
@@ -41,6 +43,7 @@ from platform_core.errors import (
     UnauthorizedProblem,
 )
 from platform_core.internal_auth import verify_gateway_token, verify_service_token
+from platform_core.logging import get_logger
 
 #: The audience every operator (staff) token carries — minted only by `services.operator_login`
 #: in auth-service, never by a tenant sign-in. `require_operator` is what every staff_only route
@@ -117,15 +120,36 @@ def _matches(granted: str, required: str) -> bool:
 
 # --------------------------------------------------------------------- token verification
 
+#: How long a verifier keeps the JWKS it fetched before fetching it again (PyJWT's `lifespan`).
+JWKS_CACHE_LIFESPAN_SECONDS = 300
+
+#: How long after *any* successful JWKS fetch a verifier refuses to force another one because a
+#: token carried a `kid` it does not know (PyJWT's `cooldown_duration`, new in 2.14 as the fix for
+#: GHSA-2gx3-rcp4-g85q: without it, a stream of tokens with made-up `kid`s was a stream of
+#: requests to auth-service, from every verifier at once).
+#:
+#: This is PyJWT's own default, stated here so the number the runbook quotes is the number the
+#: code runs, and so a future PyJWT that changed its default could not change ours silently. It is
+#: deliberately **not** zero: that setting disables the protection. The price of keeping it is
+#: the window described on `decode_token` — up to this many seconds in which a token signed by a
+#: key published *after* a verifier's last fetch is answered 401 instead of verified.
+JWKS_REFRESH_COOLDOWN_SECONDS = 30
+
 _jwk_client: PyJWKClient | None = None
 
 
 def _jwks(settings: ServiceSettings) -> PyJWKClient:
     global _jwk_client
     if _jwk_client is None:
-        # Caches keys and refreshes on an unknown kid, which is what makes rotation
-        # a publish-then-switch rather than a coordinated restart.
-        _jwk_client = PyJWKClient(settings.jwks_url, cache_keys=True, lifespan=300)
+        # Caches keys and refreshes on an unknown kid — at most once per cooldown, which is what
+        # makes rotation a publish-then-switch rather than a coordinated restart, and what bounds
+        # how often a forged `kid` can make this process call auth-service.
+        _jwk_client = PyJWKClient(
+            settings.jwks_url,
+            cache_keys=True,
+            lifespan=JWKS_CACHE_LIFESPAN_SECONDS,
+            cooldown_duration=JWKS_REFRESH_COOLDOWN_SECONDS,
+        )
     return _jwk_client
 
 
@@ -133,6 +157,125 @@ def reset_jwks_cache() -> None:
     """Tests and key rotation drills."""
     global _jwk_client
     _jwk_client = None
+    _signing_key_warnings.clear()
+
+
+#: One line per `kid` per this many seconds, per process.
+SIGNING_KEY_WARNING_INTERVAL_SECONDS = 60
+
+#: Distinct `kid`s remembered at once. `kid` is read from the *unverified* token header, so it is
+#: whatever a caller chooses to send; past this many, every further `kid` shares one slot.
+SIGNING_KEY_WARNING_MAX_KIDS = 16
+
+#: A logged `kid` is cut to this many characters. Real ones are 16 (RFC 7638 thumbprint prefix).
+SIGNING_KEY_WARNING_KID_CHARS = 64
+
+_OTHER_KIDS = "\0other"
+
+
+class _WarningThrottle:
+    """At most one log line per key per `interval`, in bounded memory.
+
+    A rotation makes every request carrying the new `kid` fail for up to the cooldown — on a busy
+    service, thousands of identical lines saying the same thing — and a forged `kid` is free for
+    anyone to send. So the first occurrence is logged, the rest are counted, and the next line
+    reports the count: the volume stays visible as a number rather than as a flood.
+    """
+
+    def __init__(
+        self,
+        *,
+        interval: float,
+        max_kids: int,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._interval = interval
+        self._max_kids = max_kids
+        self._clock = clock
+        self._lock = threading.Lock()
+        #: key -> (when it was last logged, how many occurrences were swallowed since)
+        self._seen: dict[str, tuple[float, int]] = {}
+
+    def admit(self, kid: str) -> tuple[bool, int]:
+        """`(True, n)` to log this occurrence, `n` being how many were swallowed since the last
+        line for it; `(False, 0)` to swallow it."""
+        now = self._clock()
+        with self._lock:
+            key = kid
+            if key not in self._seen and len(self._seen) >= self._max_kids:
+                # Full: forget what has aged out, and if that frees nothing, group this kid with
+                # every other newcomer rather than growing without bound.
+                self._seen = {k: v for k, v in self._seen.items() if now - v[0] < self._interval}
+                if len(self._seen) >= self._max_kids:
+                    key = _OTHER_KIDS
+            last = self._seen.get(key)
+            if last is not None and now - last[0] < self._interval:
+                self._seen[key] = (last[0], last[1] + 1)
+                return False, 0
+            swallowed = last[1] if last is not None else 0
+            self._seen[key] = (now, 0)
+            return True, swallowed
+
+    def clear(self) -> None:
+        with self._lock:
+            self._seen.clear()
+
+
+_signing_key_warnings = _WarningThrottle(
+    interval=SIGNING_KEY_WARNING_INTERVAL_SECONDS, max_kids=SIGNING_KEY_WARNING_MAX_KIDS
+)
+
+
+def _kid_for_log(token: str) -> str | None:
+    """The `kid` a token claims, safe to put in a log line; never the token or any of its keys.
+
+    Read from the unverified header, so it is attacker-chosen: cut to a fixed length and escaped,
+    so that it can neither balloon a line nor carry a newline or terminal escape into one.
+    """
+    try:
+        kid = jwt.get_unverified_header(token).get("kid")
+    except jwt.PyJWTError:
+        return None
+    if not isinstance(kid, str):
+        return None
+    return ascii(kid[:SIGNING_KEY_WARNING_KID_CHARS])[1:-1][:SIGNING_KEY_WARNING_KID_CHARS]
+
+
+def _signing_key_unavailable(token: str, exc: jwt.PyJWKClientError) -> UnauthorizedProblem:
+    """The 401 for a token whose signing key this process cannot produce right now.
+
+    Not "token is not valid": it may be perfectly valid, signed by a key auth-service published
+    moments ago that this verifier is not allowed to go and fetch yet (see
+    `JWKS_REFRESH_COOLDOWN_SECONDS`), and the client's right response is to retry shortly, with a
+    refreshed session if it has one. `WWW-Authenticate` is the standard way to say "authenticate
+    again"; `Retry-After` says when; the problem's `errors[].code` is the stable thing for a
+    client to switch on.
+    """
+    kid = _kid_for_log(token)
+    admitted, swallowed = _signing_key_warnings.admit(kid or "")
+    if admitted:
+        get_logger("platform_core.auth").warning(
+            "auth.jwks.signing_key_unavailable",
+            kid=kid,
+            reason=(
+                "jwks_unreachable"
+                if isinstance(exc, jwt.PyJWKClientConnectionError)
+                else "signing_key_not_found"
+            ),
+            suppressed=swallowed,
+        )
+    # The detail is what a person may end up reading (`messageFor` in the SPA's client shows it),
+    # so it says what to do rather than which key; the code is what a program switches on.
+    message = "Your session could not be verified just now. Please try again in a few seconds."
+    return UnauthorizedProblem(
+        message,
+        errors=[{"field": "authorization", "code": "signing_key_unavailable", "message": message}],
+        headers={
+            "WWW-Authenticate": 'Bearer error="invalid_token", '
+            'error_description="signing key not yet known; retry"',
+            "Retry-After": str(JWKS_REFRESH_COOLDOWN_SECONDS),
+        },
+    )
 
 
 def decode_token(
@@ -146,6 +289,15 @@ def decode_token(
 
     Note what this module does **not** provide: a way to mint. Only auth-service holds a
     private key, so a compromised product service cannot forge identity.
+
+    **Key rotation has a window of up to `JWKS_REFRESH_COOLDOWN_SECONDS`.** A verifier fetches
+    the JWKS lazily and, since PyJWT 2.14, will not force another fetch within the cooldown
+    after its last one. A token signed by a key published after that fetch is therefore answered
+    with a 401 (`signing_key_unavailable`) until the cooldown ends, and verifies from the next
+    request after it, with no restart. A token signed by a key the verifier already holds is
+    unaffected. It is the same 401 a made-up `kid` gets, and it must stay one: the exceptions
+    PyJWT raises for it are not `InvalidTokenError`s, and unhandled they were a 500 from every
+    service and gateway at once.
     """
     try:
         signing_key = _jwks(settings).get_signing_key_from_jwt(token).key
@@ -162,6 +314,10 @@ def decode_token(
         )
     except jwt.ExpiredSignatureError as exc:
         raise UnauthorizedProblem("Token has expired") from exc
+    except jwt.PyJWKClientError as exc:
+        # Includes `PyJWKClientConnectionError`: a JWKS this process cannot reach is, for this
+        # token, the same answer — it cannot be verified now, and may be on a retry.
+        raise _signing_key_unavailable(token, exc) from exc
     except jwt.InvalidTokenError as exc:
         raise UnauthorizedProblem("Token is not valid") from exc
 

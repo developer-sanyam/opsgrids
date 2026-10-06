@@ -14,7 +14,12 @@ dependencies = [
     "structlog>=24.4",
     "redis>=5.2",
     "aio-pika>=9.5",
-    "pyjwt[crypto]>=2.9",
+    # 2.15.1 is the floor because 2.14 changed what `PyJWKClient` does with a `kid` it has not
+    # seen: no forced JWKS refresh for `cooldown_duration` (30 s) after a successful fetch, and
+    # `PyJWKClientError` instead. `platform_core.auth.decode_token` is written and tested against
+    # that behaviour (`tests/test_jwks_key_rotation.py`). An older PyJWT refreshes on every unknown
+    # `kid` — the amplification GHSA-2gx3-rcp4-g85q is about — and would fail those tests.
+    "pyjwt[crypto]>=2.15.1",
     "httpx>=0.28",
 ]
 
