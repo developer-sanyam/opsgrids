@@ -6,9 +6,10 @@ themselves are the authority — this page exists so you can find the right one 
 **Every question an ADR left open is decided or recorded as waiting on demand** in
 [adr/open-questions-register.md](adr/open-questions-register.md). That page links each question
 to the ADR section that decides it and to the backlog item that builds it. Numbers are allocated in
-order and never reused. The next free number is **0037** (0027 is allocated to the inventory Phase 9
-work, which has not merged). This table was last brought up to date at 0019, apart from 0028–0033,
-0035 and 0036 below; [`adr/`](adr/) is the complete list.
+order and never reused. The next free number is **0038** (0027 is allocated to the inventory Phase 9
+work, which has not merged; 0037 is the stop-events ADR, already on `main`). This table was last
+brought up to date at 0019, apart from 0028–0033, 0035 and 0036 below; [`adr/`](adr/) is the
+complete list.
 
 | ADR | Title | Header status | What exists today |
 |---|---|---|---|

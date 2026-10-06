@@ -1202,8 +1202,18 @@ def test_the_adr_states_that_destruction_is_owner_run_only() -> None:
         assert needle in text_, needle
 
 
-def test_the_decisions_index_lists_the_adr_and_the_next_free_number_moved() -> None:
+def test_the_decisions_index_lists_the_adr_and_the_next_free_number_is_really_free() -> None:
+    """Not "the next free number is 0037": that was true on the day it was written and stopped
+    being true when another branch took 0037, with both editing the same two lines. The invariant
+    is what has to hold whichever branch lands first: the stated number is not an ADR that exists
+    and is above every one that does."""
     text_ = DECISIONS.read_text()
     assert "[0036](adr/0036-removing-test-organisations.md)" in text_
-    assert "next free number is **0037**" in text_
-    assert not (REPO_ROOT / "docs" / "adr" / "0037-removing-test-organisations.md").exists()
+    match = re.search(r"next free number is \*\*(\d{4})\*\*", text_)
+    assert match, "docs/decisions.md no longer states the next free ADR number"
+    stated = int(match.group(1))
+    taken = {
+        int(p.name[:4]) for p in (REPO_ROOT / "docs" / "adr").glob("[0-9][0-9][0-9][0-9]-*.md")
+    }
+    assert 36 in taken and stated not in taken, f"ADR {stated:04d} exists: the number is not free"
+    assert stated > max(taken), f"ADR {max(taken):04d} exists above the stated next free number"

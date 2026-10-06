@@ -52,7 +52,14 @@ Verified in code before deciding:
    token like `e2e`, `smoke`, `buyer`, `test`, `demo`; every member on a throwaway mail domain; "idle": nothing active
    and nothing paid). A hint is printed next to a name and is never an input. Deletion takes explicit ids
    (`--org-id`, repeatable, or `--ids-file`); the option set is pinned by a test so a "delete everything that looks
-   like test data" switch cannot be added without it noticing.
+   like test data" switch cannot be added without it noticing. **A name is a stranger's text**: signup is public and
+   an organisation name is only length checked, so the listing and the candidates file print names through `inert`
+   (every non-printable character, so every line break, escape and separator, becomes `?`; cut at 80), and an ids
+   file is read as the owner's eyes read it: lines end at LF only, a line with any other control or separator
+   character is refused, and an id must be the canonical hyphenated ASCII form. Without that, a name such as
+   `smoke test<U+2028><another organisation's id> # x` put a second id in a file the owner believed held only hinted
+   rows. Flags are matched in full, `--confirm-count` is given once, and every `--keep-file` and `--ids-file` repeated
+   is read.
 3. **Four gates, all before it connects.** `--apply`, `--confirm-count N` equal to the organisations named,
    `--i-took-a-backup`, and, when the environment is `production`, `staging` or `uat` (the set `ServiceSettings`
    already treats as real) **or the database host is not this machine**, `--i-know-this-is-the-live-database`. Listing
@@ -84,7 +91,11 @@ Verified in code before deciding:
    Operator accounts (`auth.staff_accounts`) are a separate table and are never touched.
 8. **Counts only, and one durable record.** Output is per-table counts, ids and SQLSTATEs: no row, name, address or
    connection string (the interactive listing prints organisation names to the owner's terminal, because he cannot choose
-   by id alone). Each purged organisation leaves one counts-only row in `auth.audit_logs` under the platform sentinel
+   by id alone). Beside every id the dry run and the apply print `live_signals`: members, subscriptions by state and
+   captured payments, counts a tenant cannot dress up as it can a name, so an id that is a customer stands out when the
+   owner's last look is the dry run. With several organisations the dry run counts each as it will be found when its
+   turn comes, without the rows an earlier one has already taken, so `would_delete` equals what the apply deleted for
+   any selection, not only for one organisation. Each purged organisation leaves one counts-only row in `auth.audit_logs` under the platform sentinel
    organisation, in the same transaction, so a deletion that committed is on record and one that did not is not.
 9. **What lives outside the database is named, never touched.** Object storage under `<bucket>/<organization>/`,
    provider-side mandates and connected accounts, DNS and certificates, in-flight events and dead letters, and backups

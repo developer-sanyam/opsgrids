@@ -230,25 +230,75 @@ async def _everything(conn: AsyncConnection) -> dict[str, tuple[int, str]]:
     return {f"{r[0]}.{r[1]}": await _fingerprint(conn, Table(r[0], r[1])) for r in rows}
 
 
-async def _everything_but_org(
-    conn: AsyncConnection, plan: Any, org: uuid.UUID, orphans: list[uuid.UUID]
-) -> dict[str, tuple[int, str]]:
-    """A count and a hash of every row that is *not* this organisation's (or one of its retired
-    users'), by the tool's own selector, plus every table outside the plan whole. The platform
-    sentinel's audit rows are left out: writing one is part of what a purge does."""
-    snap: dict[str, tuple[int, str]] = {}
-    for table, node in plan.nodes.items():
-        where = f"({node.predicate(plan.nodes)}) IS NOT TRUE"
-        if str(table) == "auth.audit_logs":
-            where += " AND t.organization_id IS DISTINCT FROM CAST(:nil AS uuid)"
-        snap[str(table)] = await _fingerprint(
-            conn, table, where, org=org, orphans=orphans, nil=str(NIL)
+#: What must survive a purge, for the tables that carry no `organization_id` of their own, written
+#: out by hand from how the identity schema is shaped and not from the tool's selectors. `:gone` is
+#: the removed organisations and `:users` the users retired with them.
+_SURVIVOR_RULES: dict[str, str] = {
+    "account.organizations": "id <> ALL(CAST(:gone AS uuid[]))",
+    "account.users": "id <> ALL(CAST(:users AS uuid[]))",
+    "account.membership_roles": (
+        "membership_id IN (SELECT id FROM account.memberships "
+        "WHERE organization_id <> ALL(CAST(:gone AS uuid[])))"
+    ),
+    "account.role_permissions": (
+        "role_id IN (SELECT id FROM account.roles "
+        "WHERE organization_id <> ALL(CAST(:gone AS uuid[])))"
+    ),
+    # A session is a retired user's, or was active in a removed organisation.
+    "auth.sessions": (
+        "user_id <> ALL(CAST(:users AS uuid[])) "
+        "AND (active_org_id IS NULL OR active_org_id <> ALL(CAST(:gone AS uuid[])))"
+    ),
+    **{
+        f"auth.{name}": "user_id <> ALL(CAST(:users AS uuid[]))"
+        for name in (
+            "credentials",
+            "external_identities",
+            "mfa_factors",
+            "mfa_recovery_codes",
+            "password_reset_tokens",
         )
-    every = await _everything(conn)
-    for key, value in every.items():
-        schema, name = key.split(".", 1)
-        if Table(schema, name) not in plan.nodes:
-            snap[key] = value
+    },
+}
+
+
+async def _survivors(
+    conn: AsyncConnection, gone: list[uuid.UUID], users: list[uuid.UUID]
+) -> dict[str, tuple[int, str]]:
+    """A count and a hash of every row that must still be there after `gone` organisations and
+    `users` are purged, for every base table in every service schema.
+
+    Independent of the tool on purpose. The tool's own selectors decide what it deletes, so a
+    snapshot taken with them (rows "outside" the selector, before and after) cannot notice a
+    selector that is too broad: the rows it wrongly takes are missing from both snapshots. Here a
+    table with an `organization_id` keeps every row of every *other* organisation; the identity
+    tables follow `_SURVIVOR_RULES`; and every other table (the catalogue, keys, bookkeeping) must
+    be unchanged whole. The platform's own `organization.purged` audit row is the one thing a purge
+    adds, so it is left out."""
+    with_org = {str(t) for t in await _tables_with_org_column(conn)}
+    every = (
+        await conn.execute(
+            text(
+                "SELECT n.nspname, c.relname FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition "
+                "AND n.nspname <> ALL(:sys) AND n.nspname NOT LIKE 'pg\\_%' ORDER BY 1, 2"
+            ),
+            {"sys": list(_SYSTEM)},
+        )
+    ).all()
+    snap: dict[str, tuple[int, str]] = {}
+    for schema, name in every:
+        key = f"{schema}.{name}"
+        if key in _SURVIVOR_RULES:
+            where = _SURVIVOR_RULES[key]
+        elif key in with_org:
+            where = "organization_id <> ALL(CAST(:gone AS uuid[]))"
+            if key == "auth.audit_logs":
+                where += " AND action <> 'organization.purged'"
+        else:
+            where = "true"
+        snap[key] = await _fingerprint(conn, Table(schema, name), where, gone=gone, users=users)
     return snap
 
 
@@ -536,11 +586,13 @@ async def test_a_dry_run_of_organisations_that_share_a_user_counts_what_apply_de
 async def test_apply_removes_one_organisation_and_nothing_of_any_other(
     engine: AsyncEngine, world: World
 ) -> None:
-    a = world.orgs["a"]
-    plan = await _plan(engine)
+    a, gone_users = world.orgs["a"], [world.users["a_only"]]
+    keepers = ("b", "c", "anchor", "real")
     async with engine.connect() as conn:
-        outside_before = await _everything_but_org(conn, plan, a, [world.users["a_only"]])
+        survivors_before = await _survivors(conn, [a], gone_users)
+        per_org_before = {k: await _residual(conn, world.orgs[k]) for k in keepers}
         assert await _residual(conn, a)
+        assert all(per_org_before.values()), "every surviving organisation has rows to lose"
 
     result, _lines = await _run([a], apply=True)
 
@@ -559,11 +611,53 @@ async def test_apply_removes_one_organisation_and_nothing_of_any_other(
             )
             == 0
         )
-        outside_after = await _everything_but_org(conn, plan, a, [world.users["a_only"]])
-        for org in ("b", "c", "anchor", "real"):
-            assert await _residual(conn, world.orgs[org]), f"{org} lost its rows"
-    changed = {k for k in outside_before if outside_before[k] != outside_after[k]}
+        survivors_after = await _survivors(conn, [a], gone_users)
+        per_org_after = {k: await _residual(conn, world.orgs[k]) for k in keepers}
+    # Exact, per surviving organisation and per table, not "still has some rows".
+    assert per_org_after == per_org_before, "a surviving organisation's rows changed"
+    changed = {k for k in survivors_before if survivors_before[k] != survivors_after[k]}
     assert changed == set(), f"rows that are not the organisation's changed in: {sorted(changed)}"
+    assert set(survivors_before) == set(survivors_after) and len(survivors_before) > 300
+
+
+async def test_the_independent_survivor_check_notices_a_selector_that_is_too_broad(
+    engine: AsyncEngine, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The proof that `test_apply_removes_one_organisation_and_nothing_of_any_other` can fail.
+
+    A selector that also matches other organisations' rows passes every check the tool makes of
+    itself (it counts and deletes with the same predicate, so "deleted what I counted" and
+    "nothing left that I select" both hold) and would pass any test that asks the same selector
+    what is left. So a table's predicate is widened here to every organisation in the cast (and
+    only those: the database may be shared), the purge runs, and the independent snapshot must
+    name that table."""
+    a, gone_users = world.orgs["a"], [world.users["a_only"]]
+    plan = await _plan(engine)
+    victim = next(
+        t
+        for t in plan.order
+        if t in world.seeded and plan.nodes[t].has_org_column and str(t) != "auth.audit_logs"
+    )
+    cast = ", ".join(f"CAST('{org}' AS uuid)" for org in world.every_org)
+    real_predicate = purge.Node.predicate
+
+    def too_broad(self: Any, nodes: Any, alias: str = "t", depth: int = 0, tag: str = "") -> str:
+        if self.table == victim and (alias, depth, tag) == ("t", 0, ""):
+            return f'{alias}."organization_id" = ANY(ARRAY[{cast}])'
+        return real_predicate(self, nodes, alias, depth, tag)
+
+    async with engine.connect() as conn:
+        before = await _survivors(conn, [a], gone_users)
+    monkeypatch.setattr(purge.Node, "predicate", too_broad)
+    result, _ = await _run([a], apply=True)
+    monkeypatch.undo()
+
+    assert result.failed == 0, (
+        "the tool's own checks are satisfied by a predicate that is too broad"
+    )
+    async with engine.connect() as conn:
+        after = await _survivors(conn, [a], gone_users)
+    assert {k for k in before if before[k] != after[k]} == {str(victim)}
 
 
 async def test_users_follow_the_membership_rules(engine: AsyncEngine, world: World) -> None:
