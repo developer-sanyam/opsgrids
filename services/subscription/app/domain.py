@@ -365,7 +365,7 @@ def trial_days_granted(requested: int | None, allowance: int) -> int | None:
 
 #: The longest a trial may run **in total** once staff extend it, in days, measured from the
 #: trial's start (`current_period_start`, which nothing moves while a subscription trials — there
-#: is no separate trial-start column). An owner-adjustable default (ADR-0030), not a law: a later
+#: is no separate trial-start column). An owner-adjustable default (ADR-0031), not a law: a later
 #: release may make it per-product or per-plan. Distinct from `MAX_TRIAL_DAYS`, which bounds what
 #: one *version* may sell, not how far an operator may stretch one trial.
 MAX_TOTAL_TRIAL_DAYS = 90

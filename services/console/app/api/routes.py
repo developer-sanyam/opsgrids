@@ -107,7 +107,7 @@ OperatorReadAny = Annotated[
 OperatorBilling = Annotated[Principal, Depends(require_operator(roles={"owner", "billing_ops"}))]
 OperatorAudit = Annotated[Principal, Depends(require_operator(roles={"owner", "support"}))]
 #: Owner only — the narrowest gate, for a concession the owner keeps to themselves until they say
-#: otherwise (ADR-0030: extending a trial is an owner decision; billing_ops is refused with 403).
+#: otherwise (ADR-0031: extending a trial is an owner decision; billing_ops is refused with 403).
 OperatorOwner = Annotated[Principal, Depends(require_operator(roles={"owner"}))]
 #: The contract's `console.pricing.read`/`console.pricing.write`, implemented as operator roles
 #: rather than the tenant permission grammar — ADR-0003's addendum is explicit that operator roles
@@ -787,7 +787,7 @@ async def change_plan(
     )
 
 
-# ------------------------------------------------------- staff add product, extend trial (0030)
+# ------------------------------------------------------- staff add product, extend trial (0031)
 
 #: The same required key, the same bounds and the same contract as the plan switch's.
 IdempotencyKeyHeader = Annotated[
@@ -844,7 +844,7 @@ async def add_product(
     operator: OperatorBilling,
     idempotency_key: IdempotencyKeyHeader,
 ) -> AddProductOut:
-    """Open a subscription for `product_key` pinned to `plan_version_id` (ADR-0030).
+    """Open a subscription for `product_key` pinned to `plan_version_id` (ADR-0031).
 
     **A trial by default** (`trial: true`, the version's own trial length). A paid add
     (`trial: false`) starts billing at once — its first period is claimed for payment in the same
@@ -856,7 +856,7 @@ async def add_product(
     Errors carry a stable `errors[0].code`: 404 `not_found`; 409 `already_subscribed` (a row for
     the product in any state, cancelled included), `request_in_progress`,
     `idempotency_key_reused`; 422 `charge_not_acknowledged`, `not_offerable` (a version catalog no
-    longer offers this organization — superseded, or its plan retired), `one_time`,
+    longer offers this organization — superseded, withdrawn, or its plan retired), `one_time`,
     `org_currency_mismatch`, `trial_not_offered`, `not_published`, `product_mismatch`, `bundle`,
     `reserved_reason`; 503 `catalog_unavailable` — this request changed nothing (a key not used
     before; a key already used still replays its recorded answer while catalog is down); 503
@@ -892,7 +892,7 @@ async def extend_trial(
     idempotency_key: IdempotencyKeyHeader,
 ) -> ExtendTrialOut:
     """Set the trial of the organization's `product_key` subscription to end at
-    `new_trial_ends_at` (ADR-0030). **Owner only**; billing_ops and support are refused with 403.
+    `new_trial_ends_at` (ADR-0031). **Owner only**; billing_ops and support are refused with 403.
 
     Absolute, never "add N days": `expected_trial_ends_at` is the end the operator saw (send it
     back verbatim from the read), compared under subscription's row lock, so a repeat can never

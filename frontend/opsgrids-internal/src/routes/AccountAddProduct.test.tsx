@@ -12,7 +12,7 @@ import type { OperatorRole } from "@/auth/types";
 import { AddProductCard } from "./AccountAddProduct";
 
 /**
- * Add product end to end (ADR-0030): the role hint, the picker (only products with no row, blocked
+ * Add product end to end (ADR-0031): the role hint, the picker (only products with no row, blocked
  * versions disabled with the server's reason, a bundle's overlap named), a trial by default, a paid
  * start that cannot be confirmed without the acknowledgement, the confirm → announced result, the
  * idempotency key's lifetime, a double click sending once, and every failure kind.

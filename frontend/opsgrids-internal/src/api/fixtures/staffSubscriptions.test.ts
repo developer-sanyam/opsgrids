@@ -10,7 +10,7 @@ import {
 } from "./staffSubscriptions";
 
 /**
- * The fixtures stand in for the live server (ADR-0030), so they obey its rules: only products with
+ * The fixtures stand in for the live server (ADR-0031), so they obey its rules: only products with
  * no row are offered, a paid start must be acknowledged, a repeated key replays, a trial extension
  * is absolute and guarded by the end the operator saw — otherwise fixtures mode would demonstrate
  * behaviour the product does not have.

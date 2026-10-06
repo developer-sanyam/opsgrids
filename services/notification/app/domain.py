@@ -116,7 +116,7 @@ SUBSCRIBABLE_EVENTS: Final[tuple[str, ...]] = (
     "commerce.subscription.payment_retry_due",
     "commerce.subscription.renewed",
     "commerce.subscription.suspended",
-    # Staff moved a trial's end later (ADR-0030). Its own key, so a "trial started" rule never
+    # Staff moved a trial's end later (ADR-0031). Its own key, so a "trial started" rule never
     # fires for an extension; an operator may author a rule on this one deliberately.
     "commerce.subscription.trial_extended",
     "commerce.subscription.trial_started",

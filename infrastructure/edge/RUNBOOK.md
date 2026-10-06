@@ -1314,7 +1314,7 @@ scheduled change emits **no event**, so the
 account list does not show it — the Change plan card (the live pricing read) does. Product access follows a
 change that has taken effect within about **15 minutes**.
 
-### Staff add product and extend trial (ADR-0030): deploy the consumers first
+### Staff add product and extend trial (ADR-0031): deploy the consumers first
 
 Two more console controls on the account page, on the same claim table and the same rules as Change plan:
 

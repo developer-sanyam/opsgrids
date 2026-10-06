@@ -2,7 +2,7 @@
 
 Operator delegates: a suspension and its inverse, a reactivation, the subscribe and
 change-plan that are the only way a bundle is sold (the customer routes refuse bundles) and that
-console's Add product and Change plan drive, and a trial extension (ADR-0030). The
+console's Add product and Change plan drive, and a trial extension (ADR-0031). The
 operator console delegates here rather than reaching into this service's schema. Overrides are
 enacted in the service that owns the state —
 `subscription` owns the lifecycle, so a staff suspension is a `commerce.subscription.suspended`
@@ -295,7 +295,7 @@ async def extend_trial_as_operator(
     session: SessionDep,
     request: Request,
 ) -> SubscriptionOut:
-    """Set an absolute new trial end, guarded by the end the operator saw (ADR-0030).
+    """Set an absolute new trial end, guarded by the end the operator saw (ADR-0031).
 
     Bound to the named organization as the first statement, filtered on it, and isolated by RLS
     like every route here: another organization's subscription id is a 404, and nothing is

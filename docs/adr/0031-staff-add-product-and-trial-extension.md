@@ -1,4 +1,4 @@
-# ADR-0030 — Staff Add product and Extend trial
+# ADR-0031 — Staff Add product and Extend trial
 
 **Status:** Proposed for owner sign-off — built to the owner decisions recorded in the build brief
 (2026-10-06) on `feat/admin-add-product-trial` (stacked on `feat/admin-plan-switch`), not deployed ·
@@ -58,8 +58,10 @@ behind a button:
      refusal).
    The operator subscribe is serialised per organization with a transaction-scoped advisory lock, so
    two staff adds cannot both pass the currency check. Console additionally refuses a version catalog
-   no longer offers the organization (422 `not_offerable` — superseded by a newer version, or its plan
-   retired; subscription's pin lookup cannot see either), re-read on every confirm before the claim;
+   no longer offers the organization (422 `not_offerable` — superseded by a newer version, withdrawn
+   on the Plans page (ADR-0030), or its plan retired; subscription's pin lookup cannot see the first
+   or the last, and would refuse a withdrawn one only as `not_published`), re-read on every confirm
+   before the claim;
    a catalogue outage there is 503 `catalog_unavailable` and claims nothing.
 4. **The picker** (`GET .../add-product-options`, `OperatorBilling`) offers every product that publicly
    sells a plan and that the organization has **no row for in any state**, each with catalog's

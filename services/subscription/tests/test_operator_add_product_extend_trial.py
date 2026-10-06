@@ -1,4 +1,4 @@
-"""Staff Add product and Extend trial on subscription's side (ADR-0030, the 2026-10-06 design
+"""Staff Add product and Extend trial on subscription's side (ADR-0031, the 2026-10-06 design
 `docs/superpowers/specs/2026-10-06-admin-add-product-extend-trial-design.md`).
 
 Real PostgreSQL, the real internal routes with a real service token, a fake catalog and registry.

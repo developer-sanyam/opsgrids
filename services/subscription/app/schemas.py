@@ -116,7 +116,7 @@ class ChangePlanIn(BaseModel):
 
 class OperatorSubscribeIn(BaseModel):
     """A subscription opened by the platform team for a customer — the only way a bundle is sold,
-    and the console's "Add product" (ADR-0030).
+    and the console's "Add product" (ADR-0031).
 
     Delegated over `/internal` by an operator surface, like a suspension. `organization_id` binds
     the transaction; `operator_id` is the accountable human on the audit row. `trial` asks for the
@@ -194,7 +194,7 @@ class OperatorChangePlanIn(BaseModel):
 
 
 class OperatorExtendTrialIn(BaseModel):
-    """Move a trialling subscription's end later, on the platform team's behalf (ADR-0030).
+    """Move a trialling subscription's end later, on the platform team's behalf (ADR-0031).
 
     **Absolute, never relative.** `new_trial_ends_at` is the instant the trial will end, and
     `expected_trial_ends_at` the end the operator saw — compared under the row lock (409

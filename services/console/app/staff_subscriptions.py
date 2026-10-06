@@ -1,5 +1,5 @@
 """Staff Add product and Extend trial — `.../add-product-options`, `POST .../subscriptions` and
-`POST .../subscriptions/{product_key}/extend-trial` (ADR-0030).
+`POST .../subscriptions/{product_key}/extend-trial` (ADR-0031).
 
 The second and third staff subscription actions, built on everything the plan switch built
 (ADR-0029) rather than beside it: the same `console.idempotency_keys` claim written before the
@@ -24,7 +24,9 @@ commercial truth and never writes another service's schema (ADR-0003 §2).
   refuses any other version (`not_offerable`, recorded and replayed like any refusal; subscription
   is never called) — the plan switch's own rule (ADR-0029): subscription's pin lookup sees only
   that a version is published and whose it is, not that a newer one superseded it or its plan was
-  retired. A catalogue outage is 503 `catalog_unavailable` and claims nothing.
+  retired (a version withdrawn on the Plans page, ADR-0030, is no longer published, so it would
+  refuse that one too; this answers first). A catalogue outage is 503 `catalog_unavailable` and
+  claims nothing.
 * Bundles are sold here too, through the same operator subscribe; a bundle whose members the
   organization already pays for separately is marked, because both are billed with no credit —
   and so, the other way round, is a product a live bundle already entitles it to
@@ -301,7 +303,8 @@ async def add_product(
     target = payload.plan_version_id
     # The version must be one catalog offers this organization *now* — the picker's own set, read
     # again rather than trusted from a picker loaded earlier (a newer version may have superseded
-    # it, or its plan been retired; a direct call may name any published id of the product). Read
+    # it, it may have been withdrawn, or its plan retired; a direct call may name any published id
+    # of the product). Read
     # before the claim, so a catalogue outage claims nothing; enforced after the replay branches, so
     # a request that already succeeded still replays as a success after the catalogue moves on.
     offered: frozenset[str] | None

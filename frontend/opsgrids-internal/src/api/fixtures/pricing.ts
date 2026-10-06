@@ -126,7 +126,7 @@ function currentPriceFor(sub: FixtureSubscription | undefined): ProductCurrentPr
 }
 
 /** The fixtures-mode stand-in for the subscription service's `trial_max_ends_at`: its default cap
- *  of 90 days from the trial's start (ADR-0030). The live console never computes this — it shows
+ *  of 90 days from the trial's start (ADR-0031). The live console never computes this — it shows
  *  what the subscription service states. */
 export const FIXTURE_TRIAL_CAP_DAYS = 90;
 

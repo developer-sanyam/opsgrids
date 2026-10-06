@@ -16,7 +16,7 @@ import {
 } from "./staffSubscriptionCopy";
 
 /**
- * The Add product and Extend trial words and the IST arithmetic, table-driven (ADR-0030). The IST
+ * The Add product and Extend trial words and the IST arithmetic, table-driven (ADR-0031). The IST
  * cases are the ones that bite an operator: an instant after 18:30 UTC is already the next day in
  * India, and a cap that falls early on its IST day leaves that day's 23:59 out of reach.
  */

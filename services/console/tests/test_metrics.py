@@ -133,7 +133,7 @@ class TestMetricsOnASeededStream:
 
 
 class TestTrialExtended:
-    """`commerce.subscription.trial_extended` (ADR-0030): the fold takes the new trial end, and
+    """`commerce.subscription.trial_extended` (ADR-0031): the fold takes the new trial end, and
     the extension is never a second trial start — trials started and conversions stay honest."""
 
     def test_the_consumer_binds_it(self) -> None:

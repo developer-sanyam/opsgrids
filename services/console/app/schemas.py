@@ -291,7 +291,7 @@ class ProductSubscriptionOut(BaseModel):
     current_period_start: datetime | None = None
     #: While trialling: the latest instant the trial may be extended to — subscription's own
     #: `MAX_TOTAL_TRIAL_DAYS` from the trial's start, stated by subscription so console never
-    #: restates the cap (ADR-0030). `null` for any other state. UTC.
+    #: restates the cap (ADR-0031). `null` for any other state. UTC.
     trial_max_ends_at: datetime | None = None
 
 
@@ -561,7 +561,7 @@ class PlanOptionsOut(BaseModel):
     options: list[PlanOptionOut] = Field(default_factory=list)
 
 
-# --------------------------------------------------------------- staff add product (ADR-0030)
+# --------------------------------------------------------------- staff add product (ADR-0031)
 
 #: Lowercase, starts with a letter — every product key on this platform (the same bound the plan
 #: switch routes put on their path parameter).
@@ -680,7 +680,7 @@ class AddProductOut(BaseModel):
     replayed: bool = False
 
 
-# --------------------------------------------------------------- staff extend trial (ADR-0030)
+# --------------------------------------------------------------- staff extend trial (ADR-0031)
 
 
 class ExtendTrialIn(BaseModel):

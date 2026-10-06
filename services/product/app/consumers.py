@@ -83,7 +83,7 @@ SUBSCRIPTION_EVENTS = (
     "commerce.subscription.past_due",
     "commerce.subscription.suspended",
     "commerce.subscription.cancelled",
-    # Staff moved a trial's end later (ADR-0030): still `trial`, with the new `trial_ends_at`.
+    # Staff moved a trial's end later (ADR-0031): still `trial`, with the new `trial_ends_at`.
     # Folded like every other event — the state and the end decide the activation — so a
     # customer whose old end has passed is entitled again instead of locked out while billing
     # waits for the new one. Bound before subscription emits it (RUNBOOK deploy order).

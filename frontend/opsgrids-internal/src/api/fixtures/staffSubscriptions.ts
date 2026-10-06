@@ -1,5 +1,5 @@
 /**
- * Staff Add product and Extend trial fixtures (ADR-0030), kept honest to the live rules:
+ * Staff Add product and Extend trial fixtures (ADR-0031), kept honest to the live rules:
  *
  * * Add product offers only products the organization has **no row for, in any state**; refuses a
  *   currency other than its live subscriptions' (`org_currency_mismatch`), an existing row

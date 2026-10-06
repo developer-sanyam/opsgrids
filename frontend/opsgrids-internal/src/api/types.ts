@@ -297,7 +297,7 @@ export interface PricingSubscriptionRef {
   /** When the current period — for a trial, the trial itself — began. UTC. */
   current_period_start: string | null;
   /** While trialling: the latest the trial may be extended to, stated by the subscription service
-   *  from its own cap (ADR-0030). Null for any other state. UTC. */
+   *  from its own cap (ADR-0031). Null for any other state. UTC. */
   trial_max_ends_at: string | null;
 }
 
@@ -500,7 +500,7 @@ export interface PlanChangeResult {
 
 /* ------------------------- add product, extend trial (console) ------------------------- */
 /* Verified field-for-field against `services/console/app/schemas.py`'s "staff add product" and
- * "staff extend trial" models (ADR-0030). */
+ * "staff extend trial" models (ADR-0031). */
 
 /** One plan version the Add product picker may offer. Amounts are integer minor units. */
 export interface AddProductOption {

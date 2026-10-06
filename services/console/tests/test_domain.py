@@ -475,7 +475,7 @@ class TestCommercialSeries:
         assert series["trial_conversions"] == {"2026-01": 0, "2026-02": 1}
 
     def test_a_trial_extension_is_not_a_trial_start(self) -> None:
-        """ADR-0030: `trial_extended` is a `trial -> trial` move of its own kind. It replays
+        """ADR-0031: `trial_extended` is a `trial -> trial` move of its own kind. It replays
         through the fold (MRR stays zero) and counts as neither a start nor a conversion."""
         events = [
             _event(

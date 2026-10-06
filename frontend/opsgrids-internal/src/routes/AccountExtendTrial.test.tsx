@@ -12,7 +12,7 @@ import type { OperatorRole } from "@/auth/types";
 import { ExtendTrialCard } from "./AccountExtendTrial";
 
 /**
- * Extend trial end to end (ADR-0030): owner only (billing_ops and support see a disabled button and
+ * Extend trial end to end (ADR-0031): owner only (billing_ops and support see a disabled button and
  * the hint), dates in IST with the zone named, the cap shown and enforced on the date field, the
  * absolute end and the end the operator saw sent exactly, the announced result, a double click
  * sending once, and every failure kind.

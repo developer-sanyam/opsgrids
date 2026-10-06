@@ -1,5 +1,5 @@
 """Calling subscription for the pricing screen's read, its operator re-pin, and the staff Add
-product and Extend trial (ADR-0030).
+product and Extend trial (ADR-0031).
 
 Every call travels under a service token addressed to subscription by name, `caller="console"` —
 `api/internal.py:require_console_caller` refuses anything else. Console never writes
@@ -165,7 +165,7 @@ async def subscribe(
     client: httpx.AsyncClient,
 ) -> dict[str, Any]:
     """Open a subscription on the operator's behalf — subscription's operator `POST
-    /internal/v1/subscriptions`, the path that also sells bundles (ADR-0030's Add product).
+    /internal/v1/subscriptions`, the path that also sells bundles (ADR-0031's Add product).
 
     `trial=False` opens it `active` and subscription claims its first period for billing in the same
     transaction. Refusals keep subscription's code: 409 `already_subscribed`; 422 `one_time`,

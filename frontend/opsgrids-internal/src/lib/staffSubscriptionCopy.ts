@@ -1,6 +1,6 @@
 /**
  * The words the Add product and Extend trial dialogs say, and the IST date arithmetic Extend trial
- * needs — pure functions, pinned by a table-driven test (ADR-0030).
+ * needs — pure functions, pinned by a table-driven test (ADR-0031).
  *
  * **Dates are IST and say so.** The rest of this console renders UTC, which is right for a stored
  * instant nobody acts on; but a trial end is a promise an operator in India makes to a customer in

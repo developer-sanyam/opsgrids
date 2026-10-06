@@ -1,7 +1,7 @@
 # Admin add product and extend trial — staff plan control, second release
 
 **Status:** design, built on `feat/admin-add-product-trial` (stacked on `feat/admin-plan-switch`), not
-deployed · **Decision record:** [ADR-0030](../../adr/0030-staff-add-product-and-trial-extension.md)
+deployed · **Decision record:** [ADR-0031](../../adr/0031-staff-add-product-and-trial-extension.md)
 **Services:** `subscription`, `console`, `frontend/opsgrids-internal`; consumers in `product`, `console`,
 `notification`
 

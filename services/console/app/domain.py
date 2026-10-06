@@ -37,7 +37,7 @@ SUBSCRIPTION_EVENTS: tuple[str, ...] = (
     "commerce.subscription.past_due",
     "commerce.subscription.suspended",
     "commerce.subscription.cancelled",
-    # Staff moved a trial's end later (ADR-0030). Folded like any transition — the snapshot's
+    # Staff moved a trial's end later (ADR-0031). Folded like any transition — the snapshot's
     # trial end moves — and recorded in `revenue_events` under its own kind, so it is never
     # counted as a trial start (`TRIAL_STARTED_KIND` below, and `selectors.platform_metrics`).
     "commerce.subscription.trial_extended",
@@ -158,7 +158,7 @@ def plan_change_fingerprint(
 def add_product_fingerprint(
     *, organization_id: str, product_key: str, plan_version_id: str, trial: bool
 ) -> str:
-    """A stable digest of what an Add product request *decided* (ADR-0030): where, which product,
+    """A stable digest of what an Add product request *decided* (ADR-0031): where, which product,
     which version, and whether it starts as a trial. Not in it: the reason (rephrasing on a retry
     is still a replay) and the paid-add acknowledgement (a precondition, not a decision)."""
     material = json.dumps(
@@ -182,7 +182,7 @@ def extend_trial_fingerprint(
     new_trial_ends_at: datetime,
     expected_trial_ends_at: datetime,
 ) -> str:
-    """A stable digest of an Extend trial request (ADR-0030): which subscription, the absolute new
+    """A stable digest of an Extend trial request (ADR-0031): which subscription, the absolute new
     end, and the end the operator saw. Instants are normalised to UTC first, so the same moment
     written in IST and in UTC is the same request. The reason is excluded, as everywhere."""
     material = json.dumps(

@@ -5,7 +5,7 @@ import { ApiError } from "./http";
 
 /**
  * The Add product and Extend trial client in live mode (`vitest.config.ts` pins
- * `VITE_USE_FIXTURES=false`): the admin-gateway paths ADR-0030 names, the idempotency key as the
+ * `VITE_USE_FIXTURES=false`): the admin-gateway paths ADR-0031 names, the idempotency key as the
  * header, the body as typed — and a coded refusal reaching the screen intact.
  */
 

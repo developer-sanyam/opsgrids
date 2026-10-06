@@ -1,5 +1,5 @@
 """Staff Add product and Extend trial on console: `add-product-options`, `POST .../subscriptions`,
-`POST .../subscriptions/{product_key}/extend-trial` (ADR-0030).
+`POST .../subscriptions/{product_key}/extend-trial` (ADR-0031).
 
 Properties covered, each with its negative case:
 

@@ -381,7 +381,7 @@ interface DoneView {
 }
 
 /**
- * Add product — give an organization a product it has no subscription for (ADR-0030).
+ * Add product — give an organization a product it has no subscription for (ADR-0031).
  *
  * Its own card, hosting its own dialogs, so the account page's reload never unmounts them mid-flow.
  * The role hint is a hint: the server refuses anyone who is not `owner` or `billing_ops`. A trial is

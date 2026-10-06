@@ -369,7 +369,7 @@ class TestTheGucIsLoadBearing:
 
 
 class TestTrialExtended:
-    """`commerce.subscription.trial_extended` (ADR-0030): staff moved a trial's end later. The
+    """`commerce.subscription.trial_extended` (ADR-0031): staff moved a trial's end later. The
     projection must take the new end, or a customer whose old end passed stays locked out while
     the trial they were promised is still running."""
 

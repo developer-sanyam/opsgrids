@@ -234,7 +234,7 @@ interface DoneView {
 }
 
 /**
- * Extend trial — move a trialling subscription's end later (ADR-0030). **Owner only**: the button
+ * Extend trial — move a trialling subscription's end later (ADR-0031). **Owner only**: the button
  * is disabled with a hint for everyone else, and the server refuses them regardless.
  *
  * Driven by the live pricing composite (kept on screen while it reloads, like Change plan's), which

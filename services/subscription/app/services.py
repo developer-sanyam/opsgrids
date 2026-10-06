@@ -366,10 +366,10 @@ async def subscribe_as_operator(
     request: Request | None = None,
 ) -> Subscription:
     """The platform team opens a subscription for a customer — the one path that sells a bundle,
-    and console's "Add product" (ADR-0030).
+    and console's "Add product" (ADR-0031).
 
     Stricter than the customer path in two ways a staff surface needs (the customer path is left
-    as it was — see ADR-0030, "Not changed"): a `one_time` version is refused (it has no period
+    as it was — see ADR-0031, "Not changed"): a `one_time` version is refused (it has no period
     and the run never bills it, so it would be a free subscription), and so is a currency other
     than the one the organization's live subscriptions are billed in (console sums one currency
     per organization). Serialised per organization with a transaction-scoped advisory lock, so two
@@ -1257,7 +1257,7 @@ async def extend_trial_as_operator(
     *,
     request: Request | None = None,
 ) -> Subscription:
-    """Move a trialling subscription's end later — console's owner-only "Extend trial" (ADR-0030).
+    """Move a trialling subscription's end later — console's owner-only "Extend trial" (ADR-0031).
 
     Under the row lock the billing run's claim takes, in this order:
 
