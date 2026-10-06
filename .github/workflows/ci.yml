@@ -251,8 +251,8 @@ jobs:
       #
       # Restore and save are separate steps because a cache step's own save only runs when the
       # whole job succeeded: a red job never wrote the cache, so every run paid the cold cost
-      # again. mypy's cache is valid whatever the result was, so it is saved on every run that
-      # was not cancelled.
+      # again. mypy's cache is valid whatever the result was, so it is saved on every `main` run
+      # that was not cancelled (pull requests restore it and do not save; see that step).
       - name: Restore mypy caches
         id: mypy-cache
         uses: actions/cache/restore@v4
@@ -272,7 +272,13 @@ jobs:
         run: make typecheck-libs typecheck-services typecheck-tools
 
       - name: Save mypy caches
-        if: ${{ !cancelled() && steps.mypy-cache.outputs.cache-hit != 'true' }}
+        # Only from `main`: every entry is ~110 MB (34 services at ~3 MB compressed each) under
+        # a key unique to the commit, so saving from every pull-request push would evict the
+        # `main` entry that pull requests restore from, within about a week of normal pushes
+        # against the repository's 10 GB cap. A pull request restores `main`'s newest entry —
+        # caches from the default branch are readable from any branch — and recomputes only
+        # the files it changed.
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.mypy-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: |

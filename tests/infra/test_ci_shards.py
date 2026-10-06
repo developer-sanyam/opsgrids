@@ -399,6 +399,17 @@ def test_the_shard_one_gate_check_names_a_step_that_would_be_skipped() -> None:
     assert _shard_one_steps_a_red_step_would_skip(workflow) == ["Provision"]
 
 
+def test_only_main_saves_the_mypy_cache() -> None:
+    # Each entry is ~110 MB under a per-commit key. Saved from every pull-request push they fill
+    # the repository's cache quota within about a week and evict the `main` entry that every pull
+    # request restores from, which sends the type check back to its 415 s cold run.
+    steps = _workflow()["jobs"]["types"]["steps"]
+    save = next(s for s in steps if s.get("uses", "").startswith("actions/cache/save"))
+    assert "github.ref == 'refs/heads/main'" in str(save["if"])
+    restore = next(s for s in steps if s.get("uses", "").startswith("actions/cache/restore"))
+    assert "if" not in restore, "every run restores; only main saves"
+
+
 def test_every_frontend_package_is_in_exactly_one_test_and_build_leg() -> None:
     legs = _workflow()["jobs"]["frontend-tests"]["strategy"]["matrix"]["include"]
     owned = [p.removeprefix("./") for leg in legs for p in str(leg["packages"]).split()]
