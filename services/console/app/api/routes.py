@@ -44,6 +44,7 @@ from app import (
     pricing,
     selectors,
     services,
+    staff_subscriptions,
 )
 from app.config import settings
 from app.delegation import DelegationConflict, DelegationError
@@ -52,8 +53,13 @@ from app.models import SCHEMA
 from app.schemas import (
     IDEMPOTENCY_KEY_MAX_LENGTH,
     IDEMPOTENCY_KEY_MIN_LENGTH,
+    AddProductIn,
+    AddProductOptionsOut,
+    AddProductOut,
     AuditListOut,
     AuditOut,
+    ExtendTrialIn,
+    ExtendTrialOut,
     LifecycleCountsOut,
     MetricsOut,
     MetricsOverviewOut,
@@ -100,6 +106,9 @@ OperatorReadAny = Annotated[
 ]
 OperatorBilling = Annotated[Principal, Depends(require_operator(roles={"owner", "billing_ops"}))]
 OperatorAudit = Annotated[Principal, Depends(require_operator(roles={"owner", "support"}))]
+#: Owner only — the narrowest gate, for a concession the owner keeps to themselves until they say
+#: otherwise (ADR-0031: extending a trial is an owner decision; billing_ops is refused with 403).
+OperatorOwner = Annotated[Principal, Depends(require_operator(roles={"owner"}))]
 #: The contract's `console.pricing.read`/`console.pricing.write`, implemented as operator roles
 #: rather than the tenant permission grammar — ADR-0003's addendum is explicit that operator roles
 #: "never touch `pv` or a membership's grants", and console has no `app/catalogue.py` of its own
@@ -766,6 +775,137 @@ async def change_plan(
     """
     await _require_organization(organization_id, request, client)
     return await plan_change.switch_plan(
+        settings(),
+        organization_id=organization_id,
+        product_key=product_key,
+        payload=payload,
+        idempotency_key=idempotency_key,
+        operator=operator,
+        app_session=app_session,
+        client=client,
+        request=request,
+    )
+
+
+# ------------------------------------------------------- staff add product, extend trial (0031)
+
+#: The same required key, the same bounds and the same contract as the plan switch's.
+IdempotencyKeyHeader = Annotated[
+    str,
+    Header(
+        alias="Idempotency-Key",
+        min_length=IDEMPOTENCY_KEY_MIN_LENGTH,
+        max_length=IDEMPOTENCY_KEY_MAX_LENGTH,
+        description=(
+            "Required, 8-255 characters. A claim row keyed on it is written before subscription is "
+            "called: a retry with the same key and body returns the recorded result without a "
+            "second write; the same key with a different body is a 409; two concurrent requests "
+            "with one key make one write."
+        ),
+    ),
+]
+
+
+@router.get(
+    "/admin/organizations/{organization_id}/add-product-options",
+    response_model=AddProductOptionsOut,
+    summary="The products and plan versions an organization may be given — the Add product picker",
+)
+async def get_add_product_options(
+    organization_id: uuid.UUID,
+    request: Request,
+    client: DelegationClientDep,
+    operator: OperatorBilling,
+) -> AddProductOptionsOut:
+    """Every product that publicly sells a plan and that this organization has **no subscription
+    row for in any state** (a cancelled one cannot be reopened or replaced yet), each with the
+    versions catalog says it may take — public, or negotiated for this organization alone. A
+    version it could not take is listed with the reason (`org_currency_mismatch`, `one_time`); a
+    bundle whose members it already pays for separately names them (`overlapping_products`).
+    Owner and billing_ops; support is not admitted (a bespoke price is a negotiated rate)."""
+    await _require_organization(organization_id, request, client)
+    return await staff_subscriptions.add_product_options(
+        settings(), organization_id=organization_id, client=client
+    )
+
+
+@router.post(
+    "/admin/organizations/{organization_id}/subscriptions",
+    response_model=AddProductOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Give an organization a product — a trial by default; a paid add must be acknowledged",
+)
+async def add_product(
+    organization_id: uuid.UUID,
+    payload: AddProductIn,
+    request: Request,
+    app_session: AppSessionDep,
+    client: DelegationClientDep,
+    operator: OperatorBilling,
+    idempotency_key: IdempotencyKeyHeader,
+) -> AddProductOut:
+    """Open a subscription for `product_key` pinned to `plan_version_id` (ADR-0031).
+
+    **A trial by default** (`trial: true`, the version's own trial length). A paid add
+    (`trial: false`) starts billing at once — its first period is claimed for payment in the same
+    transaction and no payment mandate is checked — so it is refused with 422
+    `charge_not_acknowledged` unless `acknowledge_immediate_charge` is true. `reason` (1-500) is
+    required and recorded on the audit trail — never on the subscription's event, which the
+    customer org's own notification templates can render.
+
+    Errors carry a stable `errors[0].code`: 404 `not_found`; 409 `already_subscribed` (a row for
+    the product in any state, cancelled included), `request_in_progress`,
+    `idempotency_key_reused`; 422 `charge_not_acknowledged`, `not_offerable` (a version catalog no
+    longer offers this organization — superseded, withdrawn, or its plan retired), `one_time`,
+    `org_currency_mismatch`, `trial_not_offered`, `not_published`, `product_mismatch`, `bundle`,
+    `reserved_reason`; 503 `catalog_unavailable` — this request changed nothing (a key not used
+    before; a key already used still replays its recorded answer while catalog is down); 503
+    `outcome_unknown` — the subscription may or may not have been opened: refresh, or repeat the
+    same request, which reconciles.
+    """
+    await _require_organization(organization_id, request, client)
+    return await staff_subscriptions.add_product(
+        settings(),
+        organization_id=organization_id,
+        payload=payload,
+        idempotency_key=idempotency_key,
+        operator=operator,
+        app_session=app_session,
+        client=client,
+        request=request,
+    )
+
+
+@router.post(
+    "/admin/organizations/{organization_id}/subscriptions/{product_key}/extend-trial",
+    response_model=ExtendTrialOut,
+    summary="Move a trial's end later — owner only, absolute, capped",
+)
+async def extend_trial(
+    organization_id: uuid.UUID,
+    product_key: ProductKeyPath,
+    payload: ExtendTrialIn,
+    request: Request,
+    app_session: AppSessionDep,
+    client: DelegationClientDep,
+    operator: OperatorOwner,
+    idempotency_key: IdempotencyKeyHeader,
+) -> ExtendTrialOut:
+    """Set the trial of the organization's `product_key` subscription to end at
+    `new_trial_ends_at` (ADR-0031). **Owner only**; billing_ops and support are refused with 403.
+
+    Absolute, never "add N days": `expected_trial_ends_at` is the end the operator saw (send it
+    back verbatim from the read), compared under subscription's row lock, so a repeat can never
+    add the time twice. The total trial is capped at subscription's `MAX_TOTAL_TRIAL_DAYS` from
+    its start (the read's `trial_max_ends_at`). `reason` (1-500) is required and recorded on the
+    audit trail — never on the subscription's event.
+
+    Errors carry a stable `errors[0].code`: 404 `no_subscription`; 409 `state_changed`,
+    `request_in_progress`, `idempotency_key_reused`; 422 `not_trial`, `claim_in_flight`,
+    `trial_cap`, `trial_not_extended`, `reserved_reason`; 503 `outcome_unknown`.
+    """
+    await _require_organization(organization_id, request, client)
+    return await staff_subscriptions.extend_trial(
         settings(),
         organization_id=organization_id,
         product_key=product_key,
