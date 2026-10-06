@@ -31,9 +31,12 @@ import type {
   OrgUnit,
   OrgUnitCreate,
   OrgUnitPatch,
+  ExpectedState,
   Page,
   Permission,
   Plan,
+  PlanChangePreview,
+  PlanOptions,
   Product,
   ProjectTask,
   Role,
@@ -41,6 +44,7 @@ import type {
   SignupRequest,
   SignupResponse,
   Subscription,
+  SubscriptionPlanSummary,
 } from "./types";
 
 /** Build a query string from the keys that are actually set. `false`/`0` survive; `undefined` doesn't. */
@@ -132,12 +136,38 @@ export function cancelSubscription(id: string, reason?: string): Promise<Subscri
   });
 }
 
-/** `POST /subscriptions/{id}/change-plan`. */
-export function changeSubscriptionPlan(id: string, planVersionId: string): Promise<Subscription> {
+/**
+ * `POST /subscriptions/{id}/change-plan`. The server decides when it lands; send the `expected`
+ * state from the preview the customer confirmed, so a subscription that moved in between is a 409
+ * `state_changed` rather than a change nobody saw.
+ */
+export function changeSubscriptionPlan(
+  id: string,
+  planVersionId: string,
+  expected?: ExpectedState,
+): Promise<Subscription> {
   return apiRequest<Subscription>(`/subscriptions/${id}/change-plan`, {
+    method: "POST",
+    body: expected ? { plan_version_id: planVersionId, expected } : { plan_version_id: planVersionId },
+  });
+}
+
+/** `POST /subscriptions/{id}/change-plan/preview` — read-only: what the change would do, and when. */
+export function previewSubscriptionPlanChange(id: string, planVersionId: string): Promise<PlanChangePreview> {
+  return apiRequest<PlanChangePreview>(`/subscriptions/${id}/change-plan/preview`, {
     method: "POST",
     body: { plan_version_id: planVersionId },
   });
+}
+
+/** `GET /subscriptions/{id}/plan-options` — the plans this subscription could move to. */
+export function getSubscriptionPlanOptions(id: string): Promise<PlanOptions> {
+  return apiRequest<PlanOptions>(`/subscriptions/${id}/plan-options`);
+}
+
+/** `GET /subscriptions/plan-summaries` — each subscription's plan, and any scheduled change. */
+export function listSubscriptionPlanSummaries(): Promise<SubscriptionPlanSummary[]> {
+  return apiRequest<SubscriptionPlanSummary[]>("/subscriptions/plan-summaries");
 }
 
 /** `GET /credit-balance?currency=…` — `currency` is required by the service. */

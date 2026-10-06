@@ -286,6 +286,15 @@ ALLOWLIST: dict[tuple[str, str], str] = {
         "Same fix as #17: resolve the versions before the transaction opens and evaluate against "
         "them."
     ),
+    ("services/subscription/app/api/routes.py", "preview_change_plan"): (
+        "D3 #17 (ADR-0034): the customer's read-only plan-change preview evaluates the same change "
+        "as change_plan — the new and current pins, and catalog's offerable set — over HTTP inside "
+        "the request's tenant-bound transaction. No row lock, nothing written: the connection is "
+        "held, not a lock. Same fix as #17: resolve the versions and the offerable set before the "
+        "transaction opens and evaluate against them. (The page's two plan reads, plan-options and "
+        "plan-summaries, read catalog the same way after their subscription read and want the "
+        "same fix.)"
+    ),
 }
 
 

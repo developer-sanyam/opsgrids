@@ -91,8 +91,8 @@ async def _offered(client: AsyncClient, org: uuid.UUID, product: str = "hrms") -
 
 
 class TestAccess:
-    @pytest.mark.parametrize("caller", [None, "subscription", "billing", "tests"])
-    async def test_only_console_may_read_it(
+    @pytest.mark.parametrize("caller", [None, "billing", "payment", "account", "tests"])
+    async def test_only_console_and_subscription_may_read_it(
         self, client: AsyncClient, platform_session: AsyncSession, caller: str | None
     ) -> None:
         async with platform_session.begin():
@@ -102,6 +102,25 @@ class TestAccess:
         )
         assert response.status_code == 401, response.text
         assert "prices" not in response.text
+
+    async def test_subscription_may_read_it_for_the_customers_own_change_plan(
+        self, client: AsyncClient, platform_session: AsyncSession
+    ) -> None:
+        """ADR-0034: subscription enforces this set on the customer's change-plan and builds the
+        customer's picker from it (deciding there what of an amount a tenant may see)."""
+        org = uuid.uuid4()
+        async with platform_session.begin():
+            plan = await _plan(platform_session)
+            public = await _publish(platform_session, plan, amount_minor=2000)
+            mine = await _publish(platform_session, plan, amount_minor=900, org=org)
+            theirs = await _publish(platform_session, plan, amount_minor=700, org=uuid.uuid4())
+        response = await client.get(
+            _url(org), params={"product_key": "hrms"}, headers=_headers("subscription")
+        )
+        assert response.status_code == 200, response.text
+        offered = {r["plan_version_id"] for r in response.json()["versions"]}
+        assert offered == {str(public.id), str(mine.id)}
+        assert str(theirs.id) not in response.text
 
     async def test_a_product_key_is_required_and_bounded(self, client: AsyncClient) -> None:
         missing = await client.get(_url(uuid.uuid4()), headers=_headers())

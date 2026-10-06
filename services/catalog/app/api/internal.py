@@ -134,31 +134,38 @@ async def get_plan_version(version_id: uuid.UUID, session: SessionDep) -> Intern
     )
 
 
-#: The one caller of the offerable-versions read below. It carries amounts for every plan a given
+#: The callers of the offerable-versions read below. It carries amounts for every plan a given
 #: organization could be moved onto, including a version negotiated for that organization alone —
 #: narrower than "any service holding a token for catalog", unlike the unfiltered pin lookup above
 #: it, which predates this and returns one version by id.
-TRUSTED_CALLER = "console"
+#:
+#: * `console` — the staff plan switch and Add product pickers (ADR-0029, ADR-0031).
+#: * `subscription` — the customer's own change-plan (ADR-0034): it enforces this set on the write
+#:   and builds the customer's picker from it. It already holds the unfiltered pin lookup above
+#:   (every amount of any version by id), so this widens nothing it could not already read; it
+#:   decides what of an amount a tenant may see (`app/plan_options.py`) and never passes this
+#:   answer through.
+TRUSTED_CALLERS = frozenset({"console", "subscription"})
 
 
-def require_console_caller(request: Request) -> None:
-    """Issued by console specifically; the router-level `require_service_token` has already
+def require_offerable_caller(request: Request) -> None:
+    """Issued by one of `TRUSTED_CALLERS`; the router-level `require_service_token` has already
     checked the token is valid and addressed to catalog, and recorded who minted it."""
-    if getattr(request.state, "service_caller", None) != TRUSTED_CALLER:
+    if getattr(request.state, "service_caller", None) not in TRUSTED_CALLERS:
         raise UnauthorizedProblem("Valid service token required")
 
 
-ConsoleCallerDep = Annotated[None, Depends(require_console_caller)]
+OfferableCallerDep = Annotated[None, Depends(require_offerable_caller)]
 
 
 @router.get(
     "/organizations/{organization_id}/offerable-versions",
     response_model=OfferableVersionsOut,
-    summary="The plan versions one organization may be switched onto — console's plan picker",
+    summary="The plan versions one organization may be switched onto — the plan pickers",
 )
 async def list_offerable_versions(
     organization_id: uuid.UUID,
-    _caller: ConsoleCallerDep,
+    _caller: OfferableCallerDep,
     session: SessionDep,
     product_key: Annotated[
         str, Query(pattern=_PRODUCT_KEY_PATTERN, description="The product whose plans to offer")
@@ -168,7 +175,8 @@ async def list_offerable_versions(
     organization — `selectors.visible_plans`' audience rule, then superseded versions dropped
     (`selectors.offerable_versions`). Console's `OperatorBilling` gate is the role check (owner and
     billing_ops), so this cannot reuse the owner-only authoring router, and it must never reuse
-    the amount-free tenant `/plans` read, which is for a customer.
+    the amount-free tenant `/plans` read, which is for a customer. Subscription reads it for the
+    customer's own change-plan and applies the tenant disclosure rule itself.
 
     Read-only, and a global un-policied read like the rest of this file: the organization in the
     path is a *filter* on whose bespoke prices are visible, not a tenant binding.

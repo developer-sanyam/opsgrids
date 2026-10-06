@@ -11,6 +11,11 @@ inventing a new one (the same choice catalog made in reusing `core.product.catal
 Both are floored at `ORG`: a subscription is an account-level resource, not one user's, so a
 narrower grant has no business managing it. Every route runs through `get_tenant_session`, the
 tenancy chokepoint, and every list carries a negative-authz test (ADR-0003 §3).
+
+The plan reads behind the Subscriptions page (ADR-0034) follow the same split: the per-row plan
+line is a read (`activation.read`), the Change plan picker and its preview are part of changing a
+plan (`activation.write`). Neither shows a list price; an amount appears only for the
+organization's own negotiated price, to a caller who may read its invoices (`app/plan_options.py`).
 """
 
 from __future__ import annotations
@@ -22,17 +27,21 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app import domain, selectors, services
+from app import domain, plan_options, selectors, services
 from app.catalog import PlanCatalog
 from app.config import settings
 from app.models import SCHEMA, DunningCycle, Subscription
 from app.schemas import (
     CancelIn,
     ChangePlanIn,
+    ChangePlanPreviewIn,
+    CustomerChangePlanPreviewOut,
     DunningOut,
+    PlanOptionsOut,
     ServiceInfo,
     SubscribeIn,
     SubscriptionOut,
+    SubscriptionPlanSummaryOut,
 )
 from platform_core.auth import Scope, ScopeContext, require
 from platform_core.db import get_tenant_session
@@ -123,6 +132,31 @@ async def list_subscriptions(session: SessionDep, ctx: ReadCtx) -> list[Subscrip
     return [_out(s, cycles.get(s.id)) for s in subscriptions]
 
 
+# Registered before `/subscriptions/{subscription_id}`: that route's path parameter is a UUID, and
+# FastAPI matches in order, so this literal segment would otherwise be read as a malformed id.
+@router.get(
+    "/subscriptions/plan-summaries",
+    response_model=list[SubscriptionPlanSummaryOut],
+    summary="The plan each of this organization's subscriptions is on, and any scheduled change",
+)
+async def list_plan_summaries(
+    session: SessionDep, ctx: ReadCtx, catalog: CatalogDep
+) -> list[SubscriptionPlanSummaryOut]:
+    """One row per subscription `GET /subscriptions` returns — the same scoped selector — with its
+    plan's name, cadence and version, the plan a scheduled change moves it to, and when. An amount
+    only for this organization's own negotiated price, and only to a caller who may read its
+    invoices; never a list price. 503 `catalog_unavailable` when catalog cannot be read: the page
+    still has `GET /subscriptions` and renders without the plan line."""
+    subscriptions = await selectors.list_subscriptions(session, ctx)
+    return await plan_options.plan_summaries(
+        session,
+        organization_id=ctx.organization_id,
+        principal=ctx.principal,
+        catalog=catalog,
+        subscriptions=subscriptions,
+    )
+
+
 @router.get(
     "/subscriptions/{subscription_id}",
     response_model=SubscriptionOut,
@@ -148,7 +182,11 @@ async def cancel_subscription(
     ctx: ManageCtx,
     request: Request,
 ) -> SubscriptionOut:
-    subscription = await services.require_subscription(session, subscription_id)
+    """Immediate and terminal. A change scheduled for the next period is cleared with it (an
+    audit row says so): a cancelled subscription never reaches that period."""
+    subscription = await services.require_subscription(
+        session, subscription_id, organization_id=ctx.organization_id
+    )
     ctx.assert_can_touch(owner_id=None)
     subscription = await services.cancel(
         session, ctx, subscription, reason=payload.reason, request=request
@@ -169,9 +207,78 @@ async def change_plan(
     catalog: CatalogDep,
     request: Request,
 ) -> SubscriptionOut:
-    subscription = await services.require_subscription(session, subscription_id)
+    """When it lands is decided by the server, never asked for: a trial moves now and free; a paid
+    upgrade moves now with a prorated charge for the rest of the period; a paid downgrade waits for
+    the next period; an equal-price change moves now. Ask `.../change-plan/preview` first and send
+    its `expected` back. Refusals carry `errors[0].code`: 409 `state_changed`,
+    `billing_catching_up`; 422 `state`, `cadence`, `currency`, `already_pinned`,
+    `product_mismatch`, `not_published`, `not_offerable`, `scheduled_by_opsgrids`; 404
+    `not_found`; 403 for a bundle."""
+    # Filtered on the caller's organization as well as isolated by RLS (the net, not the licence).
+    subscription = await services.require_subscription(
+        session, subscription_id, organization_id=ctx.organization_id
+    )
     ctx.assert_can_touch(owner_id=None)
     subscription = await services.change_plan(
         session, ctx, catalog, subscription, payload, request=request
     )
     return SubscriptionOut.model_validate(subscription)
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/change-plan/preview",
+    response_model=CustomerChangePlanPreviewOut,
+    summary="What changing this subscription's plan would do — read-only, writes nothing",
+)
+async def preview_change_plan(
+    subscription_id: uuid.UUID,
+    payload: ChangePlanPreviewIn,
+    session: SessionDep,
+    ctx: ManageCtx,
+    catalog: CatalogDep,
+) -> CustomerChangePlanPreviewOut:
+    """The confirm screen's server-computed answer, from the evaluation `change-plan` itself runs:
+    direction, whether it applies `now` or at the `next_period` (and when), whether a prorated
+    charge is raised now, what it replaces, the products it adds or removes — and the `expected`
+    state to send back with the write. **No amount**: a paid change is priced by the billing run
+    when it claims the period. A refusal is part of the answer (`refusal_code`); only a missing
+    subscription or version (404) and an unreachable catalog (503) are errors.
+
+    A POST because it carries a body, but a read: no row is written or locked, and no audit or
+    outbox row is staged. Same permission as the write it previews."""
+    # Filtered on the caller's organization as well as isolated by RLS (the net, not the licence).
+    subscription = await services.require_subscription(
+        session, subscription_id, organization_id=ctx.organization_id
+    )
+    ctx.assert_can_touch(owner_id=None)
+    return await services.preview_change_plan(session, ctx, catalog, subscription, payload)
+
+
+@router.get(
+    "/subscriptions/{subscription_id}/plan-options",
+    response_model=PlanOptionsOut,
+    summary="The plans this subscription could move to — the Change plan picker",
+)
+async def get_plan_options(
+    subscription_id: uuid.UUID,
+    session: SessionDep,
+    ctx: ManageCtx,
+    catalog: CatalogDep,
+) -> PlanOptionsOut:
+    """Catalog's offerable set for this organization and product — active plans' published
+    versions, public or negotiated for it, the newest per plan, audience, cadence and currency;
+    never a superseded, withdrawn or retired-plan version — each marked with whether this
+    subscription can take it, and the plan in force marked. Same permission as changing the plan.
+    An amount only for this organization's own negotiated price, and only to a caller who may read
+    its invoices; never a list price."""
+    subscription = await services.require_subscription(
+        session, subscription_id, organization_id=ctx.organization_id
+    )
+    ctx.assert_can_touch(owner_id=None)
+    return await plan_options.plan_options(
+        session,
+        organization_id=ctx.organization_id,
+        principal=ctx.principal,
+        catalog=catalog,
+        subscription=subscription,
+    )
