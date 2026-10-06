@@ -1,4 +1,4 @@
-# List prices 2026-10-06 — INR 3,00,000 a year, INR 25,000 a month
+# List prices 2026-10-06 — INR 30,000 a month, INR 3,00,000 a year
 
 **Status:** owner decision 2026-10-06, built on `feat/list-prices-30k-month-3l-year` (stacked on `main`), not
 merged or deployed
@@ -14,40 +14,42 @@ cadence copy), `console` (MRR by cadence), `frontend/opsgrids-dashboard` (Market
 > "For total billing of complete product should be 300000rs years and monthly so divided according to that only
 > into the all the products." — the owner, 2026-10-06
 
-Every product together costs **INR 3,00,000 a year**; the monthly price is divided from that, **INR 25,000 a
-month** (3,00,000 / 12, no yearly discount). Each total is divided across the eleven products in proportion to
-what each one's public flat plan cost until today.
+> "Yearly price would be less that would be 300000 and monthly 30000" — and the split: "Proportional to today's
+> prices". — the owner, 2026-10-06, in answer to a direct question
 
-The sentence fixes only the yearly number. An earlier draft read it as INR 30,000 a month with a year priced as
-ten months; nothing the owner wrote says 30,000, and that reading would bill every monthly customer 20% more than
-the literal one. **The owner confirms the monthly reading before merge** (ADR-0035, Context); a discounted year
-would change only the monthly column below.
+Every product together costs **INR 30,000 a month** or **INR 3,00,000 a year** — the yearly option deliberately
+the cheaper one, ten months' price for twelve (two months free). Each total is divided across the eleven products
+in proportion to what each one's public flat plan cost until today.
+
+The first sentence fixed only the yearly number; a review round read the monthly one as its twelfth, INR 25,000.
+The owner was asked and rejected that reading: the monthly total is INR 30,000 and the year is the discount
+(ADR-0035, Context).
 
 ## 2. The table
 
 Amounts in rupees; the migration stores integer paise (x100). The old prices were the seeded placeholders
 (`e1f2a3b4c5d6`, `10e6b62d9ac7`, `53f1a7a8b99d`), still live in production on 2026-10-06.
 
-| Product | `product_key` / plan `code` | Was / month | Exact share / year | **New / year** | **New / month** |
+| Product | `product_key` / plan `code` | Was / month | Exact share / month | **New / month** | **New / year** |
 |---|---|---:|---:|---:|---:|
-| Revenue | `crm` / `revenue` | 1,999 | 30,001.50 | **30,000** | **2,500** |
-| People | `hrms` / `people` | 1,999 | 30,001.50 | **30,000** | **2,500** |
-| IT | `itsm` / `it` | 1,999 | 30,001.50 | **30,000** | **2,500** |
-| Finance | `finance` / `finance` | 2,499 | 37,505.63 | **37,500** | **3,125** |
-| Inventory | `operations` / `inventory` | 2,499 | 37,505.63 | **37,500** | **3,125** |
-| Engage | `engage` / `engage` | 1,499 | 22,497.37 | **22,500** | **1,875** |
-| Marketing | `marketing` / `marketing` | 1,499 | 22,497.37 | **22,500** | **1,875** |
-| Projects | `projects` / `projects` | 1,499 | 22,497.37 | **22,500** | **1,875** |
-| PulseBoard | `pulseboard` / `pulseboard` | 1,499 | 22,497.37 | **22,500** | **1,875** |
-| Storefront | `storefront` / `storefront` | 1,499 | 22,497.37 | **22,500** | **1,875** |
-| Support | `support` / `support` | 1,499 | 22,497.37 | **22,500** | **1,875** |
-| **All eleven** | | **19,989** | **3,00,000** | **3,00,000** | **25,000** |
+| Revenue | `crm` / `revenue` | 1,999 | 3,000.15 | **3,000** | **30,000** |
+| People | `hrms` / `people` | 1,999 | 3,000.15 | **3,000** | **30,000** |
+| IT | `itsm` / `it` | 1,999 | 3,000.15 | **3,000** | **30,000** |
+| Finance | `finance` / `finance` | 2,499 | 3,750.56 | **3,750** | **37,500** |
+| Inventory | `operations` / `inventory` | 2,499 | 3,750.56 | **3,750** | **37,500** |
+| Engage | `engage` / `engage` | 1,499 | 2,249.74 | **2,250** | **22,500** |
+| Marketing | `marketing` / `marketing` | 1,499 | 2,249.74 | **2,250** | **22,500** |
+| Projects | `projects` / `projects` | 1,499 | 2,249.74 | **2,250** | **22,500** |
+| PulseBoard | `pulseboard` / `pulseboard` | 1,499 | 2,249.74 | **2,250** | **22,500** |
+| Storefront | `storefront` / `storefront` | 1,499 | 2,249.74 | **2,250** | **22,500** |
+| Support | `support` / `support` | 1,499 | 2,249.74 | **2,250** | **22,500** |
+| **All eleven** | | **19,989** | **30,000** | **30,000** | **3,00,000** |
 
-"Exact share" is `old x 3,00,000 / 19,989`. The new yearly prices round each share so the eleven sum to exactly
-INR 3,00,000 (30,000,000 paise); every one is within 0.02% of its share, equal old prices stay equal and the order
-is kept. Each monthly price is exactly its yearly price / 12 (no paise lost) and they sum to exactly INR 25,000
-(2,500,000 paise). The test `services/catalog/tests/test_list_prices_2026_10_06.py::TestTheNumbers` pins all of
-this against the seeds' own amounts.
+"Exact share" is `old x 30,000 / 19,989`. The new monthly prices round each share so the eleven sum to exactly
+INR 30,000 (3,000,000 paise); every one is within 0.02% of its share, equal old prices stay equal and the order is
+kept. Each yearly price is exactly ten times its monthly one and they sum to exactly INR 3,00,000 (30,000,000
+paise). The test `services/catalog/tests/test_list_prices_2026_10_06.py::TestTheNumbers` pins all of this against
+the seeds' own amounts.
 
 **In scope:** only these eleven public flat base plans. **Out of scope:** the per-seat Starter/Growth plans, the
 suite bundles, every bespoke (`restricted_to_org_id`) version, and every existing subscription.
@@ -102,7 +104,7 @@ the oldest published one, so every new trial would have started on the old price
 | Dashboard Start trial | pins v1 | pins v3 (new monthly) |
 | Customer `POST /subscriptions` naming v1 (a stale tab, or by id) | starts on v1 | 422 `not_offerable`; nothing created |
 | Staff Add product | v1 | v3 or v2 — both takeable |
-| Console MRR, yearly subscriber on v2 (INR 30,000) | — | INR 2,500 a month |
+| Console MRR, yearly subscriber on v2 (INR 30,000) | — | INR 2,500 a month (a monthly one on v3: INR 3,000) |
 | Customer Change plan, monthly subscription | — | v3 takeable; v2 blocked `cadence`; current v1 listed first, "no longer offered" |
 | Change plan to v2 (customer write, preview, staff write) | — | 422 `cadence`; nothing changes |
 | Existing subscriptions | pinned v1 | still pinned v1, same price, until staff switch them |

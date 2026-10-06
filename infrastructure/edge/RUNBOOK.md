@@ -1740,10 +1740,11 @@ route change (the paths sit under `/api/v1/subscriptions`).
 
 ### List prices 2026-10-06 (ADR-0035): the pricing change, and who pays what
 
-**The pricing change of 2026-10-06.** Every product together now lists at **INR 3,00,000 a year or
-INR 25,000 a month** (a twelfth of the year), split across the eleven products by their old prices:
-Revenue, People and IT INR 2,500 / 30,000; Finance and Inventory INR 3,125 / 37,500; Engage, Marketing,
-Projects, PulseBoard, Storefront and Support INR 1,875 / 22,500 (month / year; table in
+**The pricing change of 2026-10-06.** Every product together now lists at **INR 30,000 a month or
+INR 3,00,000 a year** — the owner's two numbers; the year is deliberately the cheaper option, ten
+months' price for twelve — split across the eleven products by their old prices: Revenue, People and
+IT INR 3,000 / 30,000; Finance and Inventory INR 3,750 / 37,500; Engage, Marketing, Projects,
+PulseBoard, Storefront and Support INR 2,250 / 22,500 (month / year; table in
 `docs/superpowers/specs/2026-10-06-list-prices-design.md`). **Existing subscriptions keep the price
 they are pinned to until staff switch them** — nothing re-pins anyone, and a trial already running
 converts at the price it started on.
@@ -1831,7 +1832,7 @@ SELECT billing_interval, count(*), sum(amount_minor) FROM (
 GROUP BY billing_interval ORDER BY 1;"
 ```
 
-`alembic current` must print `b88a833020dc (head)`; the query must print exactly `month|11|2500000`
+`alembic current` must print `b88a833020dc (head)`; the query must print exactly `month|11|3000000`
 and `year|11|30000000` (paise). Fewer than 11 means a plan was skipped — read the migrate output
 (`WARNI [root] list prices 2026-10-06: ... skipped`). Then in the console, a customer's **Change plan**
 lists the new monthly price and the yearly one blocked ("cadence"); **Add product** offers both.
@@ -1871,7 +1872,7 @@ WITH lp AS (
   SELECT v.id FROM catalog.plan_versions v
   JOIN catalog.prices pr ON pr.plan_version_id = v.id AND pr.kind = 'flat'
   WHERE v.restricted_to_org_id IS NULL
-    AND (v.billing_interval, pr.amount_minor) IN (('month',187500),('month',250000),('month',312500),
+    AND (v.billing_interval, pr.amount_minor) IN (('month',225000),('month',300000),('month',375000),
         ('year',2250000),('year',3000000),('year',3750000)))
 SELECT 'subscriptions', count(*) FROM subscription.subscriptions
  WHERE plan_version_id IN (SELECT id FROM lp) OR pending_plan_version_id IN (SELECT id FROM lp)
