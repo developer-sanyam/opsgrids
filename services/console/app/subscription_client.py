@@ -1,6 +1,7 @@
-"""Calling subscription for the pricing screen's read and its operator re-pin.
+"""Calling subscription for the pricing screen's read, its operator re-pin, and the staff Add
+product and Extend trial (ADR-0031).
 
-Both calls travel under a service token addressed to subscription by name, `caller="console"` —
+Every call travels under a service token addressed to subscription by name, `caller="console"` —
 `api/internal.py:require_console_caller` refuses anything else. Console never writes
 subscription's schema directly (ADR-0003 §2): the re-pin is the existing operator delegate
 `change_plan_as_operator` already built for bundle sales, reused here for a staff price change.
@@ -142,6 +143,79 @@ async def preview_change_plan(
         f"{subscription_id}/change-plan/preview"
     )
     body = {"organization_id": str(organization_id), "plan_version_id": str(plan_version_id)}
+    try:
+        response = await client.post(url, json=body, headers=_headers(settings))
+    except httpx.HTTPError as exc:
+        raise SubscriptionChangeError(f"subscription is unavailable: {exc}") from exc
+    if response.status_code >= 400:
+        raise _refusal(response)
+    result: dict[str, Any] = response.json()
+    return result
+
+
+async def subscribe(
+    settings: Settings,
+    *,
+    organization_id: uuid.UUID,
+    product_key: str,
+    plan_version_id: uuid.UUID,
+    trial: bool,
+    operator_id: str,
+    note: str,
+    client: httpx.AsyncClient,
+) -> dict[str, Any]:
+    """Open a subscription on the operator's behalf — subscription's operator `POST
+    /internal/v1/subscriptions`, the path that also sells bundles (ADR-0031's Add product).
+
+    `trial=False` opens it `active` and subscription claims its first period for billing in the same
+    transaction. Refusals keep subscription's code: 409 `already_subscribed`; 422 `one_time`,
+    `org_currency_mismatch`, `trial_not_offered`, `not_published`, `product_mismatch`, `bundle`,
+    `reserved_reason`; 404 `not_found`.
+    """
+    url = f"{settings.subscription_internal_url}/internal/v1/subscriptions"
+    body = {
+        "organization_id": str(organization_id),
+        "product_key": product_key,
+        "plan_version_id": str(plan_version_id),
+        "trial": trial,
+        "operator_id": operator_id,
+        "note": note,
+    }
+    try:
+        response = await client.post(url, json=body, headers=_headers(settings))
+    except httpx.HTTPError as exc:
+        raise SubscriptionChangeError(f"subscription is unavailable: {exc}") from exc
+    if response.status_code >= 400:
+        raise _refusal(response)
+    result: dict[str, Any] = response.json()
+    return result
+
+
+async def extend_trial(
+    settings: Settings,
+    *,
+    organization_id: uuid.UUID,
+    subscription_id: uuid.UUID,
+    new_trial_ends_at: str,
+    expected_trial_ends_at: str,
+    operator_id: str,
+    note: str,
+    client: httpx.AsyncClient,
+) -> dict[str, Any]:
+    """Move a trial's end to an absolute instant, guarded by the end the operator saw — subscription
+    answers 409 `state_changed` when it moved, so a repeat never adds the time twice. Refusals keep
+    their code: 422 `not_trial`, `claim_in_flight`, `trial_cap`, `trial_not_extended`."""
+    url = (
+        f"{settings.subscription_internal_url}/internal/v1/subscriptions/"
+        f"{subscription_id}/extend-trial"
+    )
+    body = {
+        "organization_id": str(organization_id),
+        "new_trial_ends_at": new_trial_ends_at,
+        "expected_trial_ends_at": expected_trial_ends_at,
+        "operator_id": operator_id,
+        "note": note,
+    }
     try:
         response = await client.post(url, json=body, headers=_headers(settings))
     except httpx.HTTPError as exc:

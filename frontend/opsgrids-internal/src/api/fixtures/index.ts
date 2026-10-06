@@ -26,6 +26,7 @@ export * from "./audit";
 export * from "./metrics";
 export * from "./pricing";
 export * from "./planChange";
+export * from "./staffSubscriptions";
 
 export function buildOrganizationsOut(): OrganizationsOut {
   return { organizations: buildOrgStates(), metrics: buildPlatformMetrics() };

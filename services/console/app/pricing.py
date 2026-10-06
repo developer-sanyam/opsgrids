@@ -218,6 +218,8 @@ async def build_pricing_view(
                         entitled_products=list(
                             sub.get("entitled_products") or [str(sub["product_key"])]
                         ),
+                        current_period_start=sub.get("current_period_start"),
+                        trial_max_ends_at=sub.get("trial_max_ends_at"),
                     )
                     if sub is not None
                     else None

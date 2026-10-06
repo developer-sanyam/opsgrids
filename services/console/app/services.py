@@ -713,6 +713,23 @@ async def claim_idempotency_key(
         return IdempotencyClaim("reconcile", seen_updated_at=row.updated_at)
 
 
+async def idempotency_key_seen(
+    session: AsyncSession, *, organization_id: uuid.UUID, key: str
+) -> bool:
+    """Whether `key` already names a request in this organization. Read-only — no claim, no audit
+    row — for a caller that must not claim (an upstream it needs first is down) yet still owes an
+    earlier attempt with the key its recorded answer. Keys are never deleted, so a key seen here is
+    found by the claim that follows."""
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        found = await session.execute(
+            select(IdempotencyKey.id).where(
+                IdempotencyKey.organization_id == organization_id, IdempotencyKey.key == key
+            )
+        )
+        return found.scalar_one_or_none() is not None
+
+
 async def retake_idempotency_key(
     session: AsyncSession,
     *,

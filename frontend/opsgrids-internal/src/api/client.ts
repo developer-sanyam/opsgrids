@@ -35,8 +35,13 @@
 
 import { apiRequest } from "./http";
 import type {
+  AddProductOptions,
+  AddProductRequest,
+  AddProductResult,
   AuditListOut,
   CreditLedgerEntryAdminOut,
+  ExtendTrialRequest,
+  ExtendTrialResult,
   ListLedgerParams,
   OrganizationPricing,
   OrganizationsOut,
@@ -278,6 +283,65 @@ export async function changePlan(
 
 function planChangePath(organizationId: string, productKey: string, suffix: string): string {
   return `/admin/organizations/${encodeURIComponent(organizationId)}/subscriptions/${encodeURIComponent(productKey)}/plan-change${suffix}`;
+}
+
+/* ------------------------- add product, extend trial ------------------------- */
+
+/**
+ * `GET /admin/organizations/{id}/add-product-options` — the products this organization has no
+ * subscription row for in any state, each with the versions it may take; a version it cannot take
+ * is listed with the reason. `owner` and `billing_ops`.
+ */
+export async function getAddProductOptions(organizationId: string): Promise<AddProductOptions> {
+  if (USE_FIXTURES) {
+    const { addProductOptionsForOrg } = await loadFixtures();
+    return settle(addProductOptionsForOrg(organizationId));
+  }
+  return apiRequest<AddProductOptions>(
+    `/admin/organizations/${encodeURIComponent(organizationId)}/add-product-options`,
+  );
+}
+
+/**
+ * `POST /admin/organizations/{id}/subscriptions` — give the organization a product. A trial by
+ * default; a paid add starts billing at once and must carry `acknowledge_immediate_charge: true`.
+ * `idempotencyKey` is required, with the same lifetime as `changePlan`'s.
+ */
+export async function addProduct(
+  organizationId: string,
+  request: AddProductRequest,
+  idempotencyKey: string,
+): Promise<AddProductResult> {
+  if (USE_FIXTURES) {
+    const { applyFixtureAddProduct } = await loadFixtures();
+    return settle(applyFixtureAddProduct(organizationId, request, idempotencyKey), 500);
+  }
+  return apiRequest<AddProductResult>(`/admin/organizations/${encodeURIComponent(organizationId)}/subscriptions`, {
+    method: "POST",
+    body: request,
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+/**
+ * `POST /admin/organizations/{id}/subscriptions/{product_key}/extend-trial` — move a trial's end to
+ * an absolute instant. **Owner only.** `expected_trial_ends_at` must be the end exactly as it was
+ * read, so a repeat can never add the time twice. `idempotencyKey` is required.
+ */
+export async function extendTrial(
+  organizationId: string,
+  productKey: string,
+  request: ExtendTrialRequest,
+  idempotencyKey: string,
+): Promise<ExtendTrialResult> {
+  if (USE_FIXTURES) {
+    const { applyFixtureExtendTrial } = await loadFixtures();
+    return settle(applyFixtureExtendTrial(organizationId, productKey, request, idempotencyKey), 500);
+  }
+  return apiRequest<ExtendTrialResult>(
+    `/admin/organizations/${encodeURIComponent(organizationId)}/subscriptions/${encodeURIComponent(productKey)}/extend-trial`,
+    { method: "POST", body: request, headers: { "Idempotency-Key": idempotencyKey } },
+  );
 }
 
 /* ----------------------------- overrides ---------------------------- */
