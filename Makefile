@@ -193,21 +193,37 @@ shard-verify: ## Assert SHARDS=3 partitions the service list exactly (no service
 	@test -n "$(SHARDS)" || (echo "SHARDS= is required" && exit 1)
 	tools/shard-verify.sh $(SHARDS)
 
+# How many runners the service tests are spread across in CI (`tests` job matrix in
+# .github/workflows/ci.yml; tests/infra/test_ci_shards.py keeps the two in step). The
+# migrations jobs shard by service and keep SHARDS=3; the tests shard by *item* — a service,
+# or part of one — so they have their own count and their own verifier.
+TEST_SHARDS ?= 5
+
+.PHONY: test-shard-verify
+test-shard-verify: ## Assert TEST_SHARDS=5 covers every service test file exactly once
+	python3 tools/ci_shards.py verify $(TEST_SHARDS)
+
+.PHONY: test-shard-plan
+test-shard-plan: ## Show the test shards and their estimated seconds: make test-shard-plan [TEST_SHARDS=5]
+	@python3 tools/ci_shards.py summary $(TEST_SHARDS)
+
 .PHONY: test-shard
-test-shard: ## Tests for one shard of services: make test-shard SHARD=1 SHARDS=3
+test-shard: ## Tests for one shard of the service suites: make test-shard SHARD=1 SHARDS=5
 	# CI splits the service tests across jobs rather than across processes, because on a
 	# 2-vCPU runner a second process makes both slower (see .github/workflows/ci.yml). Each
 	# shard gets its own runner and its own database, so the parallelism is real capacity.
 	#
-	# Same partition as ever (tools/shard.sh still sees every service — see its comment on
-	# why that must not change); shard-filtered.sh only narrows what gets fanned out
-	# afterwards, to AFFECTED_SERVICES when CI's `changes` job set one. Unset, or run by
-	# hand, it is every service in the shard, exactly as before.
+	# The unit of work is an *item* — a whole service, or one part of a service too heavy for a
+	# single shard's share (`operations:2/5`) — assigned by tools/ci_shards.py from the recorded
+	# durations in tools/test-durations.json. Parts of one service never share a shard, hence
+	# never a database, so they cannot truncate each other's tables. `verify` (run first, and in
+	# CI's static job) proves every test file is in exactly one item. Unlike the migrations, which
+	# still partition by service (tools/shard.sh), this is not a partition of the service list.
+	#
+	# AFFECTED_SERVICES narrows what runs, exactly as before (tools/filter-affected.sh).
 	@test -n "$(SHARD)" || (echo "SHARD= is required" && exit 1)
 	@test -n "$(SHARDS)" || (echo "SHARDS= is required" && exit 1)
-	@tools/shard-verify.sh $(SHARDS)
-	@tools/shard-filtered.sh $(SHARD) $(SHARDS) $(JOBS) tests ok-empty \
-	  uv run pytest tests -q -p no:cacheprovider
+	@tools/test-shard.sh $(SHARD) $(SHARDS) $(JOBS)
 
 .PHONY: migration-check-shard
 migration-check-shard: ## Model/migration drift for one shard: SHARD=1 SHARDS=3
@@ -344,16 +360,22 @@ frontend-boundaries: ## dependency-cruiser: apps independent, shared packages vi
 
 # `--passWithNoTests` survives only where a package genuinely has no tests yet (opsgrids-internal),
 # so a suite that stops being collected fails here instead of passing with zero.
+# FRONTEND_FILTER narrows `frontend-test` and `frontend-build` to some packages, as pnpm
+# selectors — `FRONTEND_FILTER="--filter ./opsgrids-ui --filter ./product-crm"`. CI uses it to run
+# the workspace in four legs at once (.github/workflows/ci.yml, `frontend-tests`). Empty, the
+# default, is every package: exactly what `make frontend-gate` and every local run have always done.
+FRONTEND_FILTER ?=
+
 .PHONY: frontend-test
-frontend-test: ## vitest, every app and package
-	cd frontend && pnpm -r --no-bail test
+frontend-test: ## vitest, every app and package (FRONTEND_FILTER narrows it)
+	cd frontend && pnpm -r --no-bail $(FRONTEND_FILTER) test
 
 # `build:buyer` is the storefront's second bundle — the one buyers actually load on a merchant's
 # own domain (ADR-0012 §2) — and nothing built it before this row did. `--if-present` so any
 # package that grows a second bundle the same way is covered by naming its script build:buyer.
 .PHONY: frontend-build
-frontend-build: ## Production builds, including the storefront's buyer bundle
-	cd frontend && pnpm -r build && pnpm -r --if-present build:buyer
+frontend-build: ## Production builds, including the storefront's buyer bundle (FRONTEND_FILTER narrows it)
+	cd frontend && pnpm -r $(FRONTEND_FILTER) build && pnpm -r --if-present $(FRONTEND_FILTER) build:buyer
 
 # pnpm audit over the production tree, with an allow-list that expires (tools/npm_audit.py).
 # Needs the network, like `make audit`.
@@ -522,7 +544,7 @@ hadolint: ## hadolint (pinned) over every Dockerfile
 #
 # Not parallel-safe as a whole (`make -j gate`): migration-check depends on the roundtrip's end
 # state. Each row parallelises internally through JOBS instead.
-GATE_STATIC := lint hygiene boundaries typecheck test-infra shard-verify openapi-check \
+GATE_STATIC := lint hygiene boundaries typecheck test-infra shard-verify test-shard-verify openapi-check \
                contracts-check shellcheck hadolint audit licenses secrets frontend-gate
 GATE_DB     := test-libs test-services migration-roundtrip migration-check smoke
 
