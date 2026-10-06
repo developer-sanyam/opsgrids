@@ -73,9 +73,14 @@ def is_shared_dev_database(dsn: str) -> bool:
     `opsgrids`, because the workflow's postgres service container is created with that name — but
     it is the job's own throwaway container, created for this run and discarded with it, so there
     is nothing shared there to protect. A guard that compared the name alone failed every test
-    behind it on every CI run, which says nothing about the code under test. GitHub Actions sets
-    `GITHUB_ACTIONS=true` on its runners and nowhere else, so the exemption cannot be switched on
-    by a developer's own environment file.
+    behind it on every CI run, which says nothing about the code under test.
+
+    The exemption keys on `GITHUB_ACTIONS=true`, the variable GitHub's runners set. Nothing stops
+    a developer setting it too — in a shell, or in the `.env` the Makefile exports into every test
+    process — and that would lift the guard against their own shared database. This is a guard
+    against accidents (a stray DSN, a forgotten override), not a security boundary, and it makes
+    no attempt to prove it is running on a runner. `ENVIRONMENT=ci` is deliberately *not* the key:
+    developers set that by hand to reproduce CI, which is exactly when the guard must still hold.
     """
     if os.environ.get("GITHUB_ACTIONS") == "true":
         return False
