@@ -243,6 +243,45 @@ def test_a_testcase_that_is_not_under_services_is_ignored(tree: Path) -> None:
     assert ci_shards.read_junit([junit]) == {}
 
 
+def _one_testcase_junit(tree: Path) -> Path:
+    _service(tree, "svc", {"test_a.py": 1.0})
+    junit = tree / "junit"
+    junit.mkdir()
+    case = '<testcase classname="services.svc.tests.test_a" name="t" time="2.0"/>'
+    (junit / "svc.xml").write_text(f"<testsuite>{case}</testsuite>")
+    return junit
+
+
+def test_refresh_records_the_ci_run_the_numbers_came_from(
+    tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `source` used to say "junit from /tmp/cif/junit-ci1": a path on one laptop, which tells a
+    # reader nothing three months on, after the run's 14-day artifacts have expired.
+    junit = _one_testcase_junit(tree)
+    run = "https://github.com/example/repo/actions/runs/123456789"
+    assert ci_shards.main(["ci_shards.py", "refresh", "--run", run, str(junit)]) == 0
+    source = json.loads((tree / "durations.json").read_text())["source"]
+    assert run in source
+    assert str(tree) not in source
+    assert re.search(r"refreshed \d{4}-\d{2}-\d{2}$", source)
+    assert "warning" not in capsys.readouterr().err
+
+
+def test_refresh_without_a_run_still_works_but_says_the_source_is_not_traceable(
+    tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    junit = _one_testcase_junit(tree)
+    assert ci_shards.main(["ci_shards.py", "refresh", str(junit)]) == 0
+    assert "no --run given" in capsys.readouterr().err
+    assert str(junit) in json.loads((tree / "durations.json").read_text())["source"]
+
+
+def test_refresh_takes_the_run_in_either_spelling() -> None:
+    assert ci_shards.parse_refresh_args(["--run", "u", "a", "b"]) == ("u", ["a", "b"])
+    assert ci_shards.parse_refresh_args(["a", "--run=u"]) == ("u", ["a"])
+    assert ci_shards.parse_refresh_args(["a"]) == ("", ["a"])
+
+
 # ---------------------------------------------------------------- the repository itself
 
 
@@ -256,8 +295,25 @@ def test_every_shard_of_the_repository_plan_has_work() -> None:
     assert all(ci_shards.plan(shards))
 
 
-def test_the_durations_file_names_only_files_that_exist() -> None:
-    assert ci_shards.stale_durations() == []
+def test_a_durations_entry_for_a_file_that_is_gone_is_a_note_not_a_failure(
+    tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A rename or delete under services/*/tests must not turn the tooling job red: the planner
+    # only ever schedules files that exist, so the entry is dead weight that `refresh` prunes.
+    # Failing here forced a second edit, to tools/test-durations.json, onto a service-local pull
+    # request — and that edit is root tooling, so it started every shard for it.
+    _service(tree, "svc", {"test_a.py": 5.0})
+    path = tree / "durations.json"
+    document = json.loads(path.read_text())
+    document["files"]["svc/tests/test_renamed_away.py"] = 99.0
+    path.write_text(json.dumps(document))
+
+    assert ci_shards.stale_durations() == ["svc/tests/test_renamed_away.py"]
+    assert ci_shards.verify(1) == []
+    assert _all_files(ci_shards.plan(1)) == [("svc", "tests/test_a.py")]
+    assert ci_shards.main(["ci_shards.py", "verify", "1"]) == 0
+    note = "test_renamed_away.py is in test-durations.json but not on disk"
+    assert note in capsys.readouterr().out
 
 
 def test_a_shard_cannot_hold_a_dominant_share() -> None:

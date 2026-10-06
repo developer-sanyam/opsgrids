@@ -1,6 +1,6 @@
 {
  "_comment": "Measured seconds per service test file, the weights tools/ci_shards.py balances the CI shards by. Absolute values do not need to be exact; the ratios between files do. Regenerate from a CI run's junit artifacts: docs/testing.md.",
- "source": "junit from /tmp/cif/junit-ci1",
+ "source": "junit artifacts of CI run https://github.com/developer-sanyam/opsgrids/actions/runs/37466031956, refreshed 2026-10-06",
  "files": {
   "account/tests/test_admin_directory.py": 1.9,
   "account/tests/test_admin_gaps.py": 6.9,

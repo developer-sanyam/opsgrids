@@ -60,13 +60,18 @@ make test-shard SHARD=3 SHARDS=6     # run one shard's items, as CI does; AFFECT
 ```
 
 **Re-balancing.** The durations are a measurement and go stale as suites grow; a stale file never drops a test (every
-file still runs exactly once), it only skews the balance. Each shard uploads its junit timings as `junit-shard-N`:
+file still runs exactly once), it only skews the balance — and an entry for a file that was renamed or deleted is a
+`note:` from `verify`, not a failure; `refresh` prunes it. Each shard uploads its junit timings as `junit-shard-N`
+(kept 14 days):
 
 ```bash
 gh run download <run-id> -p 'junit-shard-*' -D /tmp/junit
-python3 tools/ci_shards.py refresh /tmp/junit      # rewrites tools/test-durations.json
+python3 tools/ci_shards.py refresh --run https://github.com/developer-sanyam/opsgrids/actions/runs/<run-id> /tmp/junit
 make test-shard-plan                               # check the estimate, then commit
 ```
+
+`--run` is what lands in `source` at the top of `tools/test-durations.json`, with the date: the artifacts expire and a
+`/tmp` path means nothing to the next reader, so the run's URL is the thing to record.
 
 Changing `TEST_SHARDS` (top of `ci.yml`, and the Makefile default — a test keeps them equal) changes the number of
 runners. Look at `make test-shard-plan TEST_SHARDS=<n>` first; below the point where one item is a whole shard there is
@@ -86,7 +91,7 @@ The table compares the latest of them (a `main` push) with the first run of the 
 whole pipeline, same trigger shape as `main`). Rows marked *stopped* ended at their first red step, so their
 later rows did not run — the "after" column shows what those rows cost once they were allowed to report.
 
-| Job | Before — run 37452127273 | After, round 1 — run 37466031956 |
+| Job | Before — [run 37452127273](https://github.com/developer-sanyam/opsgrids/actions/runs/37452127273) | After, round 1 — [run 37466031956](https://github.com/developer-sanyam/opsgrids/actions/runs/37466031956) |
 |---|---|---|
 | Wall clock | **32.5 min** | **13.0 min** |
 | Changed areas | 5 s | 8 s |

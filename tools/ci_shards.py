@@ -39,14 +39,17 @@ usage:
                                            running a different plan
     ci_shards.py verify <shards>           assert the plan covers every test file exactly once
     ci_shards.py summary <shards>          the plan, with estimated seconds per shard
-    ci_shards.py refresh <junit-dir>...    rewrite tools/test-durations.json from the junit
-                                           XML files of a CI run (see docs/testing.md)
+    ci_shards.py refresh [--run <url>] <junit-dir>...
+                                           rewrite tools/test-durations.json from the junit
+                                           XML files of a CI run (see docs/testing.md); --run
+                                           records which run, so the numbers can be traced
 
 An item is spelled `<service>` (everything under `tests/`) or `<service>:<part>/<parts>`.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import math
@@ -345,6 +348,33 @@ def read_junit(directories: list[Path]) -> dict[str, float]:
     return seconds
 
 
+def parse_refresh_args(args: list[str]) -> tuple[str, list[str]]:
+    """`[--run <ref>] <junit-dir>...` -> (the run's reference or "", the directories)."""
+    run_ref = ""
+    paths: list[str] = []
+    remaining = iter(args)
+    for arg in remaining:
+        if arg == "--run":
+            run_ref = next(remaining, "")
+        elif arg.startswith("--run="):
+            run_ref = arg.removeprefix("--run=")
+        else:
+            paths.append(arg)
+    return run_ref, paths
+
+
+def refresh_source(run_ref: str, directories: list[str], today: dt.date) -> str:
+    """What `source` in test-durations.json says, so a reader can find the measurement again.
+
+    A local directory means nothing to anyone else and the run's artifacts expire after 14 days,
+    so the CI run itself (its URL) and the date are what is recorded; the numbers worth keeping
+    past the artifacts are summarised in docs/testing.md.
+    """
+    if run_ref:
+        return f"junit artifacts of CI run {run_ref}, refreshed {today.isoformat()}"
+    return f"junit from {', '.join(directories)}, refreshed {today.isoformat()}"
+
+
 def write_durations(seconds: dict[str, float], source: str) -> None:
     known = {f"{s}/{f}" for s in services_with_tests() for f in service_test_files(s)}
     kept = {k: round(v, 1) for k, v in sorted(seconds.items()) if k in known}
@@ -442,13 +472,23 @@ def main(argv: list[str]) -> int:
         return 0
 
     if command == "refresh":
-        directories = [Path(a) for a in args]
+        run_ref, paths = parse_refresh_args(args)
+        if not paths:
+            print("ci_shards: refresh needs at least one junit directory", file=sys.stderr)
+            return 2
+        directories = [Path(a) for a in paths]
         seconds = read_junit(directories)
         if not seconds:
             print("ci_shards: no junit testcases found — nothing written", file=sys.stderr)
             return 1
+        if not run_ref:
+            print(
+                "ci_shards: warning: no --run given, so test-durations.json will say only where "
+                "the junit files were on this machine; pass --run <the CI run's URL>",
+                file=sys.stderr,
+            )
         merged = {**load_durations(), **seconds}
-        write_durations(merged, source="junit from " + ", ".join(args))
+        write_durations(merged, source=refresh_source(run_ref, paths, dt.date.today()))
         print(f"ci_shards: wrote {len(seconds)} measured files into {DURATIONS.name}")
         return 0
 
