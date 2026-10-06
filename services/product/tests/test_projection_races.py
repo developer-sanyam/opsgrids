@@ -13,6 +13,13 @@ read a view that excludes the other's uncommitted write, and whichever *commits*
 * **C — ordering bypass.** An older `cancelled` for the suite commits after a newer `active`;
   both read the same watermark, so the older one lands last and locks the trio out.
 
+* **D — the gate read.** The owner's hand activation arrives while a cancellation's fold is in
+  flight. The hand-activation gate reads the activation's sources after taking the activation
+  lock, so it waits for the fold to commit and then sees its provenance: refused, not undoing a
+  cancellation that had not yet been committed when the request began.
+* **E — the other order.** The hand activation commits first, and the fold that was waiting on
+  the same lock overwrites the row: the subscription wins, whichever got there first.
+
 Each test holds the first transaction open, starts the second, proves the second is *waiting*
 rather than racing, then commits the first and checks where the rows end up. These are the
 reviewer's reproductions, kept as regressions.
@@ -28,12 +35,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app import selectors, services
 from app.config import settings
-from app.models import SCHEMA
+from app.models import SCHEMA, ActivationSource, OutboxEvent
 from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.db import TENANT_GUC
 from platform_core.errors import BusinessRuleProblem
@@ -226,3 +233,75 @@ async def test_c_an_older_event_committing_last_is_still_dropped(
     assert await _entitled(tx, org_id) == set(TRIO), (
         "ordering bypass: an older cancellation committed last and locked the trio out"
     )
+
+
+async def test_d_a_hand_activation_waiting_on_a_cancel_fold_is_refused(
+    tx: Any, org_id: uuid.UUID
+) -> None:
+    """The gate reads the activation's sources *after* the activation lock. The cancellation's fold
+    holds that lock and has written provenance nobody can see yet; the owner's request waits for
+    it, then reads the committed row and is refused — a read taken before the lock would have found
+    nothing, and switched the product back on under a cancellation."""
+
+    async def cancel(s: AsyncSession) -> None:
+        await services.project_subscription(
+            s,
+            organization_id=org_id,
+            product_key="hrms",
+            state="cancelled",
+            trial_ends_at=None,
+            occurred_at=_at(0),
+            subscription_id=uuid.uuid4(),
+        )
+
+    async def owner_activates(s: AsyncSession) -> None:
+        await services.activate(s, _ctx(org_id), product_key="hrms", trial_days=365)
+
+    raised = await _race(tx, org_id, cancel, owner_activates)
+    assert isinstance(raised, services.SubscriptionManagedConflict), (
+        f"the hand activation should have seen the cancellation's provenance; got {raised!r}"
+    )
+    assert "hrms" not in await _entitled(tx, org_id), "the owner undid a cancellation"
+    async with tx(org_id) as s:
+        outbox = (await s.execute(select(func.count()).select_from(OutboxEvent))).scalar_one()
+        (source,) = await selectors.sources_for(s, org_id, "hrms")
+        status, trial_ends_at = source.status, source.trial_ends_at
+    assert outbox == 0, "a refused activation staged an event"
+    assert status == "suspended" and trial_ends_at is None
+
+
+async def test_e_a_fold_waiting_on_a_hand_activation_overwrites_it(
+    tx: Any, org_id: uuid.UUID
+) -> None:
+    """The other order: nothing manages the product yet, so the hand activation is allowed and
+    commits. The cancellation's fold, which was waiting for the same lock, then upserts the very
+    same row to `suspended` and stamps its provenance — the subscription wins either way."""
+
+    async def owner_activates(s: AsyncSession) -> None:
+        await services.activate(s, _ctx(org_id), product_key="hrms")
+
+    async def cancel(s: AsyncSession) -> None:
+        await services.project_subscription(
+            s,
+            organization_id=org_id,
+            product_key="hrms",
+            state="cancelled",
+            trial_ends_at=None,
+            occurred_at=_at(0),
+            subscription_id=uuid.uuid4(),
+        )
+
+    assert await _race(tx, org_id, owner_activates, cancel) is None
+    assert "hrms" not in await _entitled(tx, org_id), "the hand activation outlived the cancel"
+    async with tx(org_id) as s:
+        (source,) = (
+            (
+                await s.execute(
+                    select(ActivationSource).where(ActivationSource.product_key == "hrms")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        managed, status = source.is_subscription_managed, source.status
+    assert managed and status == "suspended"
