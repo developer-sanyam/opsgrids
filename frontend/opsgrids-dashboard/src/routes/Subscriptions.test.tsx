@@ -208,8 +208,32 @@ describe("SubscriptionsPage — what each row says", () => {
     });
     expect(await screen.findByText(`Trial ends ${formatDate(endsAt)}`)).toBeTruthy();
     expect(screen.getByText("10 days left")).toBeTruthy();
-    expect(screen.getByText("Payment overdue")).toBeTruthy();
+    expect(screen.getByText("Awaiting payment")).toBeTruthy();
     expect(screen.getByText("Access suspended")).toBeTruthy();
+  });
+
+  it("says 'Payment overdue' once per row: the dunning line has it, the renewal column does not repeat it", async () => {
+    setup({
+      subscriptions: [
+        {
+          ...revenue,
+          state: "past_due",
+          dunning: {
+            cycle_id: "cy1",
+            opened_at: "2026-10-01T00:00:00Z",
+            grace_ends_at: "2026-10-15T00:00:00Z",
+            next_attempt_at: null,
+            attempts_made: 1,
+            max_attempts: 4,
+            amount_minor: 499900,
+            currency: "INR",
+          },
+        },
+      ],
+    });
+    expect(await screen.findByText(/Payment overdue/)).toBeTruthy();
+    expect(screen.getAllByText(/Payment overdue/)).toHaveLength(1);
+    expect(screen.getByText("Awaiting payment")).toBeTruthy();
   });
 
   it("shows the plan, its cadence, and a scheduled change — never a list price", async () => {

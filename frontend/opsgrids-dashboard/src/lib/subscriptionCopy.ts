@@ -79,7 +79,9 @@ export function statusLine(subscription: Subscription, now: Date = new Date()): 
         ? { primary: `Renews ${formatDate(subscription.current_period_end)}`, secondary: null, attention: false }
         : { primary: "Active", secondary: null, attention: false };
     case "past_due":
-      return { primary: "Payment overdue", secondary: "Pay the overdue invoice to keep access", attention: true };
+      // Not "Payment overdue": the product cell's dunning line already says that, with the date
+      // access ends — the same words twice in one row read as two problems.
+      return { primary: "Awaiting payment", secondary: "Pay the overdue invoice to keep access", attention: true };
     case "suspended":
       return {
         primary: "Access suspended",

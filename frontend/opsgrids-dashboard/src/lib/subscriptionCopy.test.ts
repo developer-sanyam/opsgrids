@@ -104,7 +104,7 @@ describe("statusLine — the one date that matters next, by state", () => {
   });
 
   it.each([
-    ["past_due", null, "Payment overdue", "Pay the overdue invoice to keep access"],
+    ["past_due", null, "Awaiting payment", "Pay the overdue invoice to keep access"],
     ["suspended", null, "Access suspended", "Contact info@opsgrids.com to restore access"],
   ])("%s is stated in words", (state, dunning, primary, secondary) => {
     const line = statusLine(sub({ state, dunning }), NOW);
