@@ -86,8 +86,9 @@ class OrgCommercialState(Base, TenantBase):
 
     #: Per-product subscription detail, keyed by `product_key`:
     #: ``{"hrms": {"state": "active", "plan_version_id": "...", "amount_minor": 50000,
-    #: "currency": "INR"}}``. The fold reads the existing entry to learn a transition's *from*
-    #: state, then overwrites it with the *to* state.
+    #: "currency": "INR"}}``. `amount_minor` is a month's worth of the pinned flat price (a yearly
+    #: version's price / 12, `price.resolve_plan_price`). The fold reads the existing entry to
+    #: learn a transition's *from* state, then overwrites it with the *to* state.
     subscription_states: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
     #: The nearest trial end across this organization's trialling subscriptions, or null when

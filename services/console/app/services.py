@@ -138,8 +138,9 @@ async def fold_subscription_event(
 
     Payload (documented, from subscription-service; not imported): ``organization_id``,
     ``product_key``, ``plan_version_id``, ``state``, ``trial_ends_at``. The pinned price the state
-    is worth is resolved from catalog (`price.resolve_plan_price`); MRR is the running sum of the
-    org's active subscriptions at that price (ADR-0004 §4).
+    is worth is resolved from catalog (`price.resolve_plan_price`) as a month's worth — a yearly
+    version counts a twelfth of its price; MRR is the running sum of the org's active
+    subscriptions at that monthly amount (ADR-0004 §4).
     """
     payload = envelope["payload"]
     organization_id = uuid.UUID(str(payload["organization_id"]))
