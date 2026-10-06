@@ -40,6 +40,7 @@ def test_a_single_services_directory_is_trusted_narrowly() -> None:
     assert plan == {
         "backend": "true",
         "frontend": "false",
+        "code": "true",
         "services_all": "false",
         "services_list": "auth",
     }
@@ -130,3 +131,46 @@ def test_mixed_backend_and_frontend_change_sets_both_and_still_narrows_services(
     assert plan["frontend"] == "true"
     assert plan["services_all"] == "false"
     assert plan["services_list"] == "auth"
+
+
+# ---------------------------------------------------------------- `code`: the docs-only skip
+
+
+def test_a_docs_only_change_still_runs_the_backend_static_checks_but_is_not_code() -> None:
+    # `ruff format` checks the Python inside Markdown fences, so the backend lint must still see
+    # it; nothing database-backed can.
+    plan = run(["docs/adr/0038-faster-ci.md", "docs/testing.md"])
+    assert plan["backend"] == "true"
+    assert plan["frontend"] == "false"
+    assert plan["code"] == "false"
+
+
+def test_docs_next_to_a_service_change_is_code() -> None:
+    plan = run(["docs/testing.md", "services/auth/app/main.py"])
+    assert plan["code"] == "true"
+    assert plan["services_list"] == "auth"
+
+
+def test_docs_next_to_a_frontend_change_is_not_code_but_still_runs_the_frontend() -> None:
+    plan = run(["docs/testing.md", "frontend/product-crm/src/App.tsx"])
+    assert plan["frontend"] == "true"
+    assert plan["code"] == "false"
+
+
+def test_markdown_outside_docs_is_still_code() -> None:
+    # service tests read infrastructure/edge/RUNBOOK.md by path, so a .md is not prose-only.
+    for path in ("infrastructure/edge/RUNBOOK.md", "README.md", "services/auth/README.md"):
+        assert run([path])["code"] == "true", path
+
+
+def test_infrastructure_and_tools_are_code() -> None:
+    for path in ("infrastructure/edge/routes.prod.json", "tools/ci_shards.py", "Makefile"):
+        assert run([path])["code"] == "true", path
+
+
+def test_the_workflow_file_is_code() -> None:
+    assert run([".github/workflows/ci.yml"])["code"] == "true"
+
+
+def test_no_input_at_all_is_code() -> None:
+    assert run([])["code"] == "true"

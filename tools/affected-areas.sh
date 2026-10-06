@@ -17,14 +17,24 @@
 # input at all it answers the same way — run everything — rather than claim a pull request
 # touched nothing.
 #
+# `code` answers a narrower question than `backend`: could this change alter what a service's
+# tests or migrations see? It is false only when *every* changed path is under docs/ — prose.
+# The static job still runs for such a change (`backend` stays true: `ruff format` checks the
+# Python inside Markdown fences, and tests/infra reads some docs), and so does the supply-chain
+# job (the secret scan covers every tracked file), but the database-backed jobs — migrations,
+# service tests, contracts — have nothing to look at. It is deliberately NOT widened to *.md
+# anywhere or to infrastructure/: service tests read infrastructure/edge/RUNBOOK.md,
+# routes.prod.json and the preflight libraries by path, so a change there can fail them.
+#
 # usage: printf '%s\n' "${files[@]}" | tools/affected-areas.sh
 #   reads changed file paths, one per line, on stdin (as `gh api .../files --jq
-#   '.[].filename'` prints them); writes backend=, frontend=, services_all=,
+#   '.[].filename'` prints them); writes backend=, frontend=, code=, services_all=,
 #   services_list= to stdout, one per line, GITHUB_OUTPUT format.
 set -euo pipefail
 
 backend=false
 frontend=false
+code=false
 # Stays false only while every non-frontend path seen so far was services/<name>/... for
 # some specific <name>. Anything else flips it, which is the conservative default this
 # whole mechanism leans on.
@@ -37,23 +47,33 @@ while IFS= read -r f; do
   saw_a_line=true
   case "$f" in
   frontend/*) frontend=true ;;
+  docs/*)
+    # Prose. Backend lint and the tooling tests still look at it; nothing database-backed
+    # does — see `code` above. Says nothing about which services are affected, so it does not
+    # touch services_all either: alone it narrows nothing, beside a service change it adds
+    # nothing to the list.
+    backend=true
+    ;;
   .github/workflows/*)
     backend=true
     frontend=true
+    code=true
     services_all=true
     ;;
   services/*/*)
     # services/<name>/anything — the one shape narrow enough to trust.
     backend=true
+    code=true
     svc=$(echo "$f" | cut -d/ -f2)
     services="$services $svc"
     ;;
   *)
     # Everything else that is not under frontend/ — libs/platform-core (every service
     # depends on it), libs/contracts, root config (Makefile, pyproject.toml, uv.lock,
-    # .importlinter, …), tools/, docs/ — "fail open": not specific to one service, so
-    # all of them run.
+    # .importlinter, …), tools/, infrastructure/ — "fail open": not specific to one service,
+    # so all of them run. (docs/ is handled above: it is the one prose-only path.)
     backend=true
+    code=true
     services_all=true
     ;;
   esac
@@ -63,6 +83,7 @@ if [ "$saw_a_line" = "false" ]; then
   echo "affected-areas: no input — running everything rather than nothing" >&2
   backend=true
   frontend=true
+  code=true
   services_all=true
 fi
 
@@ -92,5 +113,6 @@ services_list="${services_list% }"
 
 echo "backend=$backend"
 echo "frontend=$frontend"
+echo "code=$code"
 echo "services_all=$services_all"
 echo "services_list=$services_list"
