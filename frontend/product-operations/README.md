@@ -65,6 +65,23 @@ Live-only screens (no fixture twin), all built so that no failure in them can br
   picks the tab. The 3-D page (`/warehouses/:id/3d`) has a floor selector (`?floor=`): a floor with a
   published layout is drawn from its real placements, anything else keeps the auto-arranged layout
   and its banner.
+- **Floor layout editor** (`/warehouses/:id/floors/:floorId`) — places a floor's locations, draws the
+  walk graph, validates and publishes a draft. An empty canvas says so, with the count of unplaced
+  locations and two ways forward: **Auto-arrange** puts every location not yet on the draft onto the
+  canvas in one step (grouped by parent — a band per zone, then a row per depth, siblings together,
+  an aisle between parents — sized by kind and ordered by pick sequence then code, beneath anything
+  already placed), and **Place** adds one into the first free spot and selects it. Both leave the
+  draft unsaved; *Undo* is offered until the next edit.
+  Limits worth knowing: footprints are schematic defaults by kind (edit them in the selection panel),
+  and never nest, because the server rejects overlapping footprints — a rack is not drawn around
+  its bins. Auto-arrange adds no walk nodes (one per location with no edges between them would fail
+  the connectivity check on every one); *Place* still adds its location's node. Locations are not
+  assigned to floors, so a location already on another floor's layout is still listed as unplaced
+  here. *Check for problems* reads the saved draft, not unsaved edits. Past 1,000 m (the server's
+  coordinate bound) what does not fit stays unplaced, and the note says how many. A finger over the
+  canvas scrolls the page and selects; **Edit by touch** hands it the touch so shapes move and walk
+  nodes can be drawn. Zoom is the canvas's width, so panning is the browser's own scrolling; there
+  is no pinch gesture of its own.
 - **Find stock** — a card on the Stock page and on item, lot and roll detail. It asks
   `GET /inventory/locate` only when clicked and groups the bins by warehouse and floor.
 - **Put-away details** — on a storage put-away's ledger row. The worker's GPS fix is behind "Show
