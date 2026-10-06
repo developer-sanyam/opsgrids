@@ -1,4 +1,4 @@
-"""What the customer's Subscriptions page reads about plans (ADR-0033) — read-only.
+"""What the customer's Subscriptions page reads about plans (ADR-0034) — read-only.
 
 Two reads, both org-scoped and both composed from this organization's own subscription rows and
 catalog's internal reads:

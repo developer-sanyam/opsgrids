@@ -1,7 +1,7 @@
 # Customer Subscriptions page — plan change that says when, plans on offer, and a status-aware table
 
 **Status:** built on `fix/customer-subscriptions-page` (stacked on `main`), not deployed
-**Decision record:** [ADR-0033](../../adr/0033-customer-plan-change-and-plan-visibility.md)
+**Decision record:** [ADR-0034](../../adr/0034-customer-plan-change-and-plan-visibility.md)
 **Services:** `subscription`, `catalog`, `frontend/opsgrids-dashboard` (`routes/Subscriptions.tsx`)
 
 Fixes `app.opsgrids.com/subscriptions` as observed on 2026-10-06 in the owner's organization, after the
@@ -33,10 +33,10 @@ From `services._evaluate_change_plan` with `forced_timing=None`:
 | Active | downgrade | `current_period_end` (or a pending claim's end) | none, no credit |
 | Active | equal price | now | none; usage so far closed at the old pin's rates when it has a usage price |
 | Active or trial with a change waiting | the plan in force | now (withdraws the waiting change) | none |
-| A change the OpsGrids team scheduled is waiting | any | refused `scheduled_by_opsgrids` (ADR-0033 §6) | — |
+| A change the OpsGrids team scheduled is waiting | any | refused `scheduled_by_opsgrids` (ADR-0034 §6) | — |
 | Past due, suspended, cancelled | — | refused `state` | — |
 
-A trial with nothing claimed is answered with `direction: null` (ADR-0033 §5).
+A trial with nothing claimed is answered with `direction: null` (ADR-0034 §5).
 
 Every row is pinned by `tests/test_customer_plan_page.py::TestTimingMatrix`, which asserts the preview's
 answer **and** that the write then does exactly that (pin, pending pin, proration row).
@@ -60,7 +60,7 @@ periods are asserted unchanged).
 Optional `expected {state, plan_version_id, pending_plan_version_id, current_period_end,
 lifecycle_claim_id}` (`CustomerExpectedState`; the last two required, null included), compared under the
 row lock before anything else: 409 `state_changed`. The period end and the billing run's pending claim
-are what a roll or a claimed conversion moves while state, pin and pending stay put (ADR-0033 §2). The
+are what a roll or a claimed conversion moves while state, pin and pending stay put (ADR-0034 §2). The
 dashboard always sends the preview's, unchanged. The bundle refusal stays a 403 on the write.
 
 ### 3.3 Offerable, enforced
@@ -89,7 +89,7 @@ end, else `current_period_end` — the boundary the write and the billing run us
 A cancelled row reports no scheduled change. Registered before `/subscriptions/{subscription_id}`. One
 catalog lookup per distinct pin.
 
-### 3.6 Which amounts a tenant sees (ADR-0033 §5)
+### 3.6 Which amounts a tenant sees (ADR-0034 §5)
 
 `plan_options.amount_visible`: the version is restricted to the caller's organization **and** the caller
 holds `core.billing.invoice.read` at ORG. A public version's amount is never sent — including the public

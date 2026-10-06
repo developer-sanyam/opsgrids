@@ -871,13 +871,13 @@ async def _evaluate_change_plan(
     `lock_claims` is False for the preview: the "has the run claimed the due period" check then
     reads the claim row instead of taking `FOR UPDATE` on it.
 
-    `enforce_offerable` (the customer path, ADR-0033): the target must be in catalog's offerable
+    `enforce_offerable` (the customer path, ADR-0034): the target must be in catalog's offerable
     set for this organization now — not a superseded, withdrawn or retired-plan version that is
     still published and pinnable by id. Checked after the subscription's own refusals, and never
     for the pin already in force (a withdrawal of a waiting change keeps what they have). Console
     enforces the same set on the staff path itself (ADR-0029 §8).
 
-    `respect_operator_schedule` (the customer path, ADR-0033 §6): while a change the OpsGrids team
+    `respect_operator_schedule` (the customer path, ADR-0034 §6): while a change the OpsGrids team
     scheduled is waiting, the customer may not withdraw it, replace it or supersede it — every
     target is refused `scheduled_by_opsgrids`, right after the version is known to exist. Staff
     change or withdraw their own scheduled change on the staff path.

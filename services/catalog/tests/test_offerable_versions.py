@@ -106,7 +106,7 @@ class TestAccess:
     async def test_subscription_may_read_it_for_the_customers_own_change_plan(
         self, client: AsyncClient, platform_session: AsyncSession
     ) -> None:
-        """ADR-0033: subscription enforces this set on the customer's change-plan and builds the
+        """ADR-0034: subscription enforces this set on the customer's change-plan and builds the
         customer's picker from it (deciding there what of an amount a tenant may see)."""
         org = uuid.uuid4()
         async with platform_session.begin():

@@ -1,4 +1,4 @@
-"""The customer Subscriptions page's plan reads and change-plan preview (ADR-0033).
+"""The customer Subscriptions page's plan reads and change-plan preview (ADR-0034).
 
 Real PostgreSQL, the real customer routes behind a forged principal, a fake catalog. What is
 pinned:

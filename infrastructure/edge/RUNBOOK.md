@@ -1314,7 +1314,7 @@ scheduled change emits **no event**, so the
 account list does not show it — the Change plan card (the live pricing read) does. Product access follows a
 change that has taken effect within about **15 minutes**.
 
-### Customer plan change on the dashboard (ADR-0033)
+### Customer plan change on the dashboard (ADR-0034)
 
 `app.opsgrids.com/subscriptions` reads `GET /api/v1/subscriptions/plan-summaries` (each row's plan and
 any scheduled change) and, in **Change plan**, `.../{id}/plan-options` and

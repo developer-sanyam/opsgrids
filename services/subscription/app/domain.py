@@ -89,14 +89,14 @@ CODE_TRIAL_CAP = "trial_cap"
 #: 422: a trial "extension" that ends no later than the trial already does, or not in the future.
 CODE_TRIAL_NOT_EXTENDED = "trial_not_extended"
 #: 422: a customer's change-plan to a version catalog no longer offers this organization — a newer
-#: version replaced it, it was withdrawn, or its plan was retired (ADR-0033). The same code and rule
+#: version replaced it, it was withdrawn, or its plan was retired (ADR-0034). The same code and rule
 #: console enforces on the staff path (ADR-0029 §8).
 CODE_NOT_OFFERABLE = "not_offerable"
 NOT_OFFERABLE_DETAIL = (
     "that plan version is no longer on offer for this organization: a newer version has replaced "
     "it, it was withdrawn, or its plan was retired. Choose again from the plans on offer now."
 )
-#: 422: a customer's change-plan while a change the OpsGrids team scheduled is waiting (ADR-0033
+#: 422: a customer's change-plan while a change the OpsGrids team scheduled is waiting (ADR-0034
 #: §6). Staff schedule a negotiated price from the next period; withdrawing it ("keep my plan"),
 #: replacing it with another scheduled change, or superseding it with one that applies now would
 #: each undo an agreed deal with nothing but an audit row to say so.

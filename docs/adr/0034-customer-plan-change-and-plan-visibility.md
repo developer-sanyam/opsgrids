@@ -1,4 +1,4 @@
-# ADR-0033 — The customer's own plan change: preview, offerable plans, and which prices a tenant sees
+# ADR-0034 — The customer's own plan change: preview, offerable plans, and which prices a tenant sees
 
 **Status:** Proposed for owner sign-off — built on `fix/customer-subscriptions-page`, not deployed ·
 **Date:** 2026-10-06 · **Services:** `subscription`, `catalog`, `frontend/opsgrids-dashboard` ·
@@ -121,7 +121,10 @@ code:
 
 ## Numbering
 
-Drafted as ADR-0032; renumbered 0033 because `main` took 0032 for the payment provider seam and checkout.
+Drafted as ADR-0032; renumbered 0033 because `main` took 0032 for the payment provider seam and
+checkout, then 0034 because `main` took 0033 for merchant connect (#110). `docs/decisions.md` gives
+0034 as the next free number; its index row for this ADR, and the next free number (0035), are added
+when this branch merges, since the index on this branch predates #110.
 
 ## Deviations from the brief, recorded
 
