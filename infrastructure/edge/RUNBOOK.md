@@ -1098,9 +1098,12 @@ a production box**; `CASHFREE_ENV=production` with test-shaped keys; and `PAYMEN
 on a production box without `CASHFREE_ENV=production`. The reason is the same each time: a public test
 card paying a real invoice is a free subscription.
 
-**What that means for rehearsal: this box cannot be run against test or sandbox keys.** Test-mode
-checkouts are rehearsed on a developer's machine (the stub, or the smoke tools below); **the first key
-the box ever holds is a live one**, and the first checkout it takes is real money.
+**What that means for rehearsal: by default this box cannot be run against test or sandbox keys.**
+Test-mode checkouts are rehearsed on a developer's machine (the stub, or the smoke tools below), and the
+first key a box *with paying customers* ever holds is a live one. **The exception is a staging box with no
+real paying customers**: `PAYMENT_ALLOW_TEST_KEYS=true` lets the test pair and the sandbox run there,
+loudly. The owner decided on 2026-10-06 that the edge box is such a box: see the next section,
+"Payments: test mode on a staging box", which replaces step 4 below while it applies.
 
 **Order of steps** (owner decisions throughout; nothing here is done by the deploy):
 
@@ -1222,6 +1225,103 @@ a collection already records its Order id before the customer sees it and never 
 it does, so a duplicate Order is never shown; but nothing searches a merchant's account for a stray
 duplicate, and a lost create retried after the lease can leave one there (unpayable, since nobody has its
 id). That is unchanged by this release.
+
+### Payments: test mode on a staging box
+
+**Owner decision, 2026-10-06.** The edge box runs `ENVIRONMENT=production` (every compose service does),
+but it is a **staging server with no real paying customers**, and its payments are to run on **Razorpay
+test keys** (`rzp_test_…`) and **Cashfree sandbox keys**. By default `payment` refuses exactly that on a
+box that says `production` (previous section: a public test card would pay a real invoice).
+`PAYMENT_ALLOW_TEST_KEYS=true` is the explicit, opt-in override ([ADR-0032](../../docs/adr/0032-payment-provider-seam-and-checkout.md),
+"Staging test mode"). **Never set it on a box where real customers pay.** Everything else in the previous
+section still applies (Phase A only, no webhook to register, the poller learns outcomes); this section
+replaces its step 4 while the box is in test mode.
+
+**What the flag does, and what it refuses.**
+
+* It lets `rzp_test_` keys run with `PAYMENT_WIRE=live`, and `CASHFREE_ENV=sandbox` run (also as
+  `PAYMENT_PROVIDER=cashfree`), although `ENVIRONMENT=production`. Nothing else is relaxed.
+* It is **refused** — `payment` will not start, and preflight fails first — beside
+  `PAYMENT_ALLOW_LIVE_KEYS=true`, beside **any** live-shaped key (`rzp_live_…`, a `cfsk_ma_prod_…` Cashfree
+  secret, even with its wire off), and beside `CASHFREE_ENV=production`. A box runs on test keys or on
+  live money, **never both**.
+* It is **loud**: `payment` logs one WARNING `payment.test_mode.enabled` every time it starts (the mode,
+  the environment and which providers run on test credentials; never a key); preflight prints a
+  `warn  !!! PAYMENT_ALLOW_TEST_KEYS is ON …` block on every deploy (a warning, never a failure);
+  `/api/v1/payment/info` answers `"mode": "test"`; and every platform checkout answer —
+  `POST /payment/checkouts`, `GET /payment/checkouts/{id}` and the confirm — carries
+  `"test_mode": true` (the dashboard shows a test-mode notice from it).
+
+**Turning it on.** Generate the keys in each provider's **test** environment (Razorpay: switch the
+dashboard to *Test Mode*, then Account & Settings → API Keys; Cashfree: the *Sandbox* dashboard →
+Developers → API Keys — the App ID starts `TEST`, the secret `cfsk_ma_test_`). Edit `.env` on the box
+(same rules as "5. Secrets": nothing goes through git, chat or CI; paste each value, never type it into a
+shell history). **Exactly these lines**, with the dashboard's values in place of the `<…>`:
+
+```bash
+PAYMENT_ALLOW_TEST_KEYS=true
+PAYMENT_PROVIDER=razorpay
+RAZORPAY_KEY_ID=<the rzp_test_ key id>
+RAZORPAY_KEY_SECRET=<its key secret>
+PAYMENT_WIRE=live
+CASHFREE_APP_ID=<the sandbox App ID, TEST...>
+CASHFREE_SECRET_KEY=<the sandbox secret key, cfsk_ma_test_...>
+CASHFREE_ENV=sandbox
+```
+
+`PAYMENT_PROVIDER` is the provider new invoices' checkouts open at: `razorpay` or `cashfree`, either
+works in test mode. One provider alone is fine too: leave the other's pair empty and its switch at `stub`
+(`PAYMENT_WIRE=stub`, or `CASHFREE_ENV=stub`), but then `PAYMENT_PROVIDER` must name the one that is on.
+`PAYMENT_ALLOW_LIVE_KEYS` must be **absent or `false`**. Then:
+
+```bash
+make edge-preflight HOST=… CONFIRM=…
+#   expect: "ok    payment provider switches are consistent", the "warn  !!! PAYMENT_ALLOW_TEST_KEYS is ON"
+#   block, a payment wire "switched on" line, and no FAIL row
+docker compose -f compose.prod.yml --env-file .env up -d payment payment-worker   # on the box, as in step 4
+make edge-logs HOST=… CONFIRM=… SERVICE=payment TAIL=100
+#   expect: payment.test_mode.enabled (warning) and payment.charge_poller.started; no
+#   payment.provider.credentials_rejected
+docker compose -f compose.prod.yml --env-file .env exec -T payment python -c \
+  "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/api/v1/payment/info').read().decode())"
+#   expect: "mode":"test" and "test_keys_allowed":true (provider names and modes only, never a key)
+```
+
+Then take one checkout end to end from a test organization: open it, pay with the provider's published
+**test** card or sandbox UPI id, and watch the status answer `paid: true` with `test_mode: true`.
+
+**Turning it off** (back to the default; do it before any real customer could pay on this box). In **one**
+edit of `.env`, remove the flag *and* take the test keys off the wires — removing only the flag while a
+`rzp_test_` pair is on a live wire, or the sandbox is on, makes `payment` refuse to start (preflight
+catches it first):
+
+```bash
+# delete PAYMENT_ALLOW_TEST_KEYS (or set it to false), and set:
+PAYMENT_PROVIDER=razorpay
+PAYMENT_WIRE=stub
+CASHFREE_ENV=stub
+# and empty both test pairs: RAZORPAY_KEY_ID=, RAZORPAY_KEY_SECRET=, CASHFREE_APP_ID=, CASHFREE_SECRET_KEY=
+```
+
+Then `make edge-preflight …` (the test-mode warning is gone) and the same `docker compose … up -d payment
+payment-worker`. To go live afterwards follow the previous section's step 4 with **live** keys and
+`PAYMENT_ALLOW_LIVE_KEYS=true`; the two flags are never on together.
+
+**What test mode leaves behind.** Invoices paid in test mode are marked paid (their subscriptions
+activated) with test money. `test_mode` describes the provider's credentials **now**, not when a charge
+was made, and no row records it, so **note the moment you turn test mode off**: every checkout charge
+created before it on this box was test money. Let open test checkouts resolve first (a day,
+`CHECKOUT_TTL_SECONDS`): once the wire is the stub, or on live keys, the platform can no longer ask about a
+test-mode Order (it answers "could not be asked" and expires nothing), exactly as the previous section's
+rollback describes.
+
+```sql
+-- the checkouts this box took before test mode was turned off (replace the instant)
+SELECT provider, state, failure_reason, count(*)
+FROM payment.charges
+WHERE flow = 'checkout' AND created_at < '2026-10-06T00:00:00Z'
+GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+```
 
 ### The billing run: first deploy, watching it, and what to do when it complains
 

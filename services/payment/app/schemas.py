@@ -20,6 +20,14 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 class ServiceInfo(BaseModel):
     service: str
     schema_name: str
+    #: The provider new platform charges and checkouts go to (`PAYMENT_PROVIDER`).
+    provider: str
+    #: What that provider runs on: `stub` (no provider is called), `test` (test / sandbox
+    #: credentials: test cards pay, no real money moves) or `live`.
+    mode: Literal["stub", "test", "live"]
+    #: Whether this deployment lets test credentials run although it says `production`
+    #: (`PAYMENT_ALLOW_TEST_KEYS`, a staging box only).
+    test_keys_allowed: bool
 
 
 # --------------------------------------------------------------------- charge create (internal)
@@ -332,7 +340,10 @@ class PlatformCheckoutOut(BaseModel):
     **public** key id and the Order id — never the secret) or `{"type": "cashfree_checkout",
     "payment_session_id", "mode", "openable"}`. `openable` is False on a stub provider: the Order
     is a local stand-in no real checkout would accept. The session token is never stored;
-    reopening fetches it again."""
+    reopening fetches it again. `test_mode` is true when the provider that owns the charge runs on
+    test / sandbox credentials (a Razorpay `rzp_test_` key on a live wire, or Cashfree's sandbox):
+    the checkout takes the provider's test cards and no real money moves. False on live
+    credentials and on a stub."""
 
     charge_id: uuid.UUID
     provider: str
@@ -340,6 +351,7 @@ class PlatformCheckoutOut(BaseModel):
     amount_minor: int
     currency: str
     expires_at: datetime
+    test_mode: bool
 
 
 class PlatformCheckoutStatusOut(BaseModel):
@@ -347,7 +359,9 @@ class PlatformCheckoutStatusOut(BaseModel):
     payment — one the provider reported, by a status check or a signed webhook; never because a
     browser said so. `provider_checked` is false when the provider could not be asked this time
     (the state shown is then the last one recorded). A failed checkout with `failure_reason`
-    `checkout_expired` is one nobody paid before it expired."""
+    `checkout_expired` is one nobody paid before it expired. `test_mode` is as on
+    `PlatformCheckoutOut`: the owning provider runs on test / sandbox credentials, so `paid` means
+    paid with a test instrument."""
 
     charge_id: uuid.UUID
     provider: str
@@ -358,6 +372,7 @@ class PlatformCheckoutStatusOut(BaseModel):
     expires_at: datetime | None
     failure_reason: str | None = None
     provider_checked: bool = True
+    test_mode: bool
 
 
 class CheckoutConfirmIn(BaseModel):

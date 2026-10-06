@@ -44,6 +44,7 @@ from app.providers.base import (
     ChargeResult,
     CheckoutRequest,
     CheckoutSession,
+    CredentialsMode,
     MalformedWebhook,
     MandateResult,
     OrderResult,
@@ -117,6 +118,13 @@ class CashfreeProvider:
     @property
     def is_live(self) -> bool:
         return self._mode != "stub"
+
+    @property
+    def credentials_mode(self) -> CredentialsMode:
+        """`stub` on the in-process fake, `test` on Cashfree's sandbox, `live` on production."""
+        if self._mode == "sandbox":
+            return "test"
+        return "live" if self._mode == "production" else "stub"
 
     @property
     def capabilities(self) -> ProviderCapabilities:

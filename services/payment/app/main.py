@@ -14,7 +14,7 @@ from app.api.routes import router
 from app.api.webhooks import router as webhooks_router
 from app.checkout.cron import build_poller
 from app.collections.cron import build_expiry_sweep
-from app.config import settings
+from app.config import announce_test_mode, settings
 from app.cron import build_sweep
 from app.models import OutboxEvent
 from platform_core.app import create_app
@@ -82,6 +82,13 @@ async def _start_background_worker(app: FastAPI) -> None:
     )
 
 
+async def _on_startup(app: FastAPI) -> None:
+    """Say so, loudly and once, when payments run in test mode on this box
+    (`PAYMENT_ALLOW_TEST_KEYS`); then fold the worker in."""
+    announce_test_mode(settings())
+    await _start_background_worker(app)
+
+
 async def _stop_background_worker(app: FastAPI) -> None:
     await stop_background_sweep(getattr(app.state, "background_worker_task", None))
     engine = getattr(app.state, "worker_bulkhead_engine", None)
@@ -110,7 +117,7 @@ app = create_app(
     # A stalled relay is silent. `/health/outbox` counts through the outbox engine so it is not
     # blind to the rows the app role cannot see.
     outbox_model=OutboxEvent,
-    on_startup=_start_background_worker,
+    on_startup=_on_startup,
     on_shutdown=_stop_background_worker,
 )
 

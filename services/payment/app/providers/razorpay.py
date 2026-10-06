@@ -88,6 +88,7 @@ from app.providers.base import (
     ChargeResult,
     CheckoutRequest,
     CheckoutSession,
+    CredentialsMode,
     MalformedWebhook,
     MandateResult,
     OrderResult,
@@ -338,6 +339,15 @@ class RazorpayProvider:
     def is_live(self) -> bool:
         """Whether calls reach Razorpay over the network (a live wire) or the in-process stub."""
         return self._wire is not None
+
+    @property
+    def credentials_mode(self) -> CredentialsMode:
+        """`stub` without a live wire (whatever key is set: nothing is called), `test` on a live
+        wire with a test-mode key id (`rzp_test_…`), and `live` for any other key on a live wire —
+        an unrecognised key is never reported as test mode."""
+        if self._wire is None:
+            return "stub"
+        return "test" if (self._key_id or "").startswith("rzp_test_") else "live"
 
     @property
     def capabilities(self) -> ProviderCapabilities:

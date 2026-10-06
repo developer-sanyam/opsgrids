@@ -430,6 +430,29 @@ def capabilities_of(provider: object) -> ProviderCapabilities:
     return declared if isinstance(declared, ProviderCapabilities) else LEGACY_CAPABILITIES
 
 
+#: What an adapter, as built, is running on: `stub` (no provider is called at all), `test` (a
+#: live wire on test / sandbox credentials: the provider's test cards pay, no real money moves) or
+#: `live` (real money).
+CredentialsMode = Literal["stub", "test", "live"]
+
+
+def credentials_mode_of(provider: object) -> CredentialsMode:
+    """`provider`'s declared `credentials_mode`, or `stub` for an adapter that declares none (a test
+    double, or an adapter built before this existed)."""
+    declared = getattr(provider, "credentials_mode", None)
+    if declared == "test":
+        return "test"
+    if declared == "live":
+        return "live"
+    return "stub"
+
+
+def in_test_mode(provider: object) -> bool:
+    """Whether `provider` runs on test / sandbox credentials — what a checkout's `test_mode`
+    reports. False for a stub (nothing is paid at all) and for live credentials."""
+    return credentials_mode_of(provider) == "test"
+
+
 # --------------------------------------------------------------------------- checkout
 
 #: 10 digits, or `+` and 8-15 digits for an international number — what a phone must look like to

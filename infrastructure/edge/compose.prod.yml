@@ -1051,6 +1051,12 @@ services:
       PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-razorpay}
       PAYMENT_WIRE: ${PAYMENT_WIRE:-stub}
       PAYMENT_ALLOW_LIVE_KEYS: ${PAYMENT_ALLOW_LIVE_KEYS:-false}
+      # STAGING ONLY: `true` lets Razorpay test keys (PAYMENT_WIRE=live) and CASHFREE_ENV=sandbox
+      # run although every service here says ENVIRONMENT=production — for a box with no real
+      # paying customers. Refused beside PAYMENT_ALLOW_LIVE_KEYS or any live key; `payment` logs a
+      # WARNING at start-up and preflight warns while it is on (RUNBOOK.md, 'Payments: test mode
+      # on a staging box').
+      PAYMENT_ALLOW_TEST_KEYS: ${PAYMENT_ALLOW_TEST_KEYS:-false}
       CASHFREE_ENV: ${CASHFREE_ENV:-stub}
       CASHFREE_APP_ID: ${CASHFREE_APP_ID:-}
       CASHFREE_SECRET_KEY: ${CASHFREE_SECRET_KEY:-}

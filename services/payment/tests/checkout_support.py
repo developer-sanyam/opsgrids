@@ -13,7 +13,7 @@ import contextlib
 import uuid
 from collections.abc import Iterator
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from httpx import AsyncClient
 
@@ -39,24 +39,39 @@ EMAIL = "pay.customer@example.com"
 NAME = "Pay Customer"
 
 
-def razorpay_live(fake: FakeRazorpay | None = None) -> RazorpayProvider:
-    """The platform's live Razorpay adapter over a stateful fake Razorpay."""
-    fake = fake or FakeRazorpay()
+def razorpay_live(fake: FakeRazorpay | None = None, *, key_id: str = KEY_ID) -> RazorpayProvider:
+    """The platform's live Razorpay adapter over a stateful fake Razorpay. The fake's own key is a
+    test-mode one (`rzp_test_…`); pass a `rzp_live_…` `key_id` for an adapter on live
+    credentials (the fake is then built for that key)."""
+    fake = fake or FakeRazorpay(key_id=key_id)
     provider = RazorpayProvider(
-        key_id=KEY_ID,
+        key_id=key_id,
         key_secret=KEY_SECRET,
         webhook_secret=HOOK,
-        wire=RazorpayHttpWire(key_id=KEY_ID, key_secret=KEY_SECRET, transport=fake.transport()),
+        wire=RazorpayHttpWire(key_id=key_id, key_secret=KEY_SECRET, transport=fake.transport()),
         platform_billing=True,
     )
     provider.fake = fake  # type: ignore[attr-defined]
     return provider
 
 
-def cashfree_stub(fake: CashfreeFakeWire | None = None) -> CashfreeProvider:
-    """The Cashfree adapter over its stateful fake — the wire `CASHFREE_ENV=stub` runs on."""
+def razorpay_stub() -> RazorpayProvider:
+    """The platform's Razorpay adapter with no wire — what `PAYMENT_WIRE=stub` builds, test keys
+    or not."""
+    return RazorpayProvider(
+        key_id=KEY_ID, key_secret=KEY_SECRET, webhook_secret=HOOK, platform_billing=True
+    )
+
+
+def cashfree_stub(
+    fake: CashfreeFakeWire | None = None,
+    *,
+    mode: Literal["stub", "sandbox", "production"] = "stub",
+) -> CashfreeProvider:
+    """The Cashfree adapter over its stateful fake — the wire `CASHFREE_ENV=stub` runs on. `mode`
+    is what the adapter believes it runs on (`sandbox` / `production`), over the same fake."""
     fake = fake or CashfreeFakeWire()
-    provider = CashfreeProvider(wire=fake, secret_key=CASHFREE_SECRET, mode="stub")
+    provider = CashfreeProvider(wire=fake, secret_key=CASHFREE_SECRET, mode=mode)
     provider.fake = fake  # type: ignore[attr-defined]
     return provider
 

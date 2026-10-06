@@ -8,12 +8,17 @@ outcome of a test about configuration.
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import SecretStr, ValidationError
+from structlog.testing import capture_logs
 
-from app.config import Settings
+from app.config import Settings, announce_test_mode
 from app.providers.wire import MAX_DECLARED_CALL_BUDGET_SECONDS
 
 # Placeholders in the shapes the validators judge by: not real keys, and not shaped like the real
@@ -47,6 +52,7 @@ _FROM_A_DEVELOPERS_ENV = (
     "CASHFREE_APP_ID",
     "CASHFREE_SECRET_KEY",
     "PAYMENT_ALLOW_LIVE_KEYS",
+    "PAYMENT_ALLOW_TEST_KEYS",
     "ENVIRONMENT",
     "PII_ENCRYPTION_KEY",
     "INTERNAL_SERVICE_TOKEN",
@@ -77,6 +83,7 @@ class TestAnUnconfiguredBox:
         assert cfg.payment_wire == "stub"
         assert cfg.cashfree_env == "stub"
         assert cfg.payment_allow_live_keys is False
+        assert cfg.payment_allow_test_keys is False
         assert cfg.razorpay_key_id is None and cfg.razorpay_key_secret is None
         assert cfg.cashfree_app_id is None and cfg.cashfree_secret_key is None
         assert cfg.provider_call_timeout_seconds == 45.0
@@ -264,6 +271,358 @@ class TestCashfree:
     def test_cashfree_as_the_default_is_fine_on_the_stub_off_production(self) -> None:
         cfg = build(payment_provider="cashfree")
         assert cfg.payment_provider == "cashfree" and cfg.cashfree_env == "stub"
+
+
+#: A Razorpay test pair on a live wire, and a Cashfree sandbox pair: what the staging box runs on.
+_RZP_TEST_LIVE_WIRE: dict[str, Any] = {
+    "payment_wire": "live",
+    "razorpay_key_id": RZP_TEST_ID,
+    "razorpay_key_secret": SecretStr(RZP_SECRET),
+}
+_CF_SANDBOX: dict[str, Any] = {
+    "cashfree_env": "sandbox",
+    "cashfree_app_id": SecretStr(CF_TEST_APP),
+    "cashfree_secret_key": SecretStr(CF_TEST_SECRET),
+}
+_CF_UNSHAPED_SECRET = "dev-only-unshaped-secret"  # pragma: allowlist secret
+
+
+class TestTheStagingTestKeysOverride:
+    """`PAYMENT_ALLOW_TEST_KEYS` (2026-10-06): the owner's edge box says `ENVIRONMENT=production`
+    but has no real paying customers, and is to run on Razorpay test keys and Cashfree sandbox
+    keys. The default is unchanged — test keys are refused there — and the flag never lets real
+    money move beside it."""
+
+    @pytest.mark.parametrize(
+        ("keys", "match"),
+        [
+            (_RZP_TEST_LIVE_WIRE, "PAYMENT_WIRE=live with test keys"),
+            (_CF_SANDBOX, "CASHFREE_ENV=sandbox is refused"),
+        ],
+    )
+    def test_the_default_still_refuses_test_keys_on_production(
+        self, keys: dict[str, Any], match: str
+    ) -> None:
+        refused(match, environment="production", **keys)
+        refused(match, environment="production", payment_allow_test_keys=False, **keys)
+
+    def test_the_flag_allows_razorpay_test_keys_on_a_live_wire_on_production(self) -> None:
+        cfg = build(environment="production", payment_allow_test_keys=True, **_RZP_TEST_LIVE_WIRE)
+        assert cfg.payment_wire == "live" and cfg.test_mode_providers == ("razorpay",)
+
+    def test_the_flag_allows_cashfree_sandbox_on_production_even_as_the_default(self) -> None:
+        cfg = build(
+            environment="production",
+            payment_allow_test_keys=True,
+            payment_provider="cashfree",
+            **_CF_SANDBOX,
+        )
+        assert cfg.cashfree_env == "sandbox" and cfg.test_mode_providers == ("cashfree",)
+
+    def test_the_flag_allows_both_providers_in_test_mode_at_once(self) -> None:
+        cfg = build(
+            environment="production",
+            payment_allow_test_keys=True,
+            **_RZP_TEST_LIVE_WIRE,
+            **_CF_SANDBOX,
+        )
+        assert cfg.test_mode_providers == ("razorpay", "cashfree")
+
+    def test_the_flag_without_keys_is_harmless(self) -> None:
+        for environment in ("production", "staging", "local"):
+            cfg = build(environment=environment, payment_allow_test_keys=True)
+            assert (cfg.payment_wire, cfg.cashfree_env) == ("stub", "stub")
+            assert cfg.test_mode_providers == ()
+
+    def test_test_keys_on_the_stub_are_not_test_mode(self) -> None:
+        """Keys never switch the network on, so keys alone are never "test mode" either."""
+        cfg = build(
+            environment="production",
+            payment_allow_test_keys=True,
+            razorpay_key_id=RZP_TEST_ID,
+            razorpay_key_secret=SecretStr(RZP_SECRET),
+        )
+        assert cfg.payment_wire == "stub" and cfg.test_mode_providers == ()
+
+    @pytest.mark.parametrize("environment", ["production", "local"])
+    @pytest.mark.parametrize(
+        "live",
+        [
+            pytest.param({"payment_allow_live_keys": True}, id="both-flags"),
+            pytest.param(
+                {
+                    "payment_allow_live_keys": True,
+                    "payment_wire": "live",
+                    "razorpay_key_id": RZP_LIVE_ID,
+                    "razorpay_key_secret": SecretStr(RZP_SECRET),
+                },
+                id="razorpay-live-allowed",
+            ),
+            pytest.param(
+                {"razorpay_key_id": RZP_LIVE_ID, "razorpay_key_secret": SecretStr(RZP_SECRET)},
+                id="razorpay-live-key-on-the-stub",
+            ),
+            pytest.param(
+                {
+                    "cashfree_app_id": SecretStr(CF_PROD_APP),
+                    "cashfree_secret_key": SecretStr(CF_PROD_SECRET),
+                },
+                id="cashfree-production-key-on-the-stub",
+            ),
+            pytest.param(
+                {
+                    "payment_allow_live_keys": True,
+                    "cashfree_env": "production",
+                    "cashfree_app_id": SecretStr(CF_PROD_APP),
+                    "cashfree_secret_key": SecretStr(CF_PROD_SECRET),
+                },
+                id="cashfree-production-allowed",
+            ),
+            pytest.param(
+                {
+                    "cashfree_env": "production",
+                    "cashfree_app_id": SecretStr(CF_PROD_APP),
+                    "cashfree_secret_key": SecretStr(_CF_UNSHAPED_SECRET),
+                },
+                id="cashfree-production-env",
+            ),
+        ],
+    )
+    def test_the_flag_beside_anything_that_moves_real_money_is_refused(
+        self, live: dict[str, Any], environment: str
+    ) -> None:
+        """Nobody can run live money with the test flag on, whatever else is set."""
+        refused(
+            "PAYMENT_ALLOW_TEST_KEYS",
+            environment=environment,
+            payment_allow_test_keys=True,
+            **live,
+        )
+
+    def test_live_keys_still_need_the_allow_live_flag_and_pass_without_the_test_flag(self) -> None:
+        refused(
+            "PAYMENT_ALLOW_LIVE_KEYS",
+            environment="production",
+            payment_wire="live",
+            razorpay_key_id=RZP_LIVE_ID,
+            razorpay_key_secret=SecretStr(RZP_SECRET),
+        )
+        cfg = build(
+            environment="production",
+            payment_allow_live_keys=True,
+            payment_wire="live",
+            razorpay_key_id=RZP_LIVE_ID,
+            razorpay_key_secret=SecretStr(RZP_SECRET),
+        )
+        assert cfg.payment_allow_test_keys is False and cfg.test_mode_providers == ()
+
+    def test_the_flag_relaxes_nothing_else(self) -> None:
+        """Only the two production refusals move. The stub is still not a default provider on a
+        production box, a half-set pair is still refused, and so on."""
+        flag: dict[str, Any] = {"environment": "production", "payment_allow_test_keys": True}
+        refused(
+            "needs CASHFREE_ENV=production",
+            payment_provider="cashfree",
+            cashfree_env="stub",
+            **flag,
+        )
+        refused("must be set together", razorpay_key_id=RZP_TEST_ID, **flag)
+        refused("PAYMENT_WIRE=live needs", payment_wire="live", **flag)
+        refused("needs CASHFREE_APP_ID", cashfree_env="sandbox", **flag)
+        refused(
+            "must be a Razorpay key id",
+            payment_wire="live",
+            razorpay_key_id="not-a-key",
+            razorpay_key_secret=SecretStr(RZP_SECRET),
+            **flag,
+        )
+
+    def test_read_from_the_environment_as_compose_passes_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plain strings, the way compose hands them over; `false` (compose's default) is off."""
+        for name, value in {
+            "ENVIRONMENT": "production",
+            "INTERNAL_SERVICE_TOKEN": "a" * 48,
+            "PII_ENCRYPTION_KEY": "b" * 48,
+            "PAYMENT_WIRE": "live",
+            "RAZORPAY_KEY_ID": RZP_TEST_ID,
+            "RAZORPAY_KEY_SECRET": RZP_SECRET,
+            "PAYMENT_ALLOW_TEST_KEYS": "false",
+        }.items():
+            monkeypatch.setenv(name, value)
+        with pytest.raises(ValidationError, match="PAYMENT_WIRE=live with test keys"):
+            Settings(_env_file=None)  # type: ignore[call-arg]
+        monkeypatch.setenv("PAYMENT_ALLOW_TEST_KEYS", "true")
+        cfg = Settings(_env_file=None)  # type: ignore[call-arg]
+        assert cfg.payment_allow_test_keys is True and cfg.test_mode_providers == ("razorpay",)
+
+    def test_a_refusal_never_prints_a_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PAYMENT_ALLOW_TEST_KEYS", "true")
+        monkeypatch.setenv("RAZORPAY_KEY_ID", RZP_LIVE_ID)
+        monkeypatch.setenv("RAZORPAY_KEY_SECRET", f"dev-only-{_MARKER}")
+        with pytest.raises(ValidationError, match="PAYMENT_ALLOW_TEST_KEYS") as raised:
+            Settings(_env_file=None)  # type: ignore[call-arg]
+        text = str(raised.value)
+        assert _MARKER not in text and RZP_LIVE_ID not in text and "input_value" not in text
+
+
+#: The edge box's preflight mirror of these validators (`lib/payment-switches.sh`).
+_PREFLIGHT_LIB = Path(__file__).resolve().parents[3] / "infrastructure/edge/lib/payment-switches.sh"
+#: Every variable either side reads, cleared before each case.
+_SWITCH_ENV = (
+    "PAYMENT_PROVIDER",
+    "PAYMENT_WIRE",
+    "CASHFREE_ENV",
+    "PAYMENT_ALLOW_LIVE_KEYS",
+    "PAYMENT_ALLOW_TEST_KEYS",
+    "RAZORPAY_KEY_ID",
+    "RAZORPAY_KEY_SECRET",
+    "CASHFREE_APP_ID",
+    "CASHFREE_SECRET_KEY",
+)
+_STAGING: dict[str, str] = {
+    "PAYMENT_ALLOW_TEST_KEYS": "true",
+    "PAYMENT_WIRE": "live",
+    "RAZORPAY_KEY_ID": RZP_TEST_ID,
+    "RAZORPAY_KEY_SECRET": RZP_SECRET,
+    "CASHFREE_ENV": "sandbox",
+    "CASHFREE_APP_ID": CF_TEST_APP,
+    "CASHFREE_SECRET_KEY": CF_TEST_SECRET,
+}
+
+
+@pytest.mark.skipif(
+    shutil.which("bash") is None or not _PREFLIGHT_LIB.exists(),
+    reason="needs bash and the repository's infrastructure/ (absent from a service image)",
+)
+class TestPreflightAgreesWithStartUp:
+    """The box's preflight must refuse what `payment` refuses and pass what it starts with — for the
+    test-keys override above all, since a disagreement either crash-loops `payment` after a green
+    preflight or blocks a deploy `payment` would have accepted. Every compose service runs with
+    `ENVIRONMENT=production`, so that is the environment both are judged in."""
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            pytest.param({}, id="unconfigured"),
+            pytest.param({"PAYMENT_ALLOW_TEST_KEYS": "true"}, id="flag-alone"),
+            pytest.param(_STAGING, id="staging"),
+            pytest.param({**_STAGING, "PAYMENT_PROVIDER": "cashfree"}, id="staging-cashfree"),
+            pytest.param({**_STAGING, "PAYMENT_ALLOW_TEST_KEYS": "1"}, id="staging-flag-1"),
+            pytest.param({**_STAGING, "PAYMENT_ALLOW_TEST_KEYS": "false"}, id="flag-off"),
+            pytest.param({**_STAGING, "PAYMENT_ALLOW_TEST_KEYS": ""}, id="flag-empty"),
+            pytest.param({"PAYMENT_ALLOW_TEST_KEYS": "maybe"}, id="flag-not-a-bool"),
+            pytest.param(
+                {"PAYMENT_ALLOW_TEST_KEYS": "true", "PAYMENT_ALLOW_LIVE_KEYS": "true"},
+                id="both-flags",
+            ),
+            pytest.param(
+                {"PAYMENT_ALLOW_TEST_KEYS": "True", "PAYMENT_ALLOW_LIVE_KEYS": "true"},
+                id="both-flags-capitalised",
+            ),
+            pytest.param(
+                {
+                    "PAYMENT_ALLOW_TEST_KEYS": "true",
+                    "RAZORPAY_KEY_ID": RZP_LIVE_ID,
+                    "RAZORPAY_KEY_SECRET": RZP_SECRET,
+                },
+                id="flag-and-a-live-razorpay-key",
+            ),
+            pytest.param(
+                {
+                    "PAYMENT_ALLOW_TEST_KEYS": "true",
+                    "CASHFREE_APP_ID": CF_PROD_APP,
+                    "CASHFREE_SECRET_KEY": CF_PROD_SECRET,
+                },
+                id="flag-and-a-production-cashfree-key",
+            ),
+            pytest.param(
+                {
+                    "PAYMENT_ALLOW_TEST_KEYS": "true",
+                    "PAYMENT_ALLOW_LIVE_KEYS": "true",
+                    "CASHFREE_ENV": "production",
+                    "CASHFREE_APP_ID": CF_PROD_APP,
+                    "CASHFREE_SECRET_KEY": CF_PROD_SECRET,
+                },
+                id="flag-and-cashfree-production",
+            ),
+            pytest.param(
+                {
+                    "PAYMENT_ALLOW_TEST_KEYS": "true",
+                    "PAYMENT_PROVIDER": "cashfree",
+                    "CASHFREE_ENV": "stub",
+                },
+                id="flag-cashfree-default-on-the-stub",
+            ),
+            pytest.param(
+                {
+                    "PAYMENT_ALLOW_LIVE_KEYS": "true",
+                    "PAYMENT_WIRE": "live",
+                    "RAZORPAY_KEY_ID": RZP_LIVE_ID,
+                    "RAZORPAY_KEY_SECRET": RZP_SECRET,
+                },
+                id="live-without-the-flag",
+            ),
+        ],
+    )
+    def test_both_reach_the_same_verdict(
+        self, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for name in _SWITCH_ENV:
+            monkeypatch.delenv(name, raising=False)
+        for name, value in {
+            "ENVIRONMENT": "production",
+            "INTERNAL_SERVICE_TOKEN": "a" * 48,
+            "PII_ENCRYPTION_KEY": "b" * 48,
+            **env,
+        }.items():
+            monkeypatch.setenv(name, value)
+        try:
+            Settings(_env_file=None)  # type: ignore[call-arg]
+            starts = True
+        except ValidationError:
+            starts = False
+
+        shell_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), **env}
+        # A fixed argv (no shell interpolation of `env`: it travels as the environment), the
+        # committed library, bash from PATH as preflight itself runs it.
+        done = subprocess.run(  # noqa: S603
+            ["bash", "-c", f'source "{_PREFLIGHT_LIB}"; payment_switch_problems'],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=True,
+            env=shell_env,
+        )
+        preflight_passes = done.stdout.strip() == ""
+        assert starts == preflight_passes, (starts, done.stdout)
+
+
+class TestTheStartUpWarning:
+    def test_the_flag_logs_one_warning_naming_test_mode_and_no_key(self) -> None:
+        cfg = build(
+            environment="production",
+            payment_allow_test_keys=True,
+            **_RZP_TEST_LIVE_WIRE,
+            **_CF_SANDBOX,
+        )
+        with capture_logs() as logs:
+            assert announce_test_mode(cfg) is True
+        assert len(logs) == 1
+        (entry,) = logs
+        assert entry["log_level"] == "warning" and entry["event"] == "payment.test_mode.enabled"
+        assert entry["mode"] == "test" and entry["environment"] == "production"
+        assert entry["test_mode_providers"] == ["razorpay", "cashfree"]
+        assert "TEST MODE" in entry["detail"]
+        shown = repr(logs)
+        for value in (RZP_TEST_ID, RZP_SECRET, CF_TEST_APP, CF_TEST_SECRET):
+            assert value not in shown
+
+    def test_off_it_is_silent_whatever_keys_are_set(self) -> None:
+        cfg = build(environment="staging", **_RZP_TEST_LIVE_WIRE, **_CF_SANDBOX)
+        with capture_logs() as logs:
+            assert announce_test_mode(cfg) is False
+        assert logs == []
 
 
 class TestTheCallBudget:

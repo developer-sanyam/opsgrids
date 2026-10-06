@@ -41,7 +41,7 @@ from app.checkout.services import bind
 from app.collections.services import ProviderUnreachableProblem
 from app.deps import ProviderResolver, get_provider, resolve_provider
 from app.models import CHARGE_CAPTURED, CHARGE_FAILED, Charge
-from app.providers.base import PaymentProvider, capabilities_of
+from app.providers.base import PaymentProvider, capabilities_of, in_test_mode
 from app.providers.wire import CREDENTIALS
 from app.schemas import (
     CheckoutConfirmIn,
@@ -78,7 +78,21 @@ def _provider_for(default: PaymentProvider) -> ProviderResolver:
     return resolve
 
 
-def _status_out(charge: Charge, *, provider_checked: bool) -> PlatformCheckoutStatusOut:
+def _test_mode(provider_for: ProviderResolver, name: str) -> bool:
+    """Whether provider `name` — the one that owns the charge — runs on test / sandbox
+    credentials. A provider that cannot be built here (a row from a provider this deployment no
+    longer has) is reported as not test mode: a status read never fails over a display flag."""
+    try:
+        return in_test_mode(provider_for(name))
+    except (ValueError, RuntimeError):
+        return False
+
+
+def _status_out(
+    charge: Charge, *, provider_checked: bool, provider_for: ProviderResolver
+) -> PlatformCheckoutStatusOut:
+    """The status answer. `test_mode` is the **owning** provider's (the row's, never the default's):
+    a Razorpay checkout opened before a flip to Cashfree is still paid at Razorpay."""
     return PlatformCheckoutStatusOut(
         charge_id=charge.id,
         provider=charge.provider,
@@ -89,6 +103,7 @@ def _status_out(charge: Charge, *, provider_checked: bool) -> PlatformCheckoutSt
         expires_at=charge.checkout_expires_at,
         failure_reason=charge.failure_reason if charge.state == CHARGE_FAILED else None,
         provider_checked=provider_checked,
+        test_mode=_test_mode(provider_for, charge.provider),
     )
 
 
@@ -295,6 +310,7 @@ async def open_checkout(
         amount_minor=charge.amount_minor,
         currency=charge.currency,
         expires_at=charge.checkout_expires_at,
+        test_mode=_test_mode(provider_for, charge.provider),
     )
 
 
@@ -329,13 +345,14 @@ async def get_checkout(
     still asked about inside its late-capture window: a payment made on its Order after it closed is
     recorded, and the answer is `paid: true`."""
     organization_id = ctx.organization_id
+    provider_for = _provider_for(provider)
     charge = await _require_checkout(session, organization_id, charge_id)
     if not _asks_provider(charge, datetime.now(UTC)):
-        return _status_out(charge, provider_checked=False)
-    settled = await _settle(
-        session, _provider_for(provider), organization_id, charge_id, request=request
+        return _status_out(charge, provider_checked=False, provider_for=provider_for)
+    settled = await _settle(session, provider_for, organization_id, charge_id, request=request)
+    return _status_out(
+        settled.charge or charge, provider_checked=settled.asked, provider_for=provider_for
     )
-    return _status_out(settled.charge or charge, provider_checked=settled.asked)
 
 
 @router.post(
@@ -358,8 +375,9 @@ async def confirm_checkout(
     reconcile the answer. The callback proves nothing: `paid` is true only if that answer shows a
     captured payment."""
     organization_id = ctx.organization_id
+    provider_for = _provider_for(provider)
     charge = await _require_checkout(session, organization_id, charge_id)
-    adapter = _provider_for(provider)(charge.provider)
+    adapter = provider_for(charge.provider)
     if not capabilities_of(adapter).checkout_confirmation:
         raise ConflictProblem("This checkout has no browser confirmation; poll its status instead")
     order_id, payment_id, signature = (
@@ -382,16 +400,14 @@ async def confirm_checkout(
     # window: the callback is proof that a payment was made on its Order, and a capture of it is
     # money that moved after this platform stopped waiting.
     if not _asks_provider(charge, datetime.now(UTC)):
-        return _status_out(charge, provider_checked=False)
+        return _status_out(charge, provider_checked=False, provider_for=provider_for)
     if CREDENTIALS.tripped(adapter.name):
         raise services.CheckoutUnavailableProblem("Online payment is temporarily unavailable")
-    settled = await _settle(
-        session, _provider_for(provider), organization_id, charge_id, request=request
-    )
+    settled = await _settle(session, provider_for, organization_id, charge_id, request=request)
     if not settled.asked:
         # The signature held, but the provider could not be asked: not "paid", not "failed" — the
         # browser polls `GET` and learns when it can.
         raise ProviderUnreachableProblem(
             "The payment provider could not confirm the payment yet; try again"
         )
-    return _status_out(settled.charge or charge, provider_checked=True)
+    return _status_out(settled.charge or charge, provider_checked=True, provider_for=provider_for)

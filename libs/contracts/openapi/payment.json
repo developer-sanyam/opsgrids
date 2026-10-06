@@ -311,7 +311,7 @@
         "type": "object"
       },
       "PlatformCheckoutOut": {
-        "description": "What the browser needs to open the provider's checkout, and what it will charge.\n`amount_minor` and `currency` are the invoice's own charge's. `client_action` is provider-shaped\nand tagged by `type`: `{\"type\": \"razorpay_checkout\", \"key_id\", \"order_id\", \"openable\"}` (the\n**public** key id and the Order id \u2014 never the secret) or `{\"type\": \"cashfree_checkout\",\n\"payment_session_id\", \"mode\", \"openable\"}`. `openable` is False on a stub provider: the Order\nis a local stand-in no real checkout would accept. The session token is never stored;\nreopening fetches it again.",
+        "description": "What the browser needs to open the provider's checkout, and what it will charge.\n`amount_minor` and `currency` are the invoice's own charge's. `client_action` is provider-shaped\nand tagged by `type`: `{\"type\": \"razorpay_checkout\", \"key_id\", \"order_id\", \"openable\"}` (the\n**public** key id and the Order id \u2014 never the secret) or `{\"type\": \"cashfree_checkout\",\n\"payment_session_id\", \"mode\", \"openable\"}`. `openable` is False on a stub provider: the Order\nis a local stand-in no real checkout would accept. The session token is never stored;\nreopening fetches it again. `test_mode` is true when the provider that owns the charge runs on\ntest / sandbox credentials (a Razorpay `rzp_test_` key on a live wire, or Cashfree's sandbox):\nthe checkout takes the provider's test cards and no real money moves. False on live\ncredentials and on a stub.",
         "properties": {
           "amount_minor": {
             "title": "Amount Minor",
@@ -339,6 +339,10 @@
           "provider": {
             "title": "Provider",
             "type": "string"
+          },
+          "test_mode": {
+            "title": "Test Mode",
+            "type": "boolean"
           }
         },
         "required": [
@@ -347,13 +351,14 @@
           "client_action",
           "amount_minor",
           "currency",
-          "expires_at"
+          "expires_at",
+          "test_mode"
         ],
         "title": "PlatformCheckoutOut",
         "type": "object"
       },
       "PlatformCheckoutStatusOut": {
-        "description": "The state of one checkout, as the server knows it. `paid` is true only for a **captured**\npayment \u2014 one the provider reported, by a status check or a signed webhook; never because a\nbrowser said so. `provider_checked` is false when the provider could not be asked this time\n(the state shown is then the last one recorded). A failed checkout with `failure_reason`\n`checkout_expired` is one nobody paid before it expired.",
+        "description": "The state of one checkout, as the server knows it. `paid` is true only for a **captured**\npayment \u2014 one the provider reported, by a status check or a signed webhook; never because a\nbrowser said so. `provider_checked` is false when the provider could not be asked this time\n(the state shown is then the last one recorded). A failed checkout with `failure_reason`\n`checkout_expired` is one nobody paid before it expired. `test_mode` is as on\n`PlatformCheckoutOut`: the owning provider runs on test / sandbox credentials, so `paid` means\npaid with a test instrument.",
         "properties": {
           "amount_minor": {
             "title": "Amount Minor",
@@ -413,6 +418,10 @@
             ],
             "title": "State",
             "type": "string"
+          },
+          "test_mode": {
+            "title": "Test Mode",
+            "type": "boolean"
           }
         },
         "required": [
@@ -422,7 +431,8 @@
           "paid",
           "amount_minor",
           "currency",
-          "expires_at"
+          "expires_at",
+          "test_mode"
         ],
         "title": "PlatformCheckoutStatusOut",
         "type": "object"
@@ -575,6 +585,19 @@
       },
       "ServiceInfo": {
         "properties": {
+          "mode": {
+            "enum": [
+              "stub",
+              "test",
+              "live"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
           "schema_name": {
             "title": "Schema Name",
             "type": "string"
@@ -582,11 +605,18 @@
           "service": {
             "title": "Service",
             "type": "string"
+          },
+          "test_keys_allowed": {
+            "title": "Test Keys Allowed",
+            "type": "boolean"
           }
         },
         "required": [
           "service",
-          "schema_name"
+          "schema_name",
+          "provider",
+          "mode",
+          "test_keys_allowed"
         ],
         "title": "ServiceInfo",
         "type": "object"
@@ -915,6 +945,7 @@
     },
     "/api/v1/payment/info": {
       "get": {
+        "description": "The service, the provider new checkouts go to and what it runs on: `mode` is `test` when that\nprovider is on test / sandbox credentials (a staging box under `PAYMENT_ALLOW_TEST_KEYS`).\nNames and modes only \u2014 never a key or any part of one.",
         "operationId": "info_api_v1_payment_info_get",
         "responses": {
           "200": {
