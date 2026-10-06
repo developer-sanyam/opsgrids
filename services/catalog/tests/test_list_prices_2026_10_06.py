@@ -1,11 +1,11 @@
-"""The list prices of 2026-10-06 (`b88a833020dc`, ADR-0035): INR 30,000/month, INR 3,00,000/year.
+"""The list prices of 2026-10-06 (`b88a833020dc`, ADR-0035): INR 3,00,000/year, INR 25,000/month.
 
 What is pinned:
 
-* **The owner's numbers, exactly.** The eleven monthly amounts sum to 3,000,000 paise and the eleven
-  yearly ones to 30,000,000; each yearly amount is ten times its monthly one; the split follows the
-  prices the flat plans were seeded at (read from those migrations by path, not restated). Pure, no
-  database.
+* **The owner's numbers, exactly.** The eleven yearly amounts sum to 30,000,000 paise (the owner's
+  INR 3,00,000) and the eleven monthly ones to 2,500,000; each monthly amount is exactly its yearly
+  one divided by twelve; the split follows the prices the flat plans were seeded at (read from those
+  migrations by path, not restated). Pure, no database.
 * **The migration inserts, and only inserts.** Every one of the eleven public flat base plans gains
   a yearly version and then a monthly one, published, public, at the new amount, with deterministic
   ids. Every row that existed before is byte-for-byte unchanged — the old version is still
@@ -83,19 +83,21 @@ BEFORE: str = LP.down_revision
 #: The revision under every flat-plan seed: stepping down to it and back up re-seeds all eleven.
 UNDER_SEEDS: str = INVENTORY.down_revision
 
-#: The owner's decision of 2026-10-06, as handed over: (product_key, code) -> (month, year) paise.
+#: The owner's decision of 2026-10-06 — "300000rs years and monthly so divided according to that" —
+#: in paise: (product_key, code) -> (month, year). The yearly total is the owner's number; each
+#: monthly price is its yearly price divided by twelve.
 OWNER_DECISION: dict[tuple[str, str], tuple[int, int]] = {
-    ("crm", "revenue"): (300000, 3000000),
-    ("hrms", "people"): (300000, 3000000),
-    ("itsm", "it"): (300000, 3000000),
-    ("finance", "finance"): (375000, 3750000),
-    ("operations", "inventory"): (375000, 3750000),
-    ("engage", "engage"): (225000, 2250000),
-    ("marketing", "marketing"): (225000, 2250000),
-    ("projects", "projects"): (225000, 2250000),
-    ("pulseboard", "pulseboard"): (225000, 2250000),
-    ("storefront", "storefront"): (225000, 2250000),
-    ("support", "support"): (225000, 2250000),
+    ("crm", "revenue"): (250000, 3000000),
+    ("hrms", "people"): (250000, 3000000),
+    ("itsm", "it"): (250000, 3000000),
+    ("finance", "finance"): (312500, 3750000),
+    ("operations", "inventory"): (312500, 3750000),
+    ("engage", "engage"): (187500, 2250000),
+    ("marketing", "marketing"): (187500, 2250000),
+    ("projects", "projects"): (187500, 2250000),
+    ("pulseboard", "pulseboard"): (187500, 2250000),
+    ("storefront", "storefront"): (187500, 2250000),
+    ("support", "support"): (187500, 2250000),
 }
 
 
@@ -120,17 +122,20 @@ class TestTheNumbers:
             assert type(monthly) is int and type(yearly) is int, "money is integer minor units"
             assert monthly > 0 and yearly > 0
 
-    def test_the_monthly_prices_sum_to_exactly_thirty_thousand_rupees(self) -> None:
-        assert sum(m for _k, _c, m, _y in LP.NEW_PRICES) == 3_000_000
-        assert LP.MONTHLY_TOTAL_MINOR == 3_000_000
+    def test_the_monthly_prices_sum_to_exactly_twenty_five_thousand_rupees(self) -> None:
+        assert sum(m for _k, _c, m, _y in LP.NEW_PRICES) == 2_500_000
+        assert LP.MONTHLY_TOTAL_MINOR == 2_500_000
 
     def test_the_yearly_prices_sum_to_exactly_three_lakh_rupees(self) -> None:
         assert sum(y for _k, _c, _m, y in LP.NEW_PRICES) == 30_000_000
         assert LP.YEARLY_TOTAL_MINOR == 30_000_000
 
-    def test_a_year_costs_ten_months(self) -> None:
+    def test_a_month_is_exactly_a_twelfth_of_the_year(self) -> None:
+        """The owner fixed the year (INR 3,00,000) and divided the month from it: no yearly
+        discount is invented, and no paise is lost to rounding on either side."""
         for product_key, _code, monthly, yearly in LP.NEW_PRICES:
-            assert yearly == 10 * monthly, product_key
+            assert yearly == 12 * monthly, product_key
+        assert LP.YEARLY_TOTAL_MINOR == 12 * LP.MONTHLY_TOTAL_MINOR
 
     def test_it_reprices_exactly_the_eleven_public_flat_plans_the_seeds_made(self) -> None:
         assert {(k, c) for k, c, _m, _y in LP.NEW_PRICES} == set(_seeded_prices())
@@ -142,8 +147,8 @@ class TestTheNumbers:
         new = {(k, c): m for k, c, m, _y in LP.NEW_PRICES}
         for plan, old in seeded.items():
             exact_share = old * LP.MONTHLY_TOTAL_MINOR  # / old_total, kept in integers
-            # Within 0.1% of the exact proportional share: the owner rounded to whole rupees that
-            # still sum to INR 30,000.
+            # Within 0.1% of the exact proportional share: rounded to whole rupees that still sum
+            # to INR 25,000 a month (and so, twelve times each, to INR 3,00,000 a year).
             assert abs(new[plan] * old_total - exact_share) * 1000 <= exact_share, plan
         # The same old price gives the same new one, and the order is kept.
         for a, b in ((a, b) for a in seeded for b in seeded):
@@ -653,7 +658,7 @@ class TestWhatIsOfferedAfterwards:
             for r in response.json()["versions"]
         }
         assert rows == {
-            "month": (LP.VERSION_IDS[("crm", "month")], 300000),
+            "month": (LP.VERSION_IDS[("crm", "month")], 250000),
             "year": (LP.VERSION_IDS[("crm", "year")], 3000000),
         }
         as_subscription = await yesterday.get(
@@ -718,7 +723,7 @@ class TestWhatIsOfferedAfterwards:
         )
 
         # Both new versions pin: the lookup subscription makes before it subscribes or switches.
-        for cadence, amount in (("month", 300000), ("year", 3000000)):
+        for cadence, amount in (("month", 250000), ("year", 3000000)):
             pin = await yesterday.get(
                 f"/internal/v1/plan-versions/{LP.VERSION_IDS[('crm', cadence)]}",
                 headers=_internal("subscription"),

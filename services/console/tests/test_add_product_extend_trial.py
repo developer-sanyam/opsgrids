@@ -528,7 +528,7 @@ class TestAddProductOptions:
             {
                 "versions": [
                     _offered("finance", yearly, billing_interval="year", prices=_flat(3750000)),
-                    _offered("finance", monthly, prices=_flat(375000)),
+                    _offered("finance", monthly, prices=_flat(312500)),
                 ]
             },
         )

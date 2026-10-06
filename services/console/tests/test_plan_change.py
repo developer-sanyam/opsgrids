@@ -513,7 +513,7 @@ class TestPlanOptions:
                         billing_interval="year",
                         prices=_flat(3000000),
                     ),
-                    self._offered(monthly, plan_name="People", version_no=3, prices=_flat(300000)),
+                    self._offered(monthly, plan_name="People", version_no=3, prices=_flat(250000)),
                 ]
             },
         )
@@ -526,7 +526,7 @@ class TestPlanOptions:
         by_id = {o["plan_version_id"]: o for o in body["options"]}
         assert set(by_id) == {str(yearly), str(monthly)}, "the old version is no longer offered"
         assert by_id[str(monthly)]["blocked_code"] is None
-        assert by_id[str(monthly)]["recurring_minor"] == 300000
+        assert by_id[str(monthly)]["recurring_minor"] == 250000
         assert by_id[str(yearly)]["blocked_code"] == "cadence"
         assert by_id[str(yearly)]["recurring_minor"] == 3000000
 
