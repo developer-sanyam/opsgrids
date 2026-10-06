@@ -475,6 +475,7 @@ class TestRunSupervisedForever:
         loop = asyncio.get_running_loop()
         started_at = loop.time()
         restarted_at: float | None = None
+        restarted = asyncio.Event()
 
         def build() -> dict[str, Any]:
             attempt = len(attempts)
@@ -485,6 +486,7 @@ class TestRunSupervisedForever:
                 if attempt == 0:
                     raise RuntimeError("boom")
                 restarted_at = loop.time()
+                restarted.set()
                 await asyncio.sleep(60)
 
             return {"loop": one_loop()}
@@ -493,10 +495,11 @@ class TestRunSupervisedForever:
         task = asyncio.ensure_future(
             run_supervised_forever(build, name="probe.group", initial_backoff=backoff)
         )
-        for _ in range(200):
-            if len(attempts) >= 2:
-                break
-            await asyncio.sleep(0.01)
+        # Wait for the restarted loop to actually *run*, not for `build` to have been called a
+        # second time: `build` returns a coroutine that only starts a scheduler turn later, so a
+        # poll that lands between the two sees two attempts and no restart yet. On a loaded CI
+        # runner that gap was wide enough to fail the assertion below.
+        await asyncio.wait_for(restarted.wait(), timeout=10)
 
         assert len(attempts) == 2, "the group must be rebuilt (a fresh coroutine) on restart"
         assert restarted_at is not None
