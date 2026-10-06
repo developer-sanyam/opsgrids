@@ -3,9 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    # TEMPORARY: ci/faster-pipeline is listed only so pushes to the branch can be measured on
-    # real runners before a pull request exists. Removed in the last commit of the branch.
-    branches: [main, ci/faster-pipeline]
+    branches: [main]
 
 # A newer push to a pull request makes the older run's result irrelevant, so it is cancelled
 # rather than left to burn runner minutes. A push to main is never cancelled and never queued

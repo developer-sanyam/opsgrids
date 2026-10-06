@@ -82,7 +82,7 @@ database (and refuses to run unless `CI=true`). It is 25–40% faster on a GitHu
 ### Measured timings
 
 Seven recent runs before the change, wall clock: 22.9, 37.1, 30.0, 28.6, 36.1, 33.3, **32.5** minutes. None was green.
-The table compares the latest of them (a `main` push) with the first run of the sharded pipeline (a push to the branch,
+The table compares the latest of them (a `main` push) with the first run of the sharded pipeline (a push to the branch through a temporary trigger, since removed,
 whole pipeline, same trigger shape as `main`). Rows marked *stopped* ended at their first red step, so their
 later rows did not run — the "after" column shows what those rows cost once they were allowed to report.
 
