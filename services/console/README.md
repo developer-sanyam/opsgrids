@@ -44,6 +44,13 @@ so it builds and runs before those services' PRs are merged.
 - `GET /api/v1/admin/subscriptions`, `GET /api/v1/admin/usage`, `GET /api/v1/admin/audit`.
 - `POST /api/v1/admin/overrides` — **delegates** to the owning service's `/internal/v1` under a
   service token (suspend → subscription; comp grant → billing); records a local audit row only.
+- Staff plan switching (`owner`, `billing_ops`; ADR-0029): `GET .../organizations/{id}/plan-options`,
+  `POST .../subscriptions/{product_key}/plan-change:preview` and `POST .../plan-change` (requires an
+  `Idempotency-Key`). A trial switches now, a paying subscription at its next billing period. The confirm writes
+  a claim row in `console.idempotency_keys` **before** it calls subscription, and an intent and an outcome audit
+  row around the call. The preview and the confirm re-read catalog's offerable set and refuse any other target
+  (`not_offerable`) — a withdrawal back to the current pin excepted; the operator's reason stays on the audit
+  trail and never rides the subscription event.
 
 `require_operator` is defence in depth behind the gateway's staff gate: a non-operator-audience
 token gets 404, the same answer an unknown path gives.

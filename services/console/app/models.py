@@ -205,6 +205,57 @@ class UsageSummary(Base, TenantBase):
     )
 
 
+#: `idempotency_keys.status`: the claim was written and the downstream call is (or was) in flight.
+IDEMPOTENCY_IN_PROGRESS = "in_progress"
+#: The downstream call succeeded; `response` holds what the caller was told.
+IDEMPOTENCY_SUCCEEDED = "succeeded"
+#: The downstream call was refused for a reason a retry cannot change (a 4xx); `response` holds
+#: the problem, replayed verbatim to a retry with the same key and body.
+IDEMPOTENCY_REFUSED = "refused"
+#: The call's outcome is not known (a timeout or a 5xx after the request left): a retry reconciles
+#: from a live read before it acts.
+IDEMPOTENCY_UNKNOWN = "unknown"
+
+
+class IdempotencyKey(Base, TenantBase):
+    """The claim row a staff action writes **before** it calls the owning service.
+
+    Console's earlier `Idempotency-Key` (the bespoke price) was optional, lookup-only, written
+    *after* the downstream call and backed by no unique index — so a retry racing the first
+    attempt, or a crash between the call and the record, could run the action twice. This is the
+    claim of claim → call → record (docs/io-outside-transactions.md): the unique
+    `(organization_id, key)` makes the second of two concurrent requests lose the insert, so the
+    downstream call is made by exactly one of them; and the row outlives the call, so a retry after
+    it replays the recorded result instead of acting again.
+
+    `fingerprint` is a digest of what the request *decided* (organization, product, target, the
+    state the operator saw) — the same key with a different one is a 409, never a replay of
+    someone else's answer. `status` and `response` are the replay: `succeeded` returns what the
+    caller was told, `refused` returns the same refusal, `in_progress` is a request still running
+    (or crashed), `unknown` is a call whose outcome could not be read.
+
+    Tenant-scoped and RLS-policied like every other console table; read and written under the app
+    role bound to the **target** organization, never by the cross-tenant directory reader.
+    """
+
+    __tablename__ = "idempotency_keys"
+
+    #: The caller's `Idempotency-Key` header, as sent (at most 255 characters).
+    key: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: What the key was used for: `plan_change`.
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=IDEMPOTENCY_IN_PROGRESS)
+    #: What a replay returns: the success body, or the recorded problem.
+    response: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+    __table_args__ = (
+        # The claim itself. A second insert of the same key for the same organization conflicts, and
+        # that conflict is what makes "exactly one of two concurrent requests calls downstream".
+        UniqueConstraint("organization_id", "key", name="uq_idempotency_keys_organization_id_key"),
+    )
+
+
 class OutboxEvent(Base, OutboxMixin):
     """Domain events staged in the same transaction as the change they describe.
 

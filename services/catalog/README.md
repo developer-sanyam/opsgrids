@@ -14,8 +14,11 @@ make relay SERVICE=catalog           # outbox relay
 
 - **`plans`** — a named offering under one product, keyed by the `product_key` string (no
   cross-schema FK). Unique per `(product_key, code)`. Retired, never deleted.
-- **`plan_versions`** — an immutable, priced snapshot a subscription pins. `draft -> published`;
-  once `published` the row is frozen by a `BEFORE UPDATE` trigger and a service guard. A nullable
+- **`plan_versions`** — an immutable, priced snapshot a subscription pins. `draft -> published
+  -> grandfathered`; once `published` the row is frozen by a `BEFORE UPDATE` trigger and a service
+  guard, which allow exactly one change — withdraw, `state` to `grandfathered` with every other
+  column identical — and refuse any update of a grandfathered row (migration `b7e4d2a9c613`). A
+  draft may be deleted; nothing published ever is. A nullable
   **`restricted_to_org_id`** makes a version bespoke — an audience of one — for negotiated
   pricing (ADR-0004 §2); a NULL is a public version.
 - **`prices`** — a priced component (`flat` / `per_seat` / `usage`). Money is integer minor
@@ -34,14 +37,21 @@ take no RLS policy. Bespoke visibility is an application filter
 (`restricted_to_org_id IS NULL OR = principal.organization_id`), defended by a negative-authz
 test — a global table cannot lean on row-level security. Only `audit_logs` and `outbox` are
 tenant-policied, bound to the platform sentinel organization that catalog's own platform-level
-rows belong to.
+rows belong to — and `idempotency_keys`, the claim table behind the required `Idempotency-Key` on
+every operator write (unique `(organization_id, key)`, the request fingerprint and the response to
+replay), policied the same way.
 
 ## Publishes
 
 - **`catalog.plan_version.published`** — a version is now frozen and offerable. Payload carries
   the plan, product, version, currency, interval, `restricted_to_org_id`, and `published_at`.
+- **`catalog.plan_version.grandfathered`** — a published version was withdrawn: existing pins keep
+  it, and no new subscription or new plan change can choose it. A change already *scheduled* onto it
+  still applies at renewal (subscription re-pins without re-reading catalog; ADR-0030 §4). Same
+  payload shape plus `withdrawn_at`.
 - **`catalog.plan.retired`** — a plan is no longer offered (its pinned versions stay
   reconstructable).
+- **`catalog.plan.reactivated`** — a retired plan is offered again.
 
 ## Consumes
 
@@ -60,11 +70,32 @@ version that declares `bundled_products` asks product-service's registry
 (`GET /internal/v1/products`, `PRODUCT_SERVICE_URL`) whether every member is a real, non-platform,
 non-bundle product and refuses the draft otherwise (503 if the registry cannot be reached).
 
+## Internal reads (`/internal/v1`, service token)
+
+`GET /internal/v1/organizations/{org_id}/offerable-versions?product_key=` — console's plan picker (console token
+only): active plans' published versions that are public or negotiated for exactly that organization, with plan
+identity and prices (ids and amounts), superseded versions dropped (ADR-0029).
+
 ## Surfaces
 
 - **Customer** (product gateway): `GET /api/v1/plans?product_key=`, `GET /api/v1/catalog/plans/{id}`
   — published versions the caller may see, behind `core.product.catalogue.read`.
-- **Operator** (operator gateway, `staff_only`): `POST`/`PATCH /api/v1/admin/catalog/plans`,
-  `POST .../plans/{id}/retire`, `POST .../plans/{id}/versions` (clone-to-draft; bespoke when
-  `restricted_to_org_id` is set), `POST .../versions/{id}/publish`. Refused with 404, not 403,
-  to any non-operator token.
+- **Operator** (operator gateway, `staff_only`, ADR-0030). Reads, `owner` and `billing_ops` (not
+  `support` — bespoke prices are negotiated prices): `GET /api/v1/admin/catalog/plans`
+  (`product_key`, `audience=public|restricted|all` default `public`, `state`, keyset `cursor`,
+  `limit`), `GET .../plans/{id}` (version summaries, paged), `GET .../versions/{id}` (the full
+  sheet, prices in a deterministic order, with ids). Writes, `owner` only, each with a `reason`
+  and a **required** `Idempotency-Key`: `POST`/`PATCH .../plans` (product key checked against the
+  registry), `POST .../plans/{id}/retire`, `.../reactivate`, `POST .../plans/{id}/versions` (the sheet
+  as sent — a non-empty `prices`, `features` or `seat_classes` turns cloning off for all three, so
+  completeness is the client's job; the console always sends the whole sheet; bespoke when `restricted_to_org_id` is set; a lost version-number race retries in a
+  savepoint), `POST .../versions/{id}/publish` (validated first — see below; `allow_zero_amounts`
+  to publish a deliberate zero), `POST .../versions/{id}/withdraw`, `DELETE .../versions/{id}`
+  (drafts only). Refused with 404, not 403, to any non-operator token.
+
+Publishing refuses, all at once as `errors[]`: no prices; a currency outside
+`domain.SELLABLE_CURRENCIES`; a usage price with no `meter_key` or rate; a per-seat price with no
+unit; a zero amount without `allow_zero_amounts`; an invalid `trial_days`; bundle members
+today's registry no longer vouches for; and a version of a bundle product that declares no
+`bundled_products` (`bundle_members_missing`). Publishing therefore needs the registry for every
+version (503 while product-service is down); drafting a plain version does not.

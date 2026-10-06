@@ -155,10 +155,12 @@ class Plan(Base):
 class PlanVersion(Base):
     """One immutable priced snapshot of a plan. A subscription pins exactly one of these.
 
-    `state` moves `draft -> published`, and `published -> grandfathered` when a newer version
-    supersedes it while existing subscriptions stay pinned. **Once `published`, the row never
-    changes** — enforced by a `BEFORE UPDATE` trigger and by the service layer. Re-pricing is
-    a new version, never an edit (ADR-0000 §9, ADR-0004 §2).
+    `state` moves `draft -> published`, and `published -> grandfathered` when an operator
+    withdraws it (`services.withdraw_version`): existing subscriptions stay pinned, nothing new
+    may pin it. **Once `published`, nothing but that one state change ever touches the row** —
+    enforced by a `BEFORE UPDATE` trigger (migration b7e4d2a9c613) and by the service layer, and a
+    grandfathered row is frozen outright. Re-pricing is a new version, never an edit (ADR-0000 §9,
+    ADR-0004 §2).
     """
 
     __tablename__ = "plan_versions"
@@ -393,6 +395,49 @@ class SeatClass(Base):
             "included_count is null or included_count >= 0", name="included_count_non_negative"
         ),
         Index("ix_seat_classes_plan_version_id", "plan_version_id"),
+    )
+
+
+class IdempotencyKey(Base):
+    """One claimed `Idempotency-Key` on an operator catalogue write, and the answer it got.
+
+    Every `/admin/catalog` write requires the header (owner decision, 2026-10-06; docs/superpowers/
+    specs/2026-10-06-admin-plans-page-design.md). The row is **claimed before the change** in the
+    same transaction — `INSERT … ON CONFLICT DO NOTHING` on `(organization_id, key)` — so a second
+    request carrying the same key either waits for the first to commit and then replays its
+    recorded `response`, or finds a different `fingerprint` and is refused with a 409. A request
+    that fails rolls its claim back with everything else, so only a change that actually happened
+    is ever replayed.
+
+    Not definitional: like `audit_logs` it records a platform act, so it carries the platform
+    sentinel organization and takes the same tenant policy (RLS ENABLE + FORCE). The definitional
+    tables above stay un-policied.
+    """
+
+    __tablename__ = "idempotency_keys"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    #: Always `PLATFORM_ORG` today — a plain column, not an FK, policied like `audit_logs`.
+    organization_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: `plan.create`, `version.publish`, … — part of the fingerprint, stored so a 409 can say why.
+    action: Mapped[str] = mapped_column(String(60), nullable=False)
+    #: The operator (`sub`) who claimed it. A different operator reusing the key is refused.
+    actor_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: sha256 hex of the canonical request: action, target id and body.
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: Set in the same transaction as the change, so a committed claim always has an answer.
+    status_code: Mapped[int | None] = mapped_column(Integer)
+    response: Mapped[Any | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "key", name="uq_idempotency_keys_org_key"),
     )
 
 

@@ -27,6 +27,7 @@ import {
 } from "@/ui";
 import type { Column, Definition } from "@/ui";
 import { ArrowLeftIcon, CheckCircleIcon, GiftIcon, LockIcon, PauseIcon, PlayIcon } from "@/ui/icons";
+import { PlanChangeCard } from "./AccountPlanChange";
 import { ClientPricingCard } from "./AccountPricing";
 import { CompGrantAction, ReactivateAction, SuspendAction } from "./AccountActions";
 import type { ActionKind } from "./AccountActions";
@@ -319,6 +320,10 @@ export function AccountDetailPage() {
       </Card>
 
       <SubscriptionsCard orgId={data.organization_id} reloadKey={reloadKey} />
+
+      {/* Its own card, with its own live read and its own dialogs: the page-level reload above
+          replaces this whole page with a skeleton, which would unmount a dialog mid-flow. */}
+      <PlanChangeCard org={pricingOrg} />
 
       <ClientPricingCard org={pricingOrg} />
 

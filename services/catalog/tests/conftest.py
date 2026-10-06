@@ -46,6 +46,7 @@ CATALOG_TABLES = (
     "prices",
     "features",
     "seat_classes",
+    "idempotency_keys",
     "audit_logs",
     "outbox",
     "processed_events",

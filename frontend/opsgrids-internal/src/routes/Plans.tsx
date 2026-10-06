@@ -1,51 +1,111 @@
-import { Link } from "react-router-dom";
+import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
-import { Card, EnvBadge, PageHeader } from "@/ui";
-import { LayersIcon } from "@/ui/icons";
+import { Button, Card, InlineAlert, PageHeader } from "@opsgrids/ui";
+
+import { useAuth } from "@/auth/context";
+import { EnvBadge } from "@/ui";
+import { CreatePlanDialog } from "./plans/CreatePlanDialog";
+import { PlanDetail } from "./plans/PlanDetail";
+import { PlanList } from "./plans/PlanList";
+import type { PlanFilters } from "./plans/PlanList";
 
 /**
- * There is no catalog-browsing read on the live API. `catalog-service`'s `/admin/catalog` prefix
- * only carries write routes — create a plan, patch it, retire it, create or publish a version —
- * never a `GET` that lists products, plans or versions (`services/catalog/app/api/admin.py` has no
- * such route; `libs/contracts/openapi/catalog.json` confirms it). A screen that called one anyway
- * would 404 on every load, so this page says what is actually true instead of always erroring: the
- * console cannot browse the catalog yet, and bespoke pricing — the one thing this page used to also
- * offer — already has a real, working home on each account's own page.
+ * Plans & prices — the catalogue every customer is priced from (catalog's `/admin/catalog`).
+ *
+ * `owner` and `billing_ops` may read it; only `owner` may change it, and every change carries a
+ * reason and an `Idempotency-Key`. `support` is not shown it at all: the catalogue includes every
+ * bespoke version, which is every customer's negotiated price. These role checks only decide what
+ * is drawn — catalog refuses the same calls server-side whatever this screen shows.
+ *
+ * The open plan lives in the URL (`?plan=<id>`) so a plan can be linked to and Back works.
  */
 export function PlansPage() {
+  const { hasRole } = useAuth();
+  const canRead = hasRole("owner") || hasRole("billing_ops");
+  const canWrite = hasRole("owner");
+  const [params, setParams] = useSearchParams();
+  const planId = params.get("plan");
+  const [filters, setFilters] = useState<PlanFilters>({ productKey: "", audience: "", state: "" });
+  const [creating, setCreating] = useState(false);
+  const [result, setResult] = useState("");
+  const [reloadToken, setReloadToken] = useState(0);
+
+  if (!canRead) {
+    return (
+      <div className="rise flex flex-col gap-6">
+        <PageHeader eyebrow="Catalog" title="Plans & prices" actions={<EnvBadge />} />
+        <Card className="p-6">
+          <InlineAlert
+            tone="info"
+            title="Plans & prices need the owner or billing role"
+            live="off"
+          >
+            The catalogue includes every customer&apos;s negotiated price, so support staff do not see it.
+          </InlineAlert>
+        </Card>
+      </div>
+    );
+  }
+
+  function open(id: string | null) {
+    setResult("");
+    setParams(id === null ? {} : { plan: id });
+  }
+
   return (
     <div className="rise flex flex-col gap-6">
       <PageHeader
         eyebrow="Catalog"
-        title="Plans & Pricing"
-        description="Browsing the global catalog from here isn't available yet."
-        actions={<EnvBadge />}
+        title="Plans & prices"
+        description={
+          canWrite
+            ? "What every customer can buy. Draft a version to change a price; publishing freezes it for good."
+            : "What every customer can buy. Read-only — changing the catalogue needs the owner role."
+        }
+        actions={
+          <div className="flex items-center gap-2">
+            <EnvBadge />
+            {canWrite && planId === null ? (
+              <Button variant="primary" onClick={() => setCreating(true)}>
+                New plan
+              </Button>
+            ) : null}
+          </div>
+        }
       />
 
-      <Card className="flex flex-col items-center gap-4 p-10 text-center">
-        <span className="grid size-14 place-items-center rounded-full bg-ground text-ink-soft">
-          <LayersIcon className="size-6" />
-        </span>
-        <div className="flex max-w-md flex-col gap-2">
-          <p className="text-base font-bold">Catalog browsing isn't available from the console yet</p>
-          <p className="text-sm text-muted">
-            The catalog service's admin surface only exposes writes — creating and publishing plans
-            and versions — not a read that lists them. There is nothing this screen can honestly show
-            until that endpoint exists.
-          </p>
-        </div>
-        <p className="text-sm text-muted">
-          To set what one customer pays for a product, open their account and use{" "}
-          <span className="font-semibold text-ink">Client pricing</span> — that flow is wired to the
-          real pricing API.
-        </p>
-        <Link
-          to="/accounts"
-          className="inline-flex h-10 items-center rounded-full bg-accent px-4 text-sm font-semibold text-white hover:bg-accent-strong transition-colors"
-        >
-          Go to accounts
-        </Link>
-      </Card>
+      <div role="status" aria-live="polite">
+        {result ? <InlineAlert tone="success" title={result} live="off" /> : null}
+      </div>
+
+      {planId === null ? (
+        <PlanList
+          filters={filters}
+          onFiltersChange={setFilters}
+          onOpen={(plan) => open(plan.id)}
+          reloadToken={reloadToken}
+        />
+      ) : (
+        <PlanDetail
+          key={planId}
+          planId={planId}
+          canWrite={canWrite}
+          onBack={() => open(null)}
+          onResult={setResult}
+        />
+      )}
+
+      {creating ? (
+        <CreatePlanDialog
+          onClose={() => setCreating(false)}
+          onDone={(created) => {
+            setCreating(false);
+            setResult(`${created.name} created. Draft a version to give it a price.`);
+            setReloadToken((token) => token + 1);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

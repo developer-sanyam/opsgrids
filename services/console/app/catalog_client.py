@@ -23,7 +23,7 @@ import httpx
 
 from app.config import Settings
 from platform_core.internal_auth import mint_service_token
-from platform_core.logging import get_logger
+from platform_core.logging import correlation_id_ctx, get_logger
 
 log = get_logger("console.catalog_client")
 
@@ -44,11 +44,17 @@ class CatalogError(Exception):
 
 
 def _headers(settings: Settings) -> dict[str, str]:
-    return {
+    headers = {
         "X-Internal-Token": mint_service_token(
             settings, audience=CATALOG_AUDIENCE, caller="console"
         )
     }
+    # The request's correlation id travels with the call, so one staff action can be followed
+    # from console's log into the owning service's (the same header every internal client sends).
+    correlation = correlation_id_ctx.get()
+    if correlation:
+        headers["X-Correlation-ID"] = correlation
+    return headers
 
 
 def _detail(response: httpx.Response) -> str:
@@ -104,6 +110,34 @@ async def get_plan_version(
         raise CatalogError(f"catalog refused the read: {response.status_code}") from exc
     result: dict[str, Any] = response.json()
     return result
+
+
+async def get_offerable_versions(
+    settings: Settings,
+    organization_id: uuid.UUID,
+    product_key: str,
+    *,
+    client: httpx.AsyncClient,
+) -> list[dict[str, Any]]:
+    """The plan versions this organization may be switched onto for one product — catalog's
+    console-only internal read, filtered for audience (another organization's bespoke price is
+    never in it) and for supersession. Service token only; the role gate is console's own."""
+    url = (
+        f"{settings.catalog_internal_url}/internal/v1/organizations/"
+        f"{organization_id}/offerable-versions"
+    )
+    try:
+        response = await client.get(
+            url, params={"product_key": product_key}, headers=_headers(settings)
+        )
+    except httpx.HTTPError as exc:
+        raise CatalogError(f"catalog is unavailable: {exc}") from exc
+    if response.status_code >= 400:
+        raise CatalogError(
+            f"catalog refused the read: {response.status_code}", status_code=response.status_code
+        )
+    versions: list[dict[str, Any]] = response.json()["versions"]
+    return versions
 
 
 #: Matches catalog's own `MAX_VERSION_NAMES_PER_CALL` — a list bigger than one call's cap is

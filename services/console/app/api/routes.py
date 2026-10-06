@@ -30,7 +30,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 import httpx
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, Depends, Header, Path, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -40,6 +40,7 @@ from app import (
     delegation,
     directory_client,
     pagination,
+    plan_change,
     pricing,
     selectors,
     services,
@@ -49,6 +50,8 @@ from app.delegation import DelegationConflict, DelegationError
 from app.directory_client import DirectoryLookupError
 from app.models import SCHEMA
 from app.schemas import (
+    IDEMPOTENCY_KEY_MAX_LENGTH,
+    IDEMPOTENCY_KEY_MIN_LENGTH,
     AuditListOut,
     AuditOut,
     LifecycleCountsOut,
@@ -62,6 +65,11 @@ from app.schemas import (
     OrgMembersOut,
     OverrideIn,
     OverrideOut,
+    PlanChangeIn,
+    PlanChangeOut,
+    PlanChangePreviewIn,
+    PlanChangePreviewOut,
+    PlanOptionsOut,
     SeriesPointOut,
     ServiceInfo,
     SetPricingIn,
@@ -626,6 +634,144 @@ async def set_organization_pricing(
         operator=operator,
         operator_token=operator_token,
         directory_session=directory_session,
+        app_session=app_session,
+        client=client,
+        request=request,
+    )
+
+
+# --------------------------------------------------------------------- staff plan switching
+
+#: Lowercase, starts with a letter — every product key on this platform. Bounded at this boundary
+#: too (MAJOR-1's lesson): the value ends up in a downstream URL and query string.
+PRODUCT_KEY_PATTERN = r"^[a-z][a-z0-9_-]{0,39}$"
+ProductKeyPath = Annotated[str, Path(pattern=PRODUCT_KEY_PATTERN)]
+
+
+async def _require_organization(
+    organization_id: uuid.UUID, request: Request, client: httpx.AsyncClient
+) -> None:
+    """404 unless account-service knows the organization — the staff directory route, called with
+    the operator's own forwarded token (never a service credential of console's own)."""
+    operator_token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    try:
+        directory = await directory_client.get_organization(
+            settings(), organization_id, operator_token=operator_token, client=client
+        )
+    except DirectoryLookupError as exc:
+        raise UpstreamUnavailableProblem(str(exc)) from exc
+    if directory is None:
+        raise NotFoundProblem("No such organization")
+
+
+@router.get(
+    "/admin/organizations/{organization_id}/plan-options",
+    response_model=PlanOptionsOut,
+    summary="The plans one subscription may be switched onto — the Change plan picker",
+)
+async def get_plan_options(
+    organization_id: uuid.UUID,
+    request: Request,
+    client: DelegationClientDep,
+    operator: OperatorBilling,
+    product_key: Annotated[
+        str, Query(pattern=PRODUCT_KEY_PATTERN, description="The product whose plans to offer")
+    ],
+) -> PlanOptionsOut:
+    """The subscription as it is now, and the plan versions catalog says this organization may be
+    moved onto (public, or negotiated for this organization alone — never another's), each marked
+    with whether this subscription could actually take it. Owner and billing_ops; support is not
+    admitted, because a bespoke price is a customer's negotiated rate."""
+    await _require_organization(organization_id, request, client)
+    return await plan_change.plan_options(
+        settings(), organization_id=organization_id, product_key=product_key, client=client
+    )
+
+
+@router.post(
+    "/admin/organizations/{organization_id}/subscriptions/{product_key}/plan-change:preview",
+    response_model=PlanChangePreviewOut,
+    summary="What switching this subscription's plan would do — read-only, no amount",
+)
+async def preview_plan_change(
+    organization_id: uuid.UUID,
+    product_key: ProductKeyPath,
+    payload: PlanChangePreviewIn,
+    request: Request,
+    client: DelegationClientDep,
+    operator: OperatorBilling,
+) -> PlanChangePreviewOut:
+    """The confirm screen's server-computed preview: direction, when it lands, what it replaces,
+    the products it adds or removes — and the `expected` state to send back on the confirm. A
+    refusal (a past_due subscription, a different currency or cadence, a version catalog no longer
+    offers this organization — `not_offerable`) is part of the answer. Nothing is written, claimed
+    or locked; a failure says so (503 `preview_unavailable`, never `outcome_unknown`)."""
+    await _require_organization(organization_id, request, client)
+    return await plan_change.preview(
+        settings(),
+        organization_id=organization_id,
+        product_key=product_key,
+        payload=payload,
+        client=client,
+    )
+
+
+@router.post(
+    "/admin/organizations/{organization_id}/subscriptions/{product_key}/plan-change",
+    response_model=PlanChangeOut,
+    summary="Switch a subscription's plan — a trial now, a paying subscription at its next period",
+)
+async def change_plan(
+    organization_id: uuid.UUID,
+    product_key: ProductKeyPath,
+    payload: PlanChangeIn,
+    request: Request,
+    app_session: AppSessionDep,
+    client: DelegationClientDep,
+    operator: OperatorBilling,
+    idempotency_key: Annotated[
+        str,
+        Header(
+            alias="Idempotency-Key",
+            min_length=IDEMPOTENCY_KEY_MIN_LENGTH,
+            max_length=IDEMPOTENCY_KEY_MAX_LENGTH,
+            description=(
+                "Required, 8-255 characters. A claim row keyed on it is written before the "
+                "subscription is called: a retry with the same key and body returns the recorded "
+                "result without a second change; the same key with a different body is a 409; "
+                "two concurrent requests with one key make one change."
+            ),
+        ),
+    ],
+) -> PlanChangeOut:
+    """Switch the organization's subscription for `product_key` to `plan_version_id`.
+
+    **When it takes effect is decided by the server, never asked for** (ADR-0029): a trial switches
+    now and free; a paying subscription switches at its **next billing period** (`effective:
+    "next_period"`, landing at `effective_at`); an equal-price change applies now at no charge. For
+    a customer who should get a new plan sooner, grant comp credit instead.
+
+    `reason` (1-500 characters) is required and recorded on the audit trail — never on the
+    subscription's event, which the customer org's own notification templates can render;
+    `expected` is the state the preview returned, compared under subscription's lock (409
+    `state_changed`). The target must be one catalog offers this organization *now* (the picker's
+    set, re-read here): a version superseded by a newer one, or of a retired plan, is 422
+    `not_offerable` — except a withdrawal back to the pin the subscription is on.
+    Errors carry a stable `errors[0].code`: 404 `no_subscription` / `not_found`; 409
+    `state_changed`, `billing_catching_up`, `request_in_progress`, `idempotency_key_reused`; 422
+    `state`, `cadence`, `currency`, `already_pinned`, `product_mismatch`, `not_published`,
+    `not_offerable`, `reserved_reason`, `bundle`; 503 `catalog_unavailable` — this request changed
+    nothing; 503 `outcome_unknown` — the change may or may not have been made: refresh, or repeat
+    the same request, which reconciles.
+    """
+    await _require_organization(organization_id, request, client)
+    return await plan_change.switch_plan(
+        settings(),
+        organization_id=organization_id,
+        product_key=product_key,
+        payload=payload,
+        idempotency_key=idempotency_key,
+        operator=operator,
         app_session=app_session,
         client=client,
         request=request,

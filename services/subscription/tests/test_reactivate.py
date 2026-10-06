@@ -129,7 +129,10 @@ class TestReactivateService:
         )
         last = transitions[-1]
         assert (last.from_state, last.to_state) == (STATE_SUSPENDED, STATE_ACTIVE)
-        assert last.reason == "paid offline"
+        # The transition's `reason` is a short machine code; the operator's words are the audit
+        # row's reason and the event's `note` (below), so a long reason can never overflow the
+        # 60-character column.
+        assert last.reason == "operator_reactivate"
         assert last.actor == {"type": "operator", "id": "ops-2"}
 
         assert (await _events(admin_session, org_id))[-1] == "commerce.subscription.activated"

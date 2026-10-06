@@ -16,6 +16,7 @@ import uuid
 from collections.abc import Iterable
 
 from app.domain import RegisteredProduct
+from app.registry import ProductSnapshot
 from platform_core.auth import Principal
 
 #: What the product gateway stamps on a customer's token.
@@ -103,3 +104,9 @@ class FakeRegistry:
     async def products(self) -> dict[str, RegisteredProduct]:
         self.calls += 1
         return dict(self._entries)
+
+    def snapshot(self) -> ProductSnapshot:
+        """The registry as an operator route reads it before its transaction opens — what the
+        service layer is handed instead of the client (D3 #10)."""
+        self.calls += 1
+        return ProductSnapshot(products=dict(self._entries))

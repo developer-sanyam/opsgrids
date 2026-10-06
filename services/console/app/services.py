@@ -20,19 +20,31 @@ app role with the GUC set to that org, never a cross-schema reach.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
-from typing import Any
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import domain
-from app.models import AuditLog, OrgCommercialState, RevenueEvent, UsageSummary
+from app.models import (
+    IDEMPOTENCY_IN_PROGRESS,
+    IDEMPOTENCY_REFUSED,
+    IDEMPOTENCY_SUCCEEDED,
+    IDEMPOTENCY_UNKNOWN,
+    AuditLog,
+    IdempotencyKey,
+    OrgCommercialState,
+    RevenueEvent,
+    UsageSummary,
+)
 from app.price import PriceResolver
 from platform_core.audit import record_audit
 from platform_core.db import set_tenant
+from platform_core.errors import ConflictProblem
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -583,5 +595,187 @@ async def record_organization_members_read(
             acting_as=operator_label,
             action="organization.members_viewed",
             entity="membership",
+            request=request,
+        )
+
+
+# --------------------------------------------------------------------- idempotency claims
+
+#: How long a claim may sit `in_progress` before a retry stops treating it as a request that is
+#: still running and reconciles instead. Longer than the longest downstream timeout (10 seconds,
+#: `routes.get_delegation_client`) with room to spare; shorter than an operator's patience.
+IDEMPOTENCY_LEASE = timedelta(seconds=60)
+
+ClaimOutcome = Literal["claimed", "succeeded", "refused", "in_flight", "reconcile"]
+
+
+@dataclass(frozen=True, slots=True)
+class IdempotencyClaim:
+    """What claiming a key found. `claimed`: this request owns the key and may make the call.
+    `succeeded` / `refused`: an earlier request finished — replay `response`. `in_flight`: another
+    request holds the key right now. `reconcile`: an earlier request's outcome is not known (it
+    crashed, or the call's answer never arrived) — read the live state before acting.
+    `seen_updated_at` is the row's own clock as read, for the compare-and-swap that retakes it."""
+
+    outcome: ClaimOutcome
+    response: dict[str, Any] | None = None
+    seen_updated_at: datetime | None = None
+
+
+async def claim_idempotency_key(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    key: str,
+    action: str,
+    fingerprint: str,
+    actor_id: uuid.UUID | None,
+    operator_label: str,
+    intent_action: str,
+    intent_entity: str,
+    intent_entity_id: uuid.UUID | None,
+    intent_after: dict[str, Any],
+    reason: str | None,
+    request: Request | None,
+) -> IdempotencyClaim:
+    """The **claim** of claim -> call -> record: write the key, and the intent audit row beside it,
+    in one short transaction that commits *before* any downstream call is made.
+
+    `INSERT ... ON CONFLICT DO NOTHING` on `(organization_id, key)`: of two concurrent requests
+    carrying the same key, exactly one inserts (the other waits on the unique index, then finds the
+    row and reports `in_flight`), so the downstream call is made once. The intent row is written in
+    the same transaction, so the trail shows an attempt whether or not the call that follows ever
+    answers — a failure after this point is never an unaudited change.
+
+    The same key with a different fingerprint is a 409 (`idempotency_key_reused`): a key names one
+    request, and answering a different request with the first one's result would be worse than
+    refusing it.
+    """
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        inserted = (
+            await session.execute(
+                pg_insert(IdempotencyKey)
+                .values(
+                    id=uuid.uuid4(),
+                    organization_id=organization_id,
+                    key=key,
+                    action=action,
+                    fingerprint=fingerprint,
+                    status=IDEMPOTENCY_IN_PROGRESS,
+                )
+                .on_conflict_do_nothing(index_elements=["organization_id", "key"])
+                .returning(IdempotencyKey.id)
+            )
+        ).scalar_one_or_none()
+        if inserted is not None:
+            record_audit(
+                session,
+                AuditLog,
+                organization_id=organization_id,
+                actor_id=actor_id,
+                acting_as=operator_label,
+                action=intent_action,
+                entity=intent_entity,
+                entity_id=intent_entity_id,
+                after={**intent_after, "idempotency_key": key},
+                reason=reason,
+                request=request,
+            )
+            return IdempotencyClaim("claimed")
+
+        row = (
+            await session.execute(
+                select(IdempotencyKey).where(
+                    IdempotencyKey.organization_id == organization_id,
+                    IdempotencyKey.key == key,
+                )
+            )
+        ).scalar_one()
+        if row.action != action or row.fingerprint != fingerprint:
+            raise ConflictProblem(
+                "Idempotency-Key was already used for a different request",
+                errors=[
+                    {
+                        "code": "idempotency_key_reused",
+                        "message": "Idempotency-Key was already used for a different request",
+                    }
+                ],
+            )
+        if row.status == IDEMPOTENCY_SUCCEEDED:
+            return IdempotencyClaim("succeeded", row.response)
+        if row.status == IDEMPOTENCY_REFUSED:
+            return IdempotencyClaim("refused", row.response)
+        if row.status == IDEMPOTENCY_IN_PROGRESS and (
+            datetime.now(UTC) - row.updated_at < IDEMPOTENCY_LEASE
+        ):
+            return IdempotencyClaim("in_flight")
+        return IdempotencyClaim("reconcile", seen_updated_at=row.updated_at)
+
+
+async def retake_idempotency_key(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    key: str,
+    seen_updated_at: datetime,
+) -> bool:
+    """Compare-and-swap an `unknown` or stale `in_progress` claim back to `in_progress` so this
+    retry may make the call. True when this retry won; False when another retry changed the row
+    first — the caller then reports `in_flight` rather than making a second call."""
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        result = await session.execute(
+            update(IdempotencyKey)
+            .where(
+                IdempotencyKey.organization_id == organization_id,
+                IdempotencyKey.key == key,
+                IdempotencyKey.updated_at == seen_updated_at,
+                IdempotencyKey.status.in_((IDEMPOTENCY_UNKNOWN, IDEMPOTENCY_IN_PROGRESS)),
+            )
+            .values(status=IDEMPOTENCY_IN_PROGRESS, updated_at=datetime.now(UTC))
+            .returning(IdempotencyKey.id)
+        )
+        return result.scalar_one_or_none() is not None
+
+
+async def record_idempotency_outcome(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    key: str,
+    status: str,
+    response: dict[str, Any] | None,
+    actor_id: uuid.UUID | None,
+    operator_label: str,
+    outcome_action: str,
+    entity: str,
+    entity_id: uuid.UUID | None,
+    outcome_after: dict[str, Any],
+    reason: str | None,
+    request: Request | None,
+) -> None:
+    """The **record** of claim -> call -> record: the claim's final status and replayable response,
+    and the outcome audit row, in one transaction — so a result is never recorded without its
+    audit row or the other way round. If this write itself fails the claim stays `in_progress`, and
+    a retry reconciles from a live read after the lease."""
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        await session.execute(
+            update(IdempotencyKey)
+            .where(IdempotencyKey.organization_id == organization_id, IdempotencyKey.key == key)
+            .values(status=status, response=response, updated_at=datetime.now(UTC))
+        )
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=organization_id,
+            actor_id=actor_id,
+            acting_as=operator_label,
+            action=outcome_action,
+            entity=entity,
+            entity_id=entity_id,
+            after={**outcome_after, "idempotency_key": key},
+            reason=reason,
             request=request,
         )

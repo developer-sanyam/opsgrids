@@ -48,7 +48,52 @@ from app.models import (
     STATE_SUSPENDED,
     STATE_TRIAL,
 )
-from platform_core.errors import BusinessRuleProblem
+from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
+
+# ------------------------------------------------------------------- stable refusal codes
+
+#: A refusal an operator surface has to tell apart from another one: the body carries
+#: `errors: [{"code": ..., "message": ...}]` (the shape every other service's coded refusal uses),
+#: so a screen switches on the code and shows the message, instead of matching prose or folding
+#: every 422 into one outcome. The set is a contract — add to it, never rename.
+CODE_STATE = "state"  # the subscription is past_due / suspended / cancelled
+CODE_CADENCE = "cadence"  # a different billing cadence, or one_time
+CODE_CURRENCY = "currency"  # a different currency
+CODE_ALREADY_PINNED = "already_pinned"
+CODE_PRODUCT_MISMATCH = "product_mismatch"  # a version of another product
+CODE_NOT_PUBLISHED = "not_published"
+#: No such version — and also another organization's bespoke version, so that its existence is
+#: never disclosed (a distinct `not_visible` code would disclose it).
+CODE_NOT_FOUND = "not_found"
+CODE_BILLING_CATCHING_UP = "billing_catching_up"  # 409: a period is due and not yet claimed
+CODE_STATE_CHANGED = "state_changed"  # 409: the caller's `expected` no longer holds
+CODE_RESERVED_REASON = "reserved_reason"
+CODE_BUNDLE = "bundle"  # a bundle the product registry cannot vouch for
+
+
+class CodedRefusal(BusinessRuleProblem):
+    """A 422 business-rule refusal with a stable machine code (see the codes above)."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail, errors=[{"code": code, "message": detail}])
+        self.code = code
+
+
+class CodedConflict(ConflictProblem):
+    """A 409 with a stable machine code."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail, errors=[{"code": code, "message": detail}])
+        self.code = code
+
+
+class CodedNotFound(NotFoundProblem):
+    """A 404 with a stable machine code."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail, errors=[{"code": code, "message": detail}])
+        self.code = code
+
 
 EVT_PREFIX = "commerce.subscription."
 EVT_TRIAL_STARTED = EVT_PREFIX + "trial_started"
@@ -111,6 +156,22 @@ RESERVED_REASONS = frozenset(
     }
 )
 
+
+def assert_free_text_allowed(text: str | None) -> None:
+    """Refuse free text that borrows a reason only the machinery writes.
+
+    Applied to **every** write that takes human words — change-plan, subscribe, suspend,
+    reactivate, cancel — so the audit trail never says "dunning suspended this" of a person's act,
+    and so a free-text word can never name a different event than the one the move is.
+    """
+    if text is not None and text.strip().lower() in RESERVED_REASONS:
+        raise CodedRefusal(
+            CODE_RESERVED_REASON,
+            f"{text!r} is a reason only the platform's own machinery records; "
+            "describe the operator's reason in words of your own",
+        )
+
+
 #: The legal edges. A key of `None` is birth — a subscription that does not exist yet. `cancelled`
 #: is terminal: it maps to nothing, which is what makes `cancel -> active` refused. Self-edges on
 #: `trial`/`active` are the renewals and plan changes that keep the state and move only the pin.
@@ -140,9 +201,12 @@ _EVENT_BY_TARGET: dict[str, str] = {
 }
 
 
-class IllegalTransition(BusinessRuleProblem):
+class IllegalTransition(CodedRefusal):
     """A move the state machine forbids. A 422 to the caller, not a 500 — the request was
-    well-formed, the lifecycle simply does not allow it."""
+    well-formed, the lifecycle simply does not allow it. Code `state`."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(CODE_STATE, detail)
 
 
 def is_legal(from_state: str | None, to_state: str) -> bool:
@@ -665,13 +729,16 @@ def closing_usage_window(
 _INTERVAL_DAYS: dict[str, int] = {INTERVAL_MONTH: 30, INTERVAL_YEAR: 365}
 
 
-class CadenceChangeRefused(BusinessRuleProblem):
+class CadenceChangeRefused(CodedRefusal):
     """A plan change to a different billing cadence, or to `one_time` (review round 2, B1).
 
     A monthly period and a yearly one are not two prices for one thing a proration can net: the
     periods do not line up, and pricing one against the other mis-bills one side. The path is
     cancel and subscribe again.
     """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(CODE_CADENCE, detail)
 
 
 def assert_same_cadence(current: str | None, target: str | None) -> None:

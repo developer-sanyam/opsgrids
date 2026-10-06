@@ -56,10 +56,12 @@ DUO = ["hrms", "crm"]
 TRIO = ["hrms", "crm", "finance"]
 
 
-def _service_headers() -> dict[str, str]:
+def _service_headers(caller: str = "console") -> dict[str, str]:
+    """Bundles are sold through console's operator delegate: the route takes console's token only
+    (`ConsoleCallerDep`), so a token from any other service is refused (see the negative test)."""
     return {
-        "X-Internal-Token": mint_service_token(settings(), audience="subscription", caller="tests"),
-        "X-Calling-Service": "tests",
+        "X-Internal-Token": mint_service_token(settings(), audience="subscription", caller=caller),
+        "X-Calling-Service": caller,
     }
 
 
@@ -217,6 +219,29 @@ class TestTheMembersComeOnlyFromCatalog:
         )
         assert resp.status_code == 201, resp.text
         assert resp.json()["entitled_products"] == DUO
+
+    async def test_only_consoles_token_may_open_a_subscription(
+        self, client: Any, session: AsyncSession, catalog: FakeCatalog, org_id: uuid.UUID
+    ) -> None:
+        """A negative-authz test for the operator subscribe: a valid token addressed to this
+        service, minted by any other caller, is refused and nothing is written. Before the
+        console-only check, any service holding a token for subscription could open a
+        subscription for any organization."""
+        from app.api.internal import get_product_registry
+
+        duo = catalog.add(make_bundle(DUO, tier="duo", amount_minor=58200))
+        app.dependency_overrides[get_product_registry] = lambda: FakeRegistry()
+        body = {
+            "organization_id": str(org_id),
+            "product_key": "suite",
+            "plan_version_id": str(duo.id),
+            "operator_id": "op-1",
+        }
+        for headers in ({}, _service_headers("tests"), _service_headers("billing")):
+            resp = await client.post("/internal/v1/subscriptions", headers=headers, json=body)
+            assert resp.status_code == 401, resp.text
+        async with session.begin():
+            assert (await session.execute(select(Subscription))).scalars().all() == []
 
     async def test_a_malformed_bundle_is_refused_not_pinned(
         self, session: AsyncSession, catalog: FakeCatalog, org_id: uuid.UUID
