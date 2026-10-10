@@ -328,6 +328,135 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             is_dangerous=True,
         ),
+        # Receiving (ADR-0014, inventory Phase 2). A purchase requisition is the request to buy:
+        # its raiser sees and edits their own (OWN reading), a manager sees all (ORG).
+        # Approving is a commitment step distinct from raising one and floors at ORG, so a
+        # requester can never approve their own request — the same split `purchase_order.approve`
+        # draws. Converting an approved requisition into a PO needs `requisition.write` *and*
+        # `purchase_order.write`. A goods receipt is an org-wide warehouse record (no OWN reading):
+        # `receipt.read` sees them, and posting one needs `receipt.write` (the document) *and*
+        # `inventory.stock.receive` (putting stock on the books) — two keys on purpose, so who may
+        # *describe* a delivery and who may *credit stock* can differ in a custom role.
+        PermissionSpec(
+            "procurement", "requisition", "read", "See purchase requisitions", "OWN", "ORG"
+        ),
+        PermissionSpec(
+            "procurement",
+            "requisition",
+            "write",
+            "Raise, edit, submit and cancel purchase requisitions; convert an approved one into "
+            "a purchase order (which also needs purchase_order.write)",
+            "OWN",
+            "ORG",
+        ),
+        PermissionSpec(
+            "procurement",
+            "requisition",
+            "approve",
+            "Approve or reject a submitted purchase requisition",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "procurement",
+            "receipt",
+            "read",
+            "See goods receipts and what can still be received against a purchase order",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "procurement",
+            "receipt",
+            "write",
+            "Post a goods receipt against a purchase order: partial, short or over-receipt "
+            "within the item's tolerance (also needs inventory.stock.receive)",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inventory",
+            "stock",
+            "receive",
+            "Bring purchased stock onto the books through a goods receipt",
+            "ORG",
+            "ORG",
+        ),
+        # Inter-warehouse transfers (ADR-0014 §6, inventory Phase 3; docs/inventory/movements.md).
+        # The four steps of one document are four permissions, so the person who asks for stock
+        # to move, the one who signs it off, the storekeeper who ships it and the one who receives
+        # it can be four different people. All ORG-only — a transfer is shared organization
+        # stock — and `approve` is dangerous: it is the direct sign-off (no approval-service
+        # threshold set, or one the transfer is under), after which the stock leaves a warehouse.
+        # It is never the requester's own: the service refuses a requester approving their own.
+        PermissionSpec(
+            "inventory",
+            "transfer",
+            "write",
+            "Draft, edit, request and cancel inter-warehouse transfers",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inventory",
+            "transfer",
+            "approve",
+            "Approve or reject an inter-warehouse transfer directly",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        PermissionSpec(
+            "inventory",
+            "transfer",
+            "dispatch",
+            "Dispatch an approved transfer: stock leaves the source warehouse for in-transit",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "inventory",
+            "transfer",
+            "receive",
+            "Receive a transfer into the destination warehouse, and record any shortage",
+            "ORG",
+            "ORG",
+        ),
+        # The approval thresholds (docs/inventory/movements.md §Approvals). Dangerous: raising or
+        # clearing one decides which transfers and adjustments need a second pair of eyes at all.
+        PermissionSpec(
+            "inventory",
+            "control",
+            "configure",
+            "Set the quantity thresholds above which transfers and adjustments need approval",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        # Bulk import and export (ADR-0027, inventory Phase 9). Both ORG-only: a file moves
+        # shared records, so there is no "the rows I imported" reading. `data.import` is
+        # dangerous — one request creates up to thousands of items, locations, lots, rolls or
+        # opening-stock postings — and never grants more than the entity's own write permission
+        # (the route additionally requires `item.write` / `location.write` / `lot.write` /
+        # `roll.write` / `stock.adjust` for the entity being imported). `data.export` likewise
+        # additionally requires the list's own read permission, and writes an audit row.
+        PermissionSpec(
+            "inventory",
+            "data",
+            "import",
+            "Bulk-import items, locations, lots, rolls and opening stock from a file",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        PermissionSpec(
+            "inventory",
+            "data",
+            "export",
+            "Export inventory lists (items, locations, lots, rolls, stock, ledger) to a file",
+            "ORG",
+            "ORG",
+        ),
         # Cycle counting / stocktaking (ADR-0026, Fulfilment plan F8). A count session is a shared
         # operational object, the same reasoning `orders.order.*`/`dispatch.shipment.*` already
         # give for ORG-only, no-OWN-reading permissions: any worker with `count.execute` counts
@@ -365,6 +494,47 @@ OPERATIONS = PermissionCatalogue(
             "count",
             "review",
             "Approve or reject a counted discrepancy — approving posts the adjustment",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        # Quality (inventory plan Phase 4, docs/inventory/quality.md). Like counting, an inspection
+        # is a shared operational object with no meaningful OWN reading, so all four are ORG-only.
+        # `approve` and `reject` are dangerous: they are the steps that move stock out of quality
+        # hold (release to AVAILABLE; reject / return to vendor / scrap), through `post_move`.
+        # `approve` also owns QC template management — what counts as acceptable is an approver's
+        # call, not the inspector's who is being measured against it.
+        PermissionSpec(
+            "quality",
+            "inspection",
+            "read",
+            "See QC templates, inspections and their results",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "quality",
+            "inspection",
+            "inspect",
+            "Open inspections (putting stock on quality hold), record readings, hold or send "
+            "stock for rework",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "quality",
+            "inspection",
+            "approve",
+            "Release held stock to available (all or part), and manage QC templates",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        PermissionSpec(
+            "quality",
+            "inspection",
+            "reject",
+            "Reject held stock, and return it to the vendor or scrap it",
             "ORG",
             "ORG",
             is_dangerous=True,
@@ -673,6 +843,155 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Manufacturing (inventory plan Phase 5, ADR-0014 §7). BOMs and production orders are
+        # shared operational documents like orders and shipments — there is no useful OWN reading
+        # — so every permission here is ORG-only. `bom.publish` is dangerous: it freezes a recipe
+        # that every later order is planned (and costed) from, and a published version can never
+        # be edited, only superseded. `production_order.approve` is dangerous for the other
+        # reason: it commits the plan, and with it the reservation and issue of real stock.
+        PermissionSpec(
+            "manufacturing", "bom", "read", "See BOMs, their versions and explosions", "ORG", "ORG"
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "bom",
+            "write",
+            "Create BOMs, edit draft versions and their components and substitutes, and set "
+            "wastage thresholds",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "bom",
+            "publish",
+            "Publish a draft BOM version (immutable from then on) or retire a published one",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "production_order",
+            "read",
+            "See production orders, their materials, WIP, outputs, wastage and variance",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "production_order",
+            "write",
+            "Plan and edit draft production orders, choose substitutes, and cancel an order",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "production_order",
+            "approve",
+            "Approve a production order, committing it to stock reservation and issue",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "production_order",
+            "issue",
+            "Start an order, reserve and issue its material to WIP, return unused material and "
+            "write off wastage",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "production_order",
+            "complete",
+            "Record good output into finished goods and complete an order",
+            "ORG",
+            "ORG",
+        ),
+        # MRP (inventory plan Phase 7). A plan is a shared operational document, so ORG-only like
+        # the rest of manufacturing. None is dangerous: a run only reads stock and writes its own
+        # tables, and a requisition *request* commits nobody to buy anything (the buyer still
+        # approves the requisition it becomes) — but requesting is its own permission because it
+        # is a purchasing act a planner may be asked not to do.
+        PermissionSpec(
+            "manufacturing",
+            "mrp",
+            "read",
+            "See MRP runs, the demand they planned from and their shortage tables",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "mrp",
+            "run",
+            "Start an MRP run over open orders, open production and manual demand",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "manufacturing",
+            "mrp",
+            "requisition",
+            "Request purchase requisitions for the purchased-item shortages of an MRP run",
+            "ORG",
+            "ORG",
+        ),
+        # Job work (Inventory plan Phase 6) — material sent to an outside processor and expected
+        # back. A job-work order is a shared operational document with no per-person owner, so
+        # every permission is ORG-only (the same reasoning `dispatch.shipment.*` gives). Five
+        # steps, each its own permission, because they are different acts by different people:
+        # drafting, sending stock out of the building, taking it back, and the sign-off.
+        PermissionSpec(
+            "jobwork",
+            "order",
+            "read",
+            "See job-work orders, their materials, receipts, challans and reconciliation",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "jobwork",
+            "order",
+            "write",
+            "Draft, edit and cancel (before issue) job-work orders",
+            "ORG",
+            "ORG",
+        ),
+        # Moves stock out of AVAILABLE into the vendor's bucket and cuts a numbered, immutable
+        # delivery challan — and may ask finance for an e-way bill.
+        PermissionSpec(
+            "jobwork",
+            "order",
+            "issue",
+            "Send an approved order's materials to the vendor: move the stock, cut the delivery "
+            "challan and request an e-way bill",
+            "ORG",
+            "ORG",
+        ),
+        PermissionSpec(
+            "jobwork",
+            "order",
+            "receive",
+            "Take material back from the vendor — good, rejected or declared short",
+            "ORG",
+            "ORG",
+        ),
+        # The sign-off pair: approving commits the business to sending stock out, closing settles
+        # the order. Kept apart from `write` so the person who drafts cannot also approve, and
+        # from `receive` so the person who counts goods back cannot also declare the books square.
+        PermissionSpec(
+            "jobwork",
+            "order",
+            "approve",
+            "Approve a draft job-work order, and close one once its reconciliation balances",
+            "ORG",
+            "ORG",
+        ),
     ],
 )
 
@@ -701,7 +1020,14 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and "
             "closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers "
             "lots and rolls, splits and merges rolls, moves stock between bins and statuses, and "
-            "reads stock and the ledger (ADR-0014 Phase 1). Takes and "
+            "reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and "
+            "posts goods receipts — partial, short and over-receipt within tolerance (Phase 2). "
+            "Drafts, approves, dispatches and receives inter-warehouse transfers (Phase 3); does "
+            "not set the approval thresholds — that stays with the admin. Runs quality: inspects, "
+            "releases and rejects held stock, and defines QC templates (Phase 4). Runs job "
+            "work end to end: drafts, approves, issues material to a vendor, receives it back and "
+            "closes the order once it reconciles. Exports the inventory lists (ADR-0027) — bulk "
+            "import is dangerous and stays with the admin. Takes and "
             "refunds orders' online payments and reads the payment reconciliation. Does not "
             "create or rename warehouses, or connect or change the organization's "
             "payment-provider account — those stay with the admin. Creates floors and edits a "
@@ -720,12 +1046,27 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.inventory.stock.reserve", "ORG"),
             ("operations.inventory.stock.read", "ORG"),
             ("operations.inventory.stock.transfer", "ORG"),
+            ("operations.inventory.stock.receive", "ORG"),
+            ("operations.inventory.transfer.write", "ORG"),
+            ("operations.inventory.transfer.approve", "ORG"),
+            ("operations.inventory.transfer.dispatch", "ORG"),
+            ("operations.inventory.transfer.receive", "ORG"),
             ("operations.inventory.lot.write", "ORG"),
             ("operations.inventory.roll.write", "ORG"),
+            ("operations.procurement.requisition.read", "ORG"),
+            ("operations.procurement.requisition.write", "ORG"),
+            ("operations.procurement.requisition.approve", "ORG"),
+            ("operations.procurement.receipt.read", "ORG"),
+            ("operations.procurement.receipt.write", "ORG"),
+            ("operations.inventory.data.export", "ORG"),
             ("operations.inventory.count.read", "ORG"),
             ("operations.inventory.count.manage", "ORG"),
             ("operations.inventory.count.execute", "ORG"),
             ("operations.inventory.count.review", "ORG"),
+            ("operations.quality.inspection.read", "ORG"),
+            ("operations.quality.inspection.inspect", "ORG"),
+            ("operations.quality.inspection.approve", "ORG"),
+            ("operations.quality.inspection.reject", "ORG"),
             ("operations.inventory.warehouse.read", "ORG"),
             ("operations.inventory.location.read", "ORG"),
             ("operations.inventory.location.write", "ORG"),
@@ -761,6 +1102,71 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             # `warehouse.layout.publish` already draws for this role).
             ("operations.channels.channel.read", "ORG"),
             ("operations.channels.channel.sync", "ORG"),
+            # Manufacturing: plans, approves and runs production, and publishes BOM versions.
+            ("operations.manufacturing.bom.read", "ORG"),
+            ("operations.manufacturing.bom.write", "ORG"),
+            ("operations.manufacturing.bom.publish", "ORG"),
+            ("operations.manufacturing.production_order.read", "ORG"),
+            ("operations.manufacturing.production_order.write", "ORG"),
+            ("operations.manufacturing.production_order.approve", "ORG"),
+            ("operations.manufacturing.production_order.issue", "ORG"),
+            ("operations.manufacturing.production_order.complete", "ORG"),
+            ("operations.manufacturing.mrp.read", "ORG"),
+            ("operations.manufacturing.mrp.run", "ORG"),
+            ("operations.manufacturing.mrp.requisition", "ORG"),
+            # Runs job work end to end (Phase 6): drafts, approves, issues to the vendor,
+            # receives back and closes.
+            ("operations.jobwork.order.read", "ORG"),
+            ("operations.jobwork.order.write", "ORG"),
+            ("operations.jobwork.order.issue", "ORG"),
+            ("operations.jobwork.order.receive", "ORG"),
+            ("operations.jobwork.order.approve", "ORG"),
+        ),
+    ),
+    RoleTemplate(
+        code="PRODUCTION_PLANNER",
+        name="Production planner",
+        product=PRODUCT,
+        description=(
+            "Plans production: maintains BOMs (drafts, components, substitutes) and wastage "
+            "thresholds, plans production orders, and runs them — reserves and issues material "
+            "to WIP, records output and wastage, returns what is unused and completes the order. "
+            "Runs MRP and requests purchase requisitions for its shortages. "
+            "Reads items, warehouses and locations. Does not publish a BOM version or approve an "
+            "order — those two commit the business and stay with the manager and admin."
+        ),
+        grants=OPERATIONS.pick(
+            ("operations.inventory.item.read", "ORG"),
+            ("operations.inventory.warehouse.read", "ORG"),
+            ("operations.inventory.location.read", "ORG"),
+            ("operations.manufacturing.bom.read", "ORG"),
+            ("operations.manufacturing.bom.write", "ORG"),
+            ("operations.manufacturing.production_order.read", "ORG"),
+            ("operations.manufacturing.production_order.write", "ORG"),
+            ("operations.manufacturing.production_order.issue", "ORG"),
+            ("operations.manufacturing.production_order.complete", "ORG"),
+            ("operations.manufacturing.mrp.read", "ORG"),
+            ("operations.manufacturing.mrp.run", "ORG"),
+            ("operations.manufacturing.mrp.requisition", "ORG"),
+        ),
+    ),
+    RoleTemplate(
+        code="QC_INSPECTOR",
+        name="Quality inspector",
+        product=PRODUCT,
+        description=(
+            "Inspects stock: sees QC templates and inspections, opens an inspection (which puts "
+            "the quantity on quality hold), records readings, and keeps stock on hold or sends it "
+            "for rework. Does not release or reject stock, or define templates — those are "
+            "`approve` and `reject`, held by the manager and the admin, so the person measuring "
+            "is never the person who decides (inventory plan Phase 4)."
+        ),
+        grants=OPERATIONS.pick(
+            ("operations.quality.inspection.read", "ORG"),
+            ("operations.quality.inspection.inspect", "ORG"),
+            ("operations.inventory.item.read", "ORG"),
+            ("operations.inventory.warehouse.read", "ORG"),
+            ("operations.inventory.location.read", "ORG"),
         ),
     ),
     RoleTemplate(
@@ -777,8 +1183,10 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             "stock between bins, puts stock on hold (a status change *into* quality hold, "
             "quarantine, damaged, rejected or blocked) but cannot release it back to "
             "available — that needs stock adjustment — and reads stock by location, lot and "
-            "roll; does not register, split or merge lots or rolls. Does not offer, reassign "
-            "or override a task either."
+            "roll; does not register, split or merge lots or rolls. Receives goods against "
+            "approved purchase orders (Phase 2) — reads POs, posts a goods receipt — but raises "
+            "or approves none. Drafts, dispatches and receives inter-warehouse transfers but "
+            "never approves one (Phase 3). Does not offer, reassign or override a task either."
         ),
         grants=OPERATIONS.pick(
             ("operations.fulfilment.task.read", "ORG"),
@@ -787,6 +1195,15 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("operations.inventory.count.execute", "ORG"),
             ("operations.inventory.stock.read", "ORG"),
             ("operations.inventory.stock.transfer", "ORG"),
+            # Goods-in is warehouse work: the worker can see the purchase orders to receive
+            # against, and post a receipt — not raise, approve or edit a PO or a requisition.
+            ("operations.procurement.purchase_order.read", "ORG"),
+            ("operations.procurement.receipt.read", "ORG"),
+            ("operations.procurement.receipt.write", "ORG"),
+            ("operations.inventory.stock.receive", "ORG"),
+            ("operations.inventory.transfer.write", "ORG"),
+            ("operations.inventory.transfer.dispatch", "ORG"),
+            ("operations.inventory.transfer.receive", "ORG"),
             ("operations.fulfilment.worker.read", "ORG"),
             ("operations.fulfilment.worker.write", "OWN"),
             ("operations.fulfilment.pack.read", "ORG"),
@@ -794,11 +1211,38 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
         ),
     ),
     RoleTemplate(
+        code="BUYER",
+        name="Buyer",
+        product=PRODUCT,
+        description=(
+            "Buys: raises and edits purchase orders org-wide, keeps the supplier directory, and "
+            "works the requisition queue — raises requisitions and turns approved ones into draft "
+            "purchase orders (inventory Phase 2). Sees goods receipts and stock to chase "
+            "deliveries. Approves nothing — neither a purchase order nor a requisition, so the "
+            "person who commits spend is never the person who asked for it — and does not post "
+            "goods receipts or move stock; that is the warehouse's job."
+        ),
+        grants=OPERATIONS.pick(
+            ("operations.procurement.purchase_order.read", "ORG"),
+            ("operations.procurement.purchase_order.write", "ORG"),
+            ("operations.procurement.supplier.read", "ORG"),
+            ("operations.procurement.supplier.write", "ORG"),
+            ("operations.procurement.requisition.read", "ORG"),
+            ("operations.procurement.requisition.write", "ORG"),
+            ("operations.procurement.receipt.read", "ORG"),
+            ("operations.inventory.item.read", "ORG"),
+            ("operations.inventory.stock.read", "ORG"),
+            ("operations.inventory.warehouse.read", "ORG"),
+            ("operations.inventory.location.read", "ORG"),
+        ),
+    ),
+    RoleTemplate(
         code="OPERATIONS_USER",
         name="Operations user",
         product=PRODUCT,
         description=(
-            "Every person with an Operations seat. Raises and sees their own purchase orders, "
+            "Every person with an Operations seat. Raises and sees their own purchase orders and "
+            "purchase requisitions, "
             "reads the shared suppliers, inventory, warehouses and locations, and runs the "
             "counter: creates and places customer orders, holds and releases them, and takes an "
             "order's payment online. Does not accept (commit stock to) or cancel an order, or "
@@ -810,6 +1254,8 @@ OPERATIONS_ROLE_TEMPLATES: list[RoleTemplate] = [
         grants=OPERATIONS.pick(
             ("operations.procurement.purchase_order.read", "OWN"),
             ("operations.procurement.purchase_order.write", "OWN"),
+            ("operations.procurement.requisition.read", "OWN"),
+            ("operations.procurement.requisition.write", "OWN"),
             ("operations.procurement.supplier.read", "ORG"),
             ("operations.inventory.item.read", "ORG"),
             ("operations.inventory.warehouse.read", "ORG"),

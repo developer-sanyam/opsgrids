@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.reservation.expired/v1",
+  "title": "operations.inventory.reservation.expired",
+  "description": "A reservation passed its `expires_at` and its open remainder was released by the sweep.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "reservation_id",
+    "inventory_item_id",
+    "reference_type",
+    "reference_id",
+    "expires_at"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "reservation_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "inventory_item_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "reference_type": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reference_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "expires_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    }
+  }
+}

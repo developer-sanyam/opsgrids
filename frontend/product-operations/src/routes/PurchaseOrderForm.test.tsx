@@ -141,7 +141,7 @@ describe("PurchaseOrderFormPage", () => {
     await waitFor(() => expect(listWarehouses).toHaveBeenCalled());
     await chooseSupplier(user);
     await user.selectOptions(await screen.findByLabelText("Warehouse"), "Bengaluru DC");
-    await user.type(screen.getByLabelText("Expected date"), "2026-10-01");
+    await user.type(screen.getByLabelText("Expected date"), "2099-01-01");
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(await screen.findByRole("heading", { name: "Line items" })).toBeDefined();
@@ -160,7 +160,7 @@ describe("PurchaseOrderFormPage", () => {
     await waitFor(() => expect(listWarehouses).toHaveBeenCalled());
     await chooseSupplier(user);
     await user.selectOptions(await screen.findByLabelText("Warehouse"), "Bengaluru DC");
-    await user.type(screen.getByLabelText("Expected date"), "2026-10-01");
+    await user.type(screen.getByLabelText("Expected date"), "2099-01-01");
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
     await screen.findByRole("heading", { name: "Line items" });

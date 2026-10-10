@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.production.completed/v1",
+  "title": "operations.production.completed",
+  "description": "A production order completed: good output was received into stock and the order's variance (standard vs actual consumption, scrap allowance included) is final.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "production_order_id",
+    "number",
+    "item_id",
+    "bom_version_id",
+    "planned_quantity",
+    "produced_quantity",
+    "completed_at",
+    "variance"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "production_order_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string"
+    },
+    "item_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "bom_version_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "planned_quantity": {
+      "type": "string",
+      "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+    },
+    "produced_quantity": {
+      "type": "string",
+      "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+    },
+    "completed_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "variance": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "material_id",
+          "item_id",
+          "standard",
+          "actual",
+          "variance"
+        ],
+        "properties": {
+          "material_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "item_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "standard": {
+            "type": "string",
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+          },
+          "actual": {
+            "type": "string",
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+          },
+          "variance": {
+            "type": "string",
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+          }
+        }
+      }
+    }
+  }
+}

@@ -298,6 +298,68 @@ byte for byte:
 "putaway task" (the reversal that carries picked stock back to its bin when an order is cancelled, §1 and the
 state table) is a different thing and is left untouched; where both could be meant, say "storage put-away" for the
 first and "putaway task" for the second.
+## 13. Phase 2: what the receiving slice decided
+
+**Added 2026-10-05, with Phase 2 ([receiving.md](../inventory/receiving.md)).** Five choices a later phase will
+lean on:
+
+- **A receipt is one `receipt` move per goods receipt, and the receipt rows are immutable.** The header is
+  inserted (under a unique `(organization_id, idempotency_key)` index, `ON CONFLICT DO NOTHING`) before any lot,
+  roll or ledger row, so a retried or duplicated request replays instead of double-posting; the stock is
+  found through the move's `reference_id`, so the receipt needs no mutable `move_id` and can be
+  `UPDATE`/`DELETE`-revoked like the ledger. A correction is a later document.
+- **Tolerance is integer basis points on the item, floored.** `limit = ordered + floor(ordered * bp / 10_000)`;
+  0 (the default) means exactly the ordered quantity. Rejected: a float percentage (the limit must be
+  reproducible to the milli-unit) and a tolerance on the PO line (the supplier agreement is per item; the
+  line would have to be edited to change it).
+- **Concurrency is the PO row lock, not a counter.** Receipts lock the PO, then its lines, then the items
+  (each by id) and re-read them (`populate_existing`) before deciding, so two receipts against one line
+  serialise and the second sees the first's cumulative figure. `purchase_order_lines.received_milli` is the
+  one source for "how much has arrived"; `received_qty` is only its whole-unit view.
+- **`partially_received` is a PO status, with `short_closed` per line.** `PO_TRANSITIONS` gained
+  `approved -> partially_received` and `partially_received -> received`; a partially received PO cannot be
+  cancelled (stock arrived against it), and the way to stop expecting the rest is `close_short` on the
+  lines. Rejected: a `closed`-with-shortage transition (it would hide which lines were short).
+- **Container units convert at the document, not the bucket.** `uom_conversions` is applied where a
+  container unit appears on a document — the receipt line and the PO line — through exact `Fraction`
+  arithmetic that refuses a non-whole result; a bucket is always in the item's stock unit, so the bucket
+  key and the ledger never learn about boxes. A unit with a fixed registry conversion is refused a per-item
+  row (one source for one fact), and a ratio cannot be deleted or changed under an open order that uses it.
+
+Also: **a quality-tracked item is received straight into `QUALITY_HOLD`** (never `AVAILABLE` then moved), and
+the single-shot receive endpoint keeps its answers — it is a wrapper, not a second implementation — and,
+because it posts stock, demands the same two warehouse keys as a goods receipt (`receipt.write` and
+`stock.receive`, ORG) on top of `purchase_order.write`.
+
+## 14. Phase 3: what the movements and control slice decided
+
+**Added 2026-10-05, with Phase 3 ([movements.md](../inventory/movements.md)).** Five choices a later phase
+will lean on:
+
+- **A transfer is a document over two kernel moves; stock in transit lives at the destination.** Dispatch is
+  one `relocation` into the `IN_TRANSIT` bucket at the *destination* warehouse's default bin, receipt a
+  `relocation` out of it, a shortage an `adjustment` out of it — no new move kind (§12's rule, again), no
+  new table of in-flight quantities. Put at the destination, "what is on its way to me" is a query on that
+  warehouse's own locations, and `IN_TRANSIT` stays outside on-hand as §3 says. The cost is that a
+  warehouse needs a default bin to receive a dispatch; every warehouse gets one at creation.
+- **Approval is routed by quantity, per line, in the item's own unit.** A threshold per organization
+  (`inventory_control_settings`) decides: none set → a direct sign-off by a *different* person holding
+  `inventory.transfer.approve` (transfers) or no approval (adjustments, preserving every existing client);
+  set and under it → automatic; at or over → the approval service (ADR-0006), by events in both directions,
+  the product applying the answer in its own transaction under its own state machine. A value threshold
+  needs costing (Phase 8) and is deferred; summing quantities across units was rejected as meaningless.
+- **Approved adjustments post as the system, under a deterministic key, inside a savepoint.** The decision
+  can arrive twice, late, or after the stock has gone; the key makes a double delivery post once, the
+  state check makes a late one a no-op, and the savepoint turns "the stock can no longer take it" into a
+  recorded `FAILED` (with the kernel's reason, and `failed` on the return leg) instead of a poisoned
+  consumer transaction.
+- **Expiry is a release, not a second way to close a reservation.** The sweep calls `ledger.release`
+  (key `expire:<id>`) like a person would, then stamps `expired_at`; nothing else writes
+  `reserved_milli`. It discovers organizations on the outbox role with a column-level grant on exactly
+  `(organization_id, status, expires_at)`.
+- **Stocktake was not rebuilt.** `app/counting` (ADR-0026) is the stocktake; its manager review remains its
+  own permission-gated approval. Routing a large variance through the approval service and auto-adjusting
+  under a threshold is the extension left, and nothing was built that would compete with it.
 
 ## Consequences
 

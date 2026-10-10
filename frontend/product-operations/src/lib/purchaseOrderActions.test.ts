@@ -13,6 +13,15 @@ describe("purchaseOrderActions", () => {
     expect(purchaseOrderActions("approved", true).receive).toBe(true);
   });
 
+  it("offers the goods-receipt flow on an approved or partially received order only", () => {
+    expect(purchaseOrderActions("approved", false).receiveGoods).toBe(true);
+    expect(purchaseOrderActions("partially_received", false).receiveGoods).toBe(true);
+    expect(purchaseOrderActions("partially_received", false).cancel).toBe(false);
+    for (const status of ["draft", "received", "closed", "cancelled"] as const) {
+      expect(purchaseOrderActions(status, true).receiveGoods).toBe(false);
+    }
+  });
+
   it("offers Approve on a draft only to an approver", () => {
     expect(purchaseOrderActions("draft", false).approve).toBe(false);
     expect(purchaseOrderActions("draft", true).approve).toBe(true);
@@ -30,6 +39,7 @@ describe("purchaseOrderActions", () => {
       edit: false,
       approve: false,
       receive: false,
+      receiveGoods: false,
       cancel: false,
       close: true,
     });

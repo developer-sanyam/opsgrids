@@ -13,6 +13,8 @@ import { OverviewPage } from "./routes/Overview";
 import { LoginPage } from "./routes/Login";
 import { NotFoundPage } from "./routes/NotFound";
 import { RouteError } from "./routes/RouteError";
+import { StockReadGate } from "./movements/StockReadGate";
+import { registerRoute } from "./lib/routeRegistry";
 import { RouteFallback } from "./routes/RouteFallback";
 import { LogoMark } from "./ui/LogoMark";
 
@@ -38,6 +40,22 @@ const PurchaseOrderDetailPage = lazy(() =>
 );
 const PurchaseOrderFormPage = lazy(() =>
   import("./routes/PurchaseOrderForm").then((m) => ({ default: m.PurchaseOrderFormPage })),
+);
+const PurchaseRequisitionsPage = lazy(() =>
+  import("./routes/PurchaseRequisitions").then((m) => ({ default: m.PurchaseRequisitionsPage })),
+);
+const PurchaseRequisitionFormPage = lazy(() =>
+  import("./routes/PurchaseRequisitionForm").then((m) => ({ default: m.PurchaseRequisitionFormPage })),
+);
+const PurchaseRequisitionDetailPage = lazy(() =>
+  import("./routes/PurchaseRequisitionDetail").then((m) => ({ default: m.PurchaseRequisitionDetailPage })),
+);
+const ReceiveGoodsPage = lazy(() => import("./routes/ReceiveGoods").then((m) => ({ default: m.ReceiveGoodsPage })));
+const GoodsReceiptsPage = lazy(() =>
+  import("./routes/GoodsReceipts").then((m) => ({ default: m.GoodsReceiptsPage })),
+);
+const GoodsReceiptDetailPage = lazy(() =>
+  import("./routes/GoodsReceiptDetail").then((m) => ({ default: m.GoodsReceiptDetailPage })),
 );
 const InventoryPage = lazy(() =>
   import("./routes/Inventory").then((m) => ({ default: m.InventoryPage })),
@@ -109,16 +127,71 @@ const CountSessionsPage = lazy(() =>
 const CountSessionDetailPage = lazy(() =>
   import("./routes/CountSessionDetail").then((m) => ({ default: m.CountSessionDetailPage })),
 );
+const TransfersPage = lazy(() => import("./routes/Transfers").then((m) => ({ default: m.TransfersPage })));
+const TransferFormPage = lazy(() => import("./routes/TransferForm").then((m) => ({ default: m.TransferFormPage })));
+const TransferDetailPage = lazy(() =>
+  import("./routes/TransferDetail").then((m) => ({ default: m.TransferDetailPage })),
+);
+const ReservationsPage = lazy(() => import("./routes/Reservations").then((m) => ({ default: m.ReservationsPage })));
+const AdjustmentsPage = lazy(() => import("./routes/Adjustments").then((m) => ({ default: m.AdjustmentsPage })));
+const ApprovalSettingsPage = lazy(() =>
+  import("./routes/ApprovalSettings").then((m) => ({ default: m.ApprovalSettingsPage })),
+);
+const QcTemplatesPage = lazy(() => import("./routes/QcTemplates").then((m) => ({ default: m.QcTemplatesPage })));
+const InspectionsPage = lazy(() => import("./routes/Inspections").then((m) => ({ default: m.InspectionsPage })));
+const InspectionDetailPage = lazy(() =>
+  import("./routes/InspectionDetail").then((m) => ({ default: m.InspectionDetailPage })),
+);
 const AutomationPage = lazy(() => import("./routes/Automation").then((m) => ({ default: m.AutomationPage })));
 const ChannelsPage = lazy(() => import("./routes/Channels").then((m) => ({ default: m.ChannelsPage })));
+const JobWorkOrdersPage = lazy(() =>
+  import("./routes/JobWorkOrders").then((m) => ({ default: m.JobWorkOrdersPage })),
+);
+const JobWorkOrderDetailPage = lazy(() =>
+  import("./routes/JobWorkOrderDetail").then((m) => ({ default: m.JobWorkOrderDetailPage })),
+);
+const JobWorkChallanPrintPage = lazy(() =>
+  import("./routes/JobWorkChallanPrint").then((m) => ({ default: m.JobWorkChallanPrintPage })),
+);
+const BomsPage = lazy(() => import("./routes/Boms").then((m) => ({ default: m.BomsPage })));
+const BomDetailPage = lazy(() => import("./routes/BomDetail").then((m) => ({ default: m.BomDetailPage })));
+const BomVersionDetailPage = lazy(() =>
+  import("./routes/BomVersionDetail").then((m) => ({ default: m.BomVersionDetailPage })),
+);
+const ProductionOrdersPage = lazy(() =>
+  import("./routes/ProductionOrders").then((m) => ({ default: m.ProductionOrdersPage })),
+);
+const ProductionOrderDetailPage = lazy(() =>
+  import("./routes/ProductionOrderDetail").then((m) => ({ default: m.ProductionOrderDetailPage })),
+);
+const MrpRunsPage = lazy(() => import("./routes/MrpRuns").then((m) => ({ default: m.MrpRunsPage })));
+const MrpRunDetailPage = lazy(() =>
+  import("./routes/MrpRunDetail").then((m) => ({ default: m.MrpRunDetailPage })),
+);
+
+const ScanPage = lazy(() => import("./routes/ScanPage").then((m) => ({ default: m.ScanPage })));
+const InventoryImportPage = lazy(() =>
+  import("./routes/InventoryImport").then((m) => ({ default: m.InventoryImportPage })),
+);
+const InventoryLabelsPage = lazy(() =>
+  import("./routes/InventoryLabels").then((m) => ({ default: m.InventoryLabelsPage })),
+);
 
 function lazyRoute(path: string, element: ReactNode) {
+  // The mobile scan flows link into other phases' screens only when this build mounts them, and
+  // they ask this registry, so the route table stays the one source of truth.
+  registerRoute(path);
   return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
 }
 
 /** A route that keeps a render failure to itself: the shell and every other screen stay up. */
 function guardedRoute(path: string, element: ReactNode) {
   return { ...lazyRoute(path, element), errorElement: <RouteError /> };
+}
+
+/** A movements screen: lazy, and behind the stock-read permission every read on it needs. */
+function stockRoute(path: string, element: ReactNode) {
+  return lazyRoute(path, <StockReadGate>{element}</StockReadGate>);
 }
 
 const router = createBrowserRouter([
@@ -155,6 +228,13 @@ const router = createBrowserRouter([
           lazyRoute("purchase-orders/new", <PurchaseOrderFormPage />),
           lazyRoute("purchase-orders/:id", <PurchaseOrderDetailPage />),
           lazyRoute("purchase-orders/:id/edit", <PurchaseOrderFormPage />),
+          lazyRoute("purchase-orders/:id/receive", <ReceiveGoodsPage />),
+          lazyRoute("purchase-requisitions", <PurchaseRequisitionsPage />),
+          lazyRoute("purchase-requisitions/new", <PurchaseRequisitionFormPage />),
+          lazyRoute("purchase-requisitions/:id", <PurchaseRequisitionDetailPage />),
+          lazyRoute("purchase-requisitions/:id/edit", <PurchaseRequisitionFormPage />),
+          lazyRoute("goods-receipts", <GoodsReceiptsPage />),
+          lazyRoute("goods-receipts/:id", <GoodsReceiptDetailPage />),
           lazyRoute("inventory", <InventoryPage />),
           lazyRoute("inventory/categories", <ItemCategoriesPage />),
           // Static segments are registered before `inventory/:id`; they would otherwise be read as an item id.
@@ -164,6 +244,15 @@ const router = createBrowserRouter([
           lazyRoute("inventory/rolls/:id", <RollDetailPage />),
           lazyRoute("inventory/stock", <InventoryStockPage />),
           lazyRoute("inventory/ledger", <InventoryLedgerPage />),
+          stockRoute("inventory/transfers", <TransfersPage />),
+          stockRoute("inventory/transfers/new", <TransferFormPage />),
+          stockRoute("inventory/transfers/:id", <TransferDetailPage />),
+          stockRoute("inventory/transfers/:id/edit", <TransferFormPage />),
+          stockRoute("inventory/reservations", <ReservationsPage />),
+          stockRoute("inventory/adjustments", <AdjustmentsPage />),
+          stockRoute("inventory/settings/approvals", <ApprovalSettingsPage />),
+          lazyRoute("inventory/scan", <ScanPage />),
+          lazyRoute("inventory/import", <InventoryImportPage />),
           lazyRoute("inventory/:id", <InventoryItemDetailPage />),
           lazyRoute("suppliers", <SuppliersPage />),
           lazyRoute("suppliers/:id", <SupplierDetailPage />),
@@ -183,11 +272,46 @@ const router = createBrowserRouter([
           lazyRoute("dispatch", <DispatchShipmentsPage />),
           lazyRoute("counting", <CountSessionsPage />),
           lazyRoute("counting/:id", <CountSessionDetailPage />),
+          lazyRoute("quality/templates", <QcTemplatesPage />),
+          lazyRoute("quality/inspections", <InspectionsPage />),
+          lazyRoute("quality/inspections/:id", <InspectionDetailPage />),
           lazyRoute("automation", <AutomationPage />),
           lazyRoute("settings/payments", <PaymentSettingsPage />),
           lazyRoute("channels", <ChannelsPage />),
+          lazyRoute("jobwork/orders", <JobWorkOrdersPage />),
+          lazyRoute("jobwork/orders/:id", <JobWorkOrderDetailPage />),
+          lazyRoute("manufacturing/boms", <BomsPage />),
+          lazyRoute("manufacturing/boms/:bomId", <BomDetailPage />),
+          lazyRoute("manufacturing/boms/:bomId/versions/:versionId", <BomVersionDetailPage />),
+          lazyRoute("manufacturing/orders", <ProductionOrdersPage />),
+          lazyRoute("manufacturing/orders/:orderId", <ProductionOrderDetailPage />),
+          lazyRoute("manufacturing/mrp", <MrpRunsPage />),
+          lazyRoute("manufacturing/mrp/:runId", <MrpRunDetailPage />),
           { path: "*", element: <NotFoundPage /> },
         ],
+      },
+      // Printed inventory labels (inventory Phase 9): outside `AppShell` for the same reason.
+      {
+        path: "/inventory/labels/:type",
+        element: (
+          <RequireAuth>
+            <Suspense fallback={<RouteFallback />}>
+              <InventoryLabelsPage />
+            </Suspense>
+          </RequireAuth>
+        ),
+      },
+      // A printed delivery challan likewise has no use for a sidebar. Still behind `RequireAuth`:
+      // it reads the same permissioned challan the order screen does.
+      {
+        path: "/jobwork/challans/:id/print",
+        element: (
+          <RequireAuth>
+            <Suspense fallback={<RouteFallback />}>
+              <JobWorkChallanPrintPage />
+            </Suspense>
+          </RequireAuth>
+        ),
       },
       // Its own route, outside `AppShell`: a printed label sheet has no use for a sidebar and top
       // bar, and this sidesteps fighting them with print stylesheets. Still behind `RequireAuth` —

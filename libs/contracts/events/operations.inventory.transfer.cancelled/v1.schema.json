@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.transfer.cancelled/v1",
+  "title": "operations.inventory.transfer.cancelled",
+  "description": "A transfer was cancelled before dispatch. `was_status` tells the approval service whether there is a pending request to withdraw.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "transfer_id",
+    "number",
+    "from_warehouse_id",
+    "to_warehouse_id",
+    "was_status",
+    "approval_route",
+    "reason"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "transfer_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string"
+    },
+    "from_warehouse_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "to_warehouse_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "was_status": {
+      "type": "string",
+      "enum": [
+        "DRAFT",
+        "REQUESTED",
+        "APPROVED"
+      ]
+    },
+    "approval_route": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "AUTO",
+        "DIRECT",
+        "SERVICE",
+        null
+      ]
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}

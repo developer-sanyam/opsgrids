@@ -62,6 +62,12 @@ REQUEST_TYPE_REGULARIZATION = "hrms.time.regularization"
 #: application machinery as regularisation, parametrized by `request_type` rather than
 #: duplicated; see `_open_request`/`_apply_outcome` below.
 REQUEST_TYPE_LEAVE = "hrms.time.leave"
+#: Operations' inventory requests (inventory Phase 3, docs/inventory/movements.md): an
+#: inter-warehouse transfer, or a stock adjustment, at or over operations' own quantity threshold.
+#: Routed by the same generic machinery, up the requester's reporting line. `summary` carries only
+#: structured facts (transfer number, warehouses, the largest line / the SKU and quantity).
+REQUEST_TYPE_INVENTORY_TRANSFER = "operations.inventory.transfer"
+REQUEST_TYPE_INVENTORY_ADJUSTMENT = "operations.inventory.adjustment"
 
 #: Every request type approval currently knows how to route. `GET /policies` (§10, §11) iterates
 #: this rather than "every request_type a PUT has ever written" or "every distinct request_type
@@ -72,7 +78,12 @@ REQUEST_TYPE_LEAVE = "hrms.time.leave"
 #: not what "the type is shown, on the settings screen" (screens, overview) describes. A new
 #: request type is added here the same way `REQUEST_TYPE_LEAVE` was: one new module-level
 #: constant, appended.
-KNOWN_REQUEST_TYPES: tuple[str, ...] = (REQUEST_TYPE_REGULARIZATION, REQUEST_TYPE_LEAVE)
+KNOWN_REQUEST_TYPES: tuple[str, ...] = (
+    REQUEST_TYPE_REGULARIZATION,
+    REQUEST_TYPE_LEAVE,
+    REQUEST_TYPE_INVENTORY_TRANSFER,
+    REQUEST_TYPE_INVENTORY_ADJUSTMENT,
+)
 
 EVT_REQUEST_OPENED = "core.approval.request.opened"
 EVT_REQUEST_DECIDED = "core.approval.request.decided"
@@ -395,6 +406,36 @@ async def open_leave_request(
     return await _open_request(
         session,
         request_type=REQUEST_TYPE_LEAVE,
+        organization_id=organization_id,
+        source_ref=source_ref,
+        requester_employee_id=requester_employee_id,
+        summary=summary,
+        request_note=request_note,
+    )
+
+
+INVENTORY_REQUEST_TYPES = (REQUEST_TYPE_INVENTORY_TRANSFER, REQUEST_TYPE_INVENTORY_ADJUSTMENT)
+
+
+async def open_inventory_request(
+    session: AsyncSession,
+    *,
+    request_type: str,
+    organization_id: uuid.UUID,
+    source_ref: uuid.UUID,
+    requester_employee_id: uuid.UUID,
+    summary: dict[str, Any],
+    request_note: str | None,
+) -> ApprovalRequest | None:
+    """Open an `operations.inventory.transfer` / `operations.inventory.adjustment` request from
+    operations' `.requested` event — the same opening rule ADR-0006 §4 states for every type,
+    through the shared `_open_request`. Any other `request_type` is a caller bug, refused here
+    rather than routed."""
+    if request_type not in INVENTORY_REQUEST_TYPES:
+        raise ValueError(f"{request_type!r} is not an inventory request type")
+    return await _open_request(
+        session,
+        request_type=request_type,
         organization_id=organization_id,
         source_ref=source_ref,
         requester_employee_id=requester_employee_id,
@@ -855,6 +896,29 @@ async def apply_leave_outcome(
     return await _apply_outcome(
         session,
         request_type=REQUEST_TYPE_LEAVE,
+        organization_id=organization_id,
+        source_ref=source_ref,
+        outcome=outcome,
+        failure_reason=failure_reason,
+    )
+
+
+async def apply_inventory_outcome(
+    session: AsyncSession,
+    *,
+    request_type: str,
+    organization_id: uuid.UUID,
+    source_ref: uuid.UUID,
+    outcome: str,
+    failure_reason: str | None,
+) -> ApprovalRequest | None:
+    """Operations' `.applied` events -> the write-once `application_*` trio (ADR-0006 §12), for
+    the two inventory request types."""
+    if request_type not in INVENTORY_REQUEST_TYPES:
+        raise ValueError(f"{request_type!r} is not an inventory request type")
+    return await _apply_outcome(
+        session,
+        request_type=request_type,
         organization_id=organization_id,
         source_ref=source_ref,
         outcome=outcome,

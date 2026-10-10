@@ -21,8 +21,11 @@ interface OrderItemPickerProps {
   onChange: (option: ComboboxOption | null) => void;
   /** The matched inventory item, so the line editor can prefill its selling price and show its
    *  available stock. `null` when the selection was cleared. */
-  onPick: (item: InventoryItemOut | null) => void;
-  error?: string;
+  onPick?: (item: InventoryItemOut | null) => void;
+  error?: string | undefined;
+  /** The field's label; "Item" unless a screen names the role ("Produced item", "Component"). */
+  label?: string | undefined;
+  helper?: string | undefined;
 }
 
 /**
@@ -31,16 +34,16 @@ interface OrderItemPickerProps {
  * free-text SKU: `OrderLineIn.inventory_item_id` must name a real item in the organization, so an
  * order line has no "unmatched SKU" escape hatch a PO line does.
  */
-export function OrderItemPicker({ value, onChange, onPick, error }: OrderItemPickerProps) {
+export function OrderItemPicker({ value, onChange, onPick, error, label = "Item", helper }: OrderItemPickerProps) {
   const cacheRef = useRef<Map<string, InventoryItemOut>>(new Map());
 
   return (
     <Combobox
-      label="Item"
+      label={label}
       value={value}
       onChange={(option) => {
         onChange(option);
-        onPick(option ? (cacheRef.current.get(option.id) ?? null) : null);
+        onPick?.(option ? (cacheRef.current.get(option.id) ?? null) : null);
       }}
       loadOptions={async (q) => {
         const items = await searchOrderableItems(q);
@@ -50,6 +53,7 @@ export function OrderItemPicker({ value, onChange, onPick, error }: OrderItemPic
       placeholder="Look up a stocked item…"
       copy={ITEM_COPY}
       {...(error !== undefined ? { error } : {})}
+      {...(helper !== undefined ? { helper } : {})}
     />
   );
 }

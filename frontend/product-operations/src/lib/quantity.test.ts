@@ -1,6 +1,49 @@
 import { describe, expect, it } from "vitest";
 
-import { formatQty, milliToQty, qtyToMilli, stockValueMinor } from "./quantity";
+import {
+  formatPercent,
+  formatQty,
+  isPctInput,
+  isQtyInput,
+  milliToQty,
+  pctFieldError,
+  qtyFieldError,
+  qtyToMilli,
+  stockValueMinor,
+} from "./quantity";
+
+describe("typed decimal input", () => {
+  it.each(["1", "82.5", "0.125", "0", " 3 "])("accepts %j as a quantity", (raw) => {
+    expect(isQtyInput(raw)).toBe(true);
+  });
+
+  it.each(["", "-1", "1.2345", "1e3", "1,5", ".5", "abc", "1."])("rejects %j as a quantity", (raw) => {
+    expect(isQtyInput(raw)).toBe(false);
+  });
+
+  it("rejects zero where a quantity of work is required, and allows it where asked", () => {
+    expect(qtyFieldError("0")).toBe("Enter a quantity greater than zero.");
+    expect(qtyFieldError("0.000")).toBe("Enter a quantity greater than zero.");
+    expect(qtyFieldError("0", { allowZero: true })).toBeUndefined();
+    expect(qtyFieldError("")).toBe("Enter a quantity.");
+    expect(qtyFieldError("2.5")).toBeUndefined();
+  });
+
+  it.each(["0", "2.5", "100", "100.00", "99.99", "12.34"])("accepts %j as a percentage", (raw) => {
+    expect(isPctInput(raw)).toBe(true);
+  });
+
+  it.each(["", "100.01", "101", "1.234", "-1", "1e1", "1000"])("rejects %j as a percentage", (raw) => {
+    expect(isPctInput(raw)).toBe(false);
+  });
+
+  it("explains a bad percentage and echoes a good one as sent", () => {
+    expect(pctFieldError("")).toBe("Enter a percentage.");
+    expect(pctFieldError("150")).toMatch(/0 to 100/);
+    expect(pctFieldError("2.5")).toBeUndefined();
+    expect(formatPercent("2.5")).toBe("2.5%");
+  });
+});
 
 describe("exact quantities", () => {
   it.each([

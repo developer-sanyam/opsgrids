@@ -262,3 +262,263 @@ describe("a fixture update that the server would refuse", () => {
     expect(await client.updateItemCategory(metals.id, { parent_id: polymers.id })).toMatchObject({ parent_id: polymers.id });
   });
 });
+
+/**
+ * The movement screens (inventory Phase 3) in fixture mode: every refusal the server makes is an
+ * `ApiError` carrying its problem document, so the same screen code handles both. Quantities stay
+ * decimal strings throughout.
+ */
+describe("fixture movements refuse what the server would refuse", () => {
+  async function movements() {
+    const { client, fixtures, ApiError } = await fixtureMode();
+    const movementClient = await import("./movements");
+    const warehouse = fixtures.WAREHOUSES[0];
+    const bin = warehouse ? fixtures.LOCATIONS[warehouse.id]?.find((l) => l.kind === "bin") : undefined;
+    const item = fixtures.INVENTORY[0];
+    if (!warehouse || !bin || !item) throw new Error("no fixtures");
+    return { client, fixtures, ApiError, m: movementClient, warehouse, bin, item };
+  }
+
+  it("answers a reservation larger than what is available with an insufficient-stock 409 carrying the numbers", async () => {
+    const { m, bin, item, ApiError } = await movements();
+    const error = await refusal(() =>
+      m.createReservation(
+        { inventory_item_id: item.id, location_id: bin.id, quantity: "100000.5", reference_type: "manual" },
+        "k1",
+      ),
+    );
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({
+      status: 409,
+      problem: {
+        type: "https://errors.opsgrids.dev/insufficient-stock",
+        errors: [
+          { sku: item.sku, requested: "100000.5", on_hand: item.on_hand_qty, available: item.available_qty, reservations: [] },
+        ],
+      },
+    });
+  });
+
+  it("answers a reservation for an order with no order id with a 422 on reference_id, and a lapsed expiry with one on expires_at", async () => {
+    const { m, bin, item } = await movements();
+    const missing = await refusal(() =>
+      m.createReservation({ inventory_item_id: item.id, location_id: bin.id, quantity: "1", reference_type: "order" }, "k"),
+    );
+    expect(missing).toMatchObject({ status: 422, problem: { errors: [{ field: "reference_id" }] } });
+    const lapsed = await refusal(() =>
+      m.createReservation(
+        { inventory_item_id: item.id, location_id: bin.id, quantity: "1", expires_at: "2000-01-01T00:00:00Z" },
+        "k",
+      ),
+    );
+    expect(lapsed).toMatchObject({ status: 422, problem: { errors: [{ field: "expires_at" }] } });
+  });
+
+  it("holds stock on a reservation and gives part, then all, of it back", async () => {
+    const { m, bin, item } = await movements();
+    const made = await m.createReservation(
+      { inventory_item_id: item.id, location_id: bin.id, quantity: "10.5", reference_type: "manual" },
+      "k",
+    );
+    expect(made).toMatchObject({ quantity: "10.5", remaining: "10.5", status: "active" });
+
+    const tooMuch = await refusal(() => m.releaseReservation(made.id, { quantity: "11" }, "k"));
+    expect(tooMuch).toMatchObject({ status: 409 });
+
+    expect(await m.releaseReservation(made.id, { quantity: "0.5" }, "k")).toMatchObject({
+      remaining: "10",
+      status: "active",
+    });
+    expect(await m.releaseReservation(made.id, {}, "k")).toMatchObject({ remaining: "0", status: "released" });
+    const again = await refusal(() => m.releaseReservation(made.id, {}, "k"));
+    expect(again).toMatchObject({ status: 409 });
+  });
+
+  it("answers an adjustment at the threshold with no evidence with a 422 on evidence_document_id, and holds it with one", async () => {
+    const { m, bin, item } = await movements();
+    const input = { inventory_item_id: item.id, location_id: bin.id, quantity_delta: "-50", reason: "lost" as const };
+    const error = await refusal(() => m.createAdjustment(input, "k"));
+    expect(error).toMatchObject({ status: 422, problem: { errors: [{ field: "evidence_document_id" }] } });
+
+    const held = await m.createAdjustment({ ...input, evidence_document_id: "0b8f3a52-6f1d-4e0c-8a3e-3b7c5d9e1f20" }, "k");
+    expect(held).toMatchObject({ status: "PENDING_APPROVAL", approval_required: true });
+    expect(held.number).toMatch(/^ADJ-\d{6}$/);
+  });
+
+  it("applies an adjustment under the threshold at once, and refuses to cancel what is no longer pending", async () => {
+    const { m, bin, item } = await movements();
+    const applied = await m.createAdjustment(
+      { inventory_item_id: item.id, location_id: bin.id, quantity_delta: "-1.5", reason: "damaged" },
+      "k",
+    );
+    expect(applied).toMatchObject({ status: "APPLIED", quantity_delta: "-1.5" });
+    const error = await refusal(() => m.cancelAdjustment(applied.id, {}));
+    expect(error).toMatchObject({ status: 409 });
+  });
+
+  it("withdraws a pending adjustment", async () => {
+    const { m } = await movements();
+    const pending = (await m.listAdjustments({ status: "PENDING_APPROVAL" })).items[0];
+    if (!pending) throw new Error("no pending fixture adjustment");
+    expect(await m.cancelAdjustment(pending.id, { reason: "mistake" })).toMatchObject({ status: "CANCELLED" });
+  });
+
+  it("answers an unknown transfer with a 404", async () => {
+    const { m, ApiError } = await movements();
+    const error = await refusal(() => m.getTransfer("nope"));
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 404 });
+  });
+
+  it("refuses a transfer between a warehouse and itself, and acts on a transfer only from the states the server allows", async () => {
+    const { m, warehouse, bin, item } = await movements();
+    const same = await refusal(() =>
+      m.createTransfer(
+        {
+          from_warehouse_id: warehouse.id,
+          to_warehouse_id: warehouse.id,
+          lines: [{ inventory_item_id: item.id, from_location_id: bin.id, quantity: "1" }],
+        },
+        "k",
+      ),
+    );
+    expect(same).toMatchObject({ status: 422 });
+
+    const draft = (await m.listTransfers({ status: "DRAFT" })).items[0];
+    if (!draft) throw new Error("no draft fixture transfer");
+    expect(await refusal(() => m.dispatchTransfer(draft.id, {}, "k"))).toMatchObject({ status: 409 });
+    expect(await refusal(() => m.receiveTransfer(draft.id, { lines: [] }, "k"))).toMatchObject({ status: 409 });
+
+    const inTransit = (await m.listTransfers({ status: "IN_TRANSIT" })).items[0];
+    if (!inTransit) throw new Error("no in-transit fixture transfer");
+    expect(await refusal(() => m.cancelTransfer(inTransit.id, { reason: "x" }))).toMatchObject({
+      status: 409,
+      message: "The stock is in transit; receive it, or declare what is short",
+    });
+  });
+
+  it("will not let the requester approve their own transfer, and wants a reason for a rejection", async () => {
+    const { m } = await movements();
+    await m.putControlSettings({ transfer_approval_threshold: null, adjustment_approval_threshold: null });
+    const draft = (await m.listTransfers({ status: "DRAFT" })).items[0];
+    if (!draft) throw new Error("no draft fixture transfer");
+    const requested = await m.requestTransfer(draft.id);
+    expect(requested).toMatchObject({ status: "REQUESTED", approval_route: "DIRECT" });
+
+    expect(await refusal(() => m.approveTransfer(draft.id))).toMatchObject({
+      status: 409,
+      message: "The person who requested a transfer cannot approve or reject it",
+    });
+
+    const other = (await m.listTransfers({ status: "REQUESTED" })).items.find((t) => t.id !== draft.id);
+    if (!other) throw new Error("no second requested fixture transfer");
+    expect(await refusal(() => m.rejectTransfer(other.id, { comment: "  " }))).toMatchObject({
+      status: 422,
+      problem: { errors: [{ field: "comment" }] },
+    });
+  });
+
+  it("routes a request by the threshold: under it is approved at once, over it waits for the approval service", async () => {
+    const { m } = await movements();
+    const draft = (await m.listTransfers({ status: "DRAFT" })).items[0];
+    if (!draft) throw new Error("no draft fixture transfer");
+    const full = await m.getTransfer(draft.id);
+    // The seeded draft moves 250 against a 500 threshold.
+    expect(await m.requestTransfer(draft.id)).toMatchObject({ status: "APPROVED", approval_route: "AUTO" });
+
+    await m.putControlSettings({ transfer_approval_threshold: "100", adjustment_approval_threshold: "50" });
+    const second = await m.createTransfer(
+      {
+        from_warehouse_id: full.from_warehouse.id,
+        to_warehouse_id: full.to_warehouse.id,
+        lines: full.lines.map((l) => ({
+          inventory_item_id: l.inventory_item_id,
+          from_location_id: l.from_location_id,
+          quantity: "100",
+        })),
+      },
+      "k",
+    );
+    expect(await m.requestTransfer(second.id)).toMatchObject({
+      status: "REQUESTED",
+      approval_route: "SERVICE",
+      awaiting_approval: true,
+    });
+  });
+
+  it("answers a dispatch the source cannot cover with an insufficient-stock 409", async () => {
+    const { m, fixtures } = await movements();
+    const requested = (await m.listTransfers({ status: "REQUESTED" })).items[0];
+    if (!requested) throw new Error("no requested fixture transfer");
+    await m.approveTransfer(requested.id);
+    const line = (await m.getTransfer(requested.id)).lines[0];
+    const index = fixtures.INVENTORY.findIndex((i) => i.id === line?.inventory_item_id);
+    const stocked = fixtures.INVENTORY[index];
+    if (!stocked) throw new Error("no fixture item");
+    fixtures.INVENTORY[index] = { ...stocked, available_qty: "5" };
+
+    expect(await refusal(() => m.dispatchTransfer(requested.id, {}, "k"))).toMatchObject({
+      status: 409,
+      problem: { type: "https://errors.opsgrids.dev/insufficient-stock", errors: [{ available: "5" }] },
+    });
+  });
+
+  it("receives a transfer in parts, writes off a shortage, and refuses more than is in transit", async () => {
+    const { m } = await movements();
+    const moving = (await m.listTransfers({ status: "IN_TRANSIT" })).items[0];
+    if (!moving) throw new Error("no in-transit fixture transfer");
+    const line = (await m.getTransfer(moving.id)).lines[0];
+    if (!line) throw new Error("no line");
+    expect(line).toMatchObject({ dispatched: "40", received: "10", in_transit: "30" });
+
+    const tooMuch = await refusal(() =>
+      m.receiveTransfer(moving.id, { lines: [{ line_id: line.id, received_quantity: "30", shortage_quantity: "0.001" }] }, "k"),
+    );
+    expect(tooMuch).toMatchObject({ status: 409 });
+
+    const partial = await m.receiveTransfer(
+      moving.id,
+      { lines: [{ line_id: line.id, received_quantity: "20.5", shortage_quantity: "0" }] },
+      "k",
+    );
+    expect(partial).toMatchObject({ status: "IN_TRANSIT" });
+    expect(partial.lines[0]).toMatchObject({ received: "30.5", in_transit: "9.5" });
+
+    const done = await m.receiveTransfer(
+      moving.id,
+      { lines: [{ line_id: line.id, received_quantity: "7", shortage_quantity: "2.5" }] },
+      "k",
+    );
+    expect(done).toMatchObject({ status: "RECEIVED" });
+    expect(done.lines[0]).toMatchObject({ received: "37.5", shortage: "2.5", in_transit: "0" });
+  });
+
+  it("reports in-transit stock beside the physical figure, and pages by cursor", async () => {
+    const { m } = await movements();
+    const rows = await m.listInTransit();
+    expect(rows[0]).toMatchObject({ in_transit: "30" });
+    expect(typeof rows[0]?.physical).toBe("string");
+
+    const first = await m.listTransfers({ limit: 2 });
+    expect(first.items).toHaveLength(2);
+    expect(first.next_cursor).not.toBeNull();
+    const second = await m.listTransfers({ limit: 2, ...(first.next_cursor ? { cursor: first.next_cursor } : {}) });
+    expect(second.items).toHaveLength(1);
+    expect(second.next_cursor).toBeNull();
+  });
+
+  it("refuses a threshold of zero or junk on its own field, and stores a valid one", async () => {
+    const { m } = await movements();
+    expect(
+      await refusal(() => m.putControlSettings({ transfer_approval_threshold: "0", adjustment_approval_threshold: null })),
+    ).toMatchObject({ status: 422, problem: { errors: [{ field: "transfer_approval_threshold" }] } });
+    expect(
+      await refusal(() => m.putControlSettings({ transfer_approval_threshold: null, adjustment_approval_threshold: "abc" })),
+    ).toMatchObject({ status: 422, problem: { errors: [{ field: "adjustment_approval_threshold" }] } });
+    expect(await m.putControlSettings({ transfer_approval_threshold: "250.5", adjustment_approval_threshold: null })).toMatchObject({
+      transfer_approval_threshold: "250.5",
+      adjustment_approval_threshold: null,
+    });
+    expect(await m.getControlSettings()).toMatchObject({ transfer_approval_threshold: "250.5" });
+  });
+});
