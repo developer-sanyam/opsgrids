@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/crm.book.contact.deleted/v1",
+  "title": "crm.book.contact.deleted",
+  "description": "A contact was soft-deleted. The row stays and nothing cascades; activities that name it keep the id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "contact_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "contact_id": { "type": "string", "format": "uuid" }
+  }
+}
