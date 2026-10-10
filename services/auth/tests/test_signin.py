@@ -1008,7 +1008,10 @@ class TestPasswords:
             results = await asyncio.gather(
                 *(
                     services.confirm_password_reset(
-                        s, cfg=cfg, raw_token=t, new_password="fresh-start-9"
+                        s,
+                        cfg=cfg,
+                        raw_token=t,
+                        new_password="fresh-start-9",  # pragma: allowlist secret
                     )
                     for s, t in zip((session, other), tokens, strict=True)
                 ),
