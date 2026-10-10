@@ -425,6 +425,17 @@ def flow_crm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> Non
         f"{r.status_code} {r.text[:160]}",
     )
 
+    r = c.get(f"/api/v1/customers/{contact['id']}/360", headers=h)
+    card = r.json() if r.status_code == 200 else {}
+    _require(
+        log,
+        "the 360 shows the deal and its CRM section",
+        r.status_code == 200
+        and "crm" not in card.get("unavailable", [])
+        and card.get("crm") == {"stage": "qualified", "open_opportunities": 1, "hot": False},
+        f"{r.status_code} crm={card.get('crm')!r} unavailable={card.get('unavailable')!r}",
+    )
+
     r = c.post(
         "/api/v1/deals/activities",
         headers=h,
