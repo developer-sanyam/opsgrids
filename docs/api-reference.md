@@ -113,6 +113,9 @@ unavailable, nobody can sign in and nothing is authorized — see
 
 ## Not yet implemented
 
-No product API exists. HRMS, CRM, PulseBoard and the rest have route prefixes reserved in the
-gateway route tables and **no service behind them** — a request to one resolves and then fails
-to connect. See [backlog.md](backlog.md).
+This page predates the product services and does not list their routes. The CRM is served: the
+prefixes `/api/v1/customers`, `/api/v1/contacts`, `/api/v1/deals` and `/api/v1/leads` are answered
+by customer, deal and lead, and the contract is the committed OpenAPI documents
+`libs/contracts/openapi/customer.json`, `deal.json` and `lead.json` ([crm.md](crm.md) §6). For the
+other products, which prefixes have a service behind them is not recorded here, and the stale-docs
+sweep (R35, [decisions.md](decisions.md)) owns the correction. See [backlog.md](backlog.md).

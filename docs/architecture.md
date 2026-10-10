@@ -511,8 +511,11 @@ separate from the accent and never doubles as decoration.
 JavaScript never sees. Errors arrive as **RFC 7807 `problem+json`** and are parsed into typed
 errors, with field-level detail mapped onto the control that caused it. A 4xx is never retried.
 
-**Current wiring:** six product apps default to live data; `product-crm`, `product-pulseboard` and
-`opsgrids-internal` still default to fixtures. Several live apps carry named sample islands — an
+**Current wiring:** `product-crm` talks to the real gateway by default and renders fixtures only
+when a development build sets `VITE_USE_FIXTURES=true` (`frontend/product-crm/src/api/client.ts:84`);
+what this paragraph said of the other apps is left to the stale-docs sweep (R35,
+[decisions.md](decisions.md)), except that `product-pulseboard` is live by default too
+(`frontend/product-pulseboard/src/api/client.ts:57`). Several live apps carry named sample islands — an
 Overview trend chart, a sparkline — flagged in the UI with a "Sample data" chip rather than passed
 off as real. `opsgrids-internal` is a deliberate fork off the shared packages, because its palette is
 a different token family and its auth is the staff registry, which has no organization selection.
