@@ -668,6 +668,10 @@ async def reverse_credit(
     Revoking a grant, or unwinding a mistaken consumption, is never a mutation or a delete — it
     is an equal-and-opposite append-only row that names the original in `reversal_of`, so the
     history stays intact and the balance reflects the reversal through the same `SUM`.
+
+    A grant drawn on as a pack is the one exception to "equal": what was drawn already paid an
+    invoice, so the reversal revokes only what is left on the pack (possibly zero). Negating the
+    full grant would leave the pack, and the organization's balance, short by the drawn amount.
     """
     original = await selectors.get_credit_entry(
         session, payload.reversal_of, organization_id=payload.organization_id
@@ -677,9 +681,14 @@ async def reverse_credit(
         raise NotFoundProblem("No such credit ledger entry to reverse")
     if original.entry_type == CREDIT_REVERSAL:
         raise BusinessRuleProblem("a reversal cannot itself be reversed")
+    amount_minor = -original.amount_minor
     if original.entry_type == CREDIT_GRANT:
         # A grant may be a pack: queue behind any draw on it, and make a later draw see this.
         await _lock_pack(session, original.id)
+        remaining = await selectors.pack_remaining(
+            session, original.id, organization_id=payload.organization_id
+        )
+        amount_minor = -max(remaining, 0)
 
     existing = await selectors.get_reversal_of(
         session, original.id, organization_id=payload.organization_id
@@ -693,7 +702,7 @@ async def reverse_credit(
     entry = CreditLedgerEntry(
         organization_id=payload.organization_id,
         entry_type=CREDIT_REVERSAL,
-        amount_minor=-original.amount_minor,
+        amount_minor=amount_minor,
         currency=original.currency,
         reason=payload.reason,
         # The negating row inherits the window it negates, so the pair sums to zero at

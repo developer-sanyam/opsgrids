@@ -391,6 +391,39 @@ class TestADrawDownIsChecked:
             with pytest.raises(BusinessRuleProblem, match="reversed"):
                 await _draw(session, org_id, pack.id, 10_000_000)
 
+    async def test_reversing_a_partly_drawn_pack_revokes_only_what_is_left(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """What was drawn already paid an invoice; revoking the pack takes back the unspent
+        part only. Negating the full grant would leave the pack at minus the drawn amount and
+        eat that much of the organization's unrelated credit."""
+        async with session.begin():
+            pack = await _open_pack(
+                session, org_id, amount_minor=10_000_000, valid_until=WINDOW_END
+            )
+            await _open_pack(session, org_id, amount_minor=5_000_000, valid_until=None)
+            await _draw(session, org_id, pack.id, 4_000_000, reason="INV-0001")
+
+        async with session.begin():
+            reversal = await services.reverse_credit(
+                session,
+                CreditReverseIn(organization_id=org_id, reversal_of=pack.id, reason="revoked"),
+                request=None,
+            )
+        assert reversal.amount_minor == -6_000_000
+
+        async with session.begin():
+            assert await selectors.pack_remaining(session, pack.id, organization_id=org_id) == 0
+            assert (
+                await selectors.credit_balance(
+                    session, organization_id=org_id, currency="INR", at=datetime.now(UTC)
+                )
+                == 5_000_000
+            ), "the separate goodwill grant is untouched by the pack's revocation"
+        async with session.begin():
+            with pytest.raises(BusinessRuleProblem, match="reversed"):
+                await _draw(session, org_id, pack.id, 1)
+
     async def test_a_draw_racing_the_packs_reversal_waits_for_it(
         self, session: AsyncSession, org_id: uuid.UUID
     ) -> None:
