@@ -350,6 +350,8 @@ Nothing imports upward, and no cycles. `make boundaries` fails the build otherwi
 
 **Three entrypoints** per service: `bin/api` (uvicorn), `bin/worker` (consumers), `bin/cron`
 (scheduled sweeps). Each is its own process, so a slow broker cannot block an API request.
+`customer`, `deal` and `lead` have no `bin/cron`: they run no scheduled sweep, and the copy each
+once carried only started the outbox relay a second time (the relay is `bin/relay`).
 
 **Where the edge runs each one is a memory decision, not a rule** (ADR-0013's memory-headroom
 addendum): on the one-box edge a process costs ~90-100 MiB whatever it does, so `subscription`,
