@@ -22,6 +22,9 @@ export type NodeType = "trigger" | "condition" | "wait" | "send_message" | "crea
 export type EdgeLabel = "yes" | "no";
 export type MessageChannel = "whatsapp" | "email";
 export type MessagePurpose = "transactional" | "marketing";
+/** What `recipient_path` points at: an address (the default) or a CRM contact id, which the
+    service turns into an address when the message is sent. */
+export type RecipientKind = "address" | "contact_id";
 export type ConditionOp = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "contains" | "in" | "exists";
 
 export interface NodePosition {
@@ -61,6 +64,9 @@ export interface SendMessageConfig {
   channel: MessageChannel;
   template: { ref: string; language?: string };
   recipient_path: string;
+  /** Absent means `address`. `contact_id` makes the service look the contact up when the message
+   *  is sent; it is valid on WhatsApp only, until customer can answer an email address. */
+  recipient_kind?: RecipientKind;
   /** Template variable key ("1", "order_number") to a `payload.*` or `run.*` path. */
   variable_map: Record<string, string>;
   purpose?: MessagePurpose;

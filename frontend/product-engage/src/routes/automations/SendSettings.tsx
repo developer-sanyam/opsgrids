@@ -1,7 +1,7 @@
 import type { GraphNode, MessageChannel, MessagePurpose, TriggerVariable } from "@/api/automations";
 import { Button, InlineAlert, Select, Skeleton } from "@/ui";
 import type { SelectOption } from "@/ui";
-import { withoutKey } from "./graph";
+import { namesAContactId, withoutKey } from "./graph";
 import { PathField } from "./PathField";
 import { previewText } from "./preview";
 import type { SourceState } from "./useTemplateOptions";
@@ -32,7 +32,8 @@ export function SendSettings({
   onReload: (channel: MessageChannel) => void;
   onChange: (node: GraphNode) => void;
 }) {
-  const { channel, template, recipient_path, variable_map, purpose } = node.config;
+  const { channel, template, recipient_path, recipient_kind, variable_map, purpose } = node.config;
+  const looksUpAContact = recipient_kind === "contact_id";
   const options = source.status === "ready" ? source.items : [];
   const chosen = options.find((t) => t.ref === template.ref);
   const keys = chosen?.variables ?? [];
@@ -44,8 +45,18 @@ export function SendSettings({
   function chooseChannel(next: MessageChannel) {
     if (next === channel) return;
     /* A template belongs to one channel, so switching drops it and the mapping that went with it.
-       The recipient path stays: it names where an address is read from, not what is sent. */
-    patch({ channel: next, template: { ref: "" }, variable_map: {} });
+       The recipient path stays: it names where an address is read from, not what is sent. A contact
+       lookup is WhatsApp only until customer can answer an email address, so the kind goes when
+       the channel becomes email, and is not brought back when it returns to WhatsApp. */
+    const rest = next === "email" ? withoutKey(node.config, "recipient_kind") : node.config;
+    onChange({ ...node, config: { ...rest, channel: next, template: { ref: "" }, variable_map: {} } });
+  }
+
+  function changeRecipientPath(value: string) {
+    /* Only a path that names a contact id can be a contact lookup; any other path is read as an
+       address, so editing it to one drops the kind. There is no control to choose the kind. */
+    const rest = namesAContactId(value) ? node.config : withoutKey(node.config, "recipient_kind");
+    onChange({ ...node, config: { ...rest, recipient_path: value } });
   }
 
   function chooseTemplate(ref: string) {
@@ -124,9 +135,13 @@ export function SendSettings({
         required
         value={recipient_path}
         variables={variables}
-        placeholder="payload.customer.phone"
-        helper={`Where the ${channel === "email" ? "email address" : "phone number"} is read from on the event.`}
-        onChange={(value) => patch({ recipient_path: value })}
+        placeholder={looksUpAContact ? "payload.contact_id" : "payload.customer.phone"}
+        helper={
+          looksUpAContact
+            ? "The CRM contact on the event. The WhatsApp number is looked up from the contact when the message is sent."
+            : `Where the ${channel === "email" ? "email address" : "phone number"} is read from on the event.`
+        }
+        onChange={changeRecipientPath}
       />
 
       <Select

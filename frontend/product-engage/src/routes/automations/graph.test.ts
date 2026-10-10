@@ -13,6 +13,7 @@ import {
   groupProblems,
   isWarning,
   moveStep,
+  namesAContactId,
   nodeById,
   removeStep,
   replaceNode,
@@ -361,5 +362,20 @@ describe("problem display mapping", () => {
     expect(isWarning(problems[3] as (typeof problems)[number])).toBe(true);
     expect(blockingProblems(problems).map((p) => p.code)).not.toContain("channel_not_connected");
     expect(blockingProblems(problems)).toHaveLength(4);
+  });
+});
+
+describe("namesAContactId", () => {
+  it("is true when the last segment of the path is contact_id", () => {
+    expect(namesAContactId("payload.contact_id")).toBe(true);
+    expect(namesAContactId("payload.customer.contact_id")).toBe(true);
+  });
+
+  it("is false for anything else, including a path that only contains the words", () => {
+    expect(namesAContactId("")).toBe(false);
+    expect(namesAContactId("payload.customer.phone")).toBe(false);
+    expect(namesAContactId("payload.contact_id.phone")).toBe(false);
+    expect(namesAContactId("payload.not_contact_id")).toBe(false);
+    expect(namesAContactId("payload.contact_id.")).toBe(false);
   });
 });

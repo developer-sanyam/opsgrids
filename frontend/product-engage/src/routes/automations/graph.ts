@@ -277,6 +277,13 @@ export function withoutKey<T extends object, K extends keyof T>(value: T, key: K
   return Object.fromEntries(Object.entries(value).filter(([k]) => k !== key)) as Omit<T, K>;
 }
 
+/** Whether a "Send to" path names a CRM contact id: its last segment is `contact_id`
+ *  (`payload.contact_id`, `payload.customer.contact_id`). Anything else is read as an address. */
+export function namesAContactId(path: string): boolean {
+  const segments = path.split(".");
+  return segments[segments.length - 1] === "contact_id";
+}
+
 /** Replace a node by id with a whole new node. */
 export function replaceNode(graph: Graph, node: GraphNode): Graph {
   return { nodes: graph.nodes.map((n) => (n.id === node.id ? node : n)), edges: graph.edges };
