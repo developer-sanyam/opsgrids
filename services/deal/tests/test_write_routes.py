@@ -26,7 +26,7 @@ from app import selectors
 from app.main import app
 from app.models import Activity, AuditLog, Deal, OutboxEvent
 from platform_core.auth import Principal, get_principal
-from tests.helpers import principal_for
+from tests.helpers import activities_for_deal, principal_for
 
 pytestmark = pytest.mark.integration
 
@@ -330,7 +330,7 @@ class TestLogActivity:
         assert body["owner_id"] == str(data["subject_a"])
 
         async with session.begin():
-            rows = await selectors.activities_for_deal(session, org_id, data["deal_a_id"])
+            rows = await activities_for_deal(session, org_id, data["deal_a_id"])
         assert [a.subject for a in rows] == [
             "Pricing follow-up",
             "Discovery call on telematics scope",
@@ -472,7 +472,7 @@ class TestLogActivity:
         assert response.headers["content-type"].startswith("application/problem+json")
 
         async with session.begin():
-            rows = await selectors.activities_for_deal(session, org_id, data["deal_a_id"])
+            rows = await activities_for_deal(session, org_id, data["deal_a_id"])
         assert [a.subject for a in rows] == ["Discovery call on telematics scope"]
 
     async def test_an_own_writer_cannot_log_against_another_reps_deal(
@@ -493,7 +493,7 @@ class TestLogActivity:
         assert response.status_code == 403
 
         async with session.begin():
-            rows = await selectors.activities_for_deal(session, org_id, data["deal_b_id"])
+            rows = await activities_for_deal(session, org_id, data["deal_b_id"])
         assert [a.subject for a in rows] == ["Kickoff - Harbor & Co go-live"]
 
     @pytest.mark.parametrize(
@@ -522,7 +522,7 @@ class TestLogActivity:
         assert response.status_code == 422, f"{field}={value!r}"
 
         async with session.begin():
-            rows = await selectors.activities_for_deal(session, org_id, data["deal_a_id"])
+            rows = await activities_for_deal(session, org_id, data["deal_a_id"])
         assert len(rows) == 1
 
     async def test_logging_against_another_tenants_deal_is_not_found(

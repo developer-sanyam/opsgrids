@@ -16,7 +16,7 @@ import pytest
 
 from app import domain, selectors
 from platform_core.auth import Scope
-from tests.helpers import ctx_for
+from tests.helpers import activities_for_deal, ctx_for
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools" / "demo"))
 import seed_crm
@@ -80,7 +80,7 @@ class TestDemoSeedPipeline:
         async with session.begin():
             await seed_crm.seed_deal(session, ctx)
         deal_id = seed_crm.demo_id(org_id, "deal-8")
-        timeline = await selectors.activities_for_deal(session, org_id, deal_id)
+        timeline = await activities_for_deal(session, org_id, deal_id)
         assert [a.subject for a in timeline] == [
             "Sent revised commercial proposal",  # 2026-08-23, newest first
             "Send MSA redlines to legal",  # 2026-08-10
