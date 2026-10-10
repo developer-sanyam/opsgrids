@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import oidc, security, services
+from app.api.routes import SSO_BINDER_COOKIE
 from app.config import Settings, settings
 from app.deps import get_idp, get_provisioning
 from app.directory import DirectoryUser
@@ -1731,6 +1732,69 @@ class TestOauthSocialCallbackRoute:
             "signup_federated",
             {"email": "new-via-route@example.com", "slug": "new-co"},
         ) in provisioning.calls
+
+    async def _start(self, client, session: AsyncSession, cfg: Settings, idp: FakeIdp) -> str:
+        app.dependency_overrides[get_idp] = lambda: idp
+        app.dependency_overrides[get_provisioning] = lambda: FakeProvisioningClient()
+        await _seed_google_provider(session, cfg)
+        start = await client.get("/api/v1/auth/oauth/google/start", params={"intent": "signup"})
+        assert start.status_code == 200, start.text
+        assert start.headers["set-cookie"].startswith(SSO_BINDER_COOKIE + "=")
+        body = start.json()
+        idp.next_id_token = idp.issue_id_token(
+            nonce=_nonce_from(body["authorization_url"]),
+            email="sam@example.com",
+            issuer=GOOGLE_ISSUER,
+            audience=GOOGLE_CLIENT_ID,
+        )
+        return str(body["state"])
+
+    async def test_a_callback_without_the_binding_cookie_is_refused_and_keeps_the_state(
+        self, client, session: AsyncSession, cfg: Settings, idp: FakeIdp
+    ) -> None:
+        """Login CSRF: the attacker's own `code`+`state` replayed in a victim's browser, which
+        never ran this `/start`. Refused before the state is consumed."""
+        state = await self._start(client, session, cfg, idp)
+        binder = client.cookies.get(SSO_BINDER_COOKIE)
+        assert binder
+        client.cookies.clear()
+
+        params = {"code": "fake-code", "state": state}
+        refused = await client.get("/api/v1/auth/oauth/google/callback", params=params)
+        assert refused.status_code == 401, refused.text
+        assert cfg.refresh_cookie_name not in refused.cookies
+
+        client.cookies.set(SSO_BINDER_COOKIE, binder)
+        done = await client.get("/api/v1/auth/oauth/google/callback", params=params)
+        assert done.status_code == 200, done.text
+
+    async def test_a_callback_with_the_wrong_binding_cookie_is_refused(
+        self, client, session: AsyncSession, cfg: Settings, idp: FakeIdp
+    ) -> None:
+        state = await self._start(client, session, cfg, idp)
+        client.cookies.clear()
+        client.cookies.set(SSO_BINDER_COOKIE, "not-the-binder")
+
+        refused = await client.get(
+            "/api/v1/auth/oauth/google/callback", params={"code": "fake-code", "state": state}
+        )
+        assert refused.status_code == 401, refused.text
+        assert cfg.refresh_cookie_name not in refused.cookies
+
+    async def test_the_right_cookie_signs_in_once(
+        self, client, session: AsyncSession, cfg: Settings, idp: FakeIdp
+    ) -> None:
+        state = await self._start(client, session, cfg, idp)
+        binder = client.cookies.get(SSO_BINDER_COOKIE)
+        params = {"code": "fake-code", "state": state}
+
+        done = await client.get("/api/v1/auth/oauth/google/callback", params=params)
+        assert done.status_code == 200, done.text
+        assert cfg.refresh_cookie_name in done.cookies
+
+        client.cookies.set(SSO_BINDER_COOKIE, binder)
+        replay = await client.get("/api/v1/auth/oauth/google/callback", params=params)
+        assert replay.status_code == 401, replay.text
 
 
 class TestOauthSocialRespectsEnforceSso:

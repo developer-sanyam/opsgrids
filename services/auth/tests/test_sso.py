@@ -37,6 +37,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import oidc, security, services
+from app.api.routes import SSO_BINDER_COOKIE, _set_binder_cookie
 from app.config import Settings
 from app.deps import get_idp
 from app.directory import DirectoryDomain, DirectoryUser, HttpDirectory
@@ -1952,6 +1953,99 @@ class TestOverHttp:
         # The refresh token is a cookie and never a field, exactly as on the password path.
         assert cfg.refresh_cookie_name in done.cookies
         assert "refresh_token" not in done.json()
+
+    async def _start(self, client: AsyncClient, idp) -> dict[str, Any]:
+        app.dependency_overrides[get_idp] = lambda: idp
+        started = await client.get("/api/v1/auth/sso/start", params={"email": EMAIL})
+        assert started.status_code == 200, started.text
+        body: dict[str, Any] = started.json()
+        idp.next_id_token = idp.issue_id_token(nonce=_query(body["authorization_url"])["nonce"])
+        return body
+
+    async def test_start_binds_the_flow_to_the_browser_with_a_cookie(
+        self, client: AsyncClient, idp, redis, configured
+    ) -> None:
+        app.dependency_overrides[get_idp] = lambda: idp
+        started = await client.get("/api/v1/auth/sso/start", params={"email": EMAIL})
+        assert started.status_code == 200, started.text
+        set_cookie = started.headers["set-cookie"].lower()
+        assert set_cookie.startswith(SSO_BINDER_COOKIE + "=")
+        assert "httponly" in set_cookie
+        assert "samesite=lax" in set_cookie
+        assert "path=/;" in set_cookie or set_cookie.endswith("path=/")
+
+    async def test_a_callback_without_the_binding_cookie_is_refused_and_keeps_the_state(
+        self, client: AsyncClient, cfg, idp, redis, configured
+    ) -> None:
+        """Login CSRF: an attacker's own `code`+`state`, replayed in a victim's browser, must
+        not sign the victim in as the attacker. The victim's browser never ran this `/start`,
+        so it holds no binder. Refused before the state is consumed, so a stray hit cannot
+        burn the real browser's sign-in either."""
+        body = await self._start(client, idp)
+        binder = client.cookies.get(SSO_BINDER_COOKIE)
+        assert binder
+        client.cookies.clear()
+
+        refused = await client.get(
+            "/api/v1/auth/sso/callback", params={"code": "abc", "state": body["state"]}
+        )
+        assert refused.status_code == 401, refused.text
+        assert cfg.refresh_cookie_name not in refused.cookies
+
+        client.cookies.set(SSO_BINDER_COOKIE, binder)
+        done = await client.get(
+            "/api/v1/auth/sso/callback", params={"code": "abc", "state": body["state"]}
+        )
+        assert done.status_code == 200, done.text
+
+    async def test_a_callback_with_the_wrong_binding_cookie_is_refused(
+        self, client: AsyncClient, cfg, idp, redis, configured
+    ) -> None:
+        body = await self._start(client, idp)
+        client.cookies.clear()
+        client.cookies.set(SSO_BINDER_COOKIE, "not-the-binder")
+
+        refused = await client.get(
+            "/api/v1/auth/sso/callback", params={"code": "abc", "state": body["state"]}
+        )
+        assert refused.status_code == 401, refused.text
+        assert cfg.refresh_cookie_name not in refused.cookies
+
+    async def test_the_right_cookie_signs_in_once_and_clears_the_binder(
+        self, client: AsyncClient, cfg, idp, redis, configured
+    ) -> None:
+        body = await self._start(client, idp)
+        binder = client.cookies.get(SSO_BINDER_COOKIE)
+
+        done = await client.get(
+            "/api/v1/auth/sso/callback", params={"code": "abc", "state": body["state"]}
+        )
+        assert done.status_code == 200, done.text
+        assert cfg.refresh_cookie_name in done.cookies
+        assert any(
+            h.lower().startswith(SSO_BINDER_COOKIE + '=""') or "max-age=0" in h.lower()
+            for h in done.headers.get_list("set-cookie")
+            if h.startswith(SSO_BINDER_COOKIE + "=")
+        )
+
+        # Still single-use: the same state with the same (re-presented) binder is dead.
+        client.cookies.set(SSO_BINDER_COOKIE, binder)
+        replay = await client.get(
+            "/api/v1/auth/sso/callback", params={"code": "abc", "state": body["state"]}
+        )
+        assert replay.status_code == 401, replay.text
+
+    def test_the_binding_cookie_is_host_prefixed_and_secure_outside_local(self, cfg) -> None:
+        from fastapi import Response
+
+        response = Response()
+        _set_binder_cookie(response, cfg.model_copy(update={"environment": "production"}), "b")
+        set_cookie = response.headers["set-cookie"]
+        # `__Host-`: Secure, Path=/, no Domain - a sibling subdomain cannot plant or overwrite it.
+        assert set_cookie.startswith("__Host-" + SSO_BINDER_COOKIE + "=b;")
+        lowered = set_cookie.lower()
+        assert "secure" in lowered and "httponly" in lowered and "samesite=lax" in lowered
+        assert "path=/" in lowered and "domain=" not in lowered
 
     async def test_start_needs_an_email_or_a_domain(self, client: AsyncClient) -> None:
         assert (await client.get("/api/v1/auth/sso/start")).status_code == 422
