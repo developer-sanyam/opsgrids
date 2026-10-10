@@ -13,13 +13,20 @@ Three layers.
    records the request, in a subprocess with the caller's service directory as cwd (`import app` is
    ambiguous across services, the same reason `test_route_table_parity.py` uses `_in_service`).
 2. The recorded request is sent, without credentials, to the REAL callee app over ASGI. A route that
-   exists answers 401 or 403 (authentication runs first); 404 means "not mounted there" and 405
-   "wrong method".
+   exists answers 401 or 403 (authentication runs first); 404 means "not mounted there", 405
+   "wrong method" and 307 a trailing slash. It must also be the registered request: the same method
+   on a path that matches the registered route, because a call that drifts to another route the
+   callee serves (`GET /api/v1/deals/summary`, `POST /api/v1/deals`) answers 401 just the same.
 3. The service token the client minted is decoded, and its `org` claim is compared with the
    organization the client was given.
 
-A scan keeps the registry honest: every service file that builds an internal URL must be registered
-in `CALLS` or named in `UNAUDITED_BASELINE`.
+Two scans keep the registry honest. Every service file that builds an internal URL must be
+registered in `CALLS` or named in `UNAUDITED_BASELINE`, which may not grow. And a registered file
+reads no more internal URL settings than it has registered calls, so a new call in a file that is
+already registered cannot slip in unseen.
+
+The guard's own assertions are tested too: each callee's probe is shown to answer 404 for a route it
+does not serve, and a deliberately bad call is shown to fail the path check and the claim check.
 
 **Adding an internal client? Register its calls in `CALLS` in the same commit, wherever in
 `services/` it lives.**
@@ -27,6 +34,8 @@ in `CALLS` or named in `UNAUDITED_BASELINE`.
 
 from __future__ import annotations
 
+import ast
+import collections
 import functools
 import json
 import re
@@ -311,26 +320,93 @@ class Call(NamedTuple):
     id: str
     caller: str  # the calling service's directory under services/
     callee: str  # the called service's directory; also the audience of its service token
+    method: str  # the HTTP method the call sends
+    route: str  # the callee's route the call must reach, `{x}` standing for one path segment
     source: str  # the one file that builds the URL, relative to services/
     driver: str
 
 
 CALLS: tuple[Call, ...] = (
-    Call("A1", "customer", "deal", "customer/app/c1_360.py", _A1),
-    Call("A2", "customer", "notification", "customer/app/c1_360.py", _A2),
-    Call("A3", "lead", "customer", "lead/app/clients.py", _A3),
-    Call("A4", "lead", "deal", "lead/app/clients.py", _A4),
-    Call("A5", "lead", "customer", "lead/app/clients.py", _A5),
-    Call("A6", "finance", "customer", "finance/app/clients.py", _A6),
-    Call("A7", "notification", "customer", "notification/app/targets.py", _A7),
-    Call("A8", "notification", "customer", "notification/app/contacts.py", _A8),
-    Call("A9", "notification", "account", "notification/app/memberships.py", _A9),
+    Call("A1", "customer", "deal", "GET", "/api/v1/deals", "customer/app/c1_360.py", _A1),
+    Call(
+        "A2",
+        "customer",
+        "notification",
+        "GET",
+        "/internal/v1/contacts/{contact}/messaging-summary",
+        "customer/app/c1_360.py",
+        _A2,
+    ),
+    Call(
+        "A3",
+        "lead",
+        "customer",
+        "POST",
+        "/internal/v1/organizations/{org}/leads:convert",
+        "lead/app/clients.py",
+        _A3,
+    ),
+    Call(
+        "A4",
+        "lead",
+        "deal",
+        "POST",
+        "/internal/v1/organizations/{org}/leads:convert",
+        "lead/app/clients.py",
+        _A4,
+    ),
+    Call(
+        "A5",
+        "lead",
+        "customer",
+        "POST",
+        "/internal/v1/organizations/{org}/owners:validate",
+        "lead/app/clients.py",
+        _A5,
+    ),
+    Call(
+        "A6",
+        "finance",
+        "customer",
+        "GET",
+        "/internal/v1/organizations/{org}/contacts/{contact}",
+        "finance/app/clients.py",
+        _A6,
+    ),
+    Call(
+        "A7",
+        "notification",
+        "customer",
+        "GET",
+        "/internal/v1/organizations/{org}/contacts/{contact}/messaging-target",
+        "notification/app/targets.py",
+        _A7,
+    ),
+    Call(
+        "A8",
+        "notification",
+        "customer",
+        "POST",
+        "/internal/v1/organizations/{org}/contacts:resolve",
+        "notification/app/contacts.py",
+        _A8,
+    ),
+    Call(
+        "A9",
+        "notification",
+        "account",
+        "GET",
+        "/internal/v1/organizations/{org}/memberships/{membership}",
+        "notification/app/memberships.py",
+        _A9,
+    ),
 )
 
 #: Files that build an internal URL and were **not** audited (the audit read customer, deal, lead,
 #: finance and notification). Unaudited is not clean: these may carry the path or claim defects the
-#: five audited services had. The list may only shrink by registering a file's calls in `CALLS`, and
-#: only grow on purpose, with the reason in the commit message.
+#: five audited services had. The list may only shrink, by registering a file's calls in `CALLS`;
+#: `test_the_unaudited_baseline_only_shrinks` holds its size, so adding a file means raising that
+#: number in the same diff, on purpose, with the reason in the commit message.
 UNAUDITED_BASELINE: frozenset[str] = frozenset(
     {
         # Build `/internal/v1/...` paths in place.
@@ -438,37 +514,83 @@ def _probe_registered(callee: str) -> dict[str, int]:
     return _probe(callee, requests)
 
 
+def _matches(route: str, path: str) -> bool:
+    """Does `path`, as a client sent it, fill `route`, a template whose `{x}` is one segment?"""
+    return re.fullmatch(re.sub(r"\{[^}]+\}", "[^/]+", route), path) is not None
+
+
+def _path_problem(call: Call, recorded: dict[str, Any], status: int) -> str | None:
+    """Why the request a call made is not the registered one reaching a served route, or None.
+    `status` is what the callee's real app answered that request with, given no credentials."""
+    sent = f"{recorded['method']} {recorded['path']}"
+    if recorded["method"] != call.method or not _matches(call.route, recorded["path"]):
+        return f"sent {sent}, not the registered {call.method} {call.route}"
+    if status not in (401, 403):
+        why = {404: "not mounted there", 405: "wrong method"}.get(status, "not a served route")
+        return (
+            f"{sent} answered {status} ({why}). Public routers are mounted under /api/v1, "
+            "internal routers at the root (libs/platform-core/src/platform_core/app.py:362-363)."
+        )
+    return None
+
+
+def _claim_problem(call: Call, recorded: dict[str, Any]) -> str | None:
+    """Why the token a call sent does not name the organization it was asked about, or None."""
+    claims = recorded["claims"]
+    if claims is None:
+        return "sent no X-Internal-Token"
+    if (claims.get("iss"), claims.get("aud")) != (call.caller, call.callee):
+        return f"the token runs {claims.get('iss')} -> {claims.get('aud')}, not the registered pair"
+    in_path = re.search(r"/internal/v1/organizations/([^/]+)/", recorded["path"])
+    expected = in_path.group(1) if in_path else recorded["organization"]
+    if expected != recorded["organization"]:
+        return "the driver and the URL disagree"
+    if claims.get("org") != expected:
+        return f"the token carries org={claims.get('org')!r}, not the {expected} it was asked about"
+    return None
+
+
 # --------------------------------------------------------------------------------- the tests
 
 
 def test_the_probe_tells_a_route_that_exists_from_one_that_does_not() -> None:
     """Without this, a probe that answered 401 to everything would pass every call below. These
-    four are facts about the real deal app: the 360's old path is a 404, its new one is a route."""
+    are facts about the real deal app: the 360's old path is a 404, its new one is a route, and the
+    same path with a slash is a redirect (an httpx client follows none unless told to)."""
     answers = _probe(
         "deal",
         {
             "old-360-path": ("GET", "/deals"),
             "mounted": ("GET", "/api/v1/deals"),
+            "trailing-slash": ("GET", "/api/v1/deals/"),
             "wrong-method": ("DELETE", "/api/v1/deals"),
             "nowhere": ("GET", "/api/v1/nowhere"),
         },
     )
     assert answers["old-360-path"] == 404
-    assert answers["mounted"] not in (404, 405)
+    assert answers["mounted"] in (401, 403)
+    assert answers["trailing-slash"] not in (401, 403)
     assert answers["wrong-method"] == 405
     assert answers["nowhere"] == 404
 
 
+@pytest.mark.parametrize("callee", sorted({call.callee for call in CALLS}))
+def test_every_callee_answers_404_for_a_route_it_does_not_serve(callee: str) -> None:
+    """The test above is deal only. A callee whose app rejected every anonymous request before
+    routing, under either prefix, would answer a registered call 401 whether or not the route
+    exists. Together with the 401 or 403 each registered call is held to below, a 404 here is what
+    makes that answer mean "this route exists"."""
+    answers = _probe(
+        callee,
+        {"public": ("GET", "/api/v1/nowhere-at-all"), "internal": ("GET", "/internal/v1/nowhere")},
+    )
+    assert answers == {"public": 404, "internal": 404}
+
+
 @pytest.mark.parametrize("call", _params(CALLS, KNOWN_UNREACHABLE))
 def test_every_registered_call_reaches_a_route_the_callee_serves(call: Call) -> None:
-    recorded = _recorded(call.id)
-    status = _probe_registered(call.callee)[call.id]
-    assert status not in (404, 405), (
-        f"{call.id}: {call.caller} -> {call.callee}: {recorded['method']} {recorded['path']} "
-        f"answered {status} ({'not mounted there' if status == 404 else 'wrong method'}). "
-        "Public routers are mounted under /api/v1, internal routers at the root "
-        "(libs/platform-core/src/platform_core/app.py:362-363)."
-    )
+    problem = _path_problem(call, _recorded(call.id), _probe_registered(call.callee)[call.id])
+    assert problem is None, f"{call.id}: {call.caller} -> {call.callee}: {problem}"
 
 
 #: A1 forwards the caller's identity headers and sends no service token.
@@ -477,18 +599,74 @@ TOKEN_CALLS = [call for call in CALLS if call.id != "A1"]
 
 @pytest.mark.parametrize("call", _params(TOKEN_CALLS, KNOWN_UNCLAIMED))
 def test_every_registered_call_names_its_organization_in_its_token(call: Call) -> None:
-    recorded = _recorded(call.id)
-    claims = recorded["claims"]
-    assert claims is not None, f"{call.id} sent no X-Internal-Token"
-    assert claims["iss"] == call.caller
-    assert claims["aud"] == call.callee
-    in_path = re.search(r"/internal/v1/organizations/([^/]+)/", recorded["path"])
-    expected = in_path.group(1) if in_path else recorded["organization"]
-    assert expected == recorded["organization"], "the driver and the URL disagree"
-    assert claims.get("org") == expected, (
-        f"{call.id}: the token {call.caller} minted for {call.callee} carries "
-        f"org={claims.get('org')!r}, not the organization {expected} it was asked about"
+    problem = _claim_problem(call, _recorded(call.id))
+    assert problem is None, f"{call.id}: {call.caller} -> {call.callee}: {problem}"
+
+
+# A client that asks deal for the 360's old path and is registered as it was written: the registry
+# and the client agree, so only what deal answers can fail it.
+_BAD_PATH = """
+async def main():
+    async with make_client() as client:
+        await attempt(client.get("http://deal.invalid/deals"))
+
+
+asyncio.run(main())
+emit(ORG)
+"""
+
+# A client that mints its service token without the organization claim.
+_BAD_CLAIM = """
+from platform_core.internal_auth import mint_service_token
+from app.config import Settings
+
+cfg = Settings()
+
+
+async def main():
+    async with make_client() as client:
+        token = mint_service_token(cfg, audience="customer", caller=cfg.service_name)
+        url = f"http://customer.invalid/internal/v1/organizations/{ORG}/contacts/{CONTACT}"
+        await attempt(client.get(url, headers={"X-Internal-Token": token}))
+
+
+asyncio.run(main())
+emit(ORG, cfg, "customer")
+"""
+
+
+def test_the_path_check_fails_a_call_the_callee_does_not_serve() -> None:
+    bad = Call("X1", "customer", "deal", "GET", "/deals", "customer/app/c1_360.py", _BAD_PATH)
+    recorded = _run(bad.caller, _PRELUDE + bad.driver)
+    status = _probe(bad.callee, {bad.id: (recorded["method"], recorded["path"])})[bad.id]
+    assert status == 404
+    assert _path_problem(bad, recorded, status) is not None
+
+
+def test_the_path_check_fails_a_call_that_drifts_to_another_route_the_callee_serves() -> None:
+    """Deal answers both of these 401, as it answers A1, so the status cannot tell them apart:
+    only the registered method and route can."""
+    a1 = next(call for call in CALLS if call.id == "A1")
+    sent = {"another route": ("GET", "/api/v1/deals/summary"), "the other verb": ("POST", a1.route)}
+    statuses = _probe("deal", sent)
+    for key, (method, path) in sent.items():
+        assert statuses[key] in (401, 403), key
+        assert _path_problem(a1, {"method": method, "path": path}, statuses[key]) is not None, key
+
+
+def test_the_claim_check_fails_a_token_with_no_organization() -> None:
+    bad = Call(
+        "X2",
+        "notification",
+        "customer",
+        "GET",
+        "/internal/v1/organizations/{org}/contacts/{contact}",
+        "notification/app/targets.py",
+        _BAD_CLAIM,
     )
+    recorded = _run(bad.caller, _PRELUDE + bad.driver)
+    assert "org" not in recorded["claims"]
+    assert _claim_problem(bad, recorded) is not None
 
 
 def test_the_nine_audited_calls_stay_registered() -> None:
@@ -528,6 +706,38 @@ def test_every_internal_url_in_these_services_is_a_registered_call() -> None:
     )
 
 
+def test_the_unaudited_baseline_only_shrinks() -> None:
+    # Lower this number when a file leaves the list; raising it is the decision to review.
+    assert len(UNAUDITED_BASELINE) <= 17, "UNAUDITED_BASELINE grew: register the client instead"
+
+
+def _url_reads(path: Path) -> int:
+    """How many times a file reads an `*_internal_url` or `*_service_url` setting.
+
+    shortcut: counts reads of the setting, not requests, so two calls built from one read count
+    once; count requests instead if a client ever shares a base URL between calls."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return sum(
+        isinstance(node, ast.Attribute) and node.attr.endswith(("_internal_url", "_service_url"))
+        for node in ast.walk(tree)
+    )
+
+
+def _read_count_drift(services_root: Path, calls: tuple[Call, ...] = CALLS) -> list[str]:
+    """The registered files that read more, or fewer, internal URL settings than they have calls."""
+    registered = collections.Counter(call.source for call in calls)
+    return [
+        f"{source}: {reads} internal URL reads, {count} registered calls"
+        for source, count in sorted(registered.items())
+        if (reads := _url_reads(services_root / source)) != count
+    ]
+
+
+def test_a_registered_file_reads_exactly_as_many_internal_urls_as_it_registers_calls() -> None:
+    drift = _read_count_drift(SERVICES)
+    assert not drift, f"{drift}: register the new call in CALLS, or drop the one that is gone"
+
+
 def test_the_guard_flags_an_unregistered_file(tmp_path: Path) -> None:
     app = tmp_path / "billing" / "app"
     app.mkdir(parents=True)
@@ -537,3 +747,18 @@ def test_the_guard_flags_an_unregistered_file(tmp_path: Path) -> None:
     unknown, stale = _audit(tmp_path)
     assert unknown == ["billing/app/new_client.py"]
     assert stale == sorted(UNAUDITED_BASELINE)  # nothing in this tree matches the baseline
+
+
+def test_the_guard_flags_a_new_call_in_a_registered_file(tmp_path: Path) -> None:
+    client = tmp_path / "lead" / "app" / "clients.py"
+    client.parent.mkdir(parents=True)
+    client.write_text("url = f'{settings.customer_internal_url}/internal/v1/x'\n")
+    registered = (
+        Call("T1", "lead", "customer", "GET", "/internal/v1/x", "lead/app/clients.py", ""),
+    )
+    assert _read_count_drift(tmp_path, registered) == []
+
+    client.write_text(client.read_text() + "url = f'{settings.deal_internal_url}/internal/v1/y'\n")
+    assert _read_count_drift(tmp_path, registered) == [
+        "lead/app/clients.py: 2 internal URL reads, 1 registered calls"
+    ]
