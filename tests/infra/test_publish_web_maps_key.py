@@ -361,10 +361,11 @@ def test_the_key_has_a_row_in_the_env_source_matrix_and_no_value() -> None:
     assert MAPS_KEY not in rows[0]
 
 
-# --------------------------------------------------------------------------- no Caddy change (D2)
-#: Every Content-Security-Policy the Caddyfile sets today, each on a site with its own reason.
-#: Adding the Maps key must not add to this list: ops/worker send no CSP, and the CSP-hardening
-#: release is a separate piece of work the owner scheduled on its own.
+# --------------------------------------------------------------------------- Caddy and the map (D2)
+#: Every Content-Security-Policy the Caddyfile sets with a bare `header` directive, each on a site
+#: with its own reason. The app sites' policies come from the `(platform-headers)` snippet's
+#: argument instead and are pinned per site by tests/infra/test_platform_site_headers.py — which
+#: is where the CSP-hardening release allowed the Google Maps origins, on ops.opsgrids.com only.
 KNOWN_CSPS = {
     "default-src 'none'; sandbox",  # the public bucket's objects (ADR-0009)
     "default-src 'self'; style-src 'self' https://fonts.googleapis.com; "
@@ -380,7 +381,9 @@ def _site_block(host: str) -> str:
 
 
 @pytest.mark.parametrize("host", ["ops.opsgrids.com", "worker.opsgrids.com"])
-def test_ops_and_worker_set_no_csp_or_permissions_policy(host: str) -> None:
+def test_ops_and_worker_set_no_csp_of_their_own_or_permissions_policy(host: str) -> None:
+    """Their CSP is the shared snippet's (one place to read it); the worker's location prompt and
+    camera keep working because no Permissions-Policy is sent."""
     block = _site_block(host)
     assert "Content-Security-Policy" not in block
     assert "Permissions-Policy" not in block
@@ -403,11 +406,15 @@ def test_no_new_csp_or_permissions_policy_anywhere_in_the_caddyfile() -> None:
     text = CADDYFILE.read_text()
     csps = set(re.findall(r'header Content-Security-Policy "([^"]*)"', text))
     assert csps == KNOWN_CSPS, (
-        "the Caddyfile's set of Content-Security-Policy values changed. D2 of the warehouse-map "
-        "spec ships the map with NO CSP change; if CSP hardening is now the point of this change, "
-        "update KNOWN_CSPS together with the Google Maps origins it must allow"
+        "the Caddyfile's set of bare Content-Security-Policy values changed; app sites take "
+        "theirs from the platform-headers snippet (tests/infra/test_platform_site_headers.py)"
     )
     assert "Permissions-Policy" not in text
-    # No Google Maps origin was allow-listed anywhere either.
-    assert "maps.googleapis.com" not in text
-    assert "maps.gstatic.com" not in text
+    # The Google Maps origins are allow-listed on the one site with a map, and nowhere else.
+    for host in ("maps.googleapis.com", "maps.gstatic.com"):
+        sites = [
+            m.group(1)
+            for m in re.finditer(r"^(https://\S*) \{\n(.*?)^\}\n", text, re.DOTALL | re.M)
+            if host in m.group(2)
+        ]
+        assert sites == ["https://ops.opsgrids.com"], f"{host} is allowed on {sites}"

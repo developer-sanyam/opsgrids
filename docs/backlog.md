@@ -71,8 +71,8 @@ deployed**; merging deploys nothing, and the owner approves any deploy. Open ite
   refused scan says what the barcode resolved to: "…not a {kind}" (`destination_not_storable`) and "A put-away stays
   inside one warehouse" (`different_warehouse`). Low severity (a barcode is a printed label), but it is a probe of bin
   kind and warehouse by a role that cannot list locations; a message that does not distinguish the cases would close it.
-- **CSP hardening (separate release).** `ops` and `worker` send no `Content-Security-Policy` today; when one is
-  added it must allow the Google Maps origins.
+- **CSP hardening.** Done on the security-hardening branch: every `*.opsgrids.com` app site sends a per-site
+  policy (Caddyfile `platform-headers`), with the Google Maps origins on `ops` only.
 
 ## Now — as of 2026-09-22 (`main` @ `a60baa1`)
 

@@ -838,10 +838,10 @@ The key is **not a server secret**: it ships inside the bundle, so every visitor
 receives it. It must be restricted in the Google Cloud console — HTTP referrers limited to
 `https://ops.opsgrids.com/*`, the API list limited to the Maps APIs the app calls, a budget and a quota
 cap — and it must never be a server-side key. The build log says whether a key was found and how long
-it is; it never prints it. **No Caddy change ships with this release:** `ops` and `worker` send no
-`Content-Security-Policy` or `Permissions-Policy` today (a test pins that), so the map loads and the
-worker's location prompt works without an allow-list. CSP hardening is a separate release and will have
-to allow the Google Maps origins when it lands. For local development, put the key in
+it is; it never prints it. `ops.opsgrids.com`'s Content-Security-Policy (the Caddyfile's
+`platform-headers` argument) allows the Google Maps origins, on that site only; no site sends a
+`Permissions-Policy`, so the worker's location prompt works (tests pin both). A map that loads but
+draws nothing is the first thing to check against the browser console's CSP errors. For local development, put the key in
 `frontend/product-operations/.env.local` (untracked); with none, the app runs map-less.
 
 **Limitation (c): the order engine reserves only at the item's home bin.** `accept_order` reserves

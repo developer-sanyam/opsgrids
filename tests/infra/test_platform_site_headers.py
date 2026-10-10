@@ -75,11 +75,7 @@ SPAS = {
 
 
 def _platform_sites() -> dict[str, str]:
-    return {
-        name: body
-        for name, body in _blocks().items()
-        if "import platform-headers" in body
-    }
+    return {name: body for name, body in _blocks().items() if "import platform-headers" in body}
 
 
 def test_every_platform_site_root_is_a_known_spa() -> None:
@@ -105,3 +101,174 @@ def test_theme_init_is_a_same_origin_file_reading_the_apps_own_key(root: str) ->
     app, key = SPAS[root]
     assert '<script src="/theme-init.js"></script>' in (FRONTEND / app / "index.html").read_text()
     assert f'"{key}"' in (FRONTEND / app / "public/theme-init.js").read_text()
+
+
+# ---------------------------------------------------------------- Content-Security-Policy
+#
+# The snippet carries the directives every app site shares; each site passes the rest as the
+# snippet's one argument. Why each third-party origin is there is written next to the policy in
+# the Caddyfile; this table pins that each site allows exactly those and nothing more.
+FONTS_CSS = "https://fonts.googleapis.com"
+FONTS = "https://fonts.gstatic.com"
+AUTH = "https://app.opsgrids.com"  # product apps refresh their session against the dashboard
+RAZORPAY_SCRIPT = ["https://checkout.razorpay.com", "https://cdn.razorpay.com"]
+RAZORPAY_API = ["https://api.razorpay.com", "https://api-dark.razorpay.com"]
+#: Not its telemetry-beacon host: test_metrics_never_routed.py keeps the word out of the
+#: Caddyfile, and a refused beacon costs Razorpay a data point, not the customer a checkout.
+RAZORPAY_BEACON = ["https://lumberjack.razorpay.com", "https://lumberjack-cx.razorpay.com"]
+CASHFREE_SCRIPT = ["https://sdk.cashfree.com"]
+CASHFREE_PAGES = [
+    "https://api.cashfree.com",
+    "https://sandbox.cashfree.com",
+    "https://payments.cashfree.com",
+    "https://payments-test.cashfree.com",
+]
+GOOGLE_MAPS_IMG = [
+    "https://*.googleapis.com",
+    "https://*.gstatic.com",
+    "https://*.google.com",
+    "https://*.ggpht.com",
+    "https://*.googleusercontent.com",
+]
+
+PLAIN_PRODUCT = {
+    "default-src": ["'self'"],
+    "script-src": ["'self'"],
+    "style-src": ["'self'", FONTS_CSS],
+    "font-src": ["'self'", FONTS],
+    "connect-src": ["'self'", AUTH],
+}
+PLAIN_HOSTS = (
+    "worker",
+    "people",
+    "revenue",
+    "pulse",
+    "projects",
+    "support",
+    "marketing",
+    "finance",
+    "it",
+)
+
+EXPECTED_CSP: dict[str, dict[str, list[str]]] = {
+    **{f"https://{host}.opsgrids.com": PLAIN_PRODUCT for host in PLAIN_HOSTS},
+    # Razorpay and Cashfree checkout (billing): their scripts inject <style> and style attributes.
+    "https://app.opsgrids.com": {
+        "default-src": ["'self'"],
+        "script-src": ["'self'", *RAZORPAY_SCRIPT, *CASHFREE_SCRIPT],
+        "style-src": ["'self'", "'unsafe-inline'", FONTS_CSS],
+        "font-src": ["'self'", FONTS],
+        "img-src": ["'self'", "data:", "https://cdn.razorpay.com"],
+        "connect-src": ["'self'", *RAZORPAY_API, *RAZORPAY_BEACON, *CASHFREE_PAGES],
+        "frame-src": [*RAZORPAY_API, *CASHFREE_SCRIPT, *CASHFREE_PAGES],
+    },
+    # The same two checkouts (order payments), the Google warehouse map, and the 3D floor view's
+    # text renderer (troika: a blob: worker that importScripts blob: modules and fetches its glyph
+    # data from cdn.jsdelivr.net).
+    "https://ops.opsgrids.com": {
+        "default-src": ["'self'"],
+        "script-src": [
+            "'self'",
+            "blob:",
+            "https://maps.googleapis.com",
+            "https://maps.gstatic.com",
+            *RAZORPAY_SCRIPT,
+            *CASHFREE_SCRIPT,
+        ],
+        "style-src": ["'self'", "'unsafe-inline'", FONTS_CSS],
+        "font-src": ["'self'", FONTS],
+        "img-src": ["'self'", "data:", *GOOGLE_MAPS_IMG, "https://cdn.razorpay.com"],
+        "connect-src": [
+            "'self'",
+            AUTH,
+            "https://*.googleapis.com",
+            "https://*.google.com",
+            "https://*.gstatic.com",
+            "https://cdn.jsdelivr.net",
+            *RAZORPAY_API,
+            *RAZORPAY_BEACON,
+            *CASHFREE_PAGES,
+        ],
+        "frame-src": ["https://*.google.com", *RAZORPAY_API, *CASHFREE_SCRIPT, *CASHFREE_PAGES],
+        "worker-src": ["blob:"],
+    },
+    # Meta's SDK for WhatsApp Embedded Signup; the sandboxed srcdoc email previews inherit this
+    # policy, so their inline styles and (opt-in) remote https images need it too.
+    "https://engage.opsgrids.com": {
+        "default-src": ["'self'"],
+        "script-src": ["'self'", "https://connect.facebook.net"],
+        "style-src": ["'self'", "'unsafe-inline'", FONTS_CSS],
+        "font-src": ["'self'", FONTS],
+        "img-src": ["'self'", "https:"],
+        "connect-src": ["'self'", AUTH, "https://graph.facebook.com", "https://www.facebook.com"],
+        "frame-src": [
+            "https://www.facebook.com",
+            "https://web.facebook.com",
+            "https://staticxx.facebook.com",
+        ],
+    },
+    # The store editor previews merchant content: pasted https images, upload previews (blob:),
+    # generated placeholder art (data:) and any https video embed address.
+    "https://store.opsgrids.com": {
+        "default-src": ["'self'"],
+        "script-src": ["'self'"],
+        "style-src": ["'self'", FONTS_CSS],
+        "font-src": ["'self'", FONTS],
+        "img-src": ["'self'", "data:", "blob:", "https:"],
+        "connect-src": ["'self'", AUTH],
+        "frame-src": ["https:"],
+    },
+}
+SHARED = {"object-src": ["'none'"], "base-uri": ["'self'"], "frame-ancestors": ["'none'"]}
+
+
+def _parse(policy: str) -> dict[str, list[str]]:
+    directives: dict[str, list[str]] = {}
+    for part in policy.split(";"):
+        name, *sources = part.split()
+        assert name not in directives, f"directive {name} appears twice in {policy!r}"
+        directives[name] = sources
+    return directives
+
+
+def _site_csp(site: str) -> dict[str, list[str]]:
+    """The policy a site actually sends: the snippet's template with the site's argument in it."""
+    template = re.search(r'Content-Security-Policy "([^"]*)"', _blocks()["(platform-headers)"])
+    assert template, "the platform-headers snippet sets no Content-Security-Policy"
+    arg = re.search(r'import platform-headers "([^"]*)"\n', _blocks()[site])
+    assert arg, f"{site} passes no policy to platform-headers"
+    return _parse(template.group(1).replace("{args[0]}", arg.group(1)))
+
+
+def test_every_platform_site_has_an_expected_policy() -> None:
+    assert set(_platform_sites()) == set(EXPECTED_CSP)
+
+
+@pytest.mark.parametrize("site", sorted(EXPECTED_CSP))
+def test_each_site_allows_exactly_the_origins_its_app_loads(site: str) -> None:
+    assert _site_csp(site) == {**EXPECTED_CSP[site], **SHARED}
+
+
+@pytest.mark.parametrize("site", sorted(EXPECTED_CSP))
+def test_no_site_allows_script_injection(site: str) -> None:
+    csp = _site_csp(site)
+    scripts = csp["script-src"]
+    assert "'unsafe-inline'" not in scripts
+    assert not any("unsafe-eval" in s for sources in csp.values() for s in sources)
+    assert not any(s in ("*", "https:", "http:", "data:") or "*" in s for s in scripts)
+    assert csp["object-src"] == ["'none'"]
+    assert csp["base-uri"] == ["'self'"]
+    assert csp["frame-ancestors"] == ["'none'"]
+
+
+def test_unsafe_inline_style_only_where_a_third_party_script_needs_it() -> None:
+    inline = {site for site in EXPECTED_CSP if "'unsafe-inline'" in _site_csp(site)["style-src"]}
+    assert inline == {
+        "https://app.opsgrids.com",
+        "https://ops.opsgrids.com",
+        "https://engage.opsgrids.com",
+    }
+
+
+def test_merchant_domains_get_no_platform_policy() -> None:
+    assert "Content-Security-Policy" not in _blocks()["https://"]
