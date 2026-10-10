@@ -35,8 +35,6 @@ export type {
   BarListItem,
   Column,
   DonutSlice,
-  KpiTone,
-  MetricTrend,
   RowAction,
   TableSelection,
 } from "@opsgrids/ui";

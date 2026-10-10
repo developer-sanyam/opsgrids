@@ -83,9 +83,6 @@ import type {
  *  with the "Sample data" markers suppressed. */
 export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXTURES === "true";
 
-/** True when the app is talking to the real gateway. */
-export const LIVE = !USE_FIXTURES;
-
 /** A generous page size — one request returns the whole (small) book for this org. Used by
  *  screens that need the complete set (the directory, the kanban board, a record's own scoped
  *  activity feed) rather than a page of it. */
