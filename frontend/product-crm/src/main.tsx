@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
 import { RedirectToCentralLogin, configureAuthOrigin, configureSession } from "@opsgrids/client";
-import { FileTextIcon, LifeBuoyIcon, PlugIcon, SettingsIcon, ThemeProvider, Toaster } from "@opsgrids/ui";
+import { ThemeProvider, Toaster } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
@@ -19,7 +19,7 @@ import { ContactsPage } from "./routes/Contacts";
 import { ActivitiesPage } from "./routes/Activities";
 import { TeamPage } from "./routes/Team";
 import { LoginPage } from "./routes/Login";
-import { ComingSoonPage } from "./routes/ComingSoon";
+import { NotFoundPage } from "./routes/NotFound";
 import { LogoMark } from "./ui/LogoMark";
 
 // ADR-0003 addendum: sign-in only ever happens on the dashboard, the one host the refresh
@@ -66,57 +66,8 @@ const router = createBrowserRouter([
           { path: "companies/:id", element: <CompanyDetailPage /> },
           { path: "contacts", element: <ContactsPage /> },
           { path: "activities", element: <ActivitiesPage /> },
-          {
-            path: "reports",
-            element: (
-              <ComingSoonPage
-                icon={<FileTextIcon className="size-6" />}
-                title="Reports"
-                description="Exportable pipeline, forecast and win/loss reports are on the roadmap. The Overview already breaks pipeline down by stage."
-              />
-            ),
-          },
-          {
-            path: "integrations",
-            element: (
-              <ComingSoonPage
-                icon={<PlugIcon className="size-6" />}
-                title="Integrations"
-                description="Email, calendar and telephony connectors will plug in here to log activity automatically."
-              />
-            ),
-          },
           { path: "team", element: <TeamPage /> },
-          {
-            path: "settings",
-            element: (
-              <ComingSoonPage
-                icon={<SettingsIcon className="size-6" />}
-                title="Settings"
-                description="Pipeline stages, deal fields and workspace preferences will live here."
-              />
-            ),
-          },
-          {
-            path: "help",
-            element: (
-              <ComingSoonPage
-                icon={<LifeBuoyIcon className="size-6" />}
-                title="Help & Getting Started"
-                description="Guides and support for setting up your revenue workspace are on the way."
-              />
-            ),
-          },
-          {
-            path: "*",
-            element: (
-              <ComingSoonPage
-                eyebrow="Not found"
-                title="That page doesn't exist"
-                description="Check the address, or head back to the overview."
-              />
-            ),
-          },
+          { path: "*", element: <NotFoundPage /> },
         ],
       },
     ],

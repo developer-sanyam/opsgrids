@@ -190,10 +190,6 @@
   "product-crm/src/routes/Activities.tsx": {
     "spacing": 5
   },
-  "product-crm/src/routes/ComingSoon.tsx": {
-    "colour": 1,
-    "spacing": 3
-  },
   "product-crm/src/routes/Companies.tsx": {
     "spacing": 3
   },
