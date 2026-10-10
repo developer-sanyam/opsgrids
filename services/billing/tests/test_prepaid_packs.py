@@ -20,16 +20,19 @@ arithmetic, written out.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
 from app.config import settings
 from app.models import CREDIT_GRANT, CREDIT_REVERSAL, CreditLedgerEntry
 from app.schemas import CreditConsumeIn, CreditGrantIn, CreditReverseIn
+from platform_core.db import TENANT_GUC
 from platform_core.errors import BusinessRuleProblem, NotFoundProblem
 from tests.helpers import service_token_headers
 
@@ -332,6 +335,42 @@ class TestADrawDownIsChecked:
         async with session.begin():
             with pytest.raises(BusinessRuleProblem, match="INR"):
                 await _draw(session, org_id, pack.id, 1000, currency="USD")
+
+    async def test_two_concurrent_draws_cannot_both_spend_the_same_remainder(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """Two billing runs draw 8M from a 10M pack at once. Under READ COMMITTED each `SUM`
+        would read 10M (neither insert committed) and both would pass; the second draw must wait
+        for the first and then see only 2M left."""
+        async with session.begin():
+            pack = await _open_pack(session, org_id, amount_minor=10_000_000)
+
+        other = AsyncSession(session.bind, expire_on_commit=False)
+
+        @event.listens_for(other.sync_session, "after_begin")
+        def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+            connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
+
+        async def _racing_draw() -> None:
+            async with other.begin():
+                await _draw(other, org_id, pack.id, 8_000_000, reason="run B")
+
+        try:
+            async with session.begin():
+                await _draw(session, org_id, pack.id, 8_000_000, reason="run A")
+                racing = asyncio.create_task(_racing_draw())
+                # Long enough for run B to finish if nothing makes it wait for run A's commit.
+                await asyncio.sleep(0.5)
+            with pytest.raises(BusinessRuleProblem, match="2000000"):
+                await racing
+        finally:
+            await other.close()
+
+        async with session.begin():
+            assert (
+                await selectors.pack_remaining(session, pack.id, organization_id=org_id)
+                == 2_000_000
+            )
 
 
 # --------------------------------------------------------------------- the mandate ceiling

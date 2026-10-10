@@ -553,7 +553,16 @@ async def _resolve_pack(
     * **Overdrawn.** The draw may not exceed what is left, computed as a `SUM` over the pack and
       everything already drawn from it. Without this a pack can be spent twice over and the
       organization's balance simply goes negative.
+
+    Draws on one pack are serialised by a transaction-scoped advisory lock, taken before the
+    remainder is read: under READ COMMITTED two concurrent draws would otherwise both read the
+    same `SUM` and both pass. (`FOR UPDATE` on the grant is not an option — the ledger is
+    append-only and its role holds no UPDATE, which `FOR UPDATE` requires.)
     """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+        {"k": f"credit_pack:{pack_id}"},
+    )
     pack = await selectors.get_credit_entry(
         session, pack_id, organization_id=payload.organization_id
     )
