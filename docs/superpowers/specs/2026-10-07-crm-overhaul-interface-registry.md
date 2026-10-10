@@ -179,7 +179,7 @@ Chain order is merge order (programme §7): `e94d7a2c5f18` → `a1c9e2f7b3d4` (a
 → R2.6 `owner_rekey_journal` (`d8a35c17e920`) → R3.1 → R3.4 → R3.6 → R3.8 → R4.x (the two SP2 revision ids are new files,
 unused anywhere in the tree). **For R2.3 and R2.6 the order is fixed, not first come:** the adopted `a1c9e2f7b3d4` is
 byte-pinned and is never re-parented, so R2.3 merges first and R2.6's deal revision is written with `down_revision =
-"f3b8d1a65c02"` (R2.6 needs R2.3 for deal's chain). Everywhere else whoever merges second sets `down_revision` to the
+f3b8d1a65c02` (R2.6 needs R2.3 for deal's chain). Everywhere else whoever merges second sets `down_revision` to the
 first one's head (marker `# RE-PARENT HERE`, precedent `services/operations/migrations/versions/d7a3c9e5b184_*.py`); a revision
 carrying the marker may only move forward from `f3b8d1a65c02`.
 

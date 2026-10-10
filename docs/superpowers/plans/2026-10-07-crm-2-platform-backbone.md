@@ -5087,7 +5087,7 @@ visual fixtures' contract test.
 | R1.2b merged | Task R2.3.10 closes the three `AHEAD_OF_PRODUCER` rows R1.2.7 created and the three names R1.2.10 pinned | `grep -n "AHEAD_OF_PRODUCER" services/deal/tests/test_event_contracts.py` and `grep -n "PINNED_AHEAD_OF_PRODUCER" libs/contracts/tests/test_event_schemas.py` |
 
 R2.2 is not needed (nothing in it changes deal). **R2.3 merges before R2.6** (DD-51): R2.6's deal revision `d8a35c17e920` is
-written with `down_revision = "f3b8d1a65c02"`, never against `e94d7a2c5f18`, because a second child of `e94d7a2c5f18` is a
+written with `down_revision = f3b8d1a65c02`, never against `e94d7a2c5f18`, because a second child of `e94d7a2c5f18` is a
 second Alembic head that only an edit to the byte-pinned adopted file could repair. An R2.6 branch that is ready first waits
 for this release or is stacked on it and merged after it; `test_the_deal_chain_has_one_head_and_orders_the_three_revisions`
 (Task R2.3.4) is the check that goes red first if the order is broken.
@@ -5138,7 +5138,7 @@ copied with `git show`, never cherry-picked.
    so) is the insights branch's, not this release's.
 2. *Insights is already on `main`* (`ls services/deal/migrations/versions/a1c9e2f7b3d4_add_closed_at.py` succeeds). The copy
    step of Task R2.3.3 is skipped, its byte-identity test still runs, and `f3b8d1a65c02` keeps `down_revision =
-   "a1c9e2f7b3d4"`. That stack also adds `closed_at` to `models.py`, `services.py` and the three event payloads, so the
+   a1c9e2f7b3d4`. That stack also adds `closed_at` to `models.py`, `services.py` and the three event payloads, so the
    hunks of Tasks R2.3.3, R2.3.6 and R2.3.10 that add them are applied by reading: keep what is there, re-express it through
    `outcome` as those tasks show, and stop and ask if the shapes differ.
 3. *R2.6 is ready first* (DD-51): it waits or is stacked on this branch; never an Alembic merge revision, never an edit of the
@@ -5185,7 +5185,7 @@ copied with `git show`, never cherry-picked.
    baseline difference, because no pixel changes.
 8. `make hygiene`. Expected: exit 0 (no skipped test without a reason, no bare `noqa`, no debugger, no `print`).
 9. The opt-in purge test, by hand, against the migrated throwaway database (the two tables are new, and the gate skips this
-   file without the variable): `OPSGRIDS_PURGE_ORGS_TEST_DATABASE_URL=postgresql+asyncpg://opsgrids_admin:opsgrids@localhost:5434/opsgrids_stages
+   file without the variable): `OPSGRIDS_PURGE_ORGS_TEST_DATABASE_URL=postgresql+asyncpg://opsgrids_admin:$DEV_DB_PASSWORD@localhost:5434/opsgrids_stages
    uv run pytest tests/infra/test_purge_test_orgs_db.py -q -p no:cacheprovider`. Expected: every test passes and none is skipped; paste the
    pass count in the pull request. The purge tool discovers tables by `organization_id` and orders deletes by the discovered
    foreign keys, composite ones included (`tools/purge_test_orgs.py`), so it needs no edit; this run is the proof.
@@ -6352,7 +6352,7 @@ git commit -m "Deal: domain rules read the stage catalogue, and the legacy six a
 **Interfaces:**
 - Consumes: deal's single Alembic head `e94d7a2c5f18` (`migrations/versions/e94d7a2c5f18_enable_row_level_security.py`),
   `services/deal/alembic.ini`, `app.config.settings().admin_dsn`, `app.models.SCHEMA` (`"deal"`).
-- Produces: revision `a1c9e2f7b3d4` (`down_revision = "e94d7a2c5f18"`), whose blob SHA-1 is
+- Produces: revision `a1c9e2f7b3d4` (`down_revision = e94d7a2c5f18`), whose blob SHA-1 is
   `be9f7b9f66102b70346d178c8a84299912a5245d`; `Deal.closed_at: Mapped[datetime | None]` (`TIMESTAMPTZ NULL`); a 5 s
   `lock_timeout` on every statement of deal's migration session; in the test module the helpers `alembic(*args: str, env:
   dict[str, str] | None = None) -> subprocess.CompletedProcess[str]`, `script_directory() -> ScriptDirectory`,
@@ -6692,11 +6692,11 @@ async def test_the_adopted_revision_fails_fast_behind_a_held_lock(
 
 Run: `cd services/deal && uv run pytest tests/test_migration_stages.py -q -p no:cacheprovider -k "byte_identical or one_head or lock_timeout"`
 Expected: FAIL, `3 failed, 2 deselected` (observed): `FileNotFoundError: ... a1c9e2f7b3d4_add_closed_at.py`,
-`ValueError: 'a1c9e2f7b3d4' is not in list` and `StopIteration` (`env.py` has no `connect_args`). These three need no database.
+`ValueError: a1c9e2f7b3d4 is not in list` and `StopIteration` (`env.py` has no `connect_args`). These three need no database.
 
 Run: `cd services/deal && uv run pytest tests/test_migration_stages.py -q -p no:cacheprovider` (needs the throwaway database)
 Expected: `5 failed` (inference): the two database tests fail too, because the chain has no such revision yet: the upgrade
-test with `assert 'e94d7a2c5f18' == 'a1c9e2f7b3d4'`, the fail-fast one with `assert 0 != 0` (the upgrade is a no-op, so it
+test with `assert e94d7a2c5f18 == a1c9e2f7b3d4`, the fail-fast one with `assert 0 != 0` (the upgrade is a no-op, so it
 exits 0).
 
 - [ ] **Step 3: Write the minimal implementation**
@@ -6803,7 +6803,7 @@ git commit -m "Deal: adopt the closed_at revision byte for byte and bound the mi
   - `app.models.Pipeline` (`deal.pipelines`: `key`, `name`, `is_default`) and `app.models.PipelineStage`
     (`deal.pipeline_stages`: `pipeline_id`, `key`, `label`, `position`, `outcome`, `default_probability`, `tone`,
     `archived_at`).
-  - Revision `f3b8d1a65c02` (`down_revision = "a1c9e2f7b3d4"`): both tables, row-level security enabled and **forced** with the
+  - Revision `f3b8d1a65c02` (`down_revision = a1c9e2f7b3d4`): both tables, row-level security enabled and **forced** with the
     `tenant_isolation` policy (`USING` and `WITH CHECK` on `deal.current_org()`), the trigger `trg_pipeline_stages_identity`,
     and a downgrade that refuses unless `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1` or nothing beyond the six untouched default
     rows exists and no deal sits outside the legacy six.
@@ -14058,7 +14058,7 @@ so a rewritten row never renders as a blank owner whenever the owner chooses to 
 
 ### Prerequisites
 
-- **Releases.** R2.2 deployed (the release train's need: R2.7 consumes `OwnerSubject`; R2.6 itself leaves every OWN comparison on the employee link). **R2.3 merged first (DD-51):** deal's revision `d8a35c17e920` is written with `down_revision = "f3b8d1a65c02"`, the stages revision R2.3 creates, and **never** against `e94d7a2c5f18`, because `a1c9e2f7b3d4` is byte-pinned and a second revision on the old head would leave deal with two heads that only an edit to the pinned file could repair. R2.3 should also have been deployed and verified on its own; if not, one `make deploy` walks `alembic upgrade head` through both in order (safe, but it forfeits R2.3's own verification).
+- **Releases.** R2.2 deployed (the release train's need: R2.7 consumes `OwnerSubject`; R2.6 itself leaves every OWN comparison on the employee link). **R2.3 merged first (DD-51):** deal's revision `d8a35c17e920` is written with `down_revision = f3b8d1a65c02`, the stages revision R2.3 creates, and **never** against `e94d7a2c5f18`, because `a1c9e2f7b3d4` is byte-pinned and a second revision on the old head would leave deal with two heads that only an edit to the pinned file could repair. R2.3 should also have been deployed and verified on its own; if not, one `make deploy` walks `alembic upgrade head` through both in order (safe, but it forfeits R2.3's own verification).
   R1.1 merged (docs). R2.4 is not required (if R2.4 has not merged, this release creates `services/customer/app/clients.py`; whichever merges first creates it).
 - **Decisions** (the card that depends on an open row does not start before the owner answers it): D-7 (`owners` gains `membership_id`; the Team screen activates members; free-form rep creation retires after cutover), D-8 (a reviewed plan: `link` evidence for employee-valued rows, `email` evidence needs explicit acceptance, unmapped rows untouched and listed, never guess), D-10 (the owner's read-only census). The cards build the defaults. D-9 gates R2.7, not this release.
 - **Operating model (DP-2.6-1).** ADR-0036 decision 1 says the **purge** tool has no `make` target and no `remote.sh` subcommand. The registry and spec choose the other shape for this tool: an owner-gated wrapper, the shape of `reconcile_permissions` (`infrastructure/edge/remote.sh:434-458`, registry §H preamble, spec §9.4, registry H1), because the tool must run three child processes in order in throwaway containers whose state directory belongs to the image's own user.
@@ -14160,7 +14160,7 @@ Expand to steps at release start: yes
 ### Task 2.6.2: Deal: the owner re-key journal (revision `d8a35c17e920`)
 
 **Files**
-- Create: `services/deal/migrations/versions/d8a35c17e920_owner_rekey_journal.py` (id unused, verified) with `down_revision = "f3b8d1a65c02"` and the registry's `# RE-PARENT HERE` marker (precedent `services/operations/migrations/versions/d7a3c9e5b184_*.py:49`) for a later sub-project's deal revision that merged first; it may only ever move **forward** from `f3b8d1a65c02`
+- Create: `services/deal/migrations/versions/d8a35c17e920_owner_rekey_journal.py` (id unused, verified) with `down_revision = f3b8d1a65c02` and the registry's `# RE-PARENT HERE` marker (precedent `services/operations/migrations/versions/d7a3c9e5b184_*.py:49`) for a later sub-project's deal revision that merged first; it may only ever move **forward** from `f3b8d1a65c02`
 - Modify: `services/deal/app/models.py` (add `OwnerRekeyJournal`, `table_name` CHECK `('deals')`)
 - Modify: `services/deal/tests/conftest.py` (`TENANT_TABLES` `:45-51` gains `"owner_rekey_journal"`)
 - Create: `services/deal/tests/test_migration_owner_rekey_journal.py`
