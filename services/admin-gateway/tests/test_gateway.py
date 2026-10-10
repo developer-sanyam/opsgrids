@@ -211,6 +211,21 @@ class TestRateLimiting:
         response = await client.get(STAFF_ROUTE, headers=auth(mint(staff=True)))
         assert response.status_code == 503
 
+    async def test_two_visitors_behind_the_same_proxy_get_two_different_buckets(
+        self, client: AsyncClient, redis: FakeRedis, upstream: EchoUpstream
+    ) -> None:
+        """Without this, every anonymous caller behind Caddy shared one 30/min bucket, so
+        anyone could lock all staff out of operator sign-in by sending 31 requests."""
+        for addr in ("198.51.100.1", "198.51.100.2"):
+            await client.post(
+                "/api/v1/auth/operator/login",
+                json={"email": "a@example.com", "password": "x"},
+                headers={"X-Forwarded-For": addr},
+            )
+        buckets = {k for k in redis.store if k.startswith("rl:anon:")}
+        assert any("198.51.100.1" in b for b in buckets)
+        assert any("198.51.100.2" in b for b in buckets)
+
 
 class TestPermissionResolution:
     async def test_resolution_fails_closed(
