@@ -222,10 +222,10 @@ consumer stands; where it runs has changed.
 
   **Amended 2026-10-07 — the event is not a hook for every earlier generation.**
   `crm.lead.conversion_aborted` is staged only by `finalize_conversion`'s abort
-  (`services/lead/app/services.py:1149-1163`). `fail_conversion`, which bumps the generation when
-  customer reports a deleted company or contact, stages no event (`:1226-1280`), and a
+  (`services/lead/app/services.py:1146-1160`). `fail_conversion`, which bumps the generation when
+  customer reports a deleted company or contact, stages no event (`:1223-1277`), and a
   `status_changed` abort leaves the generation alone, because only `owner_changed` bumps it
-  (`:1125-1132`). ADR-0038 proposes bumping the generation on every abort and emitting an event for
+  (`:1122-1129`). ADR-0038 proposes bumping the generation on every abort and emitting an event for
   the deleted-record bump (pending D-4); until then the leftovers of a `fail_conversion` bump have
   no hook.
 - **Databases that ran an earlier version of this branch's migrations must be recreated.**

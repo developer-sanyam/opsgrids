@@ -17,9 +17,9 @@ payment, console folds all of it into a projection.
 
 **This paragraph predates the consumers, and the stale-docs sweep (R35,
 [decisions.md](decisions.md)) owns re-checking it for the other products. For the CRM it is no
-longer true:** customer consumes `crm.pipeline.activity.logged`, and notification binds the five
-`crm.*` keys it lists as subscribable (nine after R1.2b); `deal` and `lead` consume nothing
-([crm.md](crm.md) §8). The original claim was that no product event was consumed by anything:
+longer true:** customer consumes `crm.pipeline.activity.logged`, and notification binds the
+nine `crm.*` keys it lists as subscribable (the four lead keys joined in R1.2b); `deal` and `lead`
+consume nothing ([crm.md](crm.md) §8). The original claim was that no product event was consumed by anything:
 `hrms.*`, `support.*`, `itsm.*`, `operations.*`, `projects.*`, `pulseboard.*` and `marketing.*`
 were published carefully, drained faithfully, and delivered to nobody.
 
