@@ -162,7 +162,9 @@ def decode_token(
         )
     except jwt.ExpiredSignatureError as exc:
         raise UnauthorizedProblem("Token has expired") from exc
-    except jwt.InvalidTokenError as exc:
+    except jwt.PyJWKClientConnectionError:
+        raise  # JWKS unreachable is our outage, not a bad credential — don't log everyone out
+    except (jwt.InvalidTokenError, jwt.PyJWKClientError) as exc:
         raise UnauthorizedProblem("Token is not valid") from exc
 
     if claims.get("typ") != expected_type:

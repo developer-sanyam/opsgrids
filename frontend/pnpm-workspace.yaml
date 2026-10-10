@@ -11,7 +11,6 @@ packages:
 
   # One application per surface.
   - "opsgrids-dashboard"
-  - "opsgrids-admin"
   - "opsgrids-internal"
   # The Fulfilment F3 worker PWA — its own surface (ADR-0024 §7 amends ADR-0001's "Mobile" line
   # for it), not a product, so it sits outside the "product-*" glob below.
@@ -29,3 +28,6 @@ allowBuilds:
 # Node-only streaming reader uses unzipper; the browser build and `workbook.xlsx.load` do not.
 overrides:
   "exceljs>unzipper": "0.12.5"
+  # exceljs's Node-only archiver chain pins brace-expansion 1.1.18 (GHSA-qhr7-859c-m2p7,
+  # GHSA-6j4f-fj2g-mc7p, GHSA-q2hr-2g5m-vwhr); 1.1.21 is the same major with the fixes.
+  "brace-expansion@<1.1.21": "1.1.21"

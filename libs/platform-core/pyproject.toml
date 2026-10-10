@@ -14,7 +14,7 @@ dependencies = [
     "structlog>=24.4",
     "redis>=5.2",
     "aio-pika>=9.5",
-    "pyjwt[crypto]>=2.9",
+    "pyjwt[crypto]>=2.15",
     "httpx>=0.28",
 ]
 
