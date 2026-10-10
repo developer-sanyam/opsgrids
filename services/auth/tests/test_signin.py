@@ -902,6 +902,67 @@ class TestPasswords:
                 new_password="intruder-9",  # pragma: allowlist secret
             )
 
+    async def test_two_links_opened_at_once_do_not_deadlock(
+        self, session, cfg, directory, registered, redis, monkeypatch
+    ) -> None:
+        """Each confirm used to lock its own link and then void the other's: two at once waited on
+        each other and Postgres aborted one with a deadlock (a 500). Now both queue on the
+        credential row: one link wins and the other finds itself voided."""
+        import asyncio
+        import contextlib
+
+        from sqlalchemy.ext.asyncio import AsyncSession
+
+        # Hold each confirm, just before it writes the password, until the other has caught up
+        # (or a second has passed): the interleaving the deadlock needs, made deterministic.
+        arrived = 0
+        both = asyncio.Event()
+        real = services.get_or_create_credential
+
+        async def rendezvous(s, user_id):  # type: ignore[no-untyped-def]
+            nonlocal arrived
+            arrived += 1
+            if arrived == 2:
+                both.set()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(both.wait(), 1)
+            return await real(s, user_id)
+
+        monkeypatch.setattr(services, "get_or_create_credential", rendezvous)
+
+        from app.models import OutboxEvent
+        from platform_core.errors import NotFoundProblem
+
+        for _ in range(2):
+            await services.request_password_reset(
+                session, cfg=cfg, directory=directory, email="sam@example.com"
+            )
+        tokens = [
+            r.payload["token"]
+            for r in (
+                await session.execute(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_type == services.EVT_PASSWORD_RESET_REQUESTED
+                    )
+                )
+            ).scalars()
+        ]
+        await session.commit()
+
+        async with AsyncSession(session.bind, expire_on_commit=False) as other:
+            results = await asyncio.gather(
+                *(
+                    services.confirm_password_reset(
+                        s, cfg=cfg, raw_token=t, new_password="fresh-start-9"
+                    )
+                    for s, t in zip((session, other), tokens, strict=True)
+                ),
+                return_exceptions=True,
+            )
+
+        assert sorted(type(r).__name__ for r in results) == ["NoneType", "NotFoundProblem"], results
+        assert any(isinstance(r, NotFoundProblem) for r in results)
+
     async def test_a_reset_token_works_once(
         self, session, cfg, directory, registered, redis
     ) -> None:

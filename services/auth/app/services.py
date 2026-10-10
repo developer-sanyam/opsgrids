@@ -36,6 +36,7 @@ from datetime import UTC, datetime, timedelta
 
 import idna
 from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -1437,12 +1438,22 @@ async def confirm_password_reset(
     session: AsyncSession, *, cfg: Settings, raw_token: str, new_password: str
 ) -> None:
     invalid = NotFoundProblem("That reset link is not valid")
-    stmt = (
-        select(PasswordResetToken)
-        .where(PasswordResetToken.token_hash == _hash_token(raw_token))
-        .with_for_update()  # two concurrent uses of one link must not both pass the check
-    )
+    stmt = select(PasswordResetToken).where(PasswordResetToken.token_hash == _hash_token(raw_token))
     row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise invalid
+    # Credential first, then the link — the order `change_password` and `set_password`'s voiding
+    # of every other link take them in — so two resets (or a reset and a change) for one person
+    # queue on the credential instead of deadlocking. The insert gives a person with no password
+    # yet a row to queue on.
+    await session.execute(
+        pg_insert(Credential).values(user_id=row.user_id).on_conflict_do_nothing()
+    )
+    await session.get(Credential, row.user_id, with_for_update=True)
+    # Re-read under its lock, fresh: a sibling reset that just committed may have voided it.
+    row = (
+        await session.execute(stmt.with_for_update().execution_options(populate_existing=True))
+    ).scalar_one_or_none()
     if row is None or row.used_at is not None or row.expires_at <= datetime.now(UTC):
         raise invalid
 
