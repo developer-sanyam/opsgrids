@@ -1,6 +1,7 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MockInstance } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { ApiError } from "@opsgrids/client";
@@ -298,5 +299,119 @@ describe("a published automation", () => {
     renderBuilder(`/automations/${AUTOMATION_ACTIVE.id}`);
     await userEvent.click(await screen.findByRole("tab", { name: "Runs" }));
     expect(await screen.findByText("No runs yet")).toBeTruthy();
+  });
+});
+
+describe("a send step that looks a contact up", () => {
+  const CONTACT_HELPER =
+    "The CRM contact on the event. The WhatsApp number is looked up from the contact when the message is sent.";
+  const ADDRESS_HELPER = "Where the phone number is read from on the event.";
+
+  const LOOKUP_GRAPH: Graph = {
+    nodes: [
+      { id: "trigger", type: "trigger", config: { event_type: "crm.lead.converted" } },
+      {
+        id: "send_message_1",
+        type: "send_message",
+        config: {
+          channel: "whatsapp",
+          template: { ref: "" },
+          recipient_path: "payload.contact_id",
+          recipient_kind: "contact_id",
+          variable_map: {},
+          purpose: "marketing",
+        },
+      },
+    ],
+    edges: [{ from: "trigger", to: "send_message_1" }],
+  };
+
+  /** Open the draft and select its send step. Returns the spy the save goes through. */
+  async function openStep() {
+    const update = vi.spyOn(api, "updateAutomation").mockResolvedValue(AUTOMATION_DRAFT);
+    openDraft(LOOKUP_GRAPH);
+    const flow = await screen.findByRole("region", { name: "Automation flow" });
+    await userEvent.click(within(flow).getByRole("button", { name: /2 · Send message/ }));
+    return update;
+  }
+
+  /** Save, then read the send step's config the way the service would receive it. */
+  async function savedConfig(update: MockInstance<typeof api.updateAutomation>) {
+    await userEvent.click(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    const send = update.mock.calls[0]?.[1].graph?.nodes.find((n) => n.type === "send_message");
+    if (send?.type !== "send_message") throw new Error("the saved graph has no send step");
+    return send.config;
+  }
+
+  it("says where the number comes from, and keeps the kind through a template pick and a purpose change", async () => {
+    const update = await openStep();
+    expect(await screen.findByText(CONTACT_HELPER)).toBeTruthy();
+    expect((screen.getByLabelText(/^Send to/) as HTMLInputElement).placeholder).toBe("payload.contact_id");
+
+    await userEvent.selectOptions(await screen.findByLabelText(/^Template/), "payment_reminder");
+    await userEvent.selectOptions(screen.getByLabelText(/^Purpose/), "transactional");
+
+    expect(screen.getByText(CONTACT_HELPER)).toBeTruthy();
+    const config = await savedConfig(update);
+    expect(config.recipient_kind).toBe("contact_id");
+    expect(config.template.ref).toBe("payment_reminder");
+    expect(config.purpose).toBe("transactional");
+  });
+
+  it("drops the kind when the channel becomes email and does not bring it back with WhatsApp", async () => {
+    const update = await openStep();
+    await userEvent.selectOptions(await screen.findByLabelText(/^Channel/), "email");
+    expect(await screen.findByText("Where the email address is read from on the event.")).toBeTruthy();
+    expect(screen.queryByText(CONTACT_HELPER)).toBeNull();
+
+    await userEvent.selectOptions(screen.getByLabelText(/^Channel/), "whatsapp");
+    expect(await screen.findByText(ADDRESS_HELPER)).toBeTruthy();
+    expect(screen.queryByText(CONTACT_HELPER)).toBeNull();
+
+    const config = await savedConfig(update);
+    expect(config).not.toHaveProperty("recipient_kind");
+    expect(config.channel).toBe("whatsapp");
+  });
+
+  it("keeps the kind for another path that names a contact id, and drops it for one that does not", async () => {
+    const update = await openStep();
+    const sendTo = await screen.findByLabelText(/^Send to/);
+
+    fireEvent.change(sendTo, { target: { value: "payload.customer.contact_id" } });
+    expect(screen.getByText(CONTACT_HELPER)).toBeTruthy();
+
+    fireEvent.change(sendTo, { target: { value: "payload.customer.phone" } });
+    expect(screen.getByText(ADDRESS_HELPER)).toBeTruthy();
+    expect(screen.queryByText(CONTACT_HELPER)).toBeNull();
+
+    const config = await savedConfig(update);
+    expect(config).not.toHaveProperty("recipient_kind");
+    expect(config.recipient_path).toBe("payload.customer.phone");
+  });
+
+  /* Characterization of the design's second rule under the edit a person really makes: typing in the
+     field. Every keystroke is one change, so deleting a letter of `contact_id` and typing it back
+     passes through a path that names no contact id, and the kind is gone for good (there is no
+     control to choose it). The helper text flips at once, which is the only signal, and the service
+     refuses the id as an address (`test_a_contact_id_read_as_an_address_is_refused_and_nothing_is_sent`
+     in `test_crm_lead_keys.py`), so nothing is sent to the wrong person. A reviewer who prefers to
+     restore the kind when the path names a contact id again flips this one test and gives
+     `SendSettings` a ref that remembers the kind the step was opened with (and `StepSettings` a
+     `key={node.id}` so it is not shared between steps). */
+  it("loses the kind on the first edit that stops naming a contact id, and typing the path back does not restore it", async () => {
+    const update = await openStep();
+    const sendTo = await screen.findByLabelText(/^Send to/);
+
+    fireEvent.change(sendTo, { target: { value: "payload.contact_i" } });
+    expect(screen.getByText(ADDRESS_HELPER)).toBeTruthy();
+
+    fireEvent.change(sendTo, { target: { value: "payload.contact_id" } });
+    expect(screen.getByText(ADDRESS_HELPER)).toBeTruthy();
+    expect(screen.queryByText(CONTACT_HELPER)).toBeNull();
+
+    const config = await savedConfig(update);
+    expect(config.recipient_path).toBe("payload.contact_id");
+    expect(config).not.toHaveProperty("recipient_kind");
   });
 });
