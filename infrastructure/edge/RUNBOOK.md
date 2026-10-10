@@ -558,7 +558,11 @@ What happens, in order, and what each step protects:
    ends with the **MFA reseal** — a no-op unless some `auth.mfa_factors` row still holds a
    plaintext secret, in which case it runs once from the new image and aborts the deploy unless
    it leaves none (see "Operator MFA" below).
-7. **up** — containers are recreated. Brief downtime. Not zero.
+7. **up** — containers are recreated. Brief downtime. Not zero. The gateways go first, on their
+   own: a service on a newer platform-core refuses an older gateway's hop token (the `fwd`
+   header digest), which would sign every user out until the gateway caught up. The reverse mix
+   is harmless. A **rollback** across the release that added `fwd` runs the other way — old
+   gateways in front of still-new services — so expect 401s and sign-outs until `up` finishes.
 8. **health** — every container running and healthy within 120 s, or the deploy reports a
    failure and leaves the decision to you.
 
