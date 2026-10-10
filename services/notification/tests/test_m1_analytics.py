@@ -255,7 +255,7 @@ async def seed_ledger(session, org: uuid.UUID) -> dict[str, uuid.UUID]:
         Rule(
             organization_id=org,
             code="wa_active",
-            event_type="crm.deal.won",
+            event_type="crm.pipeline.deal.stage_changed",
             channel="whatsapp",
             active=True,
             created_at=utc(12, 7),
@@ -263,7 +263,7 @@ async def seed_ledger(session, org: uuid.UUID) -> dict[str, uuid.UUID]:
         Rule(
             organization_id=org,
             code="wa_inactive",
-            event_type="crm.deal.lost",
+            event_type="crm.pipeline.deal.created",
             channel="whatsapp",
             active=False,
             created_at=datetime(2026, 8, 1, tzinfo=UTC),
@@ -271,7 +271,7 @@ async def seed_ledger(session, org: uuid.UUID) -> dict[str, uuid.UUID]:
         Rule(
             organization_id=org,
             code="mail_active",
-            event_type="crm.deal.won",
+            event_type="crm.pipeline.deal.stage_changed",
             channel="email",
             active=True,
             created_at=utc(12, 8),
