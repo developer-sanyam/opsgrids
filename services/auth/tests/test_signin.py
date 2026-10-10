@@ -100,6 +100,33 @@ class TestCredentials:
             await _login(session, cfg, pair, directory)
         assert str(locked.value) == services.INVALID
 
+    async def test_parallel_wrong_passwords_still_lock_the_account(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """Guesses sent at once must each count. Read without a lock, every sign-in saw
+        `failed_attempts == 0` and wrote back 1, so the lockout never fired however many ran."""
+        import asyncio
+
+        await session.commit()
+        others = [
+            AsyncSession(session.bind, expire_on_commit=False)
+            for _ in range(cfg.max_failed_attempts)
+        ]
+        try:
+            results = await asyncio.gather(
+                # pragma: allowlist nextline secret
+                *(_login(s, cfg, pair, directory, password="wrong") for s in others),
+                return_exceptions=True,
+            )
+        finally:
+            for s in others:
+                await s.close()
+        assert all(isinstance(r, UnauthorizedProblem) for r in results), results
+
+        credential = await session.get(Credential, USER, populate_existing=True)
+        assert credential is not None
+        assert credential.locked_until is not None and credential.locked_until > datetime.now(UTC)
+
     async def test_the_lock_expiring_is_a_real_unlock_one_typo_does_not_relock(
         self, session, cfg, pair, directory, registered
     ) -> None:

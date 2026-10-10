@@ -229,7 +229,13 @@ async def _verify_credentials(
         security.verify_password(None, password)
         raise invalid
 
-    credential = await get_or_create_credential(session, user.user_id)
+    # Locked, as `change_password` does: parallel guesses each count, and a sign-in queues behind
+    # a concurrent reset instead of verifying the old password and outliving it.
+    credential = await session.get(
+        Credential, user.user_id, with_for_update=True, populate_existing=True
+    )
+    if credential is None:
+        credential = await get_or_create_credential(session, user.user_id)
 
     now = datetime.now(UTC)
     locked = bool(credential.locked_until and credential.locked_until > now)
