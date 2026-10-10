@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
@@ -265,7 +265,11 @@ class TestListAndRead:
 
 class TestExpiry:
     async def _lapse(self, session, org_id, reservation_id: str) -> None:  # type: ignore[no-untyped-def]
-        """Move a reservation's expiry into the past, as the passing of time would."""
+        """Move a reservation's expiry into the past, as the passing of time would.
+
+        On the database's clock: the sweep's discovery compares with `now()`, so a past computed
+        from this process's clock is not past to it when the two clocks disagree.
+        """
         async with session.begin():
             await session.execute(
                 update(InventoryReservation)
@@ -273,7 +277,7 @@ class TestExpiry:
                     InventoryReservation.organization_id == org_id,
                     InventoryReservation.id == uuid.UUID(reservation_id),
                 )
-                .values(expires_at=datetime.now(UTC) - timedelta(minutes=5))
+                .values(expires_at=func.now() - timedelta(minutes=5))
             )
 
     async def test_a_lapsed_reservation_is_released_and_a_live_one_is_not(

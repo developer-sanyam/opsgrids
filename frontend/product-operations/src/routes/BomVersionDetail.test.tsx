@@ -100,11 +100,11 @@ describe("BomVersionDetailPage", () => {
   });
 
   it("explains that a published version is immutable, shows its hash, and offers no edit even to a writer", async () => {
-    serve(version({ status: "PUBLISHED", published_at: "2026-09-10T08:00:00Z", content_hash: "abc123def456" }));
+    serve(version({ status: "PUBLISHED", published_at: "2026-09-10T08:00:00Z", content_hash: "abc123def456" })); // pragma: allowlist secret — a fixture hash
     renderScreen(<BomVersionDetailPage />, [READ, WRITE, PUBLISH], ROUTE);
 
     expect(await screen.findByText(/immutable — start a new version to change it/i)).toBeDefined();
-    expect(screen.getByText("abc123def456")).toBeDefined();
+    expect(screen.getByText("abc123def456")).toBeDefined(); // pragma: allowlist secret — the fixture hash
     for (const name of ["Edit details", "Add component", "Discard draft", "Publish"]) {
       expect(screen.queryByRole("button", { name })).toBeNull();
     }
