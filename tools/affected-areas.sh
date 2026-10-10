@@ -36,6 +36,15 @@ while IFS= read -r f; do
   [ -n "$f" ] || continue
   saw_a_line=true
   case "$f" in
+  # Three frontend files that tests/infra reads as source (test_crm_spa_navigation.py and
+  # test_engage_recipe_triggers.py). Those tests run in the backend `static` job, which a
+  # frontend-only change would skip, so these count as backend too. Keep this ahead of
+  # `frontend/*`; test_affected_areas.py holds the list. No service is named, so the defensive
+  # block below turns services_all on: the safe direction.
+  frontend/product-crm/src/main.tsx | frontend/product-crm/src/ui/useNavGroups.ts | frontend/product-engage/src/routes/automations/recipes.ts)
+    backend=true
+    frontend=true
+    ;;
   frontend/*) frontend=true ;;
   .github/workflows/*)
     backend=true

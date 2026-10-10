@@ -15,8 +15,19 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AFFECTED_AREAS = REPO_ROOT / "tools/affected-areas.sh"
+
+#: Frontend files a test under tests/infra reads as source: `test_crm_spa_navigation.py` reads the
+#: first two and `test_engage_recipe_triggers.py` the third. Those tests run in the backend
+#: `static` job, which a pull request that touches only frontend/ never starts.
+READ_BY_BACKEND_GUARDS = [
+    "frontend/product-crm/src/main.tsx",
+    "frontend/product-crm/src/ui/useNavGroups.ts",
+    "frontend/product-engage/src/routes/automations/recipes.ts",
+]
 
 
 def run(files: list[str]) -> dict[str, str]:
@@ -61,6 +72,19 @@ def test_frontend_only_change_does_not_touch_backend_or_services() -> None:
     assert plan["backend"] == "false"
     assert plan["frontend"] == "true"
     assert plan["services_list"] == ""
+
+
+@pytest.mark.parametrize("path", READ_BY_BACKEND_GUARDS)
+def test_a_frontend_file_a_backend_guard_reads_reaches_the_backend_jobs(path: str) -> None:
+    # The edit that re-adds a rail entry for a missing route, or points a recipe at a key that
+    # cannot be subscribed to, is exactly the one those guards exist to catch. Frontend-only
+    # leaves them unrun, so these paths count as backend too. No service changed, so the
+    # script's defensive block answers services_all=true: the safe direction.
+    assert (REPO_ROOT / path).is_file(), f"{path} moved: update the guard, this list and the script"
+    plan = run([path])
+    assert plan["backend"] == "true"
+    assert plan["frontend"] == "true"
+    assert plan["services_all"] == "true"
 
 
 def test_a_shared_library_change_falls_back_to_every_service() -> None:
