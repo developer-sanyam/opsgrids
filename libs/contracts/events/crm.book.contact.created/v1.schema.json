@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/crm.book.contact.created/v1",
+  "title": "crm.book.contact.created",
+  "description": "A person was added to a company in the account book, by hand, by import or by a lead's conversion. `full_name` is carried for tenant automations that already render it and is frozen as legacy: a new consumer reads `contact_id` and asks customer for anything else. `status` is the contact's lifecycle status at creation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "contact_id", "company_id", "full_name", "status"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "contact_id": { "type": "string", "format": "uuid" },
+    "company_id": { "type": "string", "format": "uuid" },
+    "full_name": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "status": { "enum": ["customer", "qualified", "lead", "dormant"] }
+  }
+}

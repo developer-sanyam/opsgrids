@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/crm.book.contact.updated/v1",
+  "title": "crm.book.contact.updated",
+  "description": "A contact's plain fields were patched (never the phone, which has its own route). `changed` names the patched fields and carries no values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "contact_id", "changed"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "contact_id": { "type": "string", "format": "uuid" },
+    "changed": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+  }
+}
