@@ -4,11 +4,7 @@
  * already came from a scoped list request).
  */
 
-/** Wraps a cell in quotes and escapes embedded quotes, only when the value needs it. */
-function csvCell(value: string): string {
-  if (!/[",\n]/.test(value)) return value;
-  return `"${value.replace(/"/g, '""')}"`;
-}
+import { csvCell } from "@opsgrids/client";
 
 export interface CsvColumn<T> {
   header: string;

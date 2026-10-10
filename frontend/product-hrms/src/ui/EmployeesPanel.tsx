@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
+import { csvCell } from "@opsgrids/client";
 import type { EmployeeOut } from "@/api/types";
 import { resolveDepartment } from "@/data/departments";
 import {
@@ -29,7 +30,7 @@ function exportCsv(rows: EmployeeOut[], orgUnitMap: ReadonlyMap<string, string>)
     e.location_code ?? "",
   ]);
   const csv = [header, ...body]
-    .map((cells) => cells.map((c) => `"${c.replace(/"/g, '""')}"`).join(","))
+    .map((cells) => cells.map(csvCell).join(","))
     .join("\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
   const a = document.createElement("a");

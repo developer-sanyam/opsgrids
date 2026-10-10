@@ -4,7 +4,7 @@ import { getLedger } from "@/api/client";
 import type { LedgerAccount, LedgerReport } from "@/api/types";
 import { formatDate } from "@/lib/format";
 import { formatAmount, formatMoney } from "@/lib/money";
-import { problemMessage, useAsync } from "@opsgrids/client";
+import { csvCell, problemMessage, useAsync } from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -38,8 +38,8 @@ function exportCsv(report: LedgerReport): void {
   const header = ["Code", "Account", "Type", "Debit (INR)", "Credit (INR)"];
   const lines = report.accounts.map((a) =>
     [
-      a.code,
-      `"${a.name}"`,
+      csvCell(a.code),
+      csvCell(a.name),
       a.type,
       (a.debit_minor / 100).toFixed(2),
       (a.credit_minor / 100).toFixed(2),

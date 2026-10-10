@@ -1,3 +1,4 @@
+import { csvCell } from "@opsgrids/client";
 import type { ContactImportRow } from "@/api/types";
 
 /**
@@ -135,14 +136,9 @@ export function parseContactCsv(text: string): ContactImportRow[] {
  * downloads, for lists that have no bulk write worth offering.
  */
 
-/** RFC 4180 quoting: wrap a field in quotes and double any quote it contains, only when needed. */
-function exportField(value: string): string {
-  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-}
-
 /** Builds a CSV string from a header row and the data rows beneath it. */
 export function toCsv(header: string[], rows: string[][]): string {
-  return [header, ...rows].map((row) => row.map(exportField).join(",")).join("\n");
+  return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
 }
 
 /** Triggers a browser download of `content` as `filename` — no library, one anchor click. */
