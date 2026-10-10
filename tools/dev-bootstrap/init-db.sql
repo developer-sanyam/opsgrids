@@ -101,7 +101,9 @@ BEGIN
     -- PulseBoard
     'opsgrids_project', 'opsgrids_timesheet', 'opsgrids_standup', 'opsgrids_quotation',
     -- CRM
-    'opsgrids_customer', 'opsgrids_deal', 'opsgrids_lead', 'opsgrids_marketing', 'opsgrids_support',
+    'opsgrids_customer', 'opsgrids_deal', 'opsgrids_lead',
+    -- Marketing and support
+    'opsgrids_marketing', 'opsgrids_support',
     -- Platform (shared)
     'opsgrids_document', 'opsgrids_notification', 'opsgrids_scheduler',
     'opsgrids_eventbridge', 'opsgrids_config', 'opsgrids_approval',

@@ -1464,11 +1464,11 @@ services:
     networks:
       - back
 
-  # The lead half of the `crm` product (ADR-0017). Publishes only — `crm.lead.converted` — and
-  # consumes nothing, so no dedicated worker: `edge-relay` drains its outbox like every other
-  # service that has no consumer of its own. Calls customer's and deal's `/internal/v1` on
-  # `:convert`, under a short-lived service token, the same shape notification uses to call
-  # customer today.
+  # The lead half of the `crm` product (ADR-0017). Publishes four event types, `crm.lead.created`,
+  # `.updated`, `.converted` and `.conversion_aborted`, and consumes nothing, so no dedicated
+  # worker: `edge-relay` drains its outbox like every other service that has no consumer of its
+  # own. Calls customer's and deal's `/internal/v1` on `:convert`, under a short-lived service
+  # token, the same shape notification uses to call customer today.
   lead:
     <<: *service-common
     profiles: ['crm']

@@ -17,11 +17,11 @@ sells a customer a 404. Driven through `python -m app.launch` (P6) — the real 
 not a hand-run `UPDATE` — so this suite exercises the same path a deploy does and gets the same
 audit row and the same refusal for a key the catalogue does not know.
 
-CRM is the only product in the catalogue that spans two services (customer-service owns the
-account book, deal-service owns the pipeline) and therefore the only one shipping **two** admin
-role templates. That is exactly the shape of the defect the CRM journey exists to catch:
-activation used to grant only the last admin template parsed, so CRM's owners could read
-contacts and not deals.
+CRM is the only product in the catalogue that spans three services (customer-service owns the
+account book, deal-service owns the pipeline, lead-service owns lead capture) and therefore the
+only one shipping **three** admin role templates. That is exactly the shape of the defect the
+CRM journey exists to catch: activation used to grant only the last admin template parsed, so
+CRM's owners could read contacts and not deals.
 
 HRMS spans employee-service and attendance-service, and the Wave 0 exit journey
 (`test_approval_journey.py`) cannot start without it: an attendance correction is the one
