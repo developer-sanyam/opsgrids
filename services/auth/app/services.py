@@ -64,7 +64,7 @@ from app.provisioning import ProvisioningClient
 from platform_core import pii
 from platform_core.audit import record_audit
 from platform_core.auth import Principal
-from platform_core.cache import cache_delete, cache_get, cache_set
+from platform_core.cache import cache_delete, cache_get, cache_set, enforce_rate_limit
 from platform_core.db import assert_tenant, set_tenant
 from platform_core.errors import (
     BusinessRuleProblem,
@@ -72,6 +72,7 @@ from platform_core.errors import (
     ForbiddenProblem,
     NotFoundProblem,
     ProblemError,
+    RateLimitedProblem,
     UnauthorizedProblem,
     UpstreamUnavailableProblem,
     ValidationProblem,
@@ -1288,6 +1289,10 @@ async def change_password(
     await session.commit()
 
 
+#: Reset emails per account per hour. Caps inbox flooding and the shared mailbox's send quota.
+PASSWORD_RESETS_PER_HOUR = 3
+
+
 def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -1308,6 +1313,12 @@ async def request_password_reset(
     user = await directory.find_by_email(email)
     if user is None or not user.is_active:
         return
+    try:
+        await enforce_rate_limit(
+            f"pwreset:{user.user_id}", limit=PASSWORD_RESETS_PER_HOUR, window_seconds=3600
+        )
+    except RateLimitedProblem:
+        return  # silently: a 429 here would confirm the account exists
 
     raw = secrets.token_urlsafe(32)
     session.add(

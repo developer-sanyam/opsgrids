@@ -202,6 +202,13 @@ class FakeRedis:
         self.store[key] = value
         return True
 
+    async def incr(self, key: str) -> int:
+        self.store[key] = str(int(self.store.get(key, "0")) + 1)
+        return int(self.store[key])
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        return key in self.store
+
     async def getdel(self, key: str) -> str | None:
         return self.store.pop(key, None)
 

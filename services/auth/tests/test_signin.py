@@ -777,7 +777,33 @@ class TestPasswords:
             session, cfg=cfg, directory=FakeDirectory([]), email="nobody@example.com"
         )
 
-    async def test_a_reset_token_works_once(self, session, cfg, directory, registered) -> None:
+    async def test_resets_for_one_account_are_capped_silently(
+        self, session, cfg, directory, registered, redis
+    ) -> None:
+        """Otherwise anyone can bury a victim's inbox, or burn the platform's send quota, from
+        one IP. Over the cap the call still "succeeds" — a 429 would confirm the account."""
+        from app.models import OutboxEvent
+
+        for _ in range(services.PASSWORD_RESETS_PER_HOUR + 2):
+            await services.request_password_reset(
+                session, cfg=cfg, directory=directory, email="sam@example.com"
+            )
+        sent = (
+            (
+                await session.execute(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_type == services.EVT_PASSWORD_RESET_REQUESTED
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(sent) == services.PASSWORD_RESETS_PER_HOUR
+
+    async def test_a_reset_token_works_once(
+        self, session, cfg, directory, registered, redis
+    ) -> None:
         from app.models import OutboxEvent
         from platform_core.errors import NotFoundProblem
 
