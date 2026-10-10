@@ -103,3 +103,30 @@ class TestProviderSecretsAreRedacted:
         assert stored["nested"][0]["inner"]["key_secret"] == REDACTED
         assert stored["key_id"] == "rzp_test_public_id"
         assert "secret-value" not in json.dumps(stored)
+
+
+class TestTheRecordedAddress:
+    """The leftmost `X-Forwarded-For` entry is whatever the caller wrote — Caddy appends, it does
+    not replace — so an audit row built from it records an address of the caller's choosing."""
+
+    def test_a_caller_written_forwarded_for_is_not_the_recorded_address(self) -> None:
+        from starlette.requests import Request
+
+        request = Request(
+            {
+                "type": "http",
+                "headers": [(b"x-forwarded-for", b"6.6.6.6, 198.51.100.4")],
+                "client": ("172.18.0.5", 51000),
+            }
+        )
+        session = _Session()
+        record_audit(
+            cast(AsyncSession, session),
+            _Row,
+            organization_id=uuid.uuid4(),
+            actor_id=None,
+            action="organization.updated",
+            entity="organization",
+            request=request,
+        )
+        assert session.added[0].fields["ip"] == "172.18.0.5"

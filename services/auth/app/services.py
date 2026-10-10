@@ -63,7 +63,7 @@ from app.models import (
 from app.provisioning import ProvisioningClient
 from platform_core import pii
 from platform_core.audit import record_audit
-from platform_core.auth import Principal
+from platform_core.auth import Principal, client_ip
 from platform_core.cache import cache_delete, cache_get, cache_set, enforce_rate_limit
 from platform_core.db import assert_tenant, set_tenant
 from platform_core.errors import (
@@ -300,7 +300,7 @@ async def start_session(
         idp=idp,
         sso_domain=sso_domain,
         expires_at=datetime.now(UTC) + timedelta(days=cfg.session_ttl_days),
-        ip=request.client.host if request and request.client else None,
+        ip=client_ip(request),
         user_agent=request.headers.get("user-agent") if request else None,
     )
     session.add(row)
@@ -1407,7 +1407,8 @@ async def request_password_reset(
             user_id=user.user_id,
             token_hash=_hash_token(raw),
             expires_at=datetime.now(UTC) + timedelta(minutes=cfg.password_reset_ttl_minutes),
-            requested_ip=request.client.host if request and request.client else None,
+            # The visitor, as the gateway resolved and bound it — not the gateway's own address.
+            requested_ip=client_ip(request),
         )
     )
     # The email goes out through notify-service, from the outbox — so a crash between
