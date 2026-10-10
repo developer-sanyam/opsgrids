@@ -54,10 +54,13 @@ as a NOBYPASSRLS role, and every request transaction is bound to its organizatio
 
 ## Products
 
-**None of them exist.** HRMS, CRM, PulseBoard, Sales CRM, Project Management, IT Management,
-Marketing, Finance and Operations are named in the marketing site's catalogue and in the plan.
-No product service has been written. The platform can currently create an organization, invite
-people, sign them in, and authorize them against products that are not there yet.
+**The CRM is built; the rest of this section predates it.** CRM ("OpsGrids Revenue") is three
+services, `customer`, `deal` and `lead`, and the `product-crm` app; [crm.md](crm.md) says what it is
+and what it does today. HRMS, PulseBoard, Project Management, IT Management, Marketing, Finance and
+Operations are named in the marketing site's catalogue and in the plan, and the sentences about them
+on this page are older than their services: the stale-docs sweep (R35, [decisions.md](decisions.md))
+owns correcting them. The platform can create an organization, invite people, sign them in, and
+authorize them against products.
 
 ## Billing
 
@@ -85,11 +88,11 @@ recording and the outbox; the services that would centralise them do not exist.
 | Relay draining with `FOR UPDATE SKIP LOCKED` | Built |
 | Idempotent consumer base, `processed_events` ledger | Built |
 | Events actually published by account-service | Built |
-| **Any consumer handling any event** | **Absent** — zero handlers registered |
+| **Any consumer handling any event** | **Built** — consumers exist; for the CRM, customer consumes `crm.pipeline.activity.logged` and notification binds the five `crm.*` keys it lists ([crm.md](crm.md) §8) |
 
-So events are written and drained, and nothing reacts to them. The traced flows in the plan —
-an employee joining causing five services to do work — describe machinery that is built at the
-producing end and empty at the consuming end.
+This page was written before the consumers, so the paragraph that stood here (events are written and
+drained and nothing reacts to them) is withdrawn for the CRM and left to the stale-docs sweep (R35,
+[decisions.md](decisions.md)) for the other products.
 
 ## Observability
 

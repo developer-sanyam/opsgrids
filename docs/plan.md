@@ -8,7 +8,7 @@ this page is the longer arc and the reasoning behind the sequence.
 ## The goal
 
 One platform selling many products. A customer has **one organization, one account and one user
-directory**, and activates products against it — HRMS, CRM, PulseBoard, Sales CRM, Project
+directory**, and activates products against it — HRMS, CRM, PulseBoard, Project
 Management, IT Management, Marketing, Finance, Operations. Centralised billing, usage metering,
 an operator portal and a product marketplace sit across all of them.
 
@@ -36,7 +36,7 @@ criteria for the rebuild. Read them; do not port them.
 | 4 | Platform services | document, notification, audit, scheduler, eventbridge | |
 | 5 | HRMS rebuild | employee → attendance → leave → payroll → recruit | |
 | 6 | PulseBoard rebuild + migration | project, timesheet, standup, quotation | |
-| 7 | CRM greenfield | customer, sales, marketing, support | |
+| 7 | CRM | customer, deal, lead: one product, `crm`, three services ([ADR-0017](adr/0017-crm-lead-service-and-pipeline-scaffold-removal.md)); marketing and support are separate products | |
 | 8 | Billing | catalog → subscription → metering → billing → payment | |
 | 9 | Ecosystem surface | operator console, marketplace, workflow, analytics | |
 

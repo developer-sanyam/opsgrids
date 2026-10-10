@@ -500,8 +500,10 @@ tests because each side stubbed the other:
   startup failure, so a relay handed an RLS-bound role now dies at boot with the reason.
 - **(b) version skew** — step 13 asserts every service in the suite answers 200 to a request
   the gateway signed. A service still verifying the old static shared secret cannot.
-- **(c) a product spanning two services** — CRM is the only product with two admin templates.
-  Step 7 asserts the owner holds both, and step 9 proves it with data from the second service.
+- **(c) a product spanning services** — CRM ships three admin templates (`CRM_BOOK_ADMIN`,
+  `CRM_PIPELINE_ADMIN` and `CRM_LEADS_ADMIN`); the suite boots two of its three services, so step 7
+  asserts the owner holds the two it can see (`e2e/test_journey.py:44`) and step 10 proves it with
+  data from the second service. `lead` is not booted by the harness.
 
 Three things the harness itself is careful about, each having already bitten: ports are
 allocated rather than fixed (fixed ports made the suite silently drive a stack that was already

@@ -341,6 +341,16 @@ Finance's payments table has **no currency column**, and `amount_minor` is store
 contradicts ADR-0000 §8. Slice I2 derives the currency from the allocated invoices, and refuses a
 payment that allocates across currencies. Whether to add the column is finance's call.
 
+**Amended 2026-10-07 — the stage vocabulary moves from keys to `outcome`.** The
+`crm.pipeline.deal.created`, `.updated` and `.stage_changed` schemas carry six literal stage keys,
+and §9's metric definitions test `closed_won` and a "closed stage" by key (the "Deals won" and
+"Pipeline value" definitions). [ADR-0038](0038-crm-programme-decisions.md) proposes
+(pending D-5, D-12) that stages become configurable, with an immutable key and an `outcome` of
+`open`, `won` or `lost`, that consumers test the outcome and never the key, and that this ADR's
+projection is rebased onto `outcome` when the stages land (R2.3); the deal migration that adds
+`closed_at` and exists on the unmerged branch `sprint/insights-q2`, not on `main`, is adopted
+unchanged. Until the owner answers, the six keys stay the contract.
+
 ### 7. API
 
 All routes are under `/api/v1/insights` on the app gateway, read-only, with problem+json errors
@@ -639,6 +649,16 @@ states, and the additive source changes are harmless to leave in place.
 1. **Box memory.** +99 MB on a box already at 102% of MemTotal. Mitigation: one container, folded
    loops, 89 MB of projected headroom returned. The real fix, resizing the VM, is the owner's
    decision (ADR-0013).
+
+   **Amended 2026-10-07 — the +99 MB is an owner decision against today's totals.** Computed with
+   `infrastructure/edge/lib/memory_budget_totals.py`, the ten sellable profiles total 3747 MB and the
+   ten plus `admin` total 3944 MB against the 3862 MB reference, and the box's accepted ceiling is
+   the owner's setting (`EDGE_BUDGET_ACCEPTED_MB`), so the +99 MB above is not covered by it and the
+   CRM programme's own consumer folds (+1 MB each, the first at R2.4) draw on the same ceiling.
+   Whether the ceiling rises, memory is freed or the folds wait is
+   [ADR-0038](0038-crm-programme-decisions.md) D-13 (pending D-13); the programme design's row D-13
+   (`docs/superpowers/specs/2026-10-07-crm-overhaul-programme-design.md:388`) says the insights
+   container's +99 MB ships only after a separate owner answer on the ceiling.
 2. **Two definitions of one number.** Insights' revenue against finance's, and insights' pipeline
    against `/deals/summary`. Mitigations:
    - parity tests on shared fixtures in I2 and I3;

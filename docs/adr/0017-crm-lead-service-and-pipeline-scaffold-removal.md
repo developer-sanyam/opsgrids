@@ -47,6 +47,17 @@ and `customer`'s already-registered `crm` scope resolver stranded.
    `CRM_*_ROLE_TEMPLATES` naming, and updates the existing `CRM_BOOK_ADMIN` / `CRM_PIPELINE_ADMIN`
    pattern with a `CRM_LEADS_ADMIN`, while `CRM_SALES_REP` (customer) and `CRM_DEAL_REP` (deal)
    each pick up the lead grants a working rep needs.
+
+   **Amended 2026-10-07 — as built, the last clause of this point did not happen.** `lead` declares
+   its own `CRM_LEADS_ADMIN` and a third default role, `CRM_LEAD_REP`; neither `CRM_SALES_REP` nor
+   `CRM_DEAL_REP` holds any `crm.lead.*` grant (`services/lead/app/catalogue.py:150-179`;
+   `libs/contracts/permissions/crm.json` holds six role templates, three admin and three default).
+   The decision stays as written because it records what was decided. Four consolidated templates,
+   `CRM_ADMIN`, `CRM_REP`, `CRM_MANAGER` and `CRM_VIEWER`, built in R2.8 by same-code merging across
+   the three catalogues (the three rep templates become one `CRM_REP`), are proposed in
+   [ADR-0038](0038-crm-programme-decisions.md) (pending D-20); the six legacy role codes and all 17
+   permission codes would stay frozen.
+
 2. **`services/pipeline` and `services/activity` are deleted outright**, not built. `deal`
    already owns `crm.pipeline.*` (deals and the activity timeline) end to end, migrated,
    RLS-enabled, catalogued and tested. `cards-dev-b-pipeline.md` is stale from this decision
@@ -54,7 +65,7 @@ and `customer`'s already-registered `crm` scope resolver stranded.
 3. Both onboarding cards get a banner at the top pointing here, rather than being silently left
    to mislead the next person who opens them looking for onboarding work.
 4. **`deal.app.domain.STAGE_ORDER` stays hardcoded** (six fixed stages, `services/deal/app/
-   domain.py:38`). A configurable, per-organization pipeline — which is what
+   domain.py:21`). A configurable, per-organization pipeline — which is what
    `cards-dev-b-pipeline.md`'s `Pipeline`/`PipelineStage` tables were actually reaching for — is
    a real, larger feature (multiple named pipelines, stages an org edits) and is explicitly
    **out of scope for this slice**. It is recorded here as accepted debt rather than silently
@@ -112,6 +123,15 @@ run in production; the outbox message is published, drained by `edge-relay`, and
 queue nothing consumes, so `contacts.last_activity_at` has been silently stale since `deal`
 shipped. This slice adds `customer-worker` (`./bin/worker`, i.e. `python -m app.consumers`) to
 the `crm` profile and to `memory-budget.json`.
+
+**Amended 2026-10-07 — the worker is no longer a container of the `crm` profile.** The consumer
+this section describes now runs as a supervised task inside `customer`'s own API process when
+`RUN_CONSUMERS_IN_API` is on, which is the compose default
+(`infrastructure/edge/compose.prod.yml:94`; `services/customer/app/config.py:17-23`).
+`customer-worker` survives only behind the `split-workers` profile, as the rollback
+(`infrastructure/edge/compose.prod.yml:1449-1454`), and `memory-budget.json` prices `customer` as
+`api_with_worker` (`infrastructure/edge/memory-budget.json:310-312`). The decision to run the
+consumer stands; where it runs has changed.
 
 ## Known limitations (recorded during security review, not fixed here)
 
@@ -172,6 +192,18 @@ the `crm` profile and to `memory-budget.json`.
   removes the company and contact if nothing else references them, would subscribe to that
   event; the idempotent-by-id design means a retried conversion of the same lead reuses them
   rather than duplicating them in the meantime.
+
+  **Amended 2026-10-07 — "idempotent-by-id reuse" is why the cleanup sketched above is unsafe as
+  worded.** The event names the ids customer and deal *returned*, which can be records that already
+  existed and were reused by name or email, so it carries no provenance; and deal's internal convert
+  route treats a soft-deleted deal at the derived id as a successful replay
+  (`services/deal/app/api/internal.py:123-142`, pinned by
+  `services/deal/tests/test_lead_conversion_internal.py:97-121`), so a cleanup followed by a retry
+  could convert a lead into a dead deal. ADR-0038 proposes a different cleanup: soft-delete the
+  orphan deal with an audit row naming the consumer and emit no `stage_changed`, remove only records
+  provably created by the aborted attempt, and run log-only on the first deploy
+  (pending D-1, D-2, D-3). Until the owner answers, nothing consumes the event and nothing is
+  cleaned up.
 - **A deleted record no longer permanently blocks a lead's conversion.** The ids a lead
   converts into are derived from its own id, so a company or contact an earlier attempt created
   and someone then deleted would refuse every later attempt on the same ids. `Lead
@@ -187,6 +219,15 @@ the `crm` profile and to `memory-budget.json`.
   (above) is the hook a future cleanup would subscribe to. A deal-name 409 that still happens
   (someone else already used that exact name) is refused with a specific 422 rather than the
   generic "check the lead's details".
+
+  **Amended 2026-10-07 — the event is not a hook for every earlier generation.**
+  `crm.lead.conversion_aborted` is staged only by `finalize_conversion`'s abort
+  (`services/lead/app/services.py:1149-1163`). `fail_conversion`, which bumps the generation when
+  customer reports a deleted company or contact, stages no event (`:1226-1280`), and a
+  `status_changed` abort leaves the generation alone, because only `owner_changed` bumps it
+  (`:1125-1132`). ADR-0038 proposes bumping the generation on every abort and emitting an event for
+  the deleted-record bump (pending D-4); until then the leftovers of a `fail_conversion` bump have
+  no hook.
 - **Databases that ran an earlier version of this branch's migrations must be recreated.**
   customer's `e230c025337e` and lead's whole migration chain were rewritten in place while the
   branch was unmerged and undeployed; a dev or branch database that applied the earlier versions
@@ -208,3 +249,11 @@ the `crm` profile and to `memory-budget.json`.
   91.1% to 94.4% of the hard threshold. Still under the hard 100% gate
   `tests/infra/test_compose_memory_budget.py` and `preflight.sh` enforce, but tight enough that
   the next CRM addition to this box should measure before assuming there is headroom.
+
+  **Amended 2026-10-07 — these figures predate the memory re-pricing.** Computed with
+  `infrastructure/edge/lib/memory_budget_totals.py` over `infrastructure/edge/memory-budget.json`,
+  the ten sellable profiles now total 3747 MB (97.0% of the 3862 MB reference) and the ten plus
+  `admin` total 3944 MB (102.1%); the three `crm` containers cost 295 MB (the core alone is 1772 MB,
+  core plus `crm` is 2067 MB). The box's accepted ceiling is the owner's setting,
+  `EDGE_BUDGET_ACCEPTED_MB`, and cannot be verified from the repository. Whether it rises or memory
+  is freed is ADR-0038 D-13 (pending D-13).
