@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
 from app.config import settings
-from app.models import CREDIT_GRANT, CreditLedgerEntry
+from app.models import CREDIT_GRANT, CREDIT_REVERSAL, CreditLedgerEntry
 from app.schemas import CreditConsumeIn, CreditGrantIn, CreditReverseIn
 from platform_core.errors import BusinessRuleProblem, NotFoundProblem
 from tests.helpers import service_token_headers
@@ -127,7 +127,10 @@ class TestAPackDrawsDownAcrossInvoices:
             assert await selectors.pack_remaining(session, pack.id, organization_id=org_id) == 0
             assert (
                 await selectors.credit_balance(
-                    session, currency="INR", at=datetime(2026, 9, 1, tzinfo=UTC)
+                    session,
+                    organization_id=org_id,
+                    currency="INR",
+                    at=datetime(2026, 9, 1, tzinfo=UTC),
                 )
                 == 0
             )
@@ -190,12 +193,20 @@ class TestAPackExpiresExactlyAtItsWindowEdge:
 
         async with session.begin():
             mid_term = await selectors.credit_balance(
-                session, currency="INR", at=datetime(2026, 10, 1, tzinfo=UTC)
+                session,
+                organization_id=org_id,
+                currency="INR",
+                at=datetime(2026, 10, 1, tzinfo=UTC),
             )
             last_moment = await selectors.credit_balance(
-                session, currency="INR", at=WINDOW_END - timedelta(microseconds=1)
+                session,
+                organization_id=org_id,
+                currency="INR",
+                at=WINDOW_END - timedelta(microseconds=1),
             )
-            at_the_edge = await selectors.credit_balance(session, currency="INR", at=WINDOW_END)
+            at_the_edge = await selectors.credit_balance(
+                session, organization_id=org_id, currency="INR", at=WINDOW_END
+            )
 
         assert mid_term == PACK_MINOR - 4_500_000
         assert last_moment == PACK_MINOR - 4_500_000, "the window is closed at its upper end only"
@@ -220,7 +231,7 @@ class TestAPackExpiresExactlyAtItsWindowEdge:
 
         async with session.begin():
             long_after = await selectors.credit_balance(
-                session, currency="INR", at=datetime(2030, 1, 1, tzinfo=UTC)
+                session, organization_id=org_id, currency="INR", at=datetime(2030, 1, 1, tzinfo=UTC)
             )
         assert long_after == 0
         assert long_after >= 0, "a lapsed pack must never make the organization owe its own credit"
@@ -261,7 +272,7 @@ class TestAPackExpiresExactlyAtItsWindowEdge:
             )
         async with session.begin():
             entry_balance = await selectors.credit_balance(
-                session, currency="INR", at=datetime.now(UTC)
+                session, organization_id=org_id, currency="INR", at=datetime.now(UTC)
             )
         assert entry_balance == 750_000
 
@@ -413,7 +424,7 @@ class TestTheUpiAutopayCeilingWorkaround:
         async with session.begin():
             remaining = await selectors.pack_remaining(session, pack.id, organization_id=org_id)
             inside_window = await selectors.credit_balance(
-                session, currency="INR", at=datetime(2027, 3, 1, tzinfo=UTC)
+                session, organization_id=org_id, currency="INR", at=datetime(2027, 3, 1, tzinfo=UTC)
             )
         assert monthly * 12 == PACK_MINOR, "the commitment divides exactly; no paisa is stranded"
         assert remaining == 0
@@ -480,3 +491,53 @@ class TestTheLedgerReadsFilterTheirOwnTenant:
                 await selectors.pack_remaining(admin_session, theirs.id, organization_id=org_b)
                 == PACK_MINOR
             )
+
+    async def test_the_balance_and_the_reversal_lookup_filter_their_tenant_too(
+        self, admin_session: AsyncSession, org_id: uuid.UUID, org_b: uuid.UUID
+    ) -> None:
+        mid_window = WINDOW_START + timedelta(days=30)
+        async with admin_session.begin():
+            theirs = CreditLedgerEntry(
+                organization_id=org_b,
+                entry_type=CREDIT_GRANT,
+                amount_minor=PACK_MINOR,
+                currency="INR",
+                reason="Another tenant's grant",
+                valid_from=WINDOW_START,
+            )
+            admin_session.add(theirs)
+
+        async with admin_session.begin():
+            assert (
+                await selectors.credit_balance(
+                    admin_session, currency="INR", at=mid_window, organization_id=org_id
+                )
+                == 0
+            )
+            assert (
+                await selectors.credit_balance(
+                    admin_session, currency="INR", at=mid_window, organization_id=org_b
+                )
+                == PACK_MINOR
+            )
+
+        async with admin_session.begin():
+            admin_session.add(
+                CreditLedgerEntry(
+                    organization_id=org_b,
+                    entry_type=CREDIT_REVERSAL,
+                    amount_minor=-PACK_MINOR,
+                    currency="INR",
+                    reason="Their reversal",
+                    valid_from=WINDOW_START,
+                    reversal_of=theirs.id,
+                )
+            )
+
+        async with admin_session.begin():
+            assert (
+                await selectors.get_reversal_of(admin_session, theirs.id, organization_id=org_id)
+                is None
+            )
+            found = await selectors.get_reversal_of(admin_session, theirs.id, organization_id=org_b)
+            assert found is not None and found.reversal_of == theirs.id

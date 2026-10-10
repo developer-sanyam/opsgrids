@@ -395,7 +395,7 @@ class TestCreditBalanceIsAWindowedSum:
             )
         async with session.begin():
             after_consume = await selectors.credit_balance(
-                session, currency="USD", at=datetime.now(UTC)
+                session, organization_id=org_id, currency="USD", at=datetime.now(UTC)
             )
         assert after_consume == 700, "the consumption is a negative row in the SUM"
 
@@ -409,7 +409,7 @@ class TestCreditBalanceIsAWindowedSum:
             )
         async with session.begin():
             after_reversal = await selectors.credit_balance(
-                session, currency="USD", at=datetime.now(UTC)
+                session, organization_id=org_id, currency="USD", at=datetime.now(UTC)
             )
         assert after_reversal == 1000, "the reversal is another row, restoring the balance"
 
@@ -437,10 +437,10 @@ class TestCreditBalanceIsAWindowedSum:
 
         async with session.begin():
             during = await selectors.credit_balance(
-                session, currency="USD", at=datetime(2026, 3, 1, tzinfo=UTC)
+                session, organization_id=org_id, currency="USD", at=datetime(2026, 3, 1, tzinfo=UTC)
             )
             after = await selectors.credit_balance(
-                session, currency="USD", at=datetime(2026, 9, 1, tzinfo=UTC)
+                session, organization_id=org_id, currency="USD", at=datetime(2026, 9, 1, tzinfo=UTC)
             )
         assert during == 1000, "inside its window the grant counts"
         assert after == 0, "past its window the grant drops out of the SUM on its own"
@@ -485,9 +485,11 @@ class TestReversalNetsToZeroAndHappensOnce:
         assert reversal.valid_until == window_end
 
         async with session.begin():
-            during = await selectors.credit_balance(session, currency="USD", at=now)
+            during = await selectors.credit_balance(
+                session, organization_id=org_id, currency="USD", at=now
+            )
             after = await selectors.credit_balance(
-                session, currency="USD", at=window_end + timedelta(hours=1)
+                session, organization_id=org_id, currency="USD", at=window_end + timedelta(hours=1)
             )
         assert during == 0, "inside the window the pair nets to zero"
         assert after == 0, "past the window BOTH rows drop out — never -1000"
@@ -522,7 +524,9 @@ class TestReversalNetsToZeroAndHappensOnce:
         assert second.id == first.id, "a retry returns the existing reversal, not a new row"
 
         async with session.begin():
-            balance = await selectors.credit_balance(session, currency="USD", at=datetime.now(UTC))
+            balance = await selectors.credit_balance(
+                session, organization_id=org_id, currency="USD", at=datetime.now(UTC)
+            )
             reversals = (
                 await session.execute(
                     select(func.count())
@@ -611,7 +615,9 @@ class TestCrossTenantIsolation:
         async with session.begin():
             ctx = _read_ctx(org_id)
             visible = await selectors.list_invoices(session, ctx)
-            balance = await selectors.credit_balance(session, currency="USD", at=datetime.now(UTC))
+            balance = await selectors.credit_balance(
+                session, organization_id=org_id, currency="USD", at=datetime.now(UTC)
+            )
 
         ids = {inv.id for inv in visible}
         assert my_invoice.id in ids

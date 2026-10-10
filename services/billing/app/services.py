@@ -655,7 +655,9 @@ async def reverse_credit(
     if original.entry_type == CREDIT_REVERSAL:
         raise BusinessRuleProblem("a reversal cannot itself be reversed")
 
-    existing = await selectors.get_reversal_of(session, original.id)
+    existing = await selectors.get_reversal_of(
+        session, original.id, organization_id=payload.organization_id
+    )
     if existing is not None:
         # Idempotent, because the caller's delivery contract is at-least-once: a retried
         # reverse must move the balance once, not once per retry. The partial-unique index

@@ -56,17 +56,18 @@ async def get_invoice(session: AsyncSession, invoice_id: uuid.UUID) -> Invoice |
     ).scalar_one_or_none()
 
 
-async def credit_balance(session: AsyncSession, *, currency: str, at: datetime) -> int:
+async def credit_balance(
+    session: AsyncSession, *, organization_id: uuid.UUID, currency: str, at: datetime
+) -> int:
     """The credit available in `currency` at instant `at`, as a `SUM` over the covering rows.
 
     Balance is derived, never stored (ADR-0004 §3): a grant counts only while
     `valid_from <= at < valid_until` (an open `valid_until` counts forever), so a lapsed grant
-    leaves the balance automatically. The tenant is scoped by row-level security, which is why
-    there is no `organization_id` predicate here — adding one would be redundant, and forgetting
-    it is not a leak.
+    leaves the balance automatically. The explicit tenant predicate is the rule; RLS is the net.
     """
     stmt = (
         select(func.coalesce(func.sum(CreditLedgerEntry.amount_minor), 0))
+        .where(CreditLedgerEntry.organization_id == organization_id)
         .where(CreditLedgerEntry.currency == currency.upper())
         .where(CreditLedgerEntry.valid_from <= at)
         .where(
@@ -120,15 +121,19 @@ async def get_credit_entry(
     ).scalar_one_or_none()
 
 
-async def get_reversal_of(session: AsyncSession, entry_id: uuid.UUID) -> CreditLedgerEntry | None:
-    """The reversal already written against `entry_id`, if any.
+async def get_reversal_of(
+    session: AsyncSession, entry_id: uuid.UUID, *, organization_id: uuid.UUID
+) -> CreditLedgerEntry | None:
+    """The reversal already written against `entry_id` in `organization_id`, if any.
 
     At most one exists — `ix_credit_ledger_org_reversal_of` is partial-unique — so this is
     how `reverse_credit` stays idempotent under at-least-once delivery.
     """
     return (
         await session.execute(
-            select(CreditLedgerEntry).where(CreditLedgerEntry.reversal_of == entry_id)
+            select(CreditLedgerEntry)
+            .where(CreditLedgerEntry.organization_id == organization_id)
+            .where(CreditLedgerEntry.reversal_of == entry_id)
         )
     ).scalar_one_or_none()
 

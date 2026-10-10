@@ -74,7 +74,9 @@ async def credit_balance(
     """Balance is derived, never stored: a `SUM` over the ledger rows whose validity window
     covers this instant. A lapsed grant is already gone from it, with nothing having run."""
     at = datetime.now(UTC)
-    balance = await selectors.credit_balance(session, currency=currency, at=at)
+    balance = await selectors.credit_balance(
+        session, organization_id=ctx.organization_id, currency=currency, at=at
+    )
     return CreditBalanceOut(
         organization_id=ctx.organization_id,
         currency=currency.upper(),
