@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -23,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors
 from app.main import app
-from app.models import AuditLog, Deal, OutboxEvent
+from app.models import Activity, AuditLog, Deal, OutboxEvent
 from platform_core.auth import Principal, get_principal
 from tests.helpers import principal_for
 
@@ -339,6 +340,120 @@ class TestLogActivity:
         deal = await _reload(session, org_id, data["deal_a_id"])
         assert deal.last_activity_at is not None
         assert deal.last_activity_at.isoformat().startswith("2026-09-01T10:30")
+
+    async def test_a_timestamp_without_an_offset_is_taken_as_utc(
+        self, client, session, org_id, data
+    ) -> None:
+        """A client may send `occurred_at` with no offset. It is read as UTC, the way the request
+        model's own future check already reads it, instead of being compared with an aware
+        timestamp, and the event carries the offset its schema promises."""
+        principal = principal_for(
+            org_id, ["crm.pipeline.activity.write:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/deals/activities",
+                json={
+                    "deal_id": str(data["deal_a_id"]),
+                    "type": "note",
+                    "subject": "Naive stamp",
+                    "occurred_at": "2026-09-02T09:15:00",
+                },
+            )
+        assert response.status_code == 201, response.text
+        activity_id = uuid.UUID(response.json()["id"])
+
+        expected = datetime(2026, 9, 2, 9, 15, tzinfo=UTC)
+        async with session.begin():
+            stored = (
+                await session.execute(
+                    select(Activity.occurred_at).where(Activity.id == activity_id)
+                )
+            ).scalar_one()
+            published = (
+                await session.execute(
+                    select(OutboxEvent.payload).where(
+                        OutboxEvent.event_type == "crm.pipeline.activity.logged",
+                        OutboxEvent.aggregate_id == activity_id,
+                    )
+                )
+            ).scalar_one()
+        assert stored == expected
+        stamp = datetime.fromisoformat(published["occurred_at"])
+        assert stamp.utcoffset() == timedelta(0)
+        assert stamp == expected
+
+    async def test_a_timestamp_with_a_non_utc_offset_keeps_its_instant(
+        self, client, session, org_id, data
+    ) -> None:
+        """A client in India sends `+05:30`. The instant is the same one in UTC: stored as that
+        instant, published as that instant (the offset it was sent with is kept, and it is still
+        an offset) and the deal's staleness clock moves to it. Nothing is shifted by five and a
+        half hours."""
+        principal = principal_for(
+            org_id, ["crm.pipeline.activity.write:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/deals/activities",
+                json={
+                    "deal_id": str(data["deal_a_id"]),
+                    "type": "note",
+                    "subject": "Kolkata stamp",
+                    "occurred_at": "2026-09-02T14:45:00+05:30",
+                },
+            )
+        assert response.status_code == 201, response.text
+        activity_id = uuid.UUID(response.json()["id"])
+
+        expected = datetime(2026, 9, 2, 9, 15, tzinfo=UTC)
+        async with session.begin():
+            stored = (
+                await session.execute(
+                    select(Activity.occurred_at).where(Activity.id == activity_id)
+                )
+            ).scalar_one()
+            published = (
+                await session.execute(
+                    select(OutboxEvent.payload).where(
+                        OutboxEvent.event_type == "crm.pipeline.activity.logged",
+                        OutboxEvent.aggregate_id == activity_id,
+                    )
+                )
+            ).scalar_one()
+        assert stored == expected
+        assert datetime.fromisoformat(published["occurred_at"]) == expected
+        assert (await _reload(session, org_id, data["deal_a_id"])).last_activity_at == expected
+
+    async def test_a_timestamp_with_no_offset_that_is_ahead_of_utc_is_refused(
+        self, client, session, org_id, data
+    ) -> None:
+        """No offset means UTC: the request model's reading, and the service's since this task. A
+        client in India that sends its own wall clock for "now" is up to five and a half hours
+        ahead of UTC, so it is refused as a time that has not happened and nothing is stored,
+        instead of being kept as a time that is wrong by the offset."""
+        ahead = datetime.now(UTC) + timedelta(hours=5, minutes=30)
+        principal = principal_for(
+            org_id, ["crm.pipeline.activity.write:ORG"], subject_ref=data["subject_a"]
+        )
+        async with session.begin():
+            before = (
+                await session.execute(select(func.count()).select_from(Activity))
+            ).scalar_one()
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/deals/activities",
+                json={
+                    "deal_id": str(data["deal_a_id"]),
+                    "type": "note",
+                    "subject": "Wall clock in Kolkata",
+                    "occurred_at": ahead.replace(tzinfo=None).isoformat(timespec="seconds"),
+                },
+            )
+        assert response.status_code == 422, response.text
+        async with session.begin():
+            after = (await session.execute(select(func.count()).select_from(Activity))).scalar_one()
+        assert after == before
 
     async def test_a_reader_cannot_log_a_touch(self, client, session, org_id, data) -> None:
         """The required negative-authz case: activity.read reads the timeline, it does not
