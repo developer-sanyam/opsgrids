@@ -19,7 +19,6 @@ import { GoTo, LocationProbe } from "./testProbes";
 
 export const SESSION_TOKEN = "session-access-token";
 export const STEP_UP_TOKEN = "step-up-access-token";
-export const SECOND_STEP_UP_TOKEN = "second-step-up-access-token";
 
 export const STEP_UP = "POST /api/v1/auth/mfa/step-up";
 export const ME = "GET /api/v1/auth/me";
