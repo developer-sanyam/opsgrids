@@ -78,7 +78,9 @@ async def finalize_invoice(
     async with session.begin():
         await _bind(session, payload.organization_id, request)
         invoice = await services.finalize_invoice(session, payload, request=request)
-        fresh = await services.require_invoice(session, invoice.id)
+        fresh = await services.require_invoice(
+            session, invoice.id, organization_id=payload.organization_id
+        )
         return InvoiceOut.model_validate(fresh)
 
 
@@ -196,9 +198,13 @@ async def void_invoice(
 ) -> InvoiceOut:
     async with session.begin():
         await _bind(session, payload.organization_id, request)
-        invoice = await services.require_invoice(session, invoice_id)
+        invoice = await services.require_invoice(
+            session, invoice_id, organization_id=payload.organization_id
+        )
         invoice = await services.void_invoice(session, invoice, payload, request=request)
-        fresh = await services.require_invoice(session, invoice.id)
+        fresh = await services.require_invoice(
+            session, invoice.id, organization_id=payload.organization_id
+        )
         return InvoiceOut.model_validate(fresh)
 
 

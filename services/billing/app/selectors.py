@@ -46,12 +46,17 @@ async def list_invoices(session: AsyncSession, ctx: ScopeContext) -> list[Invoic
     return list((await session.execute(stmt)).scalars().all())
 
 
-async def get_invoice(session: AsyncSession, invoice_id: uuid.UUID) -> Invoice | None:
-    """One invoice with its lines. Row-level security scopes it to the bound tenant, so an id
-    belonging to another organization simply resolves to nothing."""
+async def get_invoice(
+    session: AsyncSession, invoice_id: uuid.UUID, *, organization_id: uuid.UUID
+) -> Invoice | None:
+    """One invoice of `organization_id` with its lines; another organization's id resolves to
+    nothing. The explicit predicate is the rule; RLS is the net."""
     return (
         await session.execute(
-            select(Invoice).options(selectinload(Invoice.lines)).where(Invoice.id == invoice_id)
+            select(Invoice)
+            .options(selectinload(Invoice.lines))
+            .where(Invoice.organization_id == organization_id)
+            .where(Invoice.id == invoice_id)
         )
     ).scalar_one_or_none()
 
@@ -88,8 +93,8 @@ async def pack_remaining(
     Derived exactly like the organization-wide balance and for the same reason (ADR-0004 §3) — a
     "remaining" column on the grant would be a second source of truth that drifts from the ledger
     the first time two invoices draw on the pack at once. The grant is the positive row; each
-    draw-down is a negative row naming it in `drawn_from`; a reversal of either is a further row
-    that is picked up here too, because it carries the same `drawn_from`.
+    draw-down is a negative row naming it in `drawn_from`; a draw's reversal carries the same
+    `drawn_from`, and the grant's own reversal names it in `reversal_of`, so both count here.
 
     Deliberately **not** windowed: this answers "how much of this pack has been spent", which is
     a fact about the pack and not about the clock. Whether the pack still counts toward the
@@ -102,6 +107,7 @@ async def pack_remaining(
             or_(
                 CreditLedgerEntry.id == pack_id,
                 CreditLedgerEntry.drawn_from == pack_id,
+                CreditLedgerEntry.reversal_of == pack_id,
             )
         )
     )

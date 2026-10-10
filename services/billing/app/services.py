@@ -305,7 +305,7 @@ async def record_subscription_invoice(
         )
     await session.flush()
 
-    invoice = await require_invoice(session, invoice_id)
+    invoice = await require_invoice(session, invoice_id, organization_id=organization_id)
     record_audit(
         session,
         AuditLog,
@@ -414,8 +414,10 @@ async def void_subscription_invoice(
     return True, invoice.id
 
 
-async def require_invoice(session: AsyncSession, invoice_id: Any) -> Invoice:
-    invoice = await selectors.get_invoice(session, invoice_id)
+async def require_invoice(
+    session: AsyncSession, invoice_id: Any, *, organization_id: uuid.UUID
+) -> Invoice:
+    invoice = await selectors.get_invoice(session, invoice_id, organization_id=organization_id)
     if invoice is None:
         raise NotFoundProblem("No such invoice")
     return invoice
@@ -534,12 +536,21 @@ async def grant_credit(
     return entry
 
 
+async def _lock_pack(session: AsyncSession, pack_id: Any) -> None:
+    """Serialise everything that moves one pack's remainder — draws and the grant's reversal —
+    until this transaction ends."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+        {"k": f"credit_pack:{pack_id}"},
+    )
+
+
 async def _resolve_pack(
     session: AsyncSession, payload: CreditConsumeIn, pack_id: Any
 ) -> CreditLedgerEntry:
     """The grant a draw-down names, checked before a paisa of it is spent.
 
-    Five refusals, and each of them is a way a prepaid pack goes wrong quietly rather than
+    Six refusals, and each of them is a way a prepaid pack goes wrong quietly rather than
     loudly (docs/commerce-packaging.md):
 
     * **Not this tenant's.** The lookup filters on the organization (and RLS backs it), so another
@@ -550,6 +561,7 @@ async def _resolve_pack(
       pack against a dollar invoice is not a conversion, it is a mistake.
     * **Lapsed.** Past its `valid_until` the pack no longer counts toward any balance, so a draw
       against it would net to zero and *look* like it had paid an invoice it did not pay.
+    * **Reversed.** A revoked grant has nothing left to spend, whatever was drawn before.
     * **Overdrawn.** The draw may not exceed what is left, computed as a `SUM` over the pack and
       everything already drawn from it. Without this a pack can be spent twice over and the
       organization's balance simply goes negative.
@@ -559,10 +571,7 @@ async def _resolve_pack(
     same `SUM` and both pass. (`FOR UPDATE` on the grant is not an option — the ledger is
     append-only and its role holds no UPDATE, which `FOR UPDATE` requires.)
     """
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
-        {"k": f"credit_pack:{pack_id}"},
-    )
+    await _lock_pack(session, pack_id)
     pack = await selectors.get_credit_entry(
         session, pack_id, organization_id=payload.organization_id
     )
@@ -581,6 +590,11 @@ async def _resolve_pack(
             f"this pack lapsed at {pack.valid_until.astimezone(UTC).isoformat()} "
             "and can no longer be drawn down"
         )
+    if (
+        await selectors.get_reversal_of(session, pack.id, organization_id=payload.organization_id)
+        is not None
+    ):
+        raise BusinessRuleProblem(f"pack {pack.id} has been reversed and can no longer be drawn")
 
     remaining = await selectors.pack_remaining(
         session, pack.id, organization_id=payload.organization_id
@@ -663,6 +677,9 @@ async def reverse_credit(
         raise NotFoundProblem("No such credit ledger entry to reverse")
     if original.entry_type == CREDIT_REVERSAL:
         raise BusinessRuleProblem("a reversal cannot itself be reversed")
+    if original.entry_type == CREDIT_GRANT:
+        # A grant may be a pack: queue behind any draw on it, and make a later draw see this.
+        await _lock_pack(session, original.id)
 
     existing = await selectors.get_reversal_of(
         session, original.id, organization_id=payload.organization_id
