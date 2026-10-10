@@ -29,6 +29,7 @@ from fastapi import FastAPI
 from platform_core import cache
 from platform_core.config import ServiceSettings
 from platform_core.gateway import GatewayPolicy, Route, RouteTable, _normalize_path, build_gateway
+from platform_core.internal_auth import verify_gateway_token
 
 pytestmark = pytest.mark.integration
 
@@ -184,11 +185,14 @@ async def test_a_request_under_the_public_prefix_reaches_upstream_anonymously(
     status, _headers = await _raw_request(app, "GET", "/api/v1/engage/unsubscribe/real-token-abc")
     assert status == 200
     assert upstream.calls[-1]["path"] == "/api/v1/engage/unsubscribe/real-token-abc"
-    # No identity header — the public branch never asks for a token, so it never has one to
-    # vouch for. Only the public branch's own headers travel.
+    # No identity header — the public branch never asks for a token, so it has no identity to
+    # vouch for. Only the public branch's own headers travel, under a hop token that binds the
+    # visitor's address and names no user and no organization.
     forwarded = upstream.calls[-1]["headers"]
-    for spoofable in ("x-user-id", "x-org-id", "x-internal-token", "x-perms"):
+    for spoofable in ("x-user-id", "x-org-id", "x-perms"):
         assert spoofable not in forwarded
+    hop = verify_gateway_token(_Settings(), forwarded["x-internal-token"])
+    assert "uid" not in hop and "org" not in hop
 
 
 async def test_repeated_public_requests_are_rate_limited_by_address(

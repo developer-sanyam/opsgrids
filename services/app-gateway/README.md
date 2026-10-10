@@ -68,10 +68,16 @@ caller-supplied value rather than appending to it:
 
 `x-user-id` · `x-org-id` · `x-membership-id` · `x-session-id` · `x-audience` · `x-roles` ·
 `x-entitlements` · `x-locations` · `x-amr` · `x-permission-version` · `x-perms` ·
-`x-request-id` · `x-correlation-id` · `x-internal-token`
+`x-client-ip` · `x-request-id` · `x-correlation-id` · `x-internal-token`
 
 `x-org-slug` is added on public paths only, parsed from `Host`. Only the gateway parses
 `Host`; a service that trusted it directly would be trusting a client-supplied value.
+
+`x-internal-token` is a 60-second hop token that names the forwarded `uid`/`org` and binds a
+SHA-256 of every identity header above plus `x-client-ip` (`FORWARDED_HEADERS`), so a captured
+token cannot be replayed with an escalated `x-perms` or `x-audience`. Public paths carry one
+too, naming nobody, so the visitor's address (`x-client-ip`, resolved from the trusted proxy's
+`X-Forwarded-For`) is believable for an anonymous request such as a password reset.
 
 ## Permissions are resolved here, not carried
 
