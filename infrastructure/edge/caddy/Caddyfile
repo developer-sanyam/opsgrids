@@ -89,6 +89,19 @@
 	}
 }
 
+# Baseline security headers for every *.opsgrids.com app site (admin.opsgrids.com sets its own,
+# with a CSP). No includeSubDomains — the merchant store hosts must stay free of HSTS. No
+# script-src CSP yet: each SPA's index.html still carries an inline script it would block.
+(platform-headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Content-Security-Policy "frame-ancestors 'none'"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}
+
 # ---------------------------------------------------------------------------- uploaded merchant images
 #
 # Public bucket objects (ADR-0009) are served from EDGE_HOST alone — the one host
@@ -192,6 +205,7 @@ http:// {
 # `make edge-web APP=dashboard` to `${EDGE_WEB_ROOT}/dashboard/current`.
 https://app.opsgrids.com {
 	import edge
+	import platform-headers
 
 	handle {
 		root * /srv/web/dashboard/current
@@ -284,6 +298,7 @@ https://admin.opsgrids.com {
 # and the gateway's entitlement gate is what decides whether this organisation may use it.
 https://ops.opsgrids.com {
 	import edge
+	import platform-headers
 
 	handle {
 		root * /srv/web/operations/current
@@ -307,6 +322,7 @@ https://ops.opsgrids.com {
 # here — no new container, no new process, just files Caddy already knows how to serve.
 https://worker.opsgrids.com {
 	import edge
+	import platform-headers
 
 	handle {
 		root * /srv/web/worker/current
@@ -326,6 +342,7 @@ https://worker.opsgrids.com {
 # Published by `make edge-web APP=hrms`. Same shape as Inventory above.
 https://people.opsgrids.com {
 	import edge
+	import platform-headers
 
 	handle {
 		root * /srv/web/hrms/current
@@ -345,6 +362,7 @@ https://people.opsgrids.com {
 # Published by `make edge-web APP=crm`. Same shape as Inventory above.
 https://revenue.opsgrids.com {
 	import edge
+	import platform-headers
 
 	handle {
 		root * /srv/web/crm/current
@@ -364,6 +382,7 @@ https://revenue.opsgrids.com {
 # Published by `make edge-web APP=pulseboard`. Same shape as Inventory above.
 https://pulse.opsgrids.com {
 	import edge
+	import platform-headers
 
 	handle {
 		root * /srv/web/pulseboard/current
@@ -383,6 +402,7 @@ https://pulse.opsgrids.com {
 # Published by `make edge-web APP=projects`. Same shape as Inventory above.
 https://projects.opsgrids.com {
 	import edge
+	import platform-headers
 
 	handle {
 		root * /srv/web/projects/current
@@ -402,6 +422,7 @@ https://projects.opsgrids.com {
 # Published by `make edge-web APP=support`. Same shape as Inventory above.
 https://support.opsgrids.com {
 	import edge
+	import platform-headers
 
 	handle {
 		root * /srv/web/support/current
@@ -421,6 +442,7 @@ https://support.opsgrids.com {
 # Published by `make edge-web APP=marketing`. Same shape as Inventory above.
 https://marketing.opsgrids.com {
 	import edge
+	import platform-headers
 
 	handle {
 		root * /srv/web/marketing/current
@@ -440,6 +462,7 @@ https://marketing.opsgrids.com {
 # Published by `make edge-web APP=finance`. Same shape as Inventory above.
 https://finance.opsgrids.com {
 	import edge
+	import platform-headers
 
 	handle {
 		root * /srv/web/finance/current
@@ -459,6 +482,7 @@ https://finance.opsgrids.com {
 # Published by `make edge-web APP=itsm`. Same shape as Inventory above.
 https://it.opsgrids.com {
 	import edge
+	import platform-headers
 
 	handle {
 		root * /srv/web/itsm/current
@@ -478,6 +502,7 @@ https://it.opsgrids.com {
 # Published by `make edge-web APP=storefront`. Same shape as Inventory above.
 https://store.opsgrids.com {
 	import edge
+	import platform-headers
 
 	handle {
 		root * /srv/web/storefront/current
@@ -498,6 +523,7 @@ https://store.opsgrids.com {
 # TLS_PLATFORM_HOSTS, which is what lets preflight pass and storefront's tls-authorize admit it.
 https://engage.opsgrids.com {
 	import edge
+	import platform-headers
 
 	handle {
 		root * /srv/web/engage/current
