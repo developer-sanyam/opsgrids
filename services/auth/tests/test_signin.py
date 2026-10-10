@@ -127,6 +127,34 @@ class TestCredentials:
         assert credential is not None
         assert credential.locked_until is not None and credential.locked_until > datetime.now(UTC)
 
+    async def test_parallel_guesses_at_a_passwordless_account_are_all_invalid_and_counted(
+        self, session, cfg, pair, directory
+    ) -> None:
+        """A member with no credential row yet (SSO-only, or invited and never set a password).
+        Parallel sign-ins each found no row and each INSERTed one; all but the first hit the
+        primary key and raised a 500, which an unknown email never does, so the account showed."""
+        import asyncio
+
+        await session.commit()
+        others = [
+            AsyncSession(session.bind, expire_on_commit=False)
+            for _ in range(cfg.max_failed_attempts)
+        ]
+        try:
+            results = await asyncio.gather(
+                # pragma: allowlist nextline secret
+                *(_login(s, cfg, pair, directory, password="wrong") for s in others),
+                return_exceptions=True,
+            )
+        finally:
+            for s in others:
+                await s.close()
+        assert all(isinstance(r, UnauthorizedProblem) for r in results), results
+
+        credential = await session.get(Credential, USER, populate_existing=True)
+        assert credential is not None
+        assert credential.locked_until is not None and credential.locked_until > datetime.now(UTC)
+
     async def test_the_lock_expiring_is_a_real_unlock_one_typo_does_not_relock(
         self, session, cfg, pair, directory, registered
     ) -> None:

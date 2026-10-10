@@ -230,12 +230,17 @@ async def _verify_credentials(
         raise invalid
 
     # Locked, as `change_password` does: parallel guesses each count, and a sign-in queues behind
-    # a concurrent reset instead of verifying the old password and outliving it.
+    # a concurrent reset instead of verifying the old password and outliving it. The insert gives
+    # a member with no password yet a row to queue on; a plain INSERT would race a parallel guess
+    # into a primary-key 500 that an unknown email never produces.
+    await session.execute(
+        pg_insert(Credential).values(user_id=user.user_id).on_conflict_do_nothing()
+    )
     credential = await session.get(
         Credential, user.user_id, with_for_update=True, populate_existing=True
     )
-    if credential is None:
-        credential = await get_or_create_credential(session, user.user_id)
+    if credential is None:  # unreachable: the insert above, or a sibling's, made the row
+        raise invalid
 
     now = datetime.now(UTC)
     locked = bool(credential.locked_until and credential.locked_until > now)
