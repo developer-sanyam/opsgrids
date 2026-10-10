@@ -356,7 +356,7 @@ async def test_the_pixel_records_an_open_and_scanners_are_kept_but_marked_machin
     assert bot.status_code == 200
     apple = await client.get(
         f"{TRACK}/o/{token}",
-        headers={"User-Agent": DESKTOP, "X-Forwarded-For": "17.58.4.4"},
+        headers={"User-Agent": DESKTOP, **_via_gateway("17.58.4.4")},
     )
     assert apple.status_code == 200
 
@@ -367,6 +367,39 @@ async def test_the_pixel_records_an_open_and_scanners_are_kept_but_marked_machin
         ("mobile", False),
     ]
     assert all(e.kind == "open" and e.link_id is None for e in events)
+
+
+async def test_a_spoofed_forwarded_for_does_not_make_an_open_an_apple_proxy_fetch(
+    client, session, org_id, worker_engine
+):
+    """X-Forwarded-For is the caller's to write; only the address the gateway vouches for (its
+    hop-bound X-Client-Ip) can place an open in Apple's proxy range."""
+    _, sent, _ = await _run(session, org_id)
+    await _age_sends(session, org_id)
+    token = _tokens(sent[0].html or "", "o")[0]
+
+    spoofed = await client.get(
+        f"{TRACK}/o/{token}", headers={"User-Agent": DESKTOP, "X-Forwarded-For": "17.58.4.4"}
+    )
+    assert spoofed.status_code == 200
+
+    (event,) = await _events(session, org_id)
+    assert (event.user_agent_class, event.is_machine) == ("desktop", False)
+
+
+def _via_gateway(address: str) -> dict[str, str]:
+    """An anonymous request as the gateway forwards it: the visitor's address under a hop."""
+    from platform_core.internal_auth import (
+        GATEWAY_AUDIENCE,
+        forwarded_headers_digest,
+        mint_service_token,
+    )
+
+    fwd = forwarded_headers_digest({"x-client-ip": address})
+    token = mint_service_token(
+        settings(), audience=GATEWAY_AUDIENCE, caller="gateway", claims={"fwd": fwd}
+    )
+    return {"X-Internal-Token": token, "X-Client-Ip": address}
 
 
 async def test_an_open_seconds_after_sending_is_a_machine(client, session, org_id, worker_engine):
