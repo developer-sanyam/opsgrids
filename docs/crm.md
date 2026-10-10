@@ -252,28 +252,32 @@ token's `org` claim names the organization in the path (`:110-121`).
 | `POST /leads:convert` (`services/deal/app/api/internal.py:94`) | deal | `lead` | yes | lead (A4) |
 
 The first two are the only CRM routes with neither check: any validly signed service token reaches a
-contact's sealed number through them. Hardening both is registered for R3.1 and must follow the
-organization claim that R1.2a is planned to add to notification's tokens (registry `J13`).
+contact's sealed number through them. Hardening both is registered for R3.1. The organization claim
+it needs is already on notification's tokens (R1.2a, registry `J13`), so the check can be turned on
+without locking notification out.
 
 **Every place a CRM service, finance or notification calls another service** (found with
 `grep "_internal_url\|_service_url" services/{customer,deal,lead,finance,notification}/app`,
-leaving out `config.py`; `deal` builds none). R1.2a is planned to add a test that registers these
-nine calls and probes each against the real callee.
+leaving out `config.py`; `deal` builds none). `tests/infra/test_internal_client_paths.py` registers
+these nine calls, makes each with the real client, sends the recorded request to the real callee app
+and decodes the service token it carried.
 
 | # | Caller | Calls | Client code | Verdict |
 |---|---|---|---|---|
-| A1 | customer's 360 | deal `GET /api/v1/deals`, forwarding the caller's identity | `services/customer/app/c1_360.py:166-170` builds `{deal_internal_url}/deals` | **path defect: 404** (inference from the route table, §11); fix planned for R1.2a |
-| A2 | customer's 360 | notification `GET /internal/v1/contacts/{contact_id}/messaging-summary` | `services/customer/app/c1_360.py:200-203`; route `services/notification/app/api/c1_internal.py:81-86` | correct |
+| A1 | customer's 360 | deal `GET /api/v1/deals`, forwarding the caller's identity | `services/customer/app/c1_360.py:172-176` builds `{deal_internal_url}{DEAL_LIST_PATH}`, where `DEAL_LIST_PATH` is `/api/v1/deals` | was a path defect (it asked for `/deals`, which deal answers 404); fixed in R1.2a, and the 360's own test and the guard now check the path against deal's real route table |
+| A2 | customer's 360 | notification `GET /internal/v1/contacts/{contact_id}/messaging-summary` | `services/customer/app/c1_360.py:206-209`; route `services/notification/app/api/c1_internal.py:81-86` | correct |
 | A3 | lead | customer `POST …/leads:convert` | `services/lead/app/clients.py:104-105` | correct |
 | A4 | lead | deal `POST …/leads:convert` | `services/lead/app/clients.py:184-185` | correct |
 | A5 | lead | customer `POST …/owners:validate` | `services/lead/app/clients.py:249-250` | correct |
 | A6 | finance | customer `GET …/contacts/{contact_id}` | `services/finance/app/clients.py:66-67` | path correct; **unwired**: finance has no `CUSTOMER_INTERNAL_URL` in compose, so it falls to `http://localhost:8130` (`services/finance/app/config.py:52`); latent, because nothing calls it (`services/operations/app/orders/services.py:871-892` returns `None`) |
-| A7 | notification | customer `GET …/contacts/{contact_id}/messaging-target` | `services/notification/app/targets.py:73-76`; its token carries no `org` claim (`:78-80`) | correct; claim planned for R1.2a |
-| A8 | notification | customer `POST …/contacts:resolve` | `services/notification/app/contacts.py:74-77`; no `org` claim (`:79-81`) | correct; claim planned for R1.2a |
-| A9 | notification | account `GET …/memberships/{membership_id}` | `services/notification/app/memberships.py:48-51`; no `org` claim (`:53-55`); route `services/account/app/api/internal.py:304-346` | path correct; **unwired** (inference): compose sets no `ACCOUNT_INTERNAL_URL` (it sets `ACCOUNT_SERVICE_URL`, `infrastructure/edge/compose.prod.yml:103`) and the default is `http://localhost:8111` (`services/notification/app/config.py:91`), and `membership_is_active` answers `False` on a connection error (`services/notification/app/memberships.py:62-64`), so in production an Engage conversation assignment would be refused; claim planned for R1.2a |
+| A7 | notification | customer `GET …/contacts/{contact_id}/messaging-target` | `services/notification/app/targets.py:73-76`; its token carries the `org` claim (R1.2a) | correct |
+| A8 | notification | customer `POST …/contacts:resolve` | `services/notification/app/contacts.py:74-77`; its token carries the `org` claim (R1.2a) | correct |
+| A9 | notification | account `GET …/memberships/{membership_id}` | `services/notification/app/memberships.py:48-51`; its token carries the `org` claim (R1.2a); route `services/account/app/api/internal.py:304-346` | path correct; **unwired** (inference): compose sets no `ACCOUNT_INTERNAL_URL` (it sets `ACCOUNT_SERVICE_URL`, `infrastructure/edge/compose.prod.yml:103`) and the default is `http://localhost:8111` (`services/notification/app/config.py:91`), and `membership_is_active` answers `False` on a connection error (`services/notification/app/memberships.py:68-70`), so in production an Engage conversation assignment would be refused; wiring the URL is outside this programme (registry `L3`) |
 
 Seventeen further files in nine other services build internal URLs from the same settings; nobody
-has audited them (the list is the baseline that R1.2a's guard test is planned to record).
+has audited them. They are `UNAUDITED_BASELINE` in `tests/infra/test_internal_client_paths.py`: the
+list may only shrink, by registering a file's calls, and the next client in any service has to be
+registered or named there on purpose.
 
 ## 8. Events
 
@@ -479,7 +483,6 @@ not rewritten, because a reconcile creates missing roles and widens grants and n
 | Limitation | Evidence | Fixed by |
 |---|---|---|
 | OWN scope is empty for a tenant without HRMS: OWN compares `owner_id` with an HR employee id that such a tenant never has | §4; `libs/platform-core/src/platform_core/auth.py:337-341,372-381` | proposed in ADR-0038 (pending D-7, D-8, D-9): R2.2, R2.6, R2.7 |
-| The Customer 360's `crm` section is `null` in production: its deal leg calls `/deals`, which deal serves only under `/api/v1` (inference from the route table; not observed on a running stack) | `services/customer/app/c1_360.py:166-170`; the one test that checks the path asserts the wrong value, and its fake deal service answers by port whatever the path (`services/customer/tests/test_c1_customer360.py:154`, `:68-74`) | planned: R1.2a |
 | An aborted lead conversion leaves an orphaned company, contact and deal; nothing consumes `crm.lead.conversion_aborted`, and the generation bump has no event for a deleted record | ADR-0017 Known limitations; `services/lead/app/services.py:1125-1132,1226-1280` | proposed in ADR-0038 (pending D-1, D-2, D-3, D-4): R2.1, R2.4 |
 | `customer.contacts.email` is plaintext (a lead's email is sealed, so conversion narrows the protection) | `services/customer/app/models.py:171`; ADR-0017 Known limitations | no release scheduled; optional sealing proposed as R2.9 Part C (pending D-26) |
 | A lead with a phone and no email converts to a company with no contact: the person and the number are dropped | `services/customer/app/services.py:1182-1185`, `services/lead/app/clients.py:103` | proposed in ADR-0038 (pending D-14): R3.1 |
@@ -504,9 +507,11 @@ Change the code and this page in the same commit, and run the check that names t
   `make openapi` (it regenerates `libs/contracts/permissions/crm.json`), deploy the enforcing
   service, then reconcile with `make edge-reconcile PRODUCTS=crm` (the dry run first, then
   `APPLY=1`), admin roles first and the UI last (ADR-0007). Update §9.
-- **An internal client.** Register its calls in `tests/infra/test_internal_client_paths.py` (R1.2a is
-  planned to add that guard; until it exists, extend the table in §7 by hand), and put the `org`
-  claim on every token for a path under `/internal/v1/organizations/{org}/`.
+- **An internal client.** Register its calls in `tests/infra/test_internal_client_paths.py` in the
+  same commit and extend the table in §7. The guard fails when a service file builds an internal URL
+  that no registered call or baseline entry names, sends each registered request to the real callee
+  app, and decodes the token it carried: put the `org` claim on every token for a path under
+  `/internal/v1/organizations/{org}/`.
 - **A route prefix or a port.** Add the row to both `services/app-gateway/routes.json` and
   `infrastructure/edge/routes.prod.json`, and update §2 and §6.
 - **A decision.** The owner edits the State cell of its row in ADR-0038. The same commit replaces
