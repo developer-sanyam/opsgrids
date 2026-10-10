@@ -906,13 +906,21 @@ async def _forward(
         response_headers = {
             k: v for k, v in response_headers.items() if not _is_cross_origin_response_header(k)
         }
+    # `items()` comma-joins repeated headers, which turns two cookies into one malformed one; each
+    # Set-Cookie must reach the browser as its own header line.
+    # (A webhook reply already lost its Set-Cookie above, so the pop finds none and adds none.)
+    cookies = (
+        upstream.headers.get_list("set-cookie") if response_headers.pop("set-cookie", None) else []
+    )
     body = await upstream.aread()
-    return Response(
+    response = Response(
         content=body,
         status_code=upstream.status_code,
         headers=response_headers,
         background=BackgroundTask(upstream.aclose),
     )
+    response.raw_headers.extend((b"set-cookie", c.encode("latin-1")) for c in cookies)
+    return response
 
 
 async def _send_riding_out_restarts(
