@@ -1,11 +1,11 @@
 """The CRM pipeline permission catalogue and role templates, for the `crm` product.
 
-This service is one of two processes in the `crm` product — customer-service is the
-other — and it declares its own slice of that product's vocabulary (the `crm.pipeline.*`
-permissions) rather than importing the book's catalogue across a service boundary the
-platform exists to keep clean. Registering the `crm` product here is independent of, and
-consistent with, customer-service registering it there: each process owns the catalogue
-for the permissions it serves, exactly as the HRMS services do.
+This service is one of three processes in the `crm` product — customer-service and
+lead-service are the others — and it declares its own slice of that product's vocabulary
+(the `crm.pipeline.*` permissions) rather than importing theirs across a service boundary
+the platform exists to keep clean. Registering the `crm` product here is independent of, and
+consistent with, the other two registering it: each process owns the catalogue for the
+permissions it serves, exactly as the HRMS services do.
 
 The structure mirrors account- and employee-service's catalogue, and for the same reason
 it is shaped the way it is: in the system this platform replaces, an admin role was

@@ -34,7 +34,7 @@ employee 12
 eventbridge 1
 finance 112
 itsm 10
-lead 1
+lead 8
 marketing 9
 metering 4
 notification 11
