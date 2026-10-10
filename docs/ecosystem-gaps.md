@@ -15,9 +15,13 @@ Look at *which* twelve and the real shape appears. Every one of them is commerce
 genuinely wired end to end — an invoice finalizes, payment reacts, subscription reacts to the
 payment, console folds all of it into a projection.
 
-**No product event is consumed by anything.** `hrms.*`, `crm.*`, `support.*`, `itsm.*`,
-`operations.*`, `projects.*`, `pulseboard.*` and `marketing.*` — every one of them is published
-carefully, drained faithfully, and delivered to nobody.
+**This paragraph predates the consumers, and the stale-docs sweep (R35,
+[decisions.md](decisions.md)) owns re-checking it for the other products. For the CRM it is no
+longer true:** customer consumes `crm.pipeline.activity.logged`, and notification binds the five
+`crm.*` keys it lists as subscribable (nine after R1.2b); `deal` and `lead` consume nothing
+([crm.md](crm.md) §8). The original claim was that no product event was consumed by anything:
+`hrms.*`, `support.*`, `itsm.*`, `operations.*`, `projects.*`, `pulseboard.*` and `marketing.*`
+were published carefully, drained faithfully, and delivered to nobody.
 
 That is what the sales list could not honestly claim. "Automation" is not a feature built once
 per product — it is what a consumer does with an event somebody else published. Commerce proved
@@ -32,7 +36,7 @@ the machinery works. The products were never connected to it.
 | Billing & inventory | Built. `finance` (11k lines, GST/GSTR-1/e-way), `billing`, `payment`, `operations`. | Unchanged |
 | Website development | Agency work, outside this repo. | Out of scope here |
 | Website security | Agency work. The platform's own security (RLS, MFA, rotation) is real and separate. | Out of scope here |
-| CRM & lead management | **Partial.** `customer` and `deal` are real; `lead` and `pipeline` were scaffolds. | Planned — §2 |
+| CRM & lead management | **Partial.** `customer` and `deal` are real; `lead` and `pipeline` were scaffolds. | Built — §2 |
 | Sales & marketing automation | **Partial.** `marketing` is real; the automation half needs consumers. | Unblocked by §1 |
 | Custom software development | Agency work. | Out of scope here |
 | Analytics & reporting | **Partial.** Analytics exists inside `marketing` and `projects`; there is no cross-product surface. | Planned — §3 |
@@ -74,17 +78,21 @@ I/O inside the transaction that reacts to an event makes a slow provider into a 
 one protocol. Tests run against a recording fake and never open a socket; local development uses
 MailHog, which `make infra` already starts.
 
-## 2. Lead and pipeline (planned)
+## 2. Lead and pipeline (done)
 
-`lead` is a scaffold. `pipeline` is also a scaffold — and should be **deleted rather than built**:
-`deal` already owns `crm.pipeline.*` and publishes `crm.pipeline.deal.created` and
-`crm.pipeline.deal.stage_changed`. Two services claiming one bounded context is how a second
-source of truth is born. The plan is one service, `lead`, and a removal.
+`lead` is built, as the third process of the `crm` product beside `customer` and `deal`, and
+`pipeline` was deleted rather than built
+([ADR-0017](adr/0017-crm-lead-service-and-pipeline-scaffold-removal.md)): `deal` already owns
+`crm.pipeline.*` and publishes `crm.pipeline.deal.created` and `crm.pipeline.deal.stage_changed`.
+Two services claiming one bounded context is how a second source of truth is born, so there is one
+service, `lead`, and a removal. [crm.md](crm.md) describes what exists.
 
-`lead` needs: capture (web form, imported list, manual), assignment with a round-robin or
-owner-scoped rule, qualification status, and conversion — which emits `crm.lead.converted`
-carrying the created customer and deal ids so `customer` and `deal` can fold it without `lead`
-knowing either exists.
+`lead` stores a lead that a signed-in user creates by hand or through the app's import (each tagged
+with a source of `form`, `import` or `manual`; there is no public web-form or webhook capture yet,
+which the programme plans as R3.7b, [crm.md](crm.md) section 11), assigns it with a round-robin
+rule, tracks a qualification status, and converts a qualified lead into a company, a contact and a
+deal by calling `customer` and `deal` over their internal API; it publishes `crm.lead.converted`
+with the three ids.
 
 The reason it is worth building rather than folding into `deal`: a lead is not a small deal. It
 has no amount, no close date and no committed customer record, and most of them are discarded.
@@ -104,16 +112,18 @@ reads — trades an irreversible architectural guarantee for a quarter of saved 
 
 ## 4. The remaining scaffolds
 
-`document`, `scheduler`, `quotation`, `activity`, `config` and `eventbridge` are all still the
-generated template. None of them is load-bearing for a sales claim, so none is urgent, but two
-are worth naming:
+`quotation`, `config` and `eventbridge` are still the generated template. `activity` was deleted
+([ADR-0017](adr/0017-crm-lead-service-and-pipeline-scaffold-removal.md)), and `scheduler` and
+`document` are built ([ADR-0015](adr/0015-scheduler-and-not-before-delivery.md),
+[ADR-0009](adr/0009-uploaded-images-and-object-storage.md)). None of the scaffolds is load-bearing
+for a sales claim, so none is urgent, but two of the built services are worth naming:
 
 - `scheduler` is what turns "send a reminder three days before the invoice is due" into a thing
   the platform can do. Notification rules react to events; a reminder reacts to *time passing*,
-  which no event describes. The notification service is deliberately built without a scheduler
-  and gains recurring sends the day one exists.
-- `document` is the attachment story for both email and WhatsApp. Until it exists, notifications
-  carry text and links, not files.
+  which no event describes. It is built; whether notification's recurring sends use it is not
+  recorded here.
+- `document` is the attachment story for both email and WhatsApp. It is built; what notifications
+  attach is not recorded here.
 
 ## What this is not allowed to cost
 

@@ -7,7 +7,6 @@ How four developers work on this platform without holding it in their heads.
 | [`git-workflow.md`](git-workflow.md) | every developer, before their first card |
 | [`never-do.md`](never-do.md) | every developer — print it |
 | [`cards-dev-a-lead.md`](cards-dev-a-lead.md) | Dev A — `services/lead` (cards A1-A3, A5; card A4 superseded, see [ADR-0017](../adr/0017-crm-lead-service-and-pipeline-scaffold-removal.md)) |
-| [`cards-dev-b-pipeline.md`](cards-dev-b-pipeline.md) | Historical — `services/pipeline` was deleted rather than built, [ADR-0017](../adr/0017-crm-lead-service-and-pipeline-scaffold-removal.md) |
 | [`cards-dev-c-hrms.md`](cards-dev-c-hrms.md) | Dev C — `frontend/product-hrms` |
 | [`cards-dev-d-crm.md`](cards-dev-d-crm.md) | Dev D — `frontend/product-crm`, `frontend/opsgrids-ui` |
 

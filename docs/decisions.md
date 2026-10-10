@@ -6,9 +6,12 @@ themselves are the authority — this page exists so you can find the right one 
 **Every question an ADR left open is decided or recorded as waiting on demand** in
 [adr/open-questions-register.md](adr/open-questions-register.md). That page links each question
 to the ADR section that decides it and to the backlog item that builds it. Numbers are allocated in
-order and never reused. The next free number is **0038** (0027 is allocated to the inventory Phase 9
-work, which has not merged). This table was last brought up to date at 0019, apart from 0028–0033
-and 0035–0037 below; [`adr/`](adr/) is the complete list.
+order and never reused. The next free number is **0039** (0027 is allocated to the inventory Phase 9
+work, which has not merged; 0040 is allocated to the faster-CI work, claimed on another ref; the CRM
+programme expects 0039, 0041, 0042 and 0043 for its follow-up ADRs, row I2 of
+[the interface registry](superpowers/specs/2026-10-07-crm-overhaul-interface-registry.md)). This
+table was last brought up to date at 0019, apart from 0028–0033 and 0035–0038 below;
+[`adr/`](adr/) is the complete list.
 
 | ADR | Title | Header status | What exists today |
 |---|---|---|---|
@@ -41,6 +44,7 @@ and 0035–0037 below; [`adr/`](adr/) is the complete list.
 | [0035](adr/0035-list-prices-2026-10-06.md) | List prices 2026-10-06: INR 30,000 a month, INR 3,00,000 a year (the year ten months' price), for every product | Accepted 2026-10-06 (owner decision; both numbers confirmed by the owner, the INR 25,000-a-month reading rejected) | Built on `feat/list-prices-30k-month-3l-year`, not deployed: catalog migration `b88a833020dc` publishes a yearly and a monthly version of each of the eleven public flat plans (refusing on an open public draft); the customer subscribe write refuses a superseded version; console counts a yearly price as a twelfth in MRR; publishing refuses a version superseded on arrival; existing subscriptions keep their pinned price until staff switch them; monthly-to-yearly is not possible yet (a cancelled subscription cannot be replaced) |
 | [0036](adr/0036-removing-test-organisations.md) | Removing test organisations: an owner-run tool, never an in-app delete | Accepted 2026-10-06 (owner request) | Built on `feat/purge-test-orgs-tool`, not merged or deployed: `tools/purge_test_orgs.py` lists every organisation with a test-data hint and deletes only the ids the owner names, one transaction each, after `--apply`, a typed count, a backup attestation and (on a live database) its own flag; run by the owner on the box (RUNBOOK "Removing test organisations"), never by CI, a deploy or an agent |
 | [0037](adr/0037-stop-events-and-the-hand-activation-gate.md) | Stop events and the hand-activation gate | Proposed 2026-10-06 (for owner sign-off) | Built on `fix/subscription-stop-events-and-activation-gate`, not merged or deployed. No migration, no event change: a stop that finds a lapsed pending change applies it without announcing it, so product and console can no longer drop the stop; `POST /products/activations` (and a live subscription's `DELETE`) answers 409 `subscription_managed` for a product a subscription has fed, in any status. Read-only audit query for orgs that already hand-activated: RUNBOOK |
+| [0038](adr/0038-crm-programme-decisions.md) | CRM programme decisions: the owner's answers to the overhaul's forty-one decisions, and the costing of folding `lead` into `customer` | Proposed 2026-10-07 (for owner sign-off) | Documents only (R1.1 of the CRM overhaul): no code, migration, event or setting changes. Every decision is open with a recommended default until the owner edits its State cell. Amends ADR-0017, ADR-0008 and ADR-0020 by dated notes; `docs/crm.md` is the CRM's single reference |
 
 Several header status lines (0002, 0004, 0006, 0007, 0009, 0010, 0012) were written before the
 work they describe shipped. The "What exists today" column is the current fact. Correcting the
