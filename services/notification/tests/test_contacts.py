@@ -11,11 +11,14 @@ collapsing to `None` the way an earlier version of this module did.
 from __future__ import annotations
 
 import httpx
+import jwt
 import pytest
 
 from app import contacts
 from app.config import Settings
 from app.contacts import ContactResolution
+
+ORG_ID = "11111111-1111-4111-8111-111111111111"
 
 
 def _settings() -> Settings:
@@ -32,9 +35,7 @@ async def _resolve(handler, monkeypatch: pytest.MonkeyPatch) -> ContactResolutio
         return original(transport=mock, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(httpx, "AsyncClient", patched)
-    return await contacts.resolve_contact_by_phone(
-        _settings(), "11111111-1111-4111-8111-111111111111", "+917976603446"
-    )
+    return await contacts.resolve_contact_by_phone(_settings(), ORG_ID, "+917976603446")
 
 
 async def test_a_matching_number_resolves_to_a_contact_id(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -62,6 +63,25 @@ async def test_the_request_carries_the_number_in_the_body_not_the_url(
     assert seen["path"].endswith("/contacts:resolve")  # type: ignore[union-attr]
     assert "917976603446" not in str(seen["query"])
     assert "917976603446" in str(seen["body"])
+
+
+async def test_the_token_names_the_organization(monkeypatch: pytest.MonkeyPatch) -> None:
+    """See `test_targets.py`: the claim goes on the token first, and customer checks it later."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["token"] = request.headers.get("X-Internal-Token")
+        return httpx.Response(200, json={"contact_id": None})
+
+    await _resolve(handler, monkeypatch)
+    claims = jwt.decode(
+        str(seen["token"]),
+        _settings().internal_service_token.get_secret_value(),
+        algorithms=["HS256"],
+        audience="customer",
+    )
+    assert claims["iss"] == "notification"
+    assert claims.get("org") == ORG_ID
 
 
 async def test_a_stranger_is_a_definite_answer_of_nobody(monkeypatch: pytest.MonkeyPatch) -> None:

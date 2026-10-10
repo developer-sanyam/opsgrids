@@ -9,10 +9,13 @@ contact who cannot be reached or silently drops mail during an outage.
 from __future__ import annotations
 
 import httpx
+import jwt
 import pytest
 
 from app import targets
 from app.config import Settings
+
+ORG_ID = "11111111-1111-4111-8111-111111111111"
 
 
 def _settings() -> Settings:
@@ -29,9 +32,7 @@ async def _resolve(handler, monkeypatch: pytest.MonkeyPatch) -> str | None:
         return original(transport=mock, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(httpx, "AsyncClient", patched)
-    return await targets.resolve_contact_target(
-        _settings(), "11111111-1111-4111-8111-111111111111", "c0ffee", "whatsapp"
-    )
+    return await targets.resolve_contact_target(_settings(), ORG_ID, "c0ffee", "whatsapp")
 
 
 # --------------------------------------------------------------------- the happy path
@@ -63,6 +64,27 @@ async def test_the_request_carries_a_token_and_the_channel(
     assert seen["channel"] == "whatsapp"
     assert "/internal/v1/organizations/" in str(seen["path"])
     assert "/messaging-target" in str(seen["path"])
+
+
+async def test_the_token_names_the_organization(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The `org` claim says which organization the call is about. Customer does not check it on
+    this route yet; it has to be on the token before it can be checked without locking this
+    caller out."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["token"] = request.headers.get("X-Internal-Token")
+        return httpx.Response(200, json={"phone": "+917976603446"})
+
+    await _resolve(handler, monkeypatch)
+    claims = jwt.decode(
+        str(seen["token"]),
+        _settings().internal_service_token.get_secret_value(),
+        algorithms=["HS256"],
+        audience="customer",
+    )
+    assert claims["iss"] == "notification"
+    assert claims.get("org") == ORG_ID
 
 
 # --------------------------------------------------------------------- permanent: skip

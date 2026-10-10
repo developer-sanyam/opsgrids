@@ -49,9 +49,15 @@ async def membership_is_active(
         f"{settings.account_internal_url}/internal/v1/organizations/{organization_id}"
         f"/memberships/{membership_id}"
     )
+    # The `org` claim names the organization this call is about. Account checks only the calling
+    # service on this route today; the claim goes on the token first so that checking it later
+    # cannot lock this caller out.
     headers = {
         "X-Internal-Token": mint_service_token(
-            settings, audience=ACCOUNT_AUDIENCE, caller=settings.service_name
+            settings,
+            audience=ACCOUNT_AUDIENCE,
+            caller=settings.service_name,
+            claims={"org": organization_id},
         )
     }
 

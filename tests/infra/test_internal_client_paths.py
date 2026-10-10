@@ -359,11 +359,7 @@ UNAUDITED_BASELINE: frozenset[str] = frozenset(
 #: deletes its entry in the same commit as the fix. `strict=True` is the ratchet: once the fix
 #: lands the test passes, the xfail becomes a failure, and the entry has to go.
 KNOWN_UNREACHABLE: dict[str, str] = {}
-KNOWN_UNCLAIMED: dict[str, str] = {
-    "A7": "notification mints its token to customer without an org claim (Task R1.2.3)",
-    "A8": "notification mints its token to customer without an org claim (Task R1.2.3)",
-    "A9": "notification mints its token to account without an org claim (Task R1.2.3)",
-}
+KNOWN_UNCLAIMED: dict[str, str] = {}
 
 
 def _params(calls: list[Call] | tuple[Call, ...], known: dict[str, str]) -> list[Any]:
