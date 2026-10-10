@@ -29,7 +29,7 @@ from app.main import app
 from app.models import ExternalIdentity, PlatformOAuthProvider, Session
 from app.provisioning import FakeProvisioningClient
 from platform_core import pii
-from platform_core.errors import NotFoundProblem, ValidationProblem
+from platform_core.errors import ForbiddenProblem, NotFoundProblem, ValidationProblem
 from tests.conftest import (
     ORG_A,
     ORG_B,
@@ -1731,3 +1731,41 @@ class TestOauthSocialCallbackRoute:
             "signup_federated",
             {"email": "new-via-route@example.com", "slug": "new-co"},
         ) in provisioning.calls
+
+
+class TestOauthSocialRespectsEnforceSso:
+    async def test_a_social_sign_in_is_refused_for_an_organization_that_enforces_sso(
+        self,
+        session: AsyncSession,
+        cfg: Settings,
+        pair: KeyPair,
+        store: oidc.StateStore,
+        directory: FakeDirectory,
+        entitlements: FakeEntitlements,
+        idp: FakeIdp,
+    ) -> None:
+        """A Google identity proves a person, not the organization's own provider: an
+        organization that turned password sign-in off has not admitted Google either."""
+        from tests.test_sso import _install_config
+
+        await _install_config(session, cfg, enforce_sso=True)
+        await _seed_google_provider(session, cfg)
+        state = await store.issue(_pending_google_request(nonce="n1"), ttl_seconds=600)
+        idp.next_id_token = idp.issue_id_token(
+            nonce="n1", email="sam@example.com", issuer=GOOGLE_ISSUER, audience=GOOGLE_CLIENT_ID
+        )
+
+        with pytest.raises(ForbiddenProblem, match="single sign-on"):
+            await services.oauth_social_callback(
+                session,
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                provisioning=FakeProvisioningClient(),
+                entitlements=entitlements,
+                idp=idp,
+                store=store,
+                provider="google",
+                code="irrelevant-fake-code",
+                state=state,
+            )

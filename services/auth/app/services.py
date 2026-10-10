@@ -364,8 +364,15 @@ async def issue_for(
     function every path that mints a token actually calls, so it is also the one place a
     *future* caller cannot forget to check it: minting for the wrong organization from a
     federated session is refused here even if whatever called this never thought to ask.
+
+    **`enforce_sso` is enforced here for the same reason**: sign-in, organization selection, a
+    second factor, social sign-in, switching and refresh all reach this, so none of them can
+    mint for an organization that turned password sign-in off unless the session came through
+    that organization's own provider (`_sso_enforced_against`).
     """
     _assert_organization_unpinned_or_matches(auth_session, membership.organization_id)
+    if await _sso_enforced_against(session, auth_session, membership.organization_id):
+        raise SsoRequiredProblem(SSO_REQUIRED_MESSAGE)
     granted = await entitlements.for_organization(membership.organization_id)
     auth_session.active_org_id = membership.organization_id
 
@@ -871,6 +878,21 @@ async def rotate_refresh(
         await session.commit()
         raise UnauthorizedProblem("Your access to that organization has ended.")
 
+    if await _sso_enforced_against(session, auth_session, membership.organization_id):
+        # The organization turned password sign-in off after this session was minted. Ended,
+        # not merely refused, so it cannot go on to mint through `switch_organization` either;
+        # committed because the exception below rolls the route's transaction back.
+        await _revoke_session(session, auth_session.id, reason="sso_enforced")
+        log.warning(
+            "auth.refresh_sso_enforced",
+            session_id=str(auth_session.id),
+            organization_id=str(membership.organization_id),
+        )
+        await session.commit()
+        raise UnauthorizedProblem(
+            "This organization now requires single sign-on. Please sign in again."
+        )
+
     if grace_hit:
         # Every check above just re-ran against `stored`'s own row — nothing left to write:
         # the rotation that actually spent this token already recorded `rotated_at`, and this
@@ -1065,6 +1087,49 @@ def _assert_organization_unpinned_or_matches(
             "This session was started through single sign-on and is bound to one "
             "organization. Sign in again to reach a different one."
         )
+
+
+class SsoRequiredProblem(ForbiddenProblem):
+    """The organization turned password sign-in off (`OrgIdpConfig.enforce_sso`) and this
+    session was not asserted by its own identity provider. Its own slug so a sign-in page can
+    send the person to single sign-on instead of showing a dead end."""
+
+    problem_type = "sso-required"
+    title = "Single sign-on required"
+
+
+SSO_REQUIRED_MESSAGE = (
+    "This organization requires single sign-on. Sign in through your organization's "
+    "identity provider."
+)
+
+
+async def _sso_enforced_against(
+    session: AsyncSession, auth_session: Session, organization_id: uuid.UUID
+) -> bool:
+    """Whether `organization_id` accepts only its own SSO and `auth_session` is not that.
+
+    Only an *enabled* configuration enforces: turning the provider off leaves no SSO path to
+    require, and refusing passwords as well would lock the whole organization out. A session
+    pinned to this organization (`idp == "oidc:<organization_id>"`) is exactly what it asks
+    for; everything else — password, social `oauth:<provider>`, SSO for another organization —
+    is refused. Not cached: the switch must bite on the very next mint.
+    """
+    if _federated_organization_pin(auth_session) == organization_id:
+        return False
+    # `org_idp_configs` is RLS-protected; binding to the organization this transaction is
+    # about to mint for is what every caller would bind to anyway.
+    await set_tenant(session, organization_id)
+    found = await session.scalar(
+        select(OrgIdpConfig.id)
+        .where(
+            OrgIdpConfig.organization_id == organization_id,
+            OrgIdpConfig.enabled.is_(True),
+            OrgIdpConfig.enforce_sso.is_(True),
+        )
+        .limit(1)
+    )
+    return found is not None
 
 
 def _pinned_sso_cache_key(organization_id: uuid.UUID, sso_domain: str) -> str:
@@ -2645,6 +2710,9 @@ async def step_up(
             "a one-time code. Sign in with your password and two-factor authentication to "
             "reveal protected details."
         )
+    # Mints a token without `issue_for`, so the organization's `enforce_sso` is checked here.
+    if await _sso_enforced_against(session, auth_session, principal.organization_id):
+        raise SsoRequiredProblem(SSO_REQUIRED_MESSAGE)
 
     credential = await session.get(Credential, principal.sub, with_for_update=True)
     if (
