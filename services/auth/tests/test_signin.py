@@ -93,9 +93,12 @@ class TestCredentials:
                 # pragma: allowlist nextline secret
                 await _login(session, cfg, pair, directory, password="wrong")
 
-        # The correct password is now refused too — that is the point of a lockout.
-        with pytest.raises(ForbiddenProblem, match="temporarily locked"):
+        # The correct password is now refused too — that is the point of a lockout — with the
+        # same generic 401 a wrong password gets, not a "temporarily locked" that confirms the
+        # account exists (mirrors `_verify_staff`, MINOR 11 of the 2026-09-24 review).
+        with pytest.raises(UnauthorizedProblem) as locked:
             await _login(session, cfg, pair, directory)
+        assert str(locked.value) == services.INVALID
 
     async def test_the_lock_expiring_is_a_real_unlock_one_typo_does_not_relock(
         self, session, cfg, pair, directory, registered
@@ -125,17 +128,57 @@ class TestCredentials:
         outcome = await _login(session, cfg, pair, directory)
         assert outcome.status == "complete"
 
-    async def test_the_lock_is_checked_before_the_password(
+    async def test_a_locked_account_answers_the_same_401_whatever_the_password(
         self, session, cfg, pair, directory, registered
     ) -> None:
-        """Otherwise a locked account is still a working password oracle."""
+        """A locked account is neither a password oracle (right and wrong passwords get the same
+        answer) nor an enumeration oracle (that answer is the one an unknown email gets)."""
         credential = await session.get(Credential, USER)
         assert credential is not None
         credential.locked_until = datetime.now(UTC) + timedelta(minutes=5)
+        await session.commit()
 
-        with pytest.raises(ForbiddenProblem, match="temporarily locked"):
+        with pytest.raises(UnauthorizedProblem) as wrong:
             # pragma: allowlist nextline secret
             await _login(session, cfg, pair, directory, password="definitely-wrong")
+        with pytest.raises(UnauthorizedProblem) as right:
+            await _login(session, cfg, pair, directory)
+        with pytest.raises(UnauthorizedProblem) as unknown:
+            await _login(session, cfg, pair, FakeDirectory([]))
+        assert str(wrong.value) == str(right.value) == str(unknown.value) == services.INVALID
+
+        # Already locked: nothing more to count, and the lock is not lifted or extended.
+        credential = await session.get(Credential, USER)
+        assert credential is not None
+        assert credential.failed_attempts == 0
+
+    async def test_locked_and_deactivated_accounts_still_pay_the_hash(
+        self, session, cfg, pair, directory, registered, monkeypatch
+    ) -> None:
+        """Skipping the Argon2 comparison for a locked or deactivated account would make its
+        answer measurably faster than a wrong password's — a timing oracle for the same fact."""
+        calls: list[object] = []
+        real = security.verify_password
+
+        def counting(stored: str | None, raw: str) -> bool:
+            calls.append(stored)
+            return real(stored, raw)
+
+        monkeypatch.setattr(security, "verify_password", counting)
+
+        credential = await session.get(Credential, USER)
+        assert credential is not None
+        credential.locked_until = datetime.now(UTC) + timedelta(minutes=5)
+        await session.commit()
+        with pytest.raises(UnauthorizedProblem):
+            await _login(session, cfg, pair, directory)
+        assert len(calls) == 1 and calls[0] is not None
+
+        credential.locked_until = None
+        await session.commit()
+        with pytest.raises(UnauthorizedProblem):
+            await _login(session, cfg, pair, _deactivated_directory())
+        assert len(calls) == 2 and calls[1] is not None
 
     async def test_a_successful_sign_in_clears_the_failure_count(
         self, session, cfg, pair, directory, registered
@@ -149,25 +192,47 @@ class TestCredentials:
         assert credential is not None
         assert credential.failed_attempts == 0
 
-    async def test_a_deactivated_account_cannot_sign_in(
+    async def test_a_deactivated_account_cannot_sign_in_and_is_not_named(
         self, session, cfg, pair, registered
     ) -> None:
-        from tests.conftest import user_in_one_org
-
-        user = user_in_one_org()
-        deactivated = FakeDirectory(
-            [
-                type(user)(
-                    user_id=user.user_id,
-                    email=user.email,
-                    full_name=user.full_name,
-                    is_active=False,
-                    memberships=user.memberships,
-                )
-            ]
-        )
-        with pytest.raises(ForbiddenProblem, match="deactivated"):
+        """Refused with the generic 401 — even with the right password — so the form cannot be
+        used to learn that an address belongs to a deactivated account."""
+        deactivated = _deactivated_directory()
+        with pytest.raises(UnauthorizedProblem) as right:
             await _login(session, cfg, pair, deactivated)
+        with pytest.raises(UnauthorizedProblem) as wrong:
+            # pragma: allowlist nextline secret
+            await _login(session, cfg, pair, deactivated, password="not-the-password")
+        assert str(right.value) == str(wrong.value) == services.INVALID
+
+    async def test_wrong_passwords_against_a_deactivated_account_still_count(
+        self, session, cfg, pair, registered
+    ) -> None:
+        """Lockout counting is unchanged by the generic answer: a wrong password is counted
+        whether or not the account is active, exactly as `_verify_staff` does."""
+        with pytest.raises(UnauthorizedProblem):
+            # pragma: allowlist nextline secret
+            await _login(session, cfg, pair, _deactivated_directory(), password="wrong")
+        credential = await session.get(Credential, USER)
+        assert credential is not None
+        assert credential.failed_attempts == 1
+
+
+def _deactivated_directory() -> FakeDirectory:
+    from tests.conftest import user_in_one_org
+
+    user = user_in_one_org()
+    return FakeDirectory(
+        [
+            type(user)(
+                user_id=user.user_id,
+                email=user.email,
+                full_name=user.full_name,
+                is_active=False,
+                memberships=user.memberships,
+            )
+        ]
+    )
 
 
 class TestOrganizationResolution:

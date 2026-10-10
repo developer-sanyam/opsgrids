@@ -175,8 +175,9 @@ async def set_password(
 # --------------------------------------------------------------------- sign-in
 
 
-#: One message for a locked password, shared by sign-in and the re-authentication that account
-#: security changes (enrolling a second factor) ask for, so the two can never drift apart.
+#: One message for a locked password, shared by the signed-in re-authentications (changing the
+#: password, enrolling a second factor) so they can never drift apart. Anonymous sign-in never
+#: shows it: there a lock answers the generic `INVALID`, so it cannot confirm an account exists.
 PASSWORD_LOCKED_MESSAGE = (
     "This account is temporarily locked after several failed attempts. "
     "Try again shortly, or reset the password."
@@ -211,7 +212,13 @@ def _register_password_failure(credential: Credential, cfg: Settings) -> bool:
 async def _verify_credentials(
     session: AsyncSession, cfg: Settings, directory: Directory, email: str, password: str
 ) -> tuple[DirectoryUser, Credential]:
-    """Check an email and password, or raise the same error whichever part was wrong."""
+    """Check an email and password, or raise the same error whichever part was wrong.
+
+    Mirrors `_verify_staff` (MINOR 11 of the 2026-09-24 review): unknown, wrong password, locked
+    and deactivated all get the one `INVALID` 401, and the Argon2 comparison runs on every path,
+    so neither the answer nor its timing tells an anonymous caller an account exists or is in a
+    special state. A locked account's answer ignores the password, so it is no password oracle.
+    """
     invalid = UnauthorizedProblem(INVALID)
 
     user = await directory.find_by_email(email)
@@ -223,22 +230,25 @@ async def _verify_credentials(
 
     credential = await get_or_create_credential(session, user.user_id)
 
-    # Lockout is checked *before* the password, so hammering a locked account cannot be
-    # used to test candidate passwords.
     now = datetime.now(UTC)
-    if credential.locked_until and credential.locked_until > now:
-        raise ForbiddenProblem(PASSWORD_LOCKED_MESSAGE)
+    locked = bool(credential.locked_until and credential.locked_until > now)
+    password_ok = security.verify_password(credential.password_hash, password)
 
-    if not user.is_active:
-        raise ForbiddenProblem("This account has been deactivated")
+    if locked:
+        # Already locked: nothing to count, and the same answer whatever `password_ok` is.
+        raise invalid
 
-    if not security.verify_password(credential.password_hash, password):
+    if not password_ok:
         _register_password_failure(credential, cfg)
         # Committed *before* raising. Staging it in the caller's transaction meant the
         # rollback that accompanies a failed sign-in also discarded the attempt — so the
         # counter never grew and the lockout never fired. Rate limiting has to outlive
         # the request it is rate limiting.
         await session.commit()
+        raise invalid
+
+    # Password correct. Only now is a deactivated account refused — after the same Argon2 cost.
+    if not user.is_active:
         raise invalid
 
     # Raising the cost factor propagates as people sign in — the only moment the
