@@ -203,6 +203,7 @@ def _production(*, allow_test_keys: bool) -> Settings:
         environment="production",
         internal_service_token=SecretStr("a" * 48),
         pii_encryption_key=SecretStr("b" * 48),
+        razorpay_webhook_secret=SecretStr("c" * 48),
         payment_allow_test_keys=allow_test_keys,
         payment_wire="live" if allow_test_keys else "stub",
         razorpay_key_id=_RZP_TEST_ID,

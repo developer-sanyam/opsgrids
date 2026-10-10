@@ -223,6 +223,17 @@ class Settings(ServiceSettings):
         return f"{self.app_base_url.rstrip('/')}/api/v1"
 
     @model_validator(mode="after")
+    def _webhook_secret_is_real_on_a_real_box(self) -> Settings:
+        """Empty env vars fall back to the committed `dev-only-` default, which would let anyone
+        who has read the repo sign a Razorpay webhook. Refused outside development. No length
+        rule: the value is whatever was typed into Razorpay's dashboard."""
+        if self.environment in ("production", "staging", "uat") and (
+            self.razorpay_webhook_secret.get_secret_value().startswith(("dev-only-", "ci-only-"))
+        ):
+            raise ValueError(f"razorpay_webhook_secret must be a real secret in {self.environment}")
+        return self
+
+    @model_validator(mode="after")
     def _call_timeout_covers_the_wire_budget(self) -> Settings:
         """The overall call timeout must cover what the worst live adapter declares it can spend
         (every request timing out in turn): a smaller number abandons calls that were within their
