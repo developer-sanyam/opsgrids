@@ -801,6 +801,42 @@ class TestPasswords:
         )
         assert len(sent) == services.PASSWORD_RESETS_PER_HOUR
 
+    async def test_a_new_password_voids_every_other_outstanding_reset_link(
+        self, session, cfg, directory, registered, redis
+    ) -> None:
+        """Someone with brief mailbox access requests a link; the owner resets anyway. The
+        intruder's link must die with the old password, not live out its 30 minutes."""
+        from app.models import OutboxEvent
+        from platform_core.errors import NotFoundProblem
+
+        for _ in range(2):
+            await services.request_password_reset(
+                session, cfg=cfg, directory=directory, email="sam@example.com"
+            )
+        first, second = [
+            r.payload["token"]
+            for r in (
+                await session.execute(
+                    select(OutboxEvent)
+                    .where(OutboxEvent.event_type == services.EVT_PASSWORD_RESET_REQUESTED)
+                    .order_by(OutboxEvent.created_at)
+                )
+            ).scalars()
+        ]
+        await services.confirm_password_reset(
+            session,
+            cfg=cfg,
+            raw_token=first,
+            new_password="fresh-start-9",  # pragma: allowlist secret
+        )
+        with pytest.raises(NotFoundProblem, match="not valid"):
+            await services.confirm_password_reset(
+                session,
+                cfg=cfg,
+                raw_token=second,
+                new_password="intruder-9",  # pragma: allowlist secret
+            )
+
     async def test_a_reset_token_works_once(
         self, session, cfg, directory, registered, redis
     ) -> None:

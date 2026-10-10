@@ -163,6 +163,12 @@ async def set_password(
     credential.must_change_password = must_change
     credential.failed_attempts = 0
     credential.locked_until = None
+    # A reset link was issued against the old password; it must not outlive it.
+    await session.execute(
+        update(PasswordResetToken)
+        .where(PasswordResetToken.user_id == user_id, PasswordResetToken.used_at.is_(None))
+        .values(used_at=datetime.now(UTC))
+    )
     return credential
 
 
@@ -1355,7 +1361,11 @@ async def confirm_password_reset(
     session: AsyncSession, *, cfg: Settings, raw_token: str, new_password: str
 ) -> None:
     invalid = NotFoundProblem("That reset link is not valid")
-    stmt = select(PasswordResetToken).where(PasswordResetToken.token_hash == _hash_token(raw_token))
+    stmt = (
+        select(PasswordResetToken)
+        .where(PasswordResetToken.token_hash == _hash_token(raw_token))
+        .with_for_update()  # two concurrent uses of one link must not both pass the check
+    )
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None or row.used_at is not None or row.expires_at <= datetime.now(UTC):
         raise invalid
