@@ -358,9 +358,7 @@ UNAUDITED_BASELINE: frozenset[str] = frozenset(
 #: Defects this guard found on the base commit, each fixed by a named task of the plan, which
 #: deletes its entry in the same commit as the fix. `strict=True` is the ratchet: once the fix
 #: lands the test passes, the xfail becomes a failure, and the entry has to go.
-KNOWN_UNREACHABLE: dict[str, str] = {
-    "A1": "customer asks deal for /deals; deal serves /api/v1/deals (Task R1.2.2)",
-}
+KNOWN_UNREACHABLE: dict[str, str] = {}
 KNOWN_UNCLAIMED: dict[str, str] = {
     "A7": "notification mints its token to customer without an org claim (Task R1.2.3)",
     "A8": "notification mints its token to customer without an org claim (Task R1.2.3)",
