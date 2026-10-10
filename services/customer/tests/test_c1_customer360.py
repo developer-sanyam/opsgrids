@@ -53,7 +53,7 @@ class RealDealRoutes:
 
     def __init__(self) -> None:
         self.document: dict[str, Any] = json.loads(DEAL_OPENAPI.read_text(encoding="utf-8"))
-        self._routes: list[tuple[re.Pattern[str], frozenset[str]]] = []
+        self._routes: list[tuple[re.Pattern[str], str, frozenset[str]]] = []
         for template, operations in self.document["paths"].items():
             segments = [
                 "[^/]+" if segment.startswith("{") else re.escape(segment)
@@ -62,26 +62,46 @@ class RealDealRoutes:
             self._routes.append(
                 (
                     re.compile("^" + "/".join(segments) + "$"),
+                    template,
                     frozenset(method.upper() for method in operations if method in HTTP_METHODS),
                 )
             )
 
-    def serves(self, method: str, path: str) -> bool:
-        return any(
-            pattern.match(path) is not None and method.upper() in methods
-            for pattern, methods in self._routes
-        )
-
-    def query_parameters(self, method: str, template: str) -> set[str]:
-        operation = self.document["paths"][template][method.lower()]
-        return {p["name"] for p in operation.get("parameters", []) if p["in"] == "query"}
-
-    def query_parameter(self, method: str, template: str, name: str) -> dict[str, Any]:
-        """One query parameter as the document describes it, its `schema` and bounds included."""
-        operation = self.document["paths"][template][method.lower()]
+    def _template(self, method: str, path: str) -> str | None:
+        """The document's path key that a concrete request path fills, for a method it declares."""
         return next(
-            p for p in operation.get("parameters", []) if p["in"] == "query" and p["name"] == name
+            (
+                template
+                for pattern, template, methods in self._routes
+                if pattern.match(path) is not None and method.upper() in methods
+            ),
+            None,
         )
+
+    def serves(self, method: str, path: str) -> bool:
+        return self._template(method, path) is not None
+
+    def operation(self, method: str, path: str) -> dict[str, Any]:
+        """What the document declares for `method` on this concrete request `path`."""
+        template = self._template(method, path)
+        assert template is not None, f"deal serves no {method} {path}"
+        return self.document["paths"][template][method.lower()]
+
+    def query_parameters(self, method: str, path: str) -> dict[str, dict[str, Any]]:
+        """Each query parameter the route declares, by name, as the document describes it (its
+        `schema` carries the bounds)."""
+        parameters = self.operation(method, path).get("parameters", [])
+        return {p["name"]: p for p in parameters if p["in"] == "query"}
+
+    def listed_item(self, method: str, path: str) -> dict[str, Any]:
+        """The schema of one element of the page the route answers 200 with, found by following
+        the route's own response (`$ref` to the page, then the page's `items`), never by name."""
+        response = self.operation(method, path)["responses"]["200"]["content"]["application/json"]
+        page = self._schema(response["schema"])
+        return self._schema(page["properties"]["items"]["items"])
+
+    def _schema(self, ref: dict[str, Any]) -> dict[str, Any]:
+        return self.document["components"]["schemas"][ref["$ref"].rsplit("/", 1)[-1]]
 
 
 DEAL_ROUTES = RealDealRoutes()
@@ -264,6 +284,26 @@ class TestAggregation:
         assert "crm" not in body["unavailable"]
 
 
+async def _sent_to_deal() -> httpx.Request:
+    """The one request `fetch_crm` sends, caught at the HTTP boundary and not read back from the
+    constants it is built from: a renamed parameter or a changed verb is only visible here."""
+    seen: list[httpx.Request] = []
+
+    def record(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"items": []})
+
+    org = uuid.uuid4()
+    principal = principal_for(org, ["crm.pipeline.deal.read:ORG"], entitlements=["crm"])
+    caller = c1_360.CallerContext(
+        organization_id=org, user_id=principal.sub, principal=principal, forward_headers={}
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(record)) as http:
+        await c1_360.fetch_crm(http, settings(), caller, uuid.uuid4())
+    (request,) = seen
+    return request
+
+
 class TestDealLegPath:
     """The deal leg asks for the path deal really serves. These fail on a mount mistake the old
     fake could not see: it answered by port, whatever the path."""
@@ -277,34 +317,49 @@ class TestDealLegPath:
         assert "crm" not in body["unavailable"]
         assert body["crm"] == {"stage": "negotiation", "open_opportunities": 1, "hot": True}
 
-    def test_the_fake_would_have_refused_the_old_path(self) -> None:
-        """Proof the fake is not vacuous: it is the real table, so `/deals` is a 404 in it."""
-        assert not DEAL_ROUTES.serves("GET", "/deals")
-        assert DEAL_ROUTES.serves("GET", "/api/v1/deals")
+    async def test_the_fake_answers_404_for_a_path_deal_does_not_route(self) -> None:
+        """Proof the fake is not vacuous, and a test of the fake itself rather than of the table
+        it reads: without its 404 branch it answers by port, which is how the 360 asked for
+        `/deals` for as long as it did."""
+        upstream = Fake()
+        old = await upstream(httpx.Request("GET", "http://localhost:8131/deals"))
+        assert old.status_code == 404
+        mounted = await upstream(httpx.Request("GET", "http://localhost:8131/api/v1/deals"))
+        assert mounted.status_code == 200
 
-    def test_the_query_parameters_the_leg_sends_are_declared_by_the_route(self) -> None:
-        declared = DEAL_ROUTES.query_parameters("GET", "/api/v1/deals")
-        assert {"company_id", "size"} <= declared
+    async def test_the_leg_reads_a_route_deal_serves(self) -> None:
+        request = await _sent_to_deal()
+        assert request.method == "GET"  # POST on the same path creates a deal
+        assert DEAL_ROUTES.serves(request.method, request.url.path)
 
-    def test_the_page_size_the_leg_asks_for_is_within_the_bound_the_route_declares(self) -> None:
+    async def test_every_query_parameter_the_leg_sends_is_declared_by_the_route(self) -> None:
+        """FastAPI ignores a parameter a route does not declare and answers its default page, so
+        a renamed `size` changes the answer without failing any call."""
+        request = await _sent_to_deal()
+        declared = DEAL_ROUTES.query_parameters(request.method, request.url.path)
+        assert set(request.url.params) <= set(declared)
+
+    async def test_the_page_size_the_leg_sends_is_within_the_bound_the_route_declares(self) -> None:
         """A declared parameter is not enough. Deal refuses a `size` above its maximum with a 422,
         and a 422 reads exactly like the 404 above: the section goes `null`, one log line says why
         and the page looks as it did before the fix. The bound is a literal in each service
         (`PageQuery`, `libs/platform-core/src/platform_core/pagination.py:33`, and
         `_DEAL_PAGE_SIZE`), so only the committed document can say whether they still agree."""
-        size = DEAL_ROUTES.query_parameter("GET", "/api/v1/deals", "size")["schema"]
-        assert size["minimum"] <= c1_360._DEAL_PAGE_SIZE <= size["maximum"]
+        request = await _sent_to_deal()
+        size = DEAL_ROUTES.query_parameters(request.method, request.url.path)["size"]["schema"]
+        assert size["minimum"] <= int(request.url.params["size"]) <= size["maximum"]
 
-    def test_the_fields_the_leg_reads_are_always_sent_by_the_route(self) -> None:
+    async def test_the_fields_the_leg_reads_are_always_sent_by_the_route(self) -> None:
         """The leg parses `stage`, `probability` and `created_at` from every item
         (`c1_360._DealRow`), and one item without any of them fails the whole page: the section
         reads `null` for a reason no fake that returns a hand-written item can show. In the
-        committed `DealOut`, which is what the route sends, each field must be required and
-        never null."""
-        deal_out = DEAL_ROUTES.document["components"]["schemas"]["DealOut"]
+        committed schema of the item the route sends (followed from its own response, so the
+        route and the schema cannot drift apart), each field must be required and never null."""
+        request = await _sent_to_deal()
+        item = DEAL_ROUTES.listed_item(request.method, request.url.path)
         for field in c1_360._DealRow.model_fields:
-            assert field in deal_out["required"], field
-            assert "null" not in json.dumps(deal_out["properties"][field]), field
+            assert field in item["required"], field
+            assert "null" not in json.dumps(item["properties"][field]), field
 
 
 class TestOwnWithoutSubjectRef:
