@@ -2011,9 +2011,11 @@ class TestOverHttp:
         assert refused.status_code == 401, refused.text
         assert cfg.refresh_cookie_name not in refused.cookies
 
-    async def test_the_right_cookie_signs_in_once_and_clears_the_binder(
+    async def test_the_right_cookie_signs_in_once_and_sets_only_the_refresh_cookie(
         self, client: AsyncClient, cfg, idp, redis, configured
     ) -> None:
+        """The binder is left to its TTL rather than deleted: a sibling flow in the same browser
+        still needs it, and one Set-Cookie is all a successful callback sends."""
         body = await self._start(client, idp)
         binder = client.cookies.get(SSO_BINDER_COOKIE)
 
@@ -2021,12 +2023,9 @@ class TestOverHttp:
             "/api/v1/auth/sso/callback", params={"code": "abc", "state": body["state"]}
         )
         assert done.status_code == 200, done.text
-        assert cfg.refresh_cookie_name in done.cookies
-        assert any(
-            h.lower().startswith(SSO_BINDER_COOKIE + '=""') or "max-age=0" in h.lower()
-            for h in done.headers.get_list("set-cookie")
-            if h.startswith(SSO_BINDER_COOKIE + "=")
-        )
+        set_cookies = done.headers.get_list("set-cookie")
+        assert len(set_cookies) == 1
+        assert set_cookies[0].startswith(cfg.refresh_cookie_name + "=")
 
         # Still single-use: the same state with the same (re-presented) binder is dead.
         client.cookies.set(SSO_BINDER_COOKIE, binder)
@@ -2034,6 +2033,21 @@ class TestOverHttp:
             "/api/v1/auth/sso/callback", params={"code": "abc", "state": body["state"]}
         )
         assert replay.status_code == 401, replay.text
+
+    async def test_a_second_start_in_the_same_browser_does_not_break_the_first(
+        self, client: AsyncClient, cfg, idp, redis, configured
+    ) -> None:
+        """Two tabs, or a double click on "Sign in": both flows ride the browser's one binder."""
+        first = await self._start(client, idp)
+        first_nonce = _query(first["authorization_url"])["nonce"]
+        await self._start(client, idp)
+
+        idp.next_id_token = idp.issue_id_token(nonce=first_nonce)
+        done = await client.get(
+            "/api/v1/auth/sso/callback", params={"code": "abc", "state": first["state"]}
+        )
+        assert done.status_code == 200, done.text
+        assert cfg.refresh_cookie_name in done.cookies
 
     def test_the_binding_cookie_is_host_prefixed_and_secure_outside_local(self, cfg) -> None:
         from fastapi import Response
