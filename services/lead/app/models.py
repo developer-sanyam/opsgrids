@@ -61,10 +61,6 @@ class Base(_Base):
 
 Base.metadata.schema = SCHEMA
 
-#: The lifecycle, in order. `domain.can_transition` is the only enforcement point — this
-#: constant lives here because the model docstring above is where a reader looks first.
-STATUSES: tuple[str, ...] = ("new", "working", "qualified", "disqualified", "converted")
-
 
 class Lead(Base, TenantBase):
     """One prospect, from capture to conversion (or disqualification).
@@ -101,7 +97,8 @@ class Lead(Base, TenantBase):
 
     #: form | import | manual.
     source: Mapped[str] = mapped_column(String(40), nullable=False, default="manual")
-    #: new | working | qualified | disqualified | converted. See `STATUSES`.
+    #: new | working | qualified | disqualified | converted. `domain.STATUS_ORDER` is the one
+    #: list of them and `domain.can_transition` the only enforcement point.
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="new")
     #: The rep working the lead. Plain UUID into customer-service's rep directory
     #: (`customer.owners`) — never validated against it here, the same trust boundary
