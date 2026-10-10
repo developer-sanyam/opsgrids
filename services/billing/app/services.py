@@ -689,6 +689,10 @@ async def reverse_credit(
             session, original.id, organization_id=payload.organization_id
         )
         amount_minor = -max(remaining, 0)
+    elif original.drawn_from is not None:
+        # A draw's reversal moves its pack's remainder too, so it queues behind the pack's
+        # revocation (and the revocation behind it) on the same lock.
+        await _lock_pack(session, original.drawn_from)
 
     existing = await selectors.get_reversal_of(
         session, original.id, organization_id=payload.organization_id
@@ -698,6 +702,19 @@ async def reverse_credit(
         # reverse must move the balance once, not once per retry. The partial-unique index
         # on `reversal_of` is the net under this check for two racing transactions.
         return existing
+
+    if (
+        original.drawn_from is not None
+        and await selectors.get_reversal_of(
+            session, original.drawn_from, organization_id=payload.organization_id
+        )
+        is not None
+    ):
+        # The revocation took back only what was left on the pack; restoring this draw now
+        # would hand back credit from a grant that no longer exists.
+        raise BusinessRuleProblem(
+            f"pack {original.drawn_from} has been revoked; its draws cannot be reversed"
+        )
 
     entry = CreditLedgerEntry(
         organization_id=payload.organization_id,

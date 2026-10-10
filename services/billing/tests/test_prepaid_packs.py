@@ -460,6 +460,118 @@ class TestADrawDownIsChecked:
         async with session.begin():
             assert await selectors.pack_remaining(session, pack.id, organization_id=org_id) == 0
 
+    async def test_a_draw_on_a_revoked_pack_cannot_be_reversed(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """Revoking a partly drawn pack takes back only the unspent part, so reversing one of its
+        draws afterwards would put that draw's credit back on a pack nobody holds any more — and
+        into the organization's balance, where a general consumption can spend it."""
+        async with session.begin():
+            pack = await _open_pack(
+                session, org_id, amount_minor=10_000_000, valid_until=WINDOW_END
+            )
+            drawn = await _draw(session, org_id, pack.id, 4_000_000, reason="INV-0001")
+        async with session.begin():
+            await services.reverse_credit(
+                session,
+                CreditReverseIn(organization_id=org_id, reversal_of=pack.id, reason="revoked"),
+                request=None,
+            )
+
+        async with session.begin():
+            with pytest.raises(BusinessRuleProblem, match="revoked"):
+                await services.reverse_credit(
+                    session,
+                    CreditReverseIn(
+                        organization_id=org_id, reversal_of=drawn.id, reason="INV-0001 voided"
+                    ),
+                    request=None,
+                )
+
+        async with session.begin():
+            assert await selectors.pack_remaining(session, pack.id, organization_id=org_id) == 0
+            assert (
+                await selectors.credit_balance(
+                    session, organization_id=org_id, currency="INR", at=datetime.now(UTC)
+                )
+                == 0
+            )
+
+    async def test_a_draw_reversed_before_the_revocation_stays_idempotent(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The other order is fine: the revocation sees the restored draw and takes it back too.
+        A retried draw reversal after that is the same row, not a refusal."""
+        async with session.begin():
+            pack = await _open_pack(
+                session, org_id, amount_minor=10_000_000, valid_until=WINDOW_END
+            )
+            drawn = await _draw(session, org_id, pack.id, 4_000_000, reason="INV-0001")
+        undo = CreditReverseIn(organization_id=org_id, reversal_of=drawn.id, reason="voided")
+        async with session.begin():
+            first = await services.reverse_credit(session, undo, request=None)
+        async with session.begin():
+            revoked = await services.reverse_credit(
+                session,
+                CreditReverseIn(organization_id=org_id, reversal_of=pack.id, reason="revoked"),
+                request=None,
+            )
+        assert revoked.amount_minor == -10_000_000
+        async with session.begin():
+            again = await services.reverse_credit(session, undo, request=None)
+        assert again.id == first.id
+        async with session.begin():
+            assert await selectors.pack_remaining(session, pack.id, organization_id=org_id) == 0
+
+    async def test_a_draw_reversal_racing_the_packs_revocation_waits_for_it(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """Without the pack's lock the draw reversal could commit between the revocation's read
+        of the remainder and its insert, and the restored credit would outlive the revocation."""
+        async with session.begin():
+            pack = await _open_pack(
+                session, org_id, amount_minor=10_000_000, valid_until=WINDOW_END
+            )
+            drawn = await _draw(session, org_id, pack.id, 4_000_000, reason="INV-0001")
+
+        other = AsyncSession(session.bind, expire_on_commit=False)
+
+        @event.listens_for(other.sync_session, "after_begin")
+        def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+            connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
+
+        async def _racing_undo() -> None:
+            async with other.begin():
+                await services.reverse_credit(
+                    other,
+                    CreditReverseIn(organization_id=org_id, reversal_of=drawn.id, reason="voided"),
+                    request=None,
+                )
+
+        try:
+            async with session.begin():
+                await services.reverse_credit(
+                    session,
+                    CreditReverseIn(organization_id=org_id, reversal_of=pack.id, reason="revoked"),
+                    request=None,
+                )
+                racing = asyncio.create_task(_racing_undo())
+                # Long enough for the draw reversal to finish if nothing makes it wait.
+                await asyncio.sleep(0.5)
+            with pytest.raises(BusinessRuleProblem, match="revoked"):
+                await racing
+        finally:
+            await other.close()
+
+        async with session.begin():
+            assert await selectors.pack_remaining(session, pack.id, organization_id=org_id) == 0
+            assert (
+                await selectors.credit_balance(
+                    session, organization_id=org_id, currency="INR", at=datetime.now(UTC)
+                )
+                == 0
+            )
+
 
 # --------------------------------------------------------------------- the mandate ceiling
 
