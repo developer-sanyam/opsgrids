@@ -12,6 +12,10 @@ from __future__ import annotations
 
 import uuid
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import Activity
 from platform_core.auth import Principal, Scope, ScopeContext
 
 
@@ -50,3 +54,21 @@ def ctx_for(
         org_id, [f"{permission}:{scope.value}"], subject_ref=subject_ref, locations=locations
     )
     return ScopeContext(principal=principal, scope=scope, permission=permission)
+
+
+async def activities_for_deal(
+    session: AsyncSession, org_id: uuid.UUID, deal_id: uuid.UUID
+) -> list[Activity]:
+    """One deal's timeline, newest first, for assertions. It lived in `app/selectors.py` until
+    nothing but tests called it; the service reads timelines through `selectors.activities_stmt`,
+    which applies the caller's scope."""
+    stmt = (
+        select(Activity)
+        .where(
+            Activity.organization_id == org_id,
+            Activity.deal_id == deal_id,
+            Activity.deleted_at.is_(None),
+        )
+        .order_by(Activity.occurred_at.desc())
+    )
+    return list((await session.execute(stmt)).scalars().all())

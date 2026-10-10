@@ -135,22 +135,6 @@ def activities_stmt(
     return stmt.order_by(Activity.occurred_at.desc())
 
 
-async def activities_for_deal(
-    session: AsyncSession, org_id: uuid.UUID, deal_id: uuid.UUID
-) -> list[Activity]:
-    """One deal's timeline, newest first. Used by the write path and the seed checks."""
-    stmt = (
-        select(Activity)
-        .where(
-            Activity.organization_id == org_id,
-            Activity.deal_id == deal_id,
-            Activity.deleted_at.is_(None),
-        )
-        .order_by(Activity.occurred_at.desc())
-    )
-    return list((await session.execute(stmt)).scalars().all())
-
-
 async def all_activities(
     session: AsyncSession, ctx: ScopeContext, *, owner_id: uuid.UUID | None = None
 ) -> list[Activity]:
