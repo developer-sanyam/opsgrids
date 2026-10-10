@@ -388,8 +388,8 @@ class TestLogActivity:
     ) -> None:
         """A client in India sends `+05:30`. The instant is the same one in UTC: stored as that
         instant, published as that instant (the offset it was sent with is kept, and it is still
-        an offset) and the deal's staleness clock moves to it. Nothing is shifted by five and a
-        half hours."""
+        an offset) and the deal's staleness clock moves to it. A stamp that names its offset is
+        never re-read as another zone; one that does not is the next two tests."""
         principal = principal_for(
             org_id, ["crm.pipeline.activity.write:ORG"], subject_ref=data["subject_a"]
         )
@@ -429,9 +429,10 @@ class TestLogActivity:
         self, client, session, org_id, data
     ) -> None:
         """No offset means UTC: the request model's reading, and the service's since this task. A
-        client in India that sends its own wall clock for "now" is up to five and a half hours
-        ahead of UTC, so it is refused as a time that has not happened and nothing is stored,
-        instead of being kept as a time that is wrong by the offset."""
+        client in India that sends its own wall clock for "now" reads as up to five and a half
+        hours ahead of UTC, so it is refused as a time that has not happened and nothing is
+        stored. That is all the check catches: a wall clock that reads as the past is accepted
+        (the next test)."""
         ahead = datetime.now(UTC) + timedelta(hours=5, minutes=30)
         principal = principal_for(
             org_id, ["crm.pipeline.activity.write:ORG"], subject_ref=data["subject_a"]
@@ -454,6 +455,41 @@ class TestLogActivity:
         async with session.begin():
             after = (await session.execute(select(func.count()).select_from(Activity))).scalar_one()
         assert after == before
+
+    async def test_a_past_wall_clock_with_no_offset_is_read_as_utc_and_not_corrected(
+        self, client, session, org_id, data
+    ) -> None:
+        """The limit of the rule above, pinned so that nobody mistakes it for a guarantee. A client
+        in India sends the wall clock of a touch that happened eight hours ago, with no offset.
+        Read as UTC that is two and a half hours in the past, so nothing refuses it: it is stored
+        as that UTC time, five and a half hours after the instant it happened. Only an offset puts
+        the instant right, which is why the field's description tells a client to send one."""
+        happened = (datetime.now(UTC) - timedelta(hours=8)).replace(microsecond=0)
+        wall_clock = (happened + timedelta(hours=5, minutes=30)).replace(tzinfo=None)
+        principal = principal_for(
+            org_id, ["crm.pipeline.activity.write:ORG"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/deals/activities",
+                json={
+                    "deal_id": str(data["deal_a_id"]),
+                    "type": "note",
+                    "subject": "Past wall clock in Kolkata",
+                    "occurred_at": wall_clock.isoformat(),
+                },
+            )
+        assert response.status_code == 201, response.text
+        activity_id = uuid.UUID(response.json()["id"])
+
+        async with session.begin():
+            stored = (
+                await session.execute(
+                    select(Activity.occurred_at).where(Activity.id == activity_id)
+                )
+            ).scalar_one()
+        assert stored == wall_clock.replace(tzinfo=UTC)
+        assert stored - happened == timedelta(hours=5, minutes=30)
 
     async def test_a_reader_cannot_log_a_touch(self, client, session, org_id, data) -> None:
         """The required negative-authz case: activity.read reads the timeline, it does not
