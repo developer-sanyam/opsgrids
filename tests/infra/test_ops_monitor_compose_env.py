@@ -132,3 +132,25 @@ def test_the_runbook_names_the_new_keys_as_a_deploy_prerequisite() -> None:
             f"RUNBOOK.md has no `{key}=` line to paste into .env"
         )
     assert "refused at preflight" in runbook
+
+
+def _relay_schemas_default(service: str) -> list[str]:
+    """The `${EDGE_RELAY_SCHEMAS:-a,b,c}` default one compose service carries, as a list."""
+    raw = yaml.safe_load(COMPOSE_FILE.read_text())
+    value = raw["services"][service]["environment"]["EDGE_RELAY_SCHEMAS"]
+    match = re.fullmatch(r"\$\{EDGE_RELAY_SCHEMAS:-([^}]*)\}", str(value))
+    assert match, f"{service}'s EDGE_RELAY_SCHEMAS is not a ${{EDGE_RELAY_SCHEMAS:-...}} default"
+    return match.group(1).split(",")
+
+
+def test_ops_monitor_watches_every_schema_edge_relay_drains() -> None:
+    """`edge-relay` drains the outbox of every schema in its list; ops-monitor raises an
+    `outbox.<schema>` lag alert only for the schemas in its own. Two lists that differ are a schema
+    whose outbox can stall with nobody told, which is what `lead` was: drained, never watched."""
+    relay = _relay_schemas_default("edge-relay")
+    monitor = _relay_schemas_default("ops-monitor")
+    assert monitor == relay, (
+        f"ops-monitor does not watch {sorted(set(relay) - set(monitor))} and watches "
+        f"{sorted(set(monitor) - set(relay))} that edge-relay does not drain"
+    )
+    assert "lead" in monitor

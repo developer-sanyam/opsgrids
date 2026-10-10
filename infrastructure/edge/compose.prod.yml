@@ -848,7 +848,7 @@ services:
       RABBITMQ_URL: amqp://opsgrids:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       MALLOC_ARENA_MAX: '2'
       MALLOC_TRIM_THRESHOLD_: '131072'
-      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm,console}
+      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,lead,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm,console}
       # B1 (round 2): the same variable docker compose itself already reads to decide which
       # containers to start — one source of truth for "what does this box run", so
       # OpsMonitorSettings can derive exactly which API containers/DLQ queues SHOULD exist
