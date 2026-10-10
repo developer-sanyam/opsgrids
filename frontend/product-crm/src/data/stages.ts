@@ -37,9 +37,6 @@ export const STAGE_DEFAULT_PROBABILITY: Readonly<Record<DealStage, number>> = {
   closed_lost: 0,
 };
 
-/** The four open (in-flight) stages, in order — the working columns of the pipeline board. */
-export const OPEN_STAGES: DealStage[] = ["lead", "qualified", "proposal", "negotiation"];
-
 const META = new Map(STAGES.map((s) => [s.stage, s]));
 
 export function stageMeta(stage: DealStage): StageMeta {
@@ -52,8 +49,4 @@ export function stageLabel(stage: DealStage): string {
 
 export function isOpen(stage: DealStage): boolean {
   return stage !== "closed_won" && stage !== "closed_lost";
-}
-
-export function isWon(stage: DealStage): boolean {
-  return stage === "closed_won";
 }
