@@ -542,8 +542,8 @@ async def _resolve_pack(
     Five refusals, and each of them is a way a prepaid pack goes wrong quietly rather than
     loudly (docs/commerce-packaging.md):
 
-    * **Not this tenant's.** Row-level security scopes the lookup, so another organization's pack
-      is simply not found — the same 404 an invented id gets.
+    * **Not this tenant's.** The lookup filters on the organization (and RLS backs it), so another
+      organization's pack is simply not found — the same 404 an invented id gets.
     * **Not a grant.** Drawing "from" a consumption or a reversal would name a negative row as a
       source of credit, and the remaining-balance sum would then read as though there were more.
     * **Wrong currency.** Money is minor units *and* an ISO code (ADR-0000 §8); spending a rupee
@@ -554,7 +554,9 @@ async def _resolve_pack(
       everything already drawn from it. Without this a pack can be spent twice over and the
       organization's balance simply goes negative.
     """
-    pack = await selectors.get_credit_entry(session, pack_id)
+    pack = await selectors.get_credit_entry(
+        session, pack_id, organization_id=payload.organization_id
+    )
     if pack is None:
         raise NotFoundProblem("No such credit ledger entry to draw down")
     if pack.entry_type != CREDIT_GRANT:
@@ -571,7 +573,9 @@ async def _resolve_pack(
             "and can no longer be drawn down"
         )
 
-    remaining = await selectors.pack_remaining(session, pack.id)
+    remaining = await selectors.pack_remaining(
+        session, pack.id, organization_id=payload.organization_id
+    )
     if payload.amount_minor > remaining:
         raise BusinessRuleProblem(
             f"this pack has {remaining} {pack.currency} minor units left; "
@@ -642,9 +646,11 @@ async def reverse_credit(
     is an equal-and-opposite append-only row that names the original in `reversal_of`, so the
     history stays intact and the balance reflects the reversal through the same `SUM`.
     """
-    original = await selectors.get_credit_entry(session, payload.reversal_of)
+    original = await selectors.get_credit_entry(
+        session, payload.reversal_of, organization_id=payload.organization_id
+    )
     if original is None:
-        # Row-level security scopes the lookup, so another tenant's entry is simply not found.
+        # The lookup filters on the organization (RLS backs it): another tenant's entry is absent.
         raise NotFoundProblem("No such credit ledger entry to reverse")
     if original.entry_type == CREDIT_REVERSAL:
         raise BusinessRuleProblem("a reversal cannot itself be reversed")

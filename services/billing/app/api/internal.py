@@ -253,14 +253,16 @@ async def get_credit_pack(
     """
     async with session.begin():
         await _bind(session, organization_id, request)
-        pack = await selectors.get_credit_entry(session, pack_id)
+        pack = await selectors.get_credit_entry(session, pack_id, organization_id=organization_id)
         if pack is None:
             raise NotFoundProblem("No such credit ledger entry")
         if pack.entry_type != CREDIT_GRANT:
             raise BusinessRuleProblem(
                 f"entry {pack.id} is a {pack.entry_type}, not a grant, so it is not a pack"
             )
-        remaining = await selectors.pack_remaining(session, pack.id)
+        remaining = await selectors.pack_remaining(
+            session, pack.id, organization_id=organization_id
+        )
         at = datetime.now(UTC)
         return CreditPackOut(
             id=pack.id,

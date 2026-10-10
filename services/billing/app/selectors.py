@@ -79,7 +79,9 @@ async def credit_balance(session: AsyncSession, *, currency: str, at: datetime) 
     return int((await session.execute(stmt)).scalar_one())
 
 
-async def pack_remaining(session: AsyncSession, pack_id: uuid.UUID) -> int:
+async def pack_remaining(
+    session: AsyncSession, pack_id: uuid.UUID, *, organization_id: uuid.UUID
+) -> int:
     """What is left on one prepaid pack: a `SUM` over the grant and everything drawn from it.
 
     Derived exactly like the organization-wide balance and for the same reason (ADR-0004 §3) — a
@@ -92,18 +94,29 @@ async def pack_remaining(session: AsyncSession, pack_id: uuid.UUID) -> int:
     a fact about the pack and not about the clock. Whether the pack still counts toward the
     organization's balance is `credit_balance`'s question, and it answers it by the window.
     """
-    stmt = select(func.coalesce(func.sum(CreditLedgerEntry.amount_minor), 0)).where(
-        or_(
-            CreditLedgerEntry.id == pack_id,
-            CreditLedgerEntry.drawn_from == pack_id,
+    stmt = (
+        select(func.coalesce(func.sum(CreditLedgerEntry.amount_minor), 0))
+        .where(CreditLedgerEntry.organization_id == organization_id)
+        .where(
+            or_(
+                CreditLedgerEntry.id == pack_id,
+                CreditLedgerEntry.drawn_from == pack_id,
+            )
         )
     )
     return int((await session.execute(stmt)).scalar_one())
 
 
-async def get_credit_entry(session: AsyncSession, entry_id: uuid.UUID) -> CreditLedgerEntry | None:
+async def get_credit_entry(
+    session: AsyncSession, entry_id: uuid.UUID, *, organization_id: uuid.UUID
+) -> CreditLedgerEntry | None:
+    """One ledger row of `organization_id`. The explicit predicate is the rule; RLS is the net."""
     return (
-        await session.execute(select(CreditLedgerEntry).where(CreditLedgerEntry.id == entry_id))
+        await session.execute(
+            select(CreditLedgerEntry)
+            .where(CreditLedgerEntry.organization_id == organization_id)
+            .where(CreditLedgerEntry.id == entry_id)
+        )
     ).scalar_one_or_none()
 
 

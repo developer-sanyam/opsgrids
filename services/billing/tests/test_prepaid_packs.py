@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
 from app.config import settings
+from app.models import CREDIT_GRANT, CreditLedgerEntry
 from app.schemas import CreditConsumeIn, CreditGrantIn, CreditReverseIn
 from platform_core.errors import BusinessRuleProblem, NotFoundProblem
 from tests.helpers import service_token_headers
@@ -105,11 +106,14 @@ class TestAPackDrawsDownAcrossInvoices:
 
         async with session.begin():
             await _draw(session, org_id, pack.id, 4_500_000, reason="INV-0001")
-            assert await selectors.pack_remaining(session, pack.id) == 7_500_000
+            assert (
+                await selectors.pack_remaining(session, pack.id, organization_id=org_id)
+                == 7_500_000
+            )
 
         async with session.begin():
             await _draw(session, org_id, pack.id, 5_000_000, reason="INV-0002")
-            remaining = await selectors.pack_remaining(session, pack.id)
+            remaining = await selectors.pack_remaining(session, pack.id, organization_id=org_id)
         assert remaining == 2_500_000
 
         # A third invoice for ₹30,000 exceeds what is left. The refusal names the remainder, so
@@ -120,7 +124,7 @@ class TestAPackDrawsDownAcrossInvoices:
 
         async with session.begin():
             await _draw(session, org_id, pack.id, remaining, reason="INV-0003 (partial)")
-            assert await selectors.pack_remaining(session, pack.id) == 0
+            assert await selectors.pack_remaining(session, pack.id, organization_id=org_id) == 0
             assert (
                 await selectors.credit_balance(
                     session, currency="INR", at=datetime(2026, 9, 1, tzinfo=UTC)
@@ -162,7 +166,10 @@ class TestAPackDrawsDownAcrossInvoices:
             )
 
         async with session.begin():
-            assert await selectors.pack_remaining(session, pack.id) == PACK_MINOR
+            assert (
+                await selectors.pack_remaining(session, pack.id, organization_id=org_id)
+                == PACK_MINOR
+            )
 
 
 # --------------------------------------------------------------------- the window edge
@@ -286,7 +293,10 @@ class TestADrawDownIsChecked:
                     ),
                     request=None,
                 )
-            assert await selectors.pack_remaining(session, pack.id) == PACK_MINOR
+            assert (
+                await selectors.pack_remaining(session, pack.id, organization_id=org_id)
+                == PACK_MINOR
+            )
 
     async def test_credit_cannot_be_drawn_from_a_consumption(
         self, session: AsyncSession, org_id: uuid.UUID
@@ -401,7 +411,7 @@ class TestTheUpiAutopayCeilingWorkaround:
                 await _draw(session, org_id, pack.id, monthly, reason=f"INV-2026-{month + 1:02d}")
 
         async with session.begin():
-            remaining = await selectors.pack_remaining(session, pack.id)
+            remaining = await selectors.pack_remaining(session, pack.id, organization_id=org_id)
             inside_window = await selectors.credit_balance(
                 session, currency="INR", at=datetime(2027, 3, 1, tzinfo=UTC)
             )
@@ -427,3 +437,46 @@ class TestTheUpiAutopayCeilingWorkaround:
         async with session.begin():
             with pytest.raises(BusinessRuleProblem, match="0 INR minor units left"):
                 await _draw(session, org_id, pack.id, monthly)
+
+
+# ------------------------------------------------------------- the reads filter the tenant too
+
+
+class TestTheLedgerReadsFilterTheirOwnTenant:
+    """`get_credit_entry` and `pack_remaining` carry an explicit `organization_id` predicate, not
+    only row-level security (CLAUDE.md: every query filters on it; RLS is the net). The reads
+    run on the BYPASSRLS `admin_session` deliberately: under a tenant-bound session RLS would hide
+    the other organization's pack and the test would pass with the predicate missing."""
+
+    async def test_another_tenants_pack_is_not_returned_when_rls_would_allow_it(
+        self, admin_session: AsyncSession, org_id: uuid.UUID, org_b: uuid.UUID
+    ) -> None:
+        async with admin_session.begin():
+            theirs = CreditLedgerEntry(
+                organization_id=org_b,
+                entry_type=CREDIT_GRANT,
+                amount_minor=PACK_MINOR,
+                currency="INR",
+                reason="Another tenant's pack",
+                valid_from=WINDOW_START,
+            )
+            admin_session.add(theirs)
+
+        async with admin_session.begin():
+            assert (
+                await selectors.get_credit_entry(admin_session, theirs.id, organization_id=org_id)
+                is None
+            )
+            assert (
+                await selectors.pack_remaining(admin_session, theirs.id, organization_id=org_id)
+                == 0
+            )
+            # Control: the same reads for the owning tenant do find it.
+            found = await selectors.get_credit_entry(
+                admin_session, theirs.id, organization_id=org_b
+            )
+            assert found is not None and found.id == theirs.id
+            assert (
+                await selectors.pack_remaining(admin_session, theirs.id, organization_id=org_b)
+                == PACK_MINOR
+            )
