@@ -140,9 +140,9 @@ them are worth knowing:
   `admin-gateway` proxies all five `/api/v1/admin/*` prefixes to 8170 as well. `projects` and
   `console` cannot both hold it on one host. This is a live defect, not a documented convention.
 
-Five further prefixes route to services that do not exist yet — `/leave` (8122), `/payroll`
-(8123), `/recruit` (8124), `/campaigns` (8132) and `/tickets` (8133). They are either reserved
-intent or dead entries; either way a request to one reaches nothing.
+Two further prefixes route to services that do not exist yet — `/payroll` (8123) and `/recruit`
+(8124). They are either reserved intent or dead entries; either way a request to one reaches
+nothing. (`/leave` (8122) is served by `leave`, and the `/campaigns` and `/tickets` rows are gone.)
 
 **Two gateways rather than one**, because the alternative puts a surface that grants cross-customer
 access one routing mistake away from the public internet. They also scale on different terms: the
