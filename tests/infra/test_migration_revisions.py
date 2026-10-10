@@ -51,6 +51,7 @@ def test_known_revisions_print_nothing(versions: Path) -> None:
 
 
 def test_a_revision_the_image_does_not_have_is_reported(versions: Path) -> None:
+    # pragma: allowlist nextline secret
     assert unknown(versions, "aaa111", "b7d41e92c05a") == ["b7d41e92c05a"]
 
 
@@ -93,7 +94,7 @@ def test_the_warning_says_skipped_and_never_downgrade() -> None:
     result = _run("migration_rollback_warning", "operations", "b7d41e92c05a")
     assert result.returncode == 0
     assert "operations: SKIPPED" in result.stdout
-    assert "b7d41e92c05a" in result.stdout
+    assert "b7d41e92c05a" in result.stdout  # pragma: allowlist secret
     assert "NOT downgraded" in result.stdout
 
 

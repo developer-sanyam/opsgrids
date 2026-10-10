@@ -103,9 +103,12 @@ fi
 
 upload() {
 	local file="$1"
-	docker run --rm \
-		-e AWS_ACCESS_KEY_ID="$BACKUP_S3_ACCESS_KEY_ID" \
-		-e AWS_SECRET_ACCESS_KEY="$BACKUP_S3_SECRET_ACCESS_KEY" \
+	# Values go through docker's environment, not its argv, so `ps` on the box never shows them.
+	AWS_ACCESS_KEY_ID="$BACKUP_S3_ACCESS_KEY_ID" \
+		AWS_SECRET_ACCESS_KEY="$BACKUP_S3_SECRET_ACCESS_KEY" \
+		docker run --rm \
+		-e AWS_ACCESS_KEY_ID \
+		-e AWS_SECRET_ACCESS_KEY \
 		-e AWS_DEFAULT_REGION="${BACKUP_S3_REGION:-us-east-1}" \
 		-v "$dir:/backup:ro" \
 		"$AWS_CLI_IMAGE" s3 cp "/backup/$(basename "$file")" \

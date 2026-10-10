@@ -89,8 +89,8 @@ describe("PaymentSettingsPage", () => {
       expect(saveMerchantAccount).toHaveBeenCalledWith({
         provider: "razorpay",
         key_id: "rzp_test_Merchant0001",
-        key_secret: "typed-key-secret",
-        webhook_secret: "typed-hook-secret",
+        key_secret: "typed-key-secret", // pragma: allowlist secret
+        webhook_secret: "typed-hook-secret", // pragma: allowlist secret
       }),
     );
     await waitFor(() => expect(screen.queryByLabelText("Key secret")).toBeNull());

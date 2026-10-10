@@ -38,7 +38,8 @@ def test_every_platform_app_site_imports_it() -> None:
     app_sites = [
         name
         for name in blocks
-        if re.fullmatch(r"https://[a-z]+\.opsgrids\.com", name) and name != "https://admin.opsgrids.com"
+        if re.fullmatch(r"https://[a-z]+\.opsgrids\.com", name)
+        and name != "https://admin.opsgrids.com"
     ]
     assert "https://app.opsgrids.com" in app_sites
     missing = [name for name in app_sites if "import platform-headers" not in blocks[name]]
