@@ -154,10 +154,9 @@ class ActivityIn(BaseModel):
     now and may backfill the past, but never the future — a touch cannot be logged before
     it happens.
 
-    `owner_id` is deliberately absent here: an OWN-scoped caller can only ever log against
-    themselves, and the route forces it; only an ORG-scoped caller may attribute the entry
-    to someone else, which is why the field lives on the model but not on this contract —
-    see `app/api/routes.py`.
+    `owner_id` is optional: an ORG-scoped caller may attribute the entry to another rep, while
+    an OWN-scoped caller can only ever log against themselves and the route forces it, whatever
+    the body says — see `app/api/routes.py`.
     """
 
     model_config = ConfigDict(extra="forbid")
