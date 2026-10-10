@@ -92,7 +92,12 @@ class Lead(Base, TenantBase):
     phone_masked: Mapped[str | None] = mapped_column(String(40))
     #: The raw phone, sealed the same way as `email_enc`.
     phone_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
-    phone_index: Mapped[str | None] = mapped_column(String(64))
+    #: Dormant: nothing has computed it since R1.2b and nothing reads it (no selector, no index).
+    #: The column stays, because phone-based duplicate detection (R3.7) resumes writing it, with
+    #: an owner-run backfill for the leads captured in between. `deferred` keeps it out of every
+    #: statement this service issues, so a later change can drop the column and this attribute
+    #: together without breaking the code that is running.
+    phone_index: Mapped[str | None] = mapped_column(String(64), deferred=True)
 
     #: form | import | manual.
     source: Mapped[str] = mapped_column(String(40), nullable=False, default="manual")

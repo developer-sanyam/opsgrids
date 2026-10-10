@@ -462,10 +462,8 @@ async def create_lead(
 
     phone_masked: str | None = None
     phone_enc: bytes | None = None
-    phone_index: str | None = None
     if phone:
         phone_enc, phone_masked = seal(phone, kind="phone", settings=cfg)
-        phone_index = blind_index(phone, kind="phone", settings=cfg)
 
     resolved_owner_id = owner_id
     if resolved_owner_id is None:
@@ -493,7 +491,6 @@ async def create_lead(
         email_index=email_index,
         phone_masked=phone_masked,
         phone_enc=phone_enc,
-        phone_index=phone_index,
         source=source,
         status="new",
         owner_id=resolved_owner_id,
