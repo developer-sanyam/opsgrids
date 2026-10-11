@@ -22,6 +22,7 @@ from platform_core.supervise import get_sweep_health, reset_sweep_health
 class _FakeSettings:
     def __init__(self, *, run_consumers_in_api: bool) -> None:
         self.run_consumers_in_api = run_consumers_in_api
+        self.crm_conversion_cleanup_mode = "log_only"
 
 
 class _FakeEngine:
