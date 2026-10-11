@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+
+from app.pipeline import KEY_PATTERN, Outcome, Tone
 
 
 def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
@@ -34,7 +36,11 @@ def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
 
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
-DealStage = Literal["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_lost"]
+#: A stage key as the wire carries it: an immutable slug. Which keys exist is the organization's
+#: pipeline (`GET /deals/stages`), not a promise of this module, so the six-value enum this used
+#: to be is gone. A well-formed key the pipeline does not contain is refused by the service
+#: (422, `unknown_stage`), as a malformed one is refused here.
+StageKey = Annotated[str, StringConstraints(pattern=KEY_PATTERN)]
 ActivityType = Literal["call", "email", "meeting", "note", "task"]
 ActivityDirection = Literal["inbound", "outbound"]
 
@@ -56,7 +62,10 @@ class DealIn(BaseModel):
     activities attribute themselves. Naming a different rep is an ORG-scoped act — the
     route re-applies the caller's scope exactly as it does on a detail route — and a
     caller with no rep identity who also names no owner has nobody to attribute the deal
-    to, which is a 422, not a row owned by nothing."""
+    to, which is a 422, not a row owned by nothing.
+
+    `stage` is optional too: an omitted one is the pipeline's entry stage, the first active open
+    stage by position. Naming one that the pipeline does not contain, or has archived, is a 422."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -66,7 +75,7 @@ class DealIn(BaseModel):
     value_minor: int = Field(ge=0)
     close_date: date
     currency: str = Field(default="INR", min_length=3, max_length=3)
-    stage: DealStage = "lead"
+    stage: StageKey | None = None
     probability: int | None = Field(default=None, ge=0, le=100)
     primary_contact_id: uuid.UUID | None = None
     source: str = Field(default="", max_length=60)
@@ -113,18 +122,27 @@ class DealPatch(BaseModel):
 
 class StageMoveIn(BaseModel):
     """Move a deal through the pipeline. `domain.can_transition` is the enforcement
-    point — an illegal move (out of a closed stage, or to the same stage) answers 409."""
+    point — an illegal move (out of a closed stage, or to the same stage) answers 409. A key the
+    pipeline does not contain, or has archived, answers 422; a closing move whose `probability`
+    is not the pin (100 for a won stage, 0 for a lost one) answers 422, and omitting it takes
+    the pin."""
 
     model_config = ConfigDict(extra="forbid")
 
-    stage: DealStage
+    stage: StageKey
     probability: int | None = Field(default=None, ge=0, le=100)
 
 
 class DealOut(BaseModel):
     """Mirrors the SPA's `Deal`. `value_minor` is minor units of `currency`; `probability`
     is 0-100; a past `close_date` on an open deal reads as overdue; `last_activity_at` is
-    the staleness clock (NULL: never touched)."""
+    the staleness clock (NULL: never touched).
+
+    The `stage_*` fields resolve `stage` against the organization's pipeline so a reader never
+    needs the key list: `stage_outcome` is what to test (`open`, `won`, `lost`), `stage_label`
+    what to show, `stage_position` where it sits (-1 for a key the pipeline cannot resolve, which
+    also reads `open` and is labelled by its own key), `stage_is_last_open` whether it is the
+    last active open stage. `closed_at` is set once, when the deal first reaches a closing stage."""
 
     id: str
     name: str
@@ -132,13 +150,18 @@ class DealOut(BaseModel):
     primary_contact_id: str | None
     value_minor: int
     currency: str
-    stage: DealStage
+    stage: StageKey
     owner_id: str
     probability: int
     close_date: date
     created_at: datetime
     last_activity_at: datetime | None
     source: str
+    stage_label: str
+    stage_outcome: Outcome
+    stage_position: int
+    stage_is_last_open: bool
+    closed_at: datetime | None
 
 
 # ------------------------------------------------------------------ activities
@@ -222,16 +245,58 @@ class ActivityOut(BaseModel):
     direction: ActivityDirection | None
 
 
+# ------------------------------------------------------------------ stages
+
+
+class PipelineRefOut(BaseModel):
+    """Which pipeline the stage list belongs to. Absent (`null` in `StageListOut`) while the
+    organization is on the virtual default and has no pipeline row."""
+
+    id: uuid.UUID
+    key: str
+    name: str
+
+
+class StageOut(BaseModel):
+    """One stage of the organization's pipeline. `id` is null for a stage of the virtual
+    default, which has no row. `deal_count` is deal-derived data and appears only when asked for
+    (`include=counts`) **and** the caller reads deals at ORG scope; it is *absent*, never zero,
+    otherwise — the route serializes with `response_model_exclude_unset`, so a stage built
+    without it carries no such key."""
+
+    id: uuid.UUID | None
+    key: StageKey
+    label: str
+    position: int
+    outcome: Outcome
+    default_probability: int
+    tone: Tone
+    archived: bool
+    deal_count: int | None = None
+
+
+class StageListOut(BaseModel):
+    """`GET /deals/stages`: the pipeline a deal's `stage` key is read against."""
+
+    pipeline: PipelineRefOut | None
+    #: False for the virtual default (nothing stored for the organization), true once its six
+    #: rows exist. The route is read-only: a `GET` never materialises.
+    materialised: bool
+    stages: list[StageOut]
+
+
 # ------------------------------------------------------------------ summary rollups
 
 
 class StageRollupOut(BaseModel):
     """One column of the pipeline funnel — count and summed open value per stage, with
     `pct` scaled to the richest stage so the bars read as a funnel. Mirrors the SPA's
-    `StageRollup` (and its `stageFunnel` arithmetic in `data/derive.ts`)."""
+    `StageRollup` (and its `stageFunnel` arithmetic in `data/derive.ts`). `outcome` is the
+    stage's outcome; the funnel lists open stages, so it is `open` today."""
 
-    stage: DealStage
+    stage: StageKey
     label: str
+    outcome: Outcome
     count: int
     value_minor: int
     pct: int
@@ -261,18 +326,18 @@ class SummaryOut(BaseModel):
     pipeline_value_minor: int
     #: Probability-weighted open pipeline (the forecast), in minor units.
     weighted_pipeline_minor: int
-    #: How many deals are open (not closed-won or closed-lost).
+    #: How many deals are open (their stage's outcome is `open`).
     open_deals: int
-    #: closed-won / decided, 0-100. Open deals do not drag the rate down.
+    #: won / decided, 0-100, by outcome. Open deals do not drag the rate down.
     win_rate_pct: int
-    #: Total value won across closed-won deals, in minor units.
+    #: Total value won across deals in a stage whose outcome is `won`, in minor units.
     won_value_minor: int
     #: Touches logged in the trailing seven days.
     activities_this_week: int
     currency: str
     #: `None` until a dated pipeline-value history exists — see the class docstring.
     trend: list[TrendPointOut] | None = None
-    #: The by-stage funnel over the four open stages, in board order.
+    #: The by-stage funnel over the active open stages, in board order.
     funnel: list[StageRollupOut] = Field(default_factory=list)
 
 

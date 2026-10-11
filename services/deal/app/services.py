@@ -27,15 +27,30 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import domain, selectors
-from app.models import Activity, AuditLog, Deal, OutboxEvent
+from app.models import Activity, AuditLog, Deal, OutboxEvent, Pipeline, PipelineStage
+from app.pipeline import (
+    CLOSING_PROBABILITY,
+    DEFAULT_PIPELINE,
+    DEFAULT_PIPELINE_KEY,
+    DEFAULT_PIPELINE_NAME,
+    Outcome,
+    PipelineSpec,
+    StageSpec,
+)
 from app.schemas import DealPatch
 from platform_core.audit import record_audit
 from platform_core.auth import Principal, Scope, ScopeContext
-from platform_core.errors import ConflictProblem, NotFoundProblem
+from platform_core.errors import (
+    BusinessRuleProblem,
+    ConflictProblem,
+    NotFoundProblem,
+    ValidationProblem,
+)
 from platform_core.events import publish_event
 from platform_core.models import utcnow
 
@@ -46,16 +61,101 @@ EVT_DEAL_DELETED = "crm.pipeline.deal.deleted"
 EVT_DEAL_STAGE_CHANGED = "crm.pipeline.deal.stage_changed"
 EVT_ACTIVITY_LOGGED = "crm.pipeline.activity.logged"
 
-#: Where a deal's probability lands when a stage move does not say otherwise — the
-#: board's defaults, matching the fixture book's typical values per stage.
+#: Where a deal's probability lands on entering a stage of the *default* pipeline when nothing
+#: says otherwise — derived from `app.pipeline`, which is the one place the six stages are
+#: written. An organization's own pipeline carries its own defaults (`StageSpec`).
 STAGE_DEFAULT_PROBABILITY: dict[str, int] = {
-    "lead": 20,
-    "qualified": 40,
-    "proposal": 55,
-    "negotiation": 70,
-    "closed_won": 100,
-    "closed_lost": 0,
+    stage.key: stage.default_probability for stage in DEFAULT_PIPELINE.stages
 }
+
+
+# ------------------------------------------------------------------ the pipeline's locks
+
+
+def _pipeline_lock_key(organization_id: uuid.UUID) -> str:
+    return f"deal.pipeline:{organization_id}"
+
+
+async def lock_pipeline_shared(session: AsyncSession, organization_id: uuid.UUID) -> None:
+    """Hold the organization's pipeline **shared** until the transaction ends.
+
+    Every write that binds a deal to a stage (`create_deal`, `move_stage`) takes this, so any
+    number of them run together, but none runs while a stage-configuration write holds the
+    lock exclusively — the move cannot land in a stage an archive is removing. While the
+    default is virtual there is no pipeline row to lock, hence an advisory lock keyed on the
+    organization (`hashtextextended` collapses the key to the `bigint` Postgres takes; a hash
+    collision only ever costs two organizations a moment of needless waiting). A transaction
+    that takes this must never take `lock_pipeline_exclusive` afterwards: a lock upgrade can
+    deadlock."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:key, 0))"),
+        {"key": _pipeline_lock_key(organization_id)},
+    )
+
+
+async def lock_pipeline_exclusive(session: AsyncSession, organization_id: uuid.UUID) -> None:
+    """Hold the organization's pipeline **exclusively** until the transaction ends: the lock
+    every stage-configuration write takes first (materialising the default is the first of
+    them, R2.5 adds the rest). It waits for every in-flight stage-binding write and holds back
+    new ones."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": _pipeline_lock_key(organization_id)},
+    )
+
+
+async def materialise_default_pipeline(
+    session: AsyncSession, organization_id: uuid.UUID, actor_id: uuid.UUID | None
+) -> PipelineSpec:
+    """Store the default pipeline's six stages for an organization that has none, and return
+    the stored pipeline. Idempotent: it takes the exclusive lock, **re-reads**, and writes only
+    if nothing is stored, so two concurrent first writes materialise once.
+
+    No route calls this before R2.5, and a `GET` never does: materialising from a read would
+    write for every organization that merely opened a screen. It writes one audit row
+    (`pipeline.materialised`, ids and a count) and **no event** — nothing about the pipeline
+    changed, and every consumer already knows the default."""
+    await lock_pipeline_exclusive(session, organization_id)
+    spec = await selectors.load_pipeline_spec(session, organization_id)
+    if spec.materialised:
+        return spec
+
+    created_by = str(actor_id) if actor_id is not None else None
+    pipeline = Pipeline(
+        organization_id=organization_id,
+        key=DEFAULT_PIPELINE_KEY,
+        name=DEFAULT_PIPELINE_NAME,
+        is_default=True,
+        created_by=created_by,
+    )
+    session.add(pipeline)
+    await session.flush()  # the stages' composite foreign key needs the pipeline row first
+    session.add_all(
+        PipelineStage(
+            organization_id=organization_id,
+            pipeline_id=pipeline.id,
+            key=stage.key,
+            label=stage.label,
+            position=stage.position,
+            outcome=stage.outcome,
+            default_probability=stage.default_probability,
+            tone=stage.tone,
+            created_by=created_by,
+        )
+        for stage in DEFAULT_PIPELINE.stages
+    )
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=actor_id,
+        action="pipeline.materialised",
+        entity="pipeline",
+        entity_id=pipeline.id,
+        after={"pipeline_id": str(pipeline.id), "stages": len(DEFAULT_PIPELINE.stages)},
+    )
+    return await selectors.load_pipeline_spec(session, organization_id)
 
 
 def _actor(ctx: ScopeContext) -> dict[str, Any]:
@@ -63,6 +163,66 @@ def _actor(ctx: ScopeContext) -> dict[str, Any]:
         "type": "user",
         "id": str(ctx.principal.sub),
         "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
+    }
+
+
+# ------------------------------------------------------------------ event payloads
+#
+# One builder per event, so each payload is built in one place and a producer-side test can
+# hold it to its committed schema (`libs/contracts/events/crm.pipeline.deal.*`). Payloads carry
+# ids, keys and enumerations — no free text beyond the deal's `name` and the one stage label
+# (`to_label`) a stage-changed event names. `stage`, `from` and `to` are stage **keys** and never
+# change meaning; a consumer tests the `*_outcome` field.
+
+
+def _deal_state(deal: Deal) -> dict[str, Any]:
+    """The fields all three deal events carry, from the row as it stands after the write."""
+    return {
+        "organization_id": str(deal.organization_id),
+        "deal_id": str(deal.id),
+        "name": deal.name,
+        "value_minor": deal.value_minor,
+        "currency": deal.currency,
+        "owner_id": str(deal.owner_id),
+        "probability": deal.probability,
+        "closed_at": deal.closed_at.isoformat() if deal.closed_at is not None else None,
+    }
+
+
+def _created_payload(deal: Deal, stage_outcome: Outcome) -> dict[str, Any]:
+    return {
+        **_deal_state(deal),
+        "stage": deal.stage,
+        "stage_outcome": stage_outcome,
+        "company_id": str(deal.company_id),
+        "close_date": deal.close_date.isoformat(),
+        "created_at": deal.created_at.isoformat(),
+    }
+
+
+def _updated_payload(deal: Deal, stage_outcome: Outcome, changed: list[str]) -> dict[str, Any]:
+    """The full state after the patch, so a consumer converges without reading deal back. A
+    stage move is `stage_changed`, never this event: the patch cannot touch `stage`."""
+    return {
+        **_deal_state(deal),
+        "changed": changed,
+        "stage": deal.stage,
+        "stage_outcome": stage_outcome,
+        "company_id": str(deal.company_id),
+        "close_date": deal.close_date.isoformat(),
+    }
+
+
+def _stage_changed_payload(
+    deal: Deal, *, before: str, from_outcome: Outcome, target: StageSpec
+) -> dict[str, Any]:
+    return {
+        **_deal_state(deal),
+        "from": before,
+        "to": target.key,
+        "from_outcome": from_outcome,
+        "to_outcome": target.outcome,
+        "to_label": target.label,
     }
 
 
@@ -92,6 +252,44 @@ def lead_conversion_ctx(organization_id: uuid.UUID, actor_id: uuid.UUID | None) 
     )
 
 
+# ------------------------------------------------------------------ stage resolution
+
+
+def _entry_stage(spec: PipelineSpec) -> StageSpec:
+    """Where a new deal opens: the first active open stage by position."""
+    entry = spec.entry_stage()
+    if entry is None:
+        raise BusinessRuleProblem(
+            "This pipeline has no active open stage to open a deal in",
+            errors=[
+                {
+                    "code": "no_entry_stage",
+                    "message": "This pipeline has no active open stage to open a deal in",
+                }
+            ],
+        )
+    return entry
+
+
+def _target_stage(spec: PipelineSpec, key: str) -> StageSpec:
+    """The stage a deal is being put into, which must exist and be active. A deal may *sit* in
+    an archived stage, but nothing is put into one. Both refusals are 422 field errors on
+    `stage`, never a 409: the importer reads a 409 containing "already" as a skipped row, and
+    lead's client reads every deal-side 409 as a name conflict."""
+    stage = spec.get(key)
+    if stage is None:
+        message = f"{key!r} is not a stage of this pipeline"
+        raise ValidationProblem(
+            message, errors=[{"field": "stage", "code": "unknown_stage", "message": message}]
+        )
+    if stage.archived:
+        message = f"The stage {key!r} has been archived"
+        raise ValidationProblem(
+            message, errors=[{"field": "stage", "code": "stage_archived", "message": message}]
+        )
+    return stage
+
+
 # ------------------------------------------------------------------ deals
 
 
@@ -105,7 +303,7 @@ async def create_deal(
     value_minor: int,
     close_date: date,
     currency: str = "INR",
-    stage: str = "lead",
+    stage: str | None = None,
     probability: int | None = None,
     primary_contact_id: uuid.UUID | None = None,
     source: str = "",
@@ -119,12 +317,19 @@ async def create_deal(
     `created` event — all in the caller's transaction. `value_minor` is integer minor
     units of `currency`; no float is accepted anywhere on this path.
 
+    `stage` is a key of the organization's pipeline; omitted, it is the pipeline's entry stage
+    (the first active open stage by position). The write holds the pipeline's shared lock and
+    reads the stages in the same transaction, so the stage it names cannot be archived under
+    it. A deal created directly in a won or lost stage (an import, a seed) is closed on
+    creation: `closed_at` is its `created_at`.
+
     `acting_as` names the calling *service* on the audit row when this write was not a
     person clicking a button but a service holding a token addressed to deal by name
     (`lead_conversion_ctx`'s caller) — `ctx.principal.sub` still carries the human who
     ultimately asked for it, when the caller has one to give."""
-    if stage not in domain.STAGE_ORDER:
-        raise ConflictProblem(f"{stage!r} is not a pipeline stage")
+    await lock_pipeline_shared(session, ctx.organization_id)
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    target = _entry_stage(spec) if stage is None else _target_stage(spec, stage)
     if value_minor < 0:
         raise ConflictProblem("A deal's value cannot be negative")
     if await selectors.get_deal_by_name(session, ctx.organization_id, name):
@@ -138,12 +343,13 @@ async def create_deal(
         primary_contact_id=primary_contact_id,
         value_minor=value_minor,
         currency=currency.upper(),
-        stage=stage,
+        stage=target.key,
         owner_id=owner_id,
-        probability=(probability if probability is not None else STAGE_DEFAULT_PROBABILITY[stage]),
+        probability=probability if probability is not None else target.default_probability,
         close_date=close_date,
         source=source,
         last_activity_at=last_activity_at,
+        closed_at=(created_at or utcnow()) if target.outcome != "open" else None,
     )
     if deal_id is not None:
         deal.id = deal_id
@@ -162,7 +368,12 @@ async def create_deal(
         action="deal.created",
         entity="deal",
         entity_id=deal.id,
-        after={"name": name, "stage": stage, "value_minor": value_minor, "currency": deal.currency},
+        after={
+            "name": name,
+            "stage": target.key,
+            "value_minor": value_minor,
+            "currency": deal.currency,
+        },
         request=request,
     )
     publish_event(
@@ -172,15 +383,7 @@ async def create_deal(
         event_type=EVT_DEAL_CREATED,
         aggregate_type="deal",
         aggregate_id=deal.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "deal_id": str(deal.id),
-            "name": name,
-            "stage": stage,
-            "value_minor": value_minor,
-            "currency": deal.currency,
-            "owner_id": str(owner_id),
-        },
+        payload=_created_payload(deal, target.outcome),
         actor=_actor(ctx),
     )
     return deal
@@ -219,6 +422,7 @@ async def update_deal(
     if "currency" in changes:
         changes["currency"] = changes["currency"].upper()
 
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
     before = {field: getattr(deal, field) for field in changes}
     for field, value in changes.items():
         setattr(deal, field, value)
@@ -244,11 +448,7 @@ async def update_deal(
         event_type=EVT_DEAL_UPDATED,
         aggregate_type="deal",
         aggregate_id=deal.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "deal_id": str(deal.id),
-            "changed": sorted(changes),
-        },
+        payload=_updated_payload(deal, spec.outcome_of(deal.stage), sorted(changes)),
         actor=_actor(ctx),
     )
     return deal
@@ -304,16 +504,40 @@ async def move_stage(
 ) -> Deal:
     """Move a deal to another stage, under the transition rule in `domain.can_transition`:
     open deals move freely between open stages and close either way; a closed deal is a
-    record and moves nowhere. Closing won pins probability to 100, lost to 0, unless the
-    caller says otherwise for an open stage."""
-    if not domain.can_transition(deal.stage, new_stage):
+    record and moves nowhere.
+
+    The target must be an active stage of the organization's pipeline (422 `unknown_stage`,
+    422 `stage_archived`), and the move holds the pipeline's shared lock, so an archive cannot
+    remove it mid-move. A move into a stage whose outcome is `won` or `lost` pins the
+    probability — 100 and 0 — and a supplied figure that differs is a 422 `probability_pinned`
+    (storing a won deal at 37 percent would corrupt every rollup); omitted, the pin applies. A
+    move into an open stage takes `probability`, or the stage's default. The first move into a
+    closing stage also sets `closed_at`, once, and nothing ever clears it."""
+    await lock_pipeline_shared(session, ctx.organization_id)
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    target = _target_stage(spec, new_stage)
+    if not domain.can_transition(deal.stage, new_stage, spec):
         raise ConflictProblem(f"A deal in {deal.stage!r} cannot move to {new_stage!r}")
+    if target.outcome == "open":
+        resolved_probability = (
+            probability if probability is not None else target.default_probability
+        )
+    else:
+        pin = CLOSING_PROBABILITY[target.outcome]
+        if probability is not None and probability != pin:
+            message = f"A deal moved to a {target.outcome} stage is pinned at {pin} percent"
+            raise ValidationProblem(
+                message,
+                errors=[{"field": "probability", "code": "probability_pinned", "message": message}],
+            )
+        resolved_probability = pin
 
     before = deal.stage
+    from_outcome = spec.outcome_of(before)
     deal.stage = new_stage
-    deal.probability = (
-        probability if probability is not None else STAGE_DEFAULT_PROBABILITY[new_stage]
-    )
+    deal.probability = resolved_probability
+    if target.outcome != "open" and deal.closed_at is None:
+        deal.closed_at = utcnow()
     deal.updated_by = str(ctx.principal.sub)
     await session.flush()
 
@@ -336,12 +560,9 @@ async def move_stage(
         event_type=EVT_DEAL_STAGE_CHANGED,
         aggregate_type="deal",
         aggregate_id=deal.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "deal_id": str(deal.id),
-            "from": before,
-            "to": new_stage,
-        },
+        payload=_stage_changed_payload(
+            deal, before=before, from_outcome=from_outcome, target=target
+        ),
         actor=_actor(ctx),
     )
     return deal

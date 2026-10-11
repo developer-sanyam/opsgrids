@@ -18,14 +18,92 @@ part of reading it, so routes stay thin.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Activity, Deal
-from app.schemas import ActivityOut, DealOut
+from app.models import Activity, Deal, Pipeline, PipelineStage
+from app.pipeline import DEFAULT_PIPELINE, Outcome, PipelineSpec, StageSpec, Tone
+from app.schemas import ActivityOut, DealOut, PipelineRefOut, StageListOut, StageOut
 from platform_core.auth import ScopeContext
+from platform_core.logging import get_logger
+
+log = get_logger("deal.selectors")
+
+# ------------------------------------------------------------------ the pipeline
+
+
+async def load_pipeline_spec(session: AsyncSession, organization_id: uuid.UUID) -> PipelineSpec:
+    """The organization's pipeline: its default pipeline's stored stages, or the virtual default
+    (`DEFAULT_PIPELINE`) when nothing is stored for it. One or two indexed point queries, each
+    filtered on `organization_id` on top of the forced row-level-security policy.
+
+    A write that binds a deal to a stage takes the shared pipeline lock *before* calling this
+    (`services.lock_pipeline_shared`), so the spec it reads cannot change under it; a read calls
+    it with no lock. Soft-deleted stages are never loaded; archived ones are, because a deal may
+    keep sitting in one and still has to be read, summed and shown.
+    """
+    pipeline = (
+        await session.execute(
+            select(Pipeline).where(
+                Pipeline.organization_id == organization_id,
+                Pipeline.is_default.is_(True),
+                Pipeline.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if pipeline is None:
+        return DEFAULT_PIPELINE
+    rows = (
+        (
+            await session.execute(
+                select(PipelineStage)
+                .where(
+                    PipelineStage.organization_id == organization_id,
+                    PipelineStage.pipeline_id == pipeline.id,
+                    PipelineStage.deleted_at.is_(None),
+                )
+                .order_by(PipelineStage.position, PipelineStage.key)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return PipelineSpec(
+        stages=tuple(
+            StageSpec(
+                key=row.key,
+                label=row.label,
+                position=row.position,
+                # The CHECK constraints on the table are what make these casts true.
+                outcome=cast(Outcome, row.outcome),
+                default_probability=row.default_probability,
+                tone=cast(Tone, row.tone),
+                archived=row.archived_at is not None,
+                id=row.id,
+            )
+            for row in rows
+        ),
+        id=pipeline.id,
+        key=pipeline.key,
+        name=pipeline.name,
+        materialised=True,
+    )
+
+
+async def live_deal_counts_by_stage(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> dict[str, int]:
+    """How many **live** (not soft-deleted) deals sit in each stage key, organization-wide, in
+    one grouped query. Deal-derived data: the route that serves it decides who may see it."""
+    stmt = (
+        select(Deal.stage, func.count())
+        .where(Deal.organization_id == organization_id, Deal.deleted_at.is_(None))
+        .group_by(Deal.stage)
+    )
+    return dict((await session.execute(stmt)).tuples().all())
+
 
 # ------------------------------------------------------------------ deals
 
@@ -35,14 +113,21 @@ def deals_stmt(
     *,
     q: str | None = None,
     stage: str | None = None,
+    outcome: Outcome | None = None,
     owner_id: uuid.UUID | None = None,
     company_id: uuid.UUID | None = None,
+    spec: PipelineSpec = DEFAULT_PIPELINE,
 ) -> Select[Any]:
     """Scope-filtered deal list. `ctx.apply` is the enforcement point. The search matches
     the deal name — the field the SPA filters on; `owner_id` narrows to one rep's deals
     the way the board's owner dropdown does, and `company_id` to one account's deals (both
     *filters* within scope, never a widening) — the index `ix_deals_org_company` backs the
-    latter, so a company's deals card stops fetching the whole board client-side."""
+    latter, so a company's deals card stops fetching the whole board client-side.
+
+    `outcome` selects by what the stage *means* — `open`, `won` or `lost` — through the
+    pipeline's own stages, never by a key: `open` is everything that is not won or lost, so a
+    deal sitting in a stage the pipeline cannot resolve is still open, as `domain.is_open`
+    says. `stage` stays an unvalidated key: an unknown one returns an empty page."""
     stmt = select(Deal).where(
         Deal.organization_id == ctx.organization_id,
         Deal.deleted_at.is_(None),
@@ -53,6 +138,10 @@ def deals_stmt(
         stmt = stmt.where(func.lower(Deal.name).like(f"%{q.lower()}%"))
     if stage:
         stmt = stmt.where(Deal.stage == stage)
+    if outcome == "open":
+        stmt = stmt.where(Deal.stage.not_in((*spec.keys_of("won"), *spec.keys_of("lost"))))
+    elif outcome is not None:
+        stmt = stmt.where(Deal.stage.in_(spec.keys_of(outcome)))
     if owner_id is not None:
         stmt = stmt.where(Deal.owner_id == owner_id)
     if company_id is not None:
@@ -145,7 +234,19 @@ async def all_activities(
 # ------------------------------------------------------------------ projections (ORM → wire)
 
 
-def deal_out(deal: Deal) -> DealOut:
+def deal_out(deal: Deal, spec: PipelineSpec) -> DealOut:
+    """The wire shape of a deal, its `stage` key resolved against the pipeline.
+
+    A key the pipeline cannot resolve — a stage row someone removed by hand, a deal imported
+    ahead of its stage — renders `open`, labelled by its own key, at position -1, and logs the
+    deal and organization ids. It never raises: one bad row must not blank a list."""
+    stage = spec.get(deal.stage)
+    if stage is None:
+        log.warning(
+            "deal.stage.unresolved",
+            deal_id=str(deal.id),
+            organization_id=str(deal.organization_id),
+        )
     return DealOut(
         id=str(deal.id),
         name=deal.name,
@@ -160,7 +261,46 @@ def deal_out(deal: Deal) -> DealOut:
         created_at=deal.created_at,
         last_activity_at=deal.last_activity_at,
         source=deal.source,
+        stage_label=stage.label if stage is not None else deal.stage,
+        stage_outcome=stage.outcome if stage is not None else "open",
+        stage_position=stage.position if stage is not None else -1,
+        stage_is_last_open=spec.is_last_open(deal.stage),
+        closed_at=deal.closed_at,
     )
+
+
+def stage_list_out(
+    spec: PipelineSpec,
+    *,
+    include_archived: bool = False,
+    counts: dict[str, int] | None = None,
+) -> StageListOut:
+    """`GET /deals/stages`' body. Stages come out in position order; archived ones only when
+    asked for. `counts` is None unless the caller may see deal-derived figures, and then no stage
+    is given a `deal_count` at all (the field is absent, never zero)."""
+    items: list[StageOut] = []
+    for stage in sorted(spec.stages, key=lambda s: (s.position, s.key)):
+        if stage.archived and not include_archived:
+            continue
+        fields: dict[str, Any] = {
+            "id": stage.id,
+            "key": stage.key,
+            "label": stage.label,
+            "position": stage.position,
+            "outcome": stage.outcome,
+            "default_probability": stage.default_probability,
+            "tone": stage.tone,
+            "archived": stage.archived,
+        }
+        if counts is not None:
+            fields["deal_count"] = counts.get(stage.key, 0)
+        items.append(StageOut(**fields))
+    pipeline = (
+        PipelineRefOut(id=spec.id, key=spec.key, name=spec.name)
+        if spec.materialised and spec.id is not None
+        else None
+    )
+    return StageListOut(pipeline=pipeline, materialised=spec.materialised, stages=items)
 
 
 def activity_out(activity: Activity) -> ActivityOut:

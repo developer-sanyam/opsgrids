@@ -6,10 +6,14 @@ and the rep directory (`owner_id`) are plain UUIDs into customer-service's rows 
 constraint that crosses a schema boundary. Links **within** this schema
 (`activities.deal_id`) are real foreign keys, because only cross-schema keys are banned.
 
-Two concerns, one schema:
+Three concerns, one schema:
 
-* **deals** — one opportunity moving through the six-stage pipeline (lead → qualified →
-  proposal → negotiation → closed_won | closed_lost). `value_minor` is integer minor
+* **pipelines** and **pipeline_stages** — what a deal's stage *means*: one pipeline per
+  organization, whose stages carry a label, a position, a tone, a default probability and an
+  **outcome** (`open`, `won`, `lost`). An organization with no rows reads the virtual default
+  (`app.pipeline`), the six stages the service has always had.
+* **deals** — one opportunity moving through its organization's pipeline. `deals.stage` holds a
+  stage **key**. `value_minor` is integer minor
   units in an ISO currency (ADR-0000 §8); no float ever touches money. `last_activity_at`
   is the staleness clock: it advances whenever an activity is logged against the deal, and
   the Overview's "needs attention" reading (stale / closing soon / overdue) derives from
@@ -26,7 +30,22 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -70,8 +89,11 @@ class Deal(Base, TenantBase):
     value_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
 
-    #: lead | qualified | proposal | negotiation | closed_won | closed_lost.
-    stage: Mapped[str] = mapped_column(String(20), nullable=False, default="lead")
+    #: A stage **key** of the organization's pipeline (`pipeline_stages.key`, or the virtual
+    #: default's — see `app.pipeline`). Never defaulted here: `services.create_deal` always names
+    #: one, the pipeline's entry stage when the caller does not. No foreign key and no CHECK, so
+    #: a vocabulary change is not a migration; the service layer validates the key.
+    stage: Mapped[str] = mapped_column(String(20), nullable=False)
     #: The rep who runs the deal — the OWN-scope column. Plain UUID into the rep directory.
     owner_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     #: Win likelihood, 0-100. 100 once won, 0 once lost.
@@ -84,6 +106,15 @@ class Deal(Base, TenantBase):
     #: The staleness clock — when the deal was last touched. Advanced by `log_activity`;
     #: NULL for a deal with no timeline yet.
     last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    #: When the deal actually closed — set by `move_stage` on a move into a stage whose outcome is
+    #: `won` or `lost` (a closed deal moves nowhere afterwards, so this is never cleared once
+    #: set), or by `create_deal` for a deal created directly in such a stage. NULL for an open
+    #: deal, and NULL for a deal that closed before this column existed with no audit row the
+    #: migration's own backfill could recover one from (ADR-0020 §3) — insights' won/lost
+    #: coverage starts at go-live for that organization rather than guessing. Never the
+    #: *expected* close: see `close_date`.
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         # Every index leads with `organization_id`: the RLS policy qual is ANDed into every
@@ -135,6 +166,99 @@ class Activity(Base, TenantBase):
         Index("ix_activities_org_contact", "organization_id", "contact_id"),
         Index("ix_activities_org_company", "organization_id", "company_id"),
         Index("ix_activities_org_occurred", "organization_id", "occurred_at"),
+    )
+
+
+class Pipeline(Base, TenantBase):
+    """An organization's pipeline — the home of its stages.
+
+    One default pipeline per organization (`uq_pipelines_org_default`), with the tables shaped
+    so more can be added later. An organization with **no row here** reads the virtual default
+    (`app.pipeline.DEFAULT_PIPELINE`, the six stages the service has always had); the first
+    stage-configuration write materialises it. `(organization_id, id)` is unique so that
+    `pipeline_stages` can point at a pipeline of the *same* organization and no other.
+    """
+
+    __tablename__ = "pipelines"
+
+    key: Mapped[str] = mapped_column(String(40), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "key", name="uq_pipelines_org_key"),
+        # The target of `pipeline_stages`' organization-scoped foreign key.
+        UniqueConstraint("organization_id", "id", name="uq_pipelines_org_id"),
+        Index(
+            "uq_pipelines_org_default",
+            "organization_id",
+            unique=True,
+            postgresql_where=text("is_default AND deleted_at IS NULL"),
+        ),
+    )
+
+
+class PipelineStage(Base, TenantBase):
+    """One stage of a pipeline. `Deal.stage` holds a stage's **key**.
+
+    `key` is an immutable slug (a database trigger freezes it, with `pipeline_id`,
+    `organization_id` and `outcome`) and is never reused, even after the stage is archived: it
+    is the identifier events, audit rows and tenant-authored automation rules carry. `outcome`
+    (`open`, `won`, `lost`) is what every consumer tests. A stage is archived (`archived_at`),
+    never deleted. The row-local rules are CHECKs; the rules that span rows are
+    `app.pipeline.validate`, run under the exclusive pipeline lock.
+    """
+
+    __tablename__ = "pipeline_stages"
+
+    pipeline_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    key: Mapped[str] = mapped_column(String(20), nullable=False)
+    label: Mapped[str] = mapped_column(String(80), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(8), nullable=False)
+    default_probability: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    tone: Mapped[str] = mapped_column(String(10), nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("key ~ '^[a-z0-9_]{1,20}$'", name="key"),
+        CheckConstraint("outcome IN ('open', 'won', 'lost')", name="outcome"),
+        CheckConstraint("default_probability BETWEEN 0 AND 100", name="probability"),
+        CheckConstraint(
+            "outcome = 'open' "
+            "OR (outcome = 'won' AND default_probability = 100) "
+            "OR (outcome = 'lost' AND default_probability = 0)",
+            name="closing_pin",
+        ),
+        CheckConstraint("tone IN ('neutral', 'info', 'success', 'warning', 'danger')", name="tone"),
+        CheckConstraint("position >= 0", name="position"),
+        # Organization-scoped: a stage cannot name another tenant's pipeline, even though the
+        # referential-integrity check itself bypasses row-level security.
+        ForeignKeyConstraint(
+            ["organization_id", "pipeline_id"],
+            ["deal.pipelines.organization_id", "deal.pipelines.id"],
+            name="fk_pipeline_stages_pipeline",
+            ondelete="RESTRICT",
+        ),
+        # Not partial: a key is never reused, even after the stage is archived.
+        UniqueConstraint(
+            "organization_id", "pipeline_id", "key", name="uq_pipeline_stages_org_pipeline_key"
+        ),
+        Index(
+            "ix_pipeline_stages_org_pipeline_position", "organization_id", "pipeline_id", "position"
+        ),
+        # Active labels are unique case-insensitively: that is what lets an import resolve a
+        # label to exactly one key.
+        Index(
+            "uq_pipeline_stages_org_pipeline_label_active",
+            "organization_id",
+            "pipeline_id",
+            text("lower(label)"),
+            unique=True,
+            postgresql_where=text("archived_at IS NULL AND deleted_at IS NULL"),
+        ),
     )
 
 

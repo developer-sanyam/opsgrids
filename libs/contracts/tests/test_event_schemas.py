@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator, ValidationError
@@ -292,9 +293,6 @@ PINNED_AHEAD_OF_PRODUCER: frozenset[str] = frozenset(
         "crm.lead.created",  # R3.7
         "crm.lead.updated",  # R3.7
         "crm.lead.converted",  # R3.7
-        "crm.pipeline.deal.created",  # R2.3
-        "crm.pipeline.deal.updated",  # R2.3
-        "crm.pipeline.deal.stage_changed",  # R2.3
     }
 )
 
@@ -329,3 +327,44 @@ def test_no_service_test_names_a_crm_event_that_has_no_committed_schema() -> Non
             if event_type not in committed:
                 phantom.setdefault(event_type, []).append(str(path.relative_to(ROOT)))
     assert not phantom, f"service tests name crm events that no producer publishes: {phantom}"
+
+
+#: What each deal event that names a stage must carry (R2.3): the fields holding a stage **key**,
+#: and the **outcome** fields a consumer tests instead of the key.
+DEAL_STAGE_EVENTS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "crm.pipeline.deal.created": (("stage",), ("stage_outcome",)),
+    "crm.pipeline.deal.updated": (("stage",), ("stage_outcome",)),
+    "crm.pipeline.deal.stage_changed": (("from", "to"), ("from_outcome", "to_outcome")),
+}
+STAGE_KEY_PATTERN = "^[a-z0-9_]{1,20}$"
+
+
+def _deal_schema(event_type: str) -> dict[str, Any]:
+    path = event_schema_path(event_type, 1, contracts_root=CONTRACTS)
+    return dict(json.loads(path.read_text(encoding="utf-8")))
+
+
+def test_the_deal_stage_events_use_the_key_pattern_and_require_outcomes() -> None:
+    """A stage key is an organization's own slug, so no deal event may enumerate the six legacy
+    keys; what a consumer tests is the outcome, so every event that names a stage requires one.
+    The schemas are also level with their producer: none carries an "Ahead of the producer"
+    comment any more."""
+    for event_type, (key_fields, outcome_fields) in DEAL_STAGE_EVENTS.items():
+        schema = _deal_schema(event_type)
+        properties = schema["properties"]
+        for field in key_fields:
+            assert properties[field] == {"type": "string", "pattern": STAGE_KEY_PATTERN}, (
+                event_type,
+                field,
+            )
+        for field in outcome_fields:
+            assert properties[field] == {"enum": ["open", "won", "lost"]}, (event_type, field)
+            assert field in schema["required"], (event_type, field)
+        assert "Ahead of the producer" not in str(schema.get("$comment", "")), event_type
+
+
+def test_stage_changed_may_carry_the_target_stages_label_but_need_not() -> None:
+    """`to_label` is additive within v1: optional, display only, bounded like the column."""
+    schema = _deal_schema("crm.pipeline.deal.stage_changed")
+    assert schema["properties"]["to_label"] == {"type": "string", "minLength": 1, "maxLength": 80}
+    assert "to_label" not in schema["required"]

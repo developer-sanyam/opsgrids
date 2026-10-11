@@ -59,10 +59,12 @@ every field says so in its `$comment`, naming the fields and the function that m
 
 | Routing key | Producer | Status | Insights uses it for |
 |---|---|---|---|
-| `crm.pipeline.deal.created` | `deal/app/services.py:create_deal` (also reached by lead conversion through deal's internal route) | +fields: `company_id`, `close_date`, `probability`, `closed_at`, `created_at` | `deal_facts` |
-| `crm.pipeline.deal.updated` | `deal/app/services.py:update_deal` | +fields: the full state after the patch (`name`, `stage`, `value_minor`, `currency`, `owner_id`, `company_id`, `close_date`, `probability`, `closed_at`). Today it carries only `changed`. | `deal_facts` (a value or owner change moves pipeline and OWN figures) |
-| `crm.pipeline.deal.stage_changed` | `deal/app/services.py:move_stage` | +fields: `name`, `value_minor`, `currency`, `owner_id`, `probability`, `closed_at`. `closed_at` needs the new column `deal.deals.closed_at`, set here. | `deal_facts.stage`/`closed_at`, i.e. won/lost, feed |
+| `crm.pipeline.deal.created` | `deal/app/services.py:create_deal` (also reached by lead conversion through deal's internal route) | **as-is** since R2.3, the stages release: `company_id`, `close_date`, `probability`, `closed_at`, `created_at`, and `stage_outcome` (`open`, `won` or `lost`). `stage` is a stage **key**, and an organization's own once stages are editable | `deal_facts`, including its `stage_outcome` |
+| `crm.pipeline.deal.updated` | `deal/app/services.py:update_deal` | **as-is** since R2.3: the full state after the patch (`name`, `stage`, `stage_outcome`, `value_minor`, `currency`, `owner_id`, `company_id`, `close_date`, `probability`, `closed_at`) beside `changed` | `deal_facts` (a value or owner change moves pipeline and OWN figures) |
+| `crm.pipeline.deal.stage_changed` | `deal/app/services.py:move_stage` | **as-is** since R2.3: `name`, `value_minor`, `currency`, `owner_id`, `probability`, `closed_at`, and `from_outcome` and `to_outcome` beside the keys `from` and `to`; `to_label` (optional) is the target stage's label, for display only. `closed_at` is set when `to_outcome` is `won` or `lost`, in the column `deal.deals.closed_at` that R2.3 adopts (`a1c9e2f7b3d4`) | `deal_facts.stage`/`stage_outcome`/`closed_at`, i.e. won/lost, feed. **Decide won and lost by `to_outcome`, never by a key** |
 | `crm.pipeline.deal.deleted` | `deal/app/services.py:delete_deal` | as-is | `deal_facts.deleted_at` |
+
+A stage key is an organization's own once R2.5 lets it edit its stages, so insights enumerates no key: it decides open, won and lost by `stage_outcome` and `to_outcome`, keeps `stage` and `to_label` for display, and carries no CHECK on the key's values (registry `L10`).
 
 ### CRM: lead and customer; slice I4
 

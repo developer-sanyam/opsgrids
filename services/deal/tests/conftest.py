@@ -45,6 +45,8 @@ from tests.helpers import ctx_for
 TENANT_TABLES = (
     "activities",
     "deals",
+    "pipeline_stages",
+    "pipelines",
     "audit_logs",
     "outbox",
     "processed_events",
@@ -70,29 +72,41 @@ def org_id() -> uuid.UUID:
     return uuid.uuid4()
 
 
-@pytest_asyncio.fixture
-async def session(org_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
-    """A session as the **app** role, with every transaction bound to `org_id`."""
+async def _truncate_tenant_tables() -> None:
+    """Empty every table the suite writes, as the admin role. The append-only trigger refuses even
+    a cascaded DELETE, so truncate directly — TRUNCATE does not fire row-level triggers."""
     cfg = settings()
     tables = ", ".join(f'"{SCHEMA}"."{t}"' for t in TENANT_TABLES)
-
     admin = create_async_engine(cfg.admin_dsn, connect_args=_connect_args())
     async with admin.begin() as conn:
-        # The append-only trigger refuses even a cascaded DELETE, so truncate directly —
-        # TRUNCATE does not fire row-level triggers.
         await conn.execute(text(f"TRUNCATE {tables} CASCADE"))
     await admin.dispose()
 
+
+@pytest_asyncio.fixture
+async def session(org_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
+    """A session as the **app** role, with every transaction bound to `org_id`.
+
+    The tables are emptied before the test **and after it**. After, because a test may leave a
+    customised pipeline or a deal in a stage of its own, and the migration round trip
+    (`make migration-roundtrip`, which `make gate` runs after the service tests, on the same
+    database) refuses to downgrade a database that holds either."""
+    cfg = settings()
+    await _truncate_tenant_tables()
+
     engine = create_async_engine(cfg.app_dsn, connect_args=_connect_args())
     maker = async_sessionmaker(engine, expire_on_commit=False)
-    async with maker() as s:
+    try:
+        async with maker() as s:
 
-        @event.listens_for(s.sync_session, "after_begin")
-        def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
-            connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
+            @event.listens_for(s.sync_session, "after_begin")
+            def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+                connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
 
-        yield s
-    await engine.dispose()
+            yield s
+    finally:
+        await engine.dispose()
+        await _truncate_tenant_tables()
 
 
 @pytest_asyncio.fixture
@@ -103,6 +117,21 @@ async def admin_session() -> AsyncIterator[AsyncSession]:
     async with maker() as s:
         yield s
     await engine.dispose()
+
+
+@pytest_asyncio.fixture(params=["virtual", "materialised"])
+async def pipeline_mode(
+    request: pytest.FixtureRequest, session: AsyncSession, org_id: uuid.UUID
+) -> str:
+    """Run a suite against both ways an organization can hold the default pipeline: `virtual`
+    (nothing stored — what every organization is until stage configuration ships) and
+    `materialised` (the same six stages as rows, as the first stage-configuration write leaves
+    them). The suites that apply this through `pytestmark` must pass in both, which is how
+    "the legacy six behave as they always did" is proved for the stored read path too."""
+    if request.param == "materialised":
+        async with session.begin():
+            await services.materialise_default_pipeline(session, org_id, None)
+    return str(request.param)
 
 
 @pytest_asyncio.fixture

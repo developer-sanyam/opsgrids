@@ -110,9 +110,11 @@ async def convert_lead(
     than opening a second one (ADR-0017's "one deal" half of the conversion guarantee), even
     if the first attempt's deal was soft-deleted since (`get_deal_by_id_any_state` — a second
     `INSERT` with that id would otherwise fail against the row Postgres still holds). Opens at
-    the `lead` stage with the pipeline's own default probability, an explicit `close_date`
-    lead-service already computed, and `source="lead"` so the deal's own timeline shows where
-    it came from.
+    the organization's **entry stage** — the first active open stage of its pipeline, with that
+    stage's default probability — an explicit `close_date` lead-service already computed, and
+    `source="lead"` so the deal's own timeline shows where it came from. A pipeline with no
+    active open stage answers 422 (`no_entry_stage`), which lead's client turns into a permanent
+    rejection, never into the "name conflict" a 409 would be read as.
     """
     _require_caller(request, "lead")
     _require_org_claim(request, organization_id)
@@ -132,7 +134,6 @@ async def convert_lead(
                 owner_id=payload.owner_id,
                 value_minor=0,
                 close_date=payload.close_date,
-                stage="lead",
                 source=payload.source,
                 deal_id=payload.deal_id,
                 acting_as="lead",

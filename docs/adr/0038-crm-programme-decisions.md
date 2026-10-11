@@ -133,8 +133,8 @@ others. Every change is additive within `v1` and lands in the same commit as its
   key.
 - The six stored keys `lead`, `qualified`, `proposal`, `negotiation`, `closed_won` and `closed_lost`
   are frozen. They become the default pipeline's keys and never change meaning, because tenant
-  rules match `payload.to`, the Customer 360 tests them literally
-  (`services/customer/app/c1_360.py:95`) and three event contracts carry them.
+  rules match `payload.to` and three event contracts carry them. (Until R2.3 the Customer 360
+  also tested them literally; it now reads each deal's outcome.)
 - `crm.pipeline.deal.created` and `crm.pipeline.deal.updated` gain `stage_outcome`;
   `crm.pipeline.deal.stage_changed` gains `from_outcome`, `to_outcome` and an optional `to_label`,
   while `from` and `to` stay keys. The six-value enumerations that carry a stage key become the key

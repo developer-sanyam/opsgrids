@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import domain, scope, selectors, services
 from app.config import settings
 from app.models import SCHEMA
+from app.pipeline import Outcome
 from app.schemas import (
     ActivityIn,
     ActivityOut,
@@ -35,6 +36,7 @@ from app.schemas import (
     DealOut,
     DealPatch,
     ServiceInfo,
+    StageListOut,
     StageMoveIn,
     SummaryOut,
 )
@@ -87,12 +89,25 @@ async def list_deals(
     params: PageQuery,
     q: Annotated[str | None, Query(description="Deal name")] = None,
     stage: Annotated[str | None, Query()] = None,
+    outcome: Annotated[
+        Outcome | None,
+        Query(description="Select by what the stage means: open, won or lost — never by key"),
+    ] = None,
     owner_id: Annotated[uuid.UUID | None, Query()] = None,
     company_id: Annotated[uuid.UUID | None, Query(description="One account's deals only")] = None,
 ) -> Page[DealOut]:
-    stmt = selectors.deals_stmt(ctx, q=q, stage=stage, owner_id=owner_id, company_id=company_id)
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    stmt = selectors.deals_stmt(
+        ctx,
+        q=q,
+        stage=stage,
+        outcome=outcome,
+        owner_id=owner_id,
+        company_id=company_id,
+        spec=spec,
+    )
     rows, total = await paginate(session, stmt, params)
-    return Page.build([selectors.deal_out(d) for d in rows], total=total, params=params)
+    return Page.build([selectors.deal_out(d, spec) for d in rows], total=total, params=params)
 
 
 @router.post(
@@ -128,7 +143,8 @@ async def create_deal(
         source=payload.source,
         request=request,
     )
-    return selectors.deal_out(deal)
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    return selectors.deal_out(deal, spec)
 
 
 @router.get(
@@ -174,21 +190,63 @@ async def summary(
             )
         resolved_owner_id = ctx.subject_ref
 
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
     deals = await selectors.all_deals(session, ctx, owner_id=resolved_owner_id)
     activities = await selectors.all_activities(session, ctx, owner_id=resolved_owner_id)
-    open_value = domain.pipeline_value_minor(deals)
+    open_value = domain.pipeline_value_minor(deals, spec)
     currency = deals[0].currency if deals else "INR"
     return SummaryOut(
         pipeline_value_minor=open_value,
-        weighted_pipeline_minor=domain.weighted_pipeline_minor(deals),
-        open_deals=domain.open_count(deals),
-        win_rate_pct=domain.win_rate_pct(deals),
-        won_value_minor=domain.won_value_minor(deals),
+        weighted_pipeline_minor=domain.weighted_pipeline_minor(deals, spec),
+        open_deals=domain.open_count(deals, spec),
+        win_rate_pct=domain.win_rate_pct(deals, spec),
+        won_value_minor=domain.won_value_minor(deals, spec),
         activities_this_week=domain.activities_this_week(activities),
         currency=currency,
         trend=None,
-        funnel=domain.stage_funnel(deals),
+        funnel=[
+            {**row, "outcome": spec.outcome_of(str(row["stage"]))}
+            for row in domain.stage_funnel(deals, spec)
+        ],
     )
+
+
+# Declared before `/deals/{deal_id}` — Starlette matches in declaration order, so `stages` never
+# falls into the detail route (a UUID that is not one would answer 422 instead of the list).
+@router.get(
+    "/deals/stages",
+    response_model=StageListOut,
+    response_model_exclude_unset=True,
+    summary="The pipeline's stages — what a deal's stage key means",
+    dependencies=[Entitled],
+)
+async def list_stages(
+    session: SessionDep,
+    ctx: DealRead,
+    include_archived: Annotated[
+        bool, Query(description="Also list archived stages (deals may still sit in them)")
+    ] = False,
+    include: Annotated[
+        Literal["counts"] | None,
+        Query(
+            description="`counts` adds the number of live deals in each stage — for a caller "
+            "who reads deals organization-wide only; ignored for anyone else"
+        ),
+    ] = None,
+) -> StageListOut:
+    """The organization's pipeline, or the virtual default when it has none stored.
+
+    Stage rows are tenant configuration, like the rep roster, so the list has no scope floor:
+    an OWN-scoped rep still needs every stage's label to read their own deals. A `GET` never
+    materialises the default, and never writes. `deal_count` is deal-derived data, so it follows
+    the deal read's scope as `GET /deals/summary` does: it is returned only for a caller whose
+    `crm.pipeline.deal.read` grant is ORG, counts live deals only, and is *absent* — not zero —
+    for everyone else."""
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    counts: dict[str, int] | None = None
+    if include == "counts" and ctx.scope is Scope.ORG:
+        counts = await selectors.live_deal_counts_by_stage(session, ctx.organization_id)
+    return selectors.stage_list_out(spec, include_archived=include_archived, counts=counts)
 
 
 @router.get(
@@ -281,7 +339,8 @@ async def read_deal(deal_id: uuid.UUID, session: SessionDep, ctx: DealRead) -> D
     if deal is None:
         raise NotFoundProblem("That deal is not part of this organization")
     ctx.assert_can_touch(owner_id=deal.owner_id)
-    return selectors.deal_out(deal)
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    return selectors.deal_out(deal, spec)
 
 
 @router.patch(
@@ -302,7 +361,8 @@ async def update_deal(
         raise NotFoundProblem("That deal is not part of this organization")
     ctx.assert_can_touch(owner_id=deal.owner_id)
     updated = await services.update_deal(session, ctx, deal, payload, request=request)
-    return selectors.deal_out(updated)
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    return selectors.deal_out(updated, spec)
 
 
 @router.delete(
@@ -347,4 +407,5 @@ async def move_deal_stage(
         probability=payload.probability,
         request=request,
     )
-    return selectors.deal_out(updated)
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    return selectors.deal_out(updated, spec)

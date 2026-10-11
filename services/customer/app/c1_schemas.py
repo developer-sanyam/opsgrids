@@ -44,6 +44,12 @@ class Customer360Customer(BaseModel):
 
 
 class CrmSection(BaseModel):
+    """What the account's deals say, as deal reads them for the *caller's* scope.
+
+    `stage` is the key of the furthest open deal, by its position in its own pipeline.
+    `open_opportunities` counts deals whose stage outcome is `open`. `hot` is true when any
+    open deal has a probability of 70 or more, or sits in its pipeline's last open stage."""
+
     stage: str | None
     open_opportunities: int
     hot: bool

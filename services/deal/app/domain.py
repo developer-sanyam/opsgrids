@@ -6,6 +6,13 @@ computes them.
 Also the home of the stage-transition rule: which moves through the pipeline are legal is
 an algorithm, not a persistence detail, so it lives here and `services.move_stage` is its
 enforcement point.
+
+**Nothing here compares a stage key with a literal.** Every rule takes the organization's
+`PipelineSpec` (`app.pipeline`) and asks it for a stage's *outcome*: `open`, `won` or `lost`.
+The `spec` argument defaults to the virtual default pipeline — the six stages the service
+has always had — so a caller that has no spec to hand, and every test written before stages
+were data, gets exactly the answers it always got (`tests/test_pipeline_domain.py` holds that
+parity over the whole input grid).
 """
 
 from __future__ import annotations
@@ -14,104 +21,109 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
 from app.models import Activity, Deal
+from app.pipeline import DEFAULT_PIPELINE, PipelineSpec
 
 # ------------------------------------------------------------------ vocabulary (labels match SPA)
 
-#: Every stage in board order — the two terminal stages last (`data/stages.ts`).
-STAGE_ORDER: tuple[str, ...] = (
-    "lead",
-    "qualified",
-    "proposal",
-    "negotiation",
-    "closed_won",
-    "closed_lost",
+#: The default pipeline's vocabulary, derived rather than restated so there is one place the
+#: six stages are written (`app.pipeline`). Kept under their old names because callers and
+#: tests import them; they describe the *default* pipeline, never an organization's own.
+#: Every stage in board order — the two closing stages last (`data/stages.ts`).
+STAGE_ORDER: tuple[str, ...] = tuple(stage.key for stage in DEFAULT_PIPELINE.active())
+STAGE_LABELS: dict[str, str] = {stage.key: stage.label for stage in DEFAULT_PIPELINE.stages}
+#: The open (in-flight) stages, in order — the working columns of the board.
+OPEN_STAGES: tuple[str, ...] = tuple(
+    stage.key for stage in DEFAULT_PIPELINE.active() if stage.outcome == "open"
 )
-STAGE_LABELS: dict[str, str] = {
-    "lead": "Lead",
-    "qualified": "Qualified",
-    "proposal": "Proposal",
-    "negotiation": "Negotiation",
-    "closed_won": "Closed Won",
-    "closed_lost": "Closed Lost",
-}
-#: The four open (in-flight) stages, in order — the working columns of the board.
-OPEN_STAGES: tuple[str, ...] = ("lead", "qualified", "proposal", "negotiation")
-TERMINAL_STAGES: frozenset[str] = frozenset({"closed_won", "closed_lost"})
+TERMINAL_STAGES: frozenset[str] = frozenset(
+    stage.key for stage in DEFAULT_PIPELINE.stages if stage.outcome != "open"
+)
 
 
-def is_open(stage: str) -> bool:
-    return stage not in TERMINAL_STAGES
+def is_open(stage: str, spec: PipelineSpec = DEFAULT_PIPELINE) -> bool:
+    """Whether a deal in this stage is still in play. A key the pipeline does not contain
+    reads open — the same answer `is_open` has always given a key it did not know."""
+    return spec.outcome_of(stage) == "open"
 
 
-def can_transition(current: str, new: str) -> bool:
+def can_transition(current: str, new: str, spec: PipelineSpec = DEFAULT_PIPELINE) -> bool:
     """Whether a deal may move `current` → `new`.
 
     Open deals move freely between the open stages (forward on progress, backward on a
     re-qualification) and may close either way. A closed deal is a record: it moves
     nowhere — reopening one is a new deal, so won/lost reporting stays append-only in
-    spirit. A no-op "move" to the same stage is not a transition.
+    spirit. A no-op "move" to the same stage is not a transition, and neither is a move
+    into a stage the pipeline does not have or has archived.
     """
-    if current not in STAGE_ORDER or new not in STAGE_ORDER:
+    source = spec.get(current)
+    target = spec.get(new)
+    if source is None or target is None or target.archived:
         return False
-    return current not in TERMINAL_STAGES and new != current
+    return source.outcome == "open" and new != current
 
 
 # ------------------------------------------------------------------ rollups (mirror derive.ts)
 
 
-def open_deals(deals: Sequence[Deal]) -> list[Deal]:
-    """Deals still in flight (not closed-won or closed-lost)."""
-    return [d for d in deals if is_open(d.stage)]
+def open_deals(deals: Sequence[Deal], spec: PipelineSpec = DEFAULT_PIPELINE) -> list[Deal]:
+    """Deals still in flight (their stage's outcome is `open`)."""
+    return [d for d in deals if is_open(d.stage, spec)]
 
 
-def pipeline_value_minor(deals: Sequence[Deal]) -> int:
+def pipeline_value_minor(deals: Sequence[Deal], spec: PipelineSpec = DEFAULT_PIPELINE) -> int:
     """Total open pipeline value, in minor units."""
-    return sum(d.value_minor for d in open_deals(deals))
+    return sum(d.value_minor for d in open_deals(deals, spec))
 
 
-def weighted_pipeline_minor(deals: Sequence[Deal]) -> int:
+def weighted_pipeline_minor(deals: Sequence[Deal], spec: PipelineSpec = DEFAULT_PIPELINE) -> int:
     """Probability-weighted open pipeline (the forecast), in minor units."""
-    return sum(round(d.value_minor * d.probability / 100) for d in open_deals(deals))
+    return sum(round(d.value_minor * d.probability / 100) for d in open_deals(deals, spec))
 
 
-def open_count(deals: Sequence[Deal]) -> int:
-    return len(open_deals(deals))
+def open_count(deals: Sequence[Deal], spec: PipelineSpec = DEFAULT_PIPELINE) -> int:
+    return len(open_deals(deals, spec))
 
 
-def win_rate_pct(deals: Sequence[Deal]) -> int:
-    """Win rate over *decided* deals: closed-won / (closed-won + closed-lost), 0-100.
-    Deals still open don't count — a full pipeline shouldn't drag the rate toward zero."""
-    won = sum(1 for d in deals if d.stage == "closed_won")
-    lost = sum(1 for d in deals if d.stage == "closed_lost")
+def win_rate_pct(deals: Sequence[Deal], spec: PipelineSpec = DEFAULT_PIPELINE) -> int:
+    """Win rate over *decided* deals: won / (won + lost), 0-100, where a deal is won or lost
+    by its stage's outcome. Deals still open don't count — a full pipeline shouldn't drag the
+    rate toward zero."""
+    won = sum(1 for d in deals if spec.outcome_of(d.stage) == "won")
+    lost = sum(1 for d in deals if spec.outcome_of(d.stage) == "lost")
     decided = won + lost
     return 0 if decided == 0 else round(won / decided * 100)
 
 
-def won_value_minor(deals: Sequence[Deal]) -> int:
-    """Total value won across all closed-won deals, in minor units."""
-    return sum(d.value_minor for d in deals if d.stage == "closed_won")
+def won_value_minor(deals: Sequence[Deal], spec: PipelineSpec = DEFAULT_PIPELINE) -> int:
+    """Total value won across every deal in a `won` stage, in minor units."""
+    return sum(d.value_minor for d in deals if spec.outcome_of(d.stage) == "won")
 
 
-def stage_funnel(deals: Sequence[Deal]) -> list[dict[str, object]]:
-    """The by-stage funnel over the four open stages: count and summed value per stage,
-    with `pct` scaled to the richest stage so the bars read as a funnel — the same
-    arithmetic as the SPA's `stageFunnel`."""
+def stage_funnel(
+    deals: Sequence[Deal], spec: PipelineSpec = DEFAULT_PIPELINE
+) -> list[dict[str, object]]:
+    """The by-stage funnel over the active open stages, in position order: count and summed
+    value per stage, with `pct` scaled to the richest stage so the bars read as a funnel —
+    the same arithmetic as the SPA's `stageFunnel`. Archived stages are not columns, and a
+    deal sitting in a stage the pipeline does not contain is in no row."""
     rows: list[dict[str, object]] = []
     values: list[int] = []
-    for stage in OPEN_STAGES:
-        in_stage = [d for d in deals if d.stage == stage]
+    for stage in spec.active():
+        if stage.outcome != "open":
+            continue
+        in_stage = [d for d in deals if d.stage == stage.key]
         value = sum(d.value_minor for d in in_stage)
         values.append(value)
         rows.append(
             {
-                "stage": stage,
-                "label": STAGE_LABELS[stage],
+                "stage": stage.key,
+                "label": stage.label,
                 "count": len(in_stage),
                 "value_minor": value,
                 "pct": 0,
             }
         )
-    top = max(*values, 1)
+    top = max((*values, 1))
     for row, value in zip(rows, values, strict=True):
         row["pct"] = round(value / top * 100)
     return rows

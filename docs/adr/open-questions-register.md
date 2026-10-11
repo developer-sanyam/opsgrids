@@ -95,7 +95,7 @@ the register is complete. They are not re-decided.
 | `customer.contacts.email` stays plaintext when a lead converts; lead email is sealed | Accepted by ADR-0017 ("business contact data"). If it is ever sealed, that is a `customer` schema change for **C15/Q2**; [ADR-0038](0038-crm-programme-decisions.md) names the optional sealing as R2.9 Part C, after the C15 flip has soaked and only on an explicit yes (pending D-26; the proposed default is no) | not scheduled (accepted debt) |
 | The PII blind-index key is platform-wide, not per tenant | **P3** (PII envelope v2, per-service HKDF) | yes |
 | An aborted conversion leaves orphaned company, contact and deal records; `crm.lead.conversion_aborted` has no consumer | **NEW-9** (proposed in [ADR-0038](0038-crm-programme-decisions.md) as R2.1 and R2.4; pending D-1, D-2, D-3, D-4) | **no** |
-| Pipeline stages stay hard-coded (`deal.app.domain.STAGE_ORDER`); configurable stages are accepted debt | **C15** (in deal's own schema, never a separate `pipeline` service; proposed in [ADR-0038](0038-crm-programme-decisions.md) as R2.3 and R2.5, pending D-5) | yes |
+| Pipeline stages were hard-coded (`deal.app.domain.STAGE_ORDER`); since R2.3 they are rows (`deal.pipeline_stages`) behind a virtual default of the same six, and editing them is R2.5 | **C15** (in deal's own schema, never a separate `pipeline` service; proposed in [ADR-0038](0038-crm-programme-decisions.md) as R2.3 and R2.5, pending D-5) | yes |
 | Case-insensitive company-name uniqueness is enforced by the application, going forward only | no action (decided) | n/a |
 
 Note on row 20: ADR-0017's `lead` scope keys OWN on `subject_ref`, as `customer` and `deal` do.

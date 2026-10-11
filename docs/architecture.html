@@ -675,7 +675,7 @@ const NODES = [
 
   /* revenue */
   N("customer-service","service","Revenue","System of record for customers, contacts and addresses — for every product","FastAPI","customers · contacts","planned",7,"services/customer","REST · events"),
-  N("sales-service","service","Revenue","Leads, opportunities, pipelines, stages, activities","FastAPI","leads · opportunities · pipelines","planned",7,"services/sales","REST · events"),
+  N("sales-service","service","Revenue","Superseded by the built lead and deal services (ADR-0017): opportunities, pipelines and stages are rows of deal's own tables, and a stage is an organization's key whose meaning is its outcome (open, won or lost); leads and activities live in lead and deal","FastAPI","leads · opportunities · pipelines","planned",7,"services/sales","REST · events"),
   N("marketing-service","service","Revenue","Campaigns, channels, goals, attribution","FastAPI","campaigns · goals · metrics","planned",7,"services/marketing","REST · events"),
   N("support-service","service","Revenue","Tickets, SLAs, the customer helpdesk","FastAPI","tickets · sla","planned",7,"services/support","REST · events"),
 
@@ -737,6 +737,7 @@ const TOPICS = [
   ["attendance.day_finalised","attendance-service","payroll · analytics · leave","A derived day changed status"],
   ["leave.approved / cancelled","leave-service","attendance · notification","Approved leave re-derives attendance"],
   ["crm.customer.created / updated","customer-service","project · quotation · marketing","The shared customer record"],
+  ["crm.pipeline.deal.created / updated / stage_changed","deal","notification","Built. The stage is an organization's own key; stage_outcome, from_outcome and to_outcome (open, won or lost) say what it means, so a consumer tests the outcome and never the key"],
   ["billing.subscription.changed","subscription-service","every service · gateways","Entitlements moved; snapshots refresh"],
   ["billing.invoice.finalized / paid","billing-service","notification · analytics","An invoice was issued or settled"],
   ["usage.recorded","every product","metering-service","The metering feed — emitted from phase 3, billed from phase 8"],

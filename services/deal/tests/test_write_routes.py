@@ -28,7 +28,7 @@ from app.models import Activity, AuditLog, Deal, OutboxEvent
 from platform_core.auth import Principal, get_principal
 from tests.helpers import activities_for_deal, principal_for
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("pipeline_mode")]
 
 
 @contextlib.contextmanager
@@ -215,6 +215,9 @@ class TestCreateDeal:
         with as_principal(principal):
             response = await client.post("/api/v1/deals", json=payload)
         assert response.status_code == 422, f"{field}={value!r}"
+        if field == "stage":
+            # Well-formed, so the schema lets it through and the service refuses it.
+            assert response.json()["errors"][0]["code"] == "unknown_stage"
         assert await _deal_count(session) == before
 
 
@@ -274,6 +277,7 @@ class TestMoveStage:
                 f"/api/v1/deals/{data['deal_a_id']}/stage", json={"stage": "galaxy_brain"}
             )
         assert response.status_code == 422
+        assert response.json()["errors"][0]["code"] == "unknown_stage"
         assert (await _reload(session, org_id, data["deal_a_id"])).stage == "negotiation"
 
     async def test_a_closed_deal_moves_nowhere(self, client, session, org_id, data) -> None:

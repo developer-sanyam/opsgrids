@@ -78,7 +78,7 @@ Each schema also holds the platform's `outbox`, `processed_events` and `audit_lo
 | company | The **party**: a business or a one-person buyer; table `customer.companies` | status `customer, prospect, lead, churned` (`services/customer/app/schemas.py:38`); URL noun `customers` today (proposed in ADR-0038, pending D-22: `companies`, with the old prefix kept); events `crm.book.company.*` | "customer"; finance's billed party |
 | contact | A **person** at a company; table `customer.contacts`. Today `email` is required and unique among live rows (`services/customer/app/models.py:171,222-228`); the phone is sealed (`phone_enc`), masked (`phone`) and blind-indexed (`phone_index`). Phone-only contacts are proposed in ADR-0038 (pending D-14) | status `customer, qualified, lead, dormant` (`services/customer/app/schemas.py:39`); `/api/v1/contacts`; events `crm.book.contact.*` | a lead |
 | deal | An opportunity with a value in integer minor units and an ISO currency, a stage, a probability and an expected close date; table `deal.deals` | `/api/v1/deals`; events `crm.pipeline.deal.*` | a lead |
-| stage | One step of a deal's pipeline. Today six fixed keys `lead, qualified, proposal, negotiation, closed_won, closed_lost` (`services/deal/app/domain.py:21-28`). Proposed in ADR-0038 (pending D-5): an immutable key with an editable label, order, tone and default probability and an **outcome** (`open`, `won`, `lost`); consumers would test the outcome, never the key | `deals.stage` String(20) | a company or contact status |
+| stage | One step of a deal's pipeline: an immutable **key** (`deals.stage`, a slug) with a label, a position, a tone, a default probability and an **outcome** (`open`, `won`, `lost`); consumers test the outcome, never the key. Every organization reads the default six, `lead, qualified, proposal, negotiation, closed_won, closed_lost` (`services/deal/app/pipeline.py`), until stage editing ships (R2.5, ADR-0038) | `deals.stage` String(20); `deal.pipelines`, `deal.pipeline_stages` | a company or contact status |
 | activity | A logged past interaction (call, email, meeting, note, task). Append-only: a database trigger refuses UPDATE and DELETE. Table `deal.activities`; `last_activity_at` on a contact and on a deal is derived from it | `/api/v1/deals/activities` (proposed in ADR-0038, pending D-22: `/api/v1/activities` as a second path to the same handlers, the old path kept); event `crm.pipeline.activity.logged` | a to-do; the insights feed (to be called "feed") |
 | follow-up | A dated future task for a rep. Not an activity: activities are past-only and append-only. Proposed by the programme (R3.6), not built | none today; a table `deal.follow_ups` is proposed | — |
 | owner, rep | The member responsible for a record. **Today** an `owner_id` is a `customer.owners.id` (a generated uuid the public route cannot choose) or, on deals and activities, the caller's `subject_ref`, an HR employee id: a mix (`P§3` F2). Proposed in ADR-0038 (pending D-7): the account membership id | `owner_id` on companies, contacts, deals, activities and leads; `assignment_rules.owner_ids` | an HR employee; the platform `ORG_OWNER` role |
@@ -92,7 +92,7 @@ Each schema also holds the platform's `outbox`, `processed_events` and `audit_lo
 | pipeline | The module word of `crm.pipeline.*`: deal-service's slice (deals, activities). Not a service: `services/pipeline` was deleted (ADR-0017) | permission codes, event types | a service |
 | party, person, rep | The identity model (`P§4.2`): company is the party, contact the person, membership the rep. Other products link by `crm_company_id` and `crm_contact_id`, never `customer_id` (proposed in ADR-0038, pending D-14) | none today; the two column names are proposed | — |
 | scope | The ladder OWN, TEAM, LOCATION, ORG. CRM implements OWN and ORG; a TEAM or LOCATION grant on a CRM code is accepted by account and refused at runtime (`libs/platform-core/src/platform_core/auth.py:344,353`); TEAM is proposed in ADR-0038 (pending D-24) | grants `code:SCOPE` | — |
-| ahead of the producer | A contract term: a committed event schema whose required fields the producer does not emit yet. Eight CRM schemas are (§8) | the schema's `$comment` | — |
+| ahead of the producer | A contract term: a committed event schema whose required fields the producer does not emit yet. Five CRM schemas are (§8) | the schema's `$comment` | — |
 | OpsGrids Revenue, CRM | The product: entitlement key `crm`, marketplace and SPA name "OpsGrids Revenue", navigation label "CRM", host `revenue.opsgrids.com` | claim `ent` contains `crm` | — |
 
 ## 4. Identity and scope today
@@ -116,7 +116,7 @@ OWN scope compares a row's `owner_id` with `subject_ref`: `ScopeContext.apply` f
 (`libs/platform-core/src/platform_core/auth.py:341,373`). With no `subject_ref`, an OWN reader
 matches nothing (`:337-340`) and an OWN write or detail read is refused (`:372-381`). Deals and
 activities default `owner_id` to the caller's `subject_ref` when the caller names none
-(`services/deal/app/api/routes.py:112,241-243`).
+(`services/deal/app/api/routes.py:127,299-301`).
 
 **The consequence for a tenant without HRMS** (CRM sold on its own): no member has an employee
 link, so `subject_ref` is null for everyone. Default reps read at ORG and write, convert and reveal
@@ -165,11 +165,18 @@ would silently defeat consumer idempotency. The policies are in
 
 **deal** (`services/deal/app/models.py`)
 
-- `deals` (`:50-96`): `value_minor` (a big integer of minor units) with an ISO `currency`, `stage`
-  (a string the service layer constrains; it is not an enum column), `probability` 0 to 100,
-  `close_date`, `source` and `last_activity_at`, the staleness clock that `log_activity` advances.
-  `company_id` and `primary_contact_id` are plain UUIDs into customer.
-- `activities` (`:99-138`): **append-only**. The trigger `trg_activities_append_only` refuses UPDATE
+- `deals` (`:69-127`): `value_minor` (a big integer of minor units) with an ISO `currency`, `stage`
+  (a stage **key**: a string the service layer resolves against the organization's pipeline; it is
+  not an enum column and has no foreign key), `probability` 0 to 100, `close_date`, `source`,
+  `closed_at` (set once, when the deal first reaches a won or lost stage) and `last_activity_at`,
+  the staleness clock that `log_activity` advances. `company_id` and `primary_contact_id` are plain
+  UUIDs into customer.
+- `pipelines` (`:172-200`) and `pipeline_stages` (`:203-262`): what a stage key means. One default
+  pipeline per organization; a stage has an immutable `key`, a `label`, a `position`, a `tone`, a
+  `default_probability` and an **outcome** (`open`, `won`, `lost`), and is archived, never deleted.
+  An organization with no rows reads the default pipeline from code (`services/deal/app/pipeline.py`),
+  the six stages of §3; the first stage-configuration write (R2.5) stores them.
+- `activities` (`:130-169`): **append-only**. The trigger `trg_activities_append_only` refuses UPDATE
   and DELETE (`services/deal/migrations/versions/e94d7a2c5f18_enable_row_level_security.py:88-107`).
   `activity_type` is `call`, `email`, `meeting`, `note` or `task` (the wire field is `type`);
   `direction` is `inbound` or `outbound` for calls and emails and null otherwise; `deal_id` is an
@@ -211,14 +218,14 @@ behind.
 - **Entitlement.** Every route except the three `info` routes below requires the `crm` entitlement,
   through `require_product("crm")` declared once in each router module
   (`services/customer/app/api/routes.py:61`, `services/customer/app/api/c1_customer360.py:37`,
-  `services/deal/app/api/routes.py:57`, `services/lead/app/api/routes.py:65`) and attached to each
+  `services/deal/app/api/routes.py:59`, `services/lead/app/api/routes.py:65`) and attached to each
   route, and a permission with its scope (§9).
 - **Lists** answer `Page[T]`: `items`, `total`, `page`, `size` and `pages`. `page` is at least 1 and
   `size` is 1 to 200, 25 by default (`libs/platform-core/src/platform_core/pagination.py:23-52`).
 - **Actions on one record** use a colon verb: `POST /api/v1/leads/{lead_id}:convert`,
   `POST /api/v1/leads/{lead_id}:reveal` and `POST /api/v1/contacts/{contact_id}/phone:reveal`. A
   static path such as `GET /api/v1/deals/summary` or `/api/v1/deals/activities` is declared before
-  the `{id}` route so that it is never read as an id (`services/deal/app/api/routes.py:73-75`).
+  the `{id}` route so that it is never read as an id (`services/deal/app/api/routes.py:75-77`).
 - **Nouns today.** The company URL is `/customers`, the Customer 360 is
   `GET /api/v1/customers/{contact_id}/360` (`services/customer/app/api/c1_customer360.py:41-46`) and
   the timeline lives at `/api/v1/deals/activities`. Proposed in ADR-0038 (pending D-22):
@@ -227,7 +234,7 @@ behind.
 - **The `info` routes.** `GET /api/v1/customer/info`, `/api/v1/deal/info` and `/api/v1/lead/info`
   are in the documents but unreachable through the gateway, because `/api/v1/customer/info` does not
   start with the prefix `/api/v1/customers` (`services/customer/app/api/routes.py:125`,
-  `services/deal/app/api/routes.py:66`, `services/lead/app/api/routes.py:123`). They are one
+  `services/deal/app/api/routes.py:68`, `services/lead/app/api/routes.py:123`). They are one
   instance of a scaffold that 32 services carry (32 `ServiceInfo` schemas and 32 `/info` routes): a
   platform item, not the CRM's to remove.
 
@@ -265,8 +272,8 @@ and decodes the service token it carried.
 
 | # | Caller | Calls | Client code | Verdict |
 |---|---|---|---|---|
-| A1 | customer's 360 | deal `GET /api/v1/deals`, forwarding the caller's identity | `services/customer/app/c1_360.py:172-176` builds `{deal_internal_url}{DEAL_LIST_PATH}`, where `DEAL_LIST_PATH` is `/api/v1/deals` | was a path defect (it asked for `/deals`, which deal answers 404); fixed in R1.2a, and the 360's own test and the guard now check the path against deal's real route table |
-| A2 | customer's 360 | notification `GET /internal/v1/contacts/{contact_id}/messaging-summary` | `services/customer/app/c1_360.py:206-209`; route `services/notification/app/api/c1_internal.py:81-86` | correct |
+| A1 | customer's 360 | deal `GET /api/v1/deals`, forwarding the caller's identity | `services/customer/app/c1_360.py:165-169` builds `{deal_internal_url}{DEAL_LIST_PATH}`, where `DEAL_LIST_PATH` is `/api/v1/deals` | was a path defect (it asked for `/deals`, which deal answers 404); fixed in R1.2a, and the 360's own test and the guard now check the path against deal's real route table |
+| A2 | customer's 360 | notification `GET /internal/v1/contacts/{contact_id}/messaging-summary` | `services/customer/app/c1_360.py:200-203`; route `services/notification/app/api/c1_internal.py:81-86` | correct |
 | A3 | lead | customer `POST …/leads:convert` | `services/lead/app/clients.py:104-105` | correct |
 | A4 | lead | deal `POST …/leads:convert` | `services/lead/app/clients.py:184-185` | correct |
 | A5 | lead | customer `POST …/owners:validate` | `services/lead/app/clients.py:249-250` | correct |
@@ -283,8 +290,8 @@ registered or named there on purpose.
 ## 8. Events
 
 Fifteen event types are published (`services/customer/app/services.py:119-124`,
-`services/deal/app/services.py:43-47`, `services/lead/app/services.py:71-77`).
-All fifteen have a committed schema, `libs/contracts/events/<type>/v1.schema.json`; eight of them
+`services/deal/app/services.py:58-62`, `services/lead/app/services.py:71-77`).
+All fifteen have a committed schema, `libs/contracts/events/<type>/v1.schema.json`; five of them
 are **ahead of the producer**: their own `$comment` names the required fields the producer does not
 emit yet. In the table, *Emitted today* is the payload the producer builds, *State* compares it
 with the schema's required list (`conforms`, or `ahead` with the missing fields), and *Subscribable*
@@ -298,11 +305,11 @@ says whether notification's rule engine lists the key.
 | `crm.book.contact.created` | customer | `organization_id, contact_id, company_id, full_name, status` (`services/customer/app/services.py:695-701`) | yes | conforms; tested against its producer | notification | yes |
 | `crm.book.contact.updated` | customer | `organization_id, contact_id, changed` (`services/customer/app/services.py:763-767`) | yes | conforms; tested against its producer | none | no |
 | `crm.book.contact.deleted` | customer | `organization_id, contact_id` (`services/customer/app/services.py:806`) | yes | conforms; tested against its producer | none | no |
-| `crm.pipeline.deal.created` | deal | `organization_id, deal_id, name, stage, value_minor, currency, owner_id` (`services/deal/app/services.py:175-183`) | yes | ahead: lacks `company_id, close_date, probability, closed_at, created_at` | notification | yes |
-| `crm.pipeline.deal.updated` | deal | `organization_id, deal_id, changed` (`services/deal/app/services.py:247-251`) | yes | ahead: lacks `name, stage, value_minor, currency, owner_id, company_id, close_date, probability, closed_at` | none | no |
-| `crm.pipeline.deal.deleted` | deal | `organization_id, deal_id` (`services/deal/app/services.py:291`) | yes | conforms | none | no |
-| `crm.pipeline.deal.stage_changed` | deal | `organization_id, deal_id, from, to` (`services/deal/app/services.py:339-344`) | yes | ahead: lacks `name, value_minor, currency, owner_id, probability, closed_at` | notification | yes |
-| `crm.pipeline.activity.logged` | deal | `organization_id, activity_id, type, deal_id, contact_id, occurred_at` (`services/deal/app/services.py:435-440`) | yes | conforms; tested against its producer | customer, notification | yes |
+| `crm.pipeline.deal.created` | deal | `organization_id, deal_id, name, stage, stage_outcome, value_minor, currency, owner_id, company_id, close_date, probability, closed_at, created_at` (`_created_payload`, `services/deal/app/services.py`) | yes | conforms; tested against its producer in every pipeline state (`services/deal/tests/test_deal_events_contract.py`) | notification | yes |
+| `crm.pipeline.deal.updated` | deal | `organization_id, deal_id, changed, name, stage, stage_outcome, value_minor, currency, owner_id, company_id, close_date, probability, closed_at` (`_updated_payload`, `services/deal/app/services.py`) | yes | conforms; tested against its producer in every pipeline state (`services/deal/tests/test_deal_events_contract.py`) | none | no |
+| `crm.pipeline.deal.deleted` | deal | `organization_id, deal_id` (`services/deal/app/services.py:491`) | yes | conforms | none | no |
+| `crm.pipeline.deal.stage_changed` | deal | `organization_id, deal_id, from, to, from_outcome, to_outcome, to_label, name, value_minor, currency, owner_id, probability, closed_at` (`_stage_changed_payload`, `services/deal/app/services.py`) | yes | conforms; tested against its producer in every pipeline state (`services/deal/tests/test_deal_events_contract.py`) | notification | yes |
+| `crm.pipeline.activity.logged` | deal | `organization_id, activity_id, type, deal_id, contact_id, occurred_at` (`services/deal/app/services.py:656-661`) | yes | conforms; tested against its producer | customer, notification | yes |
 | `crm.lead.created` | lead | `organization_id, lead_id, source, owner_id` (`services/lead/app/services.py:539-542`) | yes | ahead: lacks `status` | notification | yes |
 | `crm.lead.updated` | lead | `organization_id, lead_id, changed` (`services/lead/app/services.py:648-650`) | yes | ahead: lacks `status, source, owner_id, converted_at` | notification | yes |
 | `crm.lead.converted` | lead | `organization_id, lead_id, company_id, contact_id, deal_id` (`services/lead/app/services.py:1251-1255`) | yes | ahead: lacks `owner_id, converted_at` | notification | yes |
@@ -322,7 +329,7 @@ says whether notification's rule engine lists the key.
   `platform_core.events.validate_event_schema` is the validator
   (`libs/platform-core/src/platform_core/events.py:203-224`). Customer, deal and lead each build
   their events through the real writers and check the payload against its schema
-  (`services/<service>/tests/test_event_contracts.py`, the eight ahead-of-producer schemas pinned
+  (`services/<service>/tests/test_event_contracts.py`, the five ahead-of-producer schemas pinned
   there), and the static contracts test requires a schema for every `crm.*` event a service declares
   and every `crm.*` key notification lists (`libs/contracts/tests/test_event_schemas.py`).
 - **Variables.** In a checkout, Engage's automation builder lists a trigger's variables from the
@@ -337,6 +344,10 @@ says whether notification's rule engine lists the key.
 - **Frozen.** The event types and, on `crm.book.contact.created`, the legacy `full_name`: a tenant
   automation may already render it, so it is documented as frozen and a new consumer reads
   `contact_id` and asks customer for anything else.
+- **Stages.** `stage` on `created` and `updated`, and `from` and `to` on `stage_changed`, are stage **keys**: an immutable slug of the
+  organization's pipeline that never changes meaning. What a key means is its **outcome** (`open`, `won` or `lost`), carried as
+  `stage_outcome`, `from_outcome` and `to_outcome`; a consumer tests the outcome and never compares a key with a literal. `to_label` is
+  the target stage's label for display only.
 
 ## 9. Permissions and roles
 
@@ -489,8 +500,8 @@ not rewritten, because a reconcile creates missing roles and widens grants and n
 | An aborted lead conversion leaves an orphaned company, contact and deal; nothing consumes `crm.lead.conversion_aborted`, and the generation bump has no event for a deleted record | ADR-0017 Known limitations; `services/lead/app/services.py:1122-1129,1223-1277` | proposed in ADR-0038 (pending D-1, D-2, D-3, D-4): R2.1, R2.4 |
 | `customer.contacts.email` is plaintext (a lead's email is sealed, so conversion narrows the protection) | `services/customer/app/models.py:171`; ADR-0017 Known limitations | no release scheduled; optional sealing proposed as R2.9 Part C (pending D-26) |
 | A lead with a phone and no email converts to a company with no contact: the person and the number are dropped | `services/customer/app/services.py:1182-1185`, `services/lead/app/clients.py:103` | proposed in ADR-0038 (pending D-14): R3.1 |
-| Deal summaries add `value_minor` across currencies, though a deal's currency is free | `services/deal/app/domain.py:67-74,90-92,101-103`, `services/deal/app/schemas.py:68` | planned: R3.2 (registry `C9`: per-currency splitting, additive) |
-| Eight committed event schemas are ahead of their producers (§8) | the `$comment` of each schema | planned, each release waiting on the open decisions ADR-0038 lists for it: R2.3 for deal (pending D-5, D-12), R3.7 for lead (pending D-27, needed before R3.7b), R4.1 for company (pending D-14, D-27, D-33, D-35) |
+| Deal summaries add `value_minor` across currencies, though a deal's currency is free | `services/deal/app/domain.py:73-80,97-99,111-115`, `services/deal/app/schemas.py:77` | planned: R3.2 (registry `C9`: per-currency splitting, additive) |
+| Five committed event schemas are ahead of their producers (§8) | the `$comment` of each schema | planned, each release waiting on the open decisions ADR-0038 lists for it: R3.7 for lead (pending D-27, needed before R3.7b), R4.1 for company (pending D-14, D-27, D-33, D-35) |
 | Fixed in #123: the page-only CSV export on Companies used to quote a cell without neutralising a first character of `=`, `+`, `-` or `@`, so a spreadsheet could read a company name as a formula | `frontend/product-crm/src/lib/csv.ts:7` now uses `csvCell` (`frontend/opsgrids-client/src/csv.ts:9-12`), which prefixes `'` to such a cell | fixed; R3.4 (delete the export, pending D-23) no longer has to deploy before R3.7 |
 
 ## 12. How to change this
@@ -501,7 +512,7 @@ Change the code and this page in the same commit, and run the check that names t
   in one commit, and prove it through the real write path with
   `platform_core.events.validate_event_schema`; `make contracts-check` runs the contracts tests.
   Update the row in §8. A new subscribable key is a one-line edit to `SUBSCRIBABLE_EVENTS` in
-  `services/notification/app/domain.py`, in the same commit as its schema. The eight
+  `services/notification/app/domain.py`, in the same commit as its schema. The five
   ahead-of-producer schemas are pinned (`PINNED_AHEAD_OF_PRODUCER` in
   `libs/contracts/tests/test_event_schemas.py` and each service's `AHEAD_OF_PRODUCER` in its
   `tests/test_event_contracts.py`): the release that closes one deletes its pin rows and the
