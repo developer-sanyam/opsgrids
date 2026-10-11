@@ -60,8 +60,13 @@ from app.quality.schemas import (
     ReleaseIn,
 )
 from platform_core.audit import record_audit
-from platform_core.auth import ScopeContext
-from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
+from platform_core.auth import Scope, ScopeContext
+from platform_core.errors import (
+    ConflictProblem,
+    ForbiddenProblem,
+    NotFoundProblem,
+    ValidationProblem,
+)
 from platform_core.events import publish_event
 
 EVT_HOLD = "operations.quality.hold"
@@ -1094,6 +1099,34 @@ async def reject(
     return inspection
 
 
+async def _check_scrap_threshold(
+    session: AsyncSession, ctx: ScopeContext, inspection: Inspection
+) -> None:
+    """A scrap is a write-off: past the adjustment threshold it needs the adjust permission at ORG
+    (the rejecter alone must not write off more than the organization lets a clerk adjust)."""
+    from app.inventory import stock_ops
+    from app.movements import common as movement_common
+    from app.movements import domain as movement_domain
+
+    settings = await movement_common.get_settings(session, ctx.organization_id)
+    threshold = settings.adjustment_approval_threshold_milli if settings else None
+    if threshold is None:
+        return
+    item = (await stock_ops.load_items(session, ctx.organization_id, [inspection.item_id]))[
+        inspection.item_id
+    ]
+    if not movement_domain.over_threshold(
+        threshold, [movement_domain.to_base_milli(inspection.rejected_milli or 0, item.uom)]
+    ):
+        return
+    held = ctx.principal.scope_for("operations.inventory.stock.adjust")
+    if held is None or held.rank < Scope.ORG.rank:
+        raise ForbiddenProblem(
+            "Scrapping this much needs the stock adjust permission: it is above the "
+            "adjustment approval threshold"
+        )
+
+
 async def dispose(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -1119,6 +1152,8 @@ async def dispose(
     assert inspection.rejected_bucket is not None  # set with rejected_milli
 
     rtv = payload.action == "RETURN_TO_VENDOR"
+    if not rtv:
+        await _check_scrap_threshold(session, ctx, inspection)
     inspection.disposition_move_id = await _post(
         session,
         ctx,
