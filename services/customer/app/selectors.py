@@ -22,7 +22,7 @@ from typing import Any
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Company, Contact, Owner
+from app.models import AuditLog, Company, Contact, Owner
 from app.schemas import CompanyOut, ContactOut, OwnerOut
 from platform_core.auth import ScopeContext
 
@@ -207,6 +207,77 @@ async def count_contacts_for_company(
     return (await session.execute(stmt)).scalar_one()
 
 
+async def count_live_contacts_except(
+    session: AsyncSession, org_id: uuid.UUID, company_id: uuid.UUID, contact_id: uuid.UUID | None
+) -> int:
+    """Live contacts naming the company other than `contact_id`: the aborted-conversion cleanup
+    keeps a company another contact still belongs to."""
+    stmt = (
+        select(func.count())
+        .select_from(Contact)
+        .where(
+            Contact.organization_id == org_id,
+            Contact.company_id == company_id,
+            Contact.deleted_at.is_(None),
+        )
+    )
+    if contact_id is not None:
+        stmt = stmt.where(Contact.id != contact_id)
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def get_company_for_update_any_state(
+    session: AsyncSession, org_id: uuid.UUID, company_id: uuid.UUID
+) -> Company | None:
+    """`get_company_by_id_any_state`, row-locked: the aborted-conversion cleanup re-verifies and
+    deletes under this lock, and a conversion reusing the company takes the same lock
+    (`get_company_by_name_for_update`), so the two serialise."""
+    stmt = (
+        select(Company)
+        .where(Company.id == company_id, Company.organization_id == org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def audit_rows_for_entity(
+    session: AsyncSession, org_id: uuid.UUID, entity: str, entity_id: uuid.UUID, *, limit: int = 2
+) -> list[tuple[str, str | None]]:
+    """`(action, acting_as)` of an entity's first `limit` audit rows, oldest first: the
+    cleanup's provenance check needs only to know whether there is more than one."""
+    stmt = (
+        select(AuditLog.action, AuditLog.acting_as)
+        .where(
+            AuditLog.organization_id == org_id,
+            AuditLog.entity == entity,
+            AuditLog.entity_id == entity_id,
+        )
+        .order_by(AuditLog.at)
+        .limit(limit)
+    )
+    return [(row.action, row.acting_as) for row in (await session.execute(stmt)).all()]
+
+
+async def get_company_by_name_for_update(
+    session: AsyncSession, org_id: uuid.UUID, name: str
+) -> Company | None:
+    """`get_company_by_name`, row-locked, for a conversion that may reuse the company: it waits
+    for a cleanup holding the row, then sees its delete (`deleted_at IS NULL` is re-checked)."""
+    stmt = (
+        select(Company)
+        .where(
+            func.lower(func.btrim(Company.name)) == func.lower(func.btrim(name)),
+            Company.organization_id == org_id,
+            Company.deleted_at.is_(None),
+        )
+        .order_by(Company.created_at.asc(), Company.id.asc())
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return (await session.execute(stmt)).scalars().first()
+
+
 async def get_company_by_name(
     session: AsyncSession, org_id: uuid.UUID, name: str
 ) -> Company | None:
@@ -305,6 +376,36 @@ async def get_contact_by_email(
         Contact.email == email,
         Contact.organization_id == org_id,
         Contact.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_contact_for_update_any_state(
+    session: AsyncSession, org_id: uuid.UUID, contact_id: uuid.UUID
+) -> Contact | None:
+    """`get_contact_by_id_any_state`, row-locked (see `get_company_for_update_any_state`)."""
+    stmt = (
+        select(Contact)
+        .where(Contact.id == contact_id, Contact.organization_id == org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_contact_by_email_for_update(
+    session: AsyncSession, org_id: uuid.UUID, email: str
+) -> Contact | None:
+    """`get_contact_by_email`, row-locked (see `get_company_by_name_for_update`)."""
+    stmt = (
+        select(Contact)
+        .where(
+            Contact.email == email,
+            Contact.organization_id == org_id,
+            Contact.deleted_at.is_(None),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 

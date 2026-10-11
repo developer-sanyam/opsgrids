@@ -565,11 +565,16 @@ async def delete_company(
     company: Company,
     *,
     request: Request | None = None,
+    acting_as: str | None = None,
+    reason: str | None = None,
 ) -> None:
     """Soft-delete a company. Refused (409) while it still has contacts — cascading the
     soft delete onto them would be the alternative, but refusing is the smaller, safer
     change (CLAUDE.md: no hard delete of anything with children; deal-service cannot see
-    this delete, so a deleted company's deals keep the id and render it as "—")."""
+    this delete, so a deleted company's deals keep the id and render it as "—").
+
+    `acting_as` and `reason` land on the audit row when a consumer, not a person, deletes (the
+    aborted-conversion cleanup names itself, the lead and the generation)."""
     remaining = await selectors.count_contacts_for_company(session, ctx.organization_id, company.id)
     if remaining > 0:
         raise ConflictProblem(
@@ -591,6 +596,8 @@ async def delete_company(
         entity_id=company.id,
         before={"deleted_at": before_deleted_at},
         after={"deleted_at": company.deleted_at},
+        reason=reason,
+        acting_as=acting_as,
         request=request,
     )
     publish_event(
@@ -776,9 +783,14 @@ async def delete_contact(
     contact: Contact,
     *,
     request: Request | None = None,
+    acting_as: str | None = None,
+    reason: str | None = None,
 ) -> None:
     """Soft-delete a contact. No children to worry about — activities reference a
-    contact by plain cross-schema UUID, never a foreign key, so nothing here cascades."""
+    contact by plain cross-schema UUID, never a foreign key, so nothing here cascades.
+
+    `acting_as` and `reason` land on the audit row when a consumer, not a person, deletes (the
+    aborted-conversion cleanup names itself, the lead and the generation)."""
     before_deleted_at = contact.deleted_at
     contact.deleted_at = utcnow()
     contact.updated_by = str(ctx.principal.sub)
@@ -794,6 +806,8 @@ async def delete_contact(
         entity_id=contact.id,
         before={"deleted_at": before_deleted_at},
         after={"deleted_at": contact.deleted_at},
+        reason=reason,
+        acting_as=acting_as,
         request=request,
     )
     publish_event(
@@ -1095,7 +1109,7 @@ async def invalid_owner_ids(
 
 async def _reconcile_reused_contact_phone(
     session: AsyncSession, ctx: ScopeContext, contact: Contact, *, raw_phone: str | None
-) -> None:
+) -> bool:
     """`ensure_company_and_contact_for_lead`'s own rule for a contact matched by *email*
     (m3): the same person is the same person regardless of which company's lead brought them
     up, and the book already has a number on file for them if it has one at all. A lead's
@@ -1107,9 +1121,12 @@ async def _reconcile_reused_contact_phone(
     audited as an ordinary update. When the contact already has a different one, that number
     is kept, and what the lead brought is recorded — masked — as a fact seen during this
     conversion, not silently dropped and not silently applied.
+
+    Returns whether it wrote an audit row, so the caller writes the reuse marker only when this
+    left no trace of its own.
     """
     if not raw_phone:
-        return
+        return False
     cfg = settings()
     raw = _canonical_e164(raw_phone)
 
@@ -1134,7 +1151,7 @@ async def _reconcile_reused_contact_phone(
             before=before,
             after={"phone": phone_masked},
         )
-        return
+        return True
 
     # A different number already on file: kept, not overwritten. `seal` for the mask alone —
     # this is a fresh raw value the caller handed in, not a decrypt of anything already
@@ -1142,7 +1159,7 @@ async def _reconcile_reused_contact_phone(
     # `create_contact`'s own initial seal already relies on).
     _, lead_phone_masked = seal(raw, kind="phone", settings=cfg)
     if lead_phone_masked == contact.phone:
-        return
+        return False
     record_audit(
         session,
         AuditLog,
@@ -1153,6 +1170,26 @@ async def _reconcile_reused_contact_phone(
         entity="contact",
         entity_id=contact.id,
         after={"phone_from_lead": lead_phone_masked, "kept_existing_phone": contact.phone},
+    )
+    return True
+
+
+def _record_reuse(
+    session: AsyncSession, ctx: ScopeContext, entity: str, entity_id: uuid.UUID, matched_by: str
+) -> None:
+    """The trace a conversion leaves on a record it reused by name or email instead of creating:
+    the aborted-conversion cleanup deletes only a record whose audit history is its creation row
+    alone, so an adopted record must never look untouched. Ids and a fixed word only."""
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        acting_as="lead",
+        action=f"{entity}.reused_for_lead",
+        entity=entity,
+        entity_id=entity_id,
+        after={"matched_by": matched_by},
     )
 
 
@@ -1182,6 +1219,11 @@ async def ensure_company_and_contact_for_lead(
     reused rather than duplicated), then a fresh insert. `contact_email` absent skips the
     contact entirely: `Contact.email` is not nullable, so a lead with no email becomes a
     company with no contact yet, not a contact with a placeholder address.
+
+    A reuse by name or email leaves exactly one audit row on the reused record (the
+    `*.reused_for_lead` marker, or the phone row `_reconcile_reused_contact_phone` wrote), and
+    both lookups lock the row: the aborted-conversion cleanup deletes only a record whose history
+    is its creation row alone, under the same lock, so a reused record is never cleaned up.
     """
     await _assert_owner_assignable(session, ctx, owner_id)
 
@@ -1192,7 +1234,12 @@ async def ensure_company_and_contact_for_lead(
         )
     if company is None:
         await _lock_company_name(session, ctx.organization_id, company_name)
-        company = await selectors.get_company_by_name(session, ctx.organization_id, company_name)
+        # Locked: a cleanup deleting this company holds the row, and this waits for it.
+        company = await selectors.get_company_by_name_for_update(
+            session, ctx.organization_id, company_name
+        )
+        if company is not None:
+            _record_reuse(session, ctx, "company", company.id, "name")
     if company is None:
         company = await create_company(
             session,
@@ -1214,13 +1261,13 @@ async def ensure_company_and_contact_for_lead(
                 "The contact this lead would convert into has been deleted from the CRM book"
             )
         if contact is None:
-            contact = await selectors.get_contact_by_email(
+            contact = await selectors.get_contact_by_email_for_update(
                 session, ctx.organization_id, contact_email
             )
-            if contact is not None:
-                await _reconcile_reused_contact_phone(
-                    session, ctx, contact, raw_phone=contact_raw_phone
-                )
+            if contact is not None and not await _reconcile_reused_contact_phone(
+                session, ctx, contact, raw_phone=contact_raw_phone
+            ):
+                _record_reuse(session, ctx, "contact", contact.id, "email")
         if contact is None:
             contact = await create_contact(
                 session,
