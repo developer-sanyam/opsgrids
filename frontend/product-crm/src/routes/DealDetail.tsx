@@ -12,7 +12,7 @@ import {
 } from "@/data/lookups";
 import { isOpen, STAGES } from "@/data/stages";
 import { formatDate, formatRelative } from "@/lib/format";
-import { RevealableField } from "@/reveal/RevealableField";
+import { RevealField } from "@/reveal/RevealField";
 import {
   Can,
   problemMessage,
@@ -321,7 +321,7 @@ export function DealDetailPage() {
                             <MailIcon className="size-4 text-faint" />
                             {primary.email}
                           </a>
-                          <RevealableField
+                          <RevealField
                             kind="phone"
                             masked={primary.phone}
                             subject="contact"

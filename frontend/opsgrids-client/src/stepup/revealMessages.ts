@@ -11,10 +11,11 @@
  * Nothing here decides anything: the server refused, this only words it.
  */
 
-import { ApiError, problemMessage } from "@opsgrids/client";
+import { ApiError } from "../http";
+import { problemMessage } from "../problem";
 
 /** Whose details are being revealed, for the sentences that name them. */
-export type RevealSubject = "lead" | "contact";
+export type RevealSubject = "lead" | "contact" | "employee";
 
 export interface RevealNotice {
   /** `neutral`: the answer is "there is nothing to show". `error`: the reveal was refused or failed. */

@@ -389,7 +389,7 @@
     "spacing": 2
   },
   "product-hrms/src/routes/EmployeeDetail.tsx": {
-    "spacing": 6
+    "spacing": 4
   },
   "product-hrms/src/routes/Employees.tsx": {
     "spacing": 7
@@ -621,10 +621,6 @@
     "arbitrary": 1,
     "spacing": 3
   },
-  "product-projects/src/ui/KanbanBoard.tsx": {
-    "arbitrary": 5,
-    "spacing": 9
-  },
   "product-projects/src/ui/NeedsAttention.tsx": {
     "arbitrary": 1,
     "spacing": 1
@@ -665,10 +661,6 @@
   },
   "product-pulseboard/src/routes/Timesheets.tsx": {
     "spacing": 3
-  },
-  "product-pulseboard/src/ui/KanbanBoard.tsx": {
-    "arbitrary": 3,
-    "spacing": 9
   },
   "product-pulseboard/src/ui/NeedsAttention.tsx": {
     "arbitrary": 1,

@@ -7,11 +7,12 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, StepUpCancelledError } from "@opsgrids/client";
-import type { RevealHeaders, UseStepUpResult } from "@opsgrids/client";
-
-import { REVEAL_VISIBLE_SECONDS, useRevealedField } from "./useRevealedField";
+import { ApiError } from "../http";
+import { StepUpCancelledError } from "./cancelled";
+import type { RevealHeaders } from "./reveal";
+import { DEFAULT_REVEAL_VISIBLE_SECONDS as REVEAL_VISIBLE_SECONDS, useRevealedField } from "./useRevealedField";
 import type { RevealedFieldOptions } from "./useRevealedField";
+import type { UseStepUpResult } from "./useStepUp";
 
 const HEADERS: RevealHeaders = { Authorization: "Bearer step-up" };
 
@@ -147,6 +148,31 @@ describe("useRevealedField", () => {
     });
     expect(result.current.value).toBeNull();
     expect(result.current.justHidden).toBe(true);
+  });
+
+  it("takes its visible time from visibleSeconds when given one", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() =>
+      useRevealedField({
+        resetKey: "lead-1",
+        stepUp: fakeStepUp(),
+        subject: "lead",
+        noun: "phone number",
+        load: vi.fn().mockResolvedValue("+91 98765 04821"),
+        visibleSeconds: 5,
+      }),
+    );
+    await act(async () => {
+      result.current.reveal();
+    });
+    act(() => {
+      vi.advanceTimersByTime(4_999);
+    });
+    expect(result.current.value).toBe("+91 98765 04821");
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(result.current.value).toBeNull();
   });
 
   it("starts the clock again on a second reveal, so an earlier timer cannot cut it short", async () => {

@@ -35,17 +35,23 @@ export { StepUpError } from "./auth/stepUpError";
 export type { StepUpFailure } from "./auth/stepUpError";
 export type { StepUpToken } from "./auth/types";
 export {
+  DEFAULT_REVEAL_VISIBLE_SECONDS,
   StepUpCancelledError,
   clearStepUpToken,
   isStepUpCancelled,
   revealRequest,
   useMfaEnrolled,
+  useRevealedField,
   useStepUp,
   withStepUp,
 } from "./stepup";
 export type {
+  RevealedField,
+  RevealedFieldOptions,
   RevealHeaders,
+  RevealNotice,
   RevealRequestOptions,
+  RevealSubject,
   StepUpMfaState,
   StepUpPhase,
   StepUpPromptError,

@@ -17,26 +17,27 @@
  * value is dropped by `resetKey` or unmount, the token goes with it — leaving a record ends the
  * access the code earned. The screen renders the one `<StepUpDialog />`; this hook only asks.
  *
- * A closed dialog is not an error and says nothing. Every refusal is worded by `./messages` and
- * left in `notice`, for the field to show under itself, where a screen reader hears it.
+ * A closed dialog is not an error and says nothing. Every refusal is worded by `./revealMessages`
+ * and left in `notice`, for the field to show under itself, where a screen reader hears it.
  *
- * Fixture mode has no auth service to step up against, so it calls `load` directly.
+ * `RevealableField` in `@opsgrids/ui` renders the result; it takes it as a prop because ui may
+ * not import this package. An app with an offline fixtures mode passes a `stepUp` whose `run`
+ * calls `load` directly while that mode is on.
  */
 
 import { useEffect, useRef, useState } from "react";
 
-import { isStepUpCancelled } from "@opsgrids/client";
-import type { RevealHeaders, UseStepUpResult } from "@opsgrids/client";
+import { isStepUpCancelled } from "./cancelled";
+import type { RevealHeaders } from "./reveal";
+import { needsFreshCode, nothingOnFile, revealFailure } from "./revealMessages";
+import type { RevealNotice, RevealSubject } from "./revealMessages";
+import type { UseStepUpResult } from "./useStepUp";
 
-import { USE_FIXTURES } from "@/api/client";
-import { needsFreshCode, nothingOnFile, revealFailure } from "./messages";
-import type { RevealNotice, RevealSubject } from "./messages";
-
-/** How long a revealed value stays on screen before it masks itself again. */
-export const REVEAL_VISIBLE_SECONDS = 30;
-
-/** What fixture mode hands `load` in place of a step-up token: the fixture reveals read no header. */
-const NO_STEP_UP: RevealHeaders = { Authorization: "" };
+/**
+ * How long a revealed value stays on screen before it masks itself again. `@opsgrids/ui` exports
+ * the same number as `REVEAL_VISIBLE_SECONDS` for the field's wording; a CRM test keeps them equal.
+ */
+export const DEFAULT_REVEAL_VISIBLE_SECONDS = 30;
 
 export interface RevealedFieldOptions {
   /**
@@ -51,6 +52,8 @@ export interface RevealedFieldOptions {
   noun: string;
   /** The reveal call. Resolves `null` when nothing is sealed. Receives the step-up bearer. */
   load: (headers: RevealHeaders) => Promise<string | null>;
+  /** How long the value shows before it hides again. Default `DEFAULT_REVEAL_VISIBLE_SECONDS`. */
+  visibleSeconds?: number | undefined;
 }
 
 export interface RevealedField {
@@ -81,6 +84,7 @@ export function useRevealedField({
   subject,
   noun,
   load,
+  visibleSeconds = DEFAULT_REVEAL_VISIBLE_SECONDS,
 }: RevealedFieldOptions): RevealedField {
   const [shown, setShown] = useState<Shown | null>(null);
   /** Bumped whenever an answer that is still on its way stops being wanted. */
@@ -127,14 +131,14 @@ export function useRevealedField({
     const key = resetKey;
     setShown({ key, value: null, notice: null, pending: true, justHidden: false });
     try {
-      const value = await (USE_FIXTURES ? load(NO_STEP_UP) : stepUp.run(load));
+      const value = await stepUp.run(load);
       if (epoch.current !== ticket) return;
       if (value === null) {
         setShown({ key, value: null, notice: nothingOnFile(noun), pending: false, justHidden: false });
         return;
       }
       setShown({ key, value, notice: null, pending: false, justHidden: false });
-      timer.current = setTimeout(hide, REVEAL_VISIBLE_SECONDS * 1000);
+      timer.current = setTimeout(hide, visibleSeconds * 1000);
     } catch (error) {
       if (epoch.current !== ticket) return;
       if (isStepUpCancelled(error)) {

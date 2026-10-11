@@ -9,7 +9,7 @@ import type { ContactFilters } from "@/data/importExport/contacts";
 import { companyName, ownerName } from "@/data/lookups";
 import { ArrowRightIcon, ChevronDown, cn, ImportExportButton, MailIcon, PlusIcon, StepUpDialog, useDebouncedValue, UsersIcon, useToast } from "@opsgrids/ui";
 import { formatDate, formatRelative } from "@/lib/format";
-import { RevealableField } from "@/reveal/RevealableField";
+import { RevealField } from "@/reveal/RevealField";
 import type { UseStepUpResult } from "@opsgrids/client";
 import {
   Can,
@@ -77,7 +77,7 @@ function ContactDetail({
           <MailIcon className="size-4 text-faint" />
           {contact.email}
         </a>
-        <RevealableField
+        <RevealField
           kind="phone"
           masked={contact.phone}
           subject="contact"

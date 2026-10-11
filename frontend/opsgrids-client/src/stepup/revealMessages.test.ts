@@ -4,9 +4,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { ApiError } from "@opsgrids/client";
-
-import { needsFreshCode, nothingOnFile, revealFailure } from "./messages";
+import { ApiError } from "../http";
+import { needsFreshCode, nothingOnFile, revealFailure } from "./revealMessages";
 
 function refusal(status: number, detail: string | undefined): ApiError {
   return new ApiError(status, detail ?? `Request failed with ${status}`, {

@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { UseStepUpResult } from "@opsgrids/client";
 
-import { RevealableField } from "./RevealableField";
+import { RevealField } from "./RevealField";
 
 vi.mock("@/api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/client")>()),
@@ -38,13 +38,13 @@ function refusingStepUp(): UseStepUpResult {
   };
 }
 
-describe("RevealableField in fixture mode", () => {
+describe("RevealField in fixture mode", () => {
   it("reveals through the fixture call directly, never asking the step-up for a code", async () => {
     const user = userEvent.setup();
     const stepUp = refusingStepUp();
     const load = vi.fn().mockResolvedValue("+91 98765 04821");
     render(
-      <RevealableField
+      <RevealField
         kind="phone"
         masked="•••••• 4821"
         subject="lead"
