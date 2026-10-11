@@ -17,6 +17,14 @@ Actions with no meaningful "own" reading pass ``minimum=Scope.ORG``.
 **Filtering the list and forgetting the detail is the named vulnerability.** ``apply()``
 narrows a query; ``assert_can_touch()`` guards a single object. Both are needed, and
 LOCATION really does compare locations here — a scope that returns early is a hole.
+
+**"The caller" is one of two ids, and the product says which.** OWN and TEAM compare a row's
+owner with ``ScopeContext.own_ref``. For every product that has not said otherwise that is the
+caller's *employee link* (``Principal.subject_ref``: an HR employee id, null for a member with
+no employee record). A product whose users may have no HR record registers its scope resolver
+with ``owner_subject=OwnerSubject.MEMBERSHIP`` and ``own_ref`` is then the caller's *membership
+id* (``Principal.membership_id``). Neither is ever a fallback for the other: a caller with no
+such id owns nothing, and passes no object check.
 """
 
 from __future__ import annotations
@@ -73,7 +81,8 @@ class Principal(BaseModel):
     sub: uuid.UUID
     organization_id: uuid.UUID
     membership_id: uuid.UUID | None = None
-    #: Product-specific subject reference — an employee id for HR, a rep id for CRM.
+    #: The caller's employee link: the HR employee id, or None when the membership has none. OWN
+    #: and TEAM compare it for every product that has not declared `OwnerSubject.MEMBERSHIP`.
     subject_ref: uuid.UUID | None = None
     audience: str | None = None
     session_id: str | None = None
@@ -361,6 +370,13 @@ class ScopeResolver(Protocol):
     TEAM and LOCATION are HR-shaped ideas. CRM's natural narrowing is territory or
     account ownership. Rather than force every product onto one reading, each registers
     how its own rows are scoped.
+
+    The registration also declares whose id OWN and TEAM compare:
+    ``register_scope_resolver(product, factory, owner_subject=...)``. That lives on the
+    registration, not on this Protocol, because a new required member here would break strict
+    mypy in every service that implements it. ``ScopeContext.apply`` does not call these
+    methods: each selector passes its own columns, so they describe a product's rows rather
+    than enforce them.
     """
 
     def owner_column(self) -> Any: ...
