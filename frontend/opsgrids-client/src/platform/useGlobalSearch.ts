@@ -71,9 +71,19 @@ export interface GlobalSearchState {
    *  but incomplete, worth a quiet "some results may be missing" rather than nothing at all. */
   partial: boolean;
   error: Error | null;
+  /** `"identifier"` when the query looks like an email or a phone number, so nothing was sent. */
+  blocked?: "identifier" | undefined;
 }
 
 const IDLE_STATE: GlobalSearchState = { status: "idle", groups: [], partial: false, error: null };
+
+/**
+ * An email or a phone number is never put in a `?q=` URL: gateway and proxy logs keep the URL.
+ * Those are looked up through POST bodies on the record's own screen (spec §4.4.6).
+ */
+function looksLikeIdentifier(query: string): boolean {
+  return query.includes("@") || /^[\d\s+().-]{6,}$/.test(query);
+}
 
 function isAbortError(reason: unknown): boolean {
   return reason instanceof DOMException && reason.name === "AbortError";
@@ -134,6 +144,13 @@ interface DealRow {
   id: string;
   name: string;
   stage: string;
+}
+
+interface LeadRow {
+  id: string;
+  full_name: string;
+  status: string;
+  source: string;
 }
 
 interface EmployeeRow {
@@ -213,6 +230,17 @@ const SEARCH_SOURCES: readonly RegisteredSource[] = [
       label: row.name,
       sublabel: joinSublabel(row.stage),
       href: `${host}/deals/${encodeURIComponent(row.id)}`,
+    }),
+  ),
+  registerSource<LeadRow>(
+    "crm",
+    "Leads",
+    (query, limit) => `/leads?q=${encodeURIComponent(query)}&size=${limit}`,
+    (row, host) => ({
+      key: `crm-lead-${row.id}`,
+      label: row.full_name,
+      sublabel: joinSublabel(row.status, row.source),
+      href: `${host}/leads/${encodeURIComponent(row.id)}`,
     }),
   ),
   registerSource<EmployeeRow>(
@@ -335,6 +363,10 @@ export function useGlobalSearch(query: string, options: UseGlobalSearchOptions =
   useEffect(() => {
     if (debounced === "") {
       setState(IDLE_STATE);
+      return;
+    }
+    if (looksLikeIdentifier(debounced)) {
+      setState({ ...IDLE_STATE, blocked: "identifier" });
       return;
     }
 

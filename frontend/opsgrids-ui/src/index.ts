@@ -35,7 +35,7 @@ export type { CheckboxOption } from "./components/CheckboxGroup";
 export { Combobox } from "./components/Combobox";
 export type { ComboboxCopy, ComboboxOption } from "./components/Combobox";
 export { CommandMenu } from "./components/CommandMenu";
-export type { CommandMenuItem } from "./components/CommandMenu";
+export type { CommandMenuItem, CommandMenuResults } from "./components/CommandMenu";
 export { ConfirmDialog } from "./components/ConfirmDialog";
 export { CopyField } from "./components/CopyField";
 export { DataTable } from "./components/DataTable";

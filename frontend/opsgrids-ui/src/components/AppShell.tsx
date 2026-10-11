@@ -19,7 +19,7 @@ import { useFocusTrap } from "../lib/useFocusTrap";
 import { Avatar } from "./Avatar";
 import { BottomNavigation } from "./BottomNavigation";
 import type { BottomNavItem } from "./BottomNavigation";
-import type { CommandMenuItem } from "./CommandMenu";
+import type { CommandMenuItem, CommandMenuResults } from "./CommandMenu";
 import { Drawer } from "./Drawer";
 import { Menu } from "./Menu";
 import { MobileHeader } from "./MobileHeader";
@@ -68,6 +68,8 @@ export interface CommandMenuConfig {
    * palette is navigation-only, once nothing typed matches a nav item, module or quick action.
    */
   fallback?: { label: string; to: string } | undefined;
+  /** Server results for the typed query (an app's `useGlobalSearch`), listed after the static items. */
+  results?: CommandMenuResults | undefined;
 }
 
 export interface AppShellProps {
@@ -571,6 +573,7 @@ export function AppShell({
             items={commandItems}
             placeholder={search.placeholder}
             {...(commandFallback ? { fallback: commandFallback } : {})}
+            results={search.results}
           />
         </Suspense>
       ) : null}

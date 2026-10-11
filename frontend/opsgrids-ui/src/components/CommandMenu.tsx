@@ -17,6 +17,32 @@ export interface CommandMenuItem {
   onSelect: () => void;
 }
 
+/**
+ * Rows the app fetches for the typed query (`useGlobalSearch`), listed after the matched static
+ * items under their own `group`. The menu only reports the query; debouncing and cancelling are
+ * the hook's.
+ */
+export interface CommandMenuResults {
+  /** Called with the trimmed query on every change, including "" when the menu opens. */
+  onQueryChange: (query: string) => void;
+  status: "idle" | "loading" | "success" | "error";
+  items: CommandMenuItem[];
+  /** Some sources failed: the rows are real but may be incomplete. */
+  partial: boolean;
+  /** Said in place of the status, e.g. why an email or phone is not searched here. */
+  hint?: string | null | undefined;
+}
+
+/** The one sentence the status line says, or "" when there is nothing to say. */
+function resultsStatus(results: CommandMenuResults, query: string): string {
+  if (results.hint) return results.hint;
+  if (query === "") return "";
+  if (results.status === "loading") return "Searching…";
+  if (results.status === "error" || results.partial) return "Some results may be missing";
+  if (results.status === "success" && results.items.length === 0) return `No matches for “${query}”.`;
+  return "";
+}
+
 interface CommandMenuProps {
   open: boolean;
   onClose: () => void;
@@ -29,6 +55,8 @@ interface CommandMenuProps {
    * typed, after every matched item, never in place of them.
    */
   fallback?: { label: string; onSubmit: (query: string) => void } | undefined;
+  /** Server results for the query, with a polite status line. Omitted, the menu is unchanged. */
+  results?: CommandMenuResults | undefined;
 }
 
 /** Case-insensitive substring match on the label and its group, so typing "crm" finds a "CRM"
@@ -49,7 +77,7 @@ function matches(item: CommandMenuItem, query: string): boolean {
  * server-backed search yet (the report's API gaps): v1 is navigation over what the shell already
  * has, not a query against the backend.
  */
-export function CommandMenu({ open, onClose, items, placeholder, fallback }: CommandMenuProps) {
+export function CommandMenu({ open, onClose, items, placeholder, fallback, results }: CommandMenuProps) {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -59,10 +87,12 @@ export function CommandMenu({ open, onClose, items, placeholder, fallback }: Com
 
   const matched = useMemo(() => items.filter((item) => matches(item, query)), [items, query]);
   const trimmed = query.trim();
+  const resultItems = results?.items;
   const displayed = useMemo<CommandMenuItem[]>(() => {
-    if (!fallback || trimmed === "") return matched;
+    const listed = trimmed === "" || resultItems === undefined ? matched : [...matched, ...resultItems];
+    if (!fallback || trimmed === "") return listed;
     return [
-      ...matched,
+      ...listed,
       {
         key: "fallback-search",
         label: `${fallback.label} “${trimmed}”`,
@@ -71,7 +101,14 @@ export function CommandMenu({ open, onClose, items, placeholder, fallback }: Com
         onSelect: () => fallback.onSubmit(trimmed),
       },
     ];
-  }, [matched, fallback, trimmed]);
+  }, [matched, resultItems, fallback, trimmed]);
+
+  // A ref, so a new `onQueryChange` identity on every render does not re-send the same query.
+  const onQueryChange = useRef(results?.onQueryChange);
+  onQueryChange.current = results?.onQueryChange;
+  useEffect(() => {
+    onQueryChange.current?.(trimmed);
+  }, [trimmed]);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -106,6 +143,8 @@ export function CommandMenu({ open, onClose, items, placeholder, fallback }: Com
       }
     }
   }
+
+  const statusText = results !== undefined ? resultsStatus(results, trimmed) : "";
 
   // Grouped in stable order of first appearance, so "Go to" always leads and "Search" trails.
   const groups: string[] = [];
@@ -149,11 +188,11 @@ export function CommandMenu({ open, onClose, items, placeholder, fallback }: Com
         </div>
 
         <div className="max-h-96 overflow-y-auto p-2">
-          {displayed.length === 0 ? (
+          {displayed.length === 0 && results === undefined ? (
             <p className="px-3 py-6 text-center text-sm text-muted">
               No matches for &ldquo;{query.trim()}&rdquo;.
             </p>
-          ) : (
+          ) : displayed.length === 0 ? null : (
             <ul id={listboxId} role="listbox" aria-label={placeholder}>
               {groups.map((group) => (
                 <li key={group}>
@@ -194,6 +233,12 @@ export function CommandMenu({ open, onClose, items, placeholder, fallback }: Com
               ))}
             </ul>
           )}
+          {results !== undefined ? (
+            // Always mounted while results are wired: a live region must exist before its text does.
+            <p role="status" className={cn("px-3 text-xs text-muted", statusText !== "" && "py-2")}>
+              {statusText}
+            </p>
+          ) : null}
         </div>
       </div>
     </div>,

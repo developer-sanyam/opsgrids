@@ -87,4 +87,27 @@ describe("Timeline", () => {
     );
     expect(screen.getByText("You already took this as leave.")).toBeDefined();
   });
+
+  it("desc_order_collapse_keeps_the_head: newest first keeps the first entries and reveals the rest below", async () => {
+    const user = userEvent.setup();
+    const newestFirst = [...entries].reverse();
+    render(<Timeline entries={newestFirst} order="desc" collapseAfter={2} />);
+
+    expect(screen.getByText("Event 7")).toBeDefined();
+    expect(screen.getByText("Event 6")).toBeDefined();
+    expect(screen.queryByText("Event 5")).toBeNull();
+    const button = screen.getByRole("button", { name: "Show all 8 events" });
+    // The control sits after the list, at the end that is hidden.
+    expect(screen.getByRole("list").compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    await user.click(button);
+    expect(screen.getByText("Event 0")).toBeDefined();
+    expect(document.activeElement?.textContent).toContain("Event 5");
+  });
+
+  it("renders a footer under the entries, for a Load more", () => {
+    render(<Timeline entries={entries.slice(0, 2)} footer={<button type="button">Load more</button>} />);
+    const footer = screen.getByRole("button", { name: "Load more" });
+    expect(screen.getByRole("list").compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 });

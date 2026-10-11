@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
+import { Button } from "./Button";
 import { Timeline } from "./Timeline";
 import type { TimelineEntry } from "./Timeline";
 
@@ -63,3 +64,18 @@ export const History: Story = {};
 export const Collapsed: Story = { args: { entries: LADDER, collapseAfter: 3, expandLabel: (total: number) => `Show all ${total} levels` } };
 
 export const Empty: Story = { args: { entries: [], emptyMessage: "No decisions yet. The first approver was notified 5 minutes ago." } };
+
+/** A feed, newest first: the head stays, the expander and a "Load more" sit underneath. */
+export const NewestFirst: Story = {
+  args: {
+    entries: [...LADDER].reverse(),
+    order: "desc",
+    collapseAfter: 4,
+    expandLabel: (total: number) => `Show all ${total} levels`,
+    footer: (
+      <Button variant="outline" size="sm" className="self-start">
+        Load more
+      </Button>
+    ),
+  },
+};
