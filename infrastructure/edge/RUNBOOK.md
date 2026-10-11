@@ -2592,6 +2592,39 @@ quiet. A narrower repair is an engineer's hand job: restore into the scratch dat
 children (the reverse of the order `--explain` prints), then its users and memberships. The
 `auth.audit_logs` rows above say when each organisation was purged and how many rows it had.
 
+### Rotating the JWT signing key: the up-to-30-second window
+
+The policy is ADR-0000 §2: only `auth-service` holds the private key, `jwt-ed25519.pem`, and
+every other service and gateway verifies through `GET /.well-known/jwks.json`. This is what a
+rotation does to the verifiers, so nobody mistakes it for an outage.
+
+- **What happens.** Each verifier fetches the JWKS lazily and keeps it. PyJWT 2.14 and later
+  (GHSA-2gx3-rcp4-g85q) will not fetch it again for **30 seconds after that verifier's last
+  successful fetch** just because a token carries a `kid` it has not seen. A token signed with
+  the new key that reaches a verifier inside that window is answered **`401`**
+  (`application/problem+json`, `unauthorized`), like any token it cannot verify. The first one
+  after the window ends makes the verifier fetch the JWKS and verifies, with no restart. The 30
+  seconds is PyJWT's default, stated as `JWKS_REFRESH_COOLDOWN_SECONDS` in `platform_core.auth`
+  and kept on purpose: turning it off would let anyone who can send a made-up `kid` make every
+  verifier call `auth-service` on every request.
+- **What you see.** A burst of 401s on requests made with new-key tokens, for at most 30 seconds
+  per verifier, in the ordinary `request.completed` lines. Anything longer is not this: either
+  the new `kid` is not in `auth-service`'s JWKS (`curl` it and look), or a verifier cannot use
+  the JWKS at all. That second case is a **`503`** (`upstream-unavailable`), never a 401, with
+  an `error` line `auth.jwks_unavailable`: an unreachable JWKS is our outage, and a 401 would
+  make every web client sign its user out.
+- **What clients see.** The web client refreshes once on a 401 and sends the user to sign-in if
+  the retry is refused too, so a person whose request and retry both land inside the window is
+  asked to sign in again. Switch signing during a quiet period and expect a few of those.
+- **What it does not hide.** `auth-service` publishes **only the key it signs with**
+  (`build_jwks([pair])`), not the two-key overlap ADR-0000 §2 describes, so a swap retires the
+  old key at once for any verifier that does not already hold it. And `PyJWKClient` keeps a
+  fetched key with no expiry, so a long-running verifier keeps accepting a retired `kid` until it
+  restarts: recreate the services after retiring a key you no longer trust.
+
+The behaviour is pinned by `libs/platform-core/tests/test_jwks_key_rotation.py`, which runs a
+real JWKS server and a real `PyJWKClient`.
+
 ### Deploying from the pipeline
 
 `.github/workflows/deploy.yml` runs the same two scripts a laptop does — `ssh-deploy.sh` for the

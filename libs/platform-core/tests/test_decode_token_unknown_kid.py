@@ -11,7 +11,7 @@ import pytest
 
 from platform_core import auth
 from platform_core.config import ServiceSettings
-from platform_core.errors import UnauthorizedProblem
+from platform_core.errors import UnauthorizedProblem, UpstreamUnavailableProblem
 
 
 class _KeyClient:
@@ -28,9 +28,15 @@ def test_an_unknown_kid_is_a_401(monkeypatch: pytest.MonkeyPatch) -> None:
         auth.decode_token(ServiceSettings.model_construct(), "x.y.z", expected_type="access")
 
 
-def test_an_unreachable_jwks_endpoint_stays_a_server_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Logging everyone out because auth-service blipped would be worse than a 5xx.
-    exc = jwt.PyJWKClientConnectionError("down")
+@pytest.mark.parametrize(
+    "exc",
+    [jwt.PyJWKClientConnectionError("down"), jwt.PyJWKSetError("no usable keys")],
+    ids=["unreachable", "no-usable-key"],
+)
+def test_a_jwks_we_cannot_use_is_a_503_not_a_401(
+    monkeypatch: pytest.MonkeyPatch, exc: Exception
+) -> None:
+    # Our outage, not a bad credential: a 401 would make every SPA sign its user out.
     monkeypatch.setattr(auth, "_jwks", lambda _s: _KeyClient(exc))
-    with pytest.raises(jwt.PyJWKClientConnectionError):
+    with pytest.raises(UpstreamUnavailableProblem):
         auth.decode_token(ServiceSettings.model_construct(), "x.y.z", expected_type="access")
