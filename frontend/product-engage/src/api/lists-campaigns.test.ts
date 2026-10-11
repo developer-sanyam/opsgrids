@@ -179,6 +179,7 @@ describe("the fixtures", () => {
       expect(Object.keys(campaign).sort()).toEqual([
         "audience",
         "cancelled_at",
+        "channel",
         "completed_at",
         "created_at",
         "html_body",
@@ -186,12 +187,15 @@ describe("the fixtures", () => {
         "list_id",
         "name",
         "pause_reason",
+        "provider_template_id",
         "scheduled_at",
+        "segment_id",
         "sender_id",
         "started_at",
         "stats",
         "status",
         "subject",
+        "template_values",
         "text_body",
         "updated_at",
       ]);
