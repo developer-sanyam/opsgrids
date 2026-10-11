@@ -305,7 +305,7 @@ the schema's required list (`conforms`, `ahead` with the missing fields, or `no 
 | `crm.lead.created` | lead | `organization_id, lead_id, source, owner_id` (`services/lead/app/services.py:538-543`) | yes | ahead: lacks `status` | none | no |
 | `crm.lead.updated` | lead | `organization_id, lead_id, changed` (`services/lead/app/services.py:647-651`) | yes | ahead: lacks `status, source, owner_id, converted_at` | none | no |
 | `crm.lead.converted` | lead | `organization_id, lead_id, company_id, contact_id, deal_id` (`services/lead/app/services.py:1199-1205`) | yes | ahead: lacks `owner_id, converted_at` | none | no |
-| `crm.lead.conversion_aborted` | lead | `organization_id, lead_id, reason, company_id, contact_id, deal_id` (`services/lead/app/services.py:1156-1161`) | yes | conforms; tested against its producer (`services/lead/tests/test_lead_lifecycle_races.py:269,292`) | none | no |
+| `crm.lead.conversion_aborted` | lead | `organization_id, lead_id, reason, generation, claim_id, company_id, contact_id, deal_id`; `reason` is `status_changed`, `owner_changed` or `record_deleted` (`services/lead/app/services.py`, `_stage_conversion_aborted`) | yes | conforms; tested against its producer (`services/lead/tests/test_lead_lifecycle_races.py`, `TestAnAbortedConversionLeavesATrail`; `services/lead/tests/test_convert.py`, `TestGenerationsAndDealNames`) | none | no |
 
 - **Publishing.** A producer stages the event in its `outbox` in the same transaction as the change,
   and the relay publishes it after commit. An event with no bound queue is silently dropped while its

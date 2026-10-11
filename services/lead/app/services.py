@@ -71,10 +71,12 @@ log = get_logger("lead.services")
 EVT_LEAD_CREATED = "crm.lead.created"
 EVT_LEAD_UPDATED = "crm.lead.updated"
 EVT_LEAD_CONVERTED = "crm.lead.converted"
-#: Staged by `_stage_conversion_aborted`, and only there, when `finalize_conversion` refuses to
-#: write "converted" — the records customer and deal already created for the attempt are still
-#: there. The payload names the attempt's `generation` and `claim_id`: a consumer re-derives the
-#: attempt's ids from `(lead_id, generation)` with `domain.conversion_ids` (R2.4).
+#: Staged by `_stage_conversion_aborted`, and only there: by `finalize_conversion` when it
+#: refuses to write "converted" (`status_changed`, `owner_changed`: the records customer and deal
+#: already created for the attempt are still there) and by `fail_conversion` when it bumps the
+#: generation because customer reported a record an earlier attempt created was deleted
+#: (`record_deleted`). The payload names the attempt's `generation` and `claim_id`: a consumer
+#: re-derives the attempt's ids from `(lead_id, generation)` with `domain.conversion_ids` (R2.4).
 EVT_LEAD_CONVERSION_ABORTED = "crm.lead.conversion_aborted"
 
 #: How far out a converted lead's deal defaults to closing. A lead carries no close date of
@@ -1297,7 +1299,10 @@ async def fail_conversion(
     reporting that the company or contact an *earlier* attempt created for this lead was
     deleted. The ids `domain.conversion_ids` derives are deterministic, so a deleted record at
     one of them refuses every future attempt on the same ids forever — bumping
-    `Lead.conversion_generation` makes the next attempt derive a fresh set instead.
+    `Lead.conversion_generation` makes the next attempt derive a fresh set instead, and
+    announces it as `crm.lead.conversion_aborted` with reason `record_deleted`, so whatever
+    the abandoned generation left behind (typically the deal) has an event to be found by.
+    A failure that does not bump stages no event.
 
     A no-op if the claim has already been taken over or cleared by someone else — there is
     nothing left for this attempt to fail on the row's behalf.
@@ -1309,6 +1314,7 @@ async def fail_conversion(
         if lead is None or lead.conversion_claim_id != claim_id:
             return
 
+        aborted_generation = lead.conversion_generation
         lead.conversion_claim_id = None
         lead.conversion_claimed_at = None
         lead.updated_by = str(ctx.principal.sub)
@@ -1316,6 +1322,8 @@ async def fail_conversion(
         if bump_generation:
             lead.conversion_generation += 1
             after["conversion_generation"] = lead.conversion_generation
+            after["claim_id"] = str(claim_id)
+            after["aborted_generation"] = aborted_generation
         await session.flush()
 
         record_audit(
@@ -1329,6 +1337,23 @@ async def fail_conversion(
             after=after,
             request=request,
         )
+        if bump_generation:
+            # The three ids are a function of the generation this attempt ran under, so they
+            # are re-derived here rather than read from anywhere: nothing was returned
+            # (customer's answer *was* the failure). The contact id is the derived one only when
+            # the lead holds an email, read from the sealed column's presence and never opened.
+            company_id, contact_id, deal_id = domain.conversion_ids(lead.id, aborted_generation)
+            _stage_conversion_aborted(
+                session,
+                ctx,
+                lead,
+                reason="record_deleted",
+                claim_id=claim_id,
+                generation=aborted_generation,
+                company_id=company_id,
+                contact_id=contact_id if lead.email_enc is not None else None,
+                deal_id=deal_id,
+            )
 
 
 async def convert_lead(

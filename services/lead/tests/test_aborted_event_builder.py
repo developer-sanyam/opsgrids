@@ -80,5 +80,7 @@ def test_the_event_type_is_spelled_out_once_as_the_constant_and_nowhere_else() -
     assert _sites().literal_sites == ["<module>"]
 
 
-def test_the_builder_is_called_from_the_finalize_abort_path() -> None:
-    assert sorted(_sites().builder_callers) == ["finalize_conversion"]
+def test_the_builder_is_called_from_both_paths_that_abort_a_conversion() -> None:
+    """`finalize_conversion` (status_changed, owner_changed) and `fail_conversion` with a bump
+    (record_deleted) -- and from nowhere else."""
+    assert sorted(_sites().builder_callers) == ["fail_conversion", "finalize_conversion"]

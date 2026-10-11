@@ -128,21 +128,36 @@ def _validate_abort(payload: dict[str, object]) -> None:
     validate_event_schema(_ABORT_EVENT, 1, payload, contracts_root=CONTRACTS)
 
 
-def test_the_lead_abort_schema_requires_a_generation_and_a_claim() -> None:
+def test_the_lead_abort_schema_requires_a_generation_and_a_claim_and_names_three_reasons() -> None:
     """A consumer re-derives an aborted attempt's ids from `(lead_id, generation)` and has to be
     able to refuse an event that carries neither, so both are required and the schema is closed.
-    Static on purpose: it runs in the contracts job without opening a database."""
+    `record_deleted` is the third reason: the bump `fail_conversion` makes when customer reports a
+    record an earlier attempt created was deleted. Static on purpose: it runs in the contracts
+    job without opening a database."""
     schema = json.loads((EVENTS / _ABORT_EVENT / "v1.schema.json").read_text(encoding="utf-8"))
     assert schema["additionalProperties"] is False
     assert {"generation", "claim_id"} <= set(schema["required"])
     assert set(schema["required"]) == set(schema["properties"])
     assert schema["properties"]["generation"] == {"type": "integer", "minimum": 0}
     assert schema["properties"]["claim_id"] == {"type": "string", "format": "uuid"}
+    assert schema["properties"]["reason"] == {
+        "enum": ["status_changed", "owner_changed", "record_deleted"]
+    }
 
 
 def test_a_complete_lead_abort_payload_validates() -> None:
     _validate_abort(_abort_payload())
     _validate_abort(_abort_payload(contact_id="3d2c1b0a-9f8e-4d7c-a6b5-4e3d2c1b0a99", generation=7))
+
+
+@pytest.mark.parametrize("reason", ["status_changed", "owner_changed", "record_deleted"])
+def test_each_of_the_three_abort_reasons_validates(reason: str) -> None:
+    _validate_abort(_abort_payload(reason=reason))
+
+
+def test_an_unknown_abort_reason_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        _validate_abort(_abort_payload(reason="lead_deleted"))
 
 
 @pytest.mark.parametrize("missing", ["generation", "claim_id"])
