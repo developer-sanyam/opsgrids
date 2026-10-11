@@ -1072,12 +1072,42 @@ class Campaign(Base, TenantBase):
     track_clicks: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    #: A/B test (version B of the subject and body). When on, `ab_split_percent` of the audience
+    #: gets version A and as many again get B; the rest waits, `queued`, until the scheduler's
+    #: `notification.campaign.ab_decide_due` fires `ab_wait_minutes` after expansion and
+    #: `services.decide_ab_test` sets `ab_winner` by `ab_metric` (open or click rate). Editable
+    #: only as a draft, like everything else here.
+    ab_test: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    subject_b: Mapped[str] = mapped_column(
+        String(255), nullable=False, default="", server_default=""
+    )
+    html_body_b: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    text_body_b: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    ab_split_percent: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=10, server_default=text("10")
+    )
+    #: open | click.
+    ab_metric: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="open", server_default="open"
+    )
+    ab_wait_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=240, server_default=text("240")
+    )
+    #: a | b, once decided; null before (and always, for a campaign that is not an A/B test).
+    ab_winner: Mapped[str | None] = mapped_column(String(1))
+    ab_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         CheckConstraint(
             "status IN ('draft', 'scheduled', 'sending', 'paused', 'sent', 'cancelled')",
             name="status",
         ),
+        CheckConstraint("ab_split_percent BETWEEN 1 AND 50", name="ab_split_percent"),
+        CheckConstraint("ab_metric IN ('open', 'click')", name="ab_metric"),
+        CheckConstraint("ab_wait_minutes BETWEEN 15 AND 10080", name="ab_wait_minutes"),
+        CheckConstraint("ab_winner IS NULL OR ab_winner IN ('a', 'b')", name="ab_winner"),
         CheckConstraint("audience IN ('list', 'all_sendable')", name="audience"),
         CheckConstraint("(audience = 'list') = (list_id IS NOT NULL)", name="audience_list"),
         Index("ix_campaigns_org_status", "organization_id", "status"),
@@ -1131,12 +1161,17 @@ class CampaignRecipient(Base, TenantBase):
     #: When the contact's sealed address was crypto-shredded. Null for every row whose contact
     #: has not been deleted or erased.
     erased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The A/B test group this recipient was drawn into at expansion (`a` | `b`). Null for every
+    #: recipient of a plain campaign, and for an A/B campaign's remainder, which is sent the
+    #: winner once `Campaign.ab_winner` is set.
+    variant: Mapped[str | None] = mapped_column(String(1))
 
     __table_args__ = (
         UniqueConstraint("campaign_id", "contact_id", name="uq_campaign_recipient"),
         CheckConstraint(
             "status IN ('queued', 'sending', 'sent', 'failed', 'suppressed')", name="status"
         ),
+        CheckConstraint("variant IS NULL OR variant IN ('a', 'b')", name="variant"),
         Index("ix_campaign_recipients_org_campaign", "organization_id", "campaign_id", "status"),
         Index("ix_campaign_recipients_org_sent_at", "organization_id", "sent_at"),
         #: What `services.erase_contact_campaign_copies` scans: every recipient row across every

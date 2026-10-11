@@ -191,6 +191,81 @@ async def campaign_analytics(
             for d, v in sorted(by_day.items())
         ],
         "tracking": {"opens": bool(campaign.track_opens), "clicks": bool(campaign.track_clicks)},
+        "ab_test": await _ab_test(session, campaign) if campaign.ab_test else None,
+    }
+
+
+async def _ab_test(session: AsyncSession, campaign: Campaign) -> dict[str, Any]:
+    """Each A/B group's recipients, delivered, and distinct human openers and clickers. Two
+    grouped queries, whatever the audience size."""
+    org = campaign.organization_id
+    in_groups = and_(
+        CampaignRecipient.organization_id == org,
+        CampaignRecipient.campaign_id == campaign.id,
+        CampaignRecipient.variant.is_not(None),
+        CampaignRecipient.deleted_at.is_(None),
+    )
+    sizes = {
+        variant: (int(total), int(sent))
+        for variant, total, sent in (
+            await session.execute(
+                select(
+                    CampaignRecipient.variant,
+                    func.count(),
+                    func.count().filter(CampaignRecipient.status == "sent"),
+                )
+                .where(in_groups)
+                .group_by(CampaignRecipient.variant)
+            )
+        ).all()
+    }
+    hits: dict[tuple[str, str], int] = {}
+    for variant, kind, n in (
+        await session.execute(
+            select(
+                CampaignRecipient.variant,
+                EmailEvent.kind,
+                func.count(func.distinct(EmailEvent.recipient_id)),
+            )
+            .join(
+                EmailEvent,
+                and_(
+                    EmailEvent.organization_id == CampaignRecipient.organization_id,
+                    EmailEvent.recipient_id == CampaignRecipient.id,
+                ),
+            )
+            .where(
+                in_groups,
+                EmailEvent.campaign_id == campaign.id,
+                EmailEvent.is_machine.is_(False),
+            )
+            .group_by(CampaignRecipient.variant, EmailEvent.kind)
+        )
+    ).all():
+        hits[(variant, kind)] = int(n)
+    variants = []
+    for variant, subject in (("a", campaign.subject), ("b", campaign.subject_b)):
+        total, delivered = sizes.get(variant, (0, 0))
+        opened, clicked = hits.get((variant, "open"), 0), hits.get((variant, "click"), 0)
+        variants.append(
+            {
+                "variant": variant,
+                "subject": subject,
+                "recipients": total,
+                "delivered": delivered,
+                "opened": opened,
+                "clicked": clicked,
+                "open_rate": _rate(opened, delivered),
+                "click_rate": _rate(clicked, delivered),
+            }
+        )
+    return {
+        "metric": campaign.ab_metric,
+        "split_percent": campaign.ab_split_percent,
+        "wait_minutes": campaign.ab_wait_minutes,
+        "winner": campaign.ab_winner,
+        "decided_at": campaign.ab_decided_at.isoformat() if campaign.ab_decided_at else None,
+        "variants": variants,
     }
 
 

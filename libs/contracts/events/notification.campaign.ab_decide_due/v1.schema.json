@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/notification.campaign.ab_decide_due/v1",
+  "title": "notification.campaign.ab_decide_due",
+  "description": "Internal to notification. An email campaign's A/B test has waited its `ab_wait_minutes` since expansion and its winner is due. Staged by `notification.services` at expansion as the target of a `platform.schedule.requested` (ADR-0015) and consumed by `notification.consumers.decide_ab_test`, which picks the winner by open or click rate only if none has been picked yet, so a second delivery changes nothing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "campaign_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "campaign_id": { "type": "string", "format": "uuid" }
+  }
+}

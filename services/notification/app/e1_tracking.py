@@ -370,7 +370,12 @@ async def prepare_plan(  # type: ignore[no-untyped-def]
     if campaign.track_clicks:
         # A pass over a body of up to 500 KB: off the event loop, which in production also
         # serves every other tenant's API traffic.
-        urls = await asyncio.to_thread(extract_links, campaign.html_body)
+        # Version B's links too, for an A/B test: each recipient's copy is rewritten from one
+        # plan, whichever version they get.
+        urls = await asyncio.to_thread(
+            extract_links,
+            campaign.html_body + ("\n" + campaign.html_body_b if campaign.ab_test else ""),
+        )
         if urls:
             await session.execute(
                 pg_insert(EmailLink)

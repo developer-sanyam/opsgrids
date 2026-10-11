@@ -5,6 +5,7 @@ import { SendIcon } from "@opsgrids/ui";
 
 import { createCampaign, editCampaign } from "@/api/client";
 import type {
+  AbMetric,
   CampaignAudience,
   CampaignIn,
   CampaignOut,
@@ -53,6 +54,14 @@ interface Values {
   subject: string;
   htmlBody: string;
   textBody: string;
+  abTest: boolean;
+  subjectB: string;
+  htmlBodyB: string;
+  textBodyB: string;
+  /** Kept as typed, so a half-typed number is not coerced under the person's cursor. */
+  abSplitPercent: string;
+  abMetric: AbMetric;
+  abWaitHours: string;
 }
 
 type Errors = Partial<Record<keyof Values, string>>;
@@ -70,7 +79,28 @@ const WIRE_FIELDS: Record<string, keyof Values> = {
   subject: "subject",
   html_body: "htmlBody",
   text_body: "textBody",
+  subject_b: "subjectB",
+  html_body_b: "htmlBodyB",
+  text_body_b: "textBodyB",
+  ab_split_percent: "abSplitPercent",
+  ab_metric: "abMetric",
+  ab_wait_minutes: "abWaitHours",
 };
+
+const VERSION_OPTIONS = [
+  { value: "one", label: "One version", description: "Everyone gets the subject and body above." },
+  {
+    value: "ab",
+    label: "A/B test two versions",
+    description:
+      "A share of the audience gets each version; after the wait, the one with the better open or click rate goes to everyone else.",
+  },
+];
+
+const METRIC_OPTIONS = [
+  { value: "open", label: "Open rate" },
+  { value: "click", label: "Click rate" },
+];
 
 const AUDIENCE_OPTIONS = [
   {
@@ -95,6 +125,29 @@ function seed(campaign: CampaignOut | null): Values {
     subject: campaign?.subject ?? "",
     htmlBody: campaign?.html_body ?? "",
     textBody: campaign?.text_body ?? "",
+    abTest: campaign?.ab_test ?? false,
+    subjectB: campaign?.subject_b ?? "",
+    htmlBodyB: campaign?.html_body_b ?? "",
+    textBodyB: campaign?.text_body_b ?? "",
+    abSplitPercent: String(campaign?.ab_split_percent ?? 10),
+    abMetric: campaign?.ab_metric ?? "open",
+    abWaitHours: String((campaign?.ab_wait_minutes ?? 240) / 60),
+  };
+}
+
+/** The A/B fields as the service takes them, or nothing for a single-version campaign — plus the
+ *  tracking the chosen metric reads, which the send gate otherwise refuses. */
+function abFields(values: Values): Partial<CampaignIn> {
+  if (!values.abTest) return {};
+  return {
+    ab_test: true,
+    subject_b: values.subjectB,
+    html_body_b: values.htmlBodyB,
+    text_body_b: values.textBodyB,
+    ab_split_percent: Number(values.abSplitPercent),
+    ab_metric: values.abMetric,
+    ab_wait_minutes: Math.round(Number(values.abWaitHours) * 60),
+    ...(values.abMetric === "open" ? { track_opens: true } : { track_clicks: true }),
   };
 }
 
@@ -111,6 +164,21 @@ function validate(values: Values): Errors {
   }
   if (values.htmlBody.length > BODY_MAX) errors.htmlBody = "The HTML body is too long to send.";
   if (values.textBody.length > BODY_MAX) errors.textBody = "The plain-text body is too long to send.";
+  if (values.abTest) {
+    const split = Number(values.abSplitPercent);
+    if (!Number.isInteger(split) || split < 1 || split > 50) {
+      errors.abSplitPercent = "Test each version on 1 to 50 per cent of the audience.";
+    }
+    const minutes = Number(values.abWaitHours) * 60;
+    if (!Number.isFinite(minutes) || minutes < 15 || minutes > 10080) {
+      errors.abWaitHours = "Wait between a quarter of an hour and 168 hours (a week).";
+    }
+    if (values.subjectB.length > SUBJECT_MAX) {
+      errors.subjectB = `A subject can be at most ${SUBJECT_MAX} characters.`;
+    }
+    if (values.htmlBodyB.length > BODY_MAX) errors.htmlBodyB = "The HTML body is too long to send.";
+    if (values.textBodyB.length > BODY_MAX) errors.textBodyB = "The plain-text body is too long to send.";
+  }
   return errors;
 }
 
@@ -123,6 +191,7 @@ function toCreate(values: Values): CampaignIn {
     text_body: values.textBody,
     audience: values.audience,
     ...(values.audience === "list" ? { list_id: values.listId } : {}),
+    ...abFields(values),
   };
 }
 
@@ -136,6 +205,7 @@ function toPatch(values: Values, saved: CampaignOut): CampaignPatch {
     ...(values.subject === saved.subject ? {} : { subject: values.subject }),
     ...(values.htmlBody === saved.html_body ? {} : { html_body: values.htmlBody }),
     ...(values.textBody === saved.text_body ? {} : { text_body: values.textBody }),
+    ...abPatch(values, saved),
     ...(values.audience === saved.audience &&
     (values.audience === "list" ? values.listId : null) === saved.list_id
       ? {}
@@ -144,6 +214,16 @@ function toPatch(values: Values, saved: CampaignOut): CampaignPatch {
           ...(values.audience === "list" ? { list_id: values.listId } : {}),
         }),
   };
+}
+
+/** The A/B fields that differ from the saved draft; turning the test off sends just that. */
+function abPatch(values: Values, saved: CampaignOut): CampaignPatch {
+  if (!values.abTest) return saved.ab_test === true ? { ab_test: false } : {};
+  const wanted = abFields(values) as Record<string, unknown>;
+  const held = saved as unknown as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(wanted).filter(([key, value]) => held[key] !== value),
+  ) as CampaignPatch;
 }
 
 function isDirty(values: Values, saved: CampaignOut | null): boolean {
@@ -505,6 +585,82 @@ export function CampaignForm({
             readOnly={locked}
             {...(errors.textBody !== undefined ? { error: errors.textBody } : {})}
           />
+
+          <RadioGroup
+            legend="Versions"
+            name="campaign-versions"
+            value={values.abTest ? "ab" : "one"}
+            onChange={(value) => set("abTest", value === "ab")}
+            options={VERSION_OPTIONS.map((option) => ({ ...option, disabled: locked }))}
+          />
+
+          {values.abTest ? (
+            <>
+              <TextField
+                label="Version B subject"
+                value={values.subjectB}
+                onChange={(event) => set("subjectB", event.target.value)}
+                helper="Required before it can be sent."
+                maxLength={SUBJECT_MAX}
+                readOnly={locked}
+                {...(errors.subjectB !== undefined ? { error: errors.subjectB } : {})}
+              />
+              <TextArea
+                label="Version B HTML body"
+                value={values.htmlBodyB}
+                onChange={(event) => set("htmlBodyB", event.target.value)}
+                rows={8}
+                spellCheck={false}
+                optional
+                readOnly={locked}
+                {...(errors.htmlBodyB !== undefined ? { error: errors.htmlBodyB } : {})}
+              />
+              <TextArea
+                label="Version B plain-text body"
+                value={values.textBodyB}
+                onChange={(event) => set("textBodyB", event.target.value)}
+                rows={5}
+                optional
+                helper="Write at least one of version B's HTML and plain-text bodies."
+                readOnly={locked}
+                {...(errors.textBodyB !== undefined ? { error: errors.textBodyB } : {})}
+              />
+              <TextField
+                label="Test group size (% of the audience for each version)"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={50}
+                value={values.abSplitPercent}
+                onChange={(event) => set("abSplitPercent", event.target.value)}
+                helper="10 sends version A to 10% and version B to another 10%; the other 80% get the winner."
+                readOnly={locked}
+                {...(errors.abSplitPercent !== undefined ? { error: errors.abSplitPercent } : {})}
+              />
+              <Select
+                label="Pick the winner by"
+                value={values.abMetric}
+                onChange={(event) => set("abMetric", event.target.value as AbMetric)}
+                options={METRIC_OPTIONS}
+                helper="Turns on open or click tracking for this campaign, which picking a winner needs."
+                disabled={locked}
+                {...(errors.abMetric !== undefined ? { error: errors.abMetric } : {})}
+              />
+              <TextField
+                label="Wait before picking (hours)"
+                type="number"
+                inputMode="decimal"
+                min={0.25}
+                max={168}
+                step={0.25}
+                value={values.abWaitHours}
+                onChange={(event) => set("abWaitHours", event.target.value)}
+                helper="Counted from when the campaign starts sending."
+                readOnly={locked}
+                {...(errors.abWaitHours !== undefined ? { error: errors.abWaitHours } : {})}
+              />
+            </>
+          ) : null}
           </FormSection>
 
           <div className="flex flex-wrap items-center gap-3">

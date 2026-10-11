@@ -694,6 +694,11 @@ def _reject_header_injection(value: str) -> str:
     return value
 
 
+#: What picks an A/B test's winner: the share of each version's delivered recipients who opened,
+#: or who clicked.
+AbMetric = Literal["open", "click"]
+
+
 class CampaignIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -709,8 +714,17 @@ class CampaignIn(BaseModel):
     #: URLs on the platform's domain (slice E1).
     track_opens: bool = False
     track_clicks: bool = False
+    #: A/B test: version B of the subject and body, the share of the audience each version is
+    #: tested on, the metric that picks the winner and how long to wait before picking it.
+    ab_test: bool = False
+    subject_b: str = Field(default="", max_length=255)
+    html_body_b: str = Field(default="", max_length=500_000)
+    text_body_b: str = Field(default="", max_length=500_000)
+    ab_split_percent: int = Field(default=10, ge=1, le=50)
+    ab_metric: AbMetric = "open"
+    ab_wait_minutes: int = Field(default=240, ge=15, le=10080)
 
-    @field_validator("subject")
+    @field_validator("subject", "subject_b")
     @classmethod
     def _subject_no_crlf(cls, value: str) -> str:
         return _reject_header_injection(value)
@@ -754,8 +768,15 @@ class CampaignPatch(BaseModel):
     scheduled_at: datetime | None = None
     track_opens: bool | None = None
     track_clicks: bool | None = None
+    ab_test: bool | None = None
+    subject_b: str | None = Field(default=None, max_length=255)
+    html_body_b: str | None = Field(default=None, max_length=500_000)
+    text_body_b: str | None = Field(default=None, max_length=500_000)
+    ab_split_percent: int | None = Field(default=None, ge=1, le=50)
+    ab_metric: AbMetric | None = None
+    ab_wait_minutes: int | None = Field(default=None, ge=15, le=10080)
 
-    @field_validator("subject")
+    @field_validator("subject", "subject_b")
     @classmethod
     def _subject_no_crlf(cls, value: str | None) -> str | None:
         return value if value is None else _reject_header_injection(value)
@@ -790,6 +811,17 @@ class CampaignOut(BaseModel):
     #: Whether opens / clicks are tracked for this campaign (off by default).
     track_opens: bool = False
     track_clicks: bool = False
+    #: A/B test settings; `ab_winner` (`a` | `b`) and `ab_decided_at` are set by the service once
+    #: the wait is over, null until then.
+    ab_test: bool = False
+    subject_b: str = ""
+    html_body_b: str = ""
+    text_body_b: str = ""
+    ab_split_percent: int = 10
+    ab_metric: AbMetric = "open"
+    ab_wait_minutes: int = 240
+    ab_winner: Literal["a", "b"] | None = None
+    ab_decided_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
