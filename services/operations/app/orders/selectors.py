@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.alerts.selectors import DEFAULT_TASK_SLA_MINUTES
 from app.domain import order_line_amount_minor
 from app.inventory.quantity import QuantityError, format_qty, parse_qty
 from app.models import (
@@ -31,7 +32,14 @@ from app.models import (
     OrderLine,
     PickTask,
 )
-from app.schemas import OrderLineItem, OrderOut, QuoteIn, QuoteLineOut, QuoteOut
+from app.schemas import (
+    FulfilmentSettingsOut,
+    OrderLineItem,
+    OrderOut,
+    QuoteIn,
+    QuoteLineOut,
+    QuoteOut,
+)
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 
 # ------------------------------------------------------------------ orders
@@ -349,10 +357,11 @@ class ResolvedSettings:
 
 
 #: What an organization gets when neither a per-warehouse nor an org-default `fulfilment_settings`
-#: row exists yet — no endpoint in F2 creates one (out of this phase's scope), so a fresh
-#: organization must still be able to place and accept orders.
+#: row exists yet, so a fresh organization must be able to run an order end to end.
+#: `invoice_timing` is `on_delivery` (INVENTORY-02): `on_accept`/`on_dispatch` require an order
+#: invoice before handover, which nothing can raise yet (INVENTORY-01).
 _HARDCODED_DEFAULT = ResolvedSettings(
-    invoice_timing="on_accept",
+    invoice_timing="on_delivery",
     payment_defaults={},
     offer_timeout_seconds=300,
     offer_rounds=3,
@@ -407,6 +416,73 @@ async def resolve_settings(
             auto_assignment_enabled=row.auto_assignment_enabled,
         )
     return _HARDCODED_DEFAULT
+
+
+async def get_settings_row(
+    session: AsyncSession, org_id: uuid.UUID, warehouse_id: uuid.UUID | None
+) -> FulfilmentSettings | None:
+    """The live row for exactly this scope: the warehouse's override, or (`None`) the org row."""
+    scope = (
+        FulfilmentSettings.warehouse_id.is_(None)
+        if warehouse_id is None
+        else FulfilmentSettings.warehouse_id == warehouse_id
+    )
+    stmt = select(FulfilmentSettings).where(
+        FulfilmentSettings.organization_id == org_id,
+        scope,
+        FulfilmentSettings.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def _settings_out(
+    row: FulfilmentSettings | None, warehouse_id: uuid.UUID | None
+) -> FulfilmentSettingsOut:
+    if row is None:
+        d = _HARDCODED_DEFAULT
+        return FulfilmentSettingsOut(
+            warehouse_id=warehouse_id,
+            source="default",
+            invoice_timing=d.invoice_timing,
+            payment_defaults=dict(d.payment_defaults),
+            offer_timeout_seconds=d.offer_timeout_seconds,
+            offer_rounds=d.offer_rounds,
+            require_pickup_code=d.require_pickup_code,
+            default_tax_rate_pct=d.default_tax_rate_pct.quantize(Decimal("0.01")),
+            auto_assignment_enabled=d.auto_assignment_enabled,
+            task_sla_minutes=DEFAULT_TASK_SLA_MINUTES,
+            alert_email=None,
+            alert_phone=None,
+            updated_at=None,
+            updated_by=None,
+        )
+    return FulfilmentSettingsOut(
+        warehouse_id=warehouse_id,
+        source="organization" if row.warehouse_id is None else "warehouse",
+        invoice_timing=row.invoice_timing,
+        payment_defaults=dict(row.payment_defaults),
+        offer_timeout_seconds=row.offer_timeout_seconds,
+        offer_rounds=row.offer_rounds,
+        require_pickup_code=row.require_pickup_code,
+        default_tax_rate_pct=row.default_tax_rate_pct.quantize(Decimal("0.01")),
+        auto_assignment_enabled=row.auto_assignment_enabled,
+        task_sla_minutes=row.task_sla_minutes,
+        alert_email=row.alert_email,
+        alert_phone=row.alert_phone,
+        updated_at=row.updated_at,
+        updated_by=row.updated_by,
+    )
+
+
+async def settings_out(
+    session: AsyncSession, org_id: uuid.UUID, warehouse_id: uuid.UUID | None
+) -> FulfilmentSettingsOut:
+    """The effective policy for this scope, the same preference `resolve_settings` applies: the
+    warehouse's own row, else the organization's, else the built-in default."""
+    row = await get_settings_row(session, org_id, warehouse_id)
+    if row is None and warehouse_id is not None:
+        row = await get_settings_row(session, org_id, None)
+    return _settings_out(row, warehouse_id)
 
 
 # ------------------------------------------------------------------ quote preview

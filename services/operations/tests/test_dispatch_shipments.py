@@ -611,7 +611,7 @@ class TestCancelledTaskLineIsRefused:
     ) -> None:
         # `_seed_settings` before `_two_zone_order`: `accept_order` snapshots `fulfilment_
         # settings` onto the order at accept time (ADR-0025 §1) — seeding afterward would leave
-        # this order pinned to `_HARDCODED_DEFAULT` (`invoice_timing="on_accept"`) regardless of
+        # this order pinned to `_HARDCODED_DEFAULT` (`invoice_timing="on_delivery"`) regardless of
         # what the settings row says, the same reason every other test in this file seeds first.
         await _seed_settings(session, org_id)
         order = await _two_zone_order(session, org_id, floor, widget_qty="5", gizmo_qty="5")

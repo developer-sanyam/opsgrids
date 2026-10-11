@@ -1895,9 +1895,8 @@ class FulfilmentSettings(Base, TenantBase):
 
     `auto_assignment_enabled` is auto-assignment's own opt-in (ADR-0024 §9): defaults `False` so
     an org with production dispatchers already relying on F3's manual-only offering sees **no**
-    change in behaviour until it explicitly turns this on — there is deliberately no admin
-    endpoint yet (the same gap every other column here already has; a settings-management surface
-    is a later phase's addition, not this one's).
+    change in behaviour until it explicitly turns this on. Every column here is written through
+    `PUT /operations/fulfilment/settings` (INVENTORY-02, `operations.fulfilment.settings.write`).
 
     `task_sla_minutes`, `alert_email` and `alert_phone` are F12's own additions (fulfilment plan
     §4, operational automation). `task_sla_minutes` is how long a pick task may stay open
@@ -1915,7 +1914,9 @@ class FulfilmentSettings(Base, TenantBase):
         PGUUID(as_uuid=True), ForeignKey("operations.warehouses.id", ondelete="RESTRICT")
     )
     #: on_accept | on_dispatch | on_delivery.
-    invoice_timing: Mapped[str] = mapped_column(String(20), nullable=False, default="on_accept")
+    #: `on_delivery` by default (INVENTORY-02): the two earlier timings need an order invoice before
+    #: handover, and nothing can raise one yet (INVENTORY-01), so they refused every handover.
+    invoice_timing: Mapped[str] = mapped_column(String(20), nullable=False, default="on_delivery")
     #: {channel: "prepaid" | "cash" | "credit"}.
     payment_defaults: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False, default=dict)
     offer_timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)

@@ -17,13 +17,12 @@ Two variants of the same chain from `ACCEPTED` onward, both real: the counter/wa
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 
-from app.models import FulfilmentSettings, Order, OutboxEvent
+from app.models import Order, OutboxEvent
 from app.orders import selectors as order_selectors
 from tests.fulfilment_fixtures import (
     Floor,
@@ -44,6 +43,7 @@ CREATE_PERM = "operations.orders.order.create:ORG"
 WRITE_PERM = "operations.orders.order.write:ORG"
 ACCEPT_PERM = "operations.orders.order.accept:ORG"
 HAND_OVER_PERM = "operations.orders.order.hand_over:ORG"
+SETTINGS_PERM = "operations.fulfilment.settings.write:ORG"
 
 
 @pytest.fixture
@@ -51,26 +51,25 @@ async def floor(session, org_id) -> Floor:
     return await build_floor(session, org_id, stock=100)
 
 
-async def _seed_settings(
-    session,
-    org_id: uuid.UUID,
-    *,
-    invoice_timing: str = "on_delivery",
-    payment_defaults: dict[str, str] | None = None,
-) -> None:
-    async with session.begin():
-        session.add(
-            FulfilmentSettings(
-                organization_id=org_id,
-                warehouse_id=None,
-                invoice_timing=invoice_timing,
-                payment_defaults=payment_defaults or {"manual": "credit"},
-                offer_timeout_seconds=300,
-                offer_rounds=3,
-                require_pickup_code=False,
-                default_tax_rate_pct=Decimal("0"),
-            )
-        )
+async def _put_settings(client, org_id: uuid.UUID, **overrides: object) -> None:  # type: ignore[no-untyped-def]
+    """Settings through the real API (INVENTORY-02), never a direct insert."""
+    payload = {
+        "invoice_timing": "on_delivery",
+        "payment_defaults": {},
+        "offer_timeout_seconds": 300,
+        "offer_rounds": 3,
+        "require_pickup_code": False,
+        "default_tax_rate_pct": "0",
+        "auto_assignment_enabled": False,
+        "task_sla_minutes": 60,
+        "alert_email": None,
+        "alert_phone": None,
+        **overrides,
+    }
+    principal = principal_for(org_id, [SETTINGS_PERM], subject_ref=uuid.uuid4())
+    with as_principal(principal):
+        response = await client.put("/api/v1/operations/fulfilment/settings", json=payload)
+    assert response.status_code == 200, response.text
 
 
 async def _create_order(client, org_id: uuid.UUID, floor: Floor, *, qty: str) -> dict:  # type: ignore[no-untyped-def]
@@ -111,12 +110,14 @@ async def _accept(client, org_id: uuid.UUID, order_id: str, version: int) -> dic
     return response.json()
 
 
-async def _hand_over(client, org_id: uuid.UUID, order_id: str, version: int) -> dict:  # type: ignore[no-untyped-def]
+async def _hand_over(  # type: ignore[no-untyped-def]
+    client, org_id: uuid.UUID, order_id: str, version: int, *, payment_confirmed: bool
+) -> dict:
     principal = principal_for(org_id, [HAND_OVER_PERM], subject_ref=uuid.uuid4())
     with as_principal(principal):
         response = await client.post(
             f"/api/v1/operations/orders/{order_id}/hand-over",
-            json={"version": version, "payment_confirmed": False},
+            json={"version": version, "payment_confirmed": payment_confirmed},
         )
     assert response.status_code == 200, response.text
     return response.json()
@@ -180,18 +181,22 @@ async def _drive_to_ready_and_packed(  # type: ignore[no-untyped-def]
 
 class TestFullJourneyCounterHandover:
     """create -> place -> accept -> pick task -> offer -> accept offer -> confirm pick -> pack ->
-    counter hand-over -> delivered, entirely over HTTP."""
+    counter hand-over -> delivered, entirely over HTTP, on a fresh organization's **default**
+    settings (INVENTORY-02: the default used to require an invoice nothing could create, so every
+    handover was a 409). `manual` defaults to the cash term, so the counter attests payment."""
 
     async def test_the_whole_chain_holds_together(
         self, client, org_id, session, floor: Floor
     ) -> None:
-        await _seed_settings(session, org_id, payment_defaults={"manual": "credit"})
         order_id, _line_id = await _drive_to_ready_and_packed(client, org_id, floor, qty="7")
 
         order = await _reload(session, org_id, uuid.UUID(order_id))
         assert order.status == "READY"
+        assert order.settings_snapshot["source"] == "default"
 
-        delivered = await _hand_over(client, org_id, order_id, order.version)
+        delivered = await _hand_over(
+            client, org_id, order_id, order.version, payment_confirmed=True
+        )
         assert delivered["status"] == "DELIVERED"
 
         after = await _reload(session, org_id, uuid.UUID(order_id))
@@ -211,11 +216,11 @@ class TestFullJourneyCarrierDispatch:
     async def test_the_whole_chain_holds_together(
         self, client, org_id, session, floor: Floor
     ) -> None:
-        await _seed_settings(session, org_id, payment_defaults={"manual": "credit"})
         order_id, _line_id = await _drive_to_ready_and_packed(client, org_id, floor, qty="7")
 
         order = await _reload(session, org_id, uuid.UUID(order_id))
         assert order.status == "READY"
+        assert order.settings_snapshot["source"] == "default"
 
         response = await dispatch_order(
             client,
@@ -224,6 +229,7 @@ class TestFullJourneyCarrierDispatch:
             order.version,
             carrier_name="Acme Couriers",
             tracking_reference="TRK-E2E-1",
+            payment_confirmed=True,
         )
         assert response.status_code == 201, response.text
         shipment = response.json()
@@ -245,3 +251,22 @@ class TestFullJourneyCarrierDispatch:
         assert "operations.orders.order.placed" in events
         assert "operations.orders.order.accepted" in events
         assert "operations.orders.order.handed_over" in events
+
+
+class TestFullJourneyWithSettingsFromTheApi:
+    """An administrator puts `manual` orders on credit terms through the settings API; the next
+    order is accepted under that row and handed over with no payment attested."""
+
+    async def test_the_configured_policy_is_the_one_the_order_runs_under(
+        self, client, org_id, session, floor: Floor
+    ) -> None:
+        await _put_settings(client, org_id, payment_defaults={"manual": "credit"})
+        order_id, _line_id = await _drive_to_ready_and_packed(client, org_id, floor, qty="3")
+
+        order = await _reload(session, org_id, uuid.UUID(order_id))
+        assert order.settings_snapshot["source"] == "organization"
+
+        delivered = await _hand_over(
+            client, org_id, order_id, order.version, payment_confirmed=False
+        )
+        assert delivered["status"] == "DELIVERED"

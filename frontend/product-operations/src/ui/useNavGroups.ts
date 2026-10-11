@@ -24,6 +24,7 @@ import {
   ReceiptIcon,
   ScaleIcon,
   SendIcon,
+  SettingsIcon,
   TagIcon,
   ShieldCheckIcon,
   TruckIcon,
@@ -74,6 +75,8 @@ const GROUPS: NavGroup[] = [
       // The organization's own payment-provider account (Razorpay or Cashfree) and payment
       // reconciliation (ADR-0024 A4, ADR-0033).
       { to: "/settings/payments", label: "Online Payments", icon: CreditCardIcon },
+      // Payment terms, pickup code, tax rate, task assignment and alert contacts (INVENTORY-02).
+      { to: "/settings/fulfilment", label: "Fulfilment Settings", icon: SettingsIcon },
     ],
   },
   {
