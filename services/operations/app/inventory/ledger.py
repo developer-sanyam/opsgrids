@@ -304,6 +304,8 @@ async def _items(
                 InventoryItem.id.in_(wanted),
                 InventoryItem.deleted_at.is_(None),
             )
+            # Id order, like every other multi-row item lock, so two writers cannot cross.
+            .order_by(InventoryItem.id)
             .with_for_update(read=True)
         )
     ).scalars()

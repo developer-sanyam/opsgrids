@@ -21181,6 +21181,19 @@
         "additionalProperties": false,
         "description": "`:receive` \u2014 one or more lines, any number of times, until every line is settled.",
         "properties": {
+          "evidence_document_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required when a shortage reaches the adjustment-approval threshold.",
+            "title": "Evidence Document Id"
+          },
           "lines": {
             "items": {
               "$ref": "#/components/schemas/TransferReceiveLineIn"
@@ -25960,23 +25973,16 @@
         "operationId": "post_goods_receipt_api_v1_operations_goods_receipts_post",
         "parameters": [
           {
-            "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
+            "description": "Required.",
             "in": "header",
             "name": "Idempotency-Key",
-            "required": false,
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 128,
-                  "minLength": 1,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Retrying with the same key replays the first result instead of posting again; reusing it for a different request is a 409.",
-              "title": "Idempotency-Key"
+              "description": "Required.",
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
             }
           }
         ],
@@ -27392,6 +27398,18 @@
                 }
               ],
               "title": "Item Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
             }
           }
         ],

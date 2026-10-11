@@ -138,6 +138,10 @@ class TransferReceiveIn(BaseModel):
 
     lines: list[TransferReceiveLineIn] = Field(min_length=1, max_length=100)
     note: str = Field(default="", max_length=500)
+    evidence_document_id: UUID | None = Field(
+        default=None,
+        description="Required when a shortage reaches the adjustment-approval threshold.",
+    )
 
     @model_validator(mode="after")
     def _one_per_line(self) -> Self:
@@ -261,8 +265,10 @@ class ReservationIn(BaseModel):
 
     @model_validator(mode="after")
     def _reference(self) -> Self:
-        if self.reference_type != "manual" and self.reference_id is None:
-            raise ValueError("an order or production-order reservation names that document")
+        # Order and production-order reservations belong to their own modules (they key off the
+        # document and `complete_handover` consumes them); a hand-made one must not impersonate.
+        if self.reference_type != "manual":
+            raise ValueError("a manual reservation is for reference_type 'manual' only")
         return self
 
 

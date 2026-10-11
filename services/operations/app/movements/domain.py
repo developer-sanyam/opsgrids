@@ -2,14 +2,16 @@
 
 The state machine follows ADR-0014 §6: a `*_TRANSITIONS` map, checked in one place, and a reversal
 is never a silent step backwards (a dispatched transfer cannot be cancelled; it is received, or its
-shortage is written off). Thresholds are compared per line in the **item's own unit** — metres are
-never summed with pieces — and a threshold of `None` means "none set".
+shortage is written off). Thresholds are compared per line in the base unit of the item's dimension
+(`to_base_milli`) — metres are never summed with pieces — and a threshold of `None` means
+"none set".
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
+from app.inventory.quantity import unit
 from platform_core.errors import ConflictProblem
 
 #: DRAFT -> REQUESTED -> APPROVED -> IN_TRANSIT -> RECEIVED, with CANCELLED reachable before
@@ -44,6 +46,19 @@ def assert_transition(
     """Raise a 409 naming the states when `current -> target` is not an allowed step."""
     if target not in table.get(current, frozenset()):
         raise ConflictProblem(f"A {noun} that is {current} cannot become {target}")
+
+
+def to_base_milli(milli: int, uom: str) -> int:
+    """`abs(milli)` of `uom` in its dimension's base unit (m, kg, pcs, ...), rounded up so a
+    borderline quantity errs towards approval — so a threshold of "10 kg" means 10 kg whether the
+    item is stocked in kg or g. A unit with no known size (a box, a free-text unit) is compared as
+    it is. shortcut: one threshold still spans dimensions (kg vs m vs pcs); per-item or
+    per-dimension thresholds are the upgrade."""
+    known = unit(uom)
+    if known is None:
+        return abs(milli)
+    scaled = abs(milli) * known.to_base
+    return -(-scaled.numerator // scaled.denominator)
 
 
 def over_threshold(threshold_milli: int | None, quantities_milli: Iterable[int]) -> bool:

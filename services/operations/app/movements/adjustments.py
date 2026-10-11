@@ -31,6 +31,7 @@ from app.movements.domain import (
     assert_transition,
     format_number,
     over_threshold,
+    to_base_milli,
 )
 from app.movements.schemas import AdjustmentCancelIn, AdjustmentIn
 from platform_core.auth import ScopeContext
@@ -48,8 +49,15 @@ async def create_adjustment(
     *,
     idempotency_key: str | None,
     request: Request | None = None,
+    stock_status: str | None = None,
 ) -> tuple[AdjustmentRequest, bool]:
-    """Returns `(row, replayed)`. `row.status` is `APPLIED` (applied now) or `PENDING_APPROVAL`."""
+    """Returns `(row, replayed)`. `row.status` is `APPLIED` (applied now) or `PENDING_APPROVAL`.
+
+    `stock_status` overrides the payload's on-site status for the one caller allowed to adjust an
+    off-site bucket (a transfer shortage in the IN_TRANSIT bucket). `evidence_document_id` is
+    required above the threshold but only recorded, not verified: operations has no client for the
+    document service, so the approver sees the id and opens the document themselves.
+    shortcut: existence in the org is unchecked, upgrade when a document lookup contract exists."""
     org_id = ctx.organization_id
     digest = common.request_hash(payload.model_dump(mode="json"))
     if idempotency_key is not None:
@@ -80,7 +88,7 @@ async def create_adjustment(
 
     settings = await common.get_settings(session, org_id)
     threshold = settings.adjustment_approval_threshold_milli if settings else None
-    needs_approval = over_threshold(threshold, [delta])
+    needs_approval = over_threshold(threshold, [to_base_milli(delta, item.uom)])
     if needs_approval:
         if payload.evidence_document_id is None:
             raise ValidationProblem(
@@ -106,7 +114,7 @@ async def create_adjustment(
         number=number,
         inventory_item_id=item.id,
         location_id=location.id,
-        stock_status=payload.status,
+        stock_status=stock_status or payload.status,
         lot_id=payload.lot_id,
         roll_id=payload.roll_id,
         quantity_delta_milli=delta,

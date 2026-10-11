@@ -6,7 +6,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import BigInteger, Select, case, cast, func, select
+from sqlalchemy import BigInteger, Select, case, cast, func, null, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.inventory.quantity import format_qty
@@ -75,7 +75,7 @@ def transfers_stmt(
 ) -> Select[Any]:
     stmt = ctx.apply(
         select(StockTransfer).where(StockTransfer.organization_id == ctx.organization_id),
-        owner_col=StockTransfer.created_by,
+        owner_col=StockTransfer.requested_by_employee_id,
     )
     if status is not None:
         stmt = stmt.where(StockTransfer.status == status)
@@ -318,7 +318,7 @@ async def in_transit_rows(
     warehouse_id: uuid.UUID | None = None,
     item_id: uuid.UUID | None = None,
     limit: int = 500,
-) -> list[InTransitRowOut]:
+) -> tuple[list[InTransitRowOut], bool]:
     """Stock on its way, by item and destination warehouse — with the item's physical on-hand in
     that same warehouse alongside, reported separately (in-transit is owned but not yet there, so
     it is never part of `physical`)."""
@@ -384,12 +384,13 @@ async def in_transit_rows(
             > 0
         )
         .order_by(Warehouse.code, InventoryItem.sku)
-        .limit(limit)
+        .limit(limit + 1)
     )
     if warehouse_id is not None:
         stmt = stmt.where(Location.warehouse_id == warehouse_id)
     if item_id is not None:
         stmt = stmt.where(InventoryBalance.inventory_item_id == item_id)
+    rows = (await session.execute(stmt)).all()
     return [
         InTransitRowOut(
             inventory_item_id=str(r.inventory_item_id),
@@ -401,8 +402,8 @@ async def in_transit_rows(
             in_transit=format_qty(int(r.in_transit)),
             physical=format_qty(int(r.physical)),
         )
-        for r in (await session.execute(stmt)).all()
-    ]
+        for r in rows[:limit]
+    ], len(rows) > limit
 
 
 # ------------------------------------------------------------------ reservations
@@ -425,7 +426,8 @@ def reservations_stmt(
             InventoryReservation.organization_id == ctx.organization_id,
             InventoryBalance.organization_id == ctx.organization_id,
         ),
-        owner_col=InventoryReservation.created_by,
+        # No employee owner on a reservation: OWN scope matches nothing (NULL), never a sub.
+        owner_col=null(),
     )
     if item_id is not None:
         stmt = stmt.where(InventoryReservation.inventory_item_id == item_id)
@@ -551,7 +553,7 @@ def adjustments_stmt(
 ) -> Select[Any]:
     stmt = ctx.apply(
         select(AdjustmentRequest).where(AdjustmentRequest.organization_id == ctx.organization_id),
-        owner_col=AdjustmentRequest.requested_by,
+        owner_col=AdjustmentRequest.requested_by_employee_id,
     )
     if status is not None:
         stmt = stmt.where(AdjustmentRequest.status == status)

@@ -21,6 +21,7 @@ status check could not post it twice.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, date, datetime
 from typing import Any
@@ -34,6 +35,7 @@ from app.inventory import selectors as inv_selectors
 from app.inventory.ledger import MoveLine
 from app.inventory.quantity import format_qty
 from app.models import (
+    AdjustmentRequest,
     InventoryItem,
     InventoryMove,
     Location,
@@ -45,16 +47,19 @@ from app.models import (
     StockTransferTransition,
     Warehouse,
 )
-from app.movements import common
+from app.movements import adjustments, common
 from app.movements import selectors as sel
 from app.movements.domain import (
     TRANSFER_TRANSITIONS,
     assert_transition,
     format_number,
     merge_amounts,
+    over_threshold,
+    to_base_milli,
     transfer_route,
 )
 from app.movements.schemas import (
+    AdjustmentIn,
     TransferCancelIn,
     TransferDecisionIn,
     TransferDispatchIn,
@@ -409,12 +414,6 @@ async def request_transfer(
         raise ValidationProblem("A transfer needs at least one line before it is requested")
     settings = await common.get_settings(session, org_id)
     threshold = settings.transfer_approval_threshold_milli if settings else None
-    route = transfer_route(threshold, [ln.quantity_milli for ln in lines])
-    if route == "SERVICE" and ctx.subject_ref is None:
-        raise ConflictProblem(
-            "This transfer needs approval, and your account is not linked to an employee "
-            "record the approval can be routed from"
-        )
     items = {
         i.id: i
         for i in (
@@ -426,6 +425,15 @@ async def request_transfer(
             )
         ).scalars()
     }
+    route = transfer_route(
+        threshold,
+        [to_base_milli(ln.quantity_milli, items[ln.inventory_item_id].uom) for ln in lines],
+    )
+    if route == "SERVICE" and ctx.subject_ref is None:
+        raise ConflictProblem(
+            "This transfer needs approval, and your account is not linked to an employee "
+            "record the approval can be routed from"
+        )
     refs = {
         w.id: w
         for w in (
@@ -775,6 +783,8 @@ async def dispatch_transfer(
             and transfer.status in ("IN_TRANSIT", "RECEIVED")
             and transfer.dispatched_by == _actor_str(ctx)
         ):
+            if payload.expected_on is not None and payload.expected_on != transfer.expected_on:
+                raise ConflictProblem("That transfer was dispatched with a different expected date")
             return transfer, True
         raise ConflictProblem(f"A transfer that is {transfer.status} cannot be dispatched")
     lines = await sel.transfer_lines(session, org_id, transfer.id, for_update=True)
@@ -879,20 +889,47 @@ async def dispatch_transfer(
 # ------------------------------------------------------------------ receive
 
 
-async def _already_received(
-    session: AsyncSession, org_id: uuid.UUID, transfer_id: uuid.UUID, key: str
+def _key_digests(key: str, payload: TransferReceiveIn) -> tuple[str, str]:
+    """`(key hash, body hash)`. A client key may be up to 128 characters and the derived keys
+    (`transfer:<id>:receive:<khash>:<bhash>`, plus `:<line>` on a held shortage) must fit in 128,
+    so it is hashed; the body digest rides in the derived key so a replay is recognised and a
+    reused key with another body is not mistaken for one."""
+    return (
+        hashlib.sha256(key.encode()).hexdigest()[:16],
+        common.request_hash(payload.model_dump(mode="json"))[:16],
+    )
+
+
+async def _prior_receipt(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    transfer_id: uuid.UUID,
+    key: str,
+    payload: TransferReceiveIn,
+    actor: str,
 ) -> bool:
-    """Whether a receipt carrying this client key was already posted for the transfer."""
-    keys = [f"transfer:{transfer_id}:receive:{key}", f"transfer:{transfer_id}:shortage:{key}"]
-    found = (
-        await session.execute(
-            select(InventoryMove.id).where(
-                InventoryMove.organization_id == org_id,
-                InventoryMove.idempotency_key.in_(keys),
+    """Whether this caller already posted this exact receipt under this client key. A key already
+    used by someone else, or for another body, is a 409 — never a silent replay."""
+    khash, bhash = _key_digests(key, payload)
+    stem = f"transfer:{transfer_id}:"
+    seen: list[tuple[str, str | None]] = []
+    for entity, key_col, who_col in (
+        (InventoryMove, InventoryMove.idempotency_key, InventoryMove.created_by),
+        (AdjustmentRequest, AdjustmentRequest.idempotency_key, AdjustmentRequest.requested_by),
+    ):
+        rows = await session.execute(
+            select(key_col, who_col).where(
+                entity.organization_id == org_id,
+                key_col.like(f"{stem}receive:{khash}:%")
+                | key_col.like(f"{stem}shortage:{khash}:%"),
             )
         )
-    ).first()
-    return found is not None
+        seen.extend((k, w) for k, w in rows.all())
+    if not seen:
+        return False
+    if any(k.split(":")[4] != bhash or w != actor for k, w in seen):
+        raise ConflictProblem("That idempotency key was already used for a different receipt")
+    return True
 
 
 async def receive_transfer(
@@ -909,10 +946,12 @@ async def receive_transfer(
     IN_TRANSIT until every line is settled."""
     org_id = ctx.organization_id
     transfer = await _locked(session, org_id, transfer_id)
-    if idempotency_key is not None and await _already_received(
-        session, org_id, transfer.id, idempotency_key
+    if idempotency_key is not None and await _prior_receipt(
+        session, org_id, transfer.id, idempotency_key, payload, _actor_str(ctx)
     ):
         return transfer, True
+    if transfer.dispatched_by == _actor_str(ctx):
+        raise ConflictProblem("A transfer cannot be received by the person who dispatched it")
     if transfer.status != "IN_TRANSIT":
         raise ConflictProblem(f"A transfer that is {transfer.status} cannot be received")
 
@@ -979,8 +1018,12 @@ async def receive_transfer(
         plan.append((line, item, received, short, to_location))
 
     today = date.today()
-    receipt_key = f"transfer:{transfer.id}:receive:{idempotency_key}" if idempotency_key else None
-    shortage_key = f"transfer:{transfer.id}:shortage:{idempotency_key}" if idempotency_key else None
+    stem = None
+    if idempotency_key is not None:
+        khash, bhash = _key_digests(idempotency_key, payload)
+        stem = f"{khash}:{bhash}"
+    receipt_key = f"transfer:{transfer.id}:receive:{stem}" if stem else None
+    shortage_key = f"transfer:{transfer.id}:shortage:{stem}" if stem else None
     receipt_move = None
     shortage_move = None
 
@@ -1022,13 +1065,43 @@ async def receive_transfer(
         if receipt_move.replayed:
             return transfer, True
 
+    # A shortage is a write-off. One that reaches the adjustment threshold is not ours to post:
+    # it becomes an adjustment request (reason, evidence, approval) and the stock stays in transit
+    # until it is decided. shortcut: if approval rejects it, the units stay in the in-transit
+    # bucket (visible in the in-transit report) for a person to resolve.
+    settings = await common.get_settings(session, org_id)
+    threshold = settings.adjustment_approval_threshold_milli if settings else None
+    direct: list[tuple[StockTransferLine, int]] = []
+    for line, item, _received, short, _to in plan:
+        if not short:
+            continue
+        if not over_threshold(threshold, [to_base_milli(short, item.uom)]):
+            direct.append((line, short))
+            continue
+        assert line.in_transit_location_id is not None
+        await adjustments.create_adjustment(
+            session,
+            ctx,
+            AdjustmentIn(
+                inventory_item_id=line.inventory_item_id,
+                location_id=line.in_transit_location_id,
+                quantity_delta=format_qty(-short),
+                reason="lost",
+                lot_id=line.lot_id,
+                roll_id=line.roll_id,
+                note=payload.note or f"Shortage on {transfer.number}",
+                evidence_document_id=payload.evidence_document_id,
+            ),
+            idempotency_key=f"{shortage_key}:{line.id}" if shortage_key else None,
+            request=request,
+            stock_status="IN_TRANSIT",
+        )
     shortages = merge_amounts(
         (
             (line.inventory_item_id, line.in_transit_location_id, line.lot_id, line.roll_id),
             -short,
         )
-        for line, _item, _received, short, _to in plan
-        if short
+        for line, short in direct
     )
     if shortages:
         shortage_move = await ledger.post_move(
@@ -1051,6 +1124,21 @@ async def receive_transfer(
         )
         if shortage_move.replayed:
             return transfer, True
+        common.audit_only(
+            session,
+            ctx,
+            action="stock_transfer.shortage_written_off",
+            entity="stock_transfer",
+            entity_id=transfer.id,
+            after={
+                "move_id": str(shortage_move.move.id),
+                "lines": [
+                    {"line_id": str(ln.id), "shortage": format_qty(short)} for ln, short in direct
+                ],
+            },
+            reason=payload.note or None,
+            request=request,
+        )
 
     settled: list[dict[str, Any]] = []
     for line, _item, received, short, to_location in plan:

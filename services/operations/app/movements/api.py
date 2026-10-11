@@ -208,10 +208,17 @@ async def list_transfers(
 async def in_transit_report(
     session: SessionDep,
     ctx: StockRead,
+    response: Response,
     warehouse_id: Annotated[uuid.UUID | None, Query()] = None,
     item_id: Annotated[uuid.UUID | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 500,
 ) -> list[InTransitRowOut]:
-    return await sel.in_transit_rows(session, ctx, warehouse_id=warehouse_id, item_id=item_id)
+    rows, truncated = await sel.in_transit_rows(
+        session, ctx, warehouse_id=warehouse_id, item_id=item_id, limit=limit
+    )
+    if truncated:  # narrow with warehouse_id / item_id to see the rest
+        response.headers["X-Result-Truncated"] = "true"
+    return rows
 
 
 @router.get(

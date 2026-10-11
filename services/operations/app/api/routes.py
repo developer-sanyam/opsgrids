@@ -1033,7 +1033,7 @@ async def adjust_stock(
         if payload.quantity_delta is not None
         else (payload.counted_on_hand or 0) * QTY_SCALE - item.on_hand_milli
     )
-    if movement_domain.over_threshold(limit, [estimated]):
+    if movement_domain.over_threshold(limit, [movement_domain.to_base_milli(estimated, item.uom)]):
         raise ConflictProblem(
             "An adjustment this size needs approval: use POST /operations/inventory/adjustments "
             "with a reason and the evidence document"

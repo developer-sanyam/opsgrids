@@ -10,6 +10,7 @@ the sweep that lets a lapsed one go through `ledger.release`, the same door a pe
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -29,6 +30,15 @@ from platform_core.errors import ProblemError
 #: How many lapsed reservations one organization's pass releases at most — a backlog drains over
 #: several ticks rather than holding one transaction open for minutes.
 EXPIRY_BATCH = 200
+
+
+def _http_key(ctx: ScopeContext, key: str | None) -> str | None:
+    """A client key lives in its own namespace and is its caller's: the kernel's key space is
+    shared with the orders module (`order:<id>:accept:...`), which a raw client key could
+    otherwise pre-claim or replay."""
+    if key is None:
+        return None
+    return f"http:reserve:{ctx.principal.sub}:{hashlib.sha256(key.encode()).hexdigest()[:32]}"
 
 
 async def create_reservation(
@@ -57,7 +67,7 @@ async def create_reservation(
         roll_id=payload.roll_id,
         reference_type=payload.reference_type,
         reference_id=payload.reference_id,
-        idempotency_key=idempotency_key,
+        idempotency_key=_http_key(ctx, idempotency_key),
         expires_at=payload.expires_at,
         note=payload.note,
         request=request,

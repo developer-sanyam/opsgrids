@@ -202,11 +202,13 @@ class TestReservationsNeverOverCommit:
     async def test_ten_retries_of_one_keyed_reservation_reserve_once(
         self, session, maker, org_id, world
     ) -> None:
+        caller = ctx(org_id, "operations.inventory.stock.reserve")  # one caller, retrying
+
         def reserve() -> Work:
             async def work(s: AsyncSession) -> None:
                 await reservations.create_reservation(
                     s,
-                    ctx(org_id, "operations.inventory.stock.reserve"),
+                    caller,
                     ReservationIn(
                         inventory_item_id=world.t.dye, location_id=world.t.weaving, quantity="30"
                     ),

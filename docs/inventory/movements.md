@@ -62,8 +62,23 @@ only. `Idempotency-Key` is honoured on create, dispatch and receive.
 * A retried receipt with the same `Idempotency-Key` is a replay (200, `replayed: true`) and moves
   nothing more. Without a key a repeat is protected by the per-line counters: it can only account for
   what is still in transit.
-* A shortage is a loss and is written off **without a second approval** — the receiver declares it, the
-  adjustment and the `transfer.received` event record it. See *Deferred*.
+* The person who dispatched a transfer cannot receive it. A client `Idempotency-Key` is hashed into the
+  derived ledger keys together with a digest of the body; a replay by another caller, or with another
+  body, is a 409.
+* A shortage is a write-off and is controlled like one. Under the adjustment-approval threshold (or with
+  none set) it posts straight out of `IN_TRANSIT` and writes a `stock_transfer.shortage_written_off`
+  audit row. At or over the threshold it becomes an `AdjustmentRequest` (reason `lost`, bucket
+  `IN_TRANSIT`) held for approval; the receipt must carry `evidence_document_id` and the receiver an
+  employee link. The stock stays in transit until the approval decides; if it is rejected the units
+  remain in the in-transit report for a person to resolve.
+
+* Manual reservations (`POST /operations/inventory/reservations`) are `reference_type: manual` only;
+  order and production-order reservations are made by their own modules. The client `Idempotency-Key`
+  is namespaced per caller (`http:reserve:<sub>:<hash>`) so it cannot collide with the orders
+  module's keys. `evidence_document_id` is required above the threshold but not verified against the
+  document service (no lookup contract yet).
+* `GET /operations/inventory/in-transit` returns at most `limit` rows (default and cap 500) and sets
+  `X-Result-Truncated: true` when more exist; narrow with `warehouse_id` or `item_id`.
 
 ### In transit is reported separately
 
@@ -97,8 +112,9 @@ into the destination bin; a roll may end up spread over two warehouses, which is
 
 Two thresholds per organization (`inventory_control_settings`, one row; `GET`/`PUT
 /operations/inventory/control-settings`; the PUT needs `inventory.control.configure`, dangerous, and
-is audited with what the values were). A threshold is milli-units compared to **each line's own
-quantity in that item's own UOM** — metres are never summed with pieces. `null` means none set. A
+is audited with what the values were). A threshold is compared to **each line's own
+quantity**, normalised to its dimension's base unit (kg for g and t, m for cm and yd) — metres are
+never summed with pieces, so one threshold still spans dimensions. `null` means none set. A
 value-based threshold waits for costing (Phase 8).
 
 | | no threshold | a threshold, line under it | a threshold, a line at or over it |

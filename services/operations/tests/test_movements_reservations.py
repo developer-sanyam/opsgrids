@@ -72,31 +72,21 @@ class TestCreate:
         assert await bucket_qty(session, world, item=world.t.dye) == (q("100"), q("30"))
         await assert_reconciled(session, org_id)
 
-    async def test_for_a_sales_or_production_order_the_document_is_named(
+    async def test_the_manual_route_refuses_to_stand_in_for_an_order(
         self, client, org_id, world
     ) -> None:
+        # Order and production-order reservations are made by their own modules; a hand-made one
+        # may not claim their reference (it would block the order's handover).
         holder = mover(org_id, STOCK_RESERVE)
-        order_id, po_id = uuid.uuid4(), uuid.uuid4()
-        sales = await call(
-            client,
-            holder,
-            "POST",
-            R,
-            body(world, "10", reference_type="order", reference_id=str(order_id)),
-        )
-        production = await call(
-            client,
-            holder,
-            "POST",
-            R,
-            body(world, "10", reference_type="production_order", reference_id=str(po_id)),
-        )
-        assert sales.status_code == production.status_code == 201
-        assert sales.json()["reference_id"] == str(order_id)
-        assert production.json()["reference_type"] == "production_order"
-        # An order reservation without its order is not a reservation for anything.
-        bare = await call(client, holder, "POST", R, body(world, "1", reference_type="order"))
-        assert bare.status_code == 422
+        for kind in ("order", "production_order"):
+            resp = await call(
+                client,
+                holder,
+                "POST",
+                R,
+                body(world, "10", reference_type=kind, reference_id=str(uuid.uuid4())),
+            )
+            assert resp.status_code == 422, resp.text
 
     async def test_more_than_is_available_is_refused_with_the_numbers(
         self, client, session, org_id, world
@@ -214,18 +204,21 @@ class TestCreate:
 
 
 class TestListAndRead:
-    async def test_list_filter_and_page(self, client, org_id, world) -> None:
+    async def test_list_filter_and_page(self, client, session, org_id, world) -> None:
         holder = mover(org_id, STOCK_RESERVE)
         order_id = uuid.uuid4()
         for n in range(3):
             await call(client, holder, "POST", R, body(world, str(n + 1)))
-        await call(
-            client,
-            holder,
-            "POST",
-            R,
-            body(world, "9", reference_type="order", reference_id=str(order_id)),
-        )
+        async with session.begin():  # the orders module's own door: the kernel
+            await ledger.reserve(
+                session,
+                world.t.ctx,
+                item_id=world.t.dye,
+                location_id=world.t.weaving,
+                quantity_milli=q("9"),
+                reference_type="order",
+                reference_id=order_id,
+            )
         reader = mover(org_id, STOCK_READ)
         page = await call(client, reader, "GET", f"{R}?limit=3")
         assert len(page.json()["items"]) == 3 and page.json()["next_cursor"]
