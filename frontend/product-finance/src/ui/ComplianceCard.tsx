@@ -19,7 +19,7 @@ import {
   Skeleton,
   cn,
 } from "@opsgrids/ui";
-import { FilingStatusPill, SampleDataChip } from "./ComplianceStatus";
+import { FilingStatusPill, PortalSimulatedNotice, SampleDataChip } from "./ComplianceStatus";
 
 /** One headline figure. The qualifier under it is what makes the number mean something. */
 function Figure({
@@ -98,7 +98,7 @@ function Position({
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Figure
           value={`${summary.filed}/${summary.required}`}
-          label="Registered with the portal"
+          label="Filed"
           qualifier={`Documents raised in ${summary.periodLabel} that need an IRN`}
         />
         <Figure
@@ -191,6 +191,7 @@ export function ComplianceCard({
           </span>
         }
       />
+      <PortalSimulatedNotice />
 
       {position.status === "loading" ? (
         <div className="flex flex-col gap-3">

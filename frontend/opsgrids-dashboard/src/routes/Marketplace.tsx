@@ -9,6 +9,7 @@ import { listActivations, listPlans, listProducts, listSubscriptions, startTrial
 import type { Activation, Plan, PlanVersion, Product, Subscription } from "@/api/types";
 import { bundleMembers, bundlesIncluding, joinNames, productNames } from "@/lib/bundles";
 import { daysUntil, formatDate } from "@/lib/money";
+import { trialTerms } from "@/lib/subscriptionCopy";
 import { Button, Card, PageHeader } from "@/ui";
 import { shortProductName } from "../lib/productName";
 
@@ -135,8 +136,10 @@ export function MarketplacePage() {
     setBusy(row.product.key);
     setNotice(null);
     try {
-      await startTrial(row.product.key, offer.id);
-      setNotice(`${shortProductName(row.product.name)} is starting. Your 14-day trial begins now; its roles arrive in a moment.`);
+      const started = await startTrial(row.product.key, offer.id);
+      setNotice(
+        `${shortProductName(row.product.name)} is starting. Your 14-day trial begins now; its roles arrive in a moment. ${trialTerms(started.trial_ends_at)}`,
+      );
       await refresh();
     } catch (err) {
       if (err instanceof ApiError) {
@@ -261,6 +264,7 @@ function ProductCard({ row, busy, onStart }: { row: Row; busy: boolean; onStart:
       ) : offer ? (
         <div className="flex flex-col gap-1">
           <p className="text-sm font-semibold text-ink-soft">Free 14-day trial</p>
+          <p className="text-xs text-muted">{trialTerms()}</p>
           <p className="text-xs text-muted">
             Pricing is agreed with OpsGrids for your organisation — contact {PRICING_CONTACT_EMAIL}.{" "}
             <a
@@ -288,7 +292,7 @@ function ProductCard({ row, busy, onStart }: { row: Row; busy: boolean; onStart:
           host && entitled ? (
             <a
               href={host}
-              className="inline-flex h-11 items-center justify-center rounded-full bg-accent px-5 font-semibold text-white transition-colors hover:bg-accent-strong"
+              className="inline-flex h-11 items-center justify-center rounded-full bg-accent px-5 font-semibold text-on-accent transition-colors hover:bg-accent-strong"
             >
               Open {shortProductName(product.name)}
             </a>
@@ -306,12 +310,13 @@ function ProductCard({ row, busy, onStart }: { row: Row; busy: boolean; onStart:
               : `Subscription: ${subscription.state}`}
           </p>
         ) : null}
+        {subscription?.state === "trial" ? <p className="text-xs text-muted">{trialTerms(subscription.trial_ends_at)}</p> : null}
 
         {product.is_bundle ? null : subscription ? (
           host && entitled ? (
             <a
               href={host}
-              className="inline-flex h-11 items-center justify-center rounded-full bg-accent px-5 font-semibold text-white transition-colors hover:bg-accent-strong"
+              className="inline-flex h-11 items-center justify-center rounded-full bg-accent px-5 font-semibold text-on-accent transition-colors hover:bg-accent-strong"
             >
               Open {shortProductName(product.name)}
             </a>

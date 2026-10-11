@@ -20,7 +20,7 @@ export function NotFoundPage() {
         </div>
         <Link
           to="/"
-          className="inline-flex h-11 items-center rounded-full bg-accent px-5 font-semibold text-white hover:bg-accent-strong transition-colors"
+          className="inline-flex h-11 items-center rounded-full bg-accent px-5 font-semibold text-on-accent hover:bg-accent-strong transition-colors"
         >
           Back to overview
         </Link>

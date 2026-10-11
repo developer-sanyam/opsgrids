@@ -22,9 +22,13 @@
  * 24 · 32 · 48 · 64 (Tailwind 1 2 3 4 6 8 12 16), enforced by the
  * `opsgrids/tokens` lint rule rather than by this file.
  * ------------------------------------------------------------------ */
+/* Manrope is bundled from `@fontsource-variable/manrope` (OFL-1.1), never fetched from a font CDN:
+   a third-party font request hands every visitor's IP to that host before any consent. */
+@import "@fontsource-variable/manrope/wght.css";
+
 @theme {
   --font-sans:
-    "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Manrope Variable", "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
   /* The figure face, for amounts and identifiers. A product that wants a distinct one — Finance
      runs Spline Sans Mono — overrides this token in its own `@theme`, not the `.money` rule. */

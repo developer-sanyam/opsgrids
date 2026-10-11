@@ -289,7 +289,7 @@ describe("SubscriptionsPage — what each row says", () => {
         }),
       ],
     });
-    expect(await screen.findByText("₹1,800.00 per month · agreed for your organisation")).toBeTruthy();
+    expect(await screen.findByText("₹1,800.00 per month + GST · agreed for your organisation")).toBeTruthy();
   });
 
   it("renders without the plan line when that read fails — and says so, with a retry", async () => {
@@ -425,7 +425,7 @@ describe("SubscriptionsPage — change plan picker", () => {
     expect(names[0]).toMatch(/^Revenue Growth · v1Current plan/);
     expect((radios[0] as HTMLInputElement).disabled).toBe(true);
     expect(names[1]).toMatch(/^Revenue Growth · v2/);
-    expect(names[2]).toMatch(/^Revenue Growth · v3Negotiated₹1,800\.00 per month · agreed for your organisation$/);
+    expect(names[2]).toMatch(/^Revenue Growth · v3Negotiated₹1,800\.00 per month \+ GST · agreed for your organisation$/);
     expect(names[4]).toMatch(/Billed yearly; this subscription renews monthly\./);
     expect((radios[4] as HTMLInputElement).disabled).toBe(true);
     expect(within(dialog).getByRole("group", { name: "Move to" })).toBeTruthy();

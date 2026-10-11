@@ -33,6 +33,7 @@ import {
   Skeleton,
   SuggestedAction,
   Tag,
+  PortalSimulatedNotice,
 } from "@/ui";
 import { ArrowLeftIcon, CheckCircleIcon, cn } from "@opsgrids/ui";
 import type { Minor } from "@/lib/money";
@@ -398,6 +399,7 @@ function DetailBody({
 
   return (
     <div className="flex flex-col gap-6">
+      <PortalSimulatedNotice />
       <Card className="flex flex-col gap-5 p-6 lg:p-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex flex-col gap-2">

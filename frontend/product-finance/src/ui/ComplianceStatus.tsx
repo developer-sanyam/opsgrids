@@ -9,6 +9,7 @@ import {
   CheckCircleIcon,
   ClockIcon,
   CloseIcon,
+  InlineAlert,
   MinusCircleIcon,
   PauseCircleIcon,
   SampleChip,
@@ -100,6 +101,24 @@ export function ImsStatusPill({ status }: { status: ImsStatus }) {
  * about a statutory obligation, and a reader has to be able to tell at a glance whether it came
  * from the portal or from a seed file.
  */
+/**
+ * The e-invoice (IRP), e-Way bill and IMS clients are deterministic stubs (`services/finance/app/deps.py`):
+ * nothing here reaches the GST portal, so every compliance surface says so and it cannot be dismissed.
+ * shortcut: remove when a real GSP is wired (and the API exposes which client is live).
+ */
+export const GST_PORTAL_CONNECTED = false;
+
+export function PortalSimulatedNotice() {
+  if (GST_PORTAL_CONNECTED) return null;
+  return (
+    <InlineAlert tone="warning" live="off" title="Simulated: not connected to the GST portal">
+      E-invoicing, e-Way bills and supplier reconciliation (IMS) run against a simulator. IRNs,
+      QR codes, e-Way bill numbers and supplier documents shown here are not registered with or
+      fetched from the government portal, and do not meet a filing obligation.
+    </InlineAlert>
+  );
+}
+
 export function SampleDataChip() {
   if (!USE_FIXTURES) return null;
   return (

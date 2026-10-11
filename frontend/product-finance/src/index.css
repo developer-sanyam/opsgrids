@@ -1,5 +1,8 @@
 @import "tailwindcss";
 @import "@opsgrids/ui/styles.css";
+/* Self-hosted (OFL-1.1), not a font CDN: see the note on Manrope in `@opsgrids/ui`'s console.css. */
+@import "@fontsource/spline-sans-mono/500.css";
+@import "@fontsource/spline-sans-mono/600.css";
 
 /* The Console design language — tokens, base layer, focus ring and motion — lives in
    `@opsgrids/ui`. Tailwind's source detection stops at node_modules, so point the scanner at the

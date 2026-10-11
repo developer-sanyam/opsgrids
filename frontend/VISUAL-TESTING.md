@@ -91,7 +91,7 @@ unrelated baseline never churns. It deletes baselines whose story or page no lon
 
 | Input | How it is fixed |
 |---|---|
-| Fonts | Every app and the workshop load Manrope, and the console loads IBM Plex Mono, from the Google Fonts CDN. The harness intercepts `fonts.googleapis.com` and `fonts.gstatic.com`. It answers with CSS generated from the `@fontsource` packages pinned in the lockfile (one `@font-face` per requested weight and subset, the same shape as Google's). A family nobody has vendored fails the run instead of falling back to a system face (`lib/fonts.ts`). |
+| Fonts | Every app and the workshop bundle Manrope (`@fontsource-variable/manrope`, imported by `console.css`), and the console bundles IBM Plex Mono, so they are served by the local static server. Only the storefront still loads Google Fonts; for it the harness intercepts `fonts.googleapis.com` and `fonts.gstatic.com`. It answers with CSS generated from the `@fontsource` packages pinned in the lockfile (one `@font-face` per requested weight and subset, the same shape as Google's). A family nobody has vendored fails the run instead of falling back to a system face (`lib/fonts.ts`). |
 | Clock | `page.clock.setFixedTime("2026-09-15T10:30:00+05:30")`. `Date` is frozen and timers still run, so debounces and fetches behave normally. Fixture dates are written relative to this. |
 | Locale, zone | `en-IN`, `Asia/Kolkata`. |
 | Motion | `reducedMotion: "reduce"` (console.css turns off the page rise) and `animations: "disabled"` on every screenshot. Infinite animations such as the skeleton pulse are reset to their first frame. |

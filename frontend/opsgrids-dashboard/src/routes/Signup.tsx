@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { ApiError } from "@opsgrids/client";
 
 import { requestPasswordLink, signup } from "@/api";
+import { trialTerms } from "@/lib/subscriptionCopy";
 import { SLUG_RULE, sanitiseHandleInput, suggestSlug } from "@/lib/slug";
 import { AuthCard, Button, Field, InlineError, inputClass } from "@/ui";
 
@@ -106,7 +107,7 @@ export function SignupPage() {
       title="Create your organisation"
       intro={
         <>
-          Free for 14 days on any product, no card needed. Already have an account?{" "}
+          Free for 14 days on any product, no card needed. {trialTerms()} Already have an account?{" "}
           <Link to="/login" className="font-semibold text-ink underline-offset-2 hover:underline">
             Sign in
           </Link>

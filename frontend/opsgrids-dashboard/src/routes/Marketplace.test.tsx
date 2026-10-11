@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
+import { formatDate } from "@/lib/money";
+
 import { MarketplacePage } from "./Marketplace";
 
 vi.mock("@/api", () => ({
@@ -81,6 +83,12 @@ describe("MarketplacePage", () => {
     );
     await waitFor(() => expect(screen.getByRole("heading", { name: "Inventory" })).toBeTruthy());
     expect(screen.getByText("Free 14-day trial")).toBeTruthy();
+    // The trial converts by itself, so the card says so before anyone starts one.
+    expect(
+      screen.getByText(
+        "When a trial ends, it continues as a paid subscription at the price agreed for your organisation, plus GST, unless you cancel it before then on the Subscriptions page.",
+      ),
+    ).toBeTruthy();
     expect(
       screen.getByText(/Pricing is agreed with OpsGrids for your organisation — contact info@opsgrids\.com\./),
     ).toBeTruthy();
@@ -123,7 +131,9 @@ describe("MarketplacePage", () => {
     await user.click(screen.getByRole("button", { name: "Start 14-day trial" }));
 
     await waitFor(() => expect(api.startTrial).toHaveBeenCalledWith("operations", "ver-1"));
-    expect((await screen.findByRole("status")).textContent).toContain("14-day trial begins now");
+    const status = (await screen.findByRole("status")).textContent;
+    expect(status).toContain("14-day trial begins now");
+    expect(status).toContain(`When the trial ends on ${formatDate("2026-10-04T00:00:00Z")}, it continues as a paid subscription`);
   });
 
   /** A published, flat-priced version as the customer plan read returns it (no amount). */
