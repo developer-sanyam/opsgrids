@@ -48,6 +48,7 @@ TENANT_TABLES = (
     # Engage's campaigns and lists. Recipients before campaigns, members before lists.
     "campaign_recipients",
     "campaigns",
+    "segments",
     "contact_list_members",
     "contact_lists",
     # Engage's audience.
