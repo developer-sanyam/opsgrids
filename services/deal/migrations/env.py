@@ -67,6 +67,17 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        # A bound on every statement of this service's chain, set on the session rather than in
+        # a revision: Alembic runs all pending revisions in one transaction, and the byte-pinned
+        # `a1c9e2f7b3d4` (adopted from the insights branch) takes `ACCESS EXCLUSIVE` on
+        # `deal.deals` in its first statement, so a `SET LOCAL` written inside a later revision
+        # would run after the statement it needed to bound. Without this, that statement queues
+        # behind any long or idle-in-transaction session, and every later read and write of
+        # `deal.deals` queues behind *it* while the old code still serves (the migrate step runs
+        # before `up`). With it the statement fails after 5s, the transaction rolls back and the
+        # deploy stops with the old containers untouched. `PGOPTIONS` would not do: asyncpg does
+        # not read it.
+        connect_args={"server_settings": {"lock_timeout": "5s"}},
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

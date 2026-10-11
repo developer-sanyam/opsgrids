@@ -85,6 +85,15 @@ class Deal(Base, TenantBase):
     #: NULL for a deal with no timeline yet.
     last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    #: When the deal actually closed — set by `move_stage` on a move into a stage whose outcome is
+    #: `won` or `lost` (a closed deal moves nowhere afterwards, so this is never cleared once
+    #: set), or by `create_deal` for a deal created directly in such a stage. NULL for an open
+    #: deal, and NULL for a deal that closed before this column existed with no audit row the
+    #: migration's own backfill could recover one from (ADR-0020 §3) — insights' won/lost
+    #: coverage starts at go-live for that organization rather than guessing. Never the
+    #: *expected* close: see `close_date`.
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     __table_args__ = (
         # Every index leads with `organization_id`: the RLS policy qual is ANDed into every
         # query, so an index that did not lead with the tenant column would scan the whole
