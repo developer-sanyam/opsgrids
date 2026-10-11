@@ -14,6 +14,7 @@ the read models (`supplier_name`, `warehouse`) so a list renders without a cross
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
@@ -1311,6 +1312,46 @@ OrderStatus = Literal[
     "REJECTED",
 ]
 PaymentTerm = Literal["prepaid", "cash", "credit"]
+InvoiceTiming = Literal["on_accept", "on_dispatch", "on_delivery"]
+
+
+class FulfilmentSettingsIn(BaseModel):
+    """`PUT /operations/fulfilment/settings` — replaces the whole policy row for the organization
+    (or, with `?warehouse_id=`, that warehouse's override). Every field is required so a saved row
+    states each value on purpose; `null` clears an alert contact."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    invoice_timing: InvoiceTiming
+    payment_defaults: dict[OrderChannel, PaymentTerm]
+    offer_timeout_seconds: int = Field(ge=15, le=3600)
+    offer_rounds: int = Field(ge=1, le=10)
+    require_pickup_code: bool
+    default_tax_rate_pct: Decimal = Field(ge=0, le=100, max_digits=5, decimal_places=2)
+    auto_assignment_enabled: bool
+    task_sla_minutes: int = Field(ge=1, le=10080)
+    alert_email: EmailStr | None = Field(max_length=254)
+    alert_phone: str | None = Field(max_length=20, pattern=r"^\+?[0-9][0-9 ()-]{5,19}$")
+
+
+class FulfilmentSettingsOut(BaseModel):
+    """The effective policy. `source` says where it came from: the warehouse's own override, the
+    organization's row, or the built-in default (no row yet)."""
+
+    warehouse_id: UUID | None
+    source: Literal["warehouse", "organization", "default"]
+    invoice_timing: InvoiceTiming
+    payment_defaults: dict[str, str]
+    offer_timeout_seconds: int
+    offer_rounds: int
+    require_pickup_code: bool
+    default_tax_rate_pct: Decimal
+    auto_assignment_enabled: bool
+    task_sla_minutes: int
+    alert_email: str | None
+    alert_phone: str | None
+    updated_at: datetime | None
+    updated_by: str | None
 
 
 class OrderLineItem(BaseModel):

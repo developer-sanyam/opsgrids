@@ -92,6 +92,15 @@
       "resource": "pack"
     },
     {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Change the fulfilment policy: invoice timing, payment terms per channel, pickup codes, default tax rate, auto-assignment, task SLA and alert contacts",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "fulfilment",
+      "resource": "settings"
+    },
+    {
       "action": "assign",
       "default_scope": "ORG",
       "description": "Create an accepted order's pick tasks, offer or reassign one to a worker, cancel a task nobody has started yet",
@@ -857,6 +866,10 @@
         },
         {
           "code": "operations.fulfilment.pack.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.fulfilment.settings.write",
           "scope": "ORG"
         },
         {

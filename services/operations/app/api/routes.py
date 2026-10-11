@@ -87,6 +87,8 @@ from app.schemas import (
     DiscrepancyResolveIn,
     DiscrepancyTrendPointOut,
     ExceptionResolveIn,
+    FulfilmentSettingsIn,
+    FulfilmentSettingsOut,
     InventoryDiscrepancyOut,
     InventoryItemIn,
     InventoryItemOut,
@@ -342,6 +344,14 @@ PackRead = Annotated[
 ]
 PackExecute = Annotated[
     ScopeContext, Depends(require("operations.fulfilment.pack.execute", minimum=Scope.ORG))
+]
+#: Reading the fulfilment policy is `orders.order.read` (the rules counter staff work under);
+#: changing it is its own dangerous permission. Both floored at ORG: one row per organization.
+SettingsRead = Annotated[
+    ScopeContext, Depends(require("operations.orders.order.read", minimum=Scope.ORG))
+]
+SettingsWrite = Annotated[
+    ScopeContext, Depends(require("operations.fulfilment.settings.write", minimum=Scope.ORG))
 ]
 
 # ------------------------------------------------------------------ dispatch (ADR-0024 §6;
@@ -2214,6 +2224,54 @@ async def _worker_out(session: AsyncSession, ctx: ScopeContext, worker) -> objec
         presence=presence,
         zone_location_ids=zone_location_ids,
     )
+
+
+# ------------------------------------------------------------------ fulfilment settings
+# (INVENTORY-02)
+
+
+async def _settings_warehouse(
+    session: AsyncSession, ctx: ScopeContext, warehouse_id: uuid.UUID | None
+) -> None:
+    if warehouse_id is not None and (
+        await inv_selectors.get_warehouse(session, ctx.organization_id, warehouse_id) is None
+    ):
+        raise NotFoundProblem("That warehouse is not part of this organization")
+
+
+@router.get(
+    "/operations/fulfilment/settings",
+    response_model=FulfilmentSettingsOut,
+    summary="The effective fulfilment policy for the organization, or for one warehouse",
+    dependencies=[Entitled],
+)
+async def get_fulfilment_settings(
+    session: SessionDep,
+    ctx: SettingsRead,
+    warehouse_id: Annotated[uuid.UUID | None, Query()] = None,
+) -> FulfilmentSettingsOut:
+    await _settings_warehouse(session, ctx, warehouse_id)
+    return await order_selectors.settings_out(session, ctx.organization_id, warehouse_id)
+
+
+@router.put(
+    "/operations/fulfilment/settings",
+    response_model=FulfilmentSettingsOut,
+    summary="Replace the fulfilment policy for the organization, or one warehouse's override",
+    dependencies=[Entitled],
+)
+async def put_fulfilment_settings(
+    payload: FulfilmentSettingsIn,
+    session: SessionDep,
+    ctx: SettingsWrite,
+    request: Request,
+    warehouse_id: Annotated[uuid.UUID | None, Query()] = None,
+) -> FulfilmentSettingsOut:
+    await _settings_warehouse(session, ctx, warehouse_id)
+    await order_services.put_fulfilment_settings(
+        session, ctx, warehouse_id=warehouse_id, payload=payload, request=request
+    )
+    return await order_selectors.settings_out(session, ctx.organization_id, warehouse_id)
 
 
 @router.get(

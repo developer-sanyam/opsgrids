@@ -3707,6 +3707,252 @@
         "title": "ExportOut",
         "type": "object"
       },
+      "FulfilmentSettingsIn": {
+        "additionalProperties": false,
+        "description": "`PUT /operations/fulfilment/settings` \u2014 replaces the whole policy row for the organization\n(or, with `?warehouse_id=`, that warehouse's override). Every field is required so a saved row\nstates each value on purpose; `null` clears an alert contact.",
+        "properties": {
+          "alert_email": {
+            "anyOf": [
+              {
+                "format": "email",
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alert Email"
+          },
+          "alert_phone": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "pattern": "^\\+?[0-9][0-9 ()-]{5,19}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alert Phone"
+          },
+          "auto_assignment_enabled": {
+            "title": "Auto Assignment Enabled",
+            "type": "boolean"
+          },
+          "default_tax_rate_pct": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,3}|(?=[\\d.]{1,6}0*$)\\d{0,3}\\.\\d{0,2}0*$)",
+                "type": "string"
+              }
+            ],
+            "title": "Default Tax Rate Pct"
+          },
+          "invoice_timing": {
+            "enum": [
+              "on_accept",
+              "on_dispatch",
+              "on_delivery"
+            ],
+            "title": "Invoice Timing",
+            "type": "string"
+          },
+          "offer_rounds": {
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Offer Rounds",
+            "type": "integer"
+          },
+          "offer_timeout_seconds": {
+            "maximum": 3600.0,
+            "minimum": 15.0,
+            "title": "Offer Timeout Seconds",
+            "type": "integer"
+          },
+          "payment_defaults": {
+            "additionalProperties": {
+              "enum": [
+                "prepaid",
+                "cash",
+                "credit"
+              ],
+              "type": "string"
+            },
+            "propertyNames": {
+              "enum": [
+                "phone",
+                "manual",
+                "sales",
+                "walk_in",
+                "marketplace"
+              ]
+            },
+            "title": "Payment Defaults",
+            "type": "object"
+          },
+          "require_pickup_code": {
+            "title": "Require Pickup Code",
+            "type": "boolean"
+          },
+          "task_sla_minutes": {
+            "maximum": 10080.0,
+            "minimum": 1.0,
+            "title": "Task Sla Minutes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "invoice_timing",
+          "payment_defaults",
+          "offer_timeout_seconds",
+          "offer_rounds",
+          "require_pickup_code",
+          "default_tax_rate_pct",
+          "auto_assignment_enabled",
+          "task_sla_minutes",
+          "alert_email",
+          "alert_phone"
+        ],
+        "title": "FulfilmentSettingsIn",
+        "type": "object"
+      },
+      "FulfilmentSettingsOut": {
+        "description": "The effective policy. `source` says where it came from: the warehouse's own override, the\norganization's row, or the built-in default (no row yet).",
+        "properties": {
+          "alert_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alert Email"
+          },
+          "alert_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alert Phone"
+          },
+          "auto_assignment_enabled": {
+            "title": "Auto Assignment Enabled",
+            "type": "boolean"
+          },
+          "default_tax_rate_pct": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Default Tax Rate Pct",
+            "type": "string"
+          },
+          "invoice_timing": {
+            "enum": [
+              "on_accept",
+              "on_dispatch",
+              "on_delivery"
+            ],
+            "title": "Invoice Timing",
+            "type": "string"
+          },
+          "offer_rounds": {
+            "title": "Offer Rounds",
+            "type": "integer"
+          },
+          "offer_timeout_seconds": {
+            "title": "Offer Timeout Seconds",
+            "type": "integer"
+          },
+          "payment_defaults": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Payment Defaults",
+            "type": "object"
+          },
+          "require_pickup_code": {
+            "title": "Require Pickup Code",
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "warehouse",
+              "organization",
+              "default"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "task_sla_minutes": {
+            "title": "Task Sla Minutes",
+            "type": "integer"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          },
+          "warehouse_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warehouse Id"
+          }
+        },
+        "required": [
+          "warehouse_id",
+          "source",
+          "invoice_timing",
+          "payment_defaults",
+          "offer_timeout_seconds",
+          "offer_rounds",
+          "require_pickup_code",
+          "default_tax_rate_pct",
+          "auto_assignment_enabled",
+          "task_sla_minutes",
+          "alert_email",
+          "alert_phone",
+          "updated_at",
+          "updated_by"
+        ],
+        "title": "FulfilmentSettingsOut",
+        "type": "object"
+      },
       "GoodsReceiptIn": {
         "additionalProperties": false,
         "description": "`POST /goods-receipts`. One delivery against one purchase order, any number of its lines\n(a PO line may appear more than once, each with its own lot). Send an `Idempotency-Key`: a\nretry replays the first result.",
@@ -24987,6 +25233,114 @@
           }
         },
         "summary": "Add a packaging material",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/fulfilment/settings": {
+      "get": {
+        "operationId": "get_fulfilment_settings_api_v1_operations_fulfilment_settings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "warehouse_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warehouse Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FulfilmentSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The effective fulfilment policy for the organization, or for one warehouse",
+        "tags": [
+          "operations"
+        ]
+      },
+      "put": {
+        "operationId": "put_fulfilment_settings_api_v1_operations_fulfilment_settings_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "warehouse_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warehouse Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FulfilmentSettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FulfilmentSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replace the fulfilment policy for the organization, or one warehouse's override",
         "tags": [
           "operations"
         ]

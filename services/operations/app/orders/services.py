@@ -24,6 +24,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -35,6 +36,7 @@ from app.inventory.ledger import MoveLine, ReserveLine
 from app.inventory.quantity import MAX_ABS_MILLI, QuantityError, format_qty, parse_qty
 from app.models import (
     AuditLog,
+    FulfilmentSettings,
     InventoryReservation,
     Order,
     OrderLine,
@@ -42,6 +44,7 @@ from app.models import (
     OutboxEvent,
 )
 from app.orders import selectors
+from app.schemas import FulfilmentSettingsIn
 from platform_core.audit import record_audit
 from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.db import assert_tenant, set_tenant
@@ -1081,7 +1084,7 @@ def check_billing_gate(order: Order) -> None:
     """
     snapshot = order.settings_snapshot or {}
 
-    invoice_timing = snapshot.get("invoice_timing", "on_accept")
+    invoice_timing = snapshot.get("invoice_timing", "on_delivery")
     if invoice_timing in _INVOICE_REQUIRED_BY_HANDOVER_TIMINGS and order.invoice_id is None:
         raise ConflictProblem(
             f"Order {order.number} has no invoice yet, and this organization's invoice-timing "
@@ -1663,3 +1666,106 @@ def record_payment_checkout_opened(
         },
         request=request,
     )
+
+
+# ------------------------------------------------------------------ fulfilment settings
+# (INVENTORY-02: the write path `fulfilment_settings` never had)
+
+_SETTINGS_FIELDS = (
+    "invoice_timing",
+    "payment_defaults",
+    "offer_timeout_seconds",
+    "offer_rounds",
+    "require_pickup_code",
+    "default_tax_rate_pct",
+    "auto_assignment_enabled",
+    "task_sla_minutes",
+    "alert_email",
+    "alert_phone",
+)
+
+
+def _settings_audit(row: FulfilmentSettings | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    out: dict[str, Any] = {}
+    for field in _SETTINGS_FIELDS:
+        value = getattr(row, field)
+        out[field] = str(value) if isinstance(value, Decimal) else value
+    return out
+
+
+async def put_fulfilment_settings(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    warehouse_id: uuid.UUID | None,
+    payload: FulfilmentSettingsIn,
+    request: Request | None = None,
+) -> FulfilmentSettings:
+    """Replace the organization's policy row (or one warehouse's override), creating it on first
+    use, audited with what it was and what it became. The caller has already checked that the
+    warehouse belongs to this organization."""
+    if payload.invoice_timing in _INVOICE_REQUIRED_BY_HANDOVER_TIMINGS:
+        # Order invoicing is not wired yet (INVENTORY-01): nothing can set `order.invoice_id`, so
+        # these timings would make `check_billing_gate` refuse every handover again.
+        message = (
+            "Invoicing before handover is not available yet, so this timing would block every "
+            "handover. Choose on_delivery."
+        )
+        raise ValidationProblem(
+            message,
+            errors=[{"field": "invoice_timing", "code": "unavailable", "message": message}],
+        )
+    org_id = ctx.organization_id
+    before = _settings_audit(await selectors.get_settings_row(session, org_id, warehouse_id))
+    actor = str(ctx.principal.sub)
+    values: dict[str, Any] = payload.model_dump()
+    values["alert_email"] = str(payload.alert_email) if payload.alert_email else None
+    on_warehouse = warehouse_id is not None
+    stmt = (
+        pg_insert(FulfilmentSettings)
+        .values(
+            organization_id=org_id,
+            warehouse_id=warehouse_id,
+            created_by=actor,
+            updated_by=actor,
+            **values,
+        )
+        .on_conflict_do_update(
+            # The two partial unique indexes on the model: one org row, one row per warehouse.
+            index_elements=(
+                [FulfilmentSettings.organization_id, FulfilmentSettings.warehouse_id]
+                if on_warehouse
+                else [FulfilmentSettings.organization_id]
+            ),
+            index_where=text(
+                "warehouse_id IS NOT NULL AND deleted_at IS NULL"
+                if on_warehouse
+                else "warehouse_id IS NULL AND deleted_at IS NULL"
+            ),
+            set_={**values, "updated_by": actor, "updated_at": func.now()},
+        )
+        .returning(FulfilmentSettings.id)
+    )
+    row_id = (await session.execute(stmt)).scalar_one()
+    row = (
+        await session.execute(
+            select(FulfilmentSettings)
+            .where(FulfilmentSettings.organization_id == org_id, FulfilmentSettings.id == row_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=org_id,
+        actor_id=ctx.principal.sub,
+        action="fulfilment.settings.updated",
+        entity="fulfilment_settings",
+        entity_id=row.id,
+        before=before,
+        after=_settings_audit(row),
+        request=request,
+    )
+    return row

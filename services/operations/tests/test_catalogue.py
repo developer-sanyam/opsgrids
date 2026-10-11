@@ -227,3 +227,11 @@ def test_bulk_import_stays_with_the_admin_and_export_reaches_the_manager() -> No
     assert "operations.inventory.data.import" not in manager
     for role in ("OPERATIONS_WORKER", "OPERATIONS_USER"):
         assert not set(PHASE_9_PERMISSIONS) & set(_grants(role)), role
+
+
+def test_only_the_admin_may_change_the_fulfilment_policy() -> None:
+    code = "operations.fulfilment.settings.write"
+    spec = next(s for s in OPERATIONS.specs if s.code(OPERATIONS.product) == code)
+    assert spec.is_dangerous and spec.default_scope == spec.max_scope == "ORG"
+    holders = {t.code for t in OPERATIONS_ROLE_TEMPLATES if code in _grants(t.code)}
+    assert holders == {"OPERATIONS_ADMIN"}

@@ -125,6 +125,8 @@ import type {
   ChannelSyncResultOut,
   ChannelSyncStatus,
   ChannelSyncType,
+  FulfilmentSettingsIn,
+  FulfilmentSettingsOut,
   ItemAttributeIn,
   ItemAttributeOut,
   JobWorkIssueIn,
@@ -1589,6 +1591,55 @@ export async function listOrders(params: ListOrdersParams = {}): Promise<Page<Or
     warehouse_id: params.warehouse_id,
   });
   return apiRequest<Page<OrderOut>>(`/operations/orders${query}`);
+}
+
+/* ---------------------------------- fulfilment settings (INVENTORY-02) ---------------------------------- */
+
+const FIXTURE_FULFILMENT_SETTINGS: FulfilmentSettingsOut = {
+  warehouse_id: null,
+  source: "default",
+  invoice_timing: "on_delivery",
+  payment_defaults: {},
+  offer_timeout_seconds: 300,
+  offer_rounds: 3,
+  require_pickup_code: false,
+  default_tax_rate_pct: "0.00",
+  auto_assignment_enabled: false,
+  task_sla_minutes: 60,
+  alert_email: null,
+  alert_phone: null,
+  updated_at: null,
+  updated_by: null,
+};
+let fixtureFulfilmentSettings = FIXTURE_FULFILMENT_SETTINGS;
+
+/** `GET /operations/fulfilment/settings` — `operations.orders.order.read`. With a warehouse, that
+ *  warehouse's effective policy (its own override, else the organization's). */
+export async function getFulfilmentSettings(warehouseId?: string): Promise<FulfilmentSettingsOut> {
+  if (USE_FIXTURES) return settle({ ...fixtureFulfilmentSettings, warehouse_id: warehouseId ?? null });
+  return apiRequest<FulfilmentSettingsOut>(`/operations/fulfilment/settings${buildQuery({ warehouse_id: warehouseId })}`);
+}
+
+/** `PUT /operations/fulfilment/settings` — `operations.fulfilment.settings.write`. Replaces the
+ *  whole row for the organization, or for one warehouse. */
+export async function putFulfilmentSettings(
+  input: FulfilmentSettingsIn,
+  warehouseId?: string,
+): Promise<FulfilmentSettingsOut> {
+  if (USE_FIXTURES) {
+    fixtureFulfilmentSettings = {
+      ...input,
+      warehouse_id: warehouseId ?? null,
+      source: warehouseId === undefined ? "organization" : "warehouse",
+      updated_at: new Date().toISOString(),
+      updated_by: "You",
+    };
+    return settle(fixtureFulfilmentSettings);
+  }
+  return apiRequest<FulfilmentSettingsOut>(`/operations/fulfilment/settings${buildQuery({ warehouse_id: warehouseId })}`, {
+    method: "PUT",
+    body: input,
+  });
 }
 
 export async function getOrder(id: string): Promise<OrderOut> {

@@ -697,6 +697,20 @@ OPERATIONS = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # The fulfilment policy (`fulfilment_settings`, INVENTORY-02): invoice timing, payment
+        # terms per channel, the pickup code, the tax rate and the alert contacts. Dangerous: it
+        # decides what the billing gate demands before goods leave the building. Reading it needs
+        # only `orders.order.read` — counter staff see the rules they work under.
+        PermissionSpec(
+            "fulfilment",
+            "settings",
+            "write",
+            "Change the fulfilment policy: invoice timing, payment terms per channel, pickup "
+            "codes, default tax rate, auto-assignment, task SLA and alert contacts",
+            "ORG",
+            "ORG",
+            is_dangerous=True,
+        ),
         # Dispatch (ADR-0024 §6; Fulfilment plan F5). Shipments are a shared operational queue
         # like orders, tasks and packages — a dispatcher has to see and work every shipment in
         # the org, not only the ones they personally created — so, like `orders.order.*`, every

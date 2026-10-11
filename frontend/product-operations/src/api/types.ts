@@ -652,6 +652,35 @@ export interface OrderOut {
   updated_at: string;
 }
 
+/* ---------------------------------- fulfilment settings (INVENTORY-02) ---------------------------------- */
+
+export type InvoiceTiming = "on_accept" | "on_dispatch" | "on_delivery";
+export type PaymentTerm = "prepaid" | "cash" | "credit";
+
+/** Mirrors `FulfilmentSettingsIn`: the whole policy row, every field required. */
+export interface FulfilmentSettingsIn {
+  invoice_timing: InvoiceTiming;
+  /** A channel left out pays on the `cash` term. */
+  payment_defaults: Partial<Record<string, PaymentTerm>>;
+  offer_timeout_seconds: number;
+  offer_rounds: number;
+  require_pickup_code: boolean;
+  /** A decimal string, 0.00–100.00. */
+  default_tax_rate_pct: string;
+  auto_assignment_enabled: boolean;
+  task_sla_minutes: number;
+  alert_email: string | null;
+  alert_phone: string | null;
+}
+
+/** Mirrors `FulfilmentSettingsOut`: the effective policy and where it came from. */
+export interface FulfilmentSettingsOut extends FulfilmentSettingsIn {
+  warehouse_id: string | null;
+  source: "warehouse" | "organization" | "default";
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
 /* ------------------------------ online payment (ADR-0024 A4, Fulfilment F10) ------------------------------ */
 
 /** One online payment attempt's state, `services/payment`'s vocabulary. "Pending" is `created`;
