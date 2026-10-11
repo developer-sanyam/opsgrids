@@ -43,8 +43,6 @@ deployed**; merging deploys nothing, and the owner approves any deploy. Open ite
 - **Permission reconcile after the API deploy.** `make edge-reconcile ... PRODUCTS=operations` (dry run, then
   `APPLY=1`) so `OPERATIONS_ADMIN` gains `operations.inventory.putaway.location_read`; the reveal answers 403 in
   existing organizations until it runs.
-- **Two-stack re-parent.** Two unmerged inventory stacks share head `c4a8e1f6d273`; whichever merges second re-points
-  `d7a3c9e5b184`'s `down_revision` (marked `# RE-PARENT HERE`) and confirms a single `alembic heads`.
 - **D1 against the warehouse's reality.** Put-away is allowed only from `receiving` or `staging` bins, and the order
   engine reserves only at an item's home bin (limitation (c)), so stock put away elsewhere is invisible to order
   accept. On `main` a goods receipt lands in the item's home bin (kind `bin`), so stock reaches a receiving/staging bin

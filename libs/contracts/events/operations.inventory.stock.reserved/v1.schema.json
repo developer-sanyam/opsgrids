@@ -4,7 +4,7 @@
   "title": "operations.inventory.stock.reserved",
   "description": "Stock was promised to a demand without moving it. Two shapes, both carrying `reference_type`/`reference_id`: one reservation (`reservation_id`, `quantity`, optional `expires_at`) from `ledger.reserve`, or a batch (`lines`) from an order's `reserve_many`.",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "required": [
     "organization_id",
     "reference_type",

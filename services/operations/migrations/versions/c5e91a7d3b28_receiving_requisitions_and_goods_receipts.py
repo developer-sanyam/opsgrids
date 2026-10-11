@@ -62,6 +62,7 @@ def _rls(table: str) -> None:
 
 
 def upgrade() -> None:
+    op.execute("SET LOCAL lock_timeout = '5s'")
     op.create_table(
         "goods_receipts",
         sa.Column("number", sa.String(length=40), nullable=False),
@@ -400,11 +401,11 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
     # The default stays: bulk loaders that insert items directly get "exactly the ordered quantity".
-    op.create_check_constraint(
-        op.f("ck_inventory_items_receipt_tolerance_bp_range"),
-        "inventory_items",
-        "receipt_tolerance_bp BETWEEN 0 AND 10000",
-        schema="operations",
+    # NOT VALID: enforced for new rows now, validated without blocking writes by `e1b6d4a8c273`.
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.inventory_items ADD CONSTRAINT "
+        "ck_inventory_items_receipt_tolerance_bp_range "
+        "CHECK (receipt_tolerance_bp BETWEEN 0 AND 10000) NOT VALID"
     )
     op.add_column(
         "purchase_order_lines",
@@ -416,17 +417,13 @@ def upgrade() -> None:
         sa.Column("short_closed", sa.Boolean(), server_default=sa.false(), nullable=False),
         schema=SCHEMA,
     )
-    # Existing lines carried whole units only; one unit is 1000 milli-units (ADR-0014 §2).
+    # Defaults stay until `e1b6d4a8c273` has backfilled `received_milli` from whole units in
+    # batches (a full-table UPDATE here would hold row locks for the whole migration) and drops
+    # them; code from before this revision, still running mid-deploy, needs them to insert lines.
     op.execute(
-        f"UPDATE {SCHEMA}.purchase_order_lines SET received_milli = received_qty::bigint * 1000"  # noqa: S608
-    )
-    op.alter_column("purchase_order_lines", "received_milli", server_default=None, schema=SCHEMA)
-    op.alter_column("purchase_order_lines", "short_closed", server_default=None, schema=SCHEMA)
-    op.create_check_constraint(
-        op.f("ck_purchase_order_lines_received_milli_non_negative"),
-        "purchase_order_lines",
-        "received_milli >= 0",
-        schema="operations",
+        f"ALTER TABLE {SCHEMA}.purchase_order_lines ADD CONSTRAINT "
+        "ck_purchase_order_lines_received_milli_non_negative "
+        "CHECK (received_milli >= 0) NOT VALID"
     )
 
     for table in NEW_TABLES:

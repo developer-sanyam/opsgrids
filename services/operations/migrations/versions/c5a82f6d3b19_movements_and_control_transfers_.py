@@ -528,21 +528,7 @@ def upgrade() -> None:
         sa.Column("note", sa.String(length=500), server_default="", nullable=False),
         schema="operations",
     )
-    op.create_index(
-        "ix_inventory_reservations_org_created",
-        "inventory_reservations",
-        ["organization_id", sa.literal_column("created_at DESC"), sa.literal_column("id DESC")],
-        unique=False,
-        schema="operations",
-    )
-    op.create_index(
-        "ix_inventory_reservations_org_expires_active",
-        "inventory_reservations",
-        ["organization_id", "expires_at"],
-        unique=False,
-        schema="operations",
-        postgresql_where=sa.text("status = 'active' AND expires_at IS NOT NULL"),
-    )
+    # The two reservation indexes are built CONCURRENTLY by `e1b6d4a8c273`.
 
     for table in NEW_TABLES:
         _rls(table)
@@ -572,11 +558,13 @@ def downgrade() -> None:
         table_name="inventory_reservations",
         schema="operations",
         postgresql_where=sa.text("status = 'active' AND expires_at IS NOT NULL"),
+        if_exists=True,
     )
     op.drop_index(
         "ix_inventory_reservations_org_created",
         table_name="inventory_reservations",
         schema="operations",
+        if_exists=True,
     )
     op.drop_column("inventory_reservations", "note", schema="operations")
     op.drop_column("inventory_reservations", "expired_at", schema="operations")

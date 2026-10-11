@@ -28,10 +28,6 @@ exists or any warehouse has coordinates, unless `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWN
 destroy proof of work and a site's map position (precedent `b7d41e92c05a`). Prefer rolling the code
 back; the schema is backward compatible. On an empty database it fully reverses.
 
-**Re-parenting.** Two unmerged inventory stacks share `down_revision` `c4a8e1f6d273`. Whichever
-merges second sets `down_revision` to the first one's head (the schema changes do not overlap);
-the `# RE-PARENT HERE` comment below marks the line.
-
 Revision ID: d7a3c9e5b184
 Revises: c4a8e1f6d273
 Create Date: 2026-10-05 18:00:00.000000
@@ -46,7 +42,6 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "d7a3c9e5b184"  # pragma: allowlist secret
-# RE-PARENT HERE (see the module docstring): the second inventory stack to merge changes this.
 down_revision: str | None = "c4a8e1f6d273"  # pragma: allowlist secret
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

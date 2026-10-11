@@ -271,5 +271,8 @@ async def test_downgrade_with_data_present_then_upgrade_again(admin) -> None:
         assert count == 0  # job work is new in this revision: nothing to preserve on the way down
     check = alembic("check")
     assert check.returncode == 0, (check.stdout + check.stderr)[-2000:]
+    # Back at head (later revisions sit on top of this one); the job_work_orders count above
+    # proves this revision's tables were re-created.
+    head = alembic("heads").stdout.split()[0]
     current = alembic("current")
-    assert REVISION in current.stdout + current.stderr
+    assert head in current.stdout + current.stderr
