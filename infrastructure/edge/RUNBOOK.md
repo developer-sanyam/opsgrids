@@ -3588,46 +3588,102 @@ gzipped `pg_dump` of the whole database, a tar of Caddy's data volume, and — o
 ADR-0009). The provider's VM snapshot is one more copy and the one to use when the box itself
 is gone.
 
-**The drill — do this once before you need it, and once a quarter after.** It restores into a
-scratch database on the live box and touches nothing that is serving:
+**Encryption and the keys that make a dump readable (PLATFORM-09).** With `BACKUP_AGE_RECIPIENT`
+set in `.env` (an `age1…` public key), `backup.sh` encrypts every artifact with `age` before upload
+and the bucket only ever holds `*.age` files; unset, it uploads plaintext as it always has and says
+so loudly in its output. Turning it on is an owner action:
+
+1. On **your own machine, not the box**: `age-keygen -o opsgrids-backup-age.key`. It prints the
+   public key (`age1…`). The file is the private key.
+2. On the box: install the binary (`sudo apt-get install -y age`, then `age --version`), add
+   `BACKUP_AGE_RECIPIENT=age1…` to `.env`, and run `make edge-backup` once: its output ends
+   `(age-encrypted)`.
+3. Keep the private key **off the box**, somewhere the owner decides, with at least one copy that
+   survives losing your laptop. Without it every encrypted dump is noise.
+
+**Off-box custody of `.env` — owner action, not automated.** No backup contains the box's `.env`,
+and the dump is useless without some of it: `PII_ENCRYPTION_KEY` (and any `PII_DECRYPT_KEYS`)
+decrypts every encrypted PII column in the dump — a restore without it brings back rows whose
+names, phones and emails nobody can read — and the role passwords, `INTERNAL_SERVICE_TOKEN` and the
+JWT signing key are what a rebuilt box needs to come up as the same platform. After any change to
+those values, the owner copies `.env` to the off-box place they have chosen for secrets (not the
+backup bucket, and not next to the age private key), and records the date. This runbook does not
+name that place on purpose.
+
+**The drill — do this once before you need it, and once a quarter after.** One command, from your
+own machine:
+
+```bash
+make edge-restore-drill HOST=deploy@<ip> CONFIRM=<EDGE_HOST> AGE_KEY=~/path/to/opsgrids-backup-age.key
+```
+
+`restore-drill.sh` fetches the newest `opsgrids-*.sql.gz[.age]` from the bucket, decrypts it with
+the key sent over ssh's stdin (it is held in one shell variable on the box — never written to its
+disk, never on a command line), restores it into the scratch database `opsgrids_restore` (the only
+name it accepts — it refuses `opsgrids` and anything else), counts the rows of the three biggest
+tables of every schema in both databases, drops the scratch database and the downloaded file, and
+ends with one line to paste into the routine log:
+
+```
+restore-drill 2026-10-12T09:14:03Z OK object=opsgrids-20261012T033000Z.sql.gz.age tables=57
+```
+
+`FAIL` names the reason (no bucket, no object, no key for an encrypted object, a restore error, a
+table missing from the dump or empty where live has rows). Restored counts are normally a little
+*below* live — the dump is from 03:00 — so only absence or emptiness fails. It reads live data
+(`SELECT count(*)` only) and changes nothing that serves. The bucket credential must be able to
+**list and read** as well as write; a strictly write-only key fails the drill at its first step,
+which is the drill doing its job.
+
+The same thing by hand, when the script itself is in doubt — on the box:
 
 ```bash
 ssh deploy@<ip>
 cd /srv/opsgrids/repo/infrastructure/edge
 set -a; . ./.env; set +a          # the bucket name and credentials, from the box's own .env
 C="docker compose -f compose.prod.yml --env-file .env"
+A="docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION=$BACKUP_S3_REGION -v /srv/opsgrids/backups:/backup amazon/aws-cli:2.36.50"
+export AWS_ACCESS_KEY_ID="$BACKUP_S3_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$BACKUP_S3_SECRET_ACCESS_KEY"
 
 # 1. Fetch the newest dump back from the bucket — this proves the upload works, which a
 #    successful `backup.sh` on its own does not.
-docker run --rm \
-  -e AWS_ACCESS_KEY_ID="$BACKUP_S3_ACCESS_KEY_ID" \
-  -e AWS_SECRET_ACCESS_KEY="$BACKUP_S3_SECRET_ACCESS_KEY" \
-  -e AWS_DEFAULT_REGION="$BACKUP_S3_REGION" \
-  -v /srv/opsgrids/backups:/backup amazon/aws-cli:2.36.50 \
-  s3 ls "s3://$BACKUP_S3_BUCKET/$BACKUP_S3_PREFIX/"     # pick the newest name, then:
-docker run --rm \
-  -e AWS_ACCESS_KEY_ID="$BACKUP_S3_ACCESS_KEY_ID" \
-  -e AWS_SECRET_ACCESS_KEY="$BACKUP_S3_SECRET_ACCESS_KEY" \
-  -e AWS_DEFAULT_REGION="$BACKUP_S3_REGION" \
-  -v /srv/opsgrids/backups:/backup amazon/aws-cli:2.36.50 \
-  s3 cp "s3://$BACKUP_S3_BUCKET/$BACKUP_S3_PREFIX/<newest>.sql.gz" /backup/
+$A s3 ls "s3://$BACKUP_S3_BUCKET/$BACKUP_S3_PREFIX/"     # pick the newest name, then:
+$A s3 cp "s3://$BACKUP_S3_BUCKET/$BACKUP_S3_PREFIX/<newest>" /backup/
 
-# 2. Restore it into a scratch database.
+# 2. Restore it into a scratch database. For a `.age` object, replace `gunzip -c FILE` with
+#    `age -d -i /dev/stdin FILE | gunzip` and paste the private key on stdin (never a file on the box).
 $C exec -T postgres psql -U opsgrids -d postgres -c 'DROP DATABASE IF EXISTS opsgrids_restore'
 $C exec -T postgres psql -U opsgrids -d postgres -c 'CREATE DATABASE opsgrids_restore'
 gunzip -c /srv/opsgrids/backups/<newest>.sql.gz | \
   $C exec -T postgres psql -v ON_ERROR_STOP=1 -U opsgrids -d opsgrids_restore
 
-# 3. Prove it holds what it should.
-$C exec -T postgres psql -U opsgrids -d opsgrids_restore -c \
-  "select count(*) from storefront.storefronts"
-$C exec -T postgres psql -U opsgrids -d opsgrids_restore -c \
-  "select custom_domain, custom_domain_status from storefront.storefronts \
-   where custom_domain is not null"
+# 3. Prove it holds what it should (the verification queries below, against opsgrids_restore).
 
 # 4. Clean up.
 $C exec -T postgres psql -U opsgrids -d postgres -c 'DROP DATABASE opsgrids_restore'
+rm -f /srv/opsgrids/backups/<newest>        # the downloaded copy
 ```
+
+**Verification queries** — after the drill's step 2, or after the real thing (`-d opsgrids`):
+
+```bash
+D=opsgrids_restore   # or opsgrids after a real restore
+# every service schema is at a migration head (one row per schema; none missing):
+$C exec -T postgres psql -U opsgrids -d $D -Atc "
+  SELECT n.nspname FROM pg_namespace n JOIN pg_class c ON c.relnamespace = n.oid
+  WHERE c.relname = 'alembic_version' ORDER BY 1"
+# tenants, people and stores came back:
+$C exec -T postgres psql -U opsgrids -d $D -c "select count(*) from account.organizations"
+$C exec -T postgres psql -U opsgrids -d $D -c "select count(*) from account.users"
+$C exec -T postgres psql -U opsgrids -d $D -c "select count(*) from storefront.storefronts"
+$C exec -T postgres psql -U opsgrids -d $D -c \
+  "select custom_domain, custom_domain_status from storefront.storefronts \
+   where custom_domain is not null"
+```
+
+Then, after a real restore only: sign in to the console and open one customer record with PII —
+it reads as text, not ciphertext, only if this box's `PII_ENCRYPTION_KEY` is the one the dump was
+written under.
 
 **The real thing — the database is corrupt or wrong and the box is otherwise fine.** This is
 destructive and every merchant is down while it runs. Announce it, then:
@@ -3636,11 +3692,18 @@ destructive and every merchant is down while it runs. Announce it, then:
 cd /srv/opsgrids/repo/infrastructure/edge
 C="docker compose -f compose.prod.yml --env-file .env"
 
-$C stop auth account product storefront app-gateway   # stop writing
-# Keep Caddy up: buyers get an error page from the origin, not a TLS failure.
+# Stop writing: every application container this box runs (its profiles decide which), keeping the
+# data plane (postgres, redis, rabbitmq, minio) and Caddy — buyers get an error page from the
+# origin, not a TLS failure. Computed, so a service added since this was written is not missed.
+APPS=$($C config --services | grep -vxE 'caddy|postgres|redis|rabbitmq|minio|minio-init')
+echo $APPS          # read it: auth account product app-gateway edge-relay ops-monitor catalog
+                    # subscription billing metering payment notification, plus every profile's own
+$C stop $APPS
 gunzip -c /srv/opsgrids/backups/<chosen>.sql.gz | \
   $C exec -T postgres psql -v ON_ERROR_STOP=1 -U opsgrids -d opsgrids
-$C start auth account product storefront app-gateway
+# (a `.age` dump: `age -d -i /dev/stdin <chosen>.sql.gz.age | gunzip | …`, the key pasted on stdin)
+# run the verification queries above with D=opsgrids
+$C start $APPS
 ./remote.sh migrate      # re-applies grants and brings the schema to head
 ./remote.sh health
 ```
@@ -3648,9 +3711,11 @@ $C start auth account product storefront app-gateway
 The dump carries ownership, so the `opsgrids_*` roles must exist — they do, because
 `20-init.sql` creates them on any fresh volume and `30-role-passwords.sh` sets their password.
 
-**The box is gone entirely.** Rebuild from [standing up a new box](#standing-up-a-new-box),
-move the reserved IP to the new VM (this is the step that means no merchant edits DNS), restore
-the dump as above, restore `caddy_data` from its tar, then `make deploy` and `make edge-web`.
+**The box is gone entirely.** Rebuild from [standing up a new box](#standing-up-a-new-box) **with
+the `.env` from its off-box copy** (above — a fresh `PII_ENCRYPTION_KEY` would leave every
+restored PII column unreadable), move the reserved IP to the new VM (this is the step that means no
+merchant edits DNS), restore the dump as above, restore `caddy_data` from its tar, then
+`make deploy` and `make edge-web`.
 Expect 60–90 minutes, most of it the first build.
 
 ---
@@ -3766,7 +3831,7 @@ Named here so nobody discovers them during an incident:
 | Daily | The `ops-monitor` all-quiet digest arrives (dead-man's switch) — if a day goes by with neither a digest nor an alert, the monitor itself may be stuck |
 | Weekly | Caddy log for ACME errors; `storefront.domain.sweep.started` present in the `storefront` log since its last start; disk |
 | Monthly | `apt-get update && apt-get upgrade` and **a planned reboot window** — kernel updates are a full outage, so choose when rather than having it chosen for you |
-| Quarterly | The restore drill above. A backup nobody has restored is a hypothesis |
+| Quarterly | `make edge-restore-drill` (restore from backup, above); keep its one-line result. A backup nobody has restored is a hypothesis |
 | When a merchant asks about uptime in writing | Stop. That is ADR-0012's stated trigger to move off one box |
 
 ## Development databases (not the box)

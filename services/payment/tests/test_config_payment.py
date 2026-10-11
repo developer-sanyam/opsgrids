@@ -54,6 +54,7 @@ _FROM_A_DEVELOPERS_ENV = (
     "CASHFREE_SECRET_KEY",
     "PAYMENT_ALLOW_LIVE_KEYS",
     "PAYMENT_ALLOW_TEST_KEYS",
+    "PAYMENT_REQUIRE_LIVE",
     "ENVIRONMENT",
     "PII_ENCRYPTION_KEY",
     "INTERNAL_SERVICE_TOKEN",
@@ -485,6 +486,76 @@ class TestTheStagingTestKeysOverride:
         assert _MARKER not in text and RZP_LIVE_ID not in text and "input_value" not in text
 
 
+_LIVE_RZP: dict[str, Any] = {
+    "environment": "production",
+    "payment_require_live": True,
+    "payment_allow_live_keys": True,
+    "payment_wire": "live",
+    "razorpay_key_id": RZP_LIVE_ID,
+    "razorpay_key_secret": SecretStr(RZP_SECRET),
+}
+
+
+class TestRequireLive:
+    """`PAYMENT_REQUIRE_LIVE` (PLATFORM-23): on a production box, nothing but live money starts."""
+
+    def test_live_razorpay_and_live_cashfree_start(self) -> None:
+        build(**_LIVE_RZP)
+        build(
+            environment="production",
+            payment_require_live=True,
+            payment_allow_live_keys=True,
+            payment_provider="cashfree",
+            cashfree_env="production",
+            cashfree_app_id=SecretStr(CF_PROD_APP),
+            cashfree_secret_key=SecretStr(CF_PROD_SECRET),
+        )
+
+    def test_the_stub_wire_is_refused(self) -> None:
+        refused(
+            "PAYMENT_REQUIRE_LIVE=true needs PAYMENT_WIRE=live",
+            environment="production",
+            payment_require_live=True,
+        )
+        refused(
+            "PAYMENT_REQUIRE_LIVE=true needs CASHFREE_ENV=production",
+            environment="production",
+            payment_require_live=True,
+            payment_provider="cashfree",
+        )
+
+    def test_test_keys_are_refused_even_beside_a_live_default(self) -> None:
+        refused(
+            "PAYMENT_REQUIRE_LIVE=true refuses test keys",
+            **_LIVE_RZP,
+            cashfree_app_id=SecretStr(CF_TEST_APP),
+            cashfree_secret_key=SecretStr(CF_TEST_SECRET),
+        )
+        refused(
+            "PAYMENT_REQUIRE_LIVE=true refuses test keys",
+            environment="production",
+            payment_require_live=True,
+            payment_wire="live",
+            razorpay_key_id=RZP_TEST_ID,
+            razorpay_key_secret=SecretStr(RZP_SECRET),
+        )
+
+    def test_the_test_mode_override_is_refused(self) -> None:
+        refused(
+            "PAYMENT_REQUIRE_LIVE=true refuses PAYMENT_ALLOW_TEST_KEYS",
+            environment="production",
+            payment_require_live=True,
+            payment_allow_test_keys=True,
+            payment_wire="live",
+            razorpay_key_id=RZP_TEST_ID,
+            razorpay_key_secret=SecretStr(RZP_SECRET),
+        )
+
+    def test_off_or_outside_production_it_changes_nothing(self) -> None:
+        build(environment="production")
+        build(environment="staging", payment_require_live=True)
+
+
 #: The edge box's preflight mirror of these validators (`lib/payment-switches.sh`).
 _PREFLIGHT_LIB = Path(__file__).resolve().parents[3] / "infrastructure/edge/lib/payment-switches.sh"
 #: Every variable either side reads, cleared before each case.
@@ -494,6 +565,7 @@ _SWITCH_ENV = (
     "CASHFREE_ENV",
     "PAYMENT_ALLOW_LIVE_KEYS",
     "PAYMENT_ALLOW_TEST_KEYS",
+    "PAYMENT_REQUIRE_LIVE",
     "RAZORPAY_KEY_ID",
     "RAZORPAY_KEY_SECRET",
     "CASHFREE_APP_ID",
@@ -581,6 +653,30 @@ class TestPreflightAgreesWithStartUp:
                     "RAZORPAY_KEY_SECRET": RZP_SECRET,
                 },
                 id="live-without-the-flag",
+            ),
+            pytest.param({"PAYMENT_REQUIRE_LIVE": "true"}, id="require-live-on-the-stub"),
+            pytest.param({**_STAGING, "PAYMENT_REQUIRE_LIVE": "true"}, id="require-live-staging"),
+            pytest.param({"PAYMENT_REQUIRE_LIVE": "maybe"}, id="require-live-not-a-bool"),
+            pytest.param(
+                {
+                    "PAYMENT_REQUIRE_LIVE": "true",
+                    "PAYMENT_ALLOW_LIVE_KEYS": "true",
+                    "PAYMENT_WIRE": "live",
+                    "RAZORPAY_KEY_ID": RZP_LIVE_ID,
+                    "RAZORPAY_KEY_SECRET": RZP_SECRET,
+                },
+                id="require-live-on-live-razorpay",
+            ),
+            pytest.param(
+                {
+                    "PAYMENT_REQUIRE_LIVE": "true",
+                    "PAYMENT_ALLOW_LIVE_KEYS": "true",
+                    "PAYMENT_PROVIDER": "cashfree",
+                    "CASHFREE_ENV": "production",
+                    "CASHFREE_APP_ID": CF_PROD_APP,
+                    "CASHFREE_SECRET_KEY": CF_PROD_SECRET,
+                },
+                id="require-live-on-live-cashfree",
             ),
         ],
     )

@@ -24,6 +24,9 @@
 #     `CASHFREE_ENV=production` (or `sandbox` under `PAYMENT_ALLOW_TEST_KEYS`).
 #   * `PAYMENT_ALLOW_TEST_KEYS` is refused beside anything that moves real money:
 #     `PAYMENT_ALLOW_LIVE_KEYS`, a live-shaped key on either provider, `CASHFREE_ENV=production`.
+#   * `PAYMENT_REQUIRE_LIVE` (opt-in, a boolean read the same way) refuses the default provider's
+#     stub (`PAYMENT_WIRE=stub` for razorpay, anything but `CASHFREE_ENV=production` for
+#     cashfree), any test-shaped key or the sandbox, and `PAYMENT_ALLOW_TEST_KEYS`.
 #
 # Only variable NAMES are printed — never a value, never part of one.
 
@@ -69,6 +72,12 @@ payment_switch_problems() {
 	if [ "$allow_test" = invalid ]; then
 		printf 'PAYMENT_ALLOW_TEST_KEYS must be true or false\n'
 		allow_test=false
+	fi
+	local require_live
+	require_live=$(_payment_flag PAYMENT_REQUIRE_LIVE)
+	if [ "$require_live" = invalid ]; then
+		printf 'PAYMENT_REQUIRE_LIVE must be true or false\n'
+		require_live=false
 	fi
 
 	# Razorpay.
@@ -140,6 +149,20 @@ payment_switch_problems() {
 		fi
 		if [ -n "$cf_prod_shaped" ] || [ "$cf_env" = production ]; then
 			printf 'PAYMENT_ALLOW_TEST_KEYS=true with a production CASHFREE_SECRET_KEY or CASHFREE_ENV=production is refused: test mode never runs beside live money\n'
+		fi
+	fi
+
+	# The box that must collect real money: no stub, no test credentials, no test-mode override.
+	if [ "$require_live" = true ]; then
+		[ "$allow_test" != true ] || printf 'PAYMENT_REQUIRE_LIVE=true refuses PAYMENT_ALLOW_TEST_KEYS=true: this box must collect real money\n'
+		if [ "$provider" = razorpay ] && [ "$wire" != live ]; then
+			printf 'PAYMENT_REQUIRE_LIVE=true needs PAYMENT_WIRE=live (not the stub)\n'
+		fi
+		if [ "$provider" = cashfree ] && [ "$cf_env" != production ]; then
+			printf 'PAYMENT_REQUIRE_LIVE=true needs CASHFREE_ENV=production\n'
+		fi
+		if [ "$rzp_mode" = test ] || [ "$cf_env" = sandbox ] || [ -n "$cf_test_shaped" ]; then
+			printf 'PAYMENT_REQUIRE_LIVE=true refuses test keys (rzp_test_..., a Cashfree sandbox key or CASHFREE_ENV=sandbox)\n'
 		fi
 	fi
 }

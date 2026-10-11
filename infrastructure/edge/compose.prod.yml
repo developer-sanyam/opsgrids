@@ -1066,6 +1066,9 @@ services:
       # WARNING at start-up and preflight warns while it is on (RUNBOOK.md, 'Payments: test mode
       # on a staging box').
       PAYMENT_ALLOW_TEST_KEYS: ${PAYMENT_ALLOW_TEST_KEYS:-false}
+      # Opt-in: `true` refuses to start on the stub, on test keys or with PAYMENT_ALLOW_TEST_KEYS —
+      # for the box that must collect real money (preflight fails the same combinations).
+      PAYMENT_REQUIRE_LIVE: ${PAYMENT_REQUIRE_LIVE:-false}
       CASHFREE_ENV: ${CASHFREE_ENV:-stub}
       CASHFREE_APP_ID: ${CASHFREE_APP_ID:-}
       CASHFREE_SECRET_KEY: ${CASHFREE_SECRET_KEY:-}
