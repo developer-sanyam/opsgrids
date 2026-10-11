@@ -7,14 +7,14 @@ import asyncio
 import uuid
 
 import pytest
-from sqlalchemy import delete, event
+from sqlalchemy import delete, event, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.manufacturing import bom_services, services
 from app.manufacturing.models import ManufacturingRequest
-from app.manufacturing.schemas import IssueIn, IssueLineIn
-from app.models import SCHEMA
+from app.manufacturing.schemas import IssueIn, IssueLineIn, ReturnIn, ReturnLineIn, WastageIn
+from app.models import SCHEMA, AuditLog
 from platform_core.auth import Scope
 from platform_core.db import TENANT_GUC
 from tests.helpers import ctx_for
@@ -97,6 +97,94 @@ class TestReplayedPostsDoNotCountTwice:
             q("5"),
             0,
         )
+
+
+class TestKernelReplayOfWastageAndReturns:
+    """A kernel replay without its HTTP claim must answer replayed and write no second audit row."""
+
+    async def _wip_order(self, client, session, m: Mfg):
+        await stock(session, m, m.t.fabric, "100")
+        await make_bom(client, m, m.shirt, "BOM-S", [(m.t.fabric, "1", "0")])
+        order = await make_order(client, m, m.shirt, "20")
+        oid = uuid.UUID(order["id"])
+        issue = IssueIn(
+            over_issue=True,
+            lines=[
+                IssueLineIn(
+                    material_id=uuid.UUID(material(order, "COT-180-NAVY")["id"]),
+                    location_id=m.t.weaving,
+                    quantity="5",
+                )
+            ],
+        )
+        ictx = ctx_for(
+            m.org_id, "operations.manufacturing.production_order.issue", Scope.ORG, sub=uuid.uuid4()
+        )
+        async with session.begin():
+            await services.issue_materials(session, ictx, oid, issue)
+        return order, oid
+
+    async def _audits(self, session, m: Mfg, action: str) -> int:
+        async with session.begin():
+            return (
+                await session.execute(
+                    select(func.count())
+                    .select_from(AuditLog)
+                    .where(AuditLog.organization_id == m.org_id, AuditLog.action == action)
+                )
+            ).scalar_one()
+
+    async def test_a_replayed_wastage_is_flagged_and_audited_once(
+        self, client, session, admin_session, m: Mfg
+    ) -> None:
+        order, oid = await self._wip_order(client, session, m)
+        ctx = ctx_for(
+            m.org_id,
+            "operations.manufacturing.production_order.wastage",
+            Scope.ORG,
+            sub=uuid.uuid4(),
+        )
+        payload = WastageIn(
+            material_id=uuid.UUID(material(order, "COT-180-NAVY")["id"]),
+            wastage_type="CUTTING",
+            quantity="1",
+        )
+        results = []
+        for _ in range(2):
+            async with session.begin():
+                results.append(await services.record_wastage(session, ctx, oid, payload, key="w1"))
+            async with admin_session.begin():
+                await admin_session.execute(delete(ManufacturingRequest))
+        assert [r.replayed for r in results] == [False, True]
+        assert await self._audits(session, m, "production_order.wastage_recorded") == 1
+
+    async def test_a_replayed_return_is_flagged_and_audited_once(
+        self, client, session, admin_session, m: Mfg
+    ) -> None:
+        _order, oid = await self._wip_order(client, session, m)
+        ctx = ctx_for(
+            m.org_id,
+            "operations.manufacturing.production_order.return",
+            Scope.ORG,
+            sub=uuid.uuid4(),
+        )
+        async with session.begin():
+            pick = (
+                await services._load(
+                    session, m.org_id, await services.lock_order(session, m.org_id, oid)
+                )
+            )[1][0]
+        payload = ReturnIn(lines=[ReturnLineIn(pick_id=pick.id, quantity="1")])
+        results = []
+        for _ in range(2):
+            async with session.begin():
+                results.append(
+                    await services.return_materials(session, ctx, oid, payload, key="r1")
+                )
+            async with admin_session.begin():
+                await admin_session.execute(delete(ManufacturingRequest))
+        assert [r.replayed for r in results] == [False, True]
+        assert await self._audits(session, m, "production_order.materials_returned") == 1
 
 
 class TestDuplicateComponents:

@@ -1263,7 +1263,8 @@ async def return_materials(
         target = line.location_id or pick.source_location_id
         await common.require_location(session, org_id, target)
         plan.append((pick, target, quantity))
-    await _post_returns(session, ctx, order, plan, by_id, key=key, request=request)
+    if await _post_returns(session, ctx, order, plan, by_id, key=key, request=request):
+        return ActionResult(order, replayed=True)
     common.audit(
         session,
         ctx,
@@ -1291,7 +1292,8 @@ async def _post_returns(
     *,
     key: str | None,
     request: Request | None,
-) -> None:
+) -> bool:
+    """True when the kernel already held this move (a replay): nothing was counted again."""
     lines: list[MoveLine] = []
     for pick, target, quantity in plan:
         lines.append(
@@ -1328,7 +1330,7 @@ async def _post_returns(
         request=request,
     )
     if posted.replayed:
-        return
+        return True
     for pick, _target, quantity in plan:
         pick.returned_milli += quantity
         pick.updated_at = datetime.now(UTC)
@@ -1336,6 +1338,7 @@ async def _post_returns(
         material.returned_milli += quantity
         material.updated_at = datetime.now(UTC)
     await session.flush()
+    return False
 
 
 # ------------------------------------------------------------------ output
@@ -1657,7 +1660,8 @@ async def _scrap(
     key: str | None,
     n: int,
     request: Request | None,
-) -> None:
+) -> bool:
+    """True when the kernel already held this move (a replay): nothing was counted again."""
     move = await ledger.post_move(
         session,
         ctx,
@@ -1685,7 +1689,7 @@ async def _scrap(
         request=request,
     )
     if move.replayed:
-        return
+        return True
     event_id = uuid.uuid4()
     for pick, q in draws:
         pick.wasted_milli += q
@@ -1712,6 +1716,7 @@ async def _scrap(
     material.updated_at = datetime.now(UTC)
     await session.flush()
     await _check_threshold(session, ctx, order, material, wastage_type)
+    return False
 
 
 async def record_wastage(
@@ -1759,7 +1764,7 @@ async def record_wastage(
             f"{format_qty(wasted)}",
             errors=[{"material_id": str(material.id), "in_wip": format_qty(in_wip)}],
         )
-    await _scrap(
+    if await _scrap(
         session,
         ctx,
         order,
@@ -1771,7 +1776,8 @@ async def record_wastage(
         key=key,
         n=0,
         request=request,
-    )
+    ):
+        return ActionResult(order, replayed=True)
     common.audit(
         session,
         ctx,
