@@ -216,6 +216,34 @@ async def count_activities_for_deal(
     return int((await session.execute(stmt)).scalar_one())
 
 
+async def reference_counts(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    *,
+    company_id: uuid.UUID,
+    contact_id: uuid.UUID | None,
+    skip_deal_id: uuid.UUID | None,
+) -> tuple[int, int, int, int]:
+    """`(company_deal_count, contact_deal_count, company_activity_count, contact_activity_count)`:
+    live deals naming the company (or the contact as primary), leaving `skip_deal_id` out, and
+    every activity ever logged naming either (the table is append-only)."""
+
+    async def _count(stmt: Any) -> int:
+        return int((await session.execute(stmt)).scalar_one())
+
+    deals = select(func.count()).where(Deal.organization_id == org_id, Deal.deleted_at.is_(None))
+    if skip_deal_id is not None:
+        deals = deals.where(Deal.id != skip_deal_id)
+    activities = select(func.count()).where(Activity.organization_id == org_id)
+    company_deals = await _count(deals.where(Deal.company_id == company_id))
+    company_activities = await _count(activities.where(Activity.company_id == company_id))
+    if contact_id is None:
+        return company_deals, 0, company_activities, 0
+    contact_deals = await _count(deals.where(Deal.primary_contact_id == contact_id))
+    contact_activities = await _count(activities.where(Activity.contact_id == contact_id))
+    return company_deals, contact_deals, company_activities, contact_activities
+
+
 async def get_deal_by_name(session: AsyncSession, org_id: uuid.UUID, name: str) -> Deal | None:
     stmt = select(Deal).where(
         Deal.name == name,

@@ -29,11 +29,11 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
-from app.schemas import LeadConversionDealIn, LeadConversionDealOut
+from app.schemas import LeadConversionDealIn, LeadConversionDealOut, ReferencesOut
 from platform_core.auth import require_service_token
 from platform_core.config import ServiceSettings
 from platform_core.db import assert_tenant, get_session, set_tenant
@@ -141,3 +141,49 @@ async def convert_lead(
 
     log.info("deal.lead_conversion.ensured", deal_id=str(deal.id))
     return LeadConversionDealOut(deal_id=str(deal.id))
+
+
+@router.get(
+    "/organizations/{organization_id}/references",
+    response_model=ReferencesOut,
+    summary="Count the deals and activities that name a company or contact",
+)
+async def references(
+    organization_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    company_id: Annotated[uuid.UUID, Query()],
+    contact_id: Annotated[uuid.UUID | None, Query()] = None,
+    exclude_deal_id: Annotated[uuid.UUID | None, Query()] = None,
+) -> ReferencesOut:
+    """Customer's probe before it deletes an aborted conversion's orphan company or contact.
+
+    `exclude_deal_id` (the aborted attempt's own deal) is left out of the deal counts only when
+    deal would itself treat it as disposable: absent or soft-deleted (not counted anyway), or
+    live and `is_pristine_lead_deal`. A deal deal keeps still names the company, so it still
+    counts. An unknown id counts zero; there is no 404. Counts only, never ids."""
+    _require_caller(request, "customer")
+    _require_org_claim(request, organization_id)
+
+    async with session.begin():
+        await _bind(session, organization_id, request)
+        skip = None
+        if exclude_deal_id is not None and await services.is_pristine_lead_deal(
+            session, organization_id, exclude_deal_id
+        ):
+            skip = exclude_deal_id
+        counts = await selectors.reference_counts(
+            session,
+            organization_id,
+            company_id=company_id,
+            contact_id=contact_id,
+            skip_deal_id=skip,
+        )
+
+    log.info("deal.references.counted", company_id=str(company_id))
+    return ReferencesOut(
+        company_deal_count=counts[0],
+        contact_deal_count=counts[1],
+        company_activity_count=counts[2],
+        contact_activity_count=counts[3],
+    )
