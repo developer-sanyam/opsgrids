@@ -39,9 +39,9 @@ frontend
 
 # Secrets and local configuration. A real .env must never reach the daemon, let alone a
 # layer; `.env.example` is committed and carries no values.
-.env
-.env.*
-!.env.example
+**/.env
+**/.env.*
+!**/.env.example
 
 # Local infrastructure and tooling output.
 tools/dev-bootstrap/keys

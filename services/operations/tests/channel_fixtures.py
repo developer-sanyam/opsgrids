@@ -26,7 +26,7 @@ CHANNEL_SYNC_PERM = "operations.channels.channel.sync:ORG"
 ALL_CHANNEL_PERMS = [CHANNEL_READ_PERM, CHANNEL_WRITE_PERM, CHANNEL_SYNC_PERM]
 
 DEFAULT_SHOP_ID = "shop-1"
-DEFAULT_API_KEY = "sk_test_dummy_key"
+DEFAULT_API_KEY = "sk_test_dummy_key"  # pragma: allowlist secret
 
 
 @dataclass

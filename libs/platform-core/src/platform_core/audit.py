@@ -23,6 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 from starlette.requests import Request
 
+from platform_core.auth import client_ip
+
 REDACTED = "***"
 
 #: Never store these, at any depth, in `before`/`after`.
@@ -140,16 +142,6 @@ def jsonable(data: Any) -> Any:
     return data
 
 
-def _client_ip(request: Request | None) -> str | None:
-    if request is None:
-        return None
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        # First hop is the client, if the proxy is trusted to rewrite this header.
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else None
-
-
 def record_audit(
     session: AsyncSession,
     audit_cls: type[Any],
@@ -177,7 +169,8 @@ def record_audit(
             before=jsonable(redact(before)) if before is not None else None,
             after=jsonable(redact(after)) if after is not None else None,
             reason=reason,
-            ip=_client_ip(request),
+            # Never the leftmost `X-Forwarded-For`: the caller writes that one.
+            ip=client_ip(request),
             user_agent=request.headers.get("user-agent") if request else None,
             request_id=getattr(request.state, "request_id", None) if request else None,
             correlation_id=getattr(request.state, "correlation_id", None) if request else None,

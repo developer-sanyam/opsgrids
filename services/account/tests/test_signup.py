@@ -193,3 +193,25 @@ class TestTheWritesAreBoundToTheNewOrganisation:
                     .all()
                 )
                 assert len(members) == 1, "a sign-up wrote a membership into another organisation"
+
+
+class TestOneMailboxGetsOneSignup:
+    """Sign-up itself sends no mail; the dashboard follows it with auth's
+    `/auth/password/forgot`, which caps mail per user (`PASSWORD_RESETS_PER_HOUR`). What keeps
+    sign-up from minting a fresh user — and so a fresh reset allowance — for the same inbox is
+    the case-insensitive email lookup (`users.email` is CITEXT). Pinned, because a plain `text`
+    column would turn every case variant of one address into a new account."""
+
+    async def test_a_case_variant_of_a_known_email_is_the_same_409_and_writes_nothing(
+        self, app_engine: None, admin_session: AsyncSession, directory_session: AsyncSession
+    ) -> None:
+        first = _payload()
+        await routes.signup(first, directory_session, _request())
+
+        local, domain = first.email.split("@")
+        variant = _payload(email=f"{local.upper()}@{domain}")
+        with pytest.raises(ConflictProblem, match="Sign in"):
+            await routes.signup(variant, directory_session, _request())
+
+        async with admin_session.begin():
+            assert not await selectors.slug_taken(admin_session, variant.slug)

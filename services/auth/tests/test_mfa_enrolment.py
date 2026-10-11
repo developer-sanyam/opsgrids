@@ -55,7 +55,7 @@ from app.models import (
 )
 from platform_core.auth import Principal
 from platform_core.db import TENANT_GUC
-from platform_core.errors import ForbiddenProblem, NotFoundProblem, UnauthorizedProblem
+from platform_core.errors import NotFoundProblem, UnauthorizedProblem
 from tests.conftest import (
     MEMBERSHIP_A,
     ORG_A,
@@ -326,9 +326,10 @@ class TestABearerAloneCannotStartAnEnrolment:
         failed = await _audit(session, "auth.mfa_enrolment_failed")
         assert failed[-1].after["locked"] is True
 
-        # Sign-in is locked too — even for the right password — and the dead session's bearer
-        # is refused outright, without touching the counters.
-        with pytest.raises(ForbiddenProblem, match="temporarily locked"):
+        # Sign-in is locked too — even for the right password, with the generic 401 so the lock
+        # does not confirm the account exists — and the dead session's bearer is refused
+        # outright, without touching the counters.
+        with pytest.raises(UnauthorizedProblem, match=services.INVALID):
             await services.login(
                 session,
                 cfg=cfg,

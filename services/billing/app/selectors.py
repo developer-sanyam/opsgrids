@@ -46,27 +46,33 @@ async def list_invoices(session: AsyncSession, ctx: ScopeContext) -> list[Invoic
     return list((await session.execute(stmt)).scalars().all())
 
 
-async def get_invoice(session: AsyncSession, invoice_id: uuid.UUID) -> Invoice | None:
-    """One invoice with its lines. Row-level security scopes it to the bound tenant, so an id
-    belonging to another organization simply resolves to nothing."""
+async def get_invoice(
+    session: AsyncSession, invoice_id: uuid.UUID, *, organization_id: uuid.UUID
+) -> Invoice | None:
+    """One invoice of `organization_id` with its lines; another organization's id resolves to
+    nothing. The explicit predicate is the rule; RLS is the net."""
     return (
         await session.execute(
-            select(Invoice).options(selectinload(Invoice.lines)).where(Invoice.id == invoice_id)
+            select(Invoice)
+            .options(selectinload(Invoice.lines))
+            .where(Invoice.organization_id == organization_id)
+            .where(Invoice.id == invoice_id)
         )
     ).scalar_one_or_none()
 
 
-async def credit_balance(session: AsyncSession, *, currency: str, at: datetime) -> int:
+async def credit_balance(
+    session: AsyncSession, *, organization_id: uuid.UUID, currency: str, at: datetime
+) -> int:
     """The credit available in `currency` at instant `at`, as a `SUM` over the covering rows.
 
     Balance is derived, never stored (ADR-0004 §3): a grant counts only while
     `valid_from <= at < valid_until` (an open `valid_until` counts forever), so a lapsed grant
-    leaves the balance automatically. The tenant is scoped by row-level security, which is why
-    there is no `organization_id` predicate here — adding one would be redundant, and forgetting
-    it is not a leak.
+    leaves the balance automatically. The explicit tenant predicate is the rule; RLS is the net.
     """
     stmt = (
         select(func.coalesce(func.sum(CreditLedgerEntry.amount_minor), 0))
+        .where(CreditLedgerEntry.organization_id == organization_id)
         .where(CreditLedgerEntry.currency == currency.upper())
         .where(CreditLedgerEntry.valid_from <= at)
         .where(
@@ -79,43 +85,61 @@ async def credit_balance(session: AsyncSession, *, currency: str, at: datetime) 
     return int((await session.execute(stmt)).scalar_one())
 
 
-async def pack_remaining(session: AsyncSession, pack_id: uuid.UUID) -> int:
+async def pack_remaining(
+    session: AsyncSession, pack_id: uuid.UUID, *, organization_id: uuid.UUID
+) -> int:
     """What is left on one prepaid pack: a `SUM` over the grant and everything drawn from it.
 
     Derived exactly like the organization-wide balance and for the same reason (ADR-0004 §3) — a
     "remaining" column on the grant would be a second source of truth that drifts from the ledger
     the first time two invoices draw on the pack at once. The grant is the positive row; each
-    draw-down is a negative row naming it in `drawn_from`; a reversal of either is a further row
-    that is picked up here too, because it carries the same `drawn_from`.
+    draw-down is a negative row naming it in `drawn_from`; a draw's reversal carries the same
+    `drawn_from`, and the grant's own reversal names it in `reversal_of`, so both count here.
 
     Deliberately **not** windowed: this answers "how much of this pack has been spent", which is
     a fact about the pack and not about the clock. Whether the pack still counts toward the
     organization's balance is `credit_balance`'s question, and it answers it by the window.
     """
-    stmt = select(func.coalesce(func.sum(CreditLedgerEntry.amount_minor), 0)).where(
-        or_(
-            CreditLedgerEntry.id == pack_id,
-            CreditLedgerEntry.drawn_from == pack_id,
+    stmt = (
+        select(func.coalesce(func.sum(CreditLedgerEntry.amount_minor), 0))
+        .where(CreditLedgerEntry.organization_id == organization_id)
+        .where(
+            or_(
+                CreditLedgerEntry.id == pack_id,
+                CreditLedgerEntry.drawn_from == pack_id,
+                CreditLedgerEntry.reversal_of == pack_id,
+            )
         )
     )
     return int((await session.execute(stmt)).scalar_one())
 
 
-async def get_credit_entry(session: AsyncSession, entry_id: uuid.UUID) -> CreditLedgerEntry | None:
+async def get_credit_entry(
+    session: AsyncSession, entry_id: uuid.UUID, *, organization_id: uuid.UUID
+) -> CreditLedgerEntry | None:
+    """One ledger row of `organization_id`. The explicit predicate is the rule; RLS is the net."""
     return (
-        await session.execute(select(CreditLedgerEntry).where(CreditLedgerEntry.id == entry_id))
+        await session.execute(
+            select(CreditLedgerEntry)
+            .where(CreditLedgerEntry.organization_id == organization_id)
+            .where(CreditLedgerEntry.id == entry_id)
+        )
     ).scalar_one_or_none()
 
 
-async def get_reversal_of(session: AsyncSession, entry_id: uuid.UUID) -> CreditLedgerEntry | None:
-    """The reversal already written against `entry_id`, if any.
+async def get_reversal_of(
+    session: AsyncSession, entry_id: uuid.UUID, *, organization_id: uuid.UUID
+) -> CreditLedgerEntry | None:
+    """The reversal already written against `entry_id` in `organization_id`, if any.
 
     At most one exists — `ix_credit_ledger_org_reversal_of` is partial-unique — so this is
     how `reverse_credit` stays idempotent under at-least-once delivery.
     """
     return (
         await session.execute(
-            select(CreditLedgerEntry).where(CreditLedgerEntry.reversal_of == entry_id)
+            select(CreditLedgerEntry)
+            .where(CreditLedgerEntry.organization_id == organization_id)
+            .where(CreditLedgerEntry.reversal_of == entry_id)
         )
     ).scalar_one_or_none()
 

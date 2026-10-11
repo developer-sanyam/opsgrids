@@ -93,9 +93,67 @@ class TestCredentials:
                 # pragma: allowlist nextline secret
                 await _login(session, cfg, pair, directory, password="wrong")
 
-        # The correct password is now refused too — that is the point of a lockout.
-        with pytest.raises(ForbiddenProblem, match="temporarily locked"):
+        # The correct password is now refused too — that is the point of a lockout — with the
+        # same generic 401 a wrong password gets, not a "temporarily locked" that confirms the
+        # account exists (mirrors `_verify_staff`, MINOR 11 of the 2026-09-24 review).
+        with pytest.raises(UnauthorizedProblem) as locked:
             await _login(session, cfg, pair, directory)
+        assert str(locked.value) == services.INVALID
+
+    async def test_parallel_wrong_passwords_still_lock_the_account(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """Guesses sent at once must each count. Read without a lock, every sign-in saw
+        `failed_attempts == 0` and wrote back 1, so the lockout never fired however many ran."""
+        import asyncio
+
+        await session.commit()
+        others = [
+            AsyncSession(session.bind, expire_on_commit=False)
+            for _ in range(cfg.max_failed_attempts)
+        ]
+        try:
+            results = await asyncio.gather(
+                # pragma: allowlist nextline secret
+                *(_login(s, cfg, pair, directory, password="wrong") for s in others),
+                return_exceptions=True,
+            )
+        finally:
+            for s in others:
+                await s.close()
+        assert all(isinstance(r, UnauthorizedProblem) for r in results), results
+
+        credential = await session.get(Credential, USER, populate_existing=True)
+        assert credential is not None
+        assert credential.locked_until is not None and credential.locked_until > datetime.now(UTC)
+
+    async def test_parallel_guesses_at_a_passwordless_account_are_all_invalid_and_counted(
+        self, session, cfg, pair, directory
+    ) -> None:
+        """A member with no credential row yet (SSO-only, or invited and never set a password).
+        Parallel sign-ins each found no row and each INSERTed one; all but the first hit the
+        primary key and raised a 500, which an unknown email never does, so the account showed."""
+        import asyncio
+
+        await session.commit()
+        others = [
+            AsyncSession(session.bind, expire_on_commit=False)
+            for _ in range(cfg.max_failed_attempts)
+        ]
+        try:
+            results = await asyncio.gather(
+                # pragma: allowlist nextline secret
+                *(_login(s, cfg, pair, directory, password="wrong") for s in others),
+                return_exceptions=True,
+            )
+        finally:
+            for s in others:
+                await s.close()
+        assert all(isinstance(r, UnauthorizedProblem) for r in results), results
+
+        credential = await session.get(Credential, USER, populate_existing=True)
+        assert credential is not None
+        assert credential.locked_until is not None and credential.locked_until > datetime.now(UTC)
 
     async def test_the_lock_expiring_is_a_real_unlock_one_typo_does_not_relock(
         self, session, cfg, pair, directory, registered
@@ -125,17 +183,57 @@ class TestCredentials:
         outcome = await _login(session, cfg, pair, directory)
         assert outcome.status == "complete"
 
-    async def test_the_lock_is_checked_before_the_password(
+    async def test_a_locked_account_answers_the_same_401_whatever_the_password(
         self, session, cfg, pair, directory, registered
     ) -> None:
-        """Otherwise a locked account is still a working password oracle."""
+        """A locked account is neither a password oracle (right and wrong passwords get the same
+        answer) nor an enumeration oracle (that answer is the one an unknown email gets)."""
         credential = await session.get(Credential, USER)
         assert credential is not None
         credential.locked_until = datetime.now(UTC) + timedelta(minutes=5)
+        await session.commit()
 
-        with pytest.raises(ForbiddenProblem, match="temporarily locked"):
+        with pytest.raises(UnauthorizedProblem) as wrong:
             # pragma: allowlist nextline secret
             await _login(session, cfg, pair, directory, password="definitely-wrong")
+        with pytest.raises(UnauthorizedProblem) as right:
+            await _login(session, cfg, pair, directory)
+        with pytest.raises(UnauthorizedProblem) as unknown:
+            await _login(session, cfg, pair, FakeDirectory([]))
+        assert str(wrong.value) == str(right.value) == str(unknown.value) == services.INVALID
+
+        # Already locked: nothing more to count, and the lock is not lifted or extended.
+        credential = await session.get(Credential, USER)
+        assert credential is not None
+        assert credential.failed_attempts == 0
+
+    async def test_locked_and_deactivated_accounts_still_pay_the_hash(
+        self, session, cfg, pair, directory, registered, monkeypatch
+    ) -> None:
+        """Skipping the Argon2 comparison for a locked or deactivated account would make its
+        answer measurably faster than a wrong password's — a timing oracle for the same fact."""
+        calls: list[object] = []
+        real = security.verify_password
+
+        def counting(stored: str | None, raw: str) -> bool:
+            calls.append(stored)
+            return real(stored, raw)
+
+        monkeypatch.setattr(security, "verify_password", counting)
+
+        credential = await session.get(Credential, USER)
+        assert credential is not None
+        credential.locked_until = datetime.now(UTC) + timedelta(minutes=5)
+        await session.commit()
+        with pytest.raises(UnauthorizedProblem):
+            await _login(session, cfg, pair, directory)
+        assert len(calls) == 1 and calls[0] is not None
+
+        credential.locked_until = None
+        await session.commit()
+        with pytest.raises(UnauthorizedProblem):
+            await _login(session, cfg, pair, _deactivated_directory())
+        assert len(calls) == 2 and calls[1] is not None
 
     async def test_a_successful_sign_in_clears_the_failure_count(
         self, session, cfg, pair, directory, registered
@@ -149,25 +247,47 @@ class TestCredentials:
         assert credential is not None
         assert credential.failed_attempts == 0
 
-    async def test_a_deactivated_account_cannot_sign_in(
+    async def test_a_deactivated_account_cannot_sign_in_and_is_not_named(
         self, session, cfg, pair, registered
     ) -> None:
-        from tests.conftest import user_in_one_org
-
-        user = user_in_one_org()
-        deactivated = FakeDirectory(
-            [
-                type(user)(
-                    user_id=user.user_id,
-                    email=user.email,
-                    full_name=user.full_name,
-                    is_active=False,
-                    memberships=user.memberships,
-                )
-            ]
-        )
-        with pytest.raises(ForbiddenProblem, match="deactivated"):
+        """Refused with the generic 401 — even with the right password — so the form cannot be
+        used to learn that an address belongs to a deactivated account."""
+        deactivated = _deactivated_directory()
+        with pytest.raises(UnauthorizedProblem) as right:
             await _login(session, cfg, pair, deactivated)
+        with pytest.raises(UnauthorizedProblem) as wrong:
+            # pragma: allowlist nextline secret
+            await _login(session, cfg, pair, deactivated, password="not-the-password")
+        assert str(right.value) == str(wrong.value) == services.INVALID
+
+    async def test_wrong_passwords_against_a_deactivated_account_still_count(
+        self, session, cfg, pair, registered
+    ) -> None:
+        """Lockout counting is unchanged by the generic answer: a wrong password is counted
+        whether or not the account is active, exactly as `_verify_staff` does."""
+        with pytest.raises(UnauthorizedProblem):
+            # pragma: allowlist nextline secret
+            await _login(session, cfg, pair, _deactivated_directory(), password="wrong")
+        credential = await session.get(Credential, USER)
+        assert credential is not None
+        assert credential.failed_attempts == 1
+
+
+def _deactivated_directory() -> FakeDirectory:
+    from tests.conftest import user_in_one_org
+
+    user = user_in_one_org()
+    return FakeDirectory(
+        [
+            type(user)(
+                user_id=user.user_id,
+                email=user.email,
+                full_name=user.full_name,
+                is_active=False,
+                memberships=user.memberships,
+            )
+        ]
+    )
 
 
 class TestOrganizationResolution:
@@ -777,7 +897,133 @@ class TestPasswords:
             session, cfg=cfg, directory=FakeDirectory([]), email="nobody@example.com"
         )
 
-    async def test_a_reset_token_works_once(self, session, cfg, directory, registered) -> None:
+    async def test_resets_for_one_account_are_capped_silently(
+        self, session, cfg, directory, registered, redis
+    ) -> None:
+        """Otherwise anyone can bury a victim's inbox, or burn the platform's send quota, from
+        one IP. Over the cap the call still "succeeds" — a 429 would confirm the account."""
+        from app.models import OutboxEvent
+
+        for _ in range(services.PASSWORD_RESETS_PER_HOUR + 2):
+            await services.request_password_reset(
+                session, cfg=cfg, directory=directory, email="sam@example.com"
+            )
+        sent = (
+            (
+                await session.execute(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_type == services.EVT_PASSWORD_RESET_REQUESTED
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(sent) == services.PASSWORD_RESETS_PER_HOUR
+
+    async def test_a_new_password_voids_every_other_outstanding_reset_link(
+        self, session, cfg, directory, registered, redis
+    ) -> None:
+        """Someone with brief mailbox access requests a link; the owner resets anyway. The
+        intruder's link must die with the old password, not live out its 30 minutes."""
+        from app.models import OutboxEvent
+        from platform_core.errors import NotFoundProblem
+
+        for _ in range(2):
+            await services.request_password_reset(
+                session, cfg=cfg, directory=directory, email="sam@example.com"
+            )
+        first, second = [
+            r.payload["token"]
+            for r in (
+                await session.execute(
+                    select(OutboxEvent)
+                    .where(OutboxEvent.event_type == services.EVT_PASSWORD_RESET_REQUESTED)
+                    .order_by(OutboxEvent.created_at)
+                )
+            ).scalars()
+        ]
+        await services.confirm_password_reset(
+            session,
+            cfg=cfg,
+            raw_token=first,
+            new_password="fresh-start-9",  # pragma: allowlist secret
+        )
+        with pytest.raises(NotFoundProblem, match="not valid"):
+            await services.confirm_password_reset(
+                session,
+                cfg=cfg,
+                raw_token=second,
+                new_password="intruder-9",  # pragma: allowlist secret
+            )
+
+    async def test_two_links_opened_at_once_do_not_deadlock(
+        self, session, cfg, directory, registered, redis, monkeypatch
+    ) -> None:
+        """Each confirm used to lock its own link and then void the other's: two at once waited on
+        each other and Postgres aborted one with a deadlock (a 500). Now both queue on the
+        credential row: one link wins and the other finds itself voided."""
+        import asyncio
+        import contextlib
+
+        from sqlalchemy.ext.asyncio import AsyncSession
+
+        # Hold each confirm, just before it writes the password, until the other has caught up
+        # (or a second has passed): the interleaving the deadlock needs, made deterministic.
+        arrived = 0
+        both = asyncio.Event()
+        real = services.get_or_create_credential
+
+        async def rendezvous(s, user_id):  # type: ignore[no-untyped-def]
+            nonlocal arrived
+            arrived += 1
+            if arrived == 2:
+                both.set()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(both.wait(), 1)
+            return await real(s, user_id)
+
+        monkeypatch.setattr(services, "get_or_create_credential", rendezvous)
+
+        from app.models import OutboxEvent
+        from platform_core.errors import NotFoundProblem
+
+        for _ in range(2):
+            await services.request_password_reset(
+                session, cfg=cfg, directory=directory, email="sam@example.com"
+            )
+        tokens = [
+            r.payload["token"]
+            for r in (
+                await session.execute(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_type == services.EVT_PASSWORD_RESET_REQUESTED
+                    )
+                )
+            ).scalars()
+        ]
+        await session.commit()
+
+        async with AsyncSession(session.bind, expire_on_commit=False) as other:
+            results = await asyncio.gather(
+                *(
+                    services.confirm_password_reset(
+                        s,
+                        cfg=cfg,
+                        raw_token=t,
+                        new_password="fresh-start-9",  # pragma: allowlist secret
+                    )
+                    for s, t in zip((session, other), tokens, strict=True)
+                ),
+                return_exceptions=True,
+            )
+
+        assert sorted(type(r).__name__ for r in results) == ["NoneType", "NotFoundProblem"], results
+        assert any(isinstance(r, NotFoundProblem) for r in results)
+
+    async def test_a_reset_token_works_once(
+        self, session, cfg, directory, registered, redis
+    ) -> None:
         from app.models import OutboxEvent
         from platform_core.errors import NotFoundProblem
 

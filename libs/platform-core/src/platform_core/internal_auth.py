@@ -26,7 +26,8 @@ The same machinery covers **both** internal channels. Service-to-service `/inter
 mint per-callee tokens (`aud` = the service being called). The gateway's identity-forwarding
 hop — the highest-volume channel, and the last place the raw secret used to travel — mints a
 per-request token on the `GATEWAY_AUDIENCE` channel with the forwarded `uid`/`org` bound in,
-so a capture can neither open an internal endpoint nor vouch for any other identity.
+plus a digest of every other forwarded header (`FORWARDED_HEADERS`), so a capture can neither
+open an internal endpoint nor vouch for any other identity, permission set or audience.
 
 Replay inside the TTL window is not prevented. Doing so needs a `jti` ledger in Redis on the
 *callee*, which puts a hard dependency on Redis in front of every internal call — including the
@@ -42,7 +43,7 @@ import re
 import secrets
 import time
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
@@ -62,6 +63,38 @@ DEFAULT_TTL_SECONDS = 60
 #: `service_name`, so a captured forwarding token can never open an `/internal/v1` endpoint —
 #: `verify_service_token` checks `aud == settings.service_name` and this value never matches.
 GATEWAY_AUDIENCE = "opsgrids-gateway-forward"
+
+#: Every header a gateway forwards that a service believes on the hop token's word. The token
+#: binds a digest of all of them (`fwd`), not only the `uid`/`org` it names: binding just those
+#: two left a captured token replayable for its TTL with an escalated `X-Perms`, `X-Audience`,
+#: `X-Amr` or `X-Roles`. `x-client-ip` is the visitor's address as the gateway resolved it.
+FORWARDED_HEADERS: tuple[str, ...] = (
+    "x-user-id",
+    "x-org-id",
+    "x-membership-id",
+    "x-subject-ref",
+    "x-roles",
+    "x-perms",
+    "x-entitlements",
+    "x-locations",
+    "x-amr",
+    "x-permission-version",
+    "x-session-id",
+    "x-audience",
+    "x-org-slug",
+    "x-client-ip",
+)
+
+
+def forwarded_headers_digest(headers: Mapping[str, str]) -> str:
+    """SHA-256 over `FORWARDED_HEADERS` in a fixed order, as `name:value` lines. `headers` must
+    answer lower-case names (the gateway's dict does; Starlette's `Headers` is case-insensitive).
+    Absent and empty canonicalise alike, because every reader of these headers treats them alike.
+    """
+    material = "\n".join(
+        f"{name}:{(headers.get(name) or '').strip()}" for name in FORWARDED_HEADERS
+    )
+    return hashlib.sha256(material.encode()).hexdigest()
 
 
 def mint_service_token(
@@ -236,8 +269,10 @@ __all__ = [
     "ADMIN_HOP_TTL_SECONDS",
     "ALGORITHM",
     "DEFAULT_TTL_SECONDS",
+    "FORWARDED_HEADERS",
     "GATEWAY_AUDIENCE",
     "canonical_query",
+    "forwarded_headers_digest",
     "mint_service_token",
     "sign_admin_hop",
     "verify_admin_hop",

@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import re
 import smtplib
+import ssl
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from email.message import EmailMessage
@@ -295,7 +296,8 @@ class SmtpTransport:
         try:
             try:
                 if self._use_tls:
-                    client.starttls()
+                    # No context = unverified TLS; verify before login() sends the password.
+                    client.starttls(context=ssl.create_default_context())
                 if self._username and self._password:
                     client.login(self._username, self._password)
             except (smtplib.SMTPException, OSError) as exc:

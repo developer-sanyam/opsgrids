@@ -1051,6 +1051,12 @@ async def set_member_roles(
     The bump is what makes a revocation take effect on the next request rather than when
     the access token happens to expire.
     """
+    if membership.is_owner and "ORG_OWNER" not in role_codes:
+        # The same rule as `revoke_member`: emptying the owner's roles is removing them.
+        raise BusinessRuleProblem(
+            "The owner's ORG_OWNER role cannot be removed. Transfer ownership first, so the "
+            "account is never left with nobody who can administer it."
+        )
     before = sorted(mr.role.code for mr in membership.roles)
 
     resolved = await _resolve_assignable_roles(session, ctx, role_codes)

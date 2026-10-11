@@ -20,15 +20,19 @@ arithmetic, written out.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import selectors, services
 from app.config import settings
+from app.models import CREDIT_GRANT, CREDIT_REVERSAL, CreditLedgerEntry
 from app.schemas import CreditConsumeIn, CreditGrantIn, CreditReverseIn
+from platform_core.db import TENANT_GUC
 from platform_core.errors import BusinessRuleProblem, NotFoundProblem
 from tests.helpers import service_token_headers
 
@@ -105,11 +109,14 @@ class TestAPackDrawsDownAcrossInvoices:
 
         async with session.begin():
             await _draw(session, org_id, pack.id, 4_500_000, reason="INV-0001")
-            assert await selectors.pack_remaining(session, pack.id) == 7_500_000
+            assert (
+                await selectors.pack_remaining(session, pack.id, organization_id=org_id)
+                == 7_500_000
+            )
 
         async with session.begin():
             await _draw(session, org_id, pack.id, 5_000_000, reason="INV-0002")
-            remaining = await selectors.pack_remaining(session, pack.id)
+            remaining = await selectors.pack_remaining(session, pack.id, organization_id=org_id)
         assert remaining == 2_500_000
 
         # A third invoice for ₹30,000 exceeds what is left. The refusal names the remainder, so
@@ -120,10 +127,13 @@ class TestAPackDrawsDownAcrossInvoices:
 
         async with session.begin():
             await _draw(session, org_id, pack.id, remaining, reason="INV-0003 (partial)")
-            assert await selectors.pack_remaining(session, pack.id) == 0
+            assert await selectors.pack_remaining(session, pack.id, organization_id=org_id) == 0
             assert (
                 await selectors.credit_balance(
-                    session, currency="INR", at=datetime(2026, 9, 1, tzinfo=UTC)
+                    session,
+                    organization_id=org_id,
+                    currency="INR",
+                    at=datetime(2026, 9, 1, tzinfo=UTC),
                 )
                 == 0
             )
@@ -162,7 +172,10 @@ class TestAPackDrawsDownAcrossInvoices:
             )
 
         async with session.begin():
-            assert await selectors.pack_remaining(session, pack.id) == PACK_MINOR
+            assert (
+                await selectors.pack_remaining(session, pack.id, organization_id=org_id)
+                == PACK_MINOR
+            )
 
 
 # --------------------------------------------------------------------- the window edge
@@ -183,12 +196,20 @@ class TestAPackExpiresExactlyAtItsWindowEdge:
 
         async with session.begin():
             mid_term = await selectors.credit_balance(
-                session, currency="INR", at=datetime(2026, 10, 1, tzinfo=UTC)
+                session,
+                organization_id=org_id,
+                currency="INR",
+                at=datetime(2026, 10, 1, tzinfo=UTC),
             )
             last_moment = await selectors.credit_balance(
-                session, currency="INR", at=WINDOW_END - timedelta(microseconds=1)
+                session,
+                organization_id=org_id,
+                currency="INR",
+                at=WINDOW_END - timedelta(microseconds=1),
             )
-            at_the_edge = await selectors.credit_balance(session, currency="INR", at=WINDOW_END)
+            at_the_edge = await selectors.credit_balance(
+                session, organization_id=org_id, currency="INR", at=WINDOW_END
+            )
 
         assert mid_term == PACK_MINOR - 4_500_000
         assert last_moment == PACK_MINOR - 4_500_000, "the window is closed at its upper end only"
@@ -213,7 +234,7 @@ class TestAPackExpiresExactlyAtItsWindowEdge:
 
         async with session.begin():
             long_after = await selectors.credit_balance(
-                session, currency="INR", at=datetime(2030, 1, 1, tzinfo=UTC)
+                session, organization_id=org_id, currency="INR", at=datetime(2030, 1, 1, tzinfo=UTC)
             )
         assert long_after == 0
         assert long_after >= 0, "a lapsed pack must never make the organization owe its own credit"
@@ -254,7 +275,7 @@ class TestAPackExpiresExactlyAtItsWindowEdge:
             )
         async with session.begin():
             entry_balance = await selectors.credit_balance(
-                session, currency="INR", at=datetime.now(UTC)
+                session, organization_id=org_id, currency="INR", at=datetime.now(UTC)
             )
         assert entry_balance == 750_000
 
@@ -286,7 +307,10 @@ class TestADrawDownIsChecked:
                     ),
                     request=None,
                 )
-            assert await selectors.pack_remaining(session, pack.id) == PACK_MINOR
+            assert (
+                await selectors.pack_remaining(session, pack.id, organization_id=org_id)
+                == PACK_MINOR
+            )
 
     async def test_credit_cannot_be_drawn_from_a_consumption(
         self, session: AsyncSession, org_id: uuid.UUID
@@ -311,6 +335,242 @@ class TestADrawDownIsChecked:
         async with session.begin():
             with pytest.raises(BusinessRuleProblem, match="INR"):
                 await _draw(session, org_id, pack.id, 1000, currency="USD")
+
+    async def test_two_concurrent_draws_cannot_both_spend_the_same_remainder(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """Two billing runs draw 8M from a 10M pack at once. Under READ COMMITTED each `SUM`
+        would read 10M (neither insert committed) and both would pass; the second draw must wait
+        for the first and then see only 2M left."""
+        async with session.begin():
+            pack = await _open_pack(session, org_id, amount_minor=10_000_000)
+
+        other = AsyncSession(session.bind, expire_on_commit=False)
+
+        @event.listens_for(other.sync_session, "after_begin")
+        def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+            connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
+
+        async def _racing_draw() -> None:
+            async with other.begin():
+                await _draw(other, org_id, pack.id, 8_000_000, reason="run B")
+
+        try:
+            async with session.begin():
+                await _draw(session, org_id, pack.id, 8_000_000, reason="run A")
+                racing = asyncio.create_task(_racing_draw())
+                # Long enough for run B to finish if nothing makes it wait for run A's commit.
+                await asyncio.sleep(0.5)
+            with pytest.raises(BusinessRuleProblem, match="2000000"):
+                await racing
+        finally:
+            await other.close()
+
+        async with session.begin():
+            assert (
+                await selectors.pack_remaining(session, pack.id, organization_id=org_id)
+                == 2_000_000
+            )
+
+    async def test_a_reversed_pack_cannot_be_drawn(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The grant's own reversal counts against the pack: a revoked pack has nothing left,
+        and a draw against it would push the organization's balance negative."""
+        async with session.begin():
+            pack = await _open_pack(session, org_id, amount_minor=10_000_000)
+        async with session.begin():
+            await services.reverse_credit(
+                session,
+                CreditReverseIn(organization_id=org_id, reversal_of=pack.id, reason="revoked"),
+                request=None,
+            )
+        async with session.begin():
+            assert await selectors.pack_remaining(session, pack.id, organization_id=org_id) == 0
+        async with session.begin():
+            with pytest.raises(BusinessRuleProblem, match="reversed"):
+                await _draw(session, org_id, pack.id, 10_000_000)
+
+    async def test_reversing_a_partly_drawn_pack_revokes_only_what_is_left(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """What was drawn already paid an invoice; revoking the pack takes back the unspent
+        part only. Negating the full grant would leave the pack at minus the drawn amount and
+        eat that much of the organization's unrelated credit."""
+        async with session.begin():
+            pack = await _open_pack(
+                session, org_id, amount_minor=10_000_000, valid_until=WINDOW_END
+            )
+            await _open_pack(session, org_id, amount_minor=5_000_000, valid_until=None)
+            await _draw(session, org_id, pack.id, 4_000_000, reason="INV-0001")
+
+        async with session.begin():
+            reversal = await services.reverse_credit(
+                session,
+                CreditReverseIn(organization_id=org_id, reversal_of=pack.id, reason="revoked"),
+                request=None,
+            )
+        assert reversal.amount_minor == -6_000_000
+
+        async with session.begin():
+            assert await selectors.pack_remaining(session, pack.id, organization_id=org_id) == 0
+            assert (
+                await selectors.credit_balance(
+                    session, organization_id=org_id, currency="INR", at=datetime.now(UTC)
+                )
+                == 5_000_000
+            ), "the separate goodwill grant is untouched by the pack's revocation"
+        async with session.begin():
+            with pytest.raises(BusinessRuleProblem, match="reversed"):
+                await _draw(session, org_id, pack.id, 1)
+
+    async def test_a_draw_racing_the_packs_reversal_waits_for_it(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """A grant reversal and a draw on the same pack serialise on the pack's lock: the draw
+        waits for the reversal to commit and is then refused, rather than both committing."""
+        async with session.begin():
+            pack = await _open_pack(session, org_id, amount_minor=10_000_000)
+
+        other = AsyncSession(session.bind, expire_on_commit=False)
+
+        @event.listens_for(other.sync_session, "after_begin")
+        def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+            connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
+
+        async def _racing_draw() -> None:
+            async with other.begin():
+                await _draw(other, org_id, pack.id, 8_000_000, reason="run B")
+
+        try:
+            async with session.begin():
+                await services.reverse_credit(
+                    session,
+                    CreditReverseIn(organization_id=org_id, reversal_of=pack.id, reason="revoked"),
+                    request=None,
+                )
+                racing = asyncio.create_task(_racing_draw())
+                # Long enough for the draw to finish if nothing makes it wait for the reversal.
+                await asyncio.sleep(0.5)
+            with pytest.raises(BusinessRuleProblem):
+                await racing
+        finally:
+            await other.close()
+
+        async with session.begin():
+            assert await selectors.pack_remaining(session, pack.id, organization_id=org_id) == 0
+
+    async def test_a_draw_on_a_revoked_pack_cannot_be_reversed(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """Revoking a partly drawn pack takes back only the unspent part, so reversing one of its
+        draws afterwards would put that draw's credit back on a pack nobody holds any more — and
+        into the organization's balance, where a general consumption can spend it."""
+        async with session.begin():
+            pack = await _open_pack(
+                session, org_id, amount_minor=10_000_000, valid_until=WINDOW_END
+            )
+            drawn = await _draw(session, org_id, pack.id, 4_000_000, reason="INV-0001")
+        async with session.begin():
+            await services.reverse_credit(
+                session,
+                CreditReverseIn(organization_id=org_id, reversal_of=pack.id, reason="revoked"),
+                request=None,
+            )
+
+        async with session.begin():
+            with pytest.raises(BusinessRuleProblem, match="revoked"):
+                await services.reverse_credit(
+                    session,
+                    CreditReverseIn(
+                        organization_id=org_id, reversal_of=drawn.id, reason="INV-0001 voided"
+                    ),
+                    request=None,
+                )
+
+        async with session.begin():
+            assert await selectors.pack_remaining(session, pack.id, organization_id=org_id) == 0
+            assert (
+                await selectors.credit_balance(
+                    session, organization_id=org_id, currency="INR", at=datetime.now(UTC)
+                )
+                == 0
+            )
+
+    async def test_a_draw_reversed_before_the_revocation_stays_idempotent(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """The other order is fine: the revocation sees the restored draw and takes it back too.
+        A retried draw reversal after that is the same row, not a refusal."""
+        async with session.begin():
+            pack = await _open_pack(
+                session, org_id, amount_minor=10_000_000, valid_until=WINDOW_END
+            )
+            drawn = await _draw(session, org_id, pack.id, 4_000_000, reason="INV-0001")
+        undo = CreditReverseIn(organization_id=org_id, reversal_of=drawn.id, reason="voided")
+        async with session.begin():
+            first = await services.reverse_credit(session, undo, request=None)
+        async with session.begin():
+            revoked = await services.reverse_credit(
+                session,
+                CreditReverseIn(organization_id=org_id, reversal_of=pack.id, reason="revoked"),
+                request=None,
+            )
+        assert revoked.amount_minor == -10_000_000
+        async with session.begin():
+            again = await services.reverse_credit(session, undo, request=None)
+        assert again.id == first.id
+        async with session.begin():
+            assert await selectors.pack_remaining(session, pack.id, organization_id=org_id) == 0
+
+    async def test_a_draw_reversal_racing_the_packs_revocation_waits_for_it(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """Without the pack's lock the draw reversal could commit between the revocation's read
+        of the remainder and its insert, and the restored credit would outlive the revocation."""
+        async with session.begin():
+            pack = await _open_pack(
+                session, org_id, amount_minor=10_000_000, valid_until=WINDOW_END
+            )
+            drawn = await _draw(session, org_id, pack.id, 4_000_000, reason="INV-0001")
+
+        other = AsyncSession(session.bind, expire_on_commit=False)
+
+        @event.listens_for(other.sync_session, "after_begin")
+        def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+            connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
+
+        async def _racing_undo() -> None:
+            async with other.begin():
+                await services.reverse_credit(
+                    other,
+                    CreditReverseIn(organization_id=org_id, reversal_of=drawn.id, reason="voided"),
+                    request=None,
+                )
+
+        try:
+            async with session.begin():
+                await services.reverse_credit(
+                    session,
+                    CreditReverseIn(organization_id=org_id, reversal_of=pack.id, reason="revoked"),
+                    request=None,
+                )
+                racing = asyncio.create_task(_racing_undo())
+                # Long enough for the draw reversal to finish if nothing makes it wait.
+                await asyncio.sleep(0.5)
+            with pytest.raises(BusinessRuleProblem, match="revoked"):
+                await racing
+        finally:
+            await other.close()
+
+        async with session.begin():
+            assert await selectors.pack_remaining(session, pack.id, organization_id=org_id) == 0
+            assert (
+                await selectors.credit_balance(
+                    session, organization_id=org_id, currency="INR", at=datetime.now(UTC)
+                )
+                == 0
+            )
 
 
 # --------------------------------------------------------------------- the mandate ceiling
@@ -401,9 +661,9 @@ class TestTheUpiAutopayCeilingWorkaround:
                 await _draw(session, org_id, pack.id, monthly, reason=f"INV-2026-{month + 1:02d}")
 
         async with session.begin():
-            remaining = await selectors.pack_remaining(session, pack.id)
+            remaining = await selectors.pack_remaining(session, pack.id, organization_id=org_id)
             inside_window = await selectors.credit_balance(
-                session, currency="INR", at=datetime(2027, 3, 1, tzinfo=UTC)
+                session, organization_id=org_id, currency="INR", at=datetime(2027, 3, 1, tzinfo=UTC)
             )
         assert monthly * 12 == PACK_MINOR, "the commitment divides exactly; no paisa is stranded"
         assert remaining == 0
@@ -427,3 +687,96 @@ class TestTheUpiAutopayCeilingWorkaround:
         async with session.begin():
             with pytest.raises(BusinessRuleProblem, match="0 INR minor units left"):
                 await _draw(session, org_id, pack.id, monthly)
+
+
+# ------------------------------------------------------------- the reads filter the tenant too
+
+
+class TestTheLedgerReadsFilterTheirOwnTenant:
+    """`get_credit_entry` and `pack_remaining` carry an explicit `organization_id` predicate, not
+    only row-level security (CLAUDE.md: every query filters on it; RLS is the net). The reads
+    run on the BYPASSRLS `admin_session` deliberately: under a tenant-bound session RLS would hide
+    the other organization's pack and the test would pass with the predicate missing."""
+
+    async def test_another_tenants_pack_is_not_returned_when_rls_would_allow_it(
+        self, admin_session: AsyncSession, org_id: uuid.UUID, org_b: uuid.UUID
+    ) -> None:
+        async with admin_session.begin():
+            theirs = CreditLedgerEntry(
+                organization_id=org_b,
+                entry_type=CREDIT_GRANT,
+                amount_minor=PACK_MINOR,
+                currency="INR",
+                reason="Another tenant's pack",
+                valid_from=WINDOW_START,
+            )
+            admin_session.add(theirs)
+
+        async with admin_session.begin():
+            assert (
+                await selectors.get_credit_entry(admin_session, theirs.id, organization_id=org_id)
+                is None
+            )
+            assert (
+                await selectors.pack_remaining(admin_session, theirs.id, organization_id=org_id)
+                == 0
+            )
+            # Control: the same reads for the owning tenant do find it.
+            found = await selectors.get_credit_entry(
+                admin_session, theirs.id, organization_id=org_b
+            )
+            assert found is not None and found.id == theirs.id
+            assert (
+                await selectors.pack_remaining(admin_session, theirs.id, organization_id=org_b)
+                == PACK_MINOR
+            )
+
+    async def test_the_balance_and_the_reversal_lookup_filter_their_tenant_too(
+        self, admin_session: AsyncSession, org_id: uuid.UUID, org_b: uuid.UUID
+    ) -> None:
+        mid_window = WINDOW_START + timedelta(days=30)
+        async with admin_session.begin():
+            theirs = CreditLedgerEntry(
+                organization_id=org_b,
+                entry_type=CREDIT_GRANT,
+                amount_minor=PACK_MINOR,
+                currency="INR",
+                reason="Another tenant's grant",
+                valid_from=WINDOW_START,
+            )
+            admin_session.add(theirs)
+
+        async with admin_session.begin():
+            assert (
+                await selectors.credit_balance(
+                    admin_session, currency="INR", at=mid_window, organization_id=org_id
+                )
+                == 0
+            )
+            assert (
+                await selectors.credit_balance(
+                    admin_session, currency="INR", at=mid_window, organization_id=org_b
+                )
+                == PACK_MINOR
+            )
+
+        async with admin_session.begin():
+            admin_session.add(
+                CreditLedgerEntry(
+                    organization_id=org_b,
+                    entry_type=CREDIT_REVERSAL,
+                    amount_minor=-PACK_MINOR,
+                    currency="INR",
+                    reason="Their reversal",
+                    valid_from=WINDOW_START,
+                    reversal_of=theirs.id,
+                )
+            )
+
+        async with admin_session.begin():
+            assert (
+                await selectors.get_reversal_of(admin_session, theirs.id, organization_id=org_id)
+                is None
+            )
+            found = await selectors.get_reversal_of(admin_session, theirs.id, organization_id=org_b)
+            assert found is not None and found.reversal_of == theirs.id

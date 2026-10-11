@@ -208,6 +208,20 @@ class TestPrivilegeEscalation:
                 await session.refresh(people["report"], ["roles"])
                 await services.set_member_roles(session, ctx, people["report"], ["ORG_OWNER"])
 
+    async def test_role_write_cannot_strip_the_owner(
+        self, session: AsyncSession, org: Organization, people: dict[str, Membership]
+    ) -> None:
+        """Removing the owner is refused; emptying their roles is the same thing by another door,
+        and would leave the account with nobody able to administer roles or billing."""
+        from platform_core.errors import BusinessRuleProblem
+
+        owner = await _owner(session, org)
+        ctx = ctx_for(org, people["manager"], "core.identity.role.write", Scope.ORG)
+        with pytest.raises(BusinessRuleProblem, match="owner"):
+            async with session.begin():
+                await session.refresh(owner, ["roles"])
+                await services.set_member_roles(session, ctx, owner, [])
+
     async def test_an_owner_may_assign_any_role(
         self, session: AsyncSession, org: Organization, people: dict[str, Membership]
     ) -> None:
