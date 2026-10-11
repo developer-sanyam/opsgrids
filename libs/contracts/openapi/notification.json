@@ -1957,6 +1957,7 @@
       },
       "ContactIn": {
         "additionalProperties": false,
+        "description": "Add a contact. Adding someone is not their agreement to marketing: without\n`marketing_opt_in` no opt-in is recorded and campaigns do not mail them.",
         "properties": {
           "attributes": {
             "additionalProperties": true,
@@ -1968,6 +1969,16 @@
             "minLength": 3,
             "title": "Email",
             "type": "string"
+          },
+          "marketing_opt_in": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContactOptInIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "default": "",
@@ -2074,6 +2085,49 @@
           }
         },
         "title": "ContactListPatch",
+        "type": "object"
+      },
+      "ContactOptInIn": {
+        "additionalProperties": false,
+        "description": "How a contact agreed to email marketing \u2014 the `source` / `evidence` / `occurred_at` of\n`ConsentEventIn`, held to the same checks.",
+        "properties": {
+          "evidence": {
+            "maxLength": 500,
+            "minLength": 3,
+            "title": "Evidence",
+            "type": "string"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "source": {
+            "enum": [
+              "checkout",
+              "web_form",
+              "import",
+              "admin",
+              "api",
+              "in_person",
+              "phone_call"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "evidence"
+        ],
+        "title": "ContactOptInIn",
         "type": "object"
       },
       "ContactOut": {

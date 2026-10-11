@@ -164,6 +164,32 @@ describe("EmployeeForm", () => {
     expect(screen.getByLabelText("Full name")).toHaveProperty("value", "New Person");
   });
 
+  it("shows the service's under-14 refusal on the date of birth field", async () => {
+    createEmployee.mockRejectedValue(
+      new ApiError(422, "invalid", {
+        detail: "Request payload failed validation",
+        errors: [
+          {
+            field: "pii.date_of_birth",
+            code: "under_minimum_age",
+            message: "An employee must be at least 14 years old",
+          },
+        ],
+      } as ProblemJson),
+    );
+    const user = userEvent.setup();
+    renderForm();
+
+    await goToReportingStep(user);
+    await user.click(screen.getByRole("button", { name: /Sensitive details/ }));
+    await user.type(screen.getByLabelText(/Date of birth/), "2020-01-01");
+    await user.click(screen.getByRole("button", { name: "Create employee" }));
+
+    const field = screen.getByLabelText(/Date of birth/);
+    await waitFor(() => expect(field.getAttribute("aria-invalid")).toBe("true"));
+    expect(screen.getByText("An employee must be at least 14 years old")).toBeDefined();
+  });
+
   it("shows the server's sentence on a 403 that belongs to no field", async () => {
     createEmployee.mockRejectedValue(
       new ApiError(403, "forbidden", { detail: "You can't create an employee." }),

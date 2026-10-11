@@ -3,9 +3,10 @@ import { useEffect, useState } from "react";
 import { useUnsavedChangesWarning } from "@opsgrids/ui";
 
 import { addContact, editContact } from "@/api/client";
-import type { ContactOut } from "@/api/types";
+import type { ContactOut, WhatsAppOptInSource } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
-import { Button, ConfirmDialog, Dialog, InlineAlert, TextField } from "@/ui";
+import { Button, ConfirmDialog, Dialog, InlineAlert, Select, TextArea, TextField } from "@/ui";
+import type { SelectOption } from "@/ui";
 
 /**
  * Add or edit one contact.
@@ -24,16 +25,37 @@ import { Button, ConfirmDialog, Dialog, InlineAlert, TextField } from "@/ui";
  * returns is the real value, not a mask. `name` is sent on submit only when it differs from the
  * seeded value — the service treats a present `name` as "set it", including to empty, so sending
  * it unconditionally would blank the name on every edit that only touched the address.
+ *
+ * **Adding someone is not their agreement to marketing.** The service records an email marketing
+ * opt-in only when "How they agreed" names how the person said yes; left at "Not yet", the contact
+ * is added but campaigns do not mail them. Only on add — an edited address is a new subject the
+ * service records no consent for.
  */
+
+const AGREED: SelectOption[] = [
+  { value: "", label: "Not yet — don't send them marketing" },
+  { value: "in_person", label: "In person" },
+  { value: "phone_call", label: "Phone call" },
+  { value: "web_form", label: "Form" },
+];
+
+// Server rule (`ContactOptInIn.evidence`): 3–500 characters, never a phone number or address.
+const DEFAULT_EVIDENCE: Record<WhatsAppOptInSource, string> = {
+  in_person: "Told staff in person",
+  phone_call: "Told staff on a phone call",
+  web_form: "Filled in a form",
+};
 
 interface Values {
   email: string;
   name: string;
+  agreed: "" | WhatsAppOptInSource;
+  note: string;
 }
 
 type Errors = Partial<Record<keyof Values, string>>;
 
-const EMPTY: Values = { email: "", name: "" };
+const EMPTY: Values = { email: "", name: "", agreed: "", note: "" };
 
 function validate(values: Values, requireEmail: boolean): Errors {
   const errors: Errors = {};
@@ -64,7 +86,11 @@ export function ContactFormDialog({
   const editing = contact !== null;
   // Email always seeds blank (it's the mask, never the real address) so anything typed there is
   // new; name seeds from the contact's own real value.
-  const dirty = values.email !== "" || values.name !== (contact === null ? "" : contact.name);
+  const dirty =
+    values.email !== "" ||
+    values.name !== (contact === null ? "" : contact.name) ||
+    values.agreed !== "" ||
+    values.note !== "";
   useUnsavedChangesWarning(open && dirty);
 
   // The dialog instance for a row is reused across opens (`Contacts` swaps `contact`, not the
@@ -74,7 +100,7 @@ export function ContactFormDialog({
   // clear it.
   useEffect(() => {
     if (!open) return;
-    setValues({ email: "", name: contact === null ? "" : contact.name });
+    setValues({ ...EMPTY, name: contact === null ? "" : contact.name });
     setErrors({});
     setFailure(null);
     setConfirmingClose(false);
@@ -122,9 +148,19 @@ export function ContactFormDialog({
     try {
       const email = values.email.trim();
       const name = values.name.trim();
+      const note = values.note.trim();
+      const optIn =
+        values.agreed === ""
+          ? {}
+          : {
+              marketing_opt_in: {
+                source: values.agreed,
+                evidence: note === "" ? DEFAULT_EVIDENCE[values.agreed] : note,
+              },
+            };
       const saved =
         contact === null
-          ? await addContact({ email, ...(name === "" ? {} : { name }) })
+          ? await addContact({ email, ...(name === "" ? {} : { name }), ...optIn })
           : await editContact(contact.id, {
               ...(email === "" ? {} : { email }),
               ...(name === contact.name ? {} : { name }),
@@ -149,7 +185,7 @@ export function ContactFormDialog({
       description={
         editing
           ? "Addresses are sealed as soon as they're saved, so this always starts blank — type a new one only if it changed."
-          : "A person Engage may reach. The address is sealed at rest and shown masked everywhere after this."
+          : "A person Engage may reach. Campaigns only mail people who agreed to marketing. The address is sealed at rest and shown masked everywhere after this."
       }
       size="md"
       footer={
@@ -205,6 +241,29 @@ export function ContactFormDialog({
           optional
           disabled={submitting}
         />
+        {editing ? null : (
+          <>
+            <Select
+              label="How they agreed to marketing email"
+              value={values.agreed}
+              onChange={(event) => set("agreed", event.target.value as Values["agreed"])}
+              options={AGREED}
+              helper="Only someone who said yes gets campaigns. Adding them is not the same as their agreement."
+              disabled={submitting}
+            />
+            {values.agreed === "" ? null : (
+              <TextArea
+                label="Note (optional)"
+                value={values.note}
+                onChange={(event) => set("note", event.target.value)}
+                helper="A reference, like “signup form, 20 Sep” or “trade fair, stall 12”. Not a phone number or email address."
+                maxLength={500}
+                rows={2}
+                disabled={submitting}
+              />
+            )}
+          </>
+        )}
       </form>
 
       <ConfirmDialog

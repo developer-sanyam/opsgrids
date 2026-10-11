@@ -28,7 +28,7 @@ from app.models import ConsentEvent, Message, Preference, Suppression
 from app.transports import RecordingTransport
 from platform_core import pii
 from platform_core.auth import Scope
-from platform_core.errors import BusinessRuleProblem
+from platform_core.errors import BusinessRuleProblem, ValidationProblem
 from tests.helpers import ctx_for, envelope_for
 
 pytestmark = pytest.mark.integration
@@ -807,70 +807,111 @@ async def test_lifting_a_preference_restores_a_prior_opt_in(session, org_id) -> 
 # --------------------------------------------------------------------- contacts and suppressions
 
 
-async def _add_contact(session, org_id, email: str = EMAIL):
+#: What an operator types when the person did agree: how, and a reference to the record of it.
+OPT_IN = {"opt_in_source": "web_form", "opt_in_evidence": "newsletter signup form, 2026-09-20"}
+
+
+async def _add_contact(session, org_id, email: str = EMAIL, *, opted_in: bool = True):
+    """Add a contact through the real write path. `opted_in` supplies the evidence an operator
+    gives when the person agreed to marketing; without it the contact is added unmailable."""
     write = ctx_for(org_id, C_WRITE, Scope.ORG)
     async with session.begin():
-        return await services.create_contact(session, write, email=email)
+        return await services.create_contact(
+            session, write, email=email, **(OPT_IN if opted_in else {})
+        )
 
 
-async def test_adding_a_contact_records_the_organizations_attestation(session, org_id) -> None:
+async def test_adding_a_contact_without_evidence_records_no_opt_in(session, org_id) -> None:
+    """An operator adding someone is not that person agreeing to marketing: no event is written,
+    and silence is not consent, so the contact is not mailable."""
+    await _add_contact(session, org_id, opted_in=False)
+    assert await _events(session, org_id) == []
+    assert (await _decide(session, org_id, "email", "marketing", EMAIL)).allowed is False
+    assert (await _decide(session, org_id, "email", "transactional", EMAIL)).allowed is True
+
+
+async def test_adding_a_contact_with_evidence_records_that_opt_in(session, org_id) -> None:
     contact = await _add_contact(session, org_id)
     events = await _events(session, org_id)
     assert len(events) == 1
     event = events[0]
     assert (event.channel, event.purpose, event.status) == ("email", "marketing", "opted_in")
-    assert event.source == "admin"
+    assert event.source == "web_form"
+    assert event.evidence == "newsletter signup form, 2026-09-20"
     assert event.contact_id == contact.id
     assert event.recorded_by is not None
-    assert "attests" in (event.evidence or "") and "unverified" in (event.evidence or "")
     assert (await _decide(session, org_id, "email", "marketing", EMAIL)).allowed is True
 
 
-async def test_importing_contacts_attests_only_the_new_ones_in_one_batch(session, org_id) -> None:
+async def test_opt_in_evidence_is_held_to_the_consent_apis_rules(session, org_id) -> None:
+    """The same checks as `POST /engage/consent`: a writable source, a reference rather than the
+    person's address, a time not in the future — and a refusal writes no contact either."""
+    write = ctx_for(org_id, C_WRITE, Scope.ORG)
+    bad = [
+        {"opt_in_source": "legacy_import", "opt_in_evidence": "carried over"},
+        {"opt_in_source": "web_form", "opt_in_evidence": f"form filled by {EMAIL}"},
+        {
+            "opt_in_source": "web_form",
+            "opt_in_evidence": "signup form",
+            "opt_in_occurred_at": datetime.now(UTC) + timedelta(days=2),
+        },
+    ]
+    for fields in bad:
+        with pytest.raises(ValidationProblem):
+            async with session.begin():
+                await services.create_contact(session, write, email=EMAIL, **fields)
+    assert await _events(session, org_id) == []
+    async with session.begin():
+        assert (
+            await selectors.contacts_by_index(session, org_id, [selectors.email_index(EMAIL)]) == {}
+        )
+
+
+async def test_importing_contacts_records_no_opt_in(session, org_id) -> None:
+    """The import carries no consent column, so it has nothing to record: the rows land, and none
+    of them is mailable until an opt-in with evidence is recorded for it."""
     write = ctx_for(org_id, C_WRITE, Scope.ORG)
     async with session.begin():
-        await services.import_contacts(
+        outcomes = await services.import_contacts(
             session,
             write,
-            rows=[
-                ("a@example.com", "A", {}),
-                ("b@example.com", "B", {}),
-                ("a@example.com", "A", {}),
-            ],
+            rows=[("a@example.com", "A", {}), ("b@example.com", "B", {})],
         )
-    assert [e.source for e in await _events(session, org_id)] == ["import", "import"]
-    # A re-import updates and attests nothing new.
-    async with session.begin():
-        await services.import_contacts(session, write, rows=[("a@example.com", "A2", {})])
-    assert len(await _events(session, org_id)) == 2
+    assert [o for o, _, _ in outcomes] == ["created", "created"]
+    assert await _events(session, org_id) == []
+    assert await _selectable_emails(session, org_id) == set()
 
 
 async def test_re_adding_an_address_that_opted_out_does_not_undo_the_refusal(
     session, org_id
 ) -> None:
-    """The attestation is only ever written where the ledger is silent: re-importing somebody is
-    not how an opt-out gets reversed."""
+    """Re-adding somebody with no evidence is not how an opt-out gets reversed."""
     await _record(
         session, org_id, "email", "marketing", "opted_out", EMAIL, source="unsubscribe_link"
     )
-    await _add_contact(session, org_id)
+    await _add_contact(session, org_id, opted_in=False)
     assert (await _decide(session, org_id, "email", "marketing", EMAIL)).allowed is False
     assert [e.status for e in await _events(session, org_id)] == ["opted_out"]
 
 
-async def test_editing_a_contacts_address_carries_the_attestation_to_the_new_one(
+async def test_editing_a_contacts_address_does_not_carry_consent_to_the_new_one(
     session, org_id
 ) -> None:
+    """The evidence was about the old address. A new address is a new subject with no consent
+    history, and stays unmailable until someone records how that address agreed."""
     contact = await _add_contact(session, org_id)
     write = ctx_for(org_id, C_WRITE, Scope.ORG)
     async with session.begin():
         await services.update_contact(
             session, write, contact_id=contact.id, email="new@example.com"
         )
-    assert (await _decide(session, org_id, "email", "marketing", "new@example.com")).allowed is True
+    assert (
+        await _decide(session, org_id, "email", "marketing", "new@example.com")
+    ).allowed is False
+    assert len(await _events(session, org_id)) == 1
 
 
-async def test_a_manual_suppression_is_mirrored_and_its_lift_restores_the_attested_opt_in(
+async def test_a_manual_suppression_is_mirrored_and_its_lift_restores_the_recorded_opt_in(
     session, org_id
 ) -> None:
     await _add_contact(session, org_id)
@@ -1039,7 +1080,7 @@ async def test_sendable_contacts_agrees_with_the_decision_for_every_state(sessio
     """The SQL predicate and the Python decision are two statements of one policy; this pins them
     together across every state a subject can be in."""
     addresses = {
-        "attested": "attested@example.com",
+        "opted_in": "opted-in@example.com",
         "opted_out": "opted-out@example.com",
         "reopted": "reopted@example.com",
         "nothing": "nothing@example.com",
@@ -1061,7 +1102,7 @@ async def test_sendable_contacts_agrees_with_the_decision_for_every_state(sessio
                     attributes={},
                 )
             )
-    await _record(session, org_id, "email", "marketing", "opted_in", addresses["attested"])
+    await _record(session, org_id, "email", "marketing", "opted_in", addresses["opted_in"])
     await _record(
         session,
         org_id,

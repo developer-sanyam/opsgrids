@@ -151,6 +151,29 @@ describe("adding a contact", () => {
     expect(await screen.findByText("p•••@vaayu-logistics.example.com")).toBeTruthy();
   });
 
+  it("sends a marketing opt-in only when the operator says how the person agreed", async () => {
+    vi.spyOn(client, "listContacts").mockResolvedValue(page([]));
+    const spy = vi.spyOn(client, "addContact").mockResolvedValue(MASKED);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Add a contact" }));
+    expect(
+      (screen.getByLabelText("How they agreed to marketing email") as HTMLSelectElement).value,
+    ).toBe("");
+    expect(screen.queryByLabelText("Note (optional)")).toBeNull();
+    await user.type(screen.getByLabelText("Email"), "priya@vaayu-logistics.example.com");
+    await user.selectOptions(screen.getByLabelText("How they agreed to marketing email"), "in_person");
+    await user.type(screen.getByLabelText("Note (optional)"), "trade fair, stall 12");
+    await user.click(screen.getByRole("button", { name: "Add contact" }));
+
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    expect(spy).toHaveBeenCalledWith({
+      email: "priya@vaayu-logistics.example.com",
+      marketing_opt_in: { source: "in_person", evidence: "trade fair, stall 12" },
+    });
+  });
+
   it("keeps the typed values on a rejected submit", async () => {
     vi.spyOn(client, "listContacts").mockResolvedValue(page([]));
     vi.spyOn(client, "addContact").mockRejectedValue(

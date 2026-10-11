@@ -29,7 +29,7 @@ from app.transports import send_batch as transport_send_batch
 from platform_core.auth import Principal, Scope, get_principal
 from platform_core.db import dispose_engine, init_engine
 from platform_core.pii import open_sealed
-from tests.helpers import ctx_for, envelope_for, principal_for
+from tests.helpers import OPTED_IN, ctx_for, envelope_for, principal_for
 
 pytestmark = pytest.mark.integration
 
@@ -106,7 +106,7 @@ async def _seed_identity(
 async def _contacts(session, org_id: uuid.UUID, *emails: str) -> list[models.Contact]:
     write = ctx_for(org_id, C_WRITE, Scope.ORG)
     async with session.begin():
-        return [await services.create_contact(session, write, email=e) for e in emails]
+        return [await services.create_contact(session, write, email=e, **OPTED_IN) for e in emails]
 
 
 async def _campaign(session, org_id, sender_id, *, list_id=None) -> uuid.UUID:
@@ -831,7 +831,9 @@ async def test_expansions_key_share_lock_blocks_a_concurrent_contact_delete(
     afterwards would not exist yet for `erase_contact_campaign_copies` to find."""
     write = ctx_for(org_id, C_WRITE, Scope.ORG)
     async with session.begin():
-        contact = await services.create_contact(session, write, email="racer@example.com")
+        contact = await services.create_contact(
+            session, write, email="racer@example.com", **OPTED_IN
+        )
     contact_id = contact.id
 
     read_ctx = ctx_for(org_id, C_READ, Scope.ORG)
@@ -1408,7 +1410,7 @@ async def test_another_tenants_lists_and_campaigns_are_invisible(
     their_sender_id = await _seed_identity(admin_session, other)
     async with admin_session.begin():
         their_contact = await services.create_contact(
-            admin_session, ctx_for(other, C_WRITE, Scope.ORG), email="them@example.com"
+            admin_session, ctx_for(other, C_WRITE, Scope.ORG), email="them@example.com", **OPTED_IN
         )
         their_list = await services.create_list(
             admin_session, ctx_for(other, L_WRITE, Scope.ORG), name="Theirs"

@@ -115,12 +115,16 @@ re-runnable by hand as the admin role: `python -m app.consent_backfill`):
 - **no WhatsApp equivalent**: there were no legacy WhatsApp marketing sends, so WhatsApp marketing
   needs an explicit `opted_in` from now on.
 
-**6. Adding a contact is an attestation.** So that "add a contact, then send a campaign" keeps
-working now that marketing needs an opt-in on record, `create_contact`, `import_contacts` and an
-address edit record an `opted_in` event (`source = admin` / `import`, attributed to the operator,
-evidence "attests … (unverified)") — **only where the ledger is silent for that address**, so
-re-adding somebody never undoes their opt-out. Filter on `source` to tell a customer's own opt-in
-(`checkout`, `web_form`, `inbound_keyword`) from an organization's attestation.
+**6. Adding a contact is not an opt-in.** *(Amended 2026-10-12; this decision originally recorded
+an operator's add, import or address edit as an `opted_in` "attestation … (unverified)".)* An
+operator adding someone is not that person agreeing to marketing, and a consent law needs evidence
+of the agreement. `create_contact` records an `opted_in` only when the operator supplies how the
+person agreed and a reference to the record of it (`marketing_opt_in: {source, evidence,
+occurred_at?}`, held to the same checks as `POST /consent/events`); `import_contacts` and an address
+edit record nothing. A contact without an opt-in is in the audience but not mailable. Attestation
+rows written before the amendment stay in the ledger as history (it is append-only), so contacts
+added before it stay sendable; filter on `source = admin` / `import` with evidence containing
+"attests" to find them.
 
 **7. API** (under `/engage`, Engage entitlement, **no new permission codes**, so no production role
 reconcile): `POST /consent/events` and `GET /consent/events` and `POST /consent/events:lookup`
@@ -183,10 +187,8 @@ marketing `opted_in`, so §5's "needs an explicit `opted_in`" is reachable witho
 
 ## Open questions for the owner
 
-1. **Is an operator's contact add/import an acceptable attestation of email marketing consent?**
-   It keeps campaigns working and is attributed and labelled unverified, but it records an opt-in
-   nobody captured evidence for. The alternative — no event, contact unmailable until consent is
-   recorded — needs a UI to capture it first.
+1. *(Decided 2026-10-12, see 6.)* An operator's add or import is not an opt-in; the add-contact
+   form captures how the person agreed.
 2. *(Decided.)* An email unsubscribe is marketing-only; a WhatsApp STOP is all purposes.
 3. **Should an explicit, evidenced re-opt-in supersede an `unsubscribed` suppression?** Today it
    cannot: nothing that was blocked before may become allowed, and only `manual` suppressions are

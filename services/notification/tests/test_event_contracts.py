@@ -30,7 +30,7 @@ from app import models, services
 from app.transports import RecordingTransport
 from platform_core.auth import Scope
 from platform_core.events import validate_event_schema
-from tests.helpers import ctx_for
+from tests.helpers import OPTED_IN, ctx_for
 from tests.test_engage_identity import FakeResolver
 
 pytestmark = pytest.mark.integration
@@ -231,7 +231,7 @@ async def test_campaign_send_requested_and_cancelled_match_their_schemas(session
 
     write = _ctx(org_id, "engage.audience.contact.write")
     async with session.begin():
-        await services.create_contact(session, write, email="a@example.com")
+        await services.create_contact(session, write, email="a@example.com", **OPTED_IN)
 
     campaign_write = _ctx(org_id, "engage.campaign.campaign.write")
     async with session.begin():

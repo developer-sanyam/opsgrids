@@ -13,10 +13,14 @@ place, `EmployeePiiUnmasked`, served by the stepped-up, audited unmask endpoint.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
-from typing import Annotated, Literal
+from datetime import UTC, date, datetime
+from typing import Annotated, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic_core import PydanticCustomError
+
+#: The Child and Adolescent Labour (Prohibition and Regulation) Act bars employing under-14s.
+MIN_EMPLOYMENT_AGE: Final = 14
 
 #: The sensitive fields a caller may ask the unmask endpoint to reveal. `bank_ifsc` is absent on
 #: purpose: it is non-sensitive and already returned whole in the masked view, so there is
@@ -64,6 +68,27 @@ class EmployeePiiIn(BaseModel):
     bank_account: str | None = Field(default=None, max_length=18)
     #: A public branch code, stored and returned whole — not sensitive.
     bank_ifsc: str | None = Field(default=None, max_length=11)
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def _not_a_child(cls, value: date | None) -> date | None:
+        """India's child-labour law bars employing anyone under 14, so a date of birth that makes
+        the person younger than that on the day it is entered — or one in the future — is an
+        entry error, refused as a 422 on `pii.date_of_birth`."""
+        if value is None:
+            return value
+        today = datetime.now(UTC).date()
+        if value > today:
+            raise PydanticCustomError("date_in_future", "Date of birth cannot be in the future")
+        try:
+            fourteen_years_ago = today.replace(year=today.year - MIN_EMPLOYMENT_AGE)
+        except ValueError:  # today is 29 February
+            fourteen_years_ago = today.replace(year=today.year - MIN_EMPLOYMENT_AGE, day=28)
+        if value > fourteen_years_ago:
+            raise PydanticCustomError(
+                "under_minimum_age", f"An employee must be at least {MIN_EMPLOYMENT_AGE} years old"
+            )
+        return value
 
 
 class EmployeeIn(BaseModel):
