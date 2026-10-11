@@ -40,12 +40,14 @@ from platform_core.errors import (
     NotFoundProblem,
     PaymentRequiredProblem,
     UnauthorizedProblem,
+    UpstreamUnavailableProblem,
 )
 from platform_core.internal_auth import (
     forwarded_headers_digest,
     verify_gateway_token,
     verify_service_token,
 )
+from platform_core.logging import get_logger
 
 #: The audience every operator (staff) token carries — minted only by `services.operator_login`
 #: in auth-service, never by a tenant sign-in. `require_operator` is what every staff_only route
@@ -124,13 +126,22 @@ def _matches(granted: str, required: str) -> bool:
 
 _jwk_client: PyJWKClient | None = None
 
+#: PyJWT's own default, stated so the runbook's "up to 30 seconds" is the number that runs. Never
+#: 0: the cooldown is what keeps a stream of forged `kid`s from becoming a stream of JWKS fetches.
+JWKS_REFRESH_COOLDOWN_SECONDS = 30
+
 
 def _jwks(settings: ServiceSettings) -> PyJWKClient:
     global _jwk_client
     if _jwk_client is None:
         # Caches keys and refreshes on an unknown kid, which is what makes rotation
         # a publish-then-switch rather than a coordinated restart.
-        _jwk_client = PyJWKClient(settings.jwks_url, cache_keys=True, lifespan=300)
+        _jwk_client = PyJWKClient(
+            settings.jwks_url,
+            cache_keys=True,
+            lifespan=300,
+            cooldown_duration=JWKS_REFRESH_COOLDOWN_SECONDS,
+        )
     return _jwk_client
 
 
@@ -167,8 +178,13 @@ def decode_token(
         )
     except jwt.ExpiredSignatureError as exc:
         raise UnauthorizedProblem("Token has expired") from exc
-    except jwt.PyJWKClientConnectionError:
-        raise  # JWKS unreachable is our outage, not a bad credential — don't log everyone out
+    except (jwt.PyJWKClientConnectionError, jwt.PyJWKSetError) as exc:
+        # Our outage, not a bad credential: a 401 here makes every SPA sign its user out. The
+        # logger is fetched here, not at import, so a configured cached logger cannot go stale.
+        get_logger("platform_core.auth").error("auth.jwks_unavailable", error=str(exc)[:200])
+        raise UpstreamUnavailableProblem(
+            "Your session cannot be verified right now. Please retry shortly."
+        ) from exc
     except (jwt.InvalidTokenError, jwt.PyJWKClientError) as exc:
         raise UnauthorizedProblem("Token is not valid") from exc
 

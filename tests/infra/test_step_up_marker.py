@@ -259,9 +259,17 @@ def test_a_session_is_built_only_by_start_session_and_never_updated_in_bulk() ->
                 )
 
 
+#: The federated-sign-in methods `start_session` may be told by name: single sign-on, and the
+#: self-serve social login that was added after it with its own label on purpose (see the comment
+#: on `OAUTH_AMR` in auth's services.py). Each must be a module-level string literal there, and
+#: must never spell what only a verified second factor or a step-up may put in `amr`.
+FEDERATED_AMR_CONSTANTS = {"SSO_AMR", "OAUTH_AMR"}
+
+
 def test_start_session_is_only_ever_told_plain_methods() -> None:
     """The callers of `start_session` pass `amr=` as a literal list of the methods a sign-in used
-    (`pwd`, or the SSO constant). None of them is a list built from anything else."""
+    (`pwd`, or one of the federated-sign-in constants). None of them is a list built from anything
+    else."""
     tree = _tree(AUTH)
     for call in _calls(tree):
         if _called_name(call) != "start_session":
@@ -274,4 +282,15 @@ def test_start_session_is_only_ever_told_plain_methods() -> None:
             if isinstance(element, ast.Constant):
                 assert element.value in {"pwd"}, ast.unparse(element)
             else:
-                assert element.id == "SSO_AMR", ast.unparse(element)
+                assert element.id in FEDERATED_AMR_CONSTANTS, ast.unparse(element)
+
+
+def test_federated_amr_constants_never_claim_a_second_factor() -> None:
+    """A federated sign-in is asserted by an external issuer, so what it puts in `amr` must be
+    its own label: never `pwd` (the platform did not check a password), never `otp` (nobody gave
+    a code), never the step-up marker, and not shared with another federated flow."""
+    values = {name: _string_constant(AUTH, name) for name in sorted(FEDERATED_AMR_CONSTANTS)}
+    assert all(values.values()), values
+    for name, value in values.items():
+        assert value not in {"pwd", "otp", EXPECTED}, f"{name} = {value!r}"
+    assert len(set(values.values())) == len(values), values

@@ -95,12 +95,21 @@ describe("yielding to the page", () => {
   });
 
   it("does not wait after the last group: a job of one group never yields, however long the slice", async () => {
-    const order: string[] = [];
-    setTimeout(() => order.push("timer"), 0);
-    await digestAll(SALT, [input(), input({ recordId: "p-2" })], 0);
-    order.push("hashed");
-    expect(order).toEqual(["hashed"]);
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    // A yield is a zero-delay timer, so that is what is observed. Racing a timer of the test's own
+    // against the digests instead measures how long the platform's crypto takes to answer: on a
+    // loaded runner the timer can fire while a digest is still in flight, with no yield involved.
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    try {
+      await digestAll(SALT, [input(), input({ recordId: "p-2" })], 0);
+      expect(timers).not.toHaveBeenCalled();
+
+      // The control: the same slice over more than one group does yield, so the spy can see it.
+      const twoGroups = Array.from({ length: 129 }, (_, index) => input({ recordId: `p-${index}` }));
+      await digestAll(SALT, twoGroups, 0);
+      expect(timers).toHaveBeenCalledTimes(1);
+    } finally {
+      timers.mockRestore();
+    }
     expect(DEFAULT_SLICE_MS).toBe(8);
   });
 

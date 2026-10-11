@@ -447,15 +447,24 @@ jobs:
       # The approval backfill tests bind a queue against a real broker (ADR-0006 §2): a queue
       # declared with the wrong arguments only fails at the broker, never in a mock. Host port
       # 5673 matches `ServiceSettings.rabbitmq_url`'s default and the dev compose file.
+      #
+      # The management port (15673 on the host, as in the dev compose file) is there for the
+      # ops-monitor integration suite, which creates and deletes a throwaway vhost per test
+      # through the management HTTP API.
       rabbitmq:
         image: rabbitmq:3-management-alpine
         env:
           RABBITMQ_DEFAULT_USER: opsgrids
           RABBITMQ_DEFAULT_PASS: opsgrids
-        ports: ['5673:5672']
+        ports: ['5673:5672', '15673:15672']
         options: >-
           --health-cmd "rabbitmq-diagnostics -q ping"
           --health-interval 10s --health-timeout 5s --health-retries 20
+      # Where the ops-monitor integration suite sends real SMTP and reads it back, on the same
+      # host ports the dev compose file maps (SMTP 1026, HTTP API 8026). Nothing else uses it.
+      mailhog:
+        image: mailhog/mailhog:v1.0.1
+        ports: ['1026:1025', '8026:8025']
 
     steps:
       - uses: actions/checkout@v4
@@ -504,6 +513,24 @@ jobs:
         # not, because test-shard's fan-out is service-local by construction (two documented
         # exceptions, folded into AFFECTED_SERVICES by the `changes` job, not into this step).
         run: make test-shard
+
+      - name: Ops-monitor integration database
+        # `libs/platform-core/tests/test_ops_monitor_integration.py` targets its own database,
+        # `opsgrids_mon`, never the shared one (its module docstring says why), with `account`
+        # and `product` migrated into it. Locally `make ops-monitor-db` creates it inside the
+        # compose container; this is the same script run from the runner, told where
+        # init-db.sql is. The suite needs the broker's management port and MailHog too, which
+        # the services above provide.
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        run: |
+          PGPASSWORD=opsgrids psql -h localhost -U opsgrids -d opsgrids \
+            -v ON_ERROR_STOP=1 -v init_sql=tools/dev-bootstrap/init-db.sql \
+            -f tools/dev-bootstrap/ops-monitor-db.sql
+          for service in account product; do
+            (cd "services/$service" && \
+              DATABASE_URL=postgresql+asyncpg://opsgrids:opsgrids@localhost:5432/opsgrids_mon \
+              uv run alembic upgrade head)
+          done
 
       - name: Library tests
         # Here rather than in the static job because they are not pure: `libs`' tenancy
