@@ -135,9 +135,7 @@ async def call(  # type: ignore[no-untyped-def]
 ):
     """One request as a principal holding `perms` (default: every job-work permission at ORG)."""
     use = perms if perms is not None else ALL_JW_ORG
-    principal = principal_for(
-        org_id, use, subject_ref=uuid.uuid4(), sub=same_caller(org_id, use)
-    )
+    principal = principal_for(org_id, use, subject_ref=uuid.uuid4(), sub=same_caller(org_id, use))
     headers = {"Idempotency-Key": idem} if idem else {}
     with as_principal(principal):
         return await client.request(method, f"{BASE}{path}", json=json, headers=headers)

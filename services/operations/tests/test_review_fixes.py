@@ -32,14 +32,14 @@ class TestPoTransitionsReReadUnderLock:
         if was:
             async with admin_session.begin():
                 await admin_session.execute(
-                    text(f'UPDATE "{SCHEMA}".purchase_orders SET status=:s WHERE id=:i'),
+                    text(f'UPDATE "{SCHEMA}".purchase_orders SET status=:s WHERE id=:i'),  # noqa: S608
                     {"s": was, "i": po_id},
                 )
         async with session.begin():
             stale = await selectors.get_purchase_order(session, org_id, po_id)
         async with admin_session.begin():
             await admin_session.execute(
-                text(f'UPDATE "{SCHEMA}".purchase_orders SET status=:s WHERE id=:i'),
+                text(f'UPDATE "{SCHEMA}".purchase_orders SET status=:s WHERE id=:i'),  # noqa: S608
                 {"s": status, "i": po_id},
             )
         return stale
@@ -122,7 +122,8 @@ class TestSyncLotSerialises:
                     )
                 )
         engine = create_async_engine(
-            settings().app_dsn, connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}}
+            settings().app_dsn,
+            connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}},
         )
         other = async_sessionmaker(engine, expire_on_commit=False)
         ctx = ctx_for(org_id, "operations.quality.inspection.approve", Scope.ORG)
@@ -130,7 +131,9 @@ class TestSyncLotSerialises:
         async def second() -> None:
             async with other() as s2, s2.begin():
                 await s2.execute(text(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)"))
-                insp = (await s2.execute(select(Inspection).where(Inspection.id == ids[1]))).scalar_one()
+                insp = (
+                    await s2.execute(select(Inspection).where(Inspection.id == ids[1]))
+                ).scalar_one()
                 insp.status = "PASSED"
                 await _sync_lot(s2, ctx, insp)
 
@@ -167,7 +170,8 @@ class TestBomGraphSerialises:
         from platform_core.db import TENANT_GUC
 
         engine = create_async_engine(
-            settings().app_dsn, connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}}
+            settings().app_dsn,
+            connect_args={"server_settings": {"search_path": f"{SCHEMA},public"}},
         )
         other = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -221,4 +225,7 @@ class TestPoLineDefaultsSurviveTheMigration:
                     {"s": SCHEMA},
                 )
             ).all()
-        assert {r[0]: r[1] is not None for r in rows} == {"received_milli": True, "short_closed": True}
+        assert {r[0]: r[1] is not None for r in rows} == {
+            "received_milli": True,
+            "short_closed": True,
+        }

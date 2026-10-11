@@ -787,8 +787,11 @@ class TestPurchaseOrderHoldersKeepReceiving:
             own = await self._grants(session, org.id, "CX_OWN_CLERK")
             reader = await self._grants(session, org.id, "CX_READER")
         assert buyer == {f"{c}:ORG" for c in (self.PO_WRITE, *self.NEW)}
-        # the same scope, never wider: an OWN holder stays OWN
-        assert own == {f"{self.PO_WRITE}:OWN", *(f"{c}:OWN" for c in self.NEW)}
+        # The receive routes need ORG scope, so an OWN grant would carry a permission that
+        # still answers 403, and widening it would hand a buyer warehouse-wide receiving: the
+        # OWN holder is left as it was and reported instead.
+        assert own == {f"{self.PO_WRITE}:OWN"}
+        assert "CX_OWN_CLERK" in first.skipped_customer_roles
         assert reader == {"operations.procurement.purchase_order.read:ORG"}
 
         async with session.begin():

@@ -492,9 +492,7 @@ class TestPartialReceiptAndShortage:
             "POST",
             f"{T}/{body['id']}:receive",
             {
-                "lines": [
-                    {"line_id": line_id, "received_quantity": "5", "shortage_quantity": "5"}
-                ],
+                "lines": [{"line_id": line_id, "received_quantity": "5", "shortage_quantity": "5"}],
                 "evidence_document_id": str(uuid.uuid4()),
             },
         )

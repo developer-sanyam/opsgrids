@@ -328,9 +328,7 @@ class TestKeyBelongsToCaller:
         from tests.jobwork_fixtures import ALL_JW_ORG, order_body
 
         idem = f"po-12-{uuid.uuid4().hex}"
-        first = await call(
-            client, mill.org_id, "POST", "/orders", json=order_body(mill), idem=idem
-        )
+        first = await call(client, mill.org_id, "POST", "/orders", json=order_body(mill), idem=idem)
         assert first.status_code == 201
         same = await call(client, mill.org_id, "POST", "/orders", json=order_body(mill), idem=idem)
         assert same.status_code == 200 and same.json()["id"] == first.json()["id"]

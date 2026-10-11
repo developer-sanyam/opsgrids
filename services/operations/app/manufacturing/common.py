@@ -178,7 +178,9 @@ class Claim:
 
 def _hash(scope: str, payload: Any, actor: uuid.UUID) -> str:
     # The caller is part of the request: a key someone else guessed or saw never replays for them.
-    canonical = json.dumps([scope, payload, str(actor)], sort_keys=True, separators=(",", ":"), default=str)
+    canonical = json.dumps(
+        [scope, payload, str(actor)], sort_keys=True, separators=(",", ":"), default=str
+    )
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 

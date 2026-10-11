@@ -241,9 +241,7 @@ async def mrp(  # type: ignore[no-untyped-def]
     params: dict[str, Any] | None = None,
 ):
     use = ALL_MRP_PERMS if perms is None else perms
-    principal = principal_for(
-        org_id, use, subject_ref=uuid.uuid4(), sub=same_caller(org_id, use)
-    )
+    principal = principal_for(org_id, use, subject_ref=uuid.uuid4(), sub=same_caller(org_id, use))
     headers = {"Idempotency-Key": key} if key else {}
     with as_principal(principal):
         return await client.request(

@@ -2233,7 +2233,8 @@ class ReconcileSummary:
 #: Permission splits that must reach customer-authored roles too. Widening a template never
 #: touches those (ADR-0007 §4), so a capability that moved to new permissions would silently
 #: leave them: `(product, held, also_needed)` gives every role holding `held` the others at the
-#: scope it already holds.
+#: scope it already holds — ORG only, the floor of the routes that use them; narrower holders are
+#: reported in `skipped_customer_roles`.
 _CARRY_FORWARD: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "operations",
@@ -2258,6 +2259,12 @@ async def _carry_forward_grants(
         for held, needed in rules:
             source = next((g for g in role.grants if g.permission.code == held), None)
             if source is None:
+                continue
+            if source.scope != "ORG":
+                # The receive routes demand ORG scope: carrying a narrower grant restores
+                # nothing (403), and lifting it would be a privilege grant nobody made. Report.
+                if role.code not in diff.skipped_customer_roles:
+                    diff.skipped_customer_roles.append(role.code)
                 continue
             for code in needed:
                 permission = await selectors.get_permission_by_code(session, code)

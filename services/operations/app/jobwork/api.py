@@ -92,7 +92,9 @@ async def _detail(
     order = await selectors.get_order(session, ctx.organization_id, order_id)
     if order is None:
         raise NotFoundProblem("That job-work order is not part of this organization")
-    return await selectors.order_detail(session, ctx.organization_id, order, today=domain.ist_today())
+    return await selectors.order_detail(
+        session, ctx.organization_id, order, today=domain.ist_today()
+    )
 
 
 # ------------------------------------------------------------------ orders

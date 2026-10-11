@@ -268,10 +268,14 @@ class PurchaseOrderLine(Base, TenantBase):
     #: `app.receiving.domain.to_stock_milli`). `received_qty` above is the whole-unit
     #: compatibility view (`received_milli // 1000`); this is the figure partial, short and
     #: over-receipt are decided on, always under the PO row's lock (inventory Phase 2).
-    received_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    received_milli: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
     #: The buyer closed the line short: nothing more is expected, and it no longer holds the PO
     #: open. A closed line takes no further receipt.
-    short_closed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    short_closed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     __table_args__ = (
         CheckConstraint("received_milli >= 0", name="received_milli_non_negative"),
