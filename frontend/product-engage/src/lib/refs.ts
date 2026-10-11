@@ -223,6 +223,7 @@ export async function resolveLists(
 /** What a campaign is addressed to, in words that claim only what was actually learned. */
 export function audienceName(campaign: CampaignOut, resolved: ResolvedLists): string {
   if (campaign.audience === "all_sendable") return "Everyone you may mail";
+  if (campaign.audience === "segment") return "A segment";
   const list = resolved.lists.find((l) => l.id === campaign.list_id);
   if (list !== undefined) return list.name;
   if (campaign.list_id !== null && resolved.gone.has(campaign.list_id)) {

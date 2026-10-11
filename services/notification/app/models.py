@@ -1013,8 +1013,31 @@ class ContactListMember(Base, TenantBase):
     )
 
 
+class Segment(Base, TenantBase):
+    """A saved filter over the contact book, evaluated when a campaign expands — never a stored
+    snapshot, so a contact who joins the list or opts in tomorrow is in tomorrow's send.
+
+    Every field narrows; an empty segment is every contact. `list_id` is membership of one list;
+    `created_within_days` keeps contacts added in the last N days; `active_within_days` keeps
+    contacts some campaign was sent to in the last N days. Consent is not a field: the campaign's
+    channel decides it, and a marketing send always needs a standing opt-in for that channel.
+    """
+
+    __tablename__ = "segments"
+
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    list_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.contact_lists.id")
+    )
+    created_within_days: Mapped[int | None] = mapped_column(Integer)
+    active_within_days: Mapped[int | None] = mapped_column(Integer)
+
+    __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_segment_org_name"),)
+
+
 class Campaign(Base, TenantBase):
-    """One email sent to an audience: a list, or every sendable contact.
+    """One email or WhatsApp template sent to an audience: a list, a segment, or every sendable
+    contact.
 
     `status` moves draft -> sending -> sent, and to cancelled from any state before sent, or to
     `paused` and back when the resumable send driver (`app/cron.py`) cannot find a route to send
@@ -1026,14 +1049,30 @@ class Campaign(Base, TenantBase):
     __tablename__ = "campaigns"
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    sender_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: email | whatsapp. A WhatsApp campaign sends `provider_template_id` (approved) and has no
+    #: sender, subject or body; an email campaign the reverse.
+    channel: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="email", server_default=text("'email'")
+    )
+    sender_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     subject: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     html_body: Mapped[str] = mapped_column(Text, nullable=False, default="")
     text_body: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    #: list | all_sendable. `list_id` is set exactly when the audience is a list.
+    #: list | all_sendable | segment. `list_id` is set exactly when the audience is a list,
+    #: `segment_id` exactly when it is a segment.
     audience: Mapped[str] = mapped_column(String(20), nullable=False, default="all_sendable")
     list_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.contact_lists.id")
+    )
+    segment_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.segments.id")
+    )
+    provider_template_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey(f"{SCHEMA}.provider_templates.id")
+    )
+    #: Fixed values for the template's variables, the same for every recipient.
+    template_values: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
     #: draft | scheduled | sending | paused | sent | cancelled.
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
@@ -1078,8 +1117,13 @@ class Campaign(Base, TenantBase):
             "status IN ('draft', 'scheduled', 'sending', 'paused', 'sent', 'cancelled')",
             name="status",
         ),
-        CheckConstraint("audience IN ('list', 'all_sendable')", name="audience"),
+        CheckConstraint("audience IN ('list', 'all_sendable', 'segment')", name="audience"),
         CheckConstraint("(audience = 'list') = (list_id IS NOT NULL)", name="audience_list"),
+        CheckConstraint(
+            "(audience = 'segment') = (segment_id IS NOT NULL)", name="audience_segment"
+        ),
+        CheckConstraint("channel IN ('email', 'whatsapp')", name="channel"),
+        CheckConstraint("(channel = 'email') = (sender_id IS NOT NULL)", name="channel_sender"),
         Index("ix_campaigns_org_status", "organization_id", "status"),
     )
 

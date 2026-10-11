@@ -61,6 +61,7 @@ from app.models import (
     ProviderAccount,
     ProviderTemplate,
     Rule,
+    Segment,
     Sender,
     Suppression,
     Template,
@@ -4482,9 +4483,14 @@ async def record_consent_event(
             subject = consent.subject_for(channel, address)
         except domain.RuleError as exc:
             raise ValidationProblem(str(exc)) from exc
-    if contact_id is not None:
-        if channel != "email":
-            raise ValidationProblem("contact_id names an email contact; give an address instead")
+    if contact_id is not None and channel != "email":
+        # A contact holds only an email address; a WhatsApp or SMS event links a contact to the
+        # number it names, which is how a WhatsApp campaign finds that contact's number.
+        if address is None:
+            raise ValidationProblem("A WhatsApp or SMS event needs the address it is about")
+        if await selectors.get_contact(session, ctx.organization_id, contact_id) is None:
+            raise NotFoundProblem("No such contact")
+    elif contact_id is not None:
         contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
         if contact is None:
             raise NotFoundProblem("No such contact")
@@ -4610,6 +4616,86 @@ async def unmask_consent_subject(
     return plaintext
 
 
+# --------------------------------------------------------------------- engage segments
+
+
+async def create_segment(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    name: str,
+    list_id: uuid.UUID | None = None,
+    created_within_days: int | None = None,
+    active_within_days: int | None = None,
+    request: Request | None = None,
+) -> Segment:
+    if await selectors.get_segment_by_name(session, ctx.organization_id, name):
+        raise ConflictProblem(f"A segment named {name!r} already exists")
+    if (
+        list_id is not None
+        and await selectors.get_list(session, ctx.organization_id, list_id) is None
+    ):
+        raise ValidationProblem("No such list")
+    row = Segment(
+        organization_id=ctx.organization_id,
+        created_by=str(ctx.principal.sub),
+        name=name,
+        list_id=list_id,
+        created_within_days=created_within_days,
+        active_within_days=active_within_days,
+    )
+    session.add(row)
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.segment.created",
+        entity="segment",
+        entity_id=row.id,
+        after={
+            "name": name,
+            "list_id": str(list_id) if list_id else None,
+            "created_within_days": created_within_days,
+            "active_within_days": active_within_days,
+        },
+        request=request,
+    )
+    return row
+
+
+async def delete_segment(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    segment_id: uuid.UUID,
+    request: Request | None = None,
+) -> None:
+    """Refused while any campaign names it, for the reason `delete_list` is: a campaign's
+    audience is part of its record."""
+    row = await selectors.get_segment(session, ctx.organization_id, segment_id)
+    if row is None:
+        raise NotFoundProblem("No such segment")
+    if await selectors.campaigns_using_segment(session, ctx.organization_id, segment_id):
+        raise ConflictProblem(
+            "A campaign is addressed to this segment; delete or re-target it first"
+        )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="engage.segment.deleted",
+        entity="segment",
+        entity_id=row.id,
+        before={"name": row.name},
+        request=request,
+    )
+    await session.delete(row)
+    await session.flush()
+
+
 # --------------------------------------------------------------------- engage lists
 #
 # A list is a named set of contacts. Membership rows cascade with either end, so deleting a
@@ -4710,6 +4796,8 @@ async def delete_list(
     # record is unaffected either way.
     if await selectors.campaigns_using_list(session, ctx.organization_id, list_id):
         raise ConflictProblem("A campaign is addressed to this list; delete or re-target it first")
+    if await selectors.segments_using_list(session, ctx.organization_id, list_id):
+        raise ConflictProblem("A segment filters on this list; delete that segment first")
     record_audit(
         session,
         AuditLog,
@@ -4826,7 +4914,11 @@ def system_ctx(organization_id: uuid.UUID) -> ScopeContext:
 
 
 async def _check_audience(
-    session: AsyncSession, org_id: uuid.UUID, audience: str, list_id: uuid.UUID | None
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    audience: str,
+    list_id: uuid.UUID | None,
+    segment_id: uuid.UUID | None = None,
 ) -> None:
     if audience == "list":
         if list_id is None:
@@ -4835,6 +4927,70 @@ async def _check_audience(
             raise ValidationProblem("No such list")
     elif list_id is not None:
         raise ValidationProblem("list_id is only meaningful when the audience is a list")
+    if audience == "segment":
+        if segment_id is None:
+            raise ValidationProblem("A segment audience needs a segment_id")
+        if await selectors.get_segment(session, org_id, segment_id) is None:
+            raise ValidationProblem("No such segment")
+    elif segment_id is not None:
+        raise ValidationProblem("segment_id is only meaningful when the audience is a segment")
+
+
+async def _check_channel(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    channel: str,
+    sender_id: uuid.UUID | None,
+    provider_template_id: uuid.UUID | None,
+) -> None:
+    """An email campaign goes out as a sender; a WhatsApp campaign sends one of this
+    organization's WhatsApp templates and has no sender."""
+    if channel == "email":
+        if sender_id is None:
+            raise ValidationProblem("An email campaign needs a sender_id")
+        if provider_template_id is not None:
+            raise ValidationProblem("provider_template_id is only for a WhatsApp campaign")
+        await _check_sender_exists(session, org_id, sender_id)
+        return
+    if sender_id is not None:
+        raise ValidationProblem("A WhatsApp campaign has no sender")
+    if provider_template_id is None:
+        raise ValidationProblem("A WhatsApp campaign needs a provider_template_id")
+    if await _whatsapp_template(session, org_id, provider_template_id) is None:
+        raise ValidationProblem("No such WhatsApp template")
+
+
+async def _whatsapp_template(
+    session: AsyncSession, org_id: uuid.UUID, template_id: uuid.UUID
+) -> ProviderTemplate | None:
+    stmt = select(ProviderTemplate).where(
+        ProviderTemplate.id == template_id,
+        ProviderTemplate.organization_id == org_id,
+        ProviderTemplate.channel == "whatsapp",
+        ProviderTemplate.deleted_at.is_(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def _whatsapp_campaign_payload(
+    template: ProviderTemplate, values: dict[str, Any]
+) -> dict[str, Any]:
+    """The template message every recipient gets, built the way an automation's WhatsApp step
+    builds it (`a1_services._send`): a value is found by the variable's key or its position.
+    Raises `domain.TemplateError` when a variable has no value."""
+    variables = [domain.TemplateVariable(**v) for v in template.variables]
+    context: dict[str, Any] = {}
+    for index, var in enumerate(variables, start=1):
+        supplied = values.get(var.key, values.get(str(index)))
+        if supplied is not None:
+            context[var.key] = supplied
+    return domain.build_template_payload(
+        template_name=template.provider_name,
+        language=template.language,
+        variables=variables,
+        context=context,
+        parameter_format=template.parameter_format,
+    )
 
 
 async def _check_sender_exists(
@@ -4851,8 +5007,20 @@ async def create_campaign(
     fields: dict[str, Any],
     request: Request | None = None,
 ) -> Campaign:
-    await _check_sender_exists(session, ctx.organization_id, fields["sender_id"])
-    await _check_audience(session, ctx.organization_id, fields["audience"], fields.get("list_id"))
+    await _check_channel(
+        session,
+        ctx.organization_id,
+        fields.get("channel", "email"),
+        fields.get("sender_id"),
+        fields.get("provider_template_id"),
+    )
+    await _check_audience(
+        session,
+        ctx.organization_id,
+        fields["audience"],
+        fields.get("list_id"),
+        fields.get("segment_id"),
+    )
     row = Campaign(
         organization_id=ctx.organization_id,
         created_by=str(ctx.principal.sub),
@@ -4869,7 +5037,7 @@ async def create_campaign(
         action="engage.campaign.created",
         entity="campaign",
         entity_id=row.id,
-        after={"name": row.name, "audience": row.audience},
+        after={"name": row.name, "channel": row.channel, "audience": row.audience},
         request=request,
     )
     return row
@@ -4889,20 +5057,29 @@ async def update_campaign(
         raise NotFoundProblem("No such campaign")
     if row.status != "draft":
         raise ConflictProblem(f"Only a draft can be edited; this campaign is {row.status}")
-    if "sender_id" in changes and changes["sender_id"] is not None:
-        await _check_sender_exists(session, ctx.organization_id, changes["sender_id"])
+    await _check_channel(
+        session,
+        ctx.organization_id,
+        row.channel,
+        changes.get("sender_id") or row.sender_id,
+        changes.get("provider_template_id") or row.provider_template_id,
+    )
     audience = changes.get("audience") or row.audience
     list_id = changes.get("list_id", row.list_id)
-    if audience == "all_sendable" and "audience" in changes and "list_id" not in changes:
+    if audience != "list" and "list_id" not in changes:
         list_id = None
-    await _check_audience(session, ctx.organization_id, audience, list_id)
+    segment_id = changes.get("segment_id", row.segment_id)
+    if audience != "segment" and "segment_id" not in changes:
+        segment_id = None
+    await _check_audience(session, ctx.organization_id, audience, list_id, segment_id)
     for key, value in changes.items():
-        if key in ("audience", "list_id"):
+        if key in ("audience", "list_id", "segment_id"):
             continue
         if value is not None or key == "scheduled_at":
             setattr(row, key, value)
     row.audience = audience
     row.list_id = list_id
+    row.segment_id = segment_id
     row.updated_by = str(ctx.principal.sub)
     row.updated_at = datetime.now(UTC)
     await session.flush()
@@ -4968,12 +5145,29 @@ async def _ensure_campaign_sendable(
     scheduled campaign gets this check again, for the *state at the time it was scheduled*
     only — nothing re-validates it the instant it actually fires.
     """
+    if (
+        row.audience == "list"
+        and (
+            row.list_id is None
+            or await selectors.get_list(session, ctx.organization_id, row.list_id)
+        )
+        is None
+    ):
+        raise BusinessRuleProblem("The campaign's list no longer exists.")
+    segment = await _campaign_segment(session, row)
+    if row.channel == "whatsapp":
+        await _ensure_whatsapp_sendable(session, ctx, row, segment)
+        return
     if not row.subject.strip():
         raise BusinessRuleProblem("Add a subject before sending.")
     if not (row.text_body.strip() or row.html_body.strip()):
         raise BusinessRuleProblem("Add a body before sending.")
 
-    sender = await selectors.get_sender(session, ctx.organization_id, row.sender_id)
+    sender = (
+        await selectors.get_sender(session, ctx.organization_id, row.sender_id)
+        if row.sender_id is not None
+        else None
+    )
     if sender is None:
         raise BusinessRuleProblem("The campaign's sender no longer exists. Choose another.")
     if not sender.usable:
@@ -4989,22 +5183,17 @@ async def _ensure_campaign_sendable(
     connection = await selectors.get_connection(session, ctx.organization_id)
     if connection is None or connection.status != "connected":
         raise BusinessRuleProblem("Connect an email provider before sending a campaign.")
-    if (
-        row.audience == "list"
-        and (
-            row.list_id is None
-            or await selectors.get_list(session, ctx.organization_id, row.list_id)
-        )
-        is None
-    ):
-        raise BusinessRuleProblem("The campaign's list no longer exists.")
     if not await selectors.sendable_contacts(
-        session, ctx, limit=1, list_id=row.list_id if row.audience == "list" else None
+        session,
+        ctx,
+        limit=1,
+        list_id=row.list_id if row.audience == "list" else None,
+        segment=segment,
     ):
         raise BusinessRuleProblem(
-            "This list has no contacts who can be emailed."
-            if row.audience == "list"
-            else "You have no contacts who can be emailed."
+            "You have no contacts who can be emailed."
+            if row.audience == "all_sendable"
+            else f"This {row.audience} has no contacts who can be emailed."
         )
     if unsubscribe_key() is None:
         raise BusinessRuleProblem(
@@ -5012,6 +5201,53 @@ async def _ensure_campaign_sendable(
             "be sent."
         )
     _check_public_base(settings())
+
+
+async def _campaign_segment(session: AsyncSession, row: Campaign) -> Segment | None:
+    """The campaign's segment, or None when its audience is not one. A segment deleted from
+    under it is a refusal, never "everyone"."""
+    if row.audience != "segment" or row.segment_id is None:
+        return None
+    segment = await selectors.get_segment(session, row.organization_id, row.segment_id)
+    if segment is None:
+        raise BusinessRuleProblem("The campaign's segment no longer exists.")
+    return segment
+
+
+async def _ensure_whatsapp_sendable(
+    session: AsyncSession, ctx: ScopeContext, row: Campaign, segment: Segment | None
+) -> None:
+    """The WhatsApp half of the send gate: an approved template whose variables all have values,
+    a connected WhatsApp account, and at least one contact with a standing marketing opt-in."""
+    template = (
+        await _whatsapp_template(session, ctx.organization_id, row.provider_template_id)
+        if row.provider_template_id is not None
+        else None
+    )
+    if template is None:
+        raise BusinessRuleProblem("The campaign's WhatsApp template no longer exists.")
+    if not domain.template_is_sendable(template.status):
+        raise BusinessRuleProblem(
+            f"The WhatsApp template {template.code} is {template.status}; only an approved "
+            "template can be sent."
+        )
+    try:
+        _whatsapp_campaign_payload(template, row.template_values)
+    except (domain.TemplateError, TypeError) as exc:
+        raise BusinessRuleProblem(f"Fill in the template's variables: {exc}") from exc
+    connection = await selectors.get_whatsapp_connection(session, ctx.organization_id)
+    if connection is None or connection.status != "connected":
+        raise BusinessRuleProblem("Connect WhatsApp before sending a campaign.")
+    if not await selectors.whatsapp_recipients(
+        session,
+        ctx,
+        limit=1,
+        list_id=row.list_id if row.audience == "list" else None,
+        segment=segment,
+    ):
+        raise BusinessRuleProblem(
+            "Nobody in this audience has opted in to WhatsApp marketing messages."
+        )
 
 
 def _campaign_send_idempotency_key(campaign_id: uuid.UUID, scheduled_at: datetime) -> str:
@@ -5056,7 +5292,11 @@ async def request_send(
         action="engage.campaign.send_requested",
         entity="campaign",
         entity_id=row.id,
-        after={"sender_id": str(row.sender_id), "audience": row.audience},
+        after={
+            "channel": row.channel,
+            "sender_id": str(row.sender_id) if row.sender_id else None,
+            "audience": row.audience,
+        },
         request=request,
     )
     publish_event(
@@ -5315,7 +5555,20 @@ async def expand_campaign(
     campaign = await selectors.get_campaign(session, organization_id, campaign_id)
     if campaign is None or campaign.status != "sending":
         return False
+    if campaign.channel == "whatsapp":
+        await _expand_whatsapp_campaign(
+            session, organization_id=organization_id, campaign_id=campaign_id, batch_size=batch_size
+        )
+        return False
     ctx = system_ctx(organization_id)
+    segment = (
+        await selectors.get_segment(session, organization_id, campaign.segment_id)
+        if campaign.segment_id is not None
+        else None
+    )
+    if campaign.audience == "segment" and segment is None:
+        await _pause_campaign(session, campaign, "The campaign's segment no longer exists.")
+        return False
     after: uuid.UUID | None = None
     while True:
         contacts = await selectors.sendable_contacts(
@@ -5324,6 +5577,7 @@ async def expand_campaign(
             limit=batch_size,
             after_id=after,
             list_id=campaign.list_id if campaign.audience == "list" else None,
+            segment=segment,
             # FOR KEY SHARE: a concurrent `delete_contact` on one of these rows must wait for
             # this transaction to commit, so its own erasure of `campaign_recipients` — which
             # only sees rows that exist yet — always runs after the copy below exists to
@@ -5358,6 +5612,101 @@ async def expand_campaign(
         campaign.expanded_at = datetime.now(UTC)
     await _fold_campaign_counts(session, campaign)
     return True
+
+
+async def _expand_whatsapp_campaign(
+    session: AsyncSession, *, organization_id: uuid.UUID, campaign_id: uuid.UUID, batch_size: int
+) -> None:
+    """Stage one WhatsApp template message per contact in the audience and mark the campaign
+    `sent`, all in the caller's transaction. From there each message is the dispatcher's, like
+    any automation's WhatsApp step: the outbox event, Meta's send, the retry sweep and the
+    receipts. `stage_message` asks the consent ledger again per number, so an opt-out landing
+    after the send gate still wins (that message is staged `suppressed`).
+
+    The row lock makes the consumer and the driver's own expansion (`claim_campaign_batch`'s
+    `expand`) take turns; the loser finds the campaign `sent` and does nothing. The per-contact
+    dedupe key makes a retried transaction stage nothing twice. A campaign whose template or
+    segment went away since the gate is paused with the reason, never sent to "everyone".
+
+    shortcut: the whole audience is staged in one transaction; split it across transactions if
+    a tenant's WhatsApp audience grows past tens of thousands.
+    """
+    campaign = await selectors.get_campaign(session, organization_id, campaign_id, lock=True)
+    if campaign is None or campaign.status != "sending":
+        return
+    template = (
+        await _whatsapp_template(session, organization_id, campaign.provider_template_id)
+        if campaign.provider_template_id is not None
+        else None
+    )
+    segment = (
+        await selectors.get_segment(session, organization_id, campaign.segment_id)
+        if campaign.segment_id is not None
+        else None
+    )
+    problem: str | None = None
+    payload: dict[str, Any] = {}
+    if template is None or not domain.template_is_sendable(template.status):
+        problem = "The campaign's WhatsApp template is gone or no longer approved."
+    elif campaign.audience == "segment" and segment is None:
+        problem = "The campaign's segment no longer exists."
+    else:
+        try:
+            payload = _whatsapp_campaign_payload(template, campaign.template_values)
+        except (domain.TemplateError, TypeError):
+            problem = "The template's variables are not all filled in."
+    if problem is not None or template is None:
+        await _pause_campaign(session, campaign, problem or "")
+        return
+
+    ctx = system_ctx(organization_id)
+    cfg = settings()
+    staged = suppressed = 0
+    after: uuid.UUID | None = None
+    while True:
+        recipients = await selectors.whatsapp_recipients(
+            session,
+            ctx,
+            limit=batch_size,
+            after_id=after,
+            list_id=campaign.list_id if campaign.audience == "list" else None,
+            segment=segment,
+        )
+        if not recipients:
+            break
+        for recipient in recipients:
+            message = await stage_message(
+                session,
+                organization_id=organization_id,
+                channel="whatsapp",
+                category=consent.MARKETING_CATEGORY,
+                to_address=pii.open_sealed(recipient.number_enc, settings=cfg),
+                subject=None,
+                body=template.preview_text,
+                created_by=CAMPAIGN_ACTOR,
+                rule_code=f"campaign:{campaign_id}",
+                dedupe_key=f"campaign:{campaign_id}:{recipient.contact_id}",
+                actor={"type": "system", "id": CAMPAIGN_ACTOR},
+                provider_template_code=template.code,
+                provider_template_payload=payload,
+            )
+            if message is None:
+                continue
+            if message.state == domain.STATE_SUPPRESSED:
+                suppressed += 1
+            else:
+                staged += 1
+        after = recipients[-1].contact_id
+
+    now = datetime.now(UTC)
+    campaign.expanded_at = campaign.expanded_at or now
+    campaign.recipient_count = staged + suppressed
+    campaign.sent_count = staged
+    campaign.suppressed_count = suppressed
+    campaign.status = "sent"
+    campaign.completed_at = now
+    campaign.updated_at = now
+    await session.flush()
 
 
 async def _fold_campaign_counts(session: AsyncSession, campaign: Campaign) -> dict[str, int]:
@@ -5457,6 +5806,10 @@ async def send_campaign_test(
     campaign = await selectors.get_campaign(session, ctx.organization_id, campaign_id)
     if campaign is None:
         raise NotFoundProblem("No such campaign")
+    if campaign.sender_id is None:
+        raise BusinessRuleProblem(
+            "A WhatsApp campaign has no test send; the template was reviewed by Meta."
+        )
 
     sender = await selectors.get_sender(session, ctx.organization_id, campaign.sender_id)
     if sender is None:
@@ -5819,6 +6172,9 @@ async def claim_campaign_batch(
         return "paused", None
     if campaign.expanded_at is None:
         return "expand", None
+    if campaign.sender_id is None:
+        # A WhatsApp campaign: its expansion staged every message and marked it sent.
+        return "stopped", None
 
     connection = await selectors.get_connection(session, organization_id, lock=True)
     sender = await selectors.get_sender(session, organization_id, campaign.sender_id)
