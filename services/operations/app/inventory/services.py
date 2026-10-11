@@ -1210,10 +1210,13 @@ async def update_inventory_item(
         )
     if changes.get("selling_price_currency"):
         changes["selling_price_currency"] = changes["selling_price_currency"].upper()
-    if changes.get("barcode") is None:
-        changes.pop("barcode", None)
-    elif changes["barcode"] != item.barcode and await inv_selectors.item_barcode_taken(
-        session, ctx.organization_id, changes["barcode"], exclude=item.id
+    # `exclude_unset` already dropped an omitted barcode, so an explicit null here clears it.
+    if (
+        changes.get("barcode") is not None
+        and changes["barcode"] != item.barcode
+        and await inv_selectors.item_barcode_taken(
+            session, ctx.organization_id, changes["barcode"], exclude=item.id
+        )
     ):
         raise _duplicate("barcode", f"Barcode {changes['barcode']!r} is already in use")
 

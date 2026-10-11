@@ -36,7 +36,7 @@ naming the field). `null` means "scan the natural code". A patch cannot clear a 
 
 ## Resolving a scan
 
-`GET /operations/inventory/scan/{payload}` — `operations.inventory.stock.read` (ORG).
+`GET /operations/inventory/scan?code=<payload>` — `operations.inventory.stock.read` (ORG).
 
 ```json
 {

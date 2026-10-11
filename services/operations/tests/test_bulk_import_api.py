@@ -16,6 +16,8 @@ from typing import Any
 import pytest
 from sqlalchemy import func, select, text
 
+from app.inventory.bulk_import import request_hash
+from app.inventory.bulk_schemas import ImportIn
 from app.models import (
     AuditLog,
     InventoryBalance,
@@ -28,8 +30,6 @@ from app.models import (
     OutboxEvent,
     Roll,
 )
-from app.inventory.bulk_import import request_hash
-from app.inventory.bulk_schemas import ImportIn
 from platform_core.events import validate_event_schema
 from tests.helpers import as_principal, principal_for
 from tests.tracking_fixtures import (

@@ -1,4 +1,4 @@
-"""`GET /operations/inventory/scan/{payload}` and the barcode columns it resolves through
+"""`GET /operations/inventory/scan?code=` and the barcode columns it resolves through
 (inventory Phase 9, ADR-0027): every entity type, printed barcode vs natural key, bare codes,
 ambiguity, authorization, cross-tenant 404, and barcode uniqueness on create / patch.
 """
@@ -6,7 +6,6 @@ ambiguity, authorization, cross-tenant 404, and barcode uniqueness on create / p
 from __future__ import annotations
 
 import uuid
-from urllib.parse import quote
 
 import pytest
 
@@ -25,7 +24,7 @@ from tests.tracking_fixtures import (
 
 pytestmark = pytest.mark.integration
 
-SCAN = "/operations/inventory/scan/"
+SCAN = "/operations/inventory/scan"
 ITEM_WRITE = "operations.inventory.item.write:ORG"
 LOCATION_WRITE = "operations.inventory.location.write:ORG"
 COUNT_EXECUTE = "operations.inventory.count.execute:ORG"
@@ -38,7 +37,7 @@ async def world(session, org_id) -> World:
 
 async def scan(client, org_id, code: str, perms=(STOCK_READ,)):  # type: ignore[no-untyped-def]
     with as_principal(principal_for(org_id, list(perms))):
-        return await client.get(API + SCAN + quote(code, safe=":"))
+        return await client.get(API + SCAN, params={"code": code})
 
 
 async def patch(client, org_id, perm, path, body):  # type: ignore[no-untyped-def]
@@ -154,6 +153,31 @@ class TestCodesWithAwkwardCharacters:
         body = (await scan(client, world.org_id, "og:item:A:B:C")).json()
         assert body["entity"]["sku"] == "DYE-RED-01"
 
+    async def test_a_code_with_path_and_url_characters_resolves_to_exactly_that_item(
+        self, client, world
+    ) -> None:
+        # Carried in the query, so a gateway's path normalisation cannot rewrite `/../`, and `?`,
+        # `#` and `%` arrive as written.
+        for code in ("A/../COT-180-NAVY", "Q?x=1#f", "P%41%2F"):
+            r = await patch(
+                client, world.org_id, ITEM_WRITE, f"/operations/inventory/{world.t.dye}",
+                {"barcode": code},
+            )  # fmt: skip
+            assert r.status_code == 200, r.text
+            body = (await scan(client, world.org_id, code)).json()
+            assert body["entity"]["sku"] == "DYE-RED-01" and body["payload"].endswith(f":{code}"), (
+                code
+            )
+
+    async def test_the_old_path_form_is_gone(self, client, world) -> None:
+        with as_principal(principal_for(world.org_id, [STOCK_READ])):
+            r = await client.get(API + SCAN + "/og:item:COT-180-NAVY")
+        assert r.status_code in (404, 405)
+
+    async def test_a_missing_code_is_422(self, client, world) -> None:
+        with as_principal(principal_for(world.org_id, [STOCK_READ])):
+            assert (await client.get(API + SCAN)).status_code == 422
+
 
 class TestAllowedActions:
     async def test_receive_follows_the_receiving_permissions_not_purchase_order_write(
@@ -261,6 +285,24 @@ class TestBarcodeColumns:
         )  # fmt: skip
         assert second.status_code == 409, second.text
         assert second.json()["errors"][0]["field"] == "barcode"
+
+    async def test_patching_barcode_null_clears_it_and_omitting_it_keeps_it(
+        self, client, world
+    ) -> None:
+        path = f"/operations/inventory/{world.t.dye}"
+        await patch(client, world.org_id, ITEM_WRITE, path, {"barcode": "EAN-9"})
+        kept = await patch(client, world.org_id, ITEM_WRITE, path, {"name": "Dye renamed"})
+        assert kept.json()["barcode"] == "EAN-9"
+        cleared = await patch(client, world.org_id, ITEM_WRITE, path, {"barcode": None})
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["barcode"] is None
+        assert (await scan(client, world.org_id, "EAN-9")).status_code == 404
+        # The freed barcode is reusable by another item.
+        reuse = await patch(
+            client, world.org_id, ITEM_WRITE, f"/operations/inventory/{world.t.buttons}",
+            {"barcode": "EAN-9"},
+        )  # fmt: skip
+        assert reuse.status_code == 200, reuse.text
 
     async def test_lot_and_roll_barcodes_are_unique_and_returned(self, client, world) -> None:
         with as_principal(principal_for(world.org_id, [LOT_WRITE, ROLL_WRITE])):

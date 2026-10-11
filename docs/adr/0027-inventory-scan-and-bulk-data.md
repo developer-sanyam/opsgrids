@@ -111,7 +111,7 @@ unless it is a plain decimal number.
   soft-deleted rows like their SKU index). A `NULL` barcode means "scan the natural code", which is
   already unique, so nothing is backfilled. A supplier's lot label or a mill's roll label can now be
   the code that resolves.
-- **Resolution** (`GET /operations/inventory/scan/{payload}`, `stock.read`, ORG-floored) looks a code
+- **Resolution** (`GET /operations/inventory/scan?code=<payload>`, `stock.read`, ORG-floored) looks a code
   up by barcode **or** natural key within the type, organization-filtered; another tenant's code is
   a 404, never a 403. If a code matches **two different records** — a barcode equal to another
   item's SKU, a lot numbered like a roll scanned bare — it answers 409 and tells the person to scan

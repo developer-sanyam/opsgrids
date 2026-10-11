@@ -29361,18 +29361,18 @@
         ]
       }
     },
-    "/api/v1/operations/inventory/scan/{payload}": {
+    "/api/v1/operations/inventory/scan": {
       "get": {
-        "operationId": "resolve_scan_api_v1_operations_inventory_scan__payload__get",
+        "operationId": "resolve_scan_api_v1_operations_inventory_scan_get",
         "parameters": [
           {
-            "in": "path",
-            "name": "payload",
+            "in": "query",
+            "name": "code",
             "required": true,
             "schema": {
               "maxLength": 200,
               "minLength": 1,
-              "title": "Payload",
+              "title": "Code",
               "type": "string"
             }
           }

@@ -4,7 +4,7 @@ Mounted by `app.main` **ahead of** `app.api.routes.router` for the same reason
 `app.inventory.api` is: `/operations/inventory/scan/...` and `/operations/inventory/data/...` are
 static segments the catch-all `/operations/inventory/{item_id}` would otherwise swallow.
 
-* `GET  /operations/inventory/scan/{payload}` — resolve a scanned label (`stock.read`).
+* `GET  /operations/inventory/scan?code=<payload>` — resolve a scanned label (`stock.read`).
 * `GET  /operations/inventory/data/import/{entity}/template` — the columns of an import
   (`data.import`).
 * `POST /operations/inventory/data/import/{entity}` — preview or commit, all-or-nothing
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Path, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 
 from app.api.routes import Entitled, IdempotencyKey, SessionDep
 from app.inventory import bulk_export, bulk_import, scan
@@ -56,13 +56,15 @@ def _also_needs(ctx: ScopeContext, permission: str) -> None:
 
 
 @router.get(
-    "/operations/inventory/scan/{payload:path}",
+    "/operations/inventory/scan",
     response_model=ScanOut,
     summary="Resolve a scanned label to its item, lot, roll or location",
     dependencies=[Entitled],
 )
 async def resolve_scan(
-    payload: Annotated[str, Path(min_length=1, max_length=200)],
+    # A query value, not a path segment: a code may hold `/..`, `?`, `#` or `%`, which a gateway
+    # normalises or decodes in a path but passes through once percent-encoded in a query.
+    payload: Annotated[str, Query(alias="code", min_length=1, max_length=200)],
     session: SessionDep,
     ctx: StockRead,
 ) -> ScanOut:

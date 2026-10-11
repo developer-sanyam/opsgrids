@@ -46,9 +46,12 @@ export interface ScanOut {
   allowed_actions: ScanAction[];
 }
 
-/** `GET /operations/inventory/scan/{payload}` — `operations.inventory.stock.read`. */
+/**
+ * `GET /operations/inventory/scan?code=` — `operations.inventory.stock.read`. The code travels
+ * in the query so `/..`, `?`, `#` and `%` in a lot number survive the gateway's path handling.
+ */
 export function resolveScan(payload: string, signal?: AbortSignal): Promise<ScanOut> {
-  return apiRequest<ScanOut>(`/operations/inventory/scan/${encodeURIComponent(payload)}`, {
+  return apiRequest<ScanOut>(`/operations/inventory/scan?code=${encodeURIComponent(payload)}`, {
     ...(signal ? { signal } : {}),
   });
 }
