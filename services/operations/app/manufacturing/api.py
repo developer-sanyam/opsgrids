@@ -189,7 +189,7 @@ async def list_boms(
     item_id: Annotated[uuid.UUID | None, Query()] = None,
     is_active: Annotated[bool | None, Query()] = None,
 ) -> Page[BomOut]:
-    stmt = selectors.boms_stmt(ctx.organization_id, q=q, item_id=item_id, is_active=is_active)
+    stmt = selectors.boms_stmt(ctx, q=q, item_id=item_id, is_active=is_active)
     rows, total = await paginate(session, stmt, params)
     out = await selectors.bom_outs(session, ctx.organization_id, rows, today=common.today())
     return Page.build(out, total=total, params=params)
@@ -534,9 +534,7 @@ async def list_orders(
 ) -> Page[ProductionOrderOut]:
     if order_status is not None and order_status not in domain.PRODUCTION_ORDER_STATUSES:
         raise ValidationProblem(f"{order_status!r} is not a production order status")
-    stmt = selectors.orders_stmt(
-        ctx.organization_id, order_status=order_status, item_id=item_id, q=q
-    )
+    stmt = selectors.orders_stmt(ctx, order_status=order_status, item_id=item_id, q=q)
     rows, total = await paginate(session, stmt, params)
     out = await selectors.order_outs(session, ctx.organization_id, rows)
     return Page.build(out, total=total, params=params)

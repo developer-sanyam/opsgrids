@@ -52,6 +52,7 @@ from app.manufacturing.schemas import (
     WastageThresholdOut,
 )
 from app.models import InventoryItem
+from platform_core.auth import ScopeContext
 
 # ------------------------------------------------------------------ items
 
@@ -109,13 +110,14 @@ async def produced_items(
 
 
 def boms_stmt(
-    org_id: uuid.UUID,
+    ctx: ScopeContext,
     *,
     q: str | None = None,
     item_id: uuid.UUID | None = None,
     is_active: bool | None = None,
 ) -> Select[Any]:
-    stmt = select(Bom).where(Bom.organization_id == org_id, Bom.deleted_at.is_(None))
+    stmt = select(Bom).where(Bom.organization_id == ctx.organization_id, Bom.deleted_at.is_(None))
+    stmt = ctx.apply(stmt, owner_col=None)
     if q:
         like = f"%{q.strip()}%"
         stmt = stmt.where(or_(Bom.code.ilike(like), Bom.name.ilike(like)))
@@ -477,15 +479,17 @@ async def component_counts(
 
 
 def orders_stmt(
-    org_id: uuid.UUID,
+    ctx: ScopeContext,
     *,
     order_status: str | None = None,
     item_id: uuid.UUID | None = None,
     q: str | None = None,
 ) -> Select[Any]:
     stmt = select(ProductionOrder).where(
-        ProductionOrder.organization_id == org_id, ProductionOrder.deleted_at.is_(None)
+        ProductionOrder.organization_id == ctx.organization_id,
+        ProductionOrder.deleted_at.is_(None),
     )
+    stmt = ctx.apply(stmt, owner_col=None)
     if order_status:
         stmt = stmt.where(ProductionOrder.status == order_status)
     if item_id is not None:

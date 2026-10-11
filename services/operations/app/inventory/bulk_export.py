@@ -101,8 +101,11 @@ async def export_rows(session: AsyncSession, ctx: ScopeContext, entity: ExportEn
             c.id: c.code
             for c in (
                 await session.execute(
-                    select(ItemCategory).where(
-                        ItemCategory.organization_id == org, ItemCategory.deleted_at.is_(None)
+                    ctx.apply(
+                        select(ItemCategory).where(
+                            ItemCategory.organization_id == org, ItemCategory.deleted_at.is_(None)
+                        ),
+                        owner_col=None,
                     )
                 )
             ).scalars()
@@ -143,13 +146,16 @@ async def export_rows(session: AsyncSession, ctx: ScopeContext, entity: ExportEn
     elif entity == "locations":
         parent = aliased(Location)
         stmt = (
-            select(Location, Warehouse.code, parent.code)
-            .join(Warehouse, Warehouse.id == Location.warehouse_id)
-            .outerjoin(parent, parent.id == Location.parent_id)
-            .where(
-                Location.organization_id == org,
-                Warehouse.organization_id == org,
-                Location.deleted_at.is_(None),
+            ctx.apply(
+                select(Location, Warehouse.code, parent.code)
+                .join(Warehouse, Warehouse.id == Location.warehouse_id)
+                .outerjoin(parent, parent.id == Location.parent_id)
+                .where(
+                    Location.organization_id == org,
+                    Warehouse.organization_id == org,
+                    Location.deleted_at.is_(None),
+                ),
+                owner_col=None,
             )
             .order_by(Warehouse.code.asc(), Location.code.asc())
             .limit(limit)

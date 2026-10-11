@@ -37,6 +37,7 @@ from app.models import (
     LedgerEntry,
     Supplier,
 )
+from platform_core.auth import ScopeContext
 
 REFERENCE_TYPE = "job_work_order"
 
@@ -44,7 +45,7 @@ REFERENCE_TYPE = "job_work_order"
 
 
 def orders_stmt(
-    org_id: uuid.UUID,
+    ctx: ScopeContext,
     *,
     status: str | None = None,
     supplier_id: uuid.UUID | None = None,
@@ -54,8 +55,9 @@ def orders_stmt(
     """`overdue_on` (a date, normally today) narrows to orders still at the vendor whose due date
     is before it — the same test `domain.is_overdue` applies per row, here in SQL."""
     stmt = select(JobWorkOrder).where(
-        JobWorkOrder.organization_id == org_id, JobWorkOrder.deleted_at.is_(None)
+        JobWorkOrder.organization_id == ctx.organization_id, JobWorkOrder.deleted_at.is_(None)
     )
+    stmt = ctx.apply(stmt, owner_col=None)
     if status is not None:
         stmt = stmt.where(JobWorkOrder.status == status)
     if supplier_id is not None:

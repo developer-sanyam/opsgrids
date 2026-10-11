@@ -345,6 +345,7 @@ def receipts_stmt(
     q: str | None = None,
 ) -> Select[Any]:
     stmt = select(GoodsReceipt).where(GoodsReceipt.organization_id == ctx.organization_id)
+    stmt = ctx.apply(stmt, owner_col=None)
     if purchase_order_id is not None:
         stmt = stmt.where(GoodsReceipt.purchase_order_id == purchase_order_id)
     if supplier_id is not None:

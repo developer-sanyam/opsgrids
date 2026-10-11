@@ -116,7 +116,7 @@ async def list_orders(
 ) -> Page[JobWorkOrderOut]:
     today = date.today()
     stmt = selectors.orders_stmt(
-        ctx.organization_id,
+        ctx,
         status=order_status,
         supplier_id=supplier_id,
         overdue_on=today if overdue else None,

@@ -29,20 +29,22 @@ from app.quality.schemas import (
     QcParamOut,
     QcTemplateOut,
 )
+from platform_core.auth import ScopeContext
 
 # ------------------------------------------------------------------ templates
 
 
 def templates_stmt(
-    org_id: uuid.UUID,
+    ctx: ScopeContext,
     *,
     kind: str | None = None,
     item_id: uuid.UUID | None = None,
     active: bool | None = None,
 ) -> Select[Any]:
     stmt = select(QcTemplate).where(
-        QcTemplate.organization_id == org_id, QcTemplate.deleted_at.is_(None)
+        QcTemplate.organization_id == ctx.organization_id, QcTemplate.deleted_at.is_(None)
     )
+    stmt = ctx.apply(stmt, owner_col=None)
     if kind is not None:
         stmt = stmt.where(QcTemplate.kind == kind)
     if item_id is not None:
@@ -141,7 +143,7 @@ def template_out(row: QcTemplate, params: Sequence[QcTemplateParam]) -> QcTempla
 
 
 def inspections_stmt(
-    org_id: uuid.UUID,
+    ctx: ScopeContext,
     *,
     status: str | None = None,
     kind: str | None = None,
@@ -149,8 +151,9 @@ def inspections_stmt(
     lot_id: uuid.UUID | None = None,
 ) -> Select[Any]:
     stmt = select(Inspection).where(
-        Inspection.organization_id == org_id, Inspection.deleted_at.is_(None)
+        Inspection.organization_id == ctx.organization_id, Inspection.deleted_at.is_(None)
     )
+    stmt = ctx.apply(stmt, owner_col=None)
     if status is not None:
         stmt = stmt.where(Inspection.status == status)
     if kind is not None:

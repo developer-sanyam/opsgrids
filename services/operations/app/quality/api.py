@@ -121,7 +121,7 @@ async def list_templates(
     item_id: Annotated[uuid.UUID | None, Query()] = None,
     active: Annotated[bool | None, Query()] = None,
 ) -> Page[QcTemplateOut]:
-    stmt = selectors.templates_stmt(ctx.organization_id, kind=kind, item_id=item_id, active=active)
+    stmt = selectors.templates_stmt(ctx, kind=kind, item_id=item_id, active=active)
     rows, total = await paginate(session, stmt, params)
     by_template = await selectors.params_for_templates(
         session, ctx.organization_id, [r.id for r in rows]
@@ -222,7 +222,7 @@ async def list_inspections(
     lot_id: Annotated[uuid.UUID | None, Query()] = None,
 ) -> Page[InspectionOut]:
     stmt = selectors.inspections_stmt(
-        ctx.organization_id, status=inspection_status, kind=kind, item_id=item_id, lot_id=lot_id
+        ctx, status=inspection_status, kind=kind, item_id=item_id, lot_id=lot_id
     )
     rows, total = await paginate(session, stmt, params)
     out = await selectors.inspections_out(session, ctx.organization_id, rows)
