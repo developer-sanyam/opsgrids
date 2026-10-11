@@ -95,6 +95,8 @@ export { RadioGroup } from "./components/RadioGroup";
 export type { RadioOption } from "./components/RadioGroup";
 export { RowActions } from "./components/RowActions";
 export type { RowAction } from "./components/RowActions";
+export { Customer360View } from "./components/Customer360View";
+export type { Customer360Money, Customer360ViewModel } from "./components/Customer360View";
 export { DetailList, PropertyRow } from "./components/DetailList";
 export type { DetailItem } from "./components/DetailList";
 export { SavedViewMenu } from "./components/SavedViewMenu";
