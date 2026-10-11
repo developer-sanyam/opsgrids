@@ -20,7 +20,7 @@ authority, and this page is the index to them. Backlog item ids (R2, O6, …) ar
 need an owner action, and 7 were already resolved or built. **5 NOT-TRIGGERED.** 8 of the
 decisions need **new backlog items**, NEW-1 to NEW-8 at the end, and one more item, NEW-9, comes
 from ADR-0017. A further 5 limitations are recorded by ADR-0017 (Q3, merged); they are listed
-but not decided again here.
+but not decided again here. The CRM overhaul's decisions are proposed in [ADR-0038](0038-crm-programme-decisions.md) and settle as the owner answers them; the counts above do not change.
 
 ADRs with nothing open: [0000](0000-phase-0-decisions.md), [0001](0001-frontend-topology.md),
 [0003](0003-surfaces-and-authorization-topology.md) (its two obligations are P4 and R31, not
@@ -53,7 +53,7 @@ decided against its own resolver-error alert).
 | 17 | [0008](0008-membership-employee-link.md) Q2 | An immediate, user-level session kill | An operator route `sessions:revoke` on auth, plus a `pv` bump in each of the user's organizations | DECIDED | **NEW-6** | **no** |
 | 18 | [0008](0008-membership-employee-link.md) Q3 | Scheduling the link verify pass | Nightly, dry-run, inside the orphan-check job, alerting through ops-monitor | DECIDED | **R21**, **R13**, **R7/C10** | yes |
 | 19 | [0008](0008-membership-employee-link.md) Q4 | When to drop `employee.employees.membership_id` | After one production dry-run reports zero; the input field keeps refusing permanently | DECIDED (owner input: the production dry-run) | **R21** | yes |
-| 20 | [0008](0008-membership-employee-link.md) Q5 | `sref` is one slot for ten products; OWN scope is empty without HRMS | HR-shaped products keep the employee link. CRM, ITSM and projects key OWN on the membership (`mem`) | DECIDED | **C15** (CRM), **C14/Q11** (projects, standup, timesheet), **NEW-7** (platform-core resolver), **NEW-8** (ITSM) | partly (C15 and C14 must name it in their scope) |
+| 20 | [0008](0008-membership-employee-link.md) Q5 | `sref` is one slot for ten products; OWN scope is empty without HRMS | HR-shaped products keep the employee link. CRM, ITSM and projects key OWN on the membership (`mem`) | DECIDED | **C15** (CRM; [ADR-0038](0038-crm-programme-decisions.md) proposes it as R2.6 and R2.7 for OWN on the membership (pending D-7) and R2.3 and R2.5 for configurable stages (pending D-5)), **C14/Q11** (projects, standup, timesheet), **NEW-7** (platform-core resolver; ADR-0038 proposes it as R2.2 and finds it larger than this row says, because the resolver registry is written and never read, `libs/platform-core/src/platform_core/auth.py:297-301`), **NEW-8** (ITSM) | partly (C15 and C14 must name it in their scope) |
 | 21 | [0009](0009-uploaded-images-and-object-storage.md) Q1 | The private half: payslips, contracts | A private bucket and a `private_objects` table. The owning product authorizes and audits. Presigned GETs last 60 s, through a dedicated Caddy route that keeps the query string | DECIDED | **R19** | yes |
 | 22 | [0009](0009-uploaded-images-and-object-storage.md) Q2 | Per-organization quota and storage metering | When priced: the catalog feature `document.storage_bytes`, 402 when exceeded, a daily `byte_days` usage event, history backfilled from the table | DECIDED (default quota numbers; owner may revise) | **R19**, **C6** | yes |
 | 23 | [0009](0009-uploaded-images-and-object-storage.md) Q3 | The reference warning on delete | Derived in the editor from the theme document, plus a batch `GET /assets?ids=` | DECIDED | **R19** | yes |
@@ -92,15 +92,15 @@ the register is complete. They are not re-decided.
 
 | ADR-0017 limitation | Built by | In ledger? |
 |---|---|---|
-| `customer.contacts.email` stays plaintext when a lead converts; lead email is sealed | Accepted by ADR-0017 ("business contact data"). If it is ever sealed, that is a `customer` schema change for **C15/Q2** | not scheduled (accepted debt) |
+| `customer.contacts.email` stays plaintext when a lead converts; lead email is sealed | Accepted by ADR-0017 ("business contact data"). If it is ever sealed, that is a `customer` schema change for **C15/Q2**; [ADR-0038](0038-crm-programme-decisions.md) names the optional sealing as R2.9 Part C, after the C15 flip has soaked and only on an explicit yes (pending D-26; the proposed default is no) | not scheduled (accepted debt) |
 | The PII blind-index key is platform-wide, not per tenant | **P3** (PII envelope v2, per-service HKDF) | yes |
-| An aborted conversion leaves orphaned company, contact and deal records; `crm.lead.conversion_aborted` has no consumer | **NEW-9** | **no** |
-| Pipeline stages stay hard-coded (`deal.app.domain.STAGE_ORDER`); configurable stages are accepted debt | **C15** (in deal's own schema, never a separate `pipeline` service) | yes |
+| An aborted conversion leaves orphaned company, contact and deal records; `crm.lead.conversion_aborted` has no consumer | **NEW-9** (proposed in [ADR-0038](0038-crm-programme-decisions.md) as R2.1 and R2.4; pending D-1, D-2, D-3, D-4) | **no** |
+| Pipeline stages stay hard-coded (`deal.app.domain.STAGE_ORDER`); configurable stages are accepted debt | **C15** (in deal's own schema, never a separate `pipeline` service; proposed in [ADR-0038](0038-crm-programme-decisions.md) as R2.3 and R2.5, pending D-5) | yes |
 | Case-insensitive company-name uniqueness is enforced by the application, going forward only | no action (decided) | n/a |
 
 Note on row 20: ADR-0017's `lead` scope keys OWN on `subject_ref`, as `customer` and `deal` do.
 The ADR-0008 Q5 decision moves all three CRM processes to the membership together, in C15. It does
-not contradict ADR-0017's current state.
+not contradict ADR-0017's current state. [ADR-0038](0038-crm-programme-decisions.md) (proposed) defines C15 and names the releases that build it (pending D-7).
 
 ---
 
@@ -117,9 +117,9 @@ from the file ownership of in-flight work.
 | **NEW-4** O2's override sentence gated on grants | screens O2 | The HRMS `RequestDetail` shows "use the attendance record" only when `/members/me/grants` resolves `hrms.time.attendance.write:ORG` | with HR-C (R6/R20) |
 | **NEW-5** Link an employee to a member | 0008 Q1 | A "Linked member" field on the HRMS employee page; picker `GET /members?linked=false`; `PATCH /members/{id}`; unlink with a warning that everyone's sign-in refreshes | any time (frontend only) |
 | **NEW-6** Operator user-level session kill | 0008 Q2 | `POST /api/v1/auth/operator/users/{id}/sessions:revoke` behind `require_operator({owner, support})`: calls `revoke_all_for_user`, bumps `pv` in each of the user's organizations, audits | after Q1 merges (auth, operator routes) |
-| **NEW-7** OWN keyed on the membership (platform-core) | 0008 Q5 | `ScopeResolver` may declare a membership subject; `ScopeContext.apply`/`assert_can_touch` honour it; tests | before C15 and C14 |
-| **NEW-8** ITSM OWN on the membership | 0008 Q5 | Switch ITSM's `requester_id` OWN to the membership and migrate existing rows through account's link, reporting any that cannot be mapped | after NEW-7 |
-| **NEW-9** Consumers for aborted lead conversions | ADR-0017 | Deal marks the orphaned deal lost; customer removes the orphaned company and contact if nothing else references them; both bound to `crm.lead.conversion_aborted` | any time; Q3 has merged (fits with C15) |
+| **NEW-7** OWN keyed on the membership (platform-core) | 0008 Q5 | `ScopeResolver` may declare a membership subject; `ScopeContext.apply`/`assert_can_touch` honour it; tests | before C15 and C14 (ADR-0038, proposed: R2.2; its TEAM tasks pending D-24) |
+| **NEW-8** ITSM OWN on the membership | 0008 Q5 | Switch ITSM's `requester_id` OWN to the membership and migrate existing rows through account's link, reporting any that cannot be mapped | after NEW-7 (ADR-0038, proposed, schedules only NEW-7, as R2.2; ITSM's own switch is outside the CRM programme) |
+| **NEW-9** Consumers for aborted lead conversions | ADR-0017 | Deal marks the orphaned deal lost (annotation: closing as lost distorts win rate and fires tenant automations, programme design §3 fact F3, so [ADR-0038](0038-crm-programme-decisions.md) D-1 proposes a soft-delete instead, pending D-1); customer removes the orphaned company and contact if nothing else references them (narrowed in D-2, pending D-2); both bound to `crm.lead.conversion_aborted` (proposed as R2.1 and R2.4) | any time; Q3 has merged (fits with C15) |
 
 ### Scope notes for items that exist
 
@@ -132,7 +132,7 @@ Each of these items covers the decision but must name the part in brackets:
 - **Q8**: the egress classification test.
 - **R21**: the nightly verify run inside R13's job, and the column drop gated on the owner's
   production dry-run.
-- **C15/C14**: OWN on the membership.
+- **C15/C14**: OWN on the membership. [ADR-0038](0038-crm-programme-decisions.md) (proposed) names the C15 releases: R2.6 and R2.7 (pending D-7), with configurable stages in R2.3 and R2.5 (pending D-5).
 - **L2/D4b**: moving the scheduler to core if either adds a producer outside finance.
 - **R19**: the owning product authorizes private objects; the internal presign route; a Caddy
   route that keeps the query string and `Host`.

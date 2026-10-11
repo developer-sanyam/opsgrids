@@ -75,9 +75,14 @@ async def resolve_contact_by_phone(
         f"{settings.customer_internal_url}/internal/v1/organizations/{organization_id}"
         "/contacts:resolve"
     )
+    # The `org` claim names the organization this call is about. Customer does not check it on
+    # this route yet; it goes on the token first so that checking it cannot lock this caller out.
     headers = {
         "X-Internal-Token": mint_service_token(
-            settings, audience=CUSTOMER_AUDIENCE, caller=settings.service_name
+            settings,
+            audience=CUSTOMER_AUDIENCE,
+            caller=settings.service_name,
+            claims={"org": organization_id},
         )
     }
 

@@ -66,8 +66,8 @@ NOTIFICATION_AUDIENCE: Final = "notification"
 #: `unavailable` on every response until one exists:
 #:   orders   no service exposes customer orders (quotation has no read routes; storefront and
 #:            operations hold enquiries and purchase orders, not sales orders per contact)
-#:   finance  finance keys invoices by its own `finance.customers` id, with no link to a CRM
-#:            contact or company, and no internal read route
+#:   finance  finance keys invoices by its own `finance.customers` id; a row can carry a
+#:            `crm_contact_id`, but no caller sets it yet and no route says what a contact owes
 #:   support  tickets carry a denormalised `requester_company` string and no CRM id, and there is
 #:            no filter to ask by contact
 MISSING_UPSTREAMS: Final[tuple[SectionName, ...]] = ("orders", "finance", "support")
@@ -84,6 +84,12 @@ _HOT_PROBABILITY: Final = 70
 #: The deal list is bounded; an account with more open deals than this is reported by what fits.
 _DEAL_PAGE_SIZE: Final = 200
 _TIMELINE_LIMIT: Final = 10
+
+#: Deal's public list route as the platform mounts it. `create_app` includes every router under
+#: `/api/v1` (`libs/platform-core/src/platform_core/app.py:362-363`) and the route is declared
+#: `@router.get("/deals", ...)` (`services/deal/app/api/routes.py:78-84`), so the real path is this
+#: one. `DEAL_INTERNAL_URL` names a host and a port and no path.
+DEAL_LIST_PATH: Final = "/api/v1/deals"
 
 
 class UpstreamUnavailable(Exception):
@@ -150,7 +156,7 @@ async def fetch_crm(
     the caller's own identity. Also returns the most recent deal's creation time for the
     timeline."""
     response = await client.get(
-        f"{cfg.deal_internal_url}/deals",
+        f"{cfg.deal_internal_url}{DEAL_LIST_PATH}",
         params={"company_id": str(company_id), "size": _DEAL_PAGE_SIZE},
         headers=dict(caller.forward_headers),
     )

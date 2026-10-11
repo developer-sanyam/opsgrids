@@ -8,9 +8,12 @@ is merged.
 ## What you are building, in plain language
 
 Two of these cards write **tests for code that already works**. That is not busy-work: this
-repository has 33 backend services with thousands of lines of tests, and a frontend with
-exactly **one** test file in it. The functions you will be testing calculate money and pipeline
-value. Nothing currently notices if someone breaks them.
+repository has 34 backend services, each with its own tests, and a frontend whose test suite has
+grown to hundreds of files (521 on 2026-10-07, 37 of them in `product-crm`; count them with
+`find frontend -name '*.test.ts*' -not -path '*/node_modules/*'`). Not every function these cards
+name has a test yet, so check whether a card's test file already exists before you start it. The
+functions you will be testing calculate money and pipeline value; nothing notices if someone
+breaks one that is untested.
 
 The other three cards fix real defects in the CRM app.
 
@@ -53,7 +56,7 @@ Your reference is `frontend/opsgrids-ui/src/lib/qr.test.ts`. Read its opening co
 
 ### REFERENCE
 
-`frontend/opsgrids-ui/src/lib/qr.test.ts` — the only existing test in the frontend. Copy its
+`frontend/opsgrids-ui/src/lib/qr.test.ts` — an existing example. Copy its
 shape: a docstring explaining why, then `describe` / `it` blocks.
 
 ### FILES YOU WILL TOUCH
@@ -274,12 +277,12 @@ pnpm --filter @opsgrids/product-crm build
 
 ### FILES YOU WILL TOUCH
 
-Only files under `frontend/product-crm/src/routes/`. There are seven screens: `Overview`,
-`Deals`, `DealDetail`, `Companies`, `CompanyDetail`, `Contacts`, `Activities`.
+Only files under `frontend/product-crm/src/routes/`. There are ten screens: `Overview`, `Leads`,
+`LeadDetail`, `Deals`, `DealDetail`, `Companies`, `CompanyDetail`, `Contacts`, `Activities`, `Team`.
 
 ### THE CONTRACT
 
-For each of the seven screens, check all four states and fix what is missing:
+For each of the ten screens, check all four states and fix what is missing:
 
 | State | Requirement |
 |---|---|
@@ -314,7 +317,7 @@ pnpm --filter @opsgrids/product-crm test
 pnpm --filter @opsgrids/product-crm build
 ```
 
-and the seven-row table is in the pull request.
+and the ten-row table is in the pull request.
 
 ---
 

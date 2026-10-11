@@ -8,6 +8,7 @@ active membership in the caller's own organization is `False`.
 from __future__ import annotations
 
 import httpx
+import jwt
 import pytest
 
 from app.config import Settings
@@ -52,6 +53,26 @@ async def test_it_carries_a_service_token(monkeypatch: pytest.MonkeyPatch) -> No
 
     await _check(handler, monkeypatch)
     assert seen["token"]
+
+
+async def test_the_token_names_the_organization(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Account checks only the calling service on this route today; the organization claim is on
+    the token so that checking it later cannot lock this caller out."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["token"] = request.headers.get("X-Internal-Token")
+        return httpx.Response(200, json={"exists": True, "active": True})
+
+    await _check(handler, monkeypatch)
+    claims = jwt.decode(
+        str(seen["token"]),
+        _settings().internal_service_token.get_secret_value(),
+        algorithms=["HS256"],
+        audience="account",
+    )
+    assert claims["iss"] == "notification"
+    assert claims.get("org") == ORG_ID
 
 
 async def test_a_membership_that_exists_but_is_not_active_is_false(

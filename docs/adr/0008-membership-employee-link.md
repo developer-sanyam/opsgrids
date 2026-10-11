@@ -836,6 +836,22 @@ membership ids through account's link, reported rather than guessed for rows tha
 mapped (§8's discipline). Metering records the membership id beside `subject_ref` from the same
 change.
 
+**Amended 2026-10-07 — two statements in this decision do not match the code or the data.**
+(1) *The migration recipe.* CRM owner values are not employee ids that can be carried across
+"through account's link". They are `customer.owners.id`, a uuid the model generates and the public
+route cannot choose (`services/customer/app/schemas.py:50-58`), except on deals and activities,
+which default `owner_id` to the caller's `subject_ref`
+(`services/deal/app/api/routes.py:112,241-243`), so a CRM organization holds a mix of roster ids and
+employee ids. The only evidence that ties a roster row to a person is its email, and Q1 above
+rejected email matching for the HRMS link, so a CRM mapping would be a human-reviewed plan, never an
+automatic rewrite. [ADR-0038](0038-crm-programme-decisions.md) proposes that plan and a
+`membership_id` column on the roster rather than a rekey (pending D-7, D-8). (2) *"The platform-core
+change is small."* `ScopeContext.apply` and `assert_can_touch` compare against
+`principal.subject_ref` only (`libs/platform-core/src/platform_core/auth.py:341,373`), and
+`register_scope_resolver` writes a dictionary that nothing reads
+(`libs/platform-core/src/platform_core/auth.py:297-301`), so a resolver cannot declare a membership
+subject today and the work is larger than stated here.
+
 **Why.** It has already happened. CRM is sold standalone (ADR-0013), and CRM's resolvers
 (`services/deal/app/scope.py`, `services/customer/app/scope.py`, and `lead` in ADR-0017) compare
 `owner_id` with `subject_ref`. So in a CRM-only tenant every OWN-scoped rep sees nothing, the
