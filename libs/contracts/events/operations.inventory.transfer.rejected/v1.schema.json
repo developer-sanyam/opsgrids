@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.transfer.rejected/v1",
+  "title": "operations.inventory.transfer.rejected",
+  "description": "A requested transfer was rejected, directly or by the approval service.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "transfer_id",
+    "number",
+    "from_warehouse_id",
+    "to_warehouse_id",
+    "approval_route",
+    "rejected_by"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "transfer_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string"
+    },
+    "from_warehouse_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "to_warehouse_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "approval_route": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "AUTO",
+        "DIRECT",
+        "SERVICE",
+        null
+      ]
+    },
+    "rejected_by": {
+      "type": "string"
+    }
+  }
+}

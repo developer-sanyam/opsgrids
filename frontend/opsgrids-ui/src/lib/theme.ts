@@ -3,8 +3,9 @@ import { createContext, useContext } from "react";
 /**
  * Light/dark theme, driven by a `data-theme` attribute on <html>. The choice is persisted per
  * browser in `localStorage` (a display preference, never anything sensitive — the access token
- * lives in memory only). An inline script in index.html applies the stored value before first
- * paint so there is no flash; the provider keeps React in sync and flips it on toggle.
+ * lives in memory only). Each app's `public/theme-init.js` (a file, not inline: the CSP forbids
+ * inline scripts) applies the stored value before first paint so there is no flash; the provider
+ * keeps React in sync and flips it on toggle.
  *
  * The context and its hook live here, apart from the provider component, so React Fast Refresh
  * stays happy.

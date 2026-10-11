@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.quality.disposed/v1",
+  "title": "operations.quality.disposed",
+  "description": "Rejected stock was removed from its rejected bucket: returned to the vendor (an `issue`) or scrapped (an `adjustment`), through `post_move`. `supplier_id` is the inspection's supplier when it named one; `reference` is the debit-note / RMA / gate-pass number the user gave, possibly empty.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "inspection_id",
+    "item_id",
+    "location_id",
+    "lot_id",
+    "roll_id",
+    "quantity_milli",
+    "action",
+    "disposed_milli",
+    "bucket",
+    "reference",
+    "supplier_id",
+    "move_id"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "inspection_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "item_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "location_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "lot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "roll_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "quantity_milli": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "RETURN_TO_VENDOR",
+        "SCRAP"
+      ]
+    },
+    "disposed_milli": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "bucket": {
+      "type": "string",
+      "enum": [
+        "REJECTED",
+        "QUARANTINE"
+      ]
+    },
+    "reference": {
+      "type": "string"
+    },
+    "supplier_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "move_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

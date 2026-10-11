@@ -1,6 +1,8 @@
 # ADR-0022: Bulk import and export from Excel
 
-Status: accepted (2026-09-26)
+Status: accepted (2026-09-26). Amended for inventory data (items, locations, lots, rolls, opening
+stock) by [ADR-0027](0027-inventory-scan-and-bulk-data.md): those imports are one server request,
+all-or-nothing, not per row. Every other list is unchanged.
 
 ## Context
 

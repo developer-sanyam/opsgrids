@@ -110,7 +110,7 @@ describe("ChannelsPage", () => {
         provider: "mock_marketplace",
         name: "My sandbox shop",
         external_shop_id: "shop-1",
-        api_key: "sandbox-key-1",
+        api_key: "sandbox-key-1", // pragma: allowlist secret
         default_warehouse_id: "wh-1",
         auto_accept_orders: true,
       }),
@@ -171,6 +171,6 @@ describe("ChannelsPage", () => {
     await user.type(within(dialog).getByLabelText("New API key"), "rotated-key");
     await user.click(within(dialog).getByRole("button", { name: "Reconnect" }));
 
-    await waitFor(() => expect(reconnectChannel).toHaveBeenCalledWith("chan-1", { api_key: "rotated-key" }));
+    await waitFor(() => expect(reconnectChannel).toHaveBeenCalledWith("chan-1", { api_key: "rotated-key" })); // pragma: allowlist secret
   });
 });

@@ -235,6 +235,21 @@ class TestAggregation:
         assert deal_call.headers["X-User-Id"] == "u-1"
         assert "X-Unrelated" not in deal_call.headers
 
+    async def test_every_header_the_hop_token_binds_travels_to_deal(
+        self, client, org_id, data, fake
+    ) -> None:
+        """The gateway's hop token binds a digest of every forwarded header. Dropping one on the
+        way to deal-service (the visitor's address, say) changes the digest, and deal refuses
+        the whole identity — the CRM section would go dark for every caller."""
+        from platform_core.internal_auth import FORWARDED_HEADERS
+
+        sent = {name: f"value-{i}" for i, name in enumerate(FORWARDED_HEADERS)}
+        upstream = fake()
+        with as_principal(_reader(org_id)):
+            await _get(client, data["contact_a_id"], sent)
+        (deal_call,) = upstream.to(8131)
+        assert {name: deal_call.headers.get(name) for name in FORWARDED_HEADERS} == sent
+
     async def test_notification_gets_a_service_token_bound_to_the_tenant(
         self, client, org_id, data, fake
     ) -> None:

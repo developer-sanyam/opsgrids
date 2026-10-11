@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.quality.hold/v1",
+  "title": "operations.quality.hold",
+  "description": "Stock was put on, or kept on, quality hold for an inspection (inventory plan Phase 4). `reason` is `inspection_opened` (the quantity was just moved AVAILABLE -> QUALITY_HOLD through `post_move`; `move_id` names that move) or `decision_hold` (an inspector chose HOLD; the stock was already held, so `move_id` is null).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "inspection_id",
+    "item_id",
+    "location_id",
+    "lot_id",
+    "roll_id",
+    "quantity_milli",
+    "reason",
+    "move_id"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "inspection_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "item_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "location_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "lot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "roll_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "quantity_milli": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "inspection_opened",
+        "decision_hold"
+      ]
+    },
+    "move_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    }
+  }
+}

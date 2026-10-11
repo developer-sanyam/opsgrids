@@ -44,6 +44,7 @@ from app.inventory.tracking_schemas import (
 from app.models import (
     AuditLog,
     InventoryItem,
+    LedgerEntry,
     Location,
     OutboxEvent,
     PutawayCapture,
@@ -51,7 +52,12 @@ from app.models import (
 )
 from platform_core.audit import record_audit
 from platform_core.auth import Scope, ScopeContext
-from platform_core.errors import ForbiddenProblem, NotFoundProblem, ValidationProblem
+from platform_core.errors import (
+    ConflictProblem,
+    ForbiddenProblem,
+    NotFoundProblem,
+    ValidationProblem,
+)
 from platform_core.events import publish_event
 from platform_core.logging import get_logger
 
@@ -223,9 +229,16 @@ async def post_opening_stock(
     idempotency_key: str | None,
     occurred_on_explicit: bool,
     request: Request | None = None,
+    fresh_buckets_only: bool = False,
 ) -> PostedMove:
     """Bring existing stock onto the books: one `opening` move, one line per
-    (item, location, status, lot, roll). Quantities are parsed against each item's own UOM."""
+    (item, location, status, lot, roll). Quantities are parsed against each item's own UOM.
+
+    Opening stock is a way to add stock with no reason or evidence, so it honours the adjustment
+    approval threshold: a line that reaches it is refused (use `POST .../adjustments`).
+    `fresh_buckets_only` also refuses a bucket that already has ledger history — adding to stock
+    that exists is an adjustment, not an opening. Both apply only once the organization has set a
+    threshold: without one there is no control to bypass."""
     items = await load_items(
         session, ctx.organization_id, (ln.inventory_item_id for ln in payload.lines)
     )
@@ -247,6 +260,11 @@ async def post_opening_stock(
                 else None,
             )
         )
+    from app.movements import common as movement_common  # movements imports this module
+    from app.movements import domain as movement_domain
+
+    settings = await movement_common.get_settings(session, ctx.organization_id)
+    threshold = settings.adjustment_approval_threshold_milli if settings else None
     posted = await ledger.post_move(
         session,
         ctx,
@@ -255,12 +273,44 @@ async def post_opening_stock(
         occurred_on=payload.occurred_on,
         reference_type="opening_stock",
         note=payload.note,
-        idempotency_key=idempotency_key,
+        idempotency_key=ledger.client_move_key(idempotency_key),
         occurred_on_explicit=occurred_on_explicit,
         request=request,
     )
     if posted.replayed:
         return posted
+    # After the post so a replay of an accepted opening still answers 200 if the threshold was
+    # lowered since; this request rolls back with the refusal.
+    if movement_domain.over_threshold(
+        threshold,
+        [movement_domain.to_base_milli(ln.quantity_milli, items[ln.item_id].uom) for ln in lines],
+    ):
+        raise ConflictProblem(
+            "Opening stock this size needs approval: use POST /operations/inventory/adjustments "
+            "with a reason and the evidence document"
+        )
+    if fresh_buckets_only and threshold is not None:
+        for ln in lines:
+            used = (
+                await session.execute(
+                    select(LedgerEntry.id)
+                    .where(
+                        LedgerEntry.organization_id == ctx.organization_id,
+                        LedgerEntry.inventory_item_id == ln.item_id,
+                        LedgerEntry.location_id == ln.location_id,
+                        LedgerEntry.status == ln.status,
+                        LedgerEntry.lot_id.is_not_distinct_from(ln.lot_id),
+                        LedgerEntry.roll_id.is_not_distinct_from(ln.roll_id),
+                        LedgerEntry.move_id != posted.move.id,
+                    )
+                    .limit(1)
+                )
+            ).first()
+            if used is not None:
+                raise ConflictProblem(
+                    "That bucket already has stock history; correct it with an adjustment "
+                    "(POST /operations/inventory/adjustments), not opening stock"
+                )
     for entry in posted.entries:
         if entry.roll_id is not None:
             session.add(
@@ -414,7 +464,7 @@ async def transfer_stock(
         roll_id=payload.roll_id,
         occurred_on=payload.occurred_on,
         note=payload.note,
-        idempotency_key=idempotency_key,
+        idempotency_key=ledger.client_move_key(idempotency_key),
         occurred_on_explicit=occurred_on_explicit,
         reference_type="bin_transfer",
         reference_id=None,
@@ -723,7 +773,7 @@ async def change_stock_status(
         occurred_on=payload.occurred_on,
         reference_type="status_change",
         note=payload.note,
-        idempotency_key=idempotency_key,
+        idempotency_key=ledger.client_move_key(idempotency_key),
         occurred_on_explicit=occurred_on_explicit,
         request=request,
     )

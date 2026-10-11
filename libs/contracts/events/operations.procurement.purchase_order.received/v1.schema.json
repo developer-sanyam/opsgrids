@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "opsgrids://contracts/operations.procurement.purchase_order.received/v1",
   "title": "operations.procurement.purchase_order.received",
-  "description": "An approved purchase order was received into stock. `received_date` and `expected_date` are business dates; comparing them is what on-time delivery means. Lines whose SKU matched an inventory item were posted to the stock ledger (`matched_lines`); the rest are listed in `unmatched_skus`.",
+  "description": "An approved purchase order was received into stock. `received_date` and `expected_date` are business dates; comparing them is what on-time delivery means. Lines whose SKU matched an inventory item were posted to the stock ledger (`matched_lines`); the rest are listed in `unmatched_skus`. Emitted when the last line is received, whether by the single-shot endpoint or by the final goods receipt (inventory Phase 2); `matched_lines` are the lines of that receipt.",
   "$comment": "Ahead of the producer (ADR-0020 slice I5): services/operations/app/services.py:receive_purchase_order does not emit expected_date yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
   "type": "object",
   "additionalProperties": false,
@@ -16,22 +16,58 @@
     "matched_lines"
   ],
   "properties": {
-    "organization_id": { "type": "string", "format": "uuid" },
-    "purchase_order_id": { "type": "string", "format": "uuid" },
-    "number": { "type": "string", "minLength": 1 },
-    "received_date": { "type": "string", "format": "date" },
-    "expected_date": { "type": "string", "format": "date" },
-    "unmatched_skus": { "type": "array", "items": { "type": "string" } },
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "purchase_order_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string",
+      "minLength": 1
+    },
+    "received_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "expected_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "unmatched_skus": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "matched_lines": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["sku", "movement_id", "quantity"],
+        "required": [
+          "sku",
+          "movement_id",
+          "quantity"
+        ],
         "properties": {
-          "sku": { "type": "string" },
-          "movement_id": { "type": "string", "format": "uuid" },
-          "quantity": { "type": "integer" }
+          "sku": {
+            "type": "string"
+          },
+          "movement_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "quantity": {
+            "type": "integer",
+            "description": "Whole units of the cumulative quantity received on the line (floor); `quantity_exact` is the exact figure."
+          },
+          "quantity_exact": {
+            "type": "string",
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+          }
         }
       }
     }

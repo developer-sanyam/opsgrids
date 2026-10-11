@@ -77,6 +77,9 @@ class TestCatalogue:
             "OPERATIONS_MANAGER": None,
             "OPERATIONS_WORKER": None,
             "OPERATIONS_USER": None,
+            "BUYER": None,
+            "PRODUCTION_PLANNER": None,
+            "QC_INSPECTOR": None,
         }
 
     def test_a_worker_keeps_what_it_always_had_and_gains_no_way_to_see_positions(self) -> None:
@@ -108,6 +111,9 @@ class TestCatalogue:
             "OPERATIONS_MANAGER": [],
             "OPERATIONS_WORKER": [],
             "OPERATIONS_USER": [],
+            "BUYER": [],
+            "PRODUCTION_PLANNER": [],
+            "QC_INSPECTOR": [],
         }
 
     def test_the_manifest_has_one_entry_per_code_in_the_catalogue(self) -> None:

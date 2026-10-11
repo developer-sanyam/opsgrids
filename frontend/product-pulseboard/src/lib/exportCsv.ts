@@ -3,10 +3,8 @@
  * library pulled in for one function. The browser downloads it as a file; nothing is sent
  * anywhere, so this needs no permission beyond the read the list itself already required.
  */
-function csvCell(value: string): string {
-  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-}
 
+import { csvCell } from "@opsgrids/client";
 export function toCsv(headers: string[], rows: string[][]): string {
   return [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
 }

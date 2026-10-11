@@ -104,6 +104,20 @@ def test_the_lead_conversion_abort_event_has_a_committed_schema() -> None:
     )
 
 
+def test_stock_reserved_rejects_undeclared_fields() -> None:
+    """Closed like every other operations inventory schema: a producer adding a field must add
+    it to the contract first."""
+    path = event_schema_path("operations.inventory.stock.reserved", 1, contracts_root=CONTRACTS)
+    validator = Draft202012Validator(json.loads(path.read_text(encoding="utf-8")))
+    base = {
+        "organization_id": "00000000-0000-0000-0000-000000000000",
+        "reference_type": None,
+        "reference_id": None,
+    }
+    assert not list(validator.iter_errors(base))
+    assert list(validator.iter_errors({**base, "surprise": 1}))
+
+
 def test_every_engage_event_notification_emits_has_a_committed_schema() -> None:
     committed = {path.parent.name for path in _schema_files()}
     emitted = _notification_engage_event_types()

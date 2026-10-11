@@ -162,3 +162,95 @@ class TestCsrfOnCookieAuthenticatedRoutes:
             "/api/v1/auth/logout", headers={"X-Requested-With": "opsgrids"}
         )
         assert response.status_code == 204, response.text
+
+
+VISITOR = "198.51.100.42"
+
+
+def via_gateway(address: str, *, bound: str | None = None) -> dict[str, str]:
+    """Headers as the gateway forwards an anonymous request: the visitor's address, under a hop
+    token that names nobody and binds `bound` (the address itself unless told otherwise)."""
+    from app.config import settings
+    from platform_core.internal_auth import (
+        GATEWAY_AUDIENCE,
+        forwarded_headers_digest,
+        mint_service_token,
+    )
+
+    fwd = forwarded_headers_digest({"x-client-ip": bound or address})
+    token = mint_service_token(
+        settings(), audience=GATEWAY_AUDIENCE, caller="gateway", claims={"fwd": fwd}
+    )
+    return {"X-Internal-Token": token, "X-Client-Ip": address}
+
+
+class TestTheVisitorsAddress:
+    """Behind the gateway, `request.client.host` is the gateway's container — the same address
+    for every visitor — so a reset or sign-in record built from it says nothing about who asked.
+    The address recorded is the one the gateway resolved and bound into its hop token."""
+
+    async def _reset_ip(self, session) -> str | None:
+        from sqlalchemy import select
+
+        from app.models import PasswordResetToken
+
+        row = (await session.execute(select(PasswordResetToken))).scalar_one()
+        return None if row.requested_ip is None else str(row.requested_ip)
+
+    async def test_a_reset_records_the_address_the_gateway_vouches_for(
+        self, client: AsyncClient, session, registered
+    ) -> None:
+        response = await client.post(
+            "/api/v1/auth/password/forgot",
+            json={"email": "sam@example.com"},
+            headers=via_gateway(VISITOR),
+        )
+        assert response.status_code == 202, response.text
+        assert await self._reset_ip(session) == VISITOR
+
+    async def test_a_reset_ignores_an_address_nobody_vouches_for(
+        self, client: AsyncClient, session, registered
+    ) -> None:
+        """A direct caller naming its own address gets the TCP peer recorded instead."""
+        response = await client.post(
+            "/api/v1/auth/password/forgot",
+            json={"email": "sam@example.com"},
+            headers={"X-Client-Ip": VISITOR},
+        )
+        assert response.status_code == 202, response.text
+        assert await self._reset_ip(session) == "127.0.0.1"
+
+    async def test_a_reset_ignores_an_address_swapped_under_a_captured_hop(
+        self, client: AsyncClient, session, registered
+    ) -> None:
+        response = await client.post(
+            "/api/v1/auth/password/forgot",
+            json={"email": "sam@example.com"},
+            headers=via_gateway(VISITOR, bound="203.0.113.1"),
+        )
+        assert response.status_code == 202, response.text
+        assert await self._reset_ip(session) == "127.0.0.1"
+
+    async def test_a_sign_in_records_the_visitors_address_on_the_session_and_audit_row(
+        self, client: AsyncClient, session, registered
+    ) -> None:
+        from sqlalchemy import select
+
+        from app.models import AuditLog, Session
+        from tests.conftest import PASSWORD
+
+        response = await client.post(
+            "/api/v1/auth/login",
+            json={"email": "sam@example.com", "password": PASSWORD},
+            headers=via_gateway(VISITOR),
+        )
+        assert response.status_code == 200, response.text
+
+        (signed_in,) = (await session.execute(select(Session))).scalars().all()
+        assert str(signed_in.ip) == VISITOR
+        audit = (
+            await session.execute(
+                select(AuditLog).where(AuditLog.action == "auth.password_verified")
+            )
+        ).scalar_one()
+        assert str(audit.ip) == VISITOR

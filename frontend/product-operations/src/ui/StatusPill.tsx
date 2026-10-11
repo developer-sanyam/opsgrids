@@ -1,14 +1,29 @@
 import type {
+  AdjustmentStatus,
+  ApprovalRoute,
+  ReservationStatus,
+  TransferStatus,
+} from "@/api/movementTypes";
+import type {
+  BomVersionStatus,
   ChannelStatus,
   ChannelSyncStatus,
   CollectionState,
   CountLineReviewStatus,
   CountSessionStatus,
+  EwayStatus,
+  JobWorkStatus,
+  InspectionStatus,
+  MrpRunStatus,
   OfferState,
   OrderStatus,
   PickTaskStatus,
   PoStatus,
+  ProductionOrderStatus,
+  ReceiptOutcome,
+  RequisitionStatus,
   ShipmentStatus,
+  StockStatus,
   SupplierStatus,
 } from "@/api/types";
 import { AlertTriangleIcon, StatusBadge } from "@opsgrids/ui";
@@ -25,14 +40,97 @@ import type { StatusTone, StatusWord } from "@opsgrids/ui";
 const PO_LABEL: Record<PoStatus, string> = {
   draft: "Draft",
   approved: "Approved",
+  partially_received: "Partially received",
   received: "Received",
   closed: "Closed",
   cancelled: "Cancelled",
 };
 
-/** Purchase-order lifecycle. */
+/** Purchase-order lifecycle. "Partially received" is not a registered word: part of the order has
+ *  landed and the rest is still expected, which is the registry's `in_progress` (info). */
 export function PoStatusPill({ status }: { status: PoStatus }) {
+  if (status === "partially_received") {
+    return <StatusBadge status="in_progress" label={PO_LABEL[status]} />;
+  }
   return <StatusBadge status={status} label={PO_LABEL[status]} />;
+}
+
+/* ------------------------- purchase requisition status ------------------------ */
+/** Every requisition status is a registered word, so each carries the registry's tone. */
+
+const REQUISITION_LABEL: Record<RequisitionStatus, string> = {
+  DRAFT: "Draft",
+  SUBMITTED: "Submitted",
+  APPROVED: "Approved",
+  REJECTED: "Rejected",
+  CONVERTED: "Converted",
+  CANCELLED: "Cancelled",
+};
+
+const REQUISITION_WORD: Record<RequisitionStatus, StatusWord> = {
+  DRAFT: "draft",
+  SUBMITTED: "submitted",
+  APPROVED: "approved",
+  REJECTED: "rejected",
+  CONVERTED: "converted",
+  CANCELLED: "cancelled",
+};
+
+export function RequisitionStatusPill({ status }: { status: RequisitionStatus }) {
+  return <StatusBadge status={REQUISITION_WORD[status]} label={REQUISITION_LABEL[status]} />;
+}
+
+/* --------------------------- goods receipt outcome ---------------------------- */
+/** How a receipt line left its purchase order line. None is a registered word: an exact receipt
+ *  is a good outcome, partial is in motion, and short or over each want a second look. */
+
+const OUTCOME_LABEL: Record<ReceiptOutcome, string> = {
+  PARTIAL: "Partial",
+  EXACT: "Exact",
+  SHORT: "Short",
+  OVER: "Over",
+};
+
+const OUTCOME_TONE: Record<ReceiptOutcome, StatusTone> = {
+  PARTIAL: "info",
+  EXACT: "success",
+  SHORT: "warning",
+  OVER: "warning",
+};
+
+export function ReceiptOutcomePill({ outcome }: { outcome: ReceiptOutcome }) {
+  return <StatusBadge tone={OUTCOME_TONE[outcome]} label={OUTCOME_LABEL[outcome]} />;
+}
+
+/* ------------------------------- stock status -------------------------------- */
+
+const STOCK_STATUS_LABEL: Record<StockStatus, string> = {
+  AVAILABLE: "Available",
+  QUALITY_HOLD: "Quality hold",
+  QUARANTINE: "Quarantine",
+  DAMAGED: "Damaged",
+  REJECTED: "Rejected",
+  WIP: "Work in progress",
+  IN_TRANSIT: "In transit",
+  AT_JOB_WORKER: "At job worker",
+  BLOCKED: "Blocked",
+};
+
+const STOCK_STATUS_TONE: Record<StockStatus, StatusTone> = {
+  AVAILABLE: "success",
+  QUALITY_HOLD: "warning",
+  QUARANTINE: "warning",
+  DAMAGED: "danger",
+  REJECTED: "danger",
+  WIP: "info",
+  IN_TRANSIT: "info",
+  AT_JOB_WORKER: "info",
+  BLOCKED: "danger",
+};
+
+/** The condition a bucket of stock is in. Always the word, never colour alone. */
+export function StockStatusPill({ status }: { status: StockStatus }) {
+  return <StatusBadge tone={STOCK_STATUS_TONE[status]} label={STOCK_STATUS_LABEL[status]} />;
 }
 
 /* --------------------------- supplier status --------------------------- */
@@ -342,4 +440,256 @@ export function CountLineReviewStatusPill({ status }: { status: CountLineReviewS
   const word = COUNT_LINE_REGISTERED[status];
   if (word) return <StatusBadge status={word} label={COUNT_LINE_LABEL[status]} />;
   return <StatusBadge tone="neutral" label={COUNT_LINE_LABEL[status]} />;
+}
+
+/* ---------------------------- transfer status (Phase 3) ---------------------------- */
+/**
+ * The transfer state machine (`TRANSFER_TRANSITIONS`). Registered words keep the registry's tone:
+ * `draft`, `approved`, `received`, `cancelled`, `rejected`. `REQUESTED` and `IN_TRANSIT` are not
+ * registered words and take explicit tones — waiting on a person (warning), and in motion (info).
+ */
+
+const TRANSFER_LABEL: Record<TransferStatus, string> = {
+  DRAFT: "Draft",
+  REQUESTED: "Requested",
+  APPROVED: "Approved",
+  IN_TRANSIT: "In transit",
+  RECEIVED: "Received",
+  CANCELLED: "Cancelled",
+  REJECTED: "Rejected",
+};
+
+const TRANSFER_REGISTERED: Partial<Record<TransferStatus, StatusWord>> = {
+  DRAFT: "draft",
+  APPROVED: "approved",
+  RECEIVED: "received",
+  CANCELLED: "cancelled",
+  REJECTED: "rejected",
+};
+
+export function TransferStatusPill({ status }: { status: TransferStatus }) {
+  const word = TRANSFER_REGISTERED[status];
+  if (word) return <StatusBadge status={word} label={TRANSFER_LABEL[status]} />;
+  return <StatusBadge tone={status === "REQUESTED" ? "warning" : "info"} label={TRANSFER_LABEL[status]} />;
+}
+
+/** How a requested transfer is signed off, in words — never the enum, never colour alone. */
+const APPROVAL_ROUTE_LABEL: Record<ApprovalRoute, string> = {
+  AUTO: "Approved automatically",
+  DIRECT: "Direct approval",
+  SERVICE: "Approval service",
+};
+
+export function ApprovalRouteChip({ route }: { route: ApprovalRoute | null }) {
+  if (route === null) return <span className="text-faint">Not requested yet</span>;
+  return <StatusBadge tone="neutral" label={APPROVAL_ROUTE_LABEL[route]} />;
+}
+
+/* --------------------------- adjustment status (Phase 3) --------------------------- */
+
+const ADJUSTMENT_LABEL: Record<AdjustmentStatus, string> = {
+  PENDING_APPROVAL: "Waiting for approval",
+  APPLIED: "Applied",
+  REJECTED: "Rejected",
+  CANCELLED: "Cancelled",
+  FAILED: "Failed",
+};
+
+const ADJUSTMENT_REGISTERED: Partial<Record<AdjustmentStatus, StatusWord>> = {
+  PENDING_APPROVAL: "awaiting_approval",
+  REJECTED: "rejected",
+  CANCELLED: "cancelled",
+  FAILED: "failed",
+};
+
+export function AdjustmentStatusPill({ status }: { status: AdjustmentStatus }) {
+  const word = ADJUSTMENT_REGISTERED[status];
+  if (word) return <StatusBadge status={word} label={ADJUSTMENT_LABEL[status]} />;
+  return <StatusBadge tone="success" label={ADJUSTMENT_LABEL[status]} />;
+}
+
+/* -------------------------- reservation status (Phase 3) --------------------------- */
+
+const RESERVATION_LABEL: Record<ReservationStatus, string> = {
+  active: "Active",
+  released: "Released",
+  consumed: "Used",
+  transferred: "Moved",
+};
+
+const RESERVATION_TONE: Record<ReservationStatus, StatusTone> = {
+  active: "info",
+  released: "neutral",
+  consumed: "success",
+  transferred: "neutral",
+};
+
+/** A reservation that lapsed is shown as "Expired" — the word the expiry sweep earned it — rather
+ *  than the "Released" its status says, which would hide why the stock came back. */
+export function ReservationStatusPill({ status, expired }: { status: ReservationStatus; expired: boolean }) {
+  if (expired) return <StatusBadge status="expired" label="Expired" />;
+  return <StatusBadge tone={RESERVATION_TONE[status]} label={RESERVATION_LABEL[status]} />;
+}
+
+/* ------------------------------ inspection status ------------------------------ */
+/**
+ * `app.quality.domain.INSPECTION_TRANSITIONS`' vocabulary. `PENDING`, `HOLD` (`on_hold`) and
+ * `FAILED` are registered words with the right tone; `PASSED`, `REWORK` and `PARTIAL_PASS` are not
+ * and each takes an explicit one. Always labelled — never colour alone.
+ */
+
+const INSPECTION_LABEL: Record<InspectionStatus, string> = {
+  PENDING: "Pending",
+  PASSED: "Passed",
+  FAILED: "Failed",
+  HOLD: "On hold",
+  REWORK: "Rework",
+  PARTIAL_PASS: "Partial pass",
+};
+
+const INSPECTION_REGISTERED: Partial<Record<InspectionStatus, StatusWord>> = {
+  PENDING: "pending",
+  FAILED: "failed",
+  HOLD: "on_hold",
+};
+
+const INSPECTION_EXPLICIT_TONE: Partial<Record<InspectionStatus, StatusTone>> = {
+  PASSED: "success",
+  REWORK: "warning",
+  PARTIAL_PASS: "info",
+};
+
+export function InspectionStatusPill({ status }: { status: InspectionStatus }) {
+  const word = INSPECTION_REGISTERED[status];
+  if (word) return <StatusBadge status={word} label={INSPECTION_LABEL[status]} />;
+  return <StatusBadge tone={INSPECTION_EXPLICIT_TONE[status] ?? "neutral"} label={INSPECTION_LABEL[status]} />;
+}
+
+/* ------------------------- manufacturing statuses -------------------------- */
+/** A BOM version: DRAFT (neutral), PUBLISHED (success), RETIRED (neutral) — all registered words. */
+
+const BOM_VERSION_WORD: Record<BomVersionStatus, StatusWord> = {
+  DRAFT: "draft",
+  PUBLISHED: "published",
+  RETIRED: "retired",
+};
+
+const BOM_VERSION_LABEL: Record<BomVersionStatus, string> = {
+  DRAFT: "Draft",
+  PUBLISHED: "Published",
+  RETIRED: "Retired",
+};
+
+export function BomVersionStatusPill({ status }: { status: BomVersionStatus }) {
+  return <StatusBadge status={BOM_VERSION_WORD[status]} label={BOM_VERSION_LABEL[status]} />;
+}
+
+/** A production order: DRAFT -> APPROVED -> IN_PROGRESS -> COMPLETED, or CANCELLED. */
+
+const PRODUCTION_ORDER_WORD: Record<ProductionOrderStatus, StatusWord> = {
+  DRAFT: "draft",
+  APPROVED: "approved",
+  IN_PROGRESS: "in_progress",
+  COMPLETED: "completed",
+  CANCELLED: "cancelled",
+};
+
+const PRODUCTION_ORDER_LABEL: Record<ProductionOrderStatus, string> = {
+  DRAFT: "Draft",
+  APPROVED: "Approved",
+  IN_PROGRESS: "In progress",
+  COMPLETED: "Completed",
+  CANCELLED: "Cancelled",
+};
+
+export function ProductionOrderStatusPill({ status }: { status: ProductionOrderStatus }) {
+  return <StatusBadge status={PRODUCTION_ORDER_WORD[status]} label={PRODUCTION_ORDER_LABEL[status]} />;
+}
+
+/* ------------------------------- MRP run status ------------------------------ */
+/**
+ * An MRP run: `QUEUED` (waiting for the worker) -> `COMPLETED` | `FAILED`. `completed` is a
+ * registered word; "queued" and "failed" are not, so each takes an explicit tone.
+ */
+export function MrpRunStatusPill({ status }: { status: MrpRunStatus }) {
+  if (status === "COMPLETED") return <StatusBadge status="completed" label="Completed" />;
+  if (status === "FAILED") return <StatusBadge tone="danger" label="Failed" />;
+  return <StatusBadge tone="info" label="Queued" />;
+}
+
+/* ---------------------------------- job work status ---------------------------------- */
+/**
+ * `app.jobwork.domain.JOB_WORK_TRANSITIONS`. Registered words carry the registry's tone: `draft`,
+ * `approved`, `received`, `closed`, `cancelled`. `ISSUED` (material is out: in motion, outcome not
+ * yet known — `info`) and `PARTIALLY_RECEIVED` (some back, some still out — `warning`) are not
+ * registered words and take explicit tones. **Overdue is not a status** — it is a flag on the
+ * order, shown by `OverduePill` beside this one.
+ */
+
+const JOBWORK_LABEL: Record<JobWorkStatus, string> = {
+  DRAFT: "Draft",
+  APPROVED: "Approved",
+  ISSUED: "At vendor",
+  PARTIALLY_RECEIVED: "Partly received",
+  RECEIVED: "Received",
+  CLOSED: "Closed",
+  CANCELLED: "Cancelled",
+};
+
+const JOBWORK_REGISTERED: Partial<Record<JobWorkStatus, StatusWord>> = {
+  DRAFT: "draft",
+  APPROVED: "approved",
+  RECEIVED: "received",
+  CLOSED: "closed",
+  CANCELLED: "cancelled",
+};
+
+const JOBWORK_EXPLICIT_TONE: Partial<Record<JobWorkStatus, StatusTone>> = {
+  ISSUED: "info",
+  PARTIALLY_RECEIVED: "warning",
+};
+
+export function JobWorkStatusPill({ status }: { status: JobWorkStatus }) {
+  const word = JOBWORK_REGISTERED[status];
+  if (word) return <StatusBadge status={word} label={JOBWORK_LABEL[status]} />;
+  return <StatusBadge tone={JOBWORK_EXPLICIT_TONE[status] ?? "neutral"} label={JOBWORK_LABEL[status]} />;
+}
+
+/** Past its due date with material still at the vendor. The words carry the meaning, never colour alone. */
+export function OverduePill({ days }: { days: number }) {
+  return <StatusBadge tone="danger" label={days === 1 ? "1 day overdue" : `${days} days overdue`} />;
+}
+
+/* ------------------------------------ e-way bill status ------------------------------------ */
+/** What this module asked finance for, and what finance later answered — not a status operations
+ *  decides. `NOT_REQUIRED` is shown quietly. */
+
+const EWAY_LABEL: Record<EwayStatus, string> = {
+  NOT_REQUIRED: "E-way bill not required",
+  REQUESTED: "E-way bill requested",
+  GENERATED: "E-way bill generated",
+  FAILED: "E-way bill failed",
+};
+
+const EWAY_TONE: Record<EwayStatus, StatusTone> = {
+  NOT_REQUIRED: "neutral",
+  REQUESTED: "info",
+  GENERATED: "success",
+  FAILED: "danger",
+};
+
+export function EwayStatusPill({ status }: { status: EwayStatus }) {
+  return <StatusBadge tone={EWAY_TONE[status]} label={EWAY_LABEL[status]} />;
+}
+
+/* ------------------------------ reconciliation verdict ------------------------------ */
+/** Whether a job-work order's documents settle and agree with the ledger — a verdict, so it is
+ *  a pill with words: "Balanced" (success), "Not balanced" (danger), "Not issued yet" (neutral). */
+export function ReconciliationPill({ issued, balanced }: { issued: boolean; balanced: boolean }) {
+  if (!issued) return <StatusBadge tone="neutral" label="Not issued yet" />;
+  return balanced ? (
+    <StatusBadge tone="success" label="Balanced" />
+  ) : (
+    <StatusBadge tone="danger" label="Not balanced" />
+  );
 }

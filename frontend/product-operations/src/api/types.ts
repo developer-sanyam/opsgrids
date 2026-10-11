@@ -79,7 +79,13 @@ export interface SupplierPatch {
 
 /* ---------------------------- purchase orders ---------------------------- */
 
-export type PoStatus = "draft" | "approved" | "received" | "closed" | "cancelled";
+export type PoStatus =
+  | "draft"
+  | "approved"
+  | "partially_received"
+  | "received"
+  | "closed"
+  | "cancelled";
 
 /** One line on a purchase order. `unit_price_minor` is per-unit minor units of the PO currency. */
 export interface PoLineItem {
@@ -90,6 +96,10 @@ export interface PoLineItem {
   uom: string;
   unit_price_minor: number;
   received_qty: number;
+  /** The exact cumulative receipt in the item's stock unit (`received_qty` is its whole-unit view). */
+  received_exact: Qty;
+  /** The buyer closed this line short: nothing more is expected against it. */
+  short_closed: boolean;
 }
 
 /** Mirrors `PurchaseOrderOut`. The total is derived from `line_items`, never stored. */
@@ -186,6 +196,8 @@ export interface InventoryItemOut {
   track_expiry: boolean;
   track_quality: boolean;
   is_active: boolean;
+  /** How far over the ordered quantity a receipt may go, in percent (`"2.5"`) — two decimals at most. */
+  receipt_tolerance_pct: string;
   /** What a customer order line is priced at (ADR-0024 §3, fulfilment plan F2) — distinct from
    *  `unit_value_minor` above, which is cost. Both `null` (no selling price set yet — an order
    *  line still needs its own explicit price then) or both set. */
@@ -213,6 +225,7 @@ export interface InventoryItemIn {
   track_expiry?: boolean;
   track_quality?: boolean;
   is_active?: boolean;
+  receipt_tolerance_pct?: string;
 }
 
 /** `PATCH /inventory/{id}`. `sku`, `currency` and — above all — `on_hand` are never accepted:
@@ -232,6 +245,7 @@ export interface InventoryItemPatch {
   track_expiry?: boolean;
   track_quality?: boolean;
   is_active?: boolean;
+  receipt_tolerance_pct?: string;
 }
 
 /* ---------------------------- item master (Phase 1) ----------------------- */
@@ -1494,4 +1508,1185 @@ export interface ChannelRetryResultOut {
 
 export interface ChannelHealthCheckOut {
   healthy: boolean;
+}
+
+/* ------------------- receiving and purchase (inventory Phase 2) ------------------- */
+
+/** `1 box = 12 pcs` is `{uom: "box", numerator: 12, denominator: 1}`. */
+export interface UomConversionOut {
+  id: string;
+  inventory_item_id: string;
+  uom_id: string;
+  uom: string;
+  numerator: number;
+  denominator: number;
+  stock_uom: string;
+  created_at: string;
+}
+
+/** `POST /inventory/{item_id}/uom-conversions`. */
+export interface UomConversionIn {
+  uom: string;
+  numerator: number;
+  denominator?: number;
+}
+
+/** `PATCH /inventory/uom-conversions/{id}` — numerator and/or denominator. */
+export interface UomConversionPatch {
+  numerator?: number;
+  denominator?: number;
+}
+
+export type RequisitionStatus = "DRAFT" | "SUBMITTED" | "APPROVED" | "REJECTED" | "CONVERTED" | "CANCELLED";
+
+export interface RequisitionLineIn {
+  inventory_item_id: string;
+  /** In the item's own stock unit — a decimal string, greater than zero. */
+  quantity: Qty;
+  suggested_supplier_id?: string | null;
+  est_unit_price_minor?: number | null;
+  note?: string | null;
+}
+
+export interface RequisitionIn {
+  warehouse_id?: string | null;
+  needed_by?: string | null;
+  reason?: string | null;
+  requested_by: string;
+  lines: RequisitionLineIn[];
+}
+
+/** `PATCH /purchase-requisitions/{id}`, draft only. `lines`, when present, replaces them. */
+export interface RequisitionPatch {
+  warehouse_id?: string | null;
+  needed_by?: string | null;
+  reason?: string | null;
+  lines?: RequisitionLineIn[];
+}
+
+export interface RequisitionDecisionIn {
+  note?: string | null;
+}
+
+export interface RequisitionRejectIn {
+  reason: string;
+}
+
+export interface RequisitionPriceIn {
+  line_id: string;
+  unit_price_minor: number;
+}
+
+export interface RequisitionConvertIn {
+  supplier_id: string;
+  expected_date: string;
+  /** A warehouse *name* (a purchase order names its warehouse by name). */
+  warehouse?: string | null;
+  currency?: string | null;
+  notes?: string | null;
+  prices?: RequisitionPriceIn[];
+}
+
+export interface RequisitionLineOut {
+  id: string;
+  line_no: number;
+  inventory_item_id: string;
+  sku: string;
+  item_name: string;
+  uom: string;
+  quantity: Qty;
+  suggested_supplier_id: string | null;
+  est_unit_price_minor: number | null;
+  note: string | null;
+}
+
+export interface RequisitionOut {
+  id: string;
+  number: string;
+  status: RequisitionStatus;
+  requested_by: string;
+  requested_by_id: string | null;
+  warehouse_id: string | null;
+  warehouse_name: string | null;
+  needed_by: string | null;
+  reason: string | null;
+  decision_note: string | null;
+  submitted_at: string | null;
+  decided_at: string | null;
+  converted_po_id: string | null;
+  converted_po_number: string | null;
+  created_at: string;
+  updated_at: string;
+  lines: RequisitionLineOut[];
+}
+
+export interface RequisitionSummaryOut {
+  id: string;
+  number: string;
+  status: RequisitionStatus;
+  requested_by: string;
+  warehouse_name: string | null;
+  needed_by: string | null;
+  line_count: number;
+  converted_po_number: string | null;
+  created_at: string;
+}
+
+export type ReceiptOutcome = "PARTIAL" | "EXACT" | "SHORT" | "OVER";
+
+export interface ReceiptRollIn {
+  roll_no?: string | null;
+  /** In the item's stock unit (82.5 m). */
+  primary_qty: Qty;
+  /** A separately measured figure in another unit (14.8 kg) — never derived. */
+  secondary_qty?: string | null;
+  secondary_uom?: string | null;
+  width_mm?: number | null;
+  gsm?: number | null;
+  shade?: string | null;
+  grade?: string | null;
+}
+
+/** An existing lot (`lot_id`) or the fields of a new one — never both. */
+export interface ReceiptLotIn {
+  lot_id?: string | null;
+  lot_no?: string | null;
+  supplier_lot_no?: string | null;
+  manufactured_on?: string | null;
+  expires_on?: string | null;
+}
+
+export interface ReceiptLineIn {
+  purchase_order_line_id: string;
+  /** Non-negative decimal string, in `uom`; `"0"` only with `close_short`. */
+  quantity: string;
+  uom?: string | null;
+  location_id?: string | null;
+  hold?: boolean;
+  close_short?: boolean;
+  lot?: ReceiptLotIn | null;
+  rolls?: ReceiptRollIn[];
+}
+
+export interface GoodsReceiptIn {
+  purchase_order_id: string;
+  received_on?: string;
+  delivery_note?: string | null;
+  note?: string | null;
+  lines: ReceiptLineIn[];
+}
+
+export interface ReceiptRollOut {
+  id: string;
+  roll_no: string;
+  primary_qty: Qty;
+  secondary_qty: Qty | null;
+  secondary_uom: string | null;
+}
+
+export interface GoodsReceiptLineOut {
+  id: string;
+  line_no: number;
+  purchase_order_line_id: string;
+  sku: string;
+  description: string;
+  inventory_item_id: string | null;
+  stock_uom: string | null;
+  location_id: string | null;
+  location_label: string | null;
+  stock_status: StockStatus | null;
+  lot_id: string | null;
+  lot_no: string | null;
+  supplier_lot_no: string | null;
+  rolls: ReceiptRollOut[];
+  entered_qty: Qty;
+  entered_uom: string;
+  /** In the item's stock unit — what actually went onto the books. */
+  received_qty: Qty;
+  ordered_qty: Qty;
+  prior_received_qty: Qty;
+  cumulative_qty: Qty;
+  tolerance_pct: string;
+  close_short: boolean;
+  outcome: ReceiptOutcome;
+  unit_cost_minor: number | null;
+  unit_cost_currency: string | null;
+}
+
+export interface GoodsReceiptOut {
+  id: string;
+  number: string;
+  purchase_order_id: string;
+  po_number: string;
+  po_status: string;
+  supplier_id: string;
+  supplier_name: string;
+  received_on: string;
+  delivery_note: string | null;
+  note: string | null;
+  status: "POSTED";
+  /** True when this is the first result of a retried `Idempotency-Key`, not a new posting. */
+  replayed: boolean;
+  created_at: string;
+  created_by: string | null;
+  lines: GoodsReceiptLineOut[];
+}
+
+export interface GoodsReceiptSummaryOut {
+  id: string;
+  number: string;
+  purchase_order_id: string;
+  po_number: string;
+  supplier_name: string;
+  received_on: string;
+  delivery_note: string | null;
+  line_count: number;
+  created_at: string;
+}
+
+export interface ReceivingConversionOut {
+  uom: string;
+  numerator: number;
+  denominator: number;
+}
+
+export interface ReceivingLineOut {
+  purchase_order_line_id: string;
+  sku: string;
+  description: string;
+  inventory_item_id: string | null;
+  stock_uom: string | null;
+  ordered_qty: Qty;
+  received_qty: Qty;
+  remaining_qty: Qty;
+  /** The most that may still be received (ordered + tolerance - received), never negative. */
+  max_receivable_qty: Qty;
+  tolerance_pct: string;
+  short_closed: boolean;
+  track_lot: boolean;
+  track_roll: boolean;
+  track_expiry: boolean;
+  track_quality: boolean;
+  default_location_id: string | null;
+  default_location_label: string | null;
+  conversions: ReceivingConversionOut[];
+}
+
+export interface ReceivingContextOut {
+  purchase_order_id: string;
+  po_number: string;
+  po_status: string;
+  warehouse: string;
+  supplier_name: string;
+  /** Whether the PO is in a state a goods receipt can be posted against. */
+  can_receive: boolean;
+  lines: ReceivingLineOut[];
+}
+
+/* ------------------------------------ quality (inventory plan Phase 4) ------------------------------------ */
+/*
+ * Mirrors `app/quality/schemas.py`. Every quantity, bound and reading is a decimal **string** with
+ * at most three decimals (`Qty`) — never a JS number; the server converts to milli-units at the
+ * edge and this file never does arithmetic on one.
+ */
+
+export type QcKind = "incoming" | "in-process" | "finished";
+export type QcParamKind = "numeric" | "pass_fail";
+export type InspectionStatus = "PENDING" | "PASSED" | "FAILED" | "HOLD" | "REWORK" | "PARTIAL_PASS";
+export type RejectBucket = "REJECTED" | "QUARANTINE";
+export type DispositionAction = "RETURN_TO_VENDOR" | "SCRAP";
+export type Disposition = "NONE" | DispositionAction;
+
+export interface QcParamIn {
+  name: string;
+  kind: QcParamKind;
+  unit?: string;
+  min?: Qty | null;
+  max?: Qty | null;
+  is_critical?: boolean;
+}
+
+export interface QcParamOut {
+  id: string;
+  name: string;
+  kind: QcParamKind;
+  unit: string;
+  min: Qty | null;
+  max: Qty | null;
+  is_critical: boolean;
+  position: number;
+}
+
+export interface QcTemplateIn {
+  code: string;
+  name: string;
+  kind: QcKind;
+  item_id?: string | null;
+  description?: string;
+  is_active?: boolean;
+  params: QcParamIn[];
+}
+
+/** `PATCH` — a supplied `params` replaces the whole list; omit it to leave parameters alone. */
+export interface QcTemplatePatch {
+  name?: string;
+  description?: string;
+  is_active?: boolean;
+  params?: QcParamIn[];
+}
+
+export interface QcTemplateOut {
+  id: string;
+  code: string;
+  name: string;
+  kind: QcKind;
+  item_id: string | null;
+  description: string;
+  is_active: boolean;
+  params: QcParamOut[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InspectionIn {
+  kind: QcKind;
+  item_id: string;
+  location_id: string;
+  quantity: Qty;
+  lot_id?: string | null;
+  roll_id?: string | null;
+  template_id?: string | null;
+  supplier_id?: string | null;
+  reference_type?: string;
+  reference_id?: string | null;
+  /** Default true: moves the quantity AVAILABLE -> QUALITY_HOLD as part of opening. */
+  hold_stock?: boolean;
+  notes?: string;
+}
+
+export interface InspectionResultIn {
+  param_name: string;
+  value?: Qty | null;
+  passed?: boolean | null;
+  note?: string;
+}
+
+export interface InspectionResultOut {
+  id: string;
+  param_name: string;
+  param_kind: QcParamKind;
+  unit: string;
+  min: Qty | null;
+  max: Qty | null;
+  is_critical: boolean;
+  value: Qty | null;
+  passed: boolean;
+  note: string;
+  recorded_by: string | null;
+}
+
+export interface InspectionOut {
+  id: string;
+  kind: QcKind;
+  status: InspectionStatus;
+  template_id: string | null;
+  item_id: string;
+  item_sku: string;
+  item_name: string;
+  uom: string;
+  location_id: string;
+  location_code: string;
+  lot_id: string | null;
+  roll_id: string | null;
+  supplier_id: string | null;
+  reference_type: string;
+  reference_id: string | null;
+  quantity: Qty;
+  accepted: Qty | null;
+  rejected: Qty | null;
+  rejected_bucket: RejectBucket | null;
+  notes: string;
+  decision_note: string;
+  decided_by: string | null;
+  decided_at: string | null;
+  disposition: Disposition;
+  disposition_note: string;
+  disposition_reference: string;
+  disposed_at: string | null;
+  hold_move_id: string | null;
+  decision_move_id: string | null;
+  disposition_move_id: string | null;
+  /** What the readings alone recommend — never applied automatically. */
+  suggested_outcome: InspectionStatus;
+  /** False while a critical parameter has failed. */
+  can_release: boolean;
+  results: InspectionResultOut[];
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReleaseIn {
+  /** Omit to release everything (`PASSED`); less is a `PARTIAL_PASS`. */
+  accepted?: Qty | null;
+  rejected_bucket?: RejectBucket;
+  note?: string;
+}
+
+export interface RejectIn {
+  reason: string;
+  bucket?: RejectBucket;
+}
+
+export interface DispositionIn {
+  action: DispositionAction;
+  note?: string;
+  reference?: string;
+}
+
+/* ----------------------------- manufacturing ----------------------------- */
+/**
+ * Inventory Phase 5 — bills of materials, production orders, wastage. Mirrors
+ * `services/operations/app/manufacturing/schemas.py` (`libs/contracts/openapi/operations.json`).
+ * Every id is a string; every quantity is a decimal `Qty` string with at most three decimals and
+ * every percentage a decimal string with at most two — none of them is ever parsed into a float.
+ */
+
+/** A percentage as a decimal string: `"2.5"`. At most two decimals. */
+export type Pct = string;
+
+export type BomVersionStatus = "DRAFT" | "PUBLISHED" | "RETIRED";
+export type ProductionOrderStatus = "DRAFT" | "APPROVED" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED";
+export type WastageType = "CUTTING" | "DEFECT" | "SPILLAGE" | "DAMAGE" | "PROCESS_LOSS" | "LEFTOVER" | "OTHER";
+export type OutputStatus = "AVAILABLE" | "QUALITY_HOLD";
+
+export interface BomSubstituteIn {
+  substitute_item_id: string;
+  ratio?: Qty;
+  priority?: number;
+}
+
+export interface BomSubstituteOut {
+  id: string;
+  substitute_item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  ratio: Qty;
+  priority: number;
+}
+
+export interface BomComponentIn {
+  component_item_id: string;
+  quantity: Qty;
+  scrap_percent?: Pct;
+  effective_from?: string | null;
+  effective_to?: string | null;
+  notes?: string;
+}
+
+export interface BomComponentPatch {
+  quantity?: Qty;
+  scrap_percent?: Pct;
+  effective_from?: string | null;
+  effective_to?: string | null;
+  notes?: string;
+}
+
+export interface BomComponentOut {
+  id: string;
+  line_no: number;
+  component_item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  quantity: Qty;
+  scrap_percent: Pct;
+  effective_from: string | null;
+  effective_to: string | null;
+  notes: string;
+  /** True when this component has a BOM of its own — what makes the BOM multi-level. */
+  is_produced: boolean;
+  substitutes: BomSubstituteOut[];
+}
+
+export interface BomVersionIn {
+  output_quantity?: Qty;
+  effective_from?: string | null;
+  effective_to?: string | null;
+  notes?: string;
+  copy_from_version_id?: string | null;
+}
+
+export interface BomVersionPatch {
+  output_quantity?: Qty;
+  effective_from?: string | null;
+  effective_to?: string | null;
+  notes?: string;
+}
+
+export interface BomVersionOut {
+  id: string;
+  bom_id: string;
+  version_no: number;
+  status: BomVersionStatus;
+  output_quantity: Qty;
+  effective_from: string | null;
+  effective_to: string | null;
+  notes: string;
+  published_at: string | null;
+  published_by: string | null;
+  content_hash: string | null;
+  component_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BomVersionDetailOut extends BomVersionOut {
+  components: BomComponentOut[];
+}
+
+export interface BomIn {
+  code: string;
+  name: string;
+  item_id: string;
+  description?: string;
+  output_quantity?: Qty;
+}
+
+export interface BomPatch {
+  name?: string;
+  description?: string;
+  is_active?: boolean;
+}
+
+export interface BomOut {
+  id: string;
+  code: string;
+  name: string;
+  item_id: string;
+  sku: string;
+  item_name: string;
+  uom: string;
+  description: string;
+  is_active: boolean;
+  version_count: number;
+  latest_version_no: number | null;
+  /** The published version in force today (null while nothing is published). */
+  current_version_id: string | null;
+  current_version_no: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BomDetailOut extends BomOut {
+  versions: BomVersionOut[];
+}
+
+export interface ExplosionNodeOut {
+  item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  level: number;
+  quantity: Qty;
+  is_produced: boolean;
+  children: ExplosionNodeOut[];
+}
+
+export interface ExplosionTotalOut {
+  item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  quantity: Qty;
+}
+
+export interface ExplosionOut {
+  bom_id: string;
+  version_id: string;
+  quantity: Qty;
+  root: ExplosionNodeOut;
+  leaf_totals: ExplosionTotalOut[];
+}
+
+export interface ProductionOrderIn {
+  bom_id?: string | null;
+  item_id?: string | null;
+  bom_version_id?: string | null;
+  quantity: Qty;
+  output_location_id: string;
+  wip_location_id?: string | null;
+  planned_start?: string | null;
+  due_date?: string | null;
+  notes?: string;
+}
+
+export interface ProductionOrderPatch {
+  quantity?: Qty;
+  output_location_id?: string;
+  wip_location_id?: string | null;
+  planned_start?: string | null;
+  due_date?: string | null;
+  notes?: string;
+}
+
+export interface ProductionCancelIn {
+  reason?: string;
+}
+
+export interface MaterialSubstituteIn {
+  /** One of the BOM line's declared substitutes; omit to go back to the BOM's own item. */
+  substitute_item_id?: string | null;
+}
+
+export interface ReserveLineIn {
+  material_id: string;
+  location_id?: string | null;
+  lot_id?: string | null;
+  roll_id?: string | null;
+  quantity?: Qty | null;
+}
+
+export interface ReserveIn {
+  lines?: ReserveLineIn[] | null;
+}
+
+export interface IssueLineIn {
+  material_id?: string | null;
+  pick_id?: string | null;
+  location_id?: string | null;
+  lot_id?: string | null;
+  roll_id?: string | null;
+  quantity?: Qty | null;
+}
+
+export interface IssueIn {
+  lines?: IssueLineIn[] | null;
+  over_issue?: boolean;
+}
+
+export interface ReturnLineIn {
+  pick_id: string;
+  quantity?: Qty | null;
+  location_id?: string | null;
+}
+
+export interface ReturnIn {
+  lines: ReturnLineIn[];
+}
+
+export interface OutputIn {
+  quantity: Qty;
+  location_id?: string | null;
+  lot_id?: string | null;
+  roll_id?: string | null;
+  status?: OutputStatus;
+  note?: string;
+}
+
+export interface WastageIn {
+  material_id: string;
+  wastage_type: WastageType;
+  quantity: Qty;
+  pick_id?: string | null;
+  note?: string;
+}
+
+export interface CompleteIn {
+  /** Required when anything is left in WIP: put it back, or write it off as wastage. */
+  leftover?: "return" | "scrap" | null;
+  note?: string;
+}
+
+export interface ProductionMaterialOut {
+  id: string;
+  line_no: number;
+  component_item_id: string;
+  component_sku: string;
+  item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  is_substitute: boolean;
+  ratio: Qty;
+  scrap_percent: Pct;
+  required: Qty;
+  reserved: Qty;
+  issued: Qty;
+  consumed: Qty;
+  returned: Qty;
+  wasted: Qty;
+  wip: Qty;
+  /** What is still not covered by a reservation or an issue. */
+  open_need: Qty;
+}
+
+export interface ProductionPickOut {
+  id: string;
+  material_id: string;
+  item_id: string;
+  source_location_id: string;
+  wip_location_id: string;
+  lot_id: string | null;
+  roll_id: string | null;
+  reservation_id: string | null;
+  reserved: Qty;
+  issued: Qty;
+  consumed: Qty;
+  returned: Qty;
+  wasted: Qty;
+  wip: Qty;
+}
+
+export interface ProductionOutputOut {
+  id: string;
+  production_order_id: string;
+  item_id: string;
+  quantity: Qty;
+  location_id: string;
+  status: OutputStatus;
+  lot_id: string | null;
+  roll_id: string | null;
+  note: string;
+  created_at: string;
+}
+
+export interface ProductionWastageOut {
+  id: string;
+  production_order_id: string;
+  material_id: string;
+  pick_id: string;
+  event_id: string;
+  item_id: string;
+  wastage_type: WastageType;
+  quantity: Qty;
+  location_id: string;
+  lot_id: string | null;
+  roll_id: string | null;
+  note: string;
+  created_at: string;
+}
+
+export interface VarianceLineOut {
+  material_id: string;
+  item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  /** What the BOM (scrap allowance included) says the produced quantity should have taken. */
+  standard: Qty;
+  /** The same, without the scrap allowance. */
+  theoretical: Qty;
+  consumed: Qty;
+  wasted: Qty;
+  /** consumed + wasted. */
+  actual: Qty;
+  /** actual - standard; positive is over-use. */
+  variance: Qty;
+  /** variance as a percentage of standard, two decimals; null when standard is zero. */
+  variance_percent: string | null;
+}
+
+export interface VarianceOut {
+  planned_quantity: Qty;
+  produced_quantity: Qty;
+  lines: VarianceLineOut[];
+}
+
+export interface ProductionOrderOut {
+  id: string;
+  number: string;
+  status: ProductionOrderStatus;
+  bom_id: string;
+  bom_code: string;
+  bom_version_id: string;
+  bom_version_no: number;
+  item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  planned_quantity: Qty;
+  produced_quantity: Qty;
+  output_location_id: string;
+  wip_location_id: string | null;
+  planned_start: string | null;
+  due_date: string | null;
+  approved_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  cancelled_at: string | null;
+  cancel_reason: string;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProductionOrderDetailOut extends ProductionOrderOut {
+  materials: ProductionMaterialOut[];
+  picks: ProductionPickOut[];
+  outputs: ProductionOutputOut[];
+  wastage: ProductionWastageOut[];
+  variance: VarianceOut;
+}
+
+export interface ShortageOut {
+  material_id: string;
+  item_id: string;
+  sku: string;
+  required: Qty;
+  covered: Qty;
+  short: Qty;
+}
+
+/** The order after an action; `shortages` is filled by a reservation that could not cover
+ *  everything. `replayed` is true when an `Idempotency-Key` matched an earlier request. */
+export interface ProductionActionOut extends ProductionOrderDetailOut {
+  shortages: ShortageOut[];
+  replayed: boolean;
+}
+
+export interface WastageThresholdIn {
+  item_id?: string | null;
+  wastage_type?: WastageType | null;
+  max_percent: Pct;
+}
+
+export interface WastageThresholdOut {
+  id: string;
+  item_id: string | null;
+  sku: string | null;
+  wastage_type: WastageType | null;
+  max_percent: Pct;
+  created_at: string;
+}
+
+/* ----------------------------------- MRP ---------------------------------- */
+/*
+ * Inventory Phase 7 (`services/operations/app/mrp/schemas.py`). Quantities are decimal strings,
+ * never numbers; ids are strings.
+ */
+
+export type MrpRunStatus = "QUEUED" | "COMPLETED" | "FAILED";
+export type MrpDemandSource = "SALES_ORDER" | "PRODUCTION_ORDER" | "MANUAL";
+export type MrpShortageAction = "BUY" | "MAKE";
+export type MrpRunMode = "auto" | "sync" | "worker";
+
+export interface MrpManualDemandIn {
+  item_id: string;
+  quantity: Qty;
+  due_date?: string | null;
+  note?: string;
+}
+
+export interface MrpRunIn {
+  sources: MrpDemandSource[];
+  manual_demands?: MrpManualDemandIn[];
+  substitutes?: { component_item_id: string; substitute_item_id: string }[];
+  plan_date?: string | null;
+  notes?: string;
+  mode?: MrpRunMode;
+}
+
+export interface MrpRunOut {
+  id: string;
+  number: string;
+  status: MrpRunStatus;
+  execution: "SYNC" | "WORKER";
+  plan_date: string;
+  sources: MrpDemandSource[];
+  notes: string;
+  demand_count: number;
+  shortage_count: number;
+  items_planned: number;
+  result_hash: string | null;
+  error: string;
+  requested_by: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+/** `replayed` is true when an `Idempotency-Key` matched an earlier request. */
+export interface MrpRunCreatedOut extends MrpRunOut {
+  replayed: boolean;
+}
+
+export interface MrpDemandOut {
+  id: string;
+  source_type: MrpDemandSource;
+  source_id: string | null;
+  source_ref: string;
+  item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  requested: Qty;
+  reserved: Qty;
+  quantity: Qty;
+  due_date: string | null;
+  note: string;
+}
+
+export interface MrpShortageOut {
+  id: string;
+  run_id: string;
+  item_id: string;
+  sku: string;
+  name: string;
+  uom: string;
+  action: MrpShortageAction;
+  level: number;
+  gross: Qty;
+  on_hand: Qty;
+  reserved: Qty;
+  available: Qty;
+  open_po: Qty;
+  open_production: Qty;
+  supply: Qty;
+  shortage: Qty;
+  need_by: string | null;
+  requisition_request_id: string | null;
+  requisition_requested_at: string | null;
+  requisition_id: string | null;
+}
+
+export interface MrpShortageLineOut {
+  source_type: MrpDemandSource;
+  source_id: string | null;
+  source_ref: string;
+  parent_item_id: string | null;
+  parent_sku: string | null;
+  quantity: Qty;
+  due_date: string | null;
+}
+
+export interface MrpShortageDetailOut extends MrpShortageOut {
+  lines: MrpShortageLineOut[];
+}
+
+export interface RequisitionRequestIn {
+  shortage_ids?: string[];
+  note?: string;
+}
+
+export interface RequisitionRequestLineOut {
+  shortage_id: string;
+  item_id: string;
+  sku: string;
+  uom: string;
+  quantity: Qty;
+  need_by: string | null;
+}
+
+export interface RequisitionRequestOut {
+  request_id: string;
+  run_id: string;
+  run_number: string;
+  lines: RequisitionRequestLineOut[];
+  replayed: boolean;
+}
+
+export interface MrpDemandSourcesOut {
+  sales_order_lines: number;
+  production_order_materials: number;
+  sync_limit: number;
+  mode_if_auto: "sync" | "worker";
+}
+
+/* --------------------------------- job work (Inventory plan Phase 6) --------------------------------- */
+/**
+ * Mirrors `services/operations/app/jobwork/schemas.py`. Every quantity is a decimal **string**
+ * (`Qty`), never a number — a float cannot hold `0.001` of a metre exactly, and a reconciliation
+ * that is off by a milli-unit is a reconciliation that does not balance. Money is integer minor
+ * units with an ISO currency.
+ */
+
+export type JobWorkStatus =
+  | "DRAFT"
+  | "APPROVED"
+  | "ISSUED"
+  | "PARTIALLY_RECEIVED"
+  | "RECEIVED"
+  | "CLOSED"
+  | "CANCELLED";
+export type EwayStatus = "NOT_REQUIRED" | "REQUESTED" | "GENERATED" | "FAILED";
+export type JobWorkGoodStatus = "AVAILABLE" | "QUALITY_HOLD";
+
+export interface JobWorkOrderOut {
+  id: string;
+  number: string;
+  supplier_id: string;
+  supplier_name: string;
+  process: string;
+  status: JobWorkStatus;
+  due_date: string | null;
+  is_overdue: boolean;
+  days_overdue: number;
+  qc_required: boolean;
+  notes: string;
+  version: number;
+  source_warehouse_id: string | null;
+  receive_location_id: string | null;
+  material_count: number;
+  total_sent: Qty;
+  total_outstanding: Qty;
+  issued_at: string | null;
+  closed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JobWorkMaterialOut {
+  id: string;
+  line_no: number;
+  item_id: string;
+  sku: string;
+  uom: string;
+  lot_id: string | null;
+  roll_id: string | null;
+  location_id: string;
+  quantity: Qty;
+  sent: Qty;
+  received: Qty;
+  rejected: Qty;
+  shortage: Qty;
+  outstanding: Qty;
+  unit_value_minor: number;
+  currency: string;
+}
+
+export interface JobWorkReceiptOut {
+  id: string;
+  receipt_no: string;
+  material_id: string;
+  sku: string;
+  received: Qty;
+  rejected: Qty;
+  shortage: Qty;
+  location_id: string;
+  good_status: JobWorkGoodStatus;
+  qc_handoff: boolean;
+  received_on: string;
+  note: string;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface ChallanLineOut {
+  sku: string;
+  uom: string;
+  quantity: Qty;
+  unit_value_minor: number;
+  value_minor: number;
+  lot_id: string | null;
+  roll_id: string | null;
+}
+
+export interface ChallanOut {
+  id: string;
+  order_id: string;
+  order_number: string;
+  challan_number: string;
+  kind: "DELIVERY";
+  issued_at: string;
+  supplier_id: string;
+  supplier_name: string;
+  process: string;
+  lines: ChallanLineOut[];
+  total_value_minor: number;
+  currency: string;
+  vehicle_no: string | null;
+  transporter_id: string | null;
+  distance_km: number | null;
+  eway_status: EwayStatus;
+  eway_bill_no: string | null;
+  eway_requested_at: string | null;
+}
+
+export interface JobWorkReconciliationLineOut {
+  material_id: string;
+  sku: string;
+  uom: string;
+  sent: Qty;
+  received: Qty;
+  rejected: Qty;
+  shortage: Qty;
+  outstanding: Qty;
+}
+
+export interface JobWorkReconciliationDriftOut {
+  item_id: string;
+  sku: string;
+  documents: Qty;
+  ledger: Qty;
+}
+
+export interface JobWorkReconciliationOut {
+  order_id: string;
+  order_status: JobWorkStatus;
+  issued: boolean;
+  lines: JobWorkReconciliationLineOut[];
+  total_sent: Qty;
+  total_received: Qty;
+  total_rejected: Qty;
+  total_shortage: Qty;
+  total_outstanding: Qty;
+  documents_settled: boolean;
+  ledger_consistent: boolean;
+  drift: JobWorkReconciliationDriftOut[];
+  /** Settled **and** consistent — the one condition `:close` requires. */
+  balanced: boolean;
+}
+
+export interface JobWorkOrderDetailOut extends JobWorkOrderOut {
+  materials: JobWorkMaterialOut[];
+  receipts: JobWorkReceiptOut[];
+  challans: ChallanOut[];
+  reconciliation: JobWorkReconciliationOut;
+}
+
+export interface JobWorkMaterialIn {
+  item_id: string;
+  quantity: Qty;
+  location_id?: string;
+  lot_id?: string;
+  roll_id?: string;
+}
+
+export interface JobWorkOrderIn {
+  supplier_id: string;
+  process?: string;
+  due_date?: string | null;
+  source_warehouse_id?: string;
+  receive_location_id?: string;
+  qc_required?: boolean;
+  notes?: string;
+  materials: JobWorkMaterialIn[];
+}
+
+export interface JobWorkIssueIn {
+  vehicle_no?: string;
+  transporter_id?: string;
+  distance_km?: number;
+  note?: string;
+}
+
+export interface JobWorkReceiptLineIn {
+  material_id: string;
+  received: Qty;
+  rejected: Qty;
+  shortage: Qty;
+  location_id?: string;
+}
+
+export interface JobWorkReceiveIn {
+  lines: JobWorkReceiptLineIn[];
+  received_on?: string;
+  note?: string;
+}
+
+export interface ChallanEwayIn {
+  distance_km: number;
+  vehicle_no?: string;
+  transporter_id?: string;
 }

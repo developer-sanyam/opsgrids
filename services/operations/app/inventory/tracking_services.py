@@ -186,6 +186,12 @@ async def create_lot(
             errors=[{"field": "inventory_item_id", "code": "not_tracked", "message": "no lots"}],
         )
     lot_no = payload.lot_no or f"LOT-{uuid.uuid4().hex[:8].upper()}"
+    if payload.barcode is not None and await sel.barcode_taken(
+        session, Lot, org_id, payload.barcode
+    ):
+        raise _duplicate("barcode", f"Barcode {payload.barcode!r} is already in use")
+    if await sel.barcode_taken(session, Lot, org_id, lot_no, only_barcode=True):
+        raise _duplicate("lot_no", f"{lot_no!r} is already in use as another lot's barcode")
     lot_id = uuid.uuid4()
     inserted = (
         await session.execute(
@@ -196,6 +202,7 @@ async def create_lot(
                 inventory_item_id=item.id,
                 lot_no=lot_no,
                 supplier_lot_no=payload.supplier_lot_no,
+                barcode=payload.barcode,
                 manufactured_on=payload.manufactured_on,
                 received_on=payload.received_on,
                 expires_on=payload.expires_on,
@@ -250,6 +257,12 @@ async def update_lot(
     expires = changes.get("expires_on", lot.expires_on)
     if manufactured and expires and expires < manufactured:
         raise ValidationProblem("expires_on is before manufactured_on")
+    if changes.get("barcode") is None:
+        changes.pop("barcode", None)
+    elif changes["barcode"] != lot.barcode and await sel.barcode_taken(
+        session, Lot, ctx.organization_id, changes["barcode"], exclude=lot.id
+    ):
+        raise _duplicate("barcode", f"Barcode {changes['barcode']!r} is already in use")
     before = {field: getattr(lot, field) for field in changes}
     for field, value in changes.items():
         setattr(lot, field, value)
@@ -278,11 +291,16 @@ async def link_lots(
     payload: LotGenealogyIn,
     *,
     request: Request | None = None,
+    if_absent: bool = False,
 ) -> LotGenealogy:
     """Record that `parent`'s material went into `child` (a blend, a rework, a derived lot).
     Refused if it would make a lot its own ancestor — the trace is a walk over a DAG, and the
     cycle check and the insert run under one per-organization advisory lock so two concurrent
-    links cannot each pass the check and together close a loop."""
+    links cannot each pass the check and together close a loop.
+
+    `if_absent=True` is for callers that record the same link many times as a matter of course
+    (production output drawing on the same input lot again and again): an identical existing edge
+    is returned instead of being a 409, and no second audit row or event is staged for it."""
     org_id = ctx.organization_id
     child_lot_id = payload.child_lot_id
     if parent_lot_id == child_lot_id:
@@ -300,16 +318,22 @@ async def link_lots(
             f"{parent.lot_no} already descends from {child.lot_no}; linking them would make a loop"
         )
     existing = (
-        await session.execute(
-            select(LotGenealogy.id).where(
-                LotGenealogy.organization_id == org_id,
-                LotGenealogy.parent_lot_id == parent_lot_id,
-                LotGenealogy.child_lot_id == child_lot_id,
-                LotGenealogy.relation == payload.relation,
+        (
+            await session.execute(
+                select(LotGenealogy).where(
+                    LotGenealogy.organization_id == org_id,
+                    LotGenealogy.parent_lot_id == parent_lot_id,
+                    LotGenealogy.child_lot_id == child_lot_id,
+                    LotGenealogy.relation == payload.relation,
+                )
             )
         )
-    ).first()
+        .scalars()
+        .first()
+    )
     if existing is not None:
+        if if_absent:
+            return existing
         raise ConflictProblem("That link already exists")
     edge = LotGenealogy(
         organization_id=org_id,
@@ -388,6 +412,12 @@ async def create_roll(
     primary = parse_positive(payload.primary_qty, item.uom, "primary_qty")
     secondary, secondary_uom = _parse_secondary(payload.secondary_qty, payload.secondary_uom)
     roll_no = payload.roll_no or f"ROLL-{uuid.uuid4().hex[:8].upper()}"
+    if payload.barcode is not None and await sel.barcode_taken(
+        session, Roll, org_id, payload.barcode
+    ):
+        raise _duplicate("barcode", f"Barcode {payload.barcode!r} is already in use")
+    if await sel.barcode_taken(session, Roll, org_id, roll_no, only_barcode=True):
+        raise _duplicate("roll_no", f"{roll_no!r} is already in use as another roll's barcode")
     roll_id = uuid.uuid4()
     inserted = (
         await session.execute(
@@ -406,6 +436,7 @@ async def create_roll(
                 gsm=payload.gsm,
                 shade=payload.shade,
                 grade=payload.grade,
+                barcode=payload.barcode,
                 created_by=str(ctx.principal.sub),
             )
             .on_conflict_do_nothing(index_elements=["organization_id", "roll_no"])
@@ -481,7 +512,13 @@ async def update_roll(
     if "secondary_qty" in changes:
         milli, code = _parse_secondary(changes.pop("secondary_qty"), changes.pop("secondary_uom"))
         roll.secondary_milli, roll.secondary_uom = milli, code
-    for field in ("width_mm", "gsm", "shade", "grade"):
+    if changes.get("barcode") is None:
+        changes.pop("barcode", None)
+    elif changes["barcode"] != roll.barcode and await sel.barcode_taken(
+        session, Roll, org_id, changes["barcode"], exclude=roll.id
+    ):
+        raise _duplicate("barcode", f"Barcode {changes['barcode']!r} is already in use")
+    for field in ("width_mm", "gsm", "shade", "grade", "barcode"):
         if field in changes:
             setattr(roll, field, changes[field])
     roll.updated_by = str(ctx.principal.sub)
@@ -544,6 +581,7 @@ async def split_roll(
     exactly. The parent's stock leaves and the children's arrives in one `relocation` move — and
     a roll whose stock is reserved is refused by the kernel, with the reservations named.
     """
+    idempotency_key = ledger.client_move_key(idempotency_key)
     org_id = ctx.organization_id
     # The roll lock first, then everything else — see the module docstring.
     parent = (await sel.lock_rolls(session, org_id, [roll_id])).get(roll_id)
@@ -780,6 +818,7 @@ async def merge_rolls(
     stock in the named bucket, or it is refused. Each source's whole balance leaves and their sum
     arrives on the result, whose weight is the sum of the sources' weights (only if every source
     was weighed). Returns the move, the result's id and the sources' ids."""
+    idempotency_key = ledger.client_move_key(idempotency_key)
     org_id = ctx.organization_id
     source_ids = sorted(set(payload.roll_ids))
     locked = await sel.lock_rolls(session, org_id, source_ids)

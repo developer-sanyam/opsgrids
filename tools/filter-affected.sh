@@ -20,7 +20,8 @@
 #
 # usage: tools/shard.sh N S | tools/filter-affected.sh
 #   reads service names on stdin, one per line; writes the ones that survive the filter,
-#   same format, to stdout.
+#   same format, to stdout. A line may also be a test-shard *item*, `<service>:<part>/<parts>`
+#   (tools/ci_shards.py): it is kept or dropped by its service name and printed unchanged.
 set -euo pipefail
 
 if [ "${AFFECTED_ALL:-true}" != "false" ] || [ -z "${AFFECTED_SERVICES:-}" ]; then
@@ -38,7 +39,7 @@ want=" $(printf '%s' "$AFFECTED_SERVICES" | tr '\n' ' ') "
 while IFS= read -r svc; do
   [ -n "$svc" ] || continue
   case "$want" in
-  *" $svc "*) printf '%s\n' "$svc" ;;
+  *" ${svc%%:*} "*) printf '%s\n' "$svc" ;;
   esac
 done
 exit 0

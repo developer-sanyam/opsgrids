@@ -101,7 +101,7 @@ class TestConnectionCrud:
                     "provider": "mock_marketplace",
                     "name": "My Shopify-like Store",
                     "external_shop_id": "shop-1",
-                    "api_key": "sk_live_super_secret",
+                    "api_key": "sk_live_super_secret",  # pragma: allowlist secret
                     "default_warehouse_id": str(shop.warehouse_id),
                     "default_currency": "INR",
                     "auto_accept_orders": True,
@@ -111,7 +111,7 @@ class TestConnectionCrud:
         body = response.json()
         assert body["status"] == "connected"
         assert "sk_live_super_secret" not in response.text
-        assert body["api_key_masked"] != "sk_live_super_secret"
+        assert body["api_key_masked"] != "sk_live_super_secret"  # pragma: allowlist secret
 
         async with session.begin():
             row = (
@@ -147,7 +147,10 @@ class TestConnectionCrud:
             )
             assert channel is not None
             channel = await channel_services.reconnect_channel(
-                session, ctx, channel, api_key="sk_live_rotated"
+                session,
+                ctx,
+                channel,
+                api_key="sk_live_rotated",  # pragma: allowlist secret
             )
         assert channel.status == "connected"
         assert channel.consecutive_failures == 0
@@ -187,7 +190,7 @@ class TestConnectionAuthzAndCrossTenant:
                     "provider": "mock_marketplace",
                     "name": "X",
                     "external_shop_id": "shop-x",
-                    "api_key": "sk_x",
+                    "api_key": "sk_x",  # pragma: allowlist secret
                     "default_warehouse_id": str(shop.warehouse_id),
                     "default_currency": "INR",
                     "auto_accept_orders": True,
@@ -706,6 +709,7 @@ class TestOutageAndCredentialHandling:
         async with session.begin():
             row = await channel_selectors.get_channel(session, org_id, channel.id, for_update=True)
             assert row is not None
+            # pragma: allowlist nextline secret
             row = await channel_services.reconnect_channel(session, ctx, row, api_key="sk_fresh")
         assert row.status == "connected"
 

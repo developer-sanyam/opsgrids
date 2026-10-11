@@ -10,6 +10,16 @@ from app.channels.sweep import ChannelSyncSweep
 from app.config import settings
 from app.cron import AlertSweep, ReconcileSweep
 from app.inventory.api import router as inventory_router
+from app.inventory.bulk_api import router as bulk_router
+from app.jobwork.api import router as jobwork_router
+from app.jobwork.sweep import JobWorkOverdueSweep
+from app.manufacturing.api import router as manufacturing_router
+from app.movements.api import router as movements_router
+from app.movements.sweep import ReservationExpirySweep
+from app.mrp.api import router as mrp_router
+from app.mrp.sweep import MrpRunSweep
+from app.quality.api import router as quality_router
+from app.receiving.api import router as receiving_router
 from platform_core.app import create_app
 from platform_core.db import (
     assert_outbox_role,
@@ -155,6 +165,118 @@ async def _stop_channel_sync_sweep(app: FastAPI) -> None:
         await engine.dispose()
 
 
+async def _start_reservation_expiry_sweep(app: FastAPI) -> None:
+    """The reservation-expiry sweep (inventory Phase 3), on the same `run_sweeps_in_api` flag and
+    in the identical shape `_start_alert_sweep` uses: its own bulkhead engine, a failed outbox-role
+    precondition skips only this sweep, visible on `/metrics` as
+    `operations.reservations.expiry`."""
+    app.state.reservation_sweep_task = None
+    app.state.reservation_sweep_engine = None
+    cfg = settings()
+    if not cfg.run_sweeps_in_api:
+        return
+    try:
+        init_outbox_engine(cfg)
+        await assert_outbox_role(get_outbox_engine(), environment=cfg.environment)
+    except Exception:
+        log.exception(
+            "operations.reservations.expiry.not_started",
+            reason="outbox role precondition failed",
+        )
+        register_sweep_health("operations.reservations.expiry").record_failure()
+        return
+    engine = create_bulkhead_engine(cfg, name="reservation-sweep")
+    app.state.reservation_sweep_engine = engine
+    sweep = ReservationExpirySweep(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=bulkhead_scope(engine),
+        interval=cfg.reservation_expiry_interval_seconds,
+    )
+    app.state.reservation_sweep_task = start_background_sweep(
+        sweep.run(), name="operations.reservations.expiry"
+    )
+
+
+async def _stop_reservation_expiry_sweep(app: FastAPI) -> None:
+    await stop_background_sweep(getattr(app.state, "reservation_sweep_task", None))
+    engine = getattr(app.state, "reservation_sweep_engine", None)
+    if engine is not None:
+        await engine.dispose()
+
+
+async def _start_mrp_sweep(app: FastAPI) -> None:
+    """The MRP worker (inventory plan Phase 7): executes the runs a large organization queued.
+    Folded into this process on the same `Settings.run_sweeps_in_api` flag and in the same shape
+    as `_start_channel_sync_sweep` — its own bulkhead engine, a failed outbox-role precondition
+    skips only this sweep, visible on `/metrics` as `operations.mrp`."""
+    app.state.mrp_sweep_task = None
+    app.state.mrp_sweep_engine = None
+    cfg = settings()
+    if not cfg.run_sweeps_in_api:
+        return
+    try:
+        init_outbox_engine(cfg)
+        await assert_outbox_role(get_outbox_engine(), environment=cfg.environment)
+    except Exception:
+        log.exception("operations.mrp.not_started", reason="outbox role precondition failed")
+        register_sweep_health("operations.mrp").record_failure()
+        return
+    engine = create_bulkhead_engine(cfg, name="mrp-sweep")
+    app.state.mrp_sweep_engine = engine
+    sweep = MrpRunSweep(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=bulkhead_scope(engine),
+        interval=cfg.mrp_sweep_interval_seconds,
+    )
+    app.state.mrp_sweep_task = start_background_sweep(sweep.run(), name="operations.mrp")
+
+
+async def _stop_mrp_sweep(app: FastAPI) -> None:
+    await stop_background_sweep(getattr(app.state, "mrp_sweep_task", None))
+    engine = getattr(app.state, "mrp_sweep_engine", None)
+    if engine is not None:
+        await engine.dispose()
+
+
+async def _start_jobwork_overdue_sweep(app: FastAPI) -> None:
+    """The job-work overdue sweep (Inventory plan Phase 6), folded into this process on the same
+    `Settings.run_sweeps_in_api` flag and the identical shape `_start_alert_sweep` uses — its own
+    bulkhead engine, a failed outbox-role precondition skips only this sweep, and it is visible on
+    `/metrics` under its own name (`operations.jobwork.overdue`). `bulkhead_scope`, not the raw
+    one: `announce_overdue` only flushes inside the one transaction the scope opens."""
+    app.state.jobwork_sweep_task = None
+    app.state.jobwork_sweep_engine = None
+    cfg = settings()
+    if not cfg.run_sweeps_in_api:
+        return
+    try:
+        init_outbox_engine(cfg)
+        await assert_outbox_role(get_outbox_engine(), environment=cfg.environment)
+    except Exception:
+        log.exception(
+            "operations.jobwork.overdue.not_started", reason="outbox role precondition failed"
+        )
+        register_sweep_health("operations.jobwork.overdue").record_failure()
+        return
+    engine = create_bulkhead_engine(cfg, name="jobwork-sweep")
+    app.state.jobwork_sweep_engine = engine
+    sweep = JobWorkOverdueSweep(
+        discovery_factory=get_outbox_sessionmaker(),
+        work_scope=bulkhead_scope(engine),
+        interval=cfg.jobwork_overdue_interval_seconds,
+    )
+    app.state.jobwork_sweep_task = start_background_sweep(
+        sweep.run(), name="operations.jobwork.overdue"
+    )
+
+
+async def _stop_jobwork_overdue_sweep(app: FastAPI) -> None:
+    await stop_background_sweep(getattr(app.state, "jobwork_sweep_task", None))
+    engine = getattr(app.state, "jobwork_sweep_engine", None)
+    if engine is not None:
+        await engine.dispose()
+
+
 async def _start_background_worker(app: FastAPI) -> None:
     """Starts this service's two event consumers (`app/consumers.py` — the fulfilment offer-
     expiry sweep and the order-cancellation cascade, ADR-0025 §3/§1), exactly what `bin/worker`
@@ -206,12 +328,18 @@ async def _startup(app: FastAPI) -> None:
     await _start_reconcile_sweep(app)
     await _start_alert_sweep(app)
     await _start_channel_sync_sweep(app)
+    await _start_reservation_expiry_sweep(app)
+    await _start_mrp_sweep(app)
+    await _start_jobwork_overdue_sweep(app)
     await _start_background_worker(app)
 
 
 async def _shutdown(app: FastAPI) -> None:
     await _stop_background_worker(app)
+    await _stop_reservation_expiry_sweep(app)
     await _stop_alert_sweep(app)
+    await _stop_mrp_sweep(app)
+    await _stop_jobwork_overdue_sweep(app)
     await _stop_channel_sync_sweep(app)
     await _stop_reconcile_sweep(app)
 
@@ -222,7 +350,17 @@ app = create_app(
     description="Operations service — part of the OpsGrids platform.",
     # The inventory router first: its static `/operations/inventory/stock` etc. must be matched
     # before the catch-all `/operations/inventory/{item_id}` routes in `router`.
-    routers=[inventory_router, router],
+    routers=[
+        bulk_router,
+        inventory_router,
+        receiving_router,
+        movements_router,
+        router,
+        quality_router,
+        manufacturing_router,
+        mrp_router,
+        jobwork_router,
+    ],
     on_startup=_startup,
     on_shutdown=_shutdown,
 )

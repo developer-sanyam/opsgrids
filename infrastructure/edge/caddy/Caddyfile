@@ -89,6 +89,32 @@
 	}
 }
 
+# Baseline security headers for every *.opsgrids.com app site (admin.opsgrids.com sets its own).
+# No includeSubDomains — the merchant store hosts must stay free of HSTS.
+#
+# Content-Security-Policy: `import platform-headers "<directives>"` — each site passes the
+# directives its own SPA needs, and this snippet appends the three every site shares. The
+# third-party origins are the ones the built bundles and the SDK scripts they load actually use
+# (tests/infra/test_platform_site_headers.py pins each site's list), so a site allows nothing
+# another app needs. Never 'unsafe-eval', never 'unsafe-inline' in script-src: the one inline
+# script each SPA had (its pre-paint theme switch) is now its own file, `public/theme-init.js`.
+#
+# Shared by the product apps: Google Fonts (index.html's stylesheet and its font files), and
+# `connect-src https://app.opsgrids.com` — every product SPA's silent refresh and logout are a
+# CORS fetch to the dashboard's origin, which holds the refresh cookie (VITE_AUTH_ORIGIN,
+# publish-web.sh). style-src 'unsafe-inline' only where a third-party script injects <style>
+# elements or style attributes (Razorpay, Cashfree, Google Maps, Meta's SDK): React's own `style`
+# props are set through the CSSOM, which CSP does not govern, so the other apps do without it.
+(platform-headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Content-Security-Policy "{args[0]}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}
+
 # ---------------------------------------------------------------------------- uploaded merchant images
 #
 # Public bucket objects (ADR-0009) are served from EDGE_HOST alone — the one host
@@ -190,8 +216,15 @@ http:// {
 #
 # A named site wins over the catch-all for its own host. The bundle is published by
 # `make edge-web APP=dashboard` to `${EDGE_WEB_ROOT}/dashboard/current`.
+#
+# Billing checkout loads Razorpay's checkout.js (which adds its risk-detection script from
+# cdn.razorpay.com, frames api.razorpay.com — api-dark is its failover — and beacons checkout
+# events to lumberjack and lumberjack-cx; its separate frontend-telemetry beacon host is left out
+# on purpose, a dropped beacon only) and Cashfree's v3 SDK (which frames sdk.cashfree.com, and the checkout and
+# result pages on api/sandbox/payments/payments-test.cashfree.com; sandbox is the test mode).
 https://app.opsgrids.com {
 	import edge
+	import platform-headers "default-src 'self'; script-src 'self' https://checkout.razorpay.com https://cdn.razorpay.com https://sdk.cashfree.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://cdn.razorpay.com; connect-src 'self' https://api.razorpay.com https://api-dark.razorpay.com https://lumberjack.razorpay.com https://lumberjack-cx.razorpay.com https://api.cashfree.com https://sandbox.cashfree.com https://payments.cashfree.com https://payments-test.cashfree.com; frame-src https://api.razorpay.com https://api-dark.razorpay.com https://sdk.cashfree.com https://api.cashfree.com https://sandbox.cashfree.com https://payments.cashfree.com https://payments-test.cashfree.com"
 
 	handle {
 		root * /srv/web/dashboard/current
@@ -282,8 +315,15 @@ https://admin.opsgrids.com {
 # The operations product's own app (ADR-0001: one hostname per product). Published by
 # `make edge-web APP=operations`. Its API calls are same-origin through the snippet's /api/*,
 # and the gateway's entitlement gate is what decides whether this organisation may use it.
+#
+# CSP: the dashboard's two checkouts (order payments), plus the warehouse map — Google's
+# documented Maps JavaScript API allowlist, narrowed to maps.googleapis.com/maps.gstatic.com for
+# scripts and without the 'unsafe-eval' Google lists — plus the 3D floor view's labels: drei's
+# <Text> (troika) runs in a blob: worker that importScripts blob: modules and fetches its glyph
+# data from cdn.jsdelivr.net.
 https://ops.opsgrids.com {
 	import edge
+	import platform-headers "default-src 'self'; script-src 'self' blob: https://maps.googleapis.com https://maps.gstatic.com https://checkout.razorpay.com https://cdn.razorpay.com https://sdk.cashfree.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*.googleapis.com https://*.gstatic.com https://*.google.com https://*.ggpht.com https://*.googleusercontent.com https://cdn.razorpay.com; connect-src 'self' https://app.opsgrids.com https://*.googleapis.com https://*.google.com https://*.gstatic.com https://cdn.jsdelivr.net https://api.razorpay.com https://api-dark.razorpay.com https://lumberjack.razorpay.com https://lumberjack-cx.razorpay.com https://api.cashfree.com https://sandbox.cashfree.com https://payments.cashfree.com https://payments-test.cashfree.com; frame-src https://*.google.com https://api.razorpay.com https://api-dark.razorpay.com https://sdk.cashfree.com https://api.cashfree.com https://sandbox.cashfree.com https://payments.cashfree.com https://payments-test.cashfree.com; worker-src blob:"
 
 	handle {
 		root * /srv/web/operations/current
@@ -307,6 +347,7 @@ https://ops.opsgrids.com {
 # here — no new container, no new process, just files Caddy already knows how to serve.
 https://worker.opsgrids.com {
 	import edge
+	import platform-headers "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://app.opsgrids.com"
 
 	handle {
 		root * /srv/web/worker/current
@@ -326,6 +367,7 @@ https://worker.opsgrids.com {
 # Published by `make edge-web APP=hrms`. Same shape as Inventory above.
 https://people.opsgrids.com {
 	import edge
+	import platform-headers "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://app.opsgrids.com"
 
 	handle {
 		root * /srv/web/hrms/current
@@ -345,6 +387,7 @@ https://people.opsgrids.com {
 # Published by `make edge-web APP=crm`. Same shape as Inventory above.
 https://revenue.opsgrids.com {
 	import edge
+	import platform-headers "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://app.opsgrids.com"
 
 	handle {
 		root * /srv/web/crm/current
@@ -364,6 +407,7 @@ https://revenue.opsgrids.com {
 # Published by `make edge-web APP=pulseboard`. Same shape as Inventory above.
 https://pulse.opsgrids.com {
 	import edge
+	import platform-headers "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://app.opsgrids.com"
 
 	handle {
 		root * /srv/web/pulseboard/current
@@ -383,6 +427,7 @@ https://pulse.opsgrids.com {
 # Published by `make edge-web APP=projects`. Same shape as Inventory above.
 https://projects.opsgrids.com {
 	import edge
+	import platform-headers "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://app.opsgrids.com"
 
 	handle {
 		root * /srv/web/projects/current
@@ -402,6 +447,7 @@ https://projects.opsgrids.com {
 # Published by `make edge-web APP=support`. Same shape as Inventory above.
 https://support.opsgrids.com {
 	import edge
+	import platform-headers "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://app.opsgrids.com"
 
 	handle {
 		root * /srv/web/support/current
@@ -421,6 +467,7 @@ https://support.opsgrids.com {
 # Published by `make edge-web APP=marketing`. Same shape as Inventory above.
 https://marketing.opsgrids.com {
 	import edge
+	import platform-headers "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://app.opsgrids.com"
 
 	handle {
 		root * /srv/web/marketing/current
@@ -440,6 +487,7 @@ https://marketing.opsgrids.com {
 # Published by `make edge-web APP=finance`. Same shape as Inventory above.
 https://finance.opsgrids.com {
 	import edge
+	import platform-headers "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://app.opsgrids.com"
 
 	handle {
 		root * /srv/web/finance/current
@@ -459,6 +507,7 @@ https://finance.opsgrids.com {
 # Published by `make edge-web APP=itsm`. Same shape as Inventory above.
 https://it.opsgrids.com {
 	import edge
+	import platform-headers "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://app.opsgrids.com"
 
 	handle {
 		root * /srv/web/itsm/current
@@ -475,9 +524,13 @@ https://it.opsgrids.com {
 }
 
 # ---------------------------------------------------------------------------- OpsGrids Storefront
-# Published by `make edge-web APP=storefront`. Same shape as Inventory above.
+# Published by `make edge-web APP=storefront`. Same shape as Inventory above. CSP: the editor
+# previews merchant content — images a merchant pasted from any https host (and uploaded ones on
+# EDGE_HOST), upload previews (blob:), generated placeholder art (data:), and a video section that
+# frames whatever https embed address the merchant gave it (VideoList.tsx takes any https host).
 https://store.opsgrids.com {
 	import edge
+	import platform-headers "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://app.opsgrids.com; frame-src https:"
 
 	handle {
 		root * /srv/web/storefront/current
@@ -496,8 +549,13 @@ https://store.opsgrids.com {
 # ---------------------------------------------------------------------------- OpsGrids Engage
 # Published by `make edge-web APP=engage`. Same shape as Inventory above. Its name is in the box's
 # TLS_PLATFORM_HOSTS, which is what lets preflight pass and storefront's tls-authorize admit it.
+# CSP: Meta's JavaScript SDK for WhatsApp Embedded Signup (connect.facebook.net, which talks to
+# graph/www.facebook.com and frames www/web/staticxx.facebook.com). The sandboxed srcdoc email
+# and campaign previews inherit this policy on top of their own meta CSP, so their inline styles
+# and their opt-in remote images (`img-src https:`) must be allowed here as well.
 https://engage.opsgrids.com {
 	import edge
+	import platform-headers "default-src 'self'; script-src 'self' https://connect.facebook.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' https:; connect-src 'self' https://app.opsgrids.com https://graph.facebook.com https://www.facebook.com; frame-src https://www.facebook.com https://web.facebook.com https://staticxx.facebook.com"
 
 	handle {
 		root * /srv/web/engage/current

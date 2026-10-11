@@ -16,7 +16,9 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import settings
+from app.manufacturing import models as _manufacturing_models  # noqa: F401  (registers tables)
 from app.models import SCHEMA, Base
+from app.mrp import models as _mrp_models  # noqa: F401  (registers tables)
 from platform_core.db import apply_schema_grants
 
 config = context.config
@@ -41,6 +43,14 @@ def include_object(obj, name, type_, reflected, compare_to) -> bool:  # type: ig
     return True
 
 
+def _is_downgrade() -> bool:
+    """An upgrade commits each revision on its own, so a long chain does not hold the early
+    revisions' ACCESS EXCLUSIVE locks to the end. A downgrade stays one transaction: its guards
+    refuse partway (stock in transit, rows that cannot be dropped) and must leave nothing undone."""
+    cmd = getattr(config.cmd_opts, "cmd", None)
+    return bool(cmd) and cmd[0].__name__ == "downgrade"
+
+
 def do_run_migrations(connection: Connection) -> None:
     connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{SCHEMA}"'))
     connection.commit()
@@ -52,6 +62,7 @@ def do_run_migrations(connection: Connection) -> None:
         version_table_schema=SCHEMA,
         compare_type=True,
         compare_server_default=True,
+        transaction_per_migration=not _is_downgrade(),
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -92,9 +103,18 @@ APPEND_ONLY_TABLES = (
     "roll_events",
     "lot_genealogy",
     "putaway_captures",
+    "goods_receipts",
+    "goods_receipt_lines",
+    "stock_transfer_transitions",
+    "inventory_import_runs",
+    "production_outputs",
+    "production_wastage",
+    "production_genealogy",
+    "job_work_receipts",
 )
 #: What each sweep's cross-tenant discovery reads — `app/cron.py`'s `ReconcileSweep` and
-#: `AlertSweep`, `app/channels/sweep.py`'s `ChannelSyncSweep`. Column-level, matching exactly
+#: `AlertSweep`, `app/channels/sweep.py`'s `ChannelSyncSweep`, `app/mrp/sweep.py`'s
+#: `MrpRunSweep`. Column-level, matching exactly
 #: what each sweep's own discovery SQL references: `AlertSweep`'s `_ALERT_ORGANIZATIONS_SQL`
 #: filters `inventory_items`/`shipments` on `deleted_at` but not `pick_tasks`; `ChannelSyncSweep`'s
 #: `_CONNECTED_CHANNELS_SQL` also selects `id` and filters on `status`. F11 and F12 each shipped
@@ -112,6 +132,18 @@ RECONCILE_DISCOVERY_TABLES: dict[str, tuple[str, ...]] = {
     "pick_tasks": ("organization_id",),
     "shipments": ("organization_id", "deleted_at"),
     "channels": ("organization_id", "id", "status", "deleted_at"),
+    # Phase 3: the reservation-expiry sweep asks which organizations hold an active reservation
+    # past its `expires_at`.
+    "inventory_reservations": ("organization_id", "status", "expires_at"),
+    "mrp_runs": ("organization_id", "status"),
+    # `app/jobwork/sweep.py`'s `_OVERDUE_ORGANIZATIONS_SQL` — Phase 6; exactly the columns it names.
+    "job_work_orders": (
+        "organization_id",
+        "status",
+        "due_date",
+        "overdue_notified_at",
+        "deleted_at",
+    ),
 }
 
 
@@ -151,7 +183,22 @@ def grant_reconcile_discovery(connection: Connection) -> None:
     for table, columns in RECONCILE_DISCOVERY_TABLES.items():
         if _exists(connection, table):
             connection.execute(text(f'REVOKE ALL ON "{SCHEMA}"."{table}" FROM "{reader}"'))
-            column_list = ", ".join(columns)
+            # Only the columns this revision has: a downgrade past the migration that added one
+            # (`inventory_reservations.expires_at`) must not fail on granting a column that is gone.
+            present = {
+                row[0]
+                for row in connection.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema = :s AND table_name = :t"
+                    ),
+                    {"s": SCHEMA, "t": table},
+                )
+            }
+            wanted = [column for column in columns if column in present]
+            if not wanted:
+                continue
+            column_list = ", ".join(wanted)
             connection.execute(
                 text(f'GRANT SELECT ({column_list}) ON "{SCHEMA}"."{table}" TO "{reader}"')
             )

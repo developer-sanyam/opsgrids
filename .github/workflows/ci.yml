@@ -5,6 +5,13 @@ on:
   push:
     branches: [main]
 
+# A newer push to the same ref makes the older run's result irrelevant, so it is cancelled
+# rather than left to burn runner minutes — on `main` as well as on a pull request. A full run
+# bills about 95 minutes, so letting every superseded `main` run finish costs about 40 more per
+# commit in a burst of merges and can leave the newest run queued behind them for runners,
+# while gaining nothing: deploy.yml plans from the commit the box last served, not from the previous
+# commit, so a commit whose run was cancelled is still part of the next deploy. The group is
+# the ref: a PR's merge ref, or `refs/heads/main`, so two PRs never cancel each other.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -17,6 +24,12 @@ env:
   ENVIRONMENT: ci
   INTERNAL_SERVICE_TOKEN: ci-only-internal-token
   PII_ENCRYPTION_KEY: ci-only-pii-key
+  # How many runners the service tests are spread across (`Backend — tests N/M`). The one place
+  # it is set: the `changes` job turns it into the job matrix, `make test-shard-verify` proves
+  # that many shards cover every test file, and tests/infra/test_ci_shards.py proves this and
+  # the Makefile's default agree. Changing it is changing the plan: run
+  # `make test-shard-plan TEST_SHARDS=<n>` to see the estimate first.
+  TEST_SHARDS: 6
 
 jobs:
   # Which halves of the repository this change can possibly affect. Runs without a checkout —
@@ -24,9 +37,12 @@ jobs:
   # the clone every other job pays.
   #
   # Deliberately fail-open: anything that is not under `frontend/` counts as backend, so a
-  # path nobody anticipated is still tested. `docs/**` is *not* excluded, and that is not an
-  # oversight — `ruff format` checks Python inside Markdown fences, so a docs-only change has
-  # broken the backend lint before.
+  # path nobody anticipated is still tested. `docs/**` still counts as backend — `ruff format`
+  # checks Python inside Markdown fences, so a docs-only change has broken the backend lint
+  # before, and the secret scan reads every tracked file — but it is the one path that does
+  # not set `code`, so a change that is *only* docs skips the database-backed jobs (migrations,
+  # service tests, contracts), which cannot see it. Nothing else is trusted that far: service
+  # tests read infrastructure/ files by path.
   changes:
     name: Changed areas
     runs-on: ubuntu-latest
@@ -38,6 +54,8 @@ jobs:
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      # False only when every changed path is under docs/ (see tools/affected-areas.sh).
+      code: ${{ steps.filter.outputs.code }}
       # Which services the sharded backend jobs (migrations, tests) should actually run,
       # on top of the backend/frontend split above. `services_all=true` means "don't trust
       # the list, run every service in every shard" — exactly today's behaviour — and is
@@ -50,11 +68,26 @@ jobs:
       # CI run this job did not gate, always does the full, safe thing.
       services_all: ${{ steps.filter.outputs.services_all }}
       services_list: ${{ steps.filter.outputs.services_list }}
+      # Which of the TEST_SHARDS service-test shards have anything to run, as a JSON list for
+      # the `tests` matrix, and how many shards there are. A change to one service leaves most
+      # shards with nothing affected; this keeps those from starting a runner, two containers
+      # and a full migration just to say so. Shard 1 is always in the list (it also runs the
+      # library tests and the boot smoke). tools/ci_shards.py computes it from the same plan
+      # each shard computes for itself, so the two cannot disagree.
+      test_shards: ${{ steps.shards.outputs.test_shards }}
+      test_shard_count: ${{ env.TEST_SHARDS }}
+      # A fingerprint of the plan this job saw. Each shard recomputes it from its own full
+      # checkout and fails if it differs, so the matrix above can never be built from a
+      # different idea of the tests than the shards run.
+      test_plan: ${{ steps.shards.outputs.test_plan }}
     steps:
+      # tools/ and every service's tests/ — all the shard planner reads. Still no clone of the
+      # application code.
       - uses: actions/checkout@v4
         with:
           sparse-checkout: |
-            tools/affected-areas.sh
+            /tools/
+            /services/*/tests/
           sparse-checkout-cone-mode: false
       - id: filter
         env:
@@ -71,6 +104,7 @@ jobs:
             {
               echo "backend=true"
               echo "frontend=true"
+              echo "code=true"
               echo "services_all=true"
               echo "services_list="
             } >> "$GITHUB_OUTPUT"
@@ -80,23 +114,52 @@ jobs:
           # An empty file list means the API told us nothing useful; tools/affected-areas.sh
           # treats no input the same way — run everything rather than conclude a pull
           # request changed nothing.
+          #
+          # Both names of a renamed file: `filename` is where it went, `previous_filename`
+          # where it came from. Reading only the first let `git mv infrastructure/edge/RUNBOOK.md
+          # docs/runbook.md` look like a docs-only change — the file service tests read by path
+          # had vanished, and every job that would have noticed was skipped.
           gh api --paginate \
             "repos/${{ github.repository }}/pulls/${{ github.event.number }}/files" \
-            --jq '.[].filename' \
+            --jq '.[] | .filename, (.previous_filename // empty)' \
             | tools/affected-areas.sh | tee -a "$GITHUB_OUTPUT"
 
+      - id: shards
+        env:
+          AFFECTED_ALL: ${{ steps.filter.outputs.services_all }}
+          AFFECTED_SERVICES: ${{ steps.filter.outputs.services_list }}
+        run: |
+          set -euo pipefail
+          # Computed into variables first: a command substitution inside `echo`'s argument
+          # discards the planner's exit status, so a crash left this step green with an empty
+          # output — and an empty digest switches off the shards' plan-agreement check.
+          shards=$(python3 tools/ci_shards.py needed "$TEST_SHARDS")
+          digest=$(python3 tools/ci_shards.py digest "$TEST_SHARDS")
+          test -n "$shards" -a -n "$digest"
+          echo "test_shards=$shards" >> "$GITHUB_OUTPUT"
+          echo "test_plan=$digest" >> "$GITHUB_OUTPUT"
+
   # The backend was one job of thirteen serial steps and 637s — the whole pipeline's
-  # critical path. It is now three, because of a measurement: on a 2-vCPU runner, running
+  # critical path. It was split across jobs, because of a measurement: on a 2-vCPU runner, running
   # two processes made each three times slower and the step lost outright. The way to
   # parallelise on hardware that small is another runner, not another process — so the work
   # is split across jobs, each with its own machine and its own database, and `JOBS: 1`
   # keeps every job serial inside itself.
 
+  # The backend's static checks used to be one job and, once lint stopped hiding the rest, 12
+  # minutes: 415s of cold mypy, 221s of repository-tooling tests and ~80s of everything else, one
+  # after another. They are independent, so they are three jobs that run at once.
+  #
+  # Every check in each job runs even when an earlier one fails (`if: ${{ !cancelled() }}`).
+  # Stopping at the first red row meant a pull request with three problems took three 30-minute
+  # round trips to learn about them one at a time. The job still fails if any step does;
+  # nothing is hidden, only no longer withheld.
   static:
-    name: Backend — lint, types, contracts
+    name: Backend — lint, boundaries, schemas
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.backend == 'true'
+    timeout-minutes: 20
     env:
       JOBS: 1
     steps:
@@ -109,16 +172,90 @@ jobs:
 
       - run: uv sync --frozen
 
-      # The single largest win in the pipeline: 219s to 14s, measured. `mypy --strict` with
-      # the pydantic plugin costs ~6s per service cold and ~0.3s incrementally, and nothing
+      # Every check in this file is one make target, and `make gate` runs the same targets.
+      # (Setup — installs, the database bootstrap — is not a check.) That is the whole
+      # contract between this file and the Makefile: a check that exists only here is a check
+      # nobody can run before pushing, which with Actions unavailable means nobody runs it.
+      - name: Lint
+        if: ${{ !cancelled() }}
+        run: make lint
+
+      - name: Hygiene
+        # No skipped tests, debugger calls, print() or bare noqa. A skipped test is a
+        # test that does not run, and a green build does not say so.
+        if: ${{ !cancelled() }}
+        run: make hygiene
+
+      - name: Dependency boundaries
+        # import-linter per service: the layering in CLAUDE.md, and no import cycles.
+        if: ${{ !cancelled() }}
+        run: make boundaries
+
+      - name: Shard arithmetic
+        # Asserts the shards below partition the service list exactly. The failure this
+        # prevents is silent: a miscount does not break a build, it drops a service's tests
+        # and leaves the pipeline green while nothing checks that service.
+        if: ${{ !cancelled() }}
+        run: make shard-verify SHARDS=3
+
+      - name: Test shard coverage
+        # The same guarantee for the service tests, which are split by item — a service, or a
+        # part of one — rather than by service: every test file is in exactly one item, and no
+        # two parts of a service share a shard (and so a database). See tools/ci_shards.py.
+        if: ${{ !cancelled() }}
+        run: make test-shard-verify TEST_SHARDS="$TEST_SHARDS"
+
+      - name: OpenAPI contract
+        # The committed documents in libs/contracts/openapi and the permission manifests
+        # must match the code. `make openapi` regenerates them.
+        if: ${{ !cancelled() }}
+        run: make openapi-check
+
+      - name: Shell scripts
+        # shellcheck at its pinned version — the runner's own is older and disagrees, so the
+        # target falls back to the pinned image rather than use it.
+        if: ${{ !cancelled() }}
+        run: make shellcheck
+
+      - name: Dockerfiles
+        # hadolint at its pinned version, through its image. Thresholds in .hadolint.yaml.
+        if: ${{ !cancelled() }}
+        run: make hadolint
+
+  types:
+    name: Backend — types
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    timeout-minutes: 20
+    env:
+      JOBS: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen
+
+      # The single largest win in this job: 415s cold to a fraction of that warm. `mypy --strict`
+      # with the pydantic plugin costs ~6s per service cold and ~0.3s incrementally, and nothing
       # cached `.mypy_cache`, so every run re-analysed code that had not changed.
       #
       # Keyed on uv.lock, which pins the mypy version — an upgrade must not read a cache the
       # previous version wrote. The rolling `github.sha` suffix saves a fresh entry each run
       # while `restore-keys` recovers the most recent compatible one. mypy validates its own
       # cache per file, so a partial hit recomputes that file rather than trusting it.
+      #
+      # Restore and save are separate steps because a cache step's own save only runs when the
+      # whole job succeeded: a red job never wrote the cache, so every run paid the cold cost
+      # again. mypy's cache is valid whatever the result was, so it is saved on every `main` run
+      # that was not cancelled (pull requests restore it and do not save; see that step).
       - name: Restore mypy caches
-        uses: actions/cache@v4
+        id: mypy-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             .mypy_cache
@@ -128,67 +265,70 @@ jobs:
             mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
             mypy-${{ runner.os }}-
 
-      # Every check in this file is one make target, and `make gate` runs the same targets.
-      # (Setup — installs, the database bootstrap — is not a check.) That is the whole
-      # contract between this file and the Makefile: a check that exists only here is a check
-      # nobody can run before pushing, which with Actions unavailable means nobody runs it.
-      - name: Lint
-        run: make lint
-
-      - name: Hygiene
-        # No skipped tests, debugger calls, print() or bare noqa. A skipped test is a
-        # test that does not run, and a green build does not say so.
-        run: make hygiene
-
-      - name: Dependency boundaries
-        # import-linter per service: the layering in CLAUDE.md, and no import cycles.
-        run: make boundaries
-
       - name: Type check
         # libs, every service, and the tooling. `mypy libs services` cannot run at all —
         # each service exposes a top-level `app`, so they must be checked one process at
         # a time.
         run: make typecheck-libs typecheck-services typecheck-tools
 
-      - name: Repository-tooling tests
-        # remote.sh's rebuild rule, ci-plan.sh's path logic, and the gate's own checkers
-        # (licence expressions, the audit allow-list's expiry, the port check). No database,
-        # no `make infra` — fits here, not in the tests job below.
-        run: make test-infra
+      - name: Save mypy caches
+        # Only from `main`: every entry is ~110 MB (34 services at ~3 MB compressed each) under
+        # a key unique to the commit, so saving from every pull-request push would evict the
+        # `main` entry that pull requests restore from, within about a week of normal pushes
+        # against the repository's 10 GB cap. A pull request restores `main`'s newest entry —
+        # caches from the default branch are readable from any branch — and recomputes only
+        # the files it changed.
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.mypy-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .mypy_cache
+            services/*/.mypy_cache
+          key: mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
 
-      - name: Shard arithmetic
-        # Asserts the shards below partition the service list exactly. The failure this
-        # prevents is silent: a miscount does not break a build, it drops a service's tests
-        # and leaves the pipeline green while nothing checks that service.
-        run: make shard-verify SHARDS=3
-
-      - name: OpenAPI contract
-        # The committed documents in libs/contracts/openapi and the permission manifests
-        # must match the code. `make openapi` regenerates them.
-        run: make openapi-check
-
-      - name: Shell scripts
-        # shellcheck at its pinned version — the runner's own is older and disagrees, so the
-        # target falls back to the pinned image rather than use it.
-        run: make shellcheck
-
-      - name: Dockerfiles
-        # hadolint at its pinned version, through its image. Thresholds in .hadolint.yaml.
-        run: make hadolint
-
-  migrations:
-    name: Backend — migrations ${{ matrix.shard }}/3
+  tooling:
+    name: Backend — tooling tests
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.backend == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
+    timeout-minutes: 20
     env:
       JOBS: 1
-      SHARD: ${{ matrix.shard }}
-      SHARDS: 3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen
+
+      - name: Repository-tooling tests
+        # remote.sh's rebuild rule, ci-plan.sh's path logic, the shard planner, and the gate's
+        # own checkers (licence expressions, the audit allow-list's expiry, the port check). No
+        # database, no `make infra` — fits here, not in the tests job below. ~220s on its own,
+        # which is why it is not a step of the lint job.
+        run: make test-infra
+
+  # One job, not three. With the database tuned (below) and two services migrated at a time, the
+  # whole round-trip and drift check take ~2 minutes — well inside the tests' critical path — and
+  # three jobs paid three container starts and three rounded-up minutes for it. `SHARDS: 1` is
+  # the same Makefile target with a single shard: every service.
+  migrations:
+    name: Backend — migrations
+    runs-on: ubuntu-latest
+    needs: changes
+    # Not for a change that is only docs: no migration can see it (see `changes`).
+    if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.code == 'true'
+    timeout-minutes: 20
+    env:
+      # Two services at a time: a migration is mostly the interpreter importing the app and
+      # Alembic starting up, not database work, so a second process uses the second vCPU.
+      # (The test jobs stay at 1: there the database server is the second busy process.)
+      JOBS: 2
+      SHARD: 1
+      SHARDS: 1
       # Narrows migration-shard / migration-check-shard to what this pull request could
       # affect (tools/filter-affected.sh). services_all=true — any non-pull_request event,
       # or a change outside a single services/<name>/ dir — makes this a no-op: every
@@ -229,6 +369,10 @@ jobs:
           PGPASSWORD=opsgrids psql -h localhost -U opsgrids -d opsgrids \
             -f tools/dev-bootstrap/init-db.sql
 
+      - name: Tune Postgres for CI
+        # fsync and friends off on this throwaway database; see the script for the numbers.
+        run: tools/ci-postgres-tune.sh
+
       - name: Migrations round-trip
         # upgrade head → downgrade base → upgrade head, for this shard's services — or the
         # ones among them AFFECTED_SERVICES names, when the `changes` job set one (see the
@@ -244,21 +388,39 @@ jobs:
         # the round-trip above, so it only checks schemas that step actually migrated.
         run: make migration-check-shard
 
+  # The service tests are the pipeline's critical path, and they are split by *item* — a whole
+  # service, or one part of a service too heavy for a runner's share — not by service. By
+  # service, `operations` alone took 19 minutes and the shard holding it 32; no assignment of
+  # whole services can beat its slowest one. tools/ci_shards.py cuts `operations` (and any
+  # other service that outweighs half a shard) into parts by recorded per-file duration, deals
+  # the items out, and `make test-shard-verify` proves nothing is dropped. Parts of one
+  # service never share a shard, so never a database: each runner has its own Postgres, and
+  # the service fixtures TRUNCATE their schema before every test.
+  #
+  # The matrix comes from the `changes` job, which leaves out shards with nothing affected.
+  # Re-balance with `make test-shard-plan`; refresh the durations from the junit artifacts
+  # each shard uploads (docs/testing.md).
   tests:
-    name: Backend — tests ${{ matrix.shard }}/3
+    name: Backend — tests ${{ matrix.shard }}/${{ needs.changes.outputs.test_shard_count }}
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.backend == 'true'
+    # Not for a change that is only docs: no service test can see it (see `changes`).
+    if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.code == 'true'
+    # A hung test would otherwise hold a runner for six hours. The longest shard is ~10.
+    timeout-minutes: 30
     strategy:
       # Every shard reports. One shard failing must not hide another's result — the same
       # reason the per-service fan-out runs every service before returning non-zero.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: ${{ fromJSON(needs.changes.outputs.test_shards) }}
     env:
       JOBS: 1
       SHARD: ${{ matrix.shard }}
-      SHARDS: 3
+      SHARDS: ${{ needs.changes.outputs.test_shard_count }}
+      TEST_PLAN_DIGEST: ${{ needs.changes.outputs.test_plan }}
+      # One junit XML per item, uploaded below: the measured timings the shards are balanced by.
+      JUNIT_DIR: ${{ github.workspace }}/junit
       # Narrows "Service tests" (make test-shard) to what this pull request could affect —
       # see the identical note on the migrations job above. Does not touch "Apply
       # migrations" below, which stays unfiltered on purpose (see that step).
@@ -310,6 +472,13 @@ jobs:
           PGPASSWORD=opsgrids psql -h localhost -U opsgrids -d opsgrids \
             -f tools/dev-bootstrap/init-db.sql
 
+      - name: Tune Postgres for CI
+        # fsync, synchronous_commit and full_page_writes off on this throwaway database. The
+        # fixtures truncate ~50 tables before every test, and waiting for the disk to confirm
+        # each one was more than half of every service's run time: 123s -> 53s on the same
+        # tests, measured. See tools/ci-postgres-tune.sh.
+        run: tools/ci-postgres-tune.sh
+
       - name: Apply migrations
         # Every schema, not just this shard's — and that is not laziness, it is a
         # correctness requirement found by trying the other way.
@@ -323,14 +492,17 @@ jobs:
         # that a table is unreachable is worthless if the table is absent.
         #
         # So the shard splits the tests, not the schema.
-        run: make migrate
+        #
+        # Two at a time (the job runs the tests one at a time): migrating thirty-odd schemas
+        # is mostly interpreter start-up, which the second vCPU takes half of.
+        run: make migrate JOBS=2
 
       - name: Service tests
-        # Every service in this shard, unless the `changes` job narrowed AFFECTED_SERVICES
-        # — see tools/filter-affected.sh and tools/shard-filtered.sh. Migrations just above
-        # are deliberately unfiltered; this step is not, because test-shard's fan-out is
-        # service-local by construction (two documented exceptions, folded into
-        # AFFECTED_SERVICES by the `changes` job, not into this step).
+        # Every item in this shard (tools/ci_shards.py: a service, or a part of one), unless
+        # the `changes` job narrowed AFFECTED_SERVICES — see tools/filter-affected.sh and
+        # tools/test-shard.sh. Migrations just above are deliberately unfiltered; this step is
+        # not, because test-shard's fan-out is service-local by construction (two documented
+        # exceptions, folded into AFFECTED_SERVICES by the `changes` job, not into this step).
         run: make test-shard
 
       - name: Library tests
@@ -338,19 +510,34 @@ jobs:
         # tests open a real session and assert on the transaction-local GUC, so they need
         # Postgres. In the old single job they happened to run after migrations, which hid
         # the dependency; moving them to a container-less job surfaced it immediately.
-        if: matrix.shard == 1
+        #
+        # Runs even when a service's tests failed: they are independent rows, and a red
+        # service suite used to hide whether the libraries or the boot were also broken.
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         run: make test-libs
 
       - name: Boot smoke
         # The real entrypoint — uvicorn, the lifespan, the pool, Redis — not the in-process
         # app the tests build. Polls /health and /health/ready. One shard is enough: it
         # exercises the entrypoint, which is identical across services.
-        if: matrix.shard == 1
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         run: make smoke
+
+      - name: Upload test timings
+        # What `tools/ci_shards.py refresh` reads to re-balance the shards. Also on failure:
+        # a red run's timings are as good as a green one's.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-shard-${{ matrix.shard }}
+          path: junit
+          if-no-files-found: ignore
+          retention-days: 14
 
   supply-chain:
     name: Supply chain — vulnerabilities, licences, secrets
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: changes
     # Either half: the npm rows audit what the frontend ships, and a frontend-only change is
     # exactly the one that adds an npm dependency.
@@ -375,33 +562,42 @@ jobs:
       - name: Install frontend dependencies
         run: make frontend-install
 
+      # Each row runs whether or not the one before it passed — they audit different things,
+      # and a red advisory scan used to hide whether the licences and secrets were clean too.
       - name: Dependency audit
         # pip-audit over what uv.lock resolves to. Needs the network for the advisory database.
+        if: ${{ !cancelled() }}
         run: make audit
 
       - name: Frontend dependency audit
         # pnpm audit --prod: high and critical fail unless accepted in
         # frontend/audit-allowlist.toml with a reason and an unexpired date.
+        if: ${{ !cancelled() }}
         run: make frontend-audit
 
       - name: Licence check
         # Every dependency's licence is on the allow-list in tools/licenses.toml.
+        if: ${{ !cancelled() }}
         run: make licenses
 
       - name: Frontend licence check
         # Every production npm package's licence is on the [npm] allow-list, same file.
+        if: ${{ !cancelled() }}
         run: make frontend-licenses
 
       - name: Secret scan
         # detect-secrets over every tracked file, against the audited baseline. The dev
         # placeholders are excluded by pattern in the Makefile, with the reasons.
+        if: ${{ !cancelled() }}
         run: make secrets
 
   contracts:
     name: Contracts — events validate against their schemas
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: changes
-    if: needs.changes.outputs.backend == 'true'
+    # Not for a change that is only docs: it reads libs/contracts, which a doc cannot change.
+    if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -417,11 +613,17 @@ jobs:
         # (services/notification/tests/test_event_contracts.py).
         run: make contracts-check
 
-  frontend:
-    name: Frontend — types, lint, boundaries, tests, build
+  # The frontend was one job running five checks in a row — 19 minutes on a 2-vCPU runner, with
+  # the tests alone 14 and the build still to come. It is now a static job and four legs that
+  # each test and build a slice of the workspace, all at once. Every check is still the same
+  # make target the gate runs; the legs only narrow it with FRONTEND_FILTER, and
+  # tests/infra/test_ci_shards.py fails if a package is in no leg, or in two.
+  frontend-static:
+    name: Frontend — types, lint, boundaries
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -449,23 +651,82 @@ jobs:
       # costs ~45s, measured, and buys one thing: a type error fails the row named "Type check"
       # before lint and tests run, rather than surfacing minutes later as a build failure. It is
       # also what `make frontend-gate` runs, and this job runs nothing the gate does not.
+      #
+      # The three rows run whether or not the one before passed: they check different things.
       - name: Type check
         run: make frontend-typecheck
 
       # ESLint through the shared preset (jsx-a11y, no focused/skipped/todo tests,
       # --max-warnings=0), then the dev/preview port check.
       - name: Lint
+        if: ${{ !cancelled() }}
         run: make frontend-lint
 
       # dependency-cruiser: apps never import each other, shared packages only through their
       # exports, the design system and the SDK never import each other, no cycles.
       - name: Dependency boundaries
+        if: ${{ !cancelled() }}
         run: make frontend-boundaries
 
+  # `packages` is every workspace package the leg owns, as pnpm path selectors relative to
+  # frontend/. Balanced by measured time per leg (first run: 326/201/197/299s, now moved so
+  # product-operations, which alone is most of a leg, has only product-support beside it). A
+  # package missing from every leg would silently never be tested or built —
+  # tests/infra/test_ci_shards.py is what stops that.
+  frontend-tests:
+    name: Frontend — tests and build ${{ matrix.leg }}/4
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: 1
+            packages: >-
+              ./product-operations ./product-support
+          - leg: 2
+            packages: >-
+              ./product-engage ./product-hrms ./opsgrids-dashboard ./worker-app
+              ./product-pulseboard
+          - leg: 3
+            packages: >-
+              ./opsgrids-client ./product-storefront ./product-itsm ./product-marketing
+              ./product-finance ./opsgrids-visual ./opsgrids-config
+          - leg: 4
+            packages: >-
+              ./product-crm ./opsgrids-ui ./opsgrids-internal ./product-projects
+    env:
+      PACKAGES: ${{ matrix.packages }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install
+        run: make frontend-install
+
       - name: Tests
-        run: make frontend-test
+        run: |
+          filter=""
+          for pkg in $PACKAGES; do filter="$filter --filter $pkg"; done
+          make frontend-test FRONTEND_FILTER="$filter"
 
       # The one check that compiles for production — including the storefront's buyer bundle,
-      # which is what a merchant's customers actually download.
+      # which is what a merchant's customers actually download. Runs after a red test row too:
+      # a package that does not build is a different finding from one whose tests fail.
       - name: Build
-        run: make frontend-build
+        if: ${{ !cancelled() }}
+        run: |
+          filter=""
+          for pkg in $PACKAGES; do filter="$filter --filter $pkg"; done
+          make frontend-build FRONTEND_FILTER="$filter"

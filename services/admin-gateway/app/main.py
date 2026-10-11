@@ -102,6 +102,9 @@ app = create_app(
     # permission-version check both read it, and both fail closed.
     database=False,
     redis=True,
+    # Same as app-gateway: behind Caddy every peer is Caddy, so without this all anonymous
+    # callers share one bucket and anyone can lock staff out of operator sign-in.
+    trust_forwarded_for=True,
 )
 
 build_gateway(app, settings=cfg, routes=routes, policy=policy, resolver=resolver)

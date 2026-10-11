@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.transfer.requested/v1",
+  "title": "operations.inventory.transfer.requested",
+  "description": "A draft inter-warehouse transfer was requested. With `approval_required` the approval service (ADR-0006) opens a request of type `operations.inventory.transfer`, routed from `employee_id`'s manager chain, and the answer returns as `core.approval.request.decided`; otherwise the transfer is auto-approved (`AUTO`) or waits for a direct sign-off (`DIRECT`).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "transfer_id",
+    "number",
+    "from_warehouse_id",
+    "to_warehouse_id",
+    "approval_route",
+    "approval_required",
+    "employee_id",
+    "line_count",
+    "summary",
+    "reason"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "transfer_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string"
+    },
+    "from_warehouse_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "to_warehouse_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "approval_route": {
+      "type": "string",
+      "enum": [
+        "AUTO",
+        "DIRECT",
+        "SERVICE"
+      ]
+    },
+    "approval_required": {
+      "type": "boolean"
+    },
+    "employee_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "line_count": {
+      "type": "integer"
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transfer_number",
+        "from_warehouse",
+        "to_warehouse",
+        "line_count",
+        "largest_line"
+      ],
+      "properties": {
+        "transfer_number": {
+          "type": "string"
+        },
+        "from_warehouse": {
+          "type": "string"
+        },
+        "to_warehouse": {
+          "type": "string"
+        },
+        "line_count": {
+          "type": "integer"
+        },
+        "largest_line": {
+          "type": "string"
+        }
+      }
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

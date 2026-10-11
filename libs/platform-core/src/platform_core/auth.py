@@ -22,6 +22,7 @@ LOCATION really does compare locations here — a scope that returns early is a 
 from __future__ import annotations
 
 import enum
+import hmac
 import uuid
 from collections.abc import Callable
 from typing import Annotated, Any, Protocol
@@ -40,7 +41,11 @@ from platform_core.errors import (
     PaymentRequiredProblem,
     UnauthorizedProblem,
 )
-from platform_core.internal_auth import verify_gateway_token, verify_service_token
+from platform_core.internal_auth import (
+    forwarded_headers_digest,
+    verify_gateway_token,
+    verify_service_token,
+)
 
 #: The audience every operator (staff) token carries — minted only by `services.operator_login`
 #: in auth-service, never by a tenant sign-in. `require_operator` is what every staff_only route
@@ -162,7 +167,9 @@ def decode_token(
         )
     except jwt.ExpiredSignatureError as exc:
         raise UnauthorizedProblem("Token has expired") from exc
-    except jwt.InvalidTokenError as exc:
+    except jwt.PyJWKClientConnectionError:
+        raise  # JWKS unreachable is our outage, not a bad credential — don't log everyone out
+    except (jwt.InvalidTokenError, jwt.PyJWKClientError) as exc:
         raise UnauthorizedProblem("Token is not valid") from exc
 
     if claims.get("typ") != expected_type:
@@ -196,6 +203,27 @@ def _csv(request: Request, header: str) -> list[str]:
     return [p for p in request.headers.get(header, "").split(",") if p]
 
 
+def _verified_hop(request: Request, settings: ServiceSettings) -> dict[str, Any] | None:
+    """The gateway hop token's claims, or `None` when the request carries no valid one.
+
+    A valid token whose `fwd` digest does not match the forwarded headers raises: those headers
+    were altered after the gateway signed them (a captured token replayed with escalated
+    `X-Perms`, say), and that must not fall back to anything.
+    """
+    internal = request.headers.get("X-Internal-Token")
+    if not internal:
+        return None
+    try:
+        hop = verify_gateway_token(settings, internal)
+    except Exception:
+        # Not a forwarding token — perhaps a service token for an internal route, perhaps
+        # garbage. Fall through to bearer authentication rather than judging it here.
+        return None
+    if not hmac.compare_digest(str(hop.get("fwd", "")), forwarded_headers_digest(request.headers)):
+        raise UnauthorizedProblem("Forwarded identity does not match the hop token")
+    return hop
+
+
 def _principal_from_gateway(request: Request, settings: ServiceSettings) -> Principal | None:
     """Identity forwarded by a gateway, trusted only with a valid forwarding token.
 
@@ -207,16 +235,11 @@ def _principal_from_gateway(request: Request, settings: ServiceSettings) -> Prin
     forwarding token is now good for the token TTL, for one user in one organization, and
     opens no `/internal/v1` endpoint (its audience is the forwarding channel, never a
     service name). Any service reachable *without* going through a gateway must still not
-    be reachable from outside the cluster.
+    be reachable from outside the cluster. Every other forwarded header (`X-Perms`,
+    `X-Audience`, `X-Amr`, …) is bound too, through the token's `fwd` digest.
     """
-    internal = request.headers.get("X-Internal-Token")
-    if not internal:
-        return None
-    try:
-        hop = verify_gateway_token(settings, internal)
-    except Exception:
-        # Not a forwarding token — perhaps a service token for an internal route, perhaps
-        # garbage. Fall through to bearer authentication rather than judging it here.
+    hop = _verified_hop(request, settings)
+    if hop is None:
         return None
     user_id = request.headers.get("X-User-Id")
     org_id = request.headers.get("X-Org-Id")
@@ -256,6 +279,25 @@ def _principal_from_gateway(request: Request, settings: ServiceSettings) -> Prin
         amr=_csv(request, "X-Amr"),
         permission_version=int(request.headers.get("X-Permission-Version") or 0),
     )
+
+
+def client_ip(request: Request | None) -> str | None:
+    """The visitor's address, for audit rows and anything else that records one.
+
+    Behind a gateway the TCP peer is the gateway's container, so the gateway forwards the
+    address it resolved in `X-Client-Ip`. That header is believed only under a hop token that
+    binds it; otherwise — a direct caller, a tampered hop — the peer is the honest answer.
+    """
+    if request is None:
+        return None
+    forwarded = request.headers.get("X-Client-Ip")
+    if forwarded and request.headers.get("X-Internal-Token"):
+        try:
+            if _verified_hop(request, request.app.state.settings) is not None:
+                return forwarded
+        except UnauthorizedProblem:
+            pass
+    return request.client.host if request.client else None
 
 
 def get_principal(request: Request) -> Principal:
@@ -513,6 +555,7 @@ __all__ = [
     "Scope",
     "ScopeContext",
     "ScopeResolver",
+    "client_ip",
     "decode_token",
     "get_principal",
     "register_scope_resolver",

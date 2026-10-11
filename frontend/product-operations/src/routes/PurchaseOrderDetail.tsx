@@ -14,6 +14,7 @@ import type { PoLineItem, PurchaseOrderOut } from "@/api/types";
 import { CATEGORY_LABEL, isLate } from "@/data/derive";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import { daysBetween, formatDate, formatMoney, formatMoneyPrecise, relativeDue } from "@/lib/format";
+import { formatQty } from "@/lib/quantity";
 import { today } from "@/lib/now";
 import {
   Avatar,
@@ -37,6 +38,7 @@ import {
   useToast,
 } from "@opsgrids/ui";
 import { purchaseOrderActions } from "../lib/purchaseOrderActions";
+import { PurchaseOrderReceipts } from "./PurchaseOrderReceipts";
 
 function lineTotal(line: PoLineItem): number {
   return line.quantity * line.unit_price_minor;
@@ -52,6 +54,17 @@ function DeliveryStatus({ po }: { po: PurchaseOrderOut }) {
         <div className="flex flex-col leading-tight">
           <span className="text-sm font-bold">Received</span>
           <span className="text-xs opacity-80 tnum">Delivered on {formatDate(when)}</span>
+        </div>
+      </div>
+    );
+  }
+  if (po.status === "partially_received") {
+    return (
+      <div className="flex items-center gap-3 rounded-tile bg-info-soft px-4 py-3 text-info">
+        <TruckIcon className="size-5 shrink-0" />
+        <div className="flex flex-col leading-tight">
+          <span className="text-sm font-bold">Partially received</span>
+          <span className="text-xs opacity-80 tnum">The rest is expected by {formatDate(po.expected_date)}</span>
         </div>
       </div>
     );
@@ -91,6 +104,10 @@ export function PurchaseOrderDetailPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const canApprove = useCan("operations.procurement.purchase_order.approve", "ORG");
+  // Posting a receipt needs both of these on the server; the button is only presentation.
+  const canWriteReceipt = useCan("operations.procurement.receipt.write", "ORG");
+  const canReceiveStock = useCan("operations.inventory.stock.receive", "ORG");
+  const canReceiveGoods = canWriteReceipt && canReceiveStock;
 
   const [deleting, setDeleting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -237,11 +254,19 @@ export function PurchaseOrderDetailPage() {
               Approve
             </Button>
           ) : null}
+          {/* The goods-receipt flow is the way to take a delivery: partial, short, tolerance-checked,
+              with lots and rolls. Receiving everything outstanding in one click stays beside it. */}
+          {actions.receiveGoods && canReceiveGoods ? (
+            <Button leadingIcon={<TruckIcon className="size-4" />} onClick={() => navigate(`/purchase-orders/${id}/receive`)}>
+              Receive goods
+            </Button>
+          ) : null}
           {/* Approval is a prerequisite for receiving: the service refuses to receive a draft, so
               the control only exists once someone with the approve permission has signed off. */}
           {actions.receive ? (
             <Can permission="operations.procurement.purchase_order.write" scope="OWN">
               <Button
+                {...(actions.receiveGoods && canReceiveGoods ? { variant: "outline" as const } : {})}
                 leadingIcon={<CheckCircleIcon className="size-4" />}
                 loading={receive.pending}
                 onClick={() => void receive.mutate(undefined)}
@@ -282,7 +307,8 @@ export function PurchaseOrderDetailPage() {
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-3 items-start">
         {/* Line items */}
-        <Card className="p-2 sm:p-4 lg:col-span-2">
+        <div className="flex flex-col gap-4 lg:col-span-2">
+        <Card className="p-2 sm:p-4">
           <div className="px-3 pt-2 pb-3">
             <SectionHeader title="Line Items" subtitle={`${po.line_items.length} lines`} />
           </div>
@@ -315,6 +341,11 @@ export function PurchaseOrderDetailPage() {
                     </td>
                     <td className="py-3.5 px-3 text-right tnum text-ink-soft whitespace-nowrap">
                       {line.quantity} {line.uom}
+                      {po.status === "partially_received" || line.short_closed ? (
+                        <span className="block text-xs font-normal text-muted">
+                          {formatQty(line.received_exact)} received{line.short_closed ? ", closed short" : ""}
+                        </span>
+                      ) : null}
                     </td>
                     <td className="py-3.5 px-3 text-right tnum font-semibold text-ink whitespace-nowrap">
                       {formatMoney(lineTotal(line), po.currency)}
@@ -335,6 +366,14 @@ export function PurchaseOrderDetailPage() {
             </table>
           </div>
         </Card>
+
+        {po.status === "draft" || po.status === "cancelled" ? null : (
+          <PurchaseOrderReceipts
+            purchaseOrderId={po.id}
+            reloadKey={`${po.status}:${po.line_items.map((l) => l.received_exact).join(",")}`}
+          />
+        )}
+        </div>
 
         {/* Sidebar: delivery + supplier + meta */}
         <div className="flex flex-col gap-5">

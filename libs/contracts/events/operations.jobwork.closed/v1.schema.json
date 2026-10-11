@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.jobwork.closed/v1",
+  "title": "operations.jobwork.closed",
+  "description": "A job-work order was closed after its reconciliation balanced (Inventory plan Phase 6): sent = received + rejected + shortage, nothing outstanding, and the ledger agrees with the documents. The totals are the settlement a costing or vendor-payment consumer needs. Quantities are exact decimal strings.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "order_id",
+    "order_number",
+    "supplier_id",
+    "total_sent",
+    "total_received",
+    "total_rejected",
+    "total_shortage"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "order_id": { "type": "string", "format": "uuid" },
+    "order_number": { "type": "string", "minLength": 1 },
+    "supplier_id": { "type": "string", "format": "uuid" },
+    "total_sent": { "type": "string", "pattern": "^\\d+(\\.\\d{1,3})?$" },
+    "total_received": { "type": "string", "pattern": "^\\d+(\\.\\d{1,3})?$" },
+    "total_rejected": { "type": "string", "pattern": "^\\d+(\\.\\d{1,3})?$" },
+    "total_shortage": { "type": "string", "pattern": "^\\d+(\\.\\d{1,3})?$" }
+  }
+}

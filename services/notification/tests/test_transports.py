@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import smtplib
+import ssl
 from typing import ClassVar
 
 import httpx
@@ -321,8 +322,8 @@ class _FakeSmtp:
         self.die_after: int | None = None
         _FakeSmtp.instances.append(self)
 
-    def starttls(self) -> None:
-        pass
+    def starttls(self, context: ssl.SSLContext | None = None) -> None:
+        self.tls_context = context
 
     def login(self, username: str, password: str) -> None:
         pass
@@ -359,6 +360,20 @@ def _smtp_transport() -> transports.SmtpTransport:
 
 def _message(to: str) -> transports.Outgoing:
     return transports.Outgoing(to_address=to, subject="Hi", body="Body")
+
+
+async def test_starttls_verifies_the_server_before_the_password_is_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`starttls()` with no context uses an unverified one, so anyone on the path could
+    present any certificate and read the SMTP password `login()` sends next."""
+    _FakeSmtp.instances.clear()
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSmtp)
+    await _smtp_transport().send_many([_message("a@b.com")])
+    ctx = _FakeSmtp.instances[0].tls_context
+    assert ctx is not None
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname
 
 
 async def test_send_many_reuses_one_connection_for_the_whole_batch(

@@ -233,6 +233,14 @@ export function InventoryPage() {
               <span className="text-muted font-medium">Page value</span>
               <span className="tnum">{formatMoneyCompact(totalValue)}</span>
             </span>
+            <Button variant="secondary" onClick={() => navigate("/inventory/labels/item")}>
+              Labels
+            </Button>
+            <Can permission="operations.inventory.stock.read" scope="ORG">
+              <Button variant="secondary" onClick={() => navigate("/inventory/scan")}>
+                Scan
+              </Button>
+            </Can>
             <ImportExportButton
               meta={dx.meta}
               state={dx.state}

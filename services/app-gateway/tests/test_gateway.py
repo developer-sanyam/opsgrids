@@ -32,6 +32,31 @@ def auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def assert_the_hop_vouches_for_nobody(upstream: EchoUpstream) -> None:
+    """A public request carries a hop token (it binds the visitor's address), but one that names
+    no user and no organization — a service handed exactly these headers derives no principal."""
+    from types import SimpleNamespace
+
+    from starlette.requests import Request
+
+    from app.config import settings
+    from platform_core.auth import _principal_from_gateway
+    from platform_core.internal_auth import verify_gateway_token
+
+    cfg = settings()
+    forwarded = upstream.last["headers"]
+    claims = verify_gateway_token(cfg, forwarded["x-internal-token"])
+    assert "uid" not in claims and "org" not in claims
+    request = Request(
+        {
+            "type": "http",
+            "headers": [(k.encode(), v.encode()) for k, v in forwarded.items()],
+            "app": SimpleNamespace(state=SimpleNamespace(settings=cfg)),
+        }
+    )
+    assert _principal_from_gateway(request, cfg) is None
+
+
 class TestRouting:
     def test_longest_prefix_wins(self) -> None:
         """A nested route may belong to a different service than its parent."""
@@ -161,6 +186,61 @@ class TestHeaderSpoofing:
         assert claims["org"] == ORG
         assert claims["iss"] == "gateway"
         assert claims["exp"] - claims["iat"] <= 300, "a hop credential must be short-lived"
+
+    async def test_the_hop_token_binds_every_forwarded_header(
+        self, client: AsyncClient, mint, upstream: EchoUpstream
+    ) -> None:
+        """Binding only uid/org let a captured hop token be replayed for its TTL with an
+        escalated `X-Perms` or `X-Audience`. The token carries a digest of every forwarded
+        identity header, computed over exactly what went out — including the grants resolved
+        after the identity headers were written."""
+        from app.config import settings
+        from platform_core.internal_auth import forwarded_headers_digest, verify_gateway_token
+
+        await client.get(HRMS, headers=auth(mint()))
+        forwarded = upstream.last["headers"]
+        claims = verify_gateway_token(settings(), forwarded["x-internal-token"])
+
+        assert forwarded["x-perms"]
+        assert claims["fwd"] == forwarded_headers_digest(forwarded)
+
+    async def test_the_visitors_address_travels_bound_and_cannot_be_supplied(
+        self, client: AsyncClient, mint, upstream: EchoUpstream
+    ) -> None:
+        """Behind the gateway a service's TCP peer is the gateway, so the address it resolved
+        (rightmost `X-Forwarded-For` from the trusted proxy) is forwarded — never one the
+        caller wrote itself."""
+        await client.get(
+            HRMS,
+            headers={
+                **auth(mint()),
+                "X-Forwarded-For": "198.51.100.7",
+                "X-Client-Ip": "203.0.113.66",
+            },
+        )
+        assert upstream.header("x-client-ip") == "198.51.100.7"
+
+    async def test_an_anonymous_request_carries_the_visitors_address_under_a_hop_that_names_nobody(
+        self, client: AsyncClient, upstream: EchoUpstream
+    ) -> None:
+        """A password-reset request is anonymous, yet auth records where it came from. The
+        address is bound by a hop token like any forwarded header — one that vouches for no
+        user and no organization."""
+        from app.config import settings
+        from platform_core.internal_auth import forwarded_headers_digest, verify_gateway_token
+
+        await client.post(
+            "/api/v1/auth/password/forgot",
+            json={"email": "a@example.com"},
+            headers={"X-Forwarded-For": "198.51.100.8", "X-Client-Ip": "203.0.113.66"},
+        )
+        forwarded = upstream.last["headers"]
+        claims = verify_gateway_token(settings(), forwarded["x-internal-token"])
+
+        assert forwarded["x-client-ip"] == "198.51.100.8"
+        assert claims["fwd"] == forwarded_headers_digest(forwarded)
+        assert "uid" not in claims and "org" not in claims
+        assert "x-user-id" not in forwarded and "x-org-id" not in forwarded
 
     async def test_the_correlation_id_is_propagated(
         self, client: AsyncClient, mint, upstream: EchoUpstream
@@ -500,7 +580,7 @@ class TestTheStorefrontBuyerSurface:
 
         assert upstream.header("x-org-id") is None
         assert upstream.header("x-perms") is None
-        assert upstream.header("x-internal-token") is None
+        assert_the_hop_vouches_for_nobody(upstream)
 
     async def test_the_bootstrap_is_limited_by_address_too(
         self, client: AsyncClient, redis: FakeRedis
@@ -545,7 +625,7 @@ class TestTheStorefrontBuyerSurface:
         await client.post(self.SERVICEABILITY, json={"store": "greenleaf", "postal_code": "400050"})
         assert upstream.header("x-org-id") is None
         assert upstream.header("x-perms") is None
-        assert upstream.header("x-internal-token") is None
+        assert_the_hop_vouches_for_nobody(upstream)
 
     async def test_it_is_limited_by_address_like_every_other_public_path(
         self, client: AsyncClient, redis: FakeRedis

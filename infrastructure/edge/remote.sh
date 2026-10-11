@@ -365,6 +365,15 @@ up() {
 	local parallel_limit
 	parallel_limit=$(up_parallel_limit)
 	echo "up: starting ${parallel_limit} containers at a time, profiles: ${COMPOSE_PROFILES:-<none: core only>}"
+	# Gateways first, alone: a service on a newer platform-core refuses an older gateway's hop
+	# token (every request a 401, every user signed out) while a new gateway in front of an old
+	# service is harmless. Only the gateways the active profiles run — naming one would start it.
+	local gateways
+	gateways=$("${COMPOSE[@]}" config --services | grep -xE 'app-gateway|admin-gateway' || true)
+	if [ -n "$gateways" ]; then
+		# shellcheck disable=SC2086 # one service name per word
+		"${COMPOSE[@]}" up -d --no-deps $gateways
+	fi
 	COMPOSE_PARALLEL_LIMIT="$parallel_limit" "${COMPOSE[@]}" up -d --remove-orphans
 	# The Caddyfile arrives through a bind mount (of its directory — a file mount follows the
 	# inode and keeps serving the pre-checkout file), so editing it changes nothing compose

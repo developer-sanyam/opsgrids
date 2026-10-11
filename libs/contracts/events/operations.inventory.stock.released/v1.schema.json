@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.stock.released/v1",
+  "title": "operations.inventory.stock.released",
+  "description": "All or part of a reservation's open remainder was given back (a person's release, or expiry).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "reservation_id",
+    "inventory_item_id",
+    "released",
+    "released_milli",
+    "remaining",
+    "remaining_milli",
+    "fully_released"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "reservation_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "inventory_item_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "released": {
+      "type": "string",
+      "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+    },
+    "released_milli": {
+      "type": "integer"
+    },
+    "remaining": {
+      "type": "string",
+      "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+    },
+    "remaining_milli": {
+      "type": "integer"
+    },
+    "fully_released": {
+      "type": "boolean"
+    }
+  }
+}

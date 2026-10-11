@@ -558,7 +558,11 @@ What happens, in order, and what each step protects:
    ends with the **MFA reseal** — a no-op unless some `auth.mfa_factors` row still holds a
    plaintext secret, in which case it runs once from the new image and aborts the deploy unless
    it leaves none (see "Operator MFA" below).
-7. **up** — containers are recreated. Brief downtime. Not zero.
+7. **up** — containers are recreated. Brief downtime. Not zero. The gateways go first, on their
+   own: a service on a newer platform-core refuses an older gateway's hop token (the `fwd`
+   header digest), which would sign every user out until the gateway caught up. The reverse mix
+   is harmless. A **rollback** across the release that added `fwd` runs the other way — old
+   gateways in front of still-new services — so expect 401s and sign-outs until `up` finishes.
 8. **health** — every container running and healthy within 120 s, or the deploy reports a
    failure and leaves the decision to you.
 
@@ -684,13 +688,16 @@ did not create), so no item is left holding stock that cannot be moved.
 **Inventory Phase 1 rollback.** A **code-only rollback leaves the schema in place** — the new
 tables, keys and indexes stay, and the previous API ignores them (it never writes a lot or roll id;
 `remote.sh migrate` skips the `operations` schema with the `SKIPPED` warning above). That is the
-supported rollback. **Never `alembic downgrade` past `b7d41e92c05a`** (`downgrade -2`,
-`downgrade 665e44e243d7`) once real lots or rolls exist: it drops `lots`, `rolls`, `roll_events` and
+supported rollback. **Never `alembic downgrade` past `b7d41e92c05a`** (`downgrade b7d41e92c05a`,
+`downgrade 665e44e243d7`, or any relative step — `-2`, `-3`, … — that lands before it; later
+phases chain on top of it, so a bare `downgrade -2` no longer means "just past Phase 1") once real lots or rolls exist: it drops `lots`, `rolls`, `roll_events` and
 `lot_genealogy` — every lot, roll, split, merge and trace. The migration enforces this: its
 `downgrade()` refuses, with a message, when any lot or roll other than its own `LEGACY-…`
 placeholders exists, unless `OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE=1` is set in the environment of
 the `alembic` command — which you do only after a fresh backup and a decision to throw that data
-away. (`downgrade -1`, which only drops the second revision's indexes, is harmless.)
+away. (Downgrading only `c4a8e1f6d273`, the second revision, which just drops its indexes, is harmless; with
+later revisions applied, name it explicitly: `downgrade c4a8e1f6d273` undoes everything after it, and
+each of those later revisions must be safe to undo first.)
 
 **Reconcile the `operations` permissions after the API is deployed** (ADR-0007; same order as
 every permission rollout: manifests committed → service that enforces them deployed → reconcile
@@ -838,10 +845,10 @@ The key is **not a server secret**: it ships inside the bundle, so every visitor
 receives it. It must be restricted in the Google Cloud console — HTTP referrers limited to
 `https://ops.opsgrids.com/*`, the API list limited to the Maps APIs the app calls, a budget and a quota
 cap — and it must never be a server-side key. The build log says whether a key was found and how long
-it is; it never prints it. **No Caddy change ships with this release:** `ops` and `worker` send no
-`Content-Security-Policy` or `Permissions-Policy` today (a test pins that), so the map loads and the
-worker's location prompt works without an allow-list. CSP hardening is a separate release and will have
-to allow the Google Maps origins when it lands. For local development, put the key in
+it is; it never prints it. `ops.opsgrids.com`'s Content-Security-Policy (the Caddyfile's
+`platform-headers` argument) allows the Google Maps origins, on that site only; no site sends a
+`Permissions-Policy`, so the worker's location prompt works (tests pin both). A map that loads but
+draws nothing is the first thing to check against the browser console's CSP errors. For local development, put the key in
 `frontend/product-operations/.env.local` (untracked); with none, the app runs map-less.
 
 **Limitation (c): the order engine reserves only at the item's home bin.** `accept_order` reserves
@@ -1445,6 +1452,168 @@ as unpaid — expected on the stub wire after a restart), `payment.collection.we
 `account_id` is someone probing it, or a merchant who re-keyed without updating the platform),
 `payment.collections_webhook` (`ignored_reason`, `duplicate`), `payment.collection.checkout`
 (`provider`, `reopened`), `payment.collection.provider_refused` (the provider's stable code only).
+### Inventory Phase 2 (receiving and purchase): migration and the `operations` permission reconcile
+
+Migration `c5e91a7d3b28` (operations, after `d7a3c9e5b184`) creates `purchase_requisitions`,
+`purchase_requisition_lines`, `goods_receipts`, `goods_receipt_lines`, and adds
+`purchase_order_lines.received_milli` / `short_closed` and `inventory_items.receipt_tolerance_bp`. It
+is part of the ordinary `migrate` step; nothing else to run. Take the nightly backup first
+(`make edge-backup`). **Existing data:** `received_milli` is backfilled as `received_qty * 1000` (one
+whole unit is 1000 milli-units); every item gets tolerance 0 (exactly the ordered quantity — nothing
+that could be received before is refused now); no purchase order changes status, no ledger row moves,
+and an in-flight `approved` PO with `received_qty` already set stays `approved`. The receipt tables are
+append-only: `migrations/env.py` re-revokes `UPDATE`/`DELETE` after every grant pass. Rollback is the
+migration's `downgrade` (drops the new tables and the three columns; `received_qty` is untouched).
+Check beforehand with:
+
+```sql
+SELECT status, count(*) FROM operations.purchase_orders WHERE deleted_at IS NULL GROUP BY status;
+SELECT count(*) FROM operations.purchase_order_lines WHERE received_qty < 0;   -- expect 0
+```
+
+**Reconcile the `operations` permissions after the API is deployed** (ADR-0007; same order as every
+permission rollout: manifests committed -> service that enforces them deployed -> reconcile -> only
+then the UI that assumes them). Six codes are new: `operations.procurement.requisition.read|write|approve`,
+`operations.procurement.receipt.read|write`, `operations.inventory.stock.receive`. `OPERATIONS_ADMIN`
+(`all()`) gets all six; `OPERATIONS_MANAGER` gets all six; `OPERATIONS_WORKER` gets `receipt.read`,
+`receipt.write`, `stock.receive` and `purchase_order.read` (goods-in); `OPERATIONS_USER` gets
+`requisition.read` and `requisition.write` at OWN. **`BUYER` is a new role code**: the reconcile
+creates it in every organization that has Operations active (it is not granted to anyone — an admin
+assigns it). Roles an organization authored itself are never touched (ADR-0007 §4); the reconcile
+prints `memberships_without`.
+
+```bash
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations          # dry run
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+```
+
+Until it runs, the new requisition and goods-receipt routes answer 403 for every non-owner in every
+existing organization (a brand-new organization is fine). **The single-shot
+`POST /operations/purchase-orders/{id}/receive` now needs more than before.** It runs through the
+goods-receipt path and posts stock, so besides `purchase_order.write` it requires
+`operations.procurement.receipt.write` and `operations.inventory.stock.receive` at ORG scope (the
+two keys `POST /operations/goods-receipts` needs) — previously `purchase_order.write` alone let a
+buyer put stock on the books. Consequences for the deploy: roles that already receive
+(`OPERATIONS_ADMIN`, `OPERATIONS_MANAGER`) get both codes from the reconcile, so **until the
+reconcile has run, the single-shot receive answers 403 for every non-owner in existing
+organizations — run it straight after the API deploy**, not later in the week. `OPERATIONS_USER`
+(`purchase_order.write` at OWN) and `BUYER` do not hold the two codes and can no longer receive a
+purchase order, by design; `OPERATIONS_WORKER` receives through `POST /goods-receipts` (it has never
+held `purchase_order.write`). A quality-tracked item it receives lands in `QUALITY_HOLD`.
+It is a fleet write — every organization's permission version bumps — so outside peak hours and never
+as part of `make deploy`.
+
+**Checking it after the deploy** (read-only): post one goods receipt in a test organization against an
+approved PO and confirm the reconciler is clean —
+
+```sql
+SELECT count(*) FROM operations.inventory_discrepancies WHERE resolved_at IS NULL;   -- expect 0
+SELECT number, purchase_order_id, received_on FROM operations.goods_receipts ORDER BY created_at DESC LIMIT 5;
+```
+
+### Inventory Phase 3 (transfers, reservations, adjustments): migration, the approval service, and the permission reconcile
+
+Reference: `docs/inventory/movements.md`. Four things ship together; deploy them in this order.
+
+**1. Migration `c5a82f6d3b19` (operations, after Phase 2's `c5e91a7d3b28`).** Part of the ordinary `migrate` step. It creates
+`inventory_control_settings`, `stock_transfers`, `stock_transfer_lines`, `stock_transfer_transitions`
+and `adjustment_requests`, and adds `expires_at` / `expired_at` / `note` (nullable or defaulted) to
+`inventory_reservations`. It changes no existing row. Take the nightly backup first (`make
+edge-backup`). **Its downgrade refuses** while any transfer holds stock in transit — receive, or write
+off, those transfers first (see *Rollback*).
+
+**2. Deploy `approval` before `operations`' first threshold is set.** `approval` gains two request
+types (`operations.inventory.transfer`, `operations.inventory.adjustment`) and the consumers that open,
+close and withdraw them. Its queue is bound to the new `operations.inventory.*` routing keys only once
+its worker starts with that code; a topic exchange drops a message for a key nothing is bound to, so a
+request raised before that is silently never routed. Nothing is routed to `approval` until an
+administrator sets a threshold (`PUT /operations/inventory/control-settings`), so deploying `approval`
+in the same release, ahead of `operations`, is enough. Then deploy `operations`. (On the edge both run
+their consumers inside the API container, `RUN_CONSUMERS_IN_API`; the reservation-expiry sweep runs
+there too, under `RUN_SWEEPS_IN_API`, as `operations.reservations.expiry` on `/metrics`.)
+
+**3. Reconcile the `operations` permissions after the API is deployed** (ADR-0007; the same order as
+every permission rollout: manifests committed → the service that enforces them deployed → reconcile →
+only then the UI that assumes them). Five codes are new: `operations.inventory.transfer.write`,
+`.transfer.approve` (dangerous), `.transfer.dispatch`, `.transfer.receive` and
+`operations.inventory.control.configure` (dangerous). `OPERATIONS_ADMIN` (`all()`) gets all five;
+`OPERATIONS_MANAGER` gets the four transfer codes; `OPERATIONS_WORKER` gets `transfer.write`,
+`.dispatch` and `.receive` but not `.approve`; `OPERATIONS_USER` gets none. Customer-authored roles are
+never touched (ADR-0007 §4); the reconcile prints `memberships_without`. The reconcile applies
+whatever the manifest adds, so if Phase 2's codes have not been reconciled yet this one run covers them too.
+
+```bash
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations          # dry run
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+```
+
+Until it runs, every new route answers 403 for every non-owner in every existing organization (a
+brand-new organization is fine). Fleet write, so outside peak hours and never as part of `make deploy`.
+
+**4. The Operations SPA last** (Transfers, Reservations, Adjustments screens assume all of the above).
+
+**Verify** after deploy: `GET /api/v1/operations/inventory/transfers` is 200 for a manager and 403 for a
+plain user; `/metrics` shows `sweep_alive` for `operations.reservations.expiry`; the reconciler pass at
+the next night shows zero drift. To exercise the approval round trip, set a small adjustment threshold
+on a test organization, raise an adjustment over it (it returns 202 `PENDING_APPROVAL`), decide it in
+the approval inbox, and confirm it becomes `APPLIED` and the stock moved once.
+
+**Rollback.** The application rolls back by redeploying the previous image: the new tables simply go
+unused, and nothing the old code writes violates them. To drop the schema (`alembic downgrade
+c5e91a7d3b28`), first make sure no transfer is mid-flight, or the downgrade refuses with the count:
+
+```sql
+SELECT t.number, l.dispatched_milli - l.received_milli - l.shortage_milli AS still_in_transit_milli
+  FROM operations.stock_transfer_lines l
+  JOIN operations.stock_transfers t ON t.id = l.transfer_id
+ WHERE l.dispatched_milli > l.received_milli + l.shortage_milli;
+```
+
+Reservations survive the round trip; only their expiry, expired-at and note are dropped.
+
+### Inventory Phase 9 (scan, labels, bulk import/export): migration and the `operations` permission reconcile
+
+Migration `d9a4c6e1b3f7` (operations, after Phase 3's `c5a82f6d3b19`) adds a nullable `barcode` column to
+`inventory_items`, `lots` and `rolls` (unique per organization where set) and the append-only
+`inventory_import_runs` table. It is part of the ordinary `migrate` step; nothing else to run. It
+changes no row and no quantity (every existing record keeps `barcode = NULL`, meaning "scan the
+SKU / lot number / roll number"). Take the nightly backup first (`make edge-backup`); to roll back,
+`alembic downgrade c5a82f6d3b19` drops the new columns and table (it loses typed barcodes and the
+import history, never stock).
+
+**Reconcile the `operations` permissions after the API is deployed** (ADR-0007: manifests committed
+-> service deployed -> reconcile -> only then the UI). Two codes are new:
+`operations.inventory.data.import` (**dangerous**) and `operations.inventory.data.export`.
+`OPERATIONS_ADMIN` (`all()`) gets both; `OPERATIONS_MANAGER` gets `data.export` only (import is
+dangerous and stays with the admin unless an organization grants it deliberately);
+`OPERATIONS_WORKER` and `OPERATIONS_USER` get neither. Customer-authored roles are never touched
+(ADR-0007 §4) - the reconcile prints `memberships_without`.
+
+```bash
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations          # dry run
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+```
+
+Until it runs, the import and export routes answer 403 for every non-owner in every existing
+organization (a brand-new organization is fine); the scan route needs only `stock.read`, which
+Phase 1 already rolled out. It is a fleet write, so outside peak hours and never as part of
+`make deploy`.
+
+**Watch after the first import.** One import is one request and one transaction (up to 5000 rows;
+opening stock posts one kernel move per 100 lines), so the largest file takes the longest: a
+5000-row `items` import runs a few thousand statements. Caddy and the gateway time out a request
+well beyond that on this box, but if an operator reports a timeout, split the file (an
+all-or-nothing import that timed out committed nothing; retrying with the same `Idempotency-Key`
+is safe). Imports into one organization serialize on an advisory lock, so a second concurrent
+import waits for the first. `SELECT entity, row_count, created_count, created_at FROM
+operations.inventory_import_runs ORDER BY created_at DESC` lists what was committed, and the audit
+log carries `inventory.import.committed` and `inventory.data.exported` rows.
+
+The import route has its own 8 MiB request-body cap in `routes.prod.json` (the gateway default is
+2 MiB); the route table is read at gateway start, so deploying the gateway with the new table is
+part of this release. A 413 on an import means the table in use predates it.
+
+The scan screen's camera needs https (a browser rule); the edge is https, so nothing to configure.
 
 ### The billing run: first deploy, watching it, and what to do when it complains
 
@@ -2612,6 +2781,83 @@ that box.
    member also uses, once an `owner` has issued *their* enrolment code the same way (step 8, or
    the audited `POST /auth/operator/enrollment-codes` route from inside the console itself).
 
+### Inventory Phase 5 (manufacturing): migration, order, and the permission reconcile
+
+What ships: `operations` migration `d3b9f2a7c614` (12 new tables, three BOM-immutability trigger
+functions, UPDATE/DELETE revoked from the app role on `production_outputs`, `production_wastage`
+and `production_genealogy`), the Manufacturing screens in the Operations SPA, and eight new
+`operations.manufacturing.*` permissions plus the `PRODUCTION_PLANNER` role template. Nothing here
+needs a new container, a new `.env` key or a new role: `operations` already owns its schema.
+
+1. **Order.** Deploy as usual (migrate → `operations` API → publish the Operations SPA). The SPA
+   goes **after** the API, as with every inventory phase; the old SPA keeps working against the
+   new API because nothing it reads changed. The migration only adds objects, so the API of the
+   previous release is unaffected by it.
+2. **Reconcile the `operations` permissions before anyone uses the screens in an organization that
+   existed before this deploy** (ADR-0007). `install_registration` skips role codes that already
+   exist, so `OPERATIONS_ADMIN` and `OPERATIONS_MANAGER` in every older organization keep exactly
+   the grants they had: every Manufacturing endpoint is a 403 for them (the SPA hides the nav
+   group) while a new organization works. **Dry run first, always**:
+
+   ```bash
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations
+   # read the diff — expect 8 new grants on OPERATIONS_ADMIN, 8 on OPERATIONS_MANAGER, and a new
+   # PRODUCTION_PLANNER role — then:
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+   ```
+
+   This is a fleet write (every organization's permission version bumps, which signs members out
+   of their cached token) and is never part of an ordinary `make deploy`. Customer-authored roles
+   are left alone; an admin grants them the new permissions by hand.
+3. **Verify.** As an admin of a pre-existing organization: `/manufacturing/boms` loads (empty
+   state, not a 403); create a BOM, publish it, plan an order. `make migration-roundtrip` proves
+   the revision up/down on a dev database; **the downgrade drops the manufacturing tables and
+   their data** — on a box with real production orders, restore from the nightly backup instead.
+
+### Inventory Phase 7 (MRP): migration, worker, and the permission reconcile
+
+What ships: `operations` migration `e7a4c1d9b352` (4 new tables — `mrp_runs`, `mrp_demands`,
+`mrp_shortages`, `mrp_shortage_lines` — and a column-level `SELECT (organization_id, status)` on
+`mrp_runs` for the outbox role, applied by `migrations/env.py`), the Material planning screens in the
+Operations SPA, three new `operations.manufacturing.mrp.*` permissions (`read`, `run`,
+`requisition`), and the MRP worker sweep. Nothing here needs a new container, a new `.env` key or a
+new role: the sweep runs inside the `operations` API process under the existing
+`RUN_SWEEPS_IN_API=true` (and in `bin/cron` elsewhere), on its own bulkhead engine.
+Optional tuning, both with safe defaults: `MRP_SYNC_MAX_DEMANDS` (200 — runs over more open demand
+lines are queued instead of computed in the request) and `MRP_SWEEP_INTERVAL_SECONDS` (30).
+
+1. **Order.** Deploy as usual (migrate → `operations` API → publish the Operations SPA). The SPA
+   goes **after** the API; the old SPA keeps working against the new API because nothing it reads
+   changed. The migration only adds objects.
+2. **The discovery grant is part of the migration run, not a separate step.** `env.py` re-applies
+   `GRANT SELECT (organization_id, status) ON operations.mrp_runs TO opsgrids_outbox` after every
+   migration. If it is missing, the worker finds no queued runs and **queued runs sit `QUEUED`
+   forever with no error** (the sweep reports healthy and `operations.mrp.pass` never logs an
+   organization). Check after deploy by starting a run in the background (the "Run in the
+   background" switch, or `mode: "worker"` on the API) and watching it complete within ~30 s.
+3. **Reconcile the `operations` permissions before anyone uses the screens in an organization that
+   existed before this deploy** (ADR-0007). `OPERATIONS_ADMIN`/`OPERATIONS_MANAGER`/
+   `PRODUCTION_PLANNER` in every older organization keep exactly the grants they had: every MRP
+   endpoint is a 403 for them (the SPA hides the nav entry) while a new organization works.
+   **Dry run first, always**:
+
+   ```bash
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations
+   # read the diff — expect 3 new grants on each of OPERATIONS_ADMIN, OPERATIONS_MANAGER and
+   # PRODUCTION_PLANNER — then:
+   make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+   ```
+
+   This is a fleet write (every organization's permission version bumps, which signs members out of
+   their cached token) and is never part of an ordinary `make deploy`. If Phase 5's reconcile has not
+   been run yet, one run covers both phases. Customer-authored roles are left alone.
+4. **Verify.** As an admin of a pre-existing organization: `/manufacturing/mrp` loads (empty state,
+   not a 403); start a run — a small organization completes it at once; `mode: "worker"` (the
+   "Run in the background" switch) shows Queued, then Completed within the sweep interval.
+   `make migration-roundtrip` proves the revision up/down on a dev database; **the downgrade drops
+   the MRP tables and their stored runs** — plans are reproducible from live data, so this loses
+   history, not state.
+
 ### Roll back a bad deploy
 
 **The application:**
@@ -3164,7 +3410,7 @@ per sweep, labelled `sweep="<log-event prefix>"`:
 
 | Gauge | Meaning | Labels |
 |---|---|---|
-| `sweep_alive` | 1 while the sweep's task is running, 0 once it has exited — or if it was never started because its precondition failed | `inventory.reconcile`, `storefront.domain.sweep`, `document.sweep` |
+| `sweep_alive` | 1 while the sweep's task is running, 0 once it has exited — or if it was never started because its precondition failed | `inventory.reconcile`, `storefront.domain.sweep`, `document.sweep`, `operations.jobwork.overdue` |
 | `sweep_consecutive_failures` | failed ticks in a row (document also counts a tick where every purge attempt failed) | same |
 | `sweep_last_success_timestamp_seconds` | Unix time of the last good tick; `0` = none since the process started | same |
 
@@ -3179,6 +3425,55 @@ misconfigured outbox role must cost a nightly report, never the customer-facing 
 Each in-API sweep runs on its own one-connection database engine (a bulkhead), so it can neither
 take one of the API's 3 + 2 request-pool connections nor be starved by them — measured cost: one
 extra Postgres connection per API, opened lazily.
+
+### Job work (Inventory Phase 6): the permission reconcile and the overdue sweep
+
+`operations` gained five permissions (`operations.jobwork.order.read|write|issue|receive|approve`)
+and a fourth in-API sweep, the job-work overdue sweep. Migration `d7b3e5a19f62` adds four tables
+(`job_work_orders`, `job_work_materials`, `job_work_receipts`, `challans`) — `remote.sh migrate`
+runs it with no manual step, and it is reversible.
+
+**Reconcile the `operations` permissions before any manager in an organization that already
+existed can use job work** (ADR-0007). `OPERATIONS_MANAGER` carries the five in its template, but
+`install_registration` skips role codes that already exist, so existing organizations' managers
+keep the grants they had and every job-work route answers 403 — while a brand-new organization works
+perfectly. Dry run first, always:
+
+```bash
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations
+# read the diff: only OPERATIONS_MANAGER and OPERATIONS_ADMIN should gain jobwork.order.*, nothing else
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=operations APPLY=1
+```
+
+This is a fleet write (every organization's permission version bumps, which signs members out of
+their cached token) and is never part of an ordinary `make deploy`. Customer-authored roles are left
+alone by design — an organization that wants its own "Store keeper" role to receive job-work
+material grants `jobwork.order.receive` to it in the roles screen.
+
+**The overdue sweep** runs inside the `operations` API when `RUN_SWEEPS_IN_API=true` (as on this
+box), every `JOBWORK_OVERDUE_INTERVAL_SECONDS` (default 3600), under its own bulkhead connection.
+Verify it started, and that it can read what it needs:
+
+```bash
+C="docker compose -f compose.prod.yml --env-file .env"
+$C logs --tail 300 operations | grep -E 'operations.jobwork.overdue'
+#   a healthy hour:  operations.jobwork.overdue.pass  organizations=<n> announced=<n> failed=0
+#   a missing line:  RUN_SWEEPS_IN_API is not true, or `operations.jobwork.overdue.not_started`
+#                    (outbox-role precondition failed — the API itself still started)
+```
+
+Its `/metrics` gauges carry `sweep="operations.jobwork.overdue"`, alongside the others in the table
+above. **`operations.jobwork.overdue.pass … failed=<n>` with `n > 0`, repeating, and
+`InsufficientPrivilegeError` beside it, is the F11/F12 failure** (a sweep reading a column the
+`opsgrids_outbox` role was never granted): the grant lives in `migrations/env.py`'s
+`RECONCILE_DISCOVERY_TABLES["job_work_orders"]` and is re-applied by every `migrate`, so re-run
+`migrate` rather than granting by hand.
+
+Two events leave `operations` with no consumer yet — `operations.jobwork.challan.eway_requested`
+(finance's e-way generator is invoice-keyed) and `operations.jobwork.receipt.qc_requested` (the
+quality module is another branch). Both sit harmlessly in the outbox relay's normal path; nothing
+fails, and nothing happens, until a consumer exists. Challans therefore show `REQUESTED` and stay
+there; the e-way bill itself is still raised on the GST portal by hand.
 
 ### Rolling out this release on the box
 

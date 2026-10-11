@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.production.started/v1",
+  "title": "operations.production.started",
+  "description": "A production order started: its first material was issued to WIP (or it was started explicitly). Stock moved only through the inventory ledger (inventory Phase 5).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "production_order_id",
+    "number",
+    "item_id",
+    "bom_id",
+    "bom_version_id",
+    "planned_quantity",
+    "started_at"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "production_order_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string"
+    },
+    "item_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "bom_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "bom_version_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "planned_quantity": {
+      "type": "string",
+      "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+    },
+    "started_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    }
+  }
+}

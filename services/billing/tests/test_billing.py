@@ -92,7 +92,9 @@ def _finalize_payload(
 async def _finalize(session: AsyncSession, payload: FinalizeInvoiceIn) -> Invoice:
     async with session.begin():
         invoice = await services.finalize_invoice(session, payload, request=None)
-        return await services.require_invoice(session, invoice.id)
+        return await services.require_invoice(
+            session, invoice.id, organization_id=payload.organization_id
+        )
 
 
 # --------------------------------------------------------------------- money mechanics (pure)
@@ -211,7 +213,7 @@ class TestFinalizedInvoiceIsFrozen:
     ) -> None:
         invoice = await _finalize(session, _finalize_payload(org_id))
         async with session.begin():
-            fresh = await services.require_invoice(session, invoice.id)
+            fresh = await services.require_invoice(session, invoice.id, organization_id=org_id)
             voided = await services.void_invoice(
                 session, fresh, VoidInvoiceIn(organization_id=org_id, reason="billed in error")
             )
@@ -225,7 +227,7 @@ class TestFinalizedInvoiceIsFrozen:
     ) -> None:
         invoice = await _finalize(session, _finalize_payload(org_id))
         async with session.begin():
-            fresh = await services.require_invoice(session, invoice.id)
+            fresh = await services.require_invoice(session, invoice.id, organization_id=org_id)
             await services.void_invoice(
                 session, fresh, VoidInvoiceIn(organization_id=org_id, reason="dup")
             )
@@ -247,7 +249,7 @@ class TestFinalizedInvoiceIsFrozen:
         """Void is terminal: the trigger refuses any change to an already-void invoice."""
         invoice = await _finalize(session, _finalize_payload(org_id))
         async with session.begin():
-            fresh = await services.require_invoice(session, invoice.id)
+            fresh = await services.require_invoice(session, invoice.id, organization_id=org_id)
             await services.void_invoice(
                 session, fresh, VoidInvoiceIn(organization_id=org_id, reason="x")
             )
@@ -266,13 +268,13 @@ class TestFinalizedInvoiceIsFrozen:
     ) -> None:
         invoice = await _finalize(session, _finalize_payload(org_id))
         async with session.begin():
-            fresh = await services.require_invoice(session, invoice.id)
+            fresh = await services.require_invoice(session, invoice.id, organization_id=org_id)
             await services.void_invoice(
                 session, fresh, VoidInvoiceIn(organization_id=org_id, reason="once")
             )
         with pytest.raises(BusinessRuleProblem, match="void"):
             async with session.begin():
-                again = await services.require_invoice(session, invoice.id)
+                again = await services.require_invoice(session, invoice.id, organization_id=org_id)
                 await services.void_invoice(
                     session, again, VoidInvoiceIn(organization_id=org_id, reason="twice")
                 )
@@ -300,7 +302,7 @@ class TestFinalizedInvoiceIsFrozen:
 
         # The refusal left the financial record intact: the lines still foot to the total.
         async with session.begin():
-            fresh = await services.require_invoice(session, invoice_id)
+            fresh = await services.require_invoice(session, invoice_id, organization_id=org_id)
             assert sum(line.amount_minor for line in fresh.lines) == fresh.total_minor
             assert len(fresh.lines) == 2
 
@@ -395,7 +397,7 @@ class TestCreditBalanceIsAWindowedSum:
             )
         async with session.begin():
             after_consume = await selectors.credit_balance(
-                session, currency="USD", at=datetime.now(UTC)
+                session, organization_id=org_id, currency="USD", at=datetime.now(UTC)
             )
         assert after_consume == 700, "the consumption is a negative row in the SUM"
 
@@ -409,7 +411,7 @@ class TestCreditBalanceIsAWindowedSum:
             )
         async with session.begin():
             after_reversal = await selectors.credit_balance(
-                session, currency="USD", at=datetime.now(UTC)
+                session, organization_id=org_id, currency="USD", at=datetime.now(UTC)
             )
         assert after_reversal == 1000, "the reversal is another row, restoring the balance"
 
@@ -437,10 +439,10 @@ class TestCreditBalanceIsAWindowedSum:
 
         async with session.begin():
             during = await selectors.credit_balance(
-                session, currency="USD", at=datetime(2026, 3, 1, tzinfo=UTC)
+                session, organization_id=org_id, currency="USD", at=datetime(2026, 3, 1, tzinfo=UTC)
             )
             after = await selectors.credit_balance(
-                session, currency="USD", at=datetime(2026, 9, 1, tzinfo=UTC)
+                session, organization_id=org_id, currency="USD", at=datetime(2026, 9, 1, tzinfo=UTC)
             )
         assert during == 1000, "inside its window the grant counts"
         assert after == 0, "past its window the grant drops out of the SUM on its own"
@@ -485,9 +487,11 @@ class TestReversalNetsToZeroAndHappensOnce:
         assert reversal.valid_until == window_end
 
         async with session.begin():
-            during = await selectors.credit_balance(session, currency="USD", at=now)
+            during = await selectors.credit_balance(
+                session, organization_id=org_id, currency="USD", at=now
+            )
             after = await selectors.credit_balance(
-                session, currency="USD", at=window_end + timedelta(hours=1)
+                session, organization_id=org_id, currency="USD", at=window_end + timedelta(hours=1)
             )
         assert during == 0, "inside the window the pair nets to zero"
         assert after == 0, "past the window BOTH rows drop out — never -1000"
@@ -522,7 +526,9 @@ class TestReversalNetsToZeroAndHappensOnce:
         assert second.id == first.id, "a retry returns the existing reversal, not a new row"
 
         async with session.begin():
-            balance = await selectors.credit_balance(session, currency="USD", at=datetime.now(UTC))
+            balance = await selectors.credit_balance(
+                session, organization_id=org_id, currency="USD", at=datetime.now(UTC)
+            )
             reversals = (
                 await session.execute(
                     select(func.count())
@@ -611,12 +617,59 @@ class TestCrossTenantIsolation:
         async with session.begin():
             ctx = _read_ctx(org_id)
             visible = await selectors.list_invoices(session, ctx)
-            balance = await selectors.credit_balance(session, currency="USD", at=datetime.now(UTC))
+            balance = await selectors.credit_balance(
+                session, organization_id=org_id, currency="USD", at=datetime.now(UTC)
+            )
 
         ids = {inv.id for inv in visible}
         assert my_invoice.id in ids
         assert all(inv.organization_id == org_id for inv in visible)
         assert balance == 0, "org B's 9999 credit must not appear in org A's balance"
+
+    async def test_an_invoice_lookup_filters_its_tenant_not_rls_alone(
+        self,
+        client,
+        admin_session: AsyncSession,
+        org_id: uuid.UUID,
+        org_b: uuid.UUID,
+    ) -> None:
+        """Org B's invoice, asked for by id on behalf of org A. On a BYPASSRLS session only the
+        explicit predicate stands between them; over HTTP the tenant read and the internal void
+        both answer 404 and leave the invoice as it was."""
+        theirs = uuid.uuid4()
+        async with admin_session.begin():
+            await admin_session.execute(
+                text(
+                    "INSERT INTO billing.invoices "
+                    "(id, organization_id, number, state, currency, total_minor, "
+                    " period_start, period_end, finalized_at, created_at, updated_at) "
+                    "VALUES (:id, :org, 'B-1', 'finalized', 'USD', 5000, :ps, :pe, now(), "
+                    " now(), now())"
+                ),
+                {"id": str(theirs), "org": str(org_b), "ps": _PERIOD_START, "pe": _PERIOD_END},
+            )
+
+        async with admin_session.begin():
+            assert (
+                await selectors.get_invoice(admin_session, theirs, organization_id=org_id) is None
+            )
+            found = await selectors.get_invoice(admin_session, theirs, organization_id=org_b)
+            assert found is not None and found.id == theirs
+
+        with as_principal(customer_principal(org_id, perms=[INVOICE_READ])):
+            assert (await client.get(f"/api/v1/invoices/{theirs}")).status_code == 404
+
+        resp = await client.post(
+            f"/internal/v1/invoices/{theirs}:void",
+            json={"organization_id": str(org_id), "reason": "not yours"},
+            headers=service_token_headers(settings()),
+        )
+        assert resp.status_code == 404
+        async with admin_session.begin():
+            state = (
+                await admin_session.execute(select(Invoice.state).where(Invoice.id == theirs))
+            ).scalar_one()
+        assert state == INVOICE_FINALIZED
 
 
 def _read_ctx(org_id: uuid.UUID):

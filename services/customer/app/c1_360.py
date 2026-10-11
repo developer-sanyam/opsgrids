@@ -54,7 +54,7 @@ from app.c1_schemas import (
 from app.config import Settings
 from app.models import Company, Contact, Owner
 from platform_core.auth import Principal
-from platform_core.internal_auth import mint_service_token
+from platform_core.internal_auth import FORWARDED_HEADERS, mint_service_token
 from platform_core.logging import get_logger
 from platform_core.pii import mask
 
@@ -74,22 +74,8 @@ MISSING_UPSTREAMS: Final[tuple[SectionName, ...]] = ("orders", "finance", "suppo
 
 #: The identity the gateway forwarded, copied verbatim to a tenant-scoped upstream so it applies
 #: the caller's own permissions and scope. An allow-list: nothing else on the request travels.
-_IDENTITY_HEADERS: Final = (
-    "Authorization",
-    "X-Internal-Token",
-    "X-User-Id",
-    "X-Org-Id",
-    "X-Membership-Id",
-    "X-Subject-Ref",
-    "X-Audience",
-    "X-Session-Id",
-    "X-Entitlements",
-    "X-Roles",
-    "X-Perms",
-    "X-Locations",
-    "X-Amr",
-    "X-Permission-Version",
-)
+#: It is exactly the set the hop token binds — drop one and the upstream refuses the digest.
+_IDENTITY_HEADERS: Final = ("Authorization", "X-Internal-Token", *FORWARDED_HEADERS)
 
 #: Deal stages that are still in play, least to most advanced.
 _OPEN_STAGES: Final = ("lead", "qualified", "proposal", "negotiation")

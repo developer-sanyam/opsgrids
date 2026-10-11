@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.adjustment.cancelled/v1",
+  "title": "operations.inventory.adjustment.cancelled",
+  "description": "An adjustment waiting for approval was withdrawn by its requester.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "adjustment_id",
+    "number",
+    "approval_request_id",
+    "employee_id",
+    "was_status",
+    "reason"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "adjustment_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string"
+    },
+    "approval_request_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "employee_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "was_status": {
+      "const": "PENDING_APPROVAL"
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

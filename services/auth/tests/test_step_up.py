@@ -582,6 +582,27 @@ class TestSingleSignOnSessions:
         assert _problem_type(response) == "mfa-unavailable-for-sso"
 
 
+class TestAnOrganizationThatEnforcesSso:
+    async def test_a_password_session_from_before_enforcement_cannot_step_up(
+        self, http: AsyncClient, session, cfg, pair, directory, registered
+    ) -> None:
+        """A step-up mints a token, and in an organization that has since turned password
+        sign-in off there is no password session left to mint one for."""
+        from tests.test_sso import _install_config
+
+        issued = await _sign_in(session, cfg, pair, directory)
+        secret, _ = await _enrol(session, cfg)
+        await _install_config(session, cfg, enforce_sso=True)
+
+        response = await http.post(
+            STEP_UP, json={"code": _code(secret)}, headers=_headers(issued.access_token)
+        )
+
+        assert response.status_code == 403
+        assert _problem_type(response) == "sso-required"
+        assert await _factor_step(session) is None
+
+
 # ---------------------------------------------------------------------- refused: recovery
 
 

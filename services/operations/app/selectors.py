@@ -24,6 +24,7 @@ from typing import Any
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.inventory import quantity
 from app.models import (
     PurchaseOrder,
     PurchaseOrderLine,
@@ -123,7 +124,7 @@ async def count_open_purchase_orders_for_supplier(
             PurchaseOrder.organization_id == org_id,
             PurchaseOrder.supplier_id == supplier_id,
             PurchaseOrder.deleted_at.is_(None),
-            PurchaseOrder.status.in_(("draft", "approved")),
+            PurchaseOrder.status.in_(("draft", "approved", "partially_received")),
         )
     )
     return (await session.execute(stmt)).scalar_one()
@@ -273,6 +274,8 @@ def po_line_out(line: PurchaseOrderLine) -> PoLineItem:
         uom=line.uom,
         unit_price_minor=line.unit_price_minor,
         received_qty=line.received_qty,
+        received_exact=quantity.format_qty(line.received_milli),
+        short_closed=line.short_closed,
     )
 
 

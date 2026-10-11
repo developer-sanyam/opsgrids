@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.transfer.applied/v1",
+  "title": "operations.inventory.transfer.applied",
+  "description": "The return leg of an approval-service decision on a transfer (ADR-0006 \u00a712): the decision was applied to the transfer. `outcome` is the approval service's own vocabulary (`applied`), `decision` is which way it went.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "transfer_id",
+    "approval_request_id",
+    "request_type",
+    "outcome",
+    "decision"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "transfer_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "approval_request_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "request_type": {
+      "const": "operations.inventory.transfer"
+    },
+    "outcome": {
+      "const": "applied"
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "rejected"
+      ]
+    }
+  }
+}

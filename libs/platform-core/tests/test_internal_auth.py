@@ -16,7 +16,7 @@ import jwt
 import pytest
 from starlette.requests import Request
 
-from platform_core.auth import _principal_from_gateway, get_principal
+from platform_core.auth import _principal_from_gateway, client_ip, get_principal
 from platform_core.config import ServiceSettings
 from platform_core.errors import UnauthorizedProblem
 from platform_core.internal_auth import (
@@ -24,6 +24,7 @@ from platform_core.internal_auth import (
     ADMIN_HOP_TTL_SECONDS,
     GATEWAY_AUDIENCE,
     canonical_query,
+    forwarded_headers_digest,
     mint_service_token,
     sign_admin_hop,
     verify_admin_hop,
@@ -52,24 +53,42 @@ def request_with(headers: dict[str, str], cfg: ServiceSettings) -> Request:
         "query_string": b"",
         "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
         "app": SimpleNamespace(state=SimpleNamespace(settings=cfg)),
+        # The TCP peer a service sees behind a gateway: the gateway's own container address.
+        "client": (GATEWAY_PEER, 51000),
     }
     return Request(scope)
 
 
-def hop_token(cfg: ServiceSettings, *, uid: str = USER_ID, org: str = ORG_ID) -> str:
+GATEWAY_PEER = "172.18.0.5"
+
+IDENTITY = {
+    "X-User-Id": USER_ID,
+    "X-Org-Id": ORG_ID,
+    "X-Perms": "crm.pipeline.deal.read:ORG",
+    "X-Entitlements": "crm",
+}
+
+
+def hop_token(
+    cfg: ServiceSettings,
+    *,
+    uid: str = USER_ID,
+    org: str = ORG_ID,
+    bound: dict[str, str] = IDENTITY,
+) -> str:
+    """A forwarding token as the gateway mints it: naming uid/org and binding the digest of the
+    forwarded headers it travels with (`bound`)."""
+    fwd = forwarded_headers_digest(request_with(bound, cfg).headers)
     return mint_service_token(
-        cfg, audience=GATEWAY_AUDIENCE, caller="gateway", claims={"uid": uid, "org": org}
+        cfg,
+        audience=GATEWAY_AUDIENCE,
+        caller="gateway",
+        claims={"uid": uid, "org": org, "fwd": fwd},
     )
 
 
 def identity_headers(token: str) -> dict[str, str]:
-    return {
-        "X-Internal-Token": token,
-        "X-User-Id": USER_ID,
-        "X-Org-Id": ORG_ID,
-        "X-Perms": "crm.pipeline.deal.read:ORG",
-        "X-Entitlements": "crm",
-    }
+    return {"X-Internal-Token": token, **IDENTITY}
 
 
 class TestChannelSeparation:
@@ -138,6 +157,87 @@ class TestForwardedIdentity:
         cfg = settings()
         headers = identity_headers(hop_token(other))
         assert _principal_from_gateway(request_with(headers, cfg), cfg) is None
+
+
+class TestForwardedHeadersAreBound:
+    """A captured hop token is good for its TTL. Binding only uid/org left every other forwarded
+    header free, so the capture could be replayed with `X-Perms: core.*:ORG` or
+    `X-Audience: operator` and believed. The token now carries a digest of all of them."""
+
+    @pytest.mark.parametrize(
+        ("header", "escalated"),
+        [
+            ("X-Perms", "core.*:ORG"),
+            ("X-Audience", "operator"),
+            ("X-Amr", "pwd,otp,stepup"),
+            ("X-Roles", "ORG_OWNER"),
+            ("X-Entitlements", "crm,hrms,pulseboard"),
+            ("X-Locations", "HQ,WH-1"),
+            ("X-Subject-Ref", str(uuid.uuid4())),
+            ("X-Membership-Id", str(uuid.uuid4())),
+            ("X-Permission-Version", "99"),
+            ("X-Session-Id", "another-session"),
+            ("X-Org-Slug", "another-tenant"),
+            ("X-Client-Ip", "203.0.113.50"),
+        ],
+    )
+    def test_a_replayed_token_with_an_altered_header_is_refused(
+        self, header: str, escalated: str
+    ) -> None:
+        cfg = settings()
+        headers = {**identity_headers(hop_token(cfg)), header: escalated}
+        with pytest.raises(UnauthorizedProblem, match="does not match"):
+            _principal_from_gateway(request_with(headers, cfg), cfg)
+
+    def test_a_token_binding_only_uid_and_org_is_refused(self) -> None:
+        """The pre-binding token shape vouches for nothing beyond two ids; accepting it would
+        keep the replay open."""
+        cfg = settings()
+        legacy = mint_service_token(
+            cfg,
+            audience=GATEWAY_AUDIENCE,
+            caller="gateway",
+            claims={"uid": USER_ID, "org": ORG_ID},
+        )
+        with pytest.raises(UnauthorizedProblem, match="does not match"):
+            _principal_from_gateway(request_with(identity_headers(legacy), cfg), cfg)
+
+    def test_the_headers_the_token_binds_still_forward(self) -> None:
+        cfg = settings()
+        bound = {**IDENTITY, "X-Audience": "app", "X-Amr": "pwd", "X-Roles": "MEMBER"}
+        headers = {"X-Internal-Token": hop_token(cfg, bound=bound), **bound}
+        principal = get_principal(request_with(headers, cfg))
+        assert principal.audience == "app"
+        assert principal.amr == ["pwd"]
+        assert principal.roles == ["MEMBER"]
+
+
+class TestClientIp:
+    """Behind a gateway the TCP peer is the gateway, so an address recorded from it says
+    nothing about the visitor. The gateway's `X-Client-Ip` is believed only under a hop token
+    that binds it."""
+
+    VISITOR = "198.51.100.23"
+
+    def test_a_bound_client_ip_is_the_visitors_address(self) -> None:
+        cfg = settings()
+        bound = {"X-Client-Ip": self.VISITOR}
+        headers = {"X-Internal-Token": hop_token(cfg, bound=bound), **bound}
+        assert client_ip(request_with(headers, cfg)) == self.VISITOR
+
+    def test_an_unvouched_client_ip_is_ignored(self) -> None:
+        """A caller that reaches the service directly cannot name its own address."""
+        cfg = settings()
+        assert client_ip(request_with({"X-Client-Ip": self.VISITOR}, cfg)) == GATEWAY_PEER
+
+    def test_a_client_ip_the_token_does_not_bind_is_ignored(self) -> None:
+        cfg = settings()
+        token = hop_token(cfg, bound={"X-Client-Ip": "203.0.113.1"})
+        headers = {"X-Internal-Token": token, "X-Client-Ip": self.VISITOR}
+        assert client_ip(request_with(headers, cfg)) == GATEWAY_PEER
+
+    def test_no_request_is_no_address(self) -> None:
+        assert client_ip(None) is None
 
 
 class TestAdminGatewayHop:

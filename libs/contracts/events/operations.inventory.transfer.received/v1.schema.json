@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.transfer.received/v1",
+  "title": "operations.inventory.transfer.received",
+  "description": "Stock was accounted for at the destination: `received` moved in-transit -> available, `shortage` was written off from in-transit. `complete` is true when every line is settled and the transfer became RECEIVED.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "transfer_id",
+    "number",
+    "from_warehouse_id",
+    "to_warehouse_id",
+    "complete",
+    "receipt_move_id",
+    "shortage_move_id",
+    "lines"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "transfer_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string"
+    },
+    "from_warehouse_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "to_warehouse_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "receipt_move_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "shortage_move_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "lines": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "line_id",
+          "inventory_item_id",
+          "received",
+          "shortage"
+        ],
+        "properties": {
+          "line_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "inventory_item_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "received": {
+            "type": "string",
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+          },
+          "shortage": {
+            "type": "string",
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+          }
+        }
+      }
+    }
+  }
+}

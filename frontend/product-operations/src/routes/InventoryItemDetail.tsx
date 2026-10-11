@@ -39,6 +39,7 @@ import { ItemAttributeFormDialog } from "@/forms/ItemAttributeFormDialog";
 import { ItemVariantFormDialog } from "@/forms/ItemVariantFormDialog";
 import { OpeningStockDialog } from "@/forms/OpeningStockDialog";
 import { StockAdjustmentDialog } from "@/forms/StockAdjustmentDialog";
+import { UomConversionsCard } from "@/forms/UomConversionsCard";
 import {
   ItemLedgerPanel,
   ItemLocationsPanel,
@@ -514,6 +515,8 @@ export function InventoryItemDetailPage() {
         {tab === "rolls" ? <ItemRollsPanel item={item} onChanged={itemState.reload} /> : null}
         {tab === "ledger" ? <ItemLedgerPanel item={item} onChanged={itemState.reload} /> : null}
       </Tabs>
+
+      <UomConversionsCard itemId={id} stockUom={item.uom} />
 
       {editing ? (
         <InventoryItemFormDialog

@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.stock.reserved/v1",
+  "title": "operations.inventory.stock.reserved",
+  "description": "Stock was promised to a demand without moving it. Two shapes, both carrying `reference_type`/`reference_id`: one reservation (`reservation_id`, `quantity`, optional `expires_at`) from `ledger.reserve`, or a batch (`lines`) from an order's `reserve_many`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "reference_type",
+    "reference_id"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "reference_type": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reference_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "reservation_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "inventory_item_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "sku": {
+      "type": "string"
+    },
+    "location": {
+      "type": "string"
+    },
+    "quantity": {
+      "type": "string",
+      "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+    },
+    "quantity_milli": {
+      "type": "integer"
+    },
+    "expires_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "lines": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
+}

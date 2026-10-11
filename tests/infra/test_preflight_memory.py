@@ -74,10 +74,12 @@ if args[:1] == ["compose"]:
         print("999")  # the image's uid/gid, as `remote.sh up`'s ops-monitor state-dir step asks
         sys.exit(0)
     if "up" in args:
-        with open(os.environ["STUB_UP_LOG"], "a") as fh:
-            fh.write(os.environ.get("COMPOSE_PARALLEL_LIMIT", "") + "\\n")
-        with open(os.environ["STUB_UP_LOG"] + ".profiles", "a") as fh:
-            fh.write(os.environ.get("COMPOSE_PROFILES", "<unset>") + "\\n")
+        # Only the general `up`: the gateways-first one before it is test_remote_up_order's.
+        if "--remove-orphans" in args:
+            with open(os.environ["STUB_UP_LOG"], "a") as fh:
+                fh.write(os.environ.get("COMPOSE_PARALLEL_LIMIT", "") + "\\n")
+            with open(os.environ["STUB_UP_LOG"] + ".profiles", "a") as fh:
+                fh.write(os.environ.get("COMPOSE_PROFILES", "<unset>") + "\\n")
         sys.exit(0)
     if "config" in args and "--profiles" in args:
         budget = json.load(open(os.environ["STUB_BUDGET"]))

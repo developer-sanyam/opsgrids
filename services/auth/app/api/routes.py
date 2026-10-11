@@ -11,13 +11,14 @@ a standard discovery path and clients look for it there.
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import services
+from app import oidc, services
 from app.config import Settings, settings
 from app.deps import (
     DirectoryDep,
@@ -162,6 +163,10 @@ def _assert_not_cross_site(request: Request) -> None:
         raise ForbiddenProblem("This request could not be verified.")
 
 
+def _secure_cookies(cfg: Settings) -> bool:
+    return cfg.environment not in ("local", "test", "ci")
+
+
 def _set_refresh_cookie(response: Response, cfg: Settings, token: str) -> None:
     """Path-scoped so it is not sent with every API call.
 
@@ -173,11 +178,55 @@ def _set_refresh_cookie(response: Response, cfg: Settings, token: str) -> None:
         token,
         max_age=cfg.refresh_token_ttl_seconds,
         httponly=True,
-        secure=cfg.environment not in ("local", "test", "ci"),
+        secure=_secure_cookies(cfg),
         samesite="lax",
         path="/api/v1/auth",
         domain=cfg.refresh_cookie_domain,
     )
+
+
+#: Binds an SSO/OAuth `state` to the browser that started the flow (login CSRF): without it,
+#: an attacker's own `code`+`state` replayed in a victim's browser signs the victim in as the
+#: attacker. The binder rides in this cookie; only its SHA-256 sits next to the state.
+SSO_BINDER_COOKIE = "opsgrids_sso_binder"
+
+
+def _binder_cookie_name(cfg: Settings) -> str:
+    # `__Host-` demands Secure, which a plain-http local browser would refuse to store.
+    return "__Host-" + SSO_BINDER_COOKIE if _secure_cookies(cfg) else SSO_BINDER_COOKIE
+
+
+def _set_binder_cookie(response: Response, cfg: Settings, binder: str) -> None:
+    """Lax, not Strict: the provider's redirect back is a cross-site top-level GET."""
+    response.set_cookie(
+        _binder_cookie_name(cfg),
+        binder,
+        max_age=cfg.sso_state_ttl_seconds,
+        httponly=True,
+        secure=_secure_cookies(cfg),
+        samesite="lax",
+        path="/",
+    )
+
+
+async def _bind_state_to_browser(
+    request: Request, response: Response, cfg: Settings, store: oidc.StateStore, state: str
+) -> None:
+    """One binder per browser, reused, so a second start (another tab, a double click) does not
+    orphan a flow already in flight. `__Host-` keeps a sibling subdomain from planting one."""
+    binder = request.cookies.get(_binder_cookie_name(cfg)) or secrets.token_urlsafe(32)
+    await store.bind(state, binder, ttl_seconds=cfg.sso_state_ttl_seconds)
+    _set_binder_cookie(response, cfg, binder)
+
+
+async def _check_state_bound_to_browser(
+    request: Request, cfg: Settings, store: oidc.StateStore, state: str
+) -> None:
+    """Before the state is consumed, so a stray hit cannot burn the real browser's sign-in.
+
+    The cookie is not deleted: a sibling flow may still need it, and it expires on its own TTL.
+    """
+    await store.check_binding(state, request.cookies.get(_binder_cookie_name(cfg)))
 
 
 def _token_out(issued: services.Issued | services.AccessOnlyIssued) -> TokenOut:
@@ -634,6 +683,8 @@ def _sso_config_out(row: OrgIdpConfig) -> SsoConfigOut:
     summary="Begin single sign-on for an email domain",
 )
 async def sso_start(
+    request: Request,
+    response: Response,
     session: SessionDep,
     directory: DirectoryDep,
     store: SsoStateDep,
@@ -648,9 +699,11 @@ async def sso_start(
     """
     if not email and not domain:
         raise ValidationProblem("Provide either an email address or a domain")
+    cfg = settings()
     redirect = await services.sso_start(
-        session, cfg=settings(), directory=directory, store=store, email=email, domain=domain
+        session, cfg=cfg, directory=directory, store=store, email=email, domain=domain
     )
+    await _bind_state_to_browser(request, response, cfg, store, redirect.state)
     return SsoStartOut(
         authorization_url=redirect.authorization_url,
         state=redirect.state,
@@ -667,6 +720,8 @@ async def sso_start(
 )
 async def oauth_social_start_route(
     provider: str,
+    request: Request,
+    response: Response,
     session: SessionDep,
     store: SsoStateDep,
     intent: Annotated[str, Query(pattern="^(signup|invite)$")],
@@ -685,9 +740,10 @@ async def oauth_social_start_route(
     same `intent=signup` redirect is also what a *returning* user lands on, and this route has
     no way to tell the two apart until the callback's email lookup actually runs.
     """
+    cfg = settings()
     redirect = await services.oauth_social_start(
         session,
-        cfg=settings(),
+        cfg=cfg,
         store=store,
         provider=provider,
         intent=intent,
@@ -695,6 +751,7 @@ async def oauth_social_start_route(
         organization_name=organization_name,
         slug=slug,
     )
+    await _bind_state_to_browser(request, response, cfg, store, redirect.state)
     return OAuthStartOut(
         authorization_url=redirect.authorization_url,
         state=redirect.state,
@@ -731,6 +788,7 @@ async def oauth_social_callback_route(
     genuinely new signup is provisioned here rather than merely authenticated.
     """
     cfg = settings()
+    await _check_state_bound_to_browser(request, cfg, store, state)
     outcome = await services.oauth_social_callback(
         session,
         cfg=cfg,
@@ -773,6 +831,7 @@ async def sso_callback(
     target a caller can influence is how an authorization code ends up somewhere else.
     """
     cfg = settings()
+    await _check_state_bound_to_browser(request, cfg, store, state)
     issued = await services.sso_callback(
         session,
         cfg=cfg,

@@ -61,7 +61,8 @@ echo "backup $stamp"
 # Ownership IS dumped (no --no-owner), so a restore puts the schemas back under
 # `opsgrids_admin` and the per-service grants stay meaningful. The price is that the roles must
 # exist before a restore — they do, because 20-init.sql runs on any fresh data volume.
-"${COMPOSE[@]}" exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" postgres \
+# The password goes through docker's environment (`-e NAME`), not its argv, as in upload().
+PGPASSWORD="$POSTGRES_PASSWORD" "${COMPOSE[@]}" exec -T -e PGPASSWORD postgres \
 	pg_dump --username=opsgrids --dbname=opsgrids --clean --if-exists |
 	gzip -9 >"$dump"
 
@@ -103,9 +104,12 @@ fi
 
 upload() {
 	local file="$1"
-	docker run --rm \
-		-e AWS_ACCESS_KEY_ID="$BACKUP_S3_ACCESS_KEY_ID" \
-		-e AWS_SECRET_ACCESS_KEY="$BACKUP_S3_SECRET_ACCESS_KEY" \
+	# Values go through docker's environment, not its argv, so `ps` on the box never shows them.
+	AWS_ACCESS_KEY_ID="$BACKUP_S3_ACCESS_KEY_ID" \
+		AWS_SECRET_ACCESS_KEY="$BACKUP_S3_SECRET_ACCESS_KEY" \
+		docker run --rm \
+		-e AWS_ACCESS_KEY_ID \
+		-e AWS_SECRET_ACCESS_KEY \
 		-e AWS_DEFAULT_REGION="${BACKUP_S3_REGION:-us-east-1}" \
 		-v "$dir:/backup:ro" \
 		"$AWS_CLI_IMAGE" s3 cp "/backup/$(basename "$file")" \
