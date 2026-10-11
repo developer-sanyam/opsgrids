@@ -459,24 +459,29 @@ class ScopeContext(BaseModel):
 
         A list endpoint that skips this leaks the organization, which is why every one of
         them carries a negative-authorization test.
+
+        OWN and TEAM compare `own_ref`: the caller's employee link, or their membership id for
+        a product that declared `OwnerSubject.MEMBERSHIP`.
         """
         if self.scope is Scope.ORG:
             return stmt
         if self.scope is Scope.OWN:
-            if self.principal.subject_ref is None:
+            own = self.own_ref
+            if own is None:
                 # Nothing to own with. Match nothing — `col == NULL` would be SQL NULL
                 # and quietly return everything the outer filter allowed.
                 return stmt.where(sa_false())
-            return stmt.where(owner_col == self.principal.subject_ref)
+            return stmt.where(owner_col == own)
         if self.scope is Scope.TEAM:
             if team_col is None:
                 raise ForbiddenProblem("TEAM scope is not supported on this resource")
-            if self.principal.subject_ref is None:
+            own = self.own_ref
+            if own is None:
                 # Same guard as OWN, for the same reason: `team_col == None` renders as
                 # `team_col IS NULL`, which would return every unmanaged row in the tenant
                 # instead of nothing.
                 return stmt.where(sa_false())
-            return stmt.where(team_col == self.principal.subject_ref)
+            return stmt.where(team_col == own)
         if self.scope is Scope.LOCATION:
             if location_col is None:
                 raise ForbiddenProblem("LOCATION scope is not supported on this resource")
@@ -495,13 +500,16 @@ class ScopeContext(BaseModel):
         LOCATION compares the row's location against the caller's. An earlier system
         returned early here, which meant a location-scoped caller could reach any single
         object it could name.
+
+        OWN and TEAM compare `own_ref`, exactly as `apply` does; a caller with none passes
+        neither (`None == None` must never admit a row).
         """
         if self.scope is Scope.ORG:
             return
-        subject = self.principal.subject_ref
-        if self.scope is Scope.OWN and subject is not None and owner_id == subject:
+        own = self.own_ref
+        if self.scope is Scope.OWN and own is not None and owner_id == own:
             return
-        if self.scope is Scope.TEAM and subject is not None and team_owner_id == subject:
+        if self.scope is Scope.TEAM and own is not None and team_owner_id == own:
             return
         if self.scope is Scope.LOCATION:
             if location_code is not None and location_code in self.principal.locations:
