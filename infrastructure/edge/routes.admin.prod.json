@@ -37,6 +37,7 @@
     { "prefix": "/api/v1/admin/audit", "upstream": "http://console:8000", "staff_only": true },
 
     { "prefix": "/api/v1/admin/credit-ledger", "upstream": "http://billing:8000", "staff_only": true },
-    { "prefix": "/api/v1/admin/invoices", "upstream": "http://billing:8000", "staff_only": true }
+    { "prefix": "/api/v1/admin/invoices", "upstream": "http://billing:8000", "staff_only": true },
+    { "prefix": "/api/v1/admin/engage", "upstream": "http://notification:8000", "staff_only": true }
   ]
 }

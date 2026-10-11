@@ -2070,11 +2070,23 @@
             "title": "By Category",
             "type": "array"
           },
+          "by_source": {
+            "items": {
+              "$ref": "#/components/schemas/CostSource"
+            },
+            "title": "By Source",
+            "type": "array"
+          },
           "estimated": {
             "const": true,
             "default": true,
             "title": "Estimated",
             "type": "boolean"
+          },
+          "priced_by_meta": {
+            "default": 0,
+            "title": "Priced By Meta",
+            "type": "integer"
           },
           "rate_card": {
             "$ref": "#/components/schemas/RateCardRef"
@@ -2117,6 +2129,43 @@
           "amount"
         ],
         "title": "CostCategory",
+        "type": "object"
+      },
+      "CostSource": {
+        "description": "What one automation or inbox conversation cost in the window (billable messages only).",
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "automation",
+              "conversation"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "messages": {
+            "title": "Messages",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "key",
+          "label",
+          "messages",
+          "amount"
+        ],
+        "title": "CostSource",
         "type": "object"
       },
       "DeliveryOut": {
@@ -4142,6 +4191,87 @@
         "title": "PerAutomationOut",
         "type": "object"
       },
+      "PlatformRateCardIn": {
+        "additionalProperties": false,
+        "description": "Staff: add or replace price points on the platform rate table (every tenant's default).\n\nRows not named are left alone, so publishing a changed market is one row, not the whole card.",
+        "properties": {
+          "effective_from": {
+            "format": "date",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "rates": {
+            "items": {
+              "$ref": "#/components/schemas/PlatformRateIn"
+            },
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Rates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "effective_from",
+          "label",
+          "rates"
+        ],
+        "title": "PlatformRateCardIn",
+        "type": "object"
+      },
+      "PlatformRateIn": {
+        "additionalProperties": false,
+        "properties": {
+          "amount_minor_per_1000_messages": {
+            "maximum": 10000000000.0,
+            "minimum": 0.0,
+            "title": "Amount Minor Per 1000 Messages",
+            "type": "integer"
+          },
+          "calling_code": {
+            "pattern": "^[0-9]{0,4}$",
+            "title": "Calling Code",
+            "type": "string"
+          },
+          "category": {
+            "enum": [
+              "marketing",
+              "utility",
+              "authentication",
+              "service"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "currency": {
+            "maxLength": 3,
+            "minLength": 3,
+            "pattern": "^[A-Z]{3}$",
+            "title": "Currency",
+            "type": "string"
+          },
+          "market": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Market",
+            "type": "string"
+          }
+        },
+        "required": [
+          "calling_code",
+          "market",
+          "category",
+          "amount_minor_per_1000_messages",
+          "currency"
+        ],
+        "title": "PlatformRateIn",
+        "type": "object"
+      },
       "Position": {
         "additionalProperties": false,
         "properties": {
@@ -4720,6 +4850,11 @@
             "title": "Amount Minor Per 1000 Messages",
             "type": "integer"
           },
+          "calling_code": {
+            "default": "",
+            "title": "Calling Code",
+            "type": "string"
+          },
           "category": {
             "enum": [
               "marketing",
@@ -4737,6 +4872,11 @@
           "effective_from": {
             "format": "date",
             "title": "Effective From",
+            "type": "string"
+          },
+          "market": {
+            "default": "",
+            "title": "Market",
             "type": "string"
           },
           "placeholder": {
@@ -7703,6 +7843,48 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/admin/engage/whatsapp-rate-card": {
+      "put": {
+        "description": "Operator only (`owner` or `billing_ops`). Upserts one platform row per market and category for `effective_from`, labelled `label` (e.g. `meta-inr-2027-01-01`, the source of the figures); rows not named are left alone and earlier price points are kept. Every tenant without its own override prices from this table. Audited under the platform tenant. Returns the card as a tenant with no override now sees it.",
+        "operationId": "override_platform_rate_card_api_v1_admin_engage_whatsapp_rate_card_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformRateCardIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateCardOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Staff: add or replace price points on the platform WhatsApp rate table",
+        "tags": [
+          "engage-analytics-admin"
+        ]
+      }
+    },
     "/api/v1/engage/analytics/email/overview": {
       "get": {
         "operationId": "email_overview_api_v1_engage_analytics_email_overview_get",
@@ -7772,7 +7954,7 @@
     },
     "/api/v1/engage/analytics/overview": {
       "get": {
-        "description": "WhatsApp numbers computed here; email numbers come from the email analytics overview and are `null` when that module is not deployed. Same UTC-day range semantics and the same cost caveats as the WhatsApp overview: the cost is an estimate from PLACEHOLDER rates until the organization overrides the rate card.",
+        "description": "WhatsApp numbers computed here; email numbers come from the email analytics overview and are `null` when that module is not deployed. Same UTC-day range semantics and the same cost caveats as the WhatsApp overview: the cost is an estimate from Meta's list rates (or the organization's override), not an invoice.",
         "operationId": "hub_overview_api_v1_engage_analytics_overview_get",
         "parameters": [
           {
@@ -7844,7 +8026,7 @@
     },
     "/api/v1/engage/analytics/rate-card": {
       "get": {
-        "description": "The rate in force today for each message category. The shipped defaults are PLACEHOLDERS (`placeholder-2026-09`, INR paise per 1000 messages: marketing 78460, utility 11500, authentication 11500, service 0), not Meta's published rates. Real rates for the organization's country must be entered with PUT. `placeholder` is true while any rate in force is a shipped default.",
+        "description": "The rate in force today for each market (`calling_code`, `''` = every other market) and message category, in minor units per 1000 messages. Unless the organization has entered its own rates with PUT, these are the platform's, seeded from Meta's published INR rate card effective 2026-10-01 (`meta-inr-2026-10-01`) and maintained by staff. `placeholder` is true only while a rate in force is an unverified placeholder.",
         "operationId": "read_rate_card_api_v1_engage_analytics_rate_card_get",
         "responses": {
           "200": {
@@ -7906,7 +8088,7 @@
     },
     "/api/v1/engage/analytics/whatsapp/overview": {
       "get": {
-        "description": "Computed on demand from the message ledger. Buckets are **UTC calendar days**; `from` and `to` are inclusive UTC dates (default: the last 30 days). `cost` is an ESTIMATE (`estimated: true`): messages x rate / 1000 in integer minor units, rounded half-up per category, using the organization's rate card. Until the organization enters its own rates, the rate card is the platform's PLACEHOLDER defaults (`placeholder-2026-09`), which are not Meta's real rates for any country.",
+        "description": "Computed on demand from the message ledger. Buckets are **UTC calendar days**; `from` and `to` are inclusive UTC dates (default: the last 30 days). `cost` is an ESTIMATE (`estimated: true`) in integer minor units: each billable message is priced at the rate for its recipient's market (longest calling-code prefix) and the category Meta reported on its delivery receipt (the template's category until a receipt lands), rounded half-up per market and category. The rates are the organization's own override or, failing that, the platform card seeded from Meta's published INR list rates (`meta-inr-2026-10-01`); volume tiers and tax are not applied. `by_source` lists the most expensive automations and inbox conversations.",
         "operationId": "whatsapp_overview_api_v1_engage_analytics_whatsapp_overview_get",
         "parameters": [
           {
