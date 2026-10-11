@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from pathlib import Path
 
 import pytest
 from sqlalchemy import event as sa_event
@@ -24,12 +25,16 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app import clients, domain, selectors, services
 from app.config import settings
 from app.models import SCHEMA, AuditLog, OutboxEvent
+from app.schemas import LeadPatch
 from platform_core.auth import Scope
 from platform_core.db import TENANT_GUC
 from platform_core.errors import ConflictProblem, UpstreamUnavailableProblem, ValidationProblem
+from platform_core.events import validate_event_schema
 from tests.helpers import ctx_for
 
 pytestmark = pytest.mark.integration
+
+CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "libs" / "contracts"
 
 
 def _fake_ensure_company_and_contact(monkeypatch, calls, *, company_id=None, contact_id=None):
@@ -593,6 +598,20 @@ def _stateful_deal_service(monkeypatch, live_names: set[str], calls: list):
     monkeypatch.setattr(clients, "ensure_deal", _fake)
 
 
+async def _aborted_events(session, lead_id: uuid.UUID) -> list[OutboxEvent]:
+    """Every `crm.lead.conversion_aborted` the lead has staged, oldest first."""
+    async with session.begin():
+        rows = await session.execute(
+            select(OutboxEvent)
+            .where(
+                OutboxEvent.event_type == "crm.lead.conversion_aborted",
+                OutboxEvent.aggregate_id == lead_id,
+            )
+            .order_by(OutboxEvent.created_at)
+        )
+        return list(rows.scalars().all())
+
+
 class TestGenerationsAndDealNames:
     """Fix round 4, findings 3 and 6. A bumped `conversion_generation` gives the retry fresh
     company/contact/deal *ids* — but deal-service also refuses a second live deal with the same
@@ -717,3 +736,257 @@ class TestGenerationsAndDealNames:
         assert converted is not None
         assert converted.status == "converted"
         assert converted.converted_company_id == converted_company_id
+
+    async def test_a_status_change_mid_convert_aborts_and_the_retry_creates_fresh_records(
+        self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The twin of the owner-change test above, for the abort that used to leave the retry
+        on the same ids: a status change lands between claim and finalize, `:convert` aborts,
+        the rep re-qualifies the lead and converts again. Before every abort bumped the
+        generation the retry derived the aborted attempt's company, contact and deal ids again,
+        and a cleanup of that attempt's leftovers could then have destroyed the retry's."""
+        lead_id = data["lead_a_id"]
+        live_names: set[str] = set()
+        first_calls: list = []
+        _stateful_deal_service(monkeypatch, live_names, first_calls)
+
+        async def _company_then_a_disqualification(settings, organization_id, **kwargs):
+            first_calls.append(("company", kwargs))
+            # A writer these guards did not anticipate, landing in the gap between claim and
+            # finalize -- the session has no transaction open here, as during the real call.
+            async with session.begin():
+                await session.execute(
+                    text('UPDATE "lead"."leads" SET status = \'disqualified\' WHERE id = :id'),
+                    {"id": lead_id},
+                )
+            return kwargs["company_id"], kwargs["contact_id"]
+
+        monkeypatch.setattr(clients, "ensure_company_and_contact", _company_then_a_disqualification)
+
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        with pytest.raises(ConflictProblem, match="status changed"):
+            await services.convert_lead(session, ctx, lead_id)
+
+        first_company = next(kw for kind, kw in first_calls if kind == "company")
+        first_deal = next(kw for kind, kw in first_calls if kind == "deal")
+        first_ids = (
+            first_company["company_id"],
+            first_company["contact_id"],
+            first_deal["deal_id"],
+        )
+        assert first_ids == domain.conversion_ids(lead_id, 0)
+
+        async with session.begin():
+            lead = await selectors.get_lead(session, org_id, lead_id)
+        assert lead is not None
+        assert lead.status == "disqualified"
+        assert lead.conversion_claim_id is None
+        assert lead.conversion_generation == 1
+
+        # The rep re-qualifies the lead and converts it again.
+        async with session.begin():
+            await session.execute(
+                text('UPDATE "lead"."leads" SET status = \'qualified\' WHERE id = :id'),
+                {"id": lead_id},
+            )
+        retry_calls: list = []
+        _stateful_deal_service(monkeypatch, live_names, retry_calls)
+        _fake_ensure_company_and_contact(monkeypatch, retry_calls)
+        await services.convert_lead(session, ctx, lead_id)
+
+        retry_company = next(kw for kind, kw in retry_calls if kind == "company")
+        retry_deal = next(kw for kind, kw in retry_calls if kind == "deal")
+        retry_ids = (
+            retry_company["company_id"],
+            retry_company["contact_id"],
+            retry_deal["deal_id"],
+        )
+        assert retry_ids == domain.conversion_ids(lead_id, 1)
+        assert retry_company["company_id"] != first_company["company_id"]
+        assert retry_company["contact_id"] != first_company["contact_id"]
+        assert retry_deal["deal_id"] != first_deal["deal_id"]
+        # The aborted attempt's deal is still live and deal refuses a second live deal with
+        # one name, so the retry's name carries the new generation.
+        assert first_deal["name"] in live_names
+        assert retry_deal["name"] != first_deal["name"]
+        assert retry_deal["name"].endswith("/1")
+
+        async with session.begin():
+            converted = await selectors.get_lead(session, org_id, lead_id)
+        assert converted is not None
+        assert converted.status == "converted"
+        assert converted.conversion_generation == 1
+
+    async def _convert_against_a_deleted_record(
+        self, session, org_id, lead_id, monkeypatch, *, exc_type, generation: int = 0
+    ) -> uuid.UUID:
+        """Run `:convert` while customer answers that the record an earlier attempt created is
+        gone. Returns the claim id the attempt held, read off the row while the call to customer
+        was in flight (no transaction open, as in production)."""
+        if generation:
+            async with session.begin():
+                await session.execute(
+                    text('UPDATE "lead"."leads" SET conversion_generation = :g WHERE id = :id'),
+                    {"g": generation, "id": lead_id},
+                )
+        seen: dict[str, uuid.UUID | None] = {}
+
+        async def _gone(settings, organization_id, **kwargs):
+            async with session.begin():
+                row = await selectors.get_lead(session, org_id, lead_id)
+                seen["claim_id"] = row.conversion_claim_id if row is not None else None
+            raise exc_type("gone")
+
+        monkeypatch.setattr(clients, "ensure_company_and_contact", _gone)
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        with pytest.raises(ValidationProblem, match="convert again to create fresh records"):
+            await services.convert_lead(session, ctx, lead_id)
+        claim_id = seen["claim_id"]
+        assert claim_id is not None
+        return claim_id
+
+    async def _assert_record_deleted(
+        self, session, org_id, lead_id, claim_id, *, generation: int, has_contact: bool
+    ) -> None:
+        events = await _aborted_events(session, lead_id)
+        assert len(events) == 1
+        payload = dict(events[0].payload)
+        company_id, contact_id, deal_id = domain.conversion_ids(lead_id, generation)
+        assert payload == {
+            "organization_id": str(org_id),
+            "lead_id": str(lead_id),
+            "reason": "record_deleted",
+            "generation": generation,
+            "claim_id": str(claim_id),
+            "company_id": str(company_id),
+            "contact_id": str(contact_id) if has_contact else None,
+            "deal_id": str(deal_id),
+        }
+        validate_event_schema(
+            "crm.lead.conversion_aborted", 1, payload, contracts_root=CONTRACTS_ROOT
+        )
+        async with session.begin():
+            lead = await selectors.get_lead(session, org_id, lead_id)
+            failed = (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "lead.conversion_failed",
+                        AuditLog.entity_id == lead_id,
+                    )
+                )
+            ).scalar_one()
+        assert lead is not None
+        assert lead.conversion_generation == generation + 1
+        assert failed.after["conversion_generation"] == generation + 1
+        assert failed.after["aborted_generation"] == generation
+        assert failed.after["claim_id"] == str(claim_id)
+
+    @pytest.mark.parametrize("generation", [0, 3])
+    async def test_a_deleted_company_bumps_and_announces_record_deleted(
+        self, session, org_id, data, monkeypatch: pytest.MonkeyPatch, generation: int
+    ) -> None:
+        lead_id = data["lead_a_id"]
+        claim_id = await self._convert_against_a_deleted_record(
+            session,
+            org_id,
+            lead_id,
+            monkeypatch,
+            exc_type=clients.CompanyDeleted,
+            generation=generation,
+        )
+        await self._assert_record_deleted(
+            session, org_id, lead_id, claim_id, generation=generation, has_contact=True
+        )
+
+    @pytest.mark.parametrize("generation", [0, 3])
+    async def test_a_deleted_contact_bumps_and_announces_record_deleted(
+        self, session, org_id, data, monkeypatch: pytest.MonkeyPatch, generation: int
+    ) -> None:
+        lead_id = data["lead_a_id"]
+        claim_id = await self._convert_against_a_deleted_record(
+            session,
+            org_id,
+            lead_id,
+            monkeypatch,
+            exc_type=clients.ContactDeleted,
+            generation=generation,
+        )
+        await self._assert_record_deleted(
+            session, org_id, lead_id, claim_id, generation=generation, has_contact=True
+        )
+
+    async def test_record_deleted_has_a_null_contact_id_when_the_lead_has_no_email(
+        self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
+        async with session.begin():
+            created = await services.create_lead(
+                session,
+                write,
+                full_name="Marcus Ng",
+                company="Harbour Freight",
+                email=None,
+                phone=None,
+                source="manual",
+                owner_id=data["owner_a"],
+                notes="",
+            )
+            lead_id = created.id
+            await services.update_lead(session, write, lead_id, LeadPatch(status="working"))
+            await services.update_lead(session, write, lead_id, LeadPatch(status="qualified"))
+
+        claim_id = await self._convert_against_a_deleted_record(
+            session, org_id, lead_id, monkeypatch, exc_type=clients.CompanyDeleted
+        )
+        await self._assert_record_deleted(
+            session, org_id, lead_id, claim_id, generation=0, has_contact=False
+        )
+
+    @pytest.mark.parametrize(
+        "exc_type",
+        [
+            clients.OwnerUnknown,
+            clients.DealNameConflict,
+            clients.ConversionRejected,
+            clients.ConversionUnavailable,
+        ],
+    )
+    async def test_a_failure_that_does_not_bump_stages_no_aborted_event(
+        self, session, org_id, data, monkeypatch: pytest.MonkeyPatch, exc_type
+    ) -> None:
+        async def _refuse(settings, organization_id, **kwargs):
+            raise exc_type("nope")
+
+        monkeypatch.setattr(clients, "ensure_company_and_contact", _refuse)
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        with pytest.raises((ValidationProblem, UpstreamUnavailableProblem)):
+            await services.convert_lead(session, ctx, data["lead_a_id"])
+
+        assert await _aborted_events(session, data["lead_a_id"]) == []
+        async with session.begin():
+            lead = await selectors.get_lead(session, org_id, data["lead_a_id"])
+        assert lead is not None
+        assert lead.conversion_generation == 0
+        assert lead.conversion_claim_id is None
+
+    async def test_a_duplicate_fail_conversion_bumps_and_announces_once(
+        self, session, org_id, data
+    ) -> None:
+        lead_id = data["lead_a_id"]
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        claim = await services.claim_conversion(session, ctx, lead_id)
+        for _ in range(2):
+            await services.fail_conversion(
+                session,
+                ctx,
+                lead_id=lead_id,
+                claim_id=claim.claim_id,
+                reason="gone",
+                bump_generation=True,
+            )
+
+        assert len(await _aborted_events(session, lead_id)) == 1
+        async with session.begin():
+            lead = await selectors.get_lead(session, org_id, lead_id)
+        assert lead is not None
+        assert lead.conversion_generation == 1
