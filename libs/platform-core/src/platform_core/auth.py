@@ -17,6 +17,14 @@ Actions with no meaningful "own" reading pass ``minimum=Scope.ORG``.
 **Filtering the list and forgetting the detail is the named vulnerability.** ``apply()``
 narrows a query; ``assert_can_touch()`` guards a single object. Both are needed, and
 LOCATION really does compare locations here — a scope that returns early is a hole.
+
+**"The caller" is one of two ids, and the product says which.** OWN and TEAM compare a row's
+owner with ``ScopeContext.own_ref``. For every product that has not said otherwise that is the
+caller's *employee link* (``Principal.subject_ref``: an HR employee id, null for a member with
+no employee record). A product whose users may have no HR record registers its scope resolver
+with ``owner_subject=OwnerSubject.MEMBERSHIP`` and ``own_ref`` is then the caller's *membership
+id* (``Principal.membership_id``). Neither is ever a fallback for the other: a caller with no
+such id owns nothing, and passes no object check.
 """
 
 from __future__ import annotations
@@ -31,7 +39,7 @@ import jwt
 from fastapi import Depends, Request
 from jwt import PyJWKClient
 from pydantic import BaseModel, Field
-from sqlalchemy import Select
+from sqlalchemy import Select, or_
 from sqlalchemy import false as sa_false
 
 from platform_core.config import ServiceSettings
@@ -73,7 +81,8 @@ class Principal(BaseModel):
     sub: uuid.UUID
     organization_id: uuid.UUID
     membership_id: uuid.UUID | None = None
-    #: Product-specific subject reference — an employee id for HR, a rep id for CRM.
+    #: The caller's employee link: the HR employee id, or None when the membership has none. OWN
+    #: and TEAM compare it for every product that has not declared `OwnerSubject.MEMBERSHIP`.
     subject_ref: uuid.UUID | None = None
     audience: str | None = None
     session_id: str | None = None
@@ -339,12 +348,35 @@ CurrentPrincipal = Annotated[Principal, Depends(get_principal)]
 # --------------------------------------------------------------------- scope resolution
 
 
+class OwnerSubject(enum.StrEnum):
+    """Whose id OWN and TEAM compare a row's owner column with.
+
+    A product declares it once, when it registers its scope resolver
+    (``register_scope_resolver(..., owner_subject=...)``); ``require()`` snapshots it onto the
+    ``ScopeContext``, and ``ScopeContext.own_ref`` is the one accessor that reads it.
+    """
+
+    #: ``Principal.subject_ref`` — the caller's employee link. Today's behaviour, and the default
+    #: for every product that does not say otherwise.
+    EMPLOYEE_LINK = "employee_link"
+    #: ``Principal.membership_id`` — the caller's membership in the organization. What a product
+    #: with no HR link (a CRM-only tenant's rep) needs.
+    MEMBERSHIP = "membership"
+
+
 class ScopeResolver(Protocol):
     """How one product turns a scope into a filter.
 
     TEAM and LOCATION are HR-shaped ideas. CRM's natural narrowing is territory or
     account ownership. Rather than force every product onto one reading, each registers
     how its own rows are scoped.
+
+    The registration also declares whose id OWN and TEAM compare:
+    ``register_scope_resolver(product, factory, owner_subject=...)``. That lives on the
+    registration, not on this Protocol, because a new required member here would break strict
+    mypy in every service that implements it. ``ScopeContext.apply`` does not call these
+    methods: each selector passes its own columns, so they describe a product's rows rather
+    than enforce them.
     """
 
     def owner_column(self) -> Any: ...
@@ -352,11 +384,49 @@ class ScopeResolver(Protocol):
     def location_column(self) -> Any | None: ...
 
 
-_resolvers: dict[str, Callable[[], ScopeResolver]] = {}
+_resolvers: dict[str, tuple[Callable[[], ScopeResolver], OwnerSubject]] = {}
 
 
-def register_scope_resolver(product: str, factory: Callable[[], ScopeResolver]) -> None:
-    _resolvers[product] = factory
+def register_scope_resolver(
+    product: str,
+    factory: Callable[[], ScopeResolver],
+    *,
+    owner_subject: OwnerSubject = OwnerSubject.EMPLOYEE_LINK,
+) -> None:
+    """Declare how `product` scopes its rows, and whose id its OWN and TEAM rungs compare.
+
+    Runs at import in each service's routes module, and one process may reach it twice for the
+    same product (customer registers `crm` from two modules), so it is idempotent: the same
+    subject again is a no-op that keeps the first factory. A **different** subject raises —
+    silently flipping which id a product's scope compares is a scope defect, not a last-write-
+    wins convenience.
+    """
+    existing = _resolvers.get(product)
+    if existing is not None:
+        if existing[1] is not owner_subject:
+            raise ValueError(
+                f"scope resolver for {product!r} is already registered with owner subject "
+                f"{existing[1].value!r}; refusing to re-register it as {owner_subject.value!r}"
+            )
+        return
+    _resolvers[product] = (factory, owner_subject)
+
+
+def owner_subject_for(permission: str) -> OwnerSubject:
+    """The subject the product that owns `permission` declared; the employee link when none did.
+
+    The product is the text before the first dot. A miss is safe by construction: a permission
+    whose prefix is not a registered product (notification registers `notification` while its
+    Engage routes require `engage.*` codes; `core` has no resolver) keeps today's behaviour.
+    """
+    entry = _resolvers.get(permission.partition(".")[0])
+    return entry[1] if entry is not None else OwnerSubject.EMPLOYEE_LINK
+
+
+def reset_scope_resolvers() -> None:
+    """Empty the registry. Tests only: import order and test pollution must never decide
+    which subject a context carries. No file under `services/*/app` may call this."""
+    _resolvers.clear()
 
 
 class ScopeContext(BaseModel):
@@ -365,6 +435,11 @@ class ScopeContext(BaseModel):
     principal: Principal
     scope: Scope
     permission: str
+    #: Whose id OWN and TEAM compare. Snapshotted by `require()` from the product's resolver
+    #: registration; a hand-built context takes the default, the employee link, which is
+    #: harmless for the ORG contexts a service builds for itself (ORG returns before any subject
+    #: is read).
+    owner_subject: OwnerSubject = OwnerSubject.EMPLOYEE_LINK
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -374,6 +449,18 @@ class ScopeContext(BaseModel):
 
     @property
     def subject_ref(self) -> uuid.UUID | None:
+        return self.principal.subject_ref
+
+    @property
+    def own_ref(self) -> uuid.UUID | None:
+        """The id this context's OWN and TEAM rungs compare a row's owner with.
+
+        The caller's membership id when the product declared `OwnerSubject.MEMBERSHIP`, the
+        employee link otherwise; `None` when the caller has no such id, which matches no row.
+        `subject_ref` keeps meaning the raw employee link, for HR code that really means it.
+        """
+        if self.owner_subject is OwnerSubject.MEMBERSHIP:
+            return self.principal.membership_id
         return self.principal.subject_ref
 
     def apply[S: Select[Any]](
@@ -388,24 +475,34 @@ class ScopeContext(BaseModel):
 
         A list endpoint that skips this leaks the organization, which is why every one of
         them carries a negative-authorization test.
+
+        OWN and TEAM compare `own_ref`: the caller's employee link, or their membership id for
+        a product that declared `OwnerSubject.MEMBERSHIP`. On a membership subject, TEAM also
+        admits the caller's own rows (D-24).
         """
         if self.scope is Scope.ORG:
             return stmt
         if self.scope is Scope.OWN:
-            if self.principal.subject_ref is None:
+            own = self.own_ref
+            if own is None:
                 # Nothing to own with. Match nothing — `col == NULL` would be SQL NULL
                 # and quietly return everything the outer filter allowed.
                 return stmt.where(sa_false())
-            return stmt.where(owner_col == self.principal.subject_ref)
+            return stmt.where(owner_col == own)
         if self.scope is Scope.TEAM:
             if team_col is None:
                 raise ForbiddenProblem("TEAM scope is not supported on this resource")
-            if self.principal.subject_ref is None:
+            own = self.own_ref
+            if own is None:
                 # Same guard as OWN, for the same reason: `team_col == None` renders as
                 # `team_col IS NULL`, which would return every unmanaged row in the tenant
                 # instead of nothing.
                 return stmt.where(sa_false())
-            return stmt.where(team_col == self.principal.subject_ref)
+            if self.owner_subject is OwnerSubject.MEMBERSHIP:
+                # A manager's own rows stay inside their team scope (D-24): `scope_for`
+                # returns the widest grant only, so a TEAM holder has no OWN grant to fall back on.
+                return stmt.where(or_(owner_col == own, team_col == own))
+            return stmt.where(team_col == own)
         if self.scope is Scope.LOCATION:
             if location_col is None:
                 raise ForbiddenProblem("LOCATION scope is not supported on this resource")
@@ -424,14 +521,25 @@ class ScopeContext(BaseModel):
         LOCATION compares the row's location against the caller's. An earlier system
         returned early here, which meant a location-scoped caller could reach any single
         object it could name.
+
+        OWN and TEAM compare `own_ref`, exactly as `apply` does; a caller with none passes
+        neither (`None == None` must never admit a row). On a membership subject, TEAM also
+        admits the caller's own row (D-24).
         """
         if self.scope is Scope.ORG:
             return
-        subject = self.principal.subject_ref
-        if self.scope is Scope.OWN and subject is not None and owner_id == subject:
+        own = self.own_ref
+        if self.scope is Scope.OWN and own is not None and owner_id == own:
             return
-        if self.scope is Scope.TEAM and subject is not None and team_owner_id == subject:
+        if self.scope is Scope.TEAM and own is not None and team_owner_id == own:
             return
+        if (
+            self.scope is Scope.TEAM
+            and self.owner_subject is OwnerSubject.MEMBERSHIP
+            and own is not None
+            and owner_id == own
+        ):
+            return  # the caller's own row, inside their team scope (D-24)
         if self.scope is Scope.LOCATION:
             if location_code is not None and location_code in self.principal.locations:
                 return
@@ -469,7 +577,15 @@ def require(
         if amr and not amr.issubset(set(principal.amr)):
             missing = ", ".join(sorted(amr - set(principal.amr)))
             raise ForbiddenProblem(f"Additional authentication required: {missing}")
-        return ScopeContext(principal=principal, scope=scope, permission=permission)
+        # Read here, per request and after every permission check above, so the subject is the
+        # one registered by now: a route module builds this dependency at import, usually before
+        # its service's own `scope.register()` line has run.
+        return ScopeContext(
+            principal=principal,
+            scope=scope,
+            permission=permission,
+            owner_subject=owner_subject_for(permission),
+        )
 
     return _dependency
 
@@ -567,6 +683,7 @@ def require_service_token(request: Request) -> None:
 __all__ = [
     "OPERATOR_AUDIENCE",
     "CurrentPrincipal",
+    "OwnerSubject",
     "Principal",
     "Scope",
     "ScopeContext",
@@ -574,10 +691,12 @@ __all__ = [
     "client_ip",
     "decode_token",
     "get_principal",
+    "owner_subject_for",
     "register_scope_resolver",
     "require",
     "require_operator",
     "require_product",
     "require_service_token",
     "reset_jwks_cache",
+    "reset_scope_resolvers",
 ]

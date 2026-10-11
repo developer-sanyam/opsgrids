@@ -8,6 +8,7 @@ imported explicitly so their cost and intent are visible at the call site.
 from platform_core.app import create_app
 from platform_core.auth import (
     CurrentPrincipal,
+    OwnerSubject,
     Principal,
     Scope,
     ScopeContext,
@@ -62,6 +63,7 @@ __all__ = [
     "ForbiddenProblem",
     "Money",
     "NotFoundProblem",
+    "OwnerSubject",
     "Page",
     "PageParams",
     "PageQuery",

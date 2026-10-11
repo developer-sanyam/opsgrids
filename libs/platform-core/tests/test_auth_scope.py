@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 from sqlalchemy import Column, String, column, select
 
+from platform_core import OwnerSubject
 from platform_core.auth import Principal, Scope, ScopeContext, require_operator
 from platform_core.errors import ForbiddenProblem, NotFoundProblem
 
@@ -218,3 +219,195 @@ class TestRequireOperator:
         dep = require_operator()
         with pytest.raises(ForbiddenProblem):
             dep(_operator(["owner"], amr=[]))
+
+
+#: A caller's membership id. `ME` above is the same person's employee link; the two differ, so a
+#: comparison against the wrong one cannot pass by accident.
+MEMBER = uuid.uuid4()
+
+
+def membership_ctx(
+    scope: Scope,
+    *,
+    membership_id: uuid.UUID | None = MEMBER,
+    subject_ref: uuid.UUID | None = ME,
+    locations: list[str] | None = None,
+) -> ScopeContext:
+    """A context for a product that declared `OwnerSubject.MEMBERSHIP`."""
+    principal = Principal(
+        sub=uuid.uuid4(),
+        organization_id=ORG,
+        membership_id=membership_id,
+        subject_ref=subject_ref,
+        locations=locations or [],
+    )
+    return ScopeContext(
+        principal=principal,
+        scope=scope,
+        permission="x.y.z.read",
+        owner_subject=OwnerSubject.MEMBERSHIP,
+    )
+
+
+class TestMembershipSubject:
+    """OWN and TEAM on a membership context compare the membership id, and only that."""
+
+    owner: Any = column("owner_id")
+    manager: Any = column("manager_id")
+    loc: Any = column("location_code")
+
+    # ---- apply: lists
+
+    def test_own_binds_only_the_callers_membership_id(self) -> None:
+        out = membership_ctx(Scope.OWN).apply(select(self.owner), owner_col=self.owner)
+        # One bound parameter, and it is the membership id: the employee link, the user id and a
+        # colleague's id appear nowhere in the statement.
+        assert list(out.compile().params.values()) == [MEMBER]
+
+    def test_own_matches_a_rep_who_has_no_employee_link_at_all(self) -> None:
+        # The CRM-only tenant: no HRMS, so no employee link, and the rep still owns rows.
+        ctx = membership_ctx(Scope.OWN, subject_ref=None)
+        out = ctx.apply(select(self.owner), owner_col=self.owner)
+        assert list(out.compile().params.values()) == [MEMBER]
+
+    def test_own_with_no_membership_id_matches_nothing_even_with_an_employee_link(self) -> None:
+        out = membership_ctx(Scope.OWN, membership_id=None).apply(
+            select(self.owner), owner_col=self.owner
+        )
+        rendered = str(out.compile()).lower()
+        assert "false" in rendered
+        assert "is null" not in rendered
+        assert out.compile().params == {}  # nothing was compared with anything
+
+    def test_team_binds_only_the_callers_membership_id(self) -> None:
+        out = membership_ctx(Scope.TEAM).apply(
+            select(self.owner), owner_col=self.owner, team_col=self.manager
+        )
+        assert set(out.compile().params.values()) == {MEMBER}
+
+    def test_team_with_no_membership_id_matches_nothing(self) -> None:
+        out = membership_ctx(Scope.TEAM, membership_id=None).apply(
+            select(self.owner), owner_col=self.owner, team_col=self.manager
+        )
+        rendered = str(out.compile()).lower()
+        assert "false" in rendered
+        assert "is null" not in rendered
+        assert out.compile().params == {}
+
+    def test_team_without_a_team_column_is_still_refused(self) -> None:
+        with pytest.raises(ForbiddenProblem, match="TEAM scope"):
+            membership_ctx(Scope.TEAM).apply(select(self.owner), owner_col=self.owner)
+
+    def test_org_returns_the_same_statement(self) -> None:
+        stmt = select(self.owner)
+        ctx = membership_ctx(Scope.ORG, membership_id=None, subject_ref=None)
+        assert ctx.apply(stmt, owner_col=self.owner) is stmt
+
+    def test_location_is_untouched_by_the_subject(self) -> None:
+        ctx = membership_ctx(
+            Scope.LOCATION, membership_id=None, subject_ref=None, locations=["MUM"]
+        )
+        out = ctx.apply(select(self.owner), owner_col=self.owner, location_col=self.loc)
+        assert "location_code IN" in str(out.compile())
+        with pytest.raises(ForbiddenProblem, match="LOCATION scope"):
+            ctx.apply(select(self.owner), owner_col=self.owner)
+
+    # ---- assert_can_touch: the refusals first
+
+    def test_own_refuses_a_row_owned_by_the_employee_link_value(self) -> None:
+        # A row an HR-linked rep wrote before the product opted in carries their employee id.
+        # The membership subject must not recognise it: that is the whole point of the subject.
+        with pytest.raises(ForbiddenProblem):
+            membership_ctx(Scope.OWN).assert_can_touch(owner_id=ME)
+
+    def test_own_refuses_a_row_owned_by_a_colleague(self) -> None:
+        with pytest.raises(ForbiddenProblem):
+            membership_ctx(Scope.OWN).assert_can_touch(owner_id=COLLEAGUE)
+
+    def test_own_with_no_membership_id_refuses_everything(self) -> None:
+        ctx = membership_ctx(Scope.OWN, membership_id=None)
+        for owner_id in (None, ME, MEMBER, COLLEAGUE):
+            with pytest.raises(ForbiddenProblem):
+                ctx.assert_can_touch(owner_id=owner_id)
+
+    def test_own_allows_exactly_the_callers_membership_id(self) -> None:
+        membership_ctx(Scope.OWN).assert_can_touch(owner_id=MEMBER)
+        membership_ctx(Scope.OWN, subject_ref=None).assert_can_touch(owner_id=MEMBER)
+
+    def test_team_allows_a_row_whose_team_owner_is_the_callers_membership_id(self) -> None:
+        membership_ctx(Scope.TEAM).assert_can_touch(owner_id=COLLEAGUE, team_owner_id=MEMBER)
+
+    def test_team_refuses_a_row_whose_team_owner_is_the_employee_link_value(self) -> None:
+        with pytest.raises(ForbiddenProblem):
+            membership_ctx(Scope.TEAM).assert_can_touch(owner_id=COLLEAGUE, team_owner_id=ME)
+
+    def test_team_refuses_when_both_ids_are_none(self) -> None:
+        # No membership id, and a row with no team owner: `None == None` must not admit it.
+        ctx = membership_ctx(Scope.TEAM, membership_id=None)
+        with pytest.raises(ForbiddenProblem):
+            ctx.assert_can_touch(owner_id=None, team_owner_id=None)
+
+    def test_location_object_check_is_untouched_by_the_subject(self) -> None:
+        ctx = membership_ctx(
+            Scope.LOCATION, membership_id=None, subject_ref=None, locations=["MUM"]
+        )
+        ctx.assert_can_touch(owner_id=COLLEAGUE, location_code="MUM")
+        with pytest.raises(ForbiddenProblem):
+            ctx.assert_can_touch(owner_id=COLLEAGUE, location_code="DEL")
+
+
+class TestMembershipTeamIncludesOwnRows:
+    """D-24 (accepted default, ADR-0038): TEAM on a membership means "my own rows or my direct
+    reports'". `Principal.scope_for` returns the widest grant only, so a manager holding TEAM write
+    has no OWN grant to fall back on: without this they could not touch a record they own
+    themselves. The employee-link TEAM path is deliberately left as it is.
+
+    If the owner answers D-24 no, delete this class and the `or_` branches it pins in
+    `ScopeContext.apply` and `ScopeContext.assert_can_touch`; nothing else changes."""
+
+    owner: Any = column("owner_id")
+    manager: Any = column("manager_id")
+
+    def test_team_is_owner_or_team_column_for_a_membership(self) -> None:
+        out = membership_ctx(Scope.TEAM).apply(
+            select(self.owner), owner_col=self.owner, team_col=self.manager
+        )
+        compiled = out.compile()
+        sql = str(compiled)
+        assert " OR " in sql
+        assert "owner_id = " in sql
+        assert "manager_id = " in sql
+        # Both comparisons are against the membership id, and nothing else is bound.
+        assert list(compiled.params.values()) == [MEMBER, MEMBER]
+
+    def test_team_allows_a_direct_report_or_the_callers_own_row(self) -> None:
+        ctx = membership_ctx(Scope.TEAM)
+        ctx.assert_can_touch(owner_id=COLLEAGUE, team_owner_id=MEMBER)  # a direct report's row
+        ctx.assert_can_touch(owner_id=MEMBER, team_owner_id=None)  # the caller's own row
+        ctx.assert_can_touch(owner_id=MEMBER, team_owner_id=COLLEAGUE)  # own, under another manager
+
+    def test_team_refuses_a_row_with_neither(self) -> None:
+        ctx = membership_ctx(Scope.TEAM)
+        for owner_id, team_owner_id in (
+            (COLLEAGUE, COLLEAGUE),
+            (COLLEAGUE, None),
+            (ME, ME),  # the employee-link value is not the membership subject's id
+            (None, None),
+        ):
+            with pytest.raises(ForbiddenProblem):
+                ctx.assert_can_touch(owner_id=owner_id, team_owner_id=team_owner_id)
+
+    def test_the_employee_link_team_path_is_unchanged(self) -> None:
+        principal = Principal(sub=uuid.uuid4(), organization_id=ORG, subject_ref=ME)
+        ctx = ScopeContext(
+            principal=principal,
+            scope=Scope.TEAM,
+            permission="x.y.z.read",
+            owner_subject=OwnerSubject.EMPLOYEE_LINK,
+        )
+        out = ctx.apply(select(self.owner), owner_col=self.owner, team_col=self.manager)
+        assert " OR " not in str(out.compile())
+        assert list(out.compile().params.values()) == [ME]
+        # The caller's own row is not admitted by a TEAM grant on this subject.
+        with pytest.raises(ForbiddenProblem):
+            ctx.assert_can_touch(owner_id=ME, team_owner_id=COLLEAGUE)

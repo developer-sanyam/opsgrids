@@ -258,9 +258,10 @@ shared.
   reporting success while the person keeps access.
 
 The `Principal` the platform passes around carries: `sub`, `organization_id`, `membership_id`,
-`subject_ref` (product-specific — an employee id for HR, a rep id for CRM), `audience`,
-`session_id`, `entitlements`, `roles`, `perms`, `locations`, `amr` (drives step-up) and
-`permission_version`.
+`subject_ref` (the employee link: the HR employee id, or null when the membership has none),
+`audience`, `session_id`, `entitlements`, `roles`, `perms`, `locations`, `amr` (drives step-up) and
+`permission_version`. Which of `subject_ref` and `membership_id` a product's OWN scope compares is
+that product's choice (`OwnerSubject`, §8).
 
 ### The auth surface
 
@@ -303,6 +304,16 @@ The ladder is universal but **what each rung means is per product**. TEAM and LO
 HR-shaped ideas; CRM's natural narrowing is territory or account ownership. Each service therefore
 registers a `ScopeResolver` declaring which column is the owner, the team and the location. A rung
 a product does not offer is **refused rather than silently widened**.
+
+The registration also declares **whose id** the OWN and TEAM rungs compare:
+`register_scope_resolver(product, factory, owner_subject=...)`, with `OwnerSubject.EMPLOYEE_LINK`
+(the caller's `Principal.subject_ref`, today's behaviour and the default) or
+`OwnerSubject.MEMBERSHIP` (their `Principal.membership_id`, for a product whose users may have no
+HR record, such as a CRM-only tenant's rep). `require()` snapshots the declared subject onto the
+`ScopeContext` it returns, and `ctx.own_ref` is the one accessor for "who am I" in an OWN or TEAM
+comparison: `ctx.apply` and `ctx.assert_can_touch` use it, and a caller with no such id owns
+nothing. The registry says whose id is compared; which columns a rung filters on is still passed
+by each selector in its own `apply` call.
 
 Each product service declares its vocabulary in `app/catalogue.py`: `PermissionSpec` rows and
 `RoleTemplate` rows. Two rules are enforced at import and asserted by a test:
