@@ -1,11 +1,12 @@
 # ruff: noqa: S608 — every f-string here interpolates only the SCHEMA constant; values are bound.
-"""Deal's migration chain, run for real: `e94d7a2c5f18` → `a1c9e2f7b3d4`.
+"""Deal's migration chain, run for real: `e94d7a2c5f18` → `a1c9e2f7b3d4` → `f3b8d1a65c02`.
 
 `a1c9e2f7b3d4` ("add closed_at") is adopted **byte for byte** from the insights branch, so that
-branch's rebase onto this one is a no-op. These tests prove the adoption is exact, the chain has
-one head and one order, the backfill recovers what the audit trail can and guesses nothing, and
-the migration connection gives up after five seconds rather than queue behind a long session
-while the old containers still serve.
+branch's rebase onto this one is a no-op; `f3b8d1a65c02` creates the two pipeline tables. These
+tests prove the adoption is exact, the chain has one head and one order, the backfill recovers
+what the audit trail can and guesses nothing, the downgrade refuses to destroy a configured
+pipeline, and the migration connection gives up after five seconds rather than queue behind a
+long session while the old containers still serve.
 
 Like every migration test in this repo they drive alembic in a subprocess against the configured
 database and restore head afterwards, so run them against a throwaway database.
@@ -29,10 +30,18 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app.config import settings
 from app.models import SCHEMA
+from app.pipeline import DEFAULT_PIPELINE
+from tests.pipeline_support import insert_deal, install_pipeline
 
 pytestmark = pytest.mark.integration
 
@@ -41,12 +50,15 @@ VERSIONS = SERVICE_DIR / "migrations" / "versions"
 
 RLS_REVISION = "e94d7a2c5f18"  # pragma: allowlist secret
 CLOSED_AT_REVISION = "a1c9e2f7b3d4"  # pragma: allowlist secret
+STAGES_REVISION = "f3b8d1a65c02"  # pragma: allowlist secret
 #: The git blob of `a1c9e2f7b3d4_add_closed_at.py` on the insights branch (`a4b248f1`).
 ADOPTED_BLOB_SHA1 = "be9f7b9f66102b70346d178c8a84299912a5245d"  # pragma: allowlist secret
 
 TABLES = (
     "activities",
     "deals",
+    "pipeline_stages",
+    "pipelines",
     "audit_logs",
     "outbox",
     "processed_events",
@@ -90,6 +102,11 @@ async def revision_of(conn: AsyncConnection) -> str:
     ).scalar_one()
 
 
+async def table_exists(conn: AsyncConnection, name: str) -> bool:
+    found = (await conn.execute(text("SELECT to_regclass(:t)"), {"t": f"{SCHEMA}.{name}"})).scalar()
+    return found is not None
+
+
 async def has_closed_at(conn: AsyncConnection) -> bool:
     return (
         await conn.execute(
@@ -124,7 +141,7 @@ async def admin() -> AsyncIterator[AsyncEngine]:
 
 @pytest.fixture
 async def at_rls_revision(admin: AsyncEngine) -> AsyncEngine:
-    """The database as it was before this release: the RLS revision, no `closed_at`."""
+    """The database as it was before this release: the RLS revision, no `closed_at`, no stages."""
     down = alembic("downgrade", RLS_REVISION)
     assert down.returncode == 0, down.stderr[-2000:]
     return admin
@@ -143,20 +160,24 @@ def test_the_adopted_closed_at_revision_is_byte_identical_to_the_insights_blob()
     assert blob == ADOPTED_BLOB_SHA1
 
 
-def test_the_deal_chain_has_one_head_and_the_adopted_revision_follows_the_rls_revision() -> None:
-    """One head, and `a1c9e2f7b3d4` is the only child of `e94d7a2c5f18`. Written to stay true as
-    later revisions extend the chain: it fails if any *other* revision is parented on the RLS
-    revision, which would leave two heads that the byte-pinned adopted file could not be
-    re-parented to repair."""
+def test_the_deal_chain_has_one_head_and_orders_the_three_revisions() -> None:
+    """One head, and `e94d7a2c5f18` → `a1c9e2f7b3d4` → `f3b8d1a65c02` in that order along the
+    chain. Written to stay true as later releases extend the chain (R2.6 adds a revision after
+    `f3b8d1a65c02`): it fails if any *other* revision is parented on `e94d7a2c5f18`, which would
+    leave two heads that the byte-pinned adopted file could not be re-parented to repair."""
     script = script_directory()
     assert len(script.get_heads()) == 1, script.get_heads()
     oldest_first = [
         rev.revision for rev in reversed(list(script.iterate_revisions("heads", "base")))
     ]
-    assert oldest_first.index(RLS_REVISION) < oldest_first.index(CLOSED_AT_REVISION)
+    positions = [oldest_first.index(r) for r in (RLS_REVISION, CLOSED_AT_REVISION, STAGES_REVISION)]
+    assert positions == sorted(positions)
     rls = script.get_revision(RLS_REVISION)
     assert rls is not None
     assert set(rls.nextrev) == {CLOSED_AT_REVISION}
+    stages = script.get_revision(STAGES_REVISION)
+    assert stages is not None
+    assert stages.down_revision == CLOSED_AT_REVISION
 
 
 def test_the_deal_migration_session_runs_under_a_5s_lock_timeout() -> None:
@@ -219,7 +240,7 @@ async def seed_deal(
     return deal_id
 
 
-async def test_upgrade_from_the_rls_revision_adds_closed_at_backfilled_from_audit(
+async def test_upgrade_from_the_rls_revision_adds_closed_at_backfilled_from_audit_and_both_tables(
     at_rls_revision: AsyncEngine,
 ) -> None:
     engine = at_rls_revision
@@ -250,8 +271,10 @@ async def test_upgrade_from_the_rls_revision_adds_closed_at_backfilled_from_audi
     assert up.returncode == 0, up.stderr[-2000:]
 
     async with engine.connect() as conn:
-        assert await revision_of(conn) == CLOSED_AT_REVISION
+        assert await revision_of(conn) == STAGES_REVISION
         assert await has_closed_at(conn)
+        assert await table_exists(conn, "pipelines")
+        assert await table_exists(conn, "pipeline_stages")
         closed_at = dict(
             (
                 await conn.execute(
@@ -268,6 +291,83 @@ async def test_upgrade_from_the_rls_revision_adds_closed_at_backfilled_from_audi
     # ... and never guessed where it does not.
     assert closed_at[still_open] is None
     assert closed_at[unaudited] is None
+
+
+# --------------------------------------------------------------------------- downgrade
+
+
+def sessions(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def test_downgrade_is_clean_when_the_tables_are_empty(admin: AsyncEngine) -> None:
+    down = alembic("downgrade", CLOSED_AT_REVISION)
+    assert down.returncode == 0, down.stderr[-2000:]
+    async with admin.connect() as conn:
+        assert await revision_of(conn) == CLOSED_AT_REVISION
+        assert not await table_exists(conn, "pipelines")
+        assert not await table_exists(conn, "pipeline_stages")
+        assert await has_closed_at(conn), "only the stages revision was undone"
+
+
+async def test_downgrade_is_clean_after_an_untouched_materialisation(admin: AsyncEngine) -> None:
+    """The six default rows, unchanged, are not an organization's configuration: nothing is lost
+    by dropping them, and the code that wrote them reads the same six from its own constants."""
+    async with sessions(admin)() as db:
+        await install_pipeline(db, uuid.uuid4(), DEFAULT_PIPELINE.stages)
+    down = alembic("downgrade", CLOSED_AT_REVISION)
+    assert down.returncode == 0, down.stderr[-2000:]
+    async with admin.connect() as conn:
+        assert not await table_exists(conn, "pipeline_stages")
+
+
+async def test_downgrade_refuses_when_a_custom_stage_exists(admin: AsyncEngine) -> None:
+    async with sessions(admin)() as db:
+        await install_pipeline(db, uuid.uuid4())  # discovery, scoping, quote, won, lost
+    down = alembic("downgrade", CLOSED_AT_REVISION)
+    assert down.returncode != 0
+    assert "Refusing to downgrade" in down.stderr
+    assert "customised stage row" in down.stderr
+    async with admin.connect() as conn:
+        assert await revision_of(conn) == STAGES_REVISION
+        assert await table_exists(conn, "pipeline_stages")
+
+
+async def test_downgrade_refuses_when_a_default_stage_was_renamed(admin: AsyncEngine) -> None:
+    """One edited label is a configuration: the six rows are no longer "untouched"."""
+    org = uuid.uuid4()
+    async with sessions(admin)() as db:
+        await install_pipeline(db, org, DEFAULT_PIPELINE.stages)
+    async with admin.begin() as conn:
+        await conn.execute(
+            text(f"UPDATE {SCHEMA}.pipeline_stages SET label = 'Prospect' WHERE key = 'lead'")
+        )
+    down = alembic("downgrade", CLOSED_AT_REVISION)
+    assert down.returncode != 0
+    assert "Refusing to downgrade" in down.stderr
+
+
+async def test_downgrade_refuses_when_a_deal_sits_in_a_custom_stage(admin: AsyncEngine) -> None:
+    async with sessions(admin)() as db:
+        await insert_deal(db, uuid.uuid4(), stage="discovery")
+    down = alembic("downgrade", CLOSED_AT_REVISION)
+    assert down.returncode != 0
+    assert "Refusing to downgrade" in down.stderr
+    assert "stage the previous code cannot name" in down.stderr
+    async with admin.connect() as conn:
+        assert await revision_of(conn) == STAGES_REVISION
+
+
+async def test_downgrade_with_the_override_drops_everything(admin: AsyncEngine) -> None:
+    async with sessions(admin)() as db:
+        await install_pipeline(db, uuid.uuid4())
+    down = alembic(
+        "downgrade", CLOSED_AT_REVISION, env={"OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE": "1"}
+    )
+    assert down.returncode == 0, down.stderr[-2000:]
+    async with admin.connect() as conn:
+        assert not await table_exists(conn, "pipelines")
+        assert not await table_exists(conn, "pipeline_stages")
 
 
 # --------------------------------------------------------------------------- the lock bound
