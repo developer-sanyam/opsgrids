@@ -324,52 +324,52 @@ Files are grouped by responsibility; the task that touches each is named in the 
 - **Files:** Modify `frontend/opsgrids-ui/src/lib/format.ts` (beside `formatDelta` and `initials`), `frontend/opsgrids-ui/src/index.ts`, `frontend/product-crm/src/lib/format.ts` and `lib/money.ts` (the money functions are deleted and callers import the shared ones), `lib/format.test.ts`, `lib/money.test.ts`; Create `frontend/opsgrids-ui/src/lib/format.money.test.ts`.
 - **Produces / Consumes:** Produces `formatMoney(minor, currency, { precise?, compact?, locale? })` (default locale `en-IN`; INR without paise unless `precise`), `toMajor`, `currencyExponent(currency)` (from `Intl.NumberFormat(...).resolvedOptions().maximumFractionDigits`, cached, 2 for an unrecognised code), `parseMinor(input, currency): {ok, minor} | {ok: false, message}`, `minorToInput(minor, currency)`, with the signature of `frontend/opsgrids-internal/src/lib/money.ts:39`; integer arithmetic on the parsed string, no float ever carries money.
 - **Tests:** `format.money.test.ts`: INR and USD identical to today's CRM output, JPY has no decimals and rejects a fractional input, KWD has three, compact, `parseMinor("1,20,000.5", "INR")` is 12000050, and `1.200,50`, a currency symbol, a trailing unit and too many decimals are refused with a message that states the accepted form (Review Focus 2); `grep -rn "formatMoney\b" frontend/product-crm/src` shows only imports from `@opsgrids/ui`.
-- [ ] **Commit boundary:** `UI: one money formatter and parser in whole minor units`.
+- [x] **Commit boundary:** `UI: one money formatter and parser in whole minor units`.
 
 ### Task R3.3.2: Org profile, timeline order and the command-menu result slot (G19, G20, G12)
 - **Files:** Create `frontend/opsgrids-client/src/platform/useOrgProfile.ts` (+ test); Modify `frontend/opsgrids-client/src/index.ts`, `platform/useGlobalSearch.ts` and `useGlobalSearch.test.tsx`, `frontend/opsgrids-ui/src/components/{Timeline,CommandMenu,AppShell}.tsx` (+ stories and tests), `frontend/opsgrids-ui/src/index.ts`.
 - **Produces / Consumes:** Produces `useOrgProfile(): { timezone, currency, locale, status }` (one `GET /organization` read per session; `Asia/Kolkata` / `INR` / `en-IN` with status `fallback` on a failed read); `Timeline` `order?: "asc" | "desc"` (default `"asc"`) and `footer?: ReactNode`; `CommandMenuConfig.results?: { onQueryChange, status: "idle" | "loading" | "success" | "error", items, partial, hint? }` through `AppShell`; `useGlobalSearch` Leads source (`/leads?q=&size=5`, href `/leads/:id`) and the identifier guard (an `@`, or six or more characters from digits, space, `+ ( ) - .`, runs no GET source and returns `status: "idle"` with `blocked: "identifier"`); the Contacts href stays `/contacts?q=` until R3.5.4; consumes `GET /organization` (every member holds `core.org.organization.read` at ORG).
 - **Tests:** `Timeline.test.tsx` `desc_order_collapse_keeps_the_head`; `CommandMenu.test.tsx` `results_render_after_static_items`, `status_line_is_announced`, `without_results_behaviour_is_unchanged`; `useGlobalSearch.test.tsx` `leads_source`, `identifier_guard_makes_no_request`; `useOrgProfile` fallback; a story for each new export (`stories.test.ts`).
-- [ ] **Commit boundary:** `UI and client: org profile, newest-first timeline and async command-menu results`.
+- [x] **Commit boundary:** `UI and client: org profile, newest-first timeline and async command-menu results`.
 
 ### Task R3.3.3: `KanbanBoard` (G1), adopted by Projects and PulseBoard
 - **Files:** Create `frontend/opsgrids-ui/src/components/KanbanBoard.tsx`, `KanbanBoard.stories.tsx`, `KanbanBoard.test.tsx`; Modify `frontend/opsgrids-ui/src/index.ts`, `frontend/product-projects/src/routes/Board.tsx` and `src/ui/index.ts`, `frontend/product-pulseboard/src/routes/Board.tsx`, `src/routes/TaskFormDialog.tsx`, `src/data/people.ts`, `src/ui/index.ts`; Delete `frontend/product-projects/src/ui/KanbanBoard.tsx`, `frontend/product-pulseboard/src/ui/KanbanBoard.tsx` (CRM's own `ui/KanbanBoard.tsx` survives until R3.4.9).
 - **Produces / Consumes:** Produces `KanbanColumn {id, label, tone?, closed?, summary?, emptyLabel?, total?}` and `KanbanBoardProps<T> {columns, items, getItemId, getColumnId, renderCard, canMove, onMove, announce, moveMenuLabel, getExtraActions?, onLoadMore?, loadingColumnIds?, readOnly?}`; every card carries a `RowActions` move menu with `inlineLimit={1}`, a refused move is shown disabled with its reason, HTML5 drag is an enhancement, an unknown column renders in a trailing "Other", `onMove` is awaited with `aria-busy`, focus stays on the moved card; consumes `RowActions` and `useAnnounce`.
 - **Tests:** `every_move_to_item_is_inside_the_menu_and_none_is_an_inline_button` (three columns, with and without `getExtraActions`), `a_card_with_one_visible_action_shows_one_inline_button`, `moving_through_the_menu_calls_onMove_once`, `a_closed_column_refuses_a_drop_and_a_menu_move_is_disabled_with_a_reason`, `announcements_for_moving_moved_failed`, `an_unknown_column_renders_in_Other_and_does_not_throw`, `focus_stays_on_the_moved_card`, `read_only_has_no_menu_and_no_drag`, `column_header_says_12_of_40`; the Projects and PulseBoard board tests rewritten onto the shared component with their assertions kept.
-- [ ] **Commit boundary:** `UI: one keyboard-operable Kanban board, replacing the Projects and PulseBoard copies`.
+- [x] **Commit boundary:** `UI: one keyboard-operable Kanban board, replacing the Projects and PulseBoard copies`.
 
 ### Task R3.3.4: `DetailList`, `PropertyRow` (G2) and `SavedViewMenu` (G8, component only)
 - **Files:** Create `frontend/opsgrids-ui/src/components/DetailList.tsx` and `SavedViewMenu.tsx`, each with `.stories.tsx` and `.test.tsx`; Modify `frontend/opsgrids-ui/src/index.ts`.
 - **Produces / Consumes:** Produces `DetailList { items: { label, value, hint? }[]; columns?: 1 | 2 }` (a `<dl>`), `PropertyRow { label, children, onEdit?, editLabel? }` (a pencil button named `editLabel ?? "Edit {label}"`), `SavedViewMenu { views: SavedViewItem[]; activeId; dirty; onSelect(id | null); onSave(name, visibility); onUpdate(id); onDelete(id); canShare }` and `SavedViewItem { id, name, visibility: "private" | "org", mine, system? }`; the data hook `useSavedViews(entity)` ships with its routes in R3.8; consumes `Menu`, `Drawer`, `ConfirmDialog`.
 - **Tests:** `dirty_dot_has_text`, `share_option_only_when_canShare`, `delete_confirms`; one and two column stories; a phone-width story.
-- [ ] **Commit boundary:** `UI: detail list, property row and saved-view menu`.
+- [x] **Commit boundary:** `UI: detail list, property row and saved-view menu`.
 
 ### Task R3.3.5: `Customer360View` (G5), adopted by Engage
 - **Files:** Create `frontend/opsgrids-ui/src/components/Customer360View.tsx` (+ stories and test); Modify `frontend/opsgrids-ui/src/index.ts`, `frontend/product-engage/src/routes/inbox/Customer360Panel.tsx` (keeps its card, live region and `LoadError`; replaces `Profile`, `SectionRow` and `SectionBody` with the view); `frontend/product-engage/src/routes/Inbox360.test.tsx` stays unchanged and must pass.
 - **Produces / Consumes:** Produces `Customer360ViewModel` (structural: `customer`, `crm`, `orders`, `finance`, `support`, `channels`, `timeline`, `unavailable: string[]`) and `Customer360View {data, revealSlot?, onOpenSection?(name), sectionLabel(name)}` that never fetches: a `null` or `unavailable` section says "Not available", an unknown name (R4.4's `delivery`) renders through `sectionLabel`, money goes through R3.3.1; consumes the generated `Customer360` type (R3.2.11).
 - **Tests:** `null_and_unavailable_sections_say_Not_available`, `an_unknown_section_name_is_rendered_not_dropped`, `phone_only_profile_has_no_email_line`, `money_is_per_currency`; Engage's `Inbox360.test.tsx` unchanged; stories: full, partial, phone-only, long names.
-- [ ] **Commit boundary:** `UI: a shared customer 360 view, used by the Engage inbox panel`.
+- [x] **Commit boundary:** `UI: a shared customer 360 view, used by the Engage inbox panel`.
 
 ### Task R3.3.6: Reveal moves to the shared packages (G6, G7; DD-10), CRM and HRMS adopt
 - **Files:** Create `frontend/opsgrids-client/src/stepup/useRevealedField.ts`, `stepup/revealMessages.ts` (from `product-crm/src/reveal/messages.ts`; `RevealSubject` gains `"employee"`), `frontend/opsgrids-ui/src/components/RevealableField.tsx` (+ stories and tests), `frontend/product-crm/src/reveal_visible_seconds_parity.test.ts`, `frontend/product-hrms/src/routes/EmployeeDetail.reveal.test.tsx`; Modify both `index.ts`, `frontend/product-crm/src/routes/{Contacts,DealDetail,LeadDetail}.tsx`, `reveal/testKit.tsx`, `frontend/product-hrms/src/routes/EmployeeDetail.tsx:219-300`; Delete `frontend/product-crm/src/reveal/RevealableField.tsx` and `reveal/useRevealedField.ts`.
 - **Produces / Consumes:** Produces `useRevealedField` (optional `visibleSeconds`, default 30; returns `RevealedField {value, notice, pending, justHidden, reveal, hide}`; it loses the `USE_FIXTURES` import, so CRM wraps it with a step-up whose `run` calls `load` directly while fixtures mode lives) and the presentational `RevealableField` (`kind="phone"|"email"|"text"`, `masked`, `canReveal`, `field`, `stepUpIdle`), `REVEAL_VISIBLE_SECONDS` (30) with `DEFAULT_REVEAL_VISIBLE_SECONDS` in client; HRMS replaces its per-field `unmaskEmployeePii` calls and warning alert with one `useStepUp()`, one `<StepUpDialog />` and a `useRevealedField` per field (`personal_email`, `personal_phone`, `pan`, `aadhaar`, `uan`, `esi`, `bank_account`, `date_of_birth`), an intended behaviour change; consumes `useStepUp`.
 - **Tests:** the roughly 65 CRM reveal tests move with the code (30 s auto-hide, hide on Hide, record change and unmount, no `tel:` before a reveal, budget exhausted announced); `reveal_visible_seconds_parity.test.ts`; HRMS `EmployeeDetail.reveal.test.tsx` with the route's `amr={"otp"}` satisfied by a step-up token; `make frontend-boundaries` (no `ui-imports-no-client` violation); `grep -rn "USE_FIXTURES" frontend/opsgrids-client/src frontend/opsgrids-ui/src` finds nothing.
-- [ ] **Commit boundary:** `Reveal: one audited reveal control and hook shared by CRM and HRMS`.
+- [x] **Commit boundary:** `Reveal: one audited reveal control and hook shared by CRM and HRMS`.
 
 ### Task R3.3.7: Visual baselines for the new stories, boundaries and gate
 - **Files:** Modify the `frontend/opsgrids-visual` baselines for the new stories only (`pnpm visual:update` after review) and `frontend/opsgrids-config/token-baseline.json` (by `pnpm tokens:baseline`); no source change.
 - **Produces / Consumes:** Produces reviewed baselines for the stories of R3.3.1 to R3.3.6 at six renderings with axe; consumes every R3.3 task.
 - **Tests:** `make ui-visual` passes with no new violation; `make frontend-gate` (typecheck, lint, boundaries, test, build, audit, licenses); token baseline equal or smaller; `stories.test.ts`.
-- [ ] **Commit boundary:** `UI: visual baselines for the shared CRM components`.
+- [x] **Commit boundary:** `UI: visual baselines for the shared CRM components`.
 
 **Acceptance checklist (S§7.6).**
 - [ ] 1. `make frontend-gate` passes: R3.3.1 to R3.3.7.
-- [ ] 2. `frontend/product-projects/src/ui/KanbanBoard.tsx` and `frontend/product-pulseboard/src/ui/KanbanBoard.tsx` are gone; `frontend/product-crm/src/ui/KanbanBoard.tsx` still exists: R3.3.3.
+- [x] 2. `frontend/product-projects/src/ui/KanbanBoard.tsx` and `frontend/product-pulseboard/src/ui/KanbanBoard.tsx` are gone; `frontend/product-crm/src/ui/KanbanBoard.tsx` still exists: R3.3.3.
 - [ ] 3. `ls frontend/product-crm/src/reveal` has no `RevealableField.tsx` or `useRevealedField.ts`; `grep -rn "USE_FIXTURES" frontend/opsgrids-client/src frontend/opsgrids-ui/src` is empty: R3.3.6.
-- [ ] 4. `grep -rn "formatMoney\b" frontend/product-crm/src` shows only imports from `@opsgrids/ui`: R3.3.1.
-- [ ] 5. `pnpm tokens:baseline` leaves the token baseline equal or smaller: R3.3.7.
+- [x] 4. `grep -rn "formatMoney\b" frontend/product-crm/src` shows only imports from `@opsgrids/ui`: R3.3.1.
+- [x] 5. `pnpm tokens:baseline` leaves the token baseline equal or smaller: R3.3.7.
 - [ ] 6. `make ui-visual` passes after reviewed `pnpm visual:update` for the new stories only: R3.3.7.
-- [ ] 7. `every_move_to_item_is_inside_the_menu_and_none_is_an_inline_button` passes; S1, S2 and S7 hold (no migration, event or route changes): R3.3.3.
+- [x] 7. `every_move_to_item_is_inside_the_menu_and_none_is_an_inline_button` passes; S1, S2 and S7 hold (no migration, event or route changes): R3.3.3.
 
 ### R3.3 step-level expansion (written 2026-10-11 at `c68ce63b`, branch `feat/crm-r3-3-ui-foundations`)
 
