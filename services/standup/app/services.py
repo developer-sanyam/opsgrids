@@ -54,6 +54,10 @@ async def post_entry(
     request: Request | None = None,
 ) -> StandupEntry:
     """Post (or repost) one person's check-in for one day. Reposting replaces the entry."""
+    # The caller's authorization was checked against `person_id`, but the entry is found by
+    # `person_ref`: a pair the stored entries disagree with would replace someone else's.
+    if await selectors.person_pair_conflicts(session, ctx.organization_id, person_id, person_ref):
+        raise ValidationProblem("person_id and person_ref name different people")
     entry = await selectors.get_entry(session, ctx.organization_id, person_ref, entry_date)
     if entry is None:
         entry = StandupEntry(

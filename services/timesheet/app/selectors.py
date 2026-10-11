@@ -20,7 +20,7 @@ import uuid
 from datetime import date
 from typing import Any
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain
@@ -76,6 +76,27 @@ async def get_week(
         Timesheet.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def person_pair_conflicts(
+    session: AsyncSession, org_id: uuid.UUID, person_id: uuid.UUID, person_ref: str
+) -> bool:
+    """True when a stored week already binds `person_ref` to another person, or `person_id` to
+    another ref. A write that trusts one half of the pair for authorization and the other for
+    lookup must refuse a pair the rows disagree with."""
+    stmt = (
+        select(Timesheet.id)
+        .where(
+            Timesheet.organization_id == org_id,
+            Timesheet.deleted_at.is_(None),
+            or_(
+                and_(Timesheet.person_ref == person_ref, Timesheet.person_id != person_id),
+                and_(Timesheet.person_id == person_id, Timesheet.person_ref != person_ref),
+            ),
+        )
+        .limit(1)
+    )
+    return (await session.execute(stmt)).first() is not None
 
 
 async def weeks_for(session: AsyncSession, ctx: ScopeContext, week_start: date) -> list[Timesheet]:

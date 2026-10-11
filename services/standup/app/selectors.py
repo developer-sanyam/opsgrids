@@ -16,7 +16,7 @@ import uuid
 from datetime import date
 from typing import Any
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import StandupEntry
@@ -56,6 +56,27 @@ async def get_entry(
         StandupEntry.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def person_pair_conflicts(
+    session: AsyncSession, org_id: uuid.UUID, person_id: uuid.UUID, person_ref: str
+) -> bool:
+    """True when a stored entry already binds `person_ref` to another person, or `person_id` to
+    another ref. A write that trusts one half of the pair for authorization and the other for
+    lookup must refuse a pair the rows disagree with."""
+    stmt = (
+        select(StandupEntry.id)
+        .where(
+            StandupEntry.organization_id == org_id,
+            StandupEntry.deleted_at.is_(None),
+            or_(
+                and_(StandupEntry.person_ref == person_ref, StandupEntry.person_id != person_id),
+                and_(StandupEntry.person_id == person_id, StandupEntry.person_ref != person_ref),
+            ),
+        )
+        .limit(1)
+    )
+    return (await session.execute(stmt)).first() is not None
 
 
 async def entries_for(

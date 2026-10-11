@@ -148,9 +148,12 @@ export function TimeGrid({ rows, people, weekDates, today, canWrite, busyPersonI
                     </span>
                     {canWrite ? (
                       <div className="flex flex-wrap items-center justify-end gap-1.5">
-                        <Button variant="ghost" onClick={() => onEditWeek(row)} disabled={busy}>
-                          Edit week
-                        </Button>
+                        {/* Only a draft records again; a submitted or approved week reopens first. */}
+                        {row.status === "draft" ? (
+                          <Button variant="ghost" onClick={() => onEditWeek(row)} disabled={busy}>
+                            Edit week
+                          </Button>
+                        ) : null}
                         {canReopen ? (
                           <Button variant="outline" onClick={() => onReopen(row)} loading={busy}>
                             Reopen

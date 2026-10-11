@@ -176,12 +176,13 @@ export interface TimesheetEntryIn {
   billable_hours: number;
 }
 
-/** Record (or re-record) one person's week. Re-recording replaces every entry on the sheet. */
+/** Record (or re-record) one person's week. Re-recording replaces every entry on the sheet.
+ *  Always a draft: a submitted or approved week is a 409 until reopened via `/timesheets/status`. */
 export interface TimesheetWeekIn {
   person_ref: string;
   person_id: string;
   week_start: string;
-  status: TimesheetStatus;
+  status: "draft";
   capacity_hours: number;
   entries: TimesheetEntryIn[];
 }

@@ -141,6 +141,32 @@ class TestEndpointAuthorization:
             )
         assert response.status_code == 403
 
+    async def test_an_own_writer_cannot_replace_a_colleagues_entry_with_a_mixed_pair(
+        self, client, session, org_id, data
+    ) -> None:
+        """WORKAPPS-03: their own `person_id` passes the OWN check, a colleague's `person_ref`
+        picks the entry. The pair must name one person, or the colleague's check-in is replaced."""
+        principal = principal_for(
+            org_id, ["pulseboard.standup.entry.write:OWN"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/standups",
+                json={
+                    "person_ref": "p03",  # subject_b's check-in
+                    "person_id": str(data["subject_a"]),
+                    "date": TODAY.isoformat(),
+                    "yesterday": "forged",
+                    "today": "forged",
+                    "blockers": "forged",
+                },
+            )
+        assert response.status_code == 422
+        entry = await selectors.get_entry(session, org_id, "p03", TODAY)
+        assert entry is not None and entry.person_id == data["subject_b"]
+        assert entry.yesterday == "Shipped dark-theme design tokens for review."
+        assert entry.blockers is None
+
     async def test_an_own_writer_may_post_their_own_entry(self, client, org_id, data) -> None:
         principal = principal_for(
             org_id, ["pulseboard.standup.entry.write:OWN"], subject_ref=data["subject_a"]

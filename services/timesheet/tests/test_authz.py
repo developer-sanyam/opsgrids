@@ -139,10 +139,110 @@ class TestEndpointAuthorization:
                     "person_ref": "p02",
                     "person_id": str(data["subject_b"]),
                     "week_start": WEEK_START.isoformat(),
-                    "status": "approved",
                 },
             )
         assert response.status_code == 403
+
+    async def test_an_own_writer_cannot_overwrite_a_colleagues_week_with_a_mixed_pair(
+        self, client, session, org_id, data
+    ) -> None:
+        """WORKAPPS-01: their own `person_id` passes the OWN check, a colleague's `person_ref`
+        picks the sheet. The pair must name one person, or the colleague's week is replaced."""
+        principal = principal_for(
+            org_id, ["pulseboard.time.timesheet.write:OWN"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.put(
+                "/api/v1/timesheets",
+                json={
+                    "person_ref": "p02",  # subject_b's week
+                    "person_id": str(data["subject_a"]),
+                    "week_start": WEEK_START.isoformat(),
+                    "entries": [{"date": WEEK_START.isoformat(), "entered_hours": 0}],
+                },
+            )
+        assert response.status_code == 422
+        sheet = await selectors.get_week(session, org_id, "p02", WEEK_START)
+        assert sheet is not None and sheet.person_id == data["subject_b"]
+        entries = (await selectors.entries_by_sheet(session, org_id, [sheet.id]))[sheet.id]
+        assert sorted(e.entered_minutes for e in entries) == [90, 6 * 60]
+
+    async def test_a_ref_cannot_be_claimed_for_a_new_week_by_another_person(
+        self, client, org_id, data
+    ) -> None:
+        """No stored sheet for that week yet — the ref is still bound to its person."""
+        principal = principal_for(
+            org_id, ["pulseboard.time.timesheet.write:OWN"], subject_ref=data["subject_a"]
+        )
+        with as_principal(principal):
+            response = await client.put(
+                "/api/v1/timesheets",
+                json={
+                    "person_ref": "p02",
+                    "person_id": str(data["subject_a"]),
+                    "week_start": (WEEK_START + timedelta(days=7)).isoformat(),
+                },
+            )
+        assert response.status_code == 422
+
+    async def test_put_cannot_approve_your_own_week(self, client, session, org_id, data) -> None:
+        """WORKAPPS-02: status moves only through POST /timesheets/status, never a PUT."""
+        principal = principal_for(
+            org_id, ["pulseboard.time.timesheet.write:OWN"], subject_ref=data["subject_b"]
+        )
+        with as_principal(principal):
+            response = await client.put(
+                "/api/v1/timesheets",
+                json={
+                    "person_ref": "p02",
+                    "person_id": str(data["subject_b"]),
+                    "week_start": WEEK_START.isoformat(),
+                    "status": "approved",
+                },
+            )
+        assert response.status_code == 422
+        sheet = await selectors.get_week(session, org_id, "p02", WEEK_START)
+        assert sheet is not None and sheet.status == "draft"
+
+    async def test_a_submitted_or_approved_week_cannot_be_rerecorded(
+        self, client, session, org_id, data
+    ) -> None:
+        """p01 is submitted, then approved by someone else. Either way a PUT is a 409 until the
+        week is reopened, and the entries stay as they were."""
+        writer = principal_for(
+            org_id, ["pulseboard.time.timesheet.write:ORG"], subject_ref=data["subject_b"]
+        )
+        body = {
+            "person_ref": "p01",
+            "person_id": str(data["subject_a"]),
+            "week_start": WEEK_START.isoformat(),
+            "entries": [{"date": WEEK_START.isoformat(), "entered_hours": 1}],
+        }
+        status_body = {"person_ref": "p01", "week_start": WEEK_START.isoformat()}
+        with as_principal(writer):
+            submitted = await client.put("/api/v1/timesheets", json=body)
+            approve = await client.post(
+                "/api/v1/timesheets/status", json={**status_body, "status": "approved"}
+            )
+            approved = await client.put("/api/v1/timesheets", json=body)
+        assert submitted.status_code == 409
+        assert approve.status_code == 200
+        assert approved.status_code == 409
+        sheet = await selectors.get_week(session, org_id, "p01", WEEK_START)
+        assert sheet is not None and sheet.status == "approved"
+        entries = (await selectors.entries_by_sheet(session, org_id, [sheet.id]))[sheet.id]
+        assert sorted(e.entered_minutes for e in entries) == [4 * 60, 4 * 60 + 30]
+        await session.rollback()  # close the reads' transaction; the next request opens its own
+
+        # Reopened, the week records again — as a draft.
+        with as_principal(writer):
+            reopen = await client.post(
+                "/api/v1/timesheets/status", json={**status_body, "status": "draft"}
+            )
+            rerecorded = await client.put("/api/v1/timesheets", json=body)
+        assert reopen.status_code == 200
+        assert rerecorded.status_code == 200
+        assert rerecorded.json()["status"] == "draft"
 
     async def test_an_own_reader_sees_only_their_row_over_http(self, client, org_id, data) -> None:
         principal = principal_for(
@@ -287,10 +387,9 @@ class TestValidation:
             sheet = await services.record_week(
                 session,
                 ctx,
-                person_id=data["subject_a"],
-                person_ref="p01",
+                person_id=data["subject_b"],
+                person_ref="p02",
                 week_start=WEEK_START,
-                status="approved",
                 capacity_minutes=20 * 60,
                 entries=[(WEEK_START, "PB-01", 8 * 60, 8 * 60)],
             )
@@ -298,7 +397,7 @@ class TestValidation:
         rows = entries.get(sheet.id, [])
         assert len(rows) == 1
         assert rows[0].entered_minutes == 8 * 60
-        assert sheet.status == "approved"
+        assert sheet.status == "draft"
 
     async def test_recording_stages_an_audit_row_and_an_outbox_event(
         self, session, org_id, data

@@ -69,7 +69,7 @@ export function TimesheetEntryDialog({
         person_ref: person.id,
         person_id: person.uuid,
         week_start: weekDates[0] ?? row?.week_start ?? "",
-        status: row?.status ?? "draft",
+        status: "draft",
         capacity_hours: person.capacity_hours,
         entries,
       }),
