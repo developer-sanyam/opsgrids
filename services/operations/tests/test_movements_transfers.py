@@ -479,6 +479,34 @@ class TestPartialReceiptAndShortage:
         ] == 0
         await assert_reconciled(session, org_id)
 
+    async def test_a_shortage_over_the_adjustment_threshold_is_not_booked_as_settled(
+        self, client, session, org_id, world
+    ) -> None:
+        await TestApprovalThreshold()._configure(client, org_id, None, "5")
+        body = await dispatched(client, org_id, world, dye_line(world, "10"))
+        line_id = body["lines"][0]["id"]
+        keeper = mover(org_id, TRANSFER_RECEIVE, employee=True)
+        resp = await call(
+            client,
+            keeper,
+            "POST",
+            f"{T}/{body['id']}:receive",
+            {
+                "lines": [
+                    {"line_id": line_id, "received_quantity": "5", "shortage_quantity": "5"}
+                ],
+                "evidence_document_id": str(uuid.uuid4()),
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        out = resp.json()
+        # The 5 kg are still in transit pending the adjustment's approval: the line is not
+        # closed and the transfer is not complete.
+        assert out["status"] == "IN_TRANSIT"
+        assert (out["lines"][0]["received"], out["lines"][0]["shortage"]) == ("5", "0")
+        assert await in_transit_total(session, org_id, world.t.dye) == q("5")
+        await assert_reconciled(session, org_id)
+
     async def test_more_than_is_in_transit_is_refused_with_the_numbers(
         self, client, org_id, world
     ) -> None:

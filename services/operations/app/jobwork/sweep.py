@@ -149,7 +149,7 @@ class JobWorkOverdueSweep(GuardedSweep):
         discovery_factory: async_sessionmaker[AsyncSession],
         work_scope: WorkScope,
         interval: float = DEFAULT_INTERVAL_SECONDS,
-        today: Callable[[], date] = date.today,
+        today: Callable[[], date] = domain.ist_today,
     ) -> None:
         super().__init__(poll_interval=interval)
         self._discovery_factory = discovery_factory

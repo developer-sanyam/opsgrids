@@ -17,13 +17,12 @@ exists elsewhere — the services look everything up under the caller's `organiz
 from __future__ import annotations
 
 import uuid
-from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.jobwork import selectors, services
+from app.jobwork import domain, selectors, services
 from app.jobwork.schemas import (
     ChallanEwayIn,
     ChallanOut,
@@ -93,7 +92,7 @@ async def _detail(
     order = await selectors.get_order(session, ctx.organization_id, order_id)
     if order is None:
         raise NotFoundProblem("That job-work order is not part of this organization")
-    return await selectors.order_detail(session, ctx.organization_id, order, today=date.today())
+    return await selectors.order_detail(session, ctx.organization_id, order, today=domain.ist_today())
 
 
 # ------------------------------------------------------------------ orders
@@ -114,7 +113,7 @@ async def list_orders(
     overdue: Annotated[bool, Query(description="Only orders overdue at the vendor")] = False,
     search: Annotated[str | None, Query(max_length=60)] = None,
 ) -> Page[JobWorkOrderOut]:
-    today = date.today()
+    today = domain.ist_today()
     stmt = selectors.orders_stmt(
         ctx,
         status=order_status,

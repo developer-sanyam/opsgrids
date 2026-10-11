@@ -27,7 +27,7 @@ from app.models import (
     Supplier,
     Warehouse,
 )
-from tests.helpers import as_principal, principal_for
+from tests.helpers import as_principal, principal_for, same_caller
 from tests.inventory_fixtures import q
 from tests.manufacturing_fixtures import (
     Mfg,
@@ -240,8 +240,9 @@ async def mrp(  # type: ignore[no-untyped-def]
     key: str | None = None,
     params: dict[str, Any] | None = None,
 ):
+    use = ALL_MRP_PERMS if perms is None else perms
     principal = principal_for(
-        org_id, ALL_MRP_PERMS if perms is None else perms, subject_ref=uuid.uuid4()
+        org_id, use, subject_ref=uuid.uuid4(), sub=same_caller(org_id, use)
     )
     headers = {"Idempotency-Key": key} if key else {}
     with as_principal(principal):

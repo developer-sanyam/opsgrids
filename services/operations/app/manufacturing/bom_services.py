@@ -17,7 +17,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -82,7 +82,13 @@ async def assert_no_cycle(
     root_item_id: uuid.UUID,
     child_items: set[uuid.UUID],
 ) -> None:
-    """Refuse if `root_item_id` can reach itself through `child_items` and the published BOMs."""
+    """Refuse if `root_item_id` can reach itself through `child_items` and the published BOMs.
+
+    Serialised per organization: two BOMs publishing (or gaining a component) at once each see
+    the other as a draft and would both pass, closing a cycle between them."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), {"k": f"bom-graph:{org_id}"}
+    )
     edges: dict[str, set[str]] = {str(root_item_id): {str(c) for c in child_items}}
     frontier = set(child_items)
     seen: set[uuid.UUID] = {root_item_id}

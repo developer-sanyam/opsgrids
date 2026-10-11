@@ -121,8 +121,14 @@ async def expire_due(
                 reservation = await ledger.release(
                     session, ctx, reservation_id, idempotency_key=f"expire:{reservation_id}"
                 )
-                if reservation.expired_at is None:
-                    reservation.expired_at = cutoff
+                if reservation.expired_at is not None or reservation.closed_by != str(
+                    ctx.principal.sub
+                ):
+                    # Released by someone else (or an earlier tick) before our lock: nothing
+                    # expired here, so no stamp and no event.
+                    result.skipped += 1
+                    continue
+                reservation.expired_at = cutoff
                 stock_ops.stage(
                     session,
                     ctx,

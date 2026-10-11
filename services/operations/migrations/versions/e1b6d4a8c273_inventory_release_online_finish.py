@@ -10,14 +10,20 @@ set for lots and rolls):
   validated here, which needs only `SHARE UPDATE EXCLUSIVE`;
 * `purchase_order_lines.received_milli` is backfilled from whole units in committed batches
   rather than one full-table UPDATE;
-* the temporary server defaults on the two new `purchase_order_lines` columns are dropped.
+
+The server defaults on the two new `purchase_order_lines` columns are deliberately kept: this
+revision runs straight after `c5e91a7d3b28`, before the old processes are replaced, and code
+from before the release inserts PO lines without those NOT NULL columns. The ORM sets both
+anyway, so they cost nothing. Run `upgrade head` before the new code serves traffic: the
+backfill only rewrites rows still at 0, so a line the new code received against first would keep
+its partial figure instead of `received_qty * 1000 + x`.
 
 Each statement runs in `autocommit_block()`; every step is idempotent, so a failure part-way is
 resumed by re-running `alembic upgrade head` (a leftover INVALID index from an interrupted build
 is dropped and rebuilt).
 
-Downgrade restores the defaults and drops the indexes in the migration's own transaction; the constraints go with the columns in
-`c5e91a7d3b28`.
+Downgrade drops the indexes in the migration's own transaction; the constraints and defaults go
+with the columns in `c5e91a7d3b28`.
 
 Revision ID: e1b6d4a8c273
 Revises: d7b3e5a19f62
@@ -101,15 +107,9 @@ def upgrade() -> None:
             )
             if done.rowcount == 0:
                 break
-    op.alter_column("purchase_order_lines", "received_milli", server_default=None, schema=SCHEMA)
-    op.alter_column("purchase_order_lines", "short_closed", server_default=None, schema=SCHEMA)
 
 
 def downgrade() -> None:
-    op.alter_column("purchase_order_lines", "received_milli", server_default="0", schema=SCHEMA)
-    op.alter_column(
-        "purchase_order_lines", "short_closed", server_default=sa.false(), schema=SCHEMA
-    )
     # Plain, transactional drops (no autocommit block): a later revision refusing the downgrade
     # must roll these back with it, never leave a database stamped at head without its indexes.
     for name in (

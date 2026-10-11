@@ -176,8 +176,9 @@ class Claim:
             self.row.result_id = result_id
 
 
-def _hash(scope: str, payload: Any) -> str:
-    canonical = json.dumps([scope, payload], sort_keys=True, separators=(",", ":"), default=str)
+def _hash(scope: str, payload: Any, actor: uuid.UUID) -> str:
+    # The caller is part of the request: a key someone else guessed or saw never replays for them.
+    canonical = json.dumps([scope, payload, str(actor)], sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
@@ -196,7 +197,7 @@ async def claim(
     if key is None:
         return Claim(None)
     org_id = ctx.organization_id
-    digest = _hash(scope, payload)
+    digest = _hash(scope, payload, ctx.principal.sub)
     inserted = (
         await session.execute(
             pg_insert(ManufacturingRequest)

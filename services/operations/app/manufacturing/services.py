@@ -24,6 +24,7 @@ one rounding, always up.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -149,7 +150,9 @@ def _key(order: ProductionOrder, op: str, key: str | None, n: int = 0) -> str | 
     """The kernel idempotency key for the n-th move of one HTTP request, when it has one."""
     if key is None:
         return None
-    return f"mo:{order.id}:{op}:{key}:{n}"[:128]
+    # Hashed so a client key of any length (up to 128) fits the kernel's limit without losing `n`.
+    digest = hashlib.sha256(f"{order.id}:{key}".encode()).hexdigest()[:32]
+    return f"mo:{digest}:{op}:{n}"
 
 
 def _materials_by_id(materials: list[ProductionMaterial]) -> dict[uuid.UUID, ProductionMaterial]:

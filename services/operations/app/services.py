@@ -491,6 +491,12 @@ async def raise_purchase_order(
     return po
 
 
+async def _lock_po(session: AsyncSession, po: PurchaseOrder) -> None:
+    """Re-read the PO under `FOR UPDATE` before judging its status. The route loaded it with a
+    plain SELECT; a concurrent goods receipt (which locks) may have moved it since."""
+    await session.refresh(po, with_for_update=True)
+
+
 async def update_purchase_order(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -504,6 +510,7 @@ async def update_purchase_order(
     order's lines in this transaction (drafts only, so nothing has been received against them).
     Changing `supplier_id` re-copies `supplier_name`/`category` and moves `open_pos` between the
     two suppliers."""
+    await _lock_po(session, po)
     if po.status != "draft":
         raise ConflictProblem(
             f"Purchase order {po.number} is {po.status}; only a draft can be edited"
@@ -632,6 +639,7 @@ async def delete_purchase_order(
 ) -> None:
     """Soft-delete a **draft** purchase order. An approved-or-later PO is a commitment; the path
     off it is cancel, not delete."""
+    await _lock_po(session, po)
     if po.status != "draft":
         raise ConflictProblem(
             f"Purchase order {po.number} is {po.status}; only a draft can be deleted — cancel it "
@@ -679,6 +687,7 @@ async def approve_purchase_order(
     """`draft -> approved`. Bumps the supplier's lifetime `spend_minor` by the PO's derived
     total — only when the PO's currency matches the supplier's; a mismatch is skipped and noted
     in the audit row rather than silently mixing currencies in one running total."""
+    await _lock_po(session, po)
     if not domain.can_transition_po(po.status, "approved"):
         raise ConflictProblem(f"Purchase order {po.number} is {po.status} and cannot be approved")
 
@@ -769,6 +778,7 @@ async def close_purchase_order(
     request: Request | None = None,
 ) -> PurchaseOrder:
     """`received -> closed`. The terminal, ordinary end of the lifecycle — nothing else changes."""
+    await _lock_po(session, po)
     if not domain.can_transition_po(po.status, "closed"):
         raise ConflictProblem(f"Purchase order {po.number} is {po.status} and cannot be closed")
 
@@ -825,6 +835,7 @@ async def cancel_purchase_order(
     reverses nothing (no spend was ever committed) and stays at `write:OWN`, the same as
     deleting one.
     """
+    await _lock_po(session, po)
     if not domain.can_transition_po(po.status, "cancelled"):
         raise ConflictProblem(f"Purchase order {po.number} is {po.status} and cannot be cancelled")
 

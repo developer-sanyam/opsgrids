@@ -1172,3 +1172,37 @@ async def test_an_item_read_permission_alone_cannot_see_receipts(
     with as_principal(principal_for(org_id, [ITEM_READ])):
         response = await client.get(API + GRN)
     assert response.status_code == 403
+
+
+class TestReceivedOnClock:
+    """The receipt date is an Indian date: one day ahead is tolerated, the distant past is not."""
+
+    async def test_a_date_one_day_ahead_of_the_ist_clock_is_accepted_two_is_not(
+        self, client, session, org_id, w, monkeypatch
+    ) -> None:
+        from datetime import date, timedelta
+
+        from app.jobwork import domain
+
+        ist = date.today() + timedelta(days=10)
+        monkeypatch.setattr(domain, "ist_today", lambda now=None: ist)
+        po_id, lines = await make_po(session, w, [buttons_line(100)])
+        too_far = await post(
+            client,
+            org_id,
+            body(po_id, line(lines["BTN-14MM"], "10"), received_on=str(ist + timedelta(days=2))),
+        )
+        assert too_far.status_code == 422, too_far.text
+        # Not before the order existed: the PO was raised today, so a receipt in 2001 is refused.
+        ancient = await post(
+            client,
+            org_id,
+            body(po_id, line(lines["BTN-14MM"], "10"), received_on="2001-01-01"),
+        )
+        assert ancient.status_code == 422, ancient.text
+        ok = await post(
+            client,
+            org_id,
+            body(po_id, line(lines["BTN-14MM"], "10"), received_on=str(ist + timedelta(days=1))),
+        )
+        assert ok.status_code == 201, ok.text

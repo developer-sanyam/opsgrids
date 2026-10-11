@@ -1067,17 +1067,21 @@ async def receive_transfer(
 
     # A shortage is a write-off. One that reaches the adjustment threshold is not ours to post:
     # it becomes an adjustment request (reason, evidence, approval) and the stock stays in transit
-    # until it is decided. shortcut: if approval rejects it, the units stay in the in-transit
-    # bucket (visible in the in-transit report) for a person to resolve.
+    # until it is decided. Such a shortage is NOT booked on the line below, so the line and the
+    # transfer stay open while the units are still in transit; if approval rejects it, they stay
+    # in the in-transit report for a person to resolve. shortcut: nothing reopens or closes the
+    # line when the request is decided, upgrade when a transfer-aware approval hook exists.
     settings = await common.get_settings(session, org_id)
     threshold = settings.adjustment_approval_threshold_milli if settings else None
     direct: list[tuple[StockTransferLine, int]] = []
+    pending: set[uuid.UUID] = set()
     for line, item, _received, short, _to in plan:
         if not short:
             continue
         if not over_threshold(threshold, [to_base_milli(short, item.uom)]):
             direct.append((line, short))
             continue
+        pending.add(line.id)
         assert line.in_transit_location_id is not None
         await adjustments.create_adjustment(
             session,
@@ -1142,6 +1146,8 @@ async def receive_transfer(
 
     settled: list[dict[str, Any]] = []
     for line, _item, received, short, to_location in plan:
+        if line.id in pending:
+            short = 0  # awaiting an adjustment decision: still in transit, not written off
         line.received_milli += received
         line.shortage_milli += short
         if received:

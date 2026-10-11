@@ -15,6 +15,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
+from app.jobwork import domain as jw_domain
 from app.schemas import Qty, StockStatus
 from app.schemas import TolerancePct as Pct
 
@@ -293,7 +294,7 @@ class GoodsReceiptIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     purchase_order_id: UUID
-    received_on: date = Field(default_factory=date.today)
+    received_on: date = Field(default_factory=jw_domain.ist_today)
     delivery_note: str | None = Field(default=None, min_length=1, max_length=80)
     note: str | None = Field(default=None, max_length=2000)
     lines: list[ReceiptLineIn] = Field(min_length=1, max_length=200)
@@ -301,7 +302,7 @@ class GoodsReceiptIn(BaseModel):
     @field_validator("received_on")
     @classmethod
     def _not_in_the_future(cls, value: date) -> date:
-        if value > date.today():
+        if value > jw_domain.ist_today() + jw_domain.RECEIVED_ON_FUTURE_TOLERANCE:
             raise ValueError("received_on cannot be in the future")
         return value
 

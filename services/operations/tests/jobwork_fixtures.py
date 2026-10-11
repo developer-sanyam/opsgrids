@@ -21,7 +21,7 @@ from app.inventory import services as inv_services
 from app.inventory.ledger import MoveLine
 from app.models import SCHEMA
 from platform_core.auth import Scope
-from tests.helpers import as_principal, ctx_for, principal_for
+from tests.helpers import as_principal, ctx_for, principal_for, same_caller
 from tests.order_fixtures import Shop, build_shop
 
 JW_READ = "operations.jobwork.order.read"
@@ -134,8 +134,9 @@ async def call(  # type: ignore[no-untyped-def]
     idem: str | None = None,
 ):
     """One request as a principal holding `perms` (default: every job-work permission at ORG)."""
+    use = perms if perms is not None else ALL_JW_ORG
     principal = principal_for(
-        org_id, perms if perms is not None else ALL_JW_ORG, subject_ref=uuid.uuid4()
+        org_id, use, subject_ref=uuid.uuid4(), sub=same_caller(org_id, use)
     )
     headers = {"Idempotency-Key": idem} if idem else {}
     with as_principal(principal):

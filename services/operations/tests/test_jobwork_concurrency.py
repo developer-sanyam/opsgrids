@@ -88,8 +88,10 @@ async def approved_order(maker, mill: Mill, quantity: str, *, item=None) -> uuid
     return await in_tx(maker, mill.org_id, work)  # type: ignore[no-any-return]
 
 
-async def try_issue(maker, mill: Mill, order_id: uuid.UUID, *, idem: str | None = None) -> str:  # type: ignore[no-untyped-def]
-    ctx = ctx_for(mill.org_id, "operations.jobwork.order.issue", Scope.ORG)
+async def try_issue(  # type: ignore[no-untyped-def]
+    maker, mill: Mill, order_id: uuid.UUID, *, idem: str | None = None, ctx=None
+) -> str:
+    ctx = ctx or ctx_for(mill.org_id, "operations.jobwork.order.issue", Scope.ORG)
 
     async def work(s: AsyncSession) -> str:
         _o, challan, replayed = await services.issue_order(
@@ -150,8 +152,10 @@ class TestConcurrentIssue:
     ) -> None:
         order_id = await approved_order(maker, mill, "40")
         idem = key()
+        # One caller retrying: a key replays only for the user who made it.
+        caller = ctx_for(mill.org_id, "operations.jobwork.order.issue", Scope.ORG)
         results = await asyncio.gather(
-            *(try_issue(maker, mill, order_id, idem=idem) for _ in range(8))
+            *(try_issue(maker, mill, order_id, idem=idem, ctx=caller) for _ in range(8))
         )
         kinds = sorted(r.split(":")[0] for r in results)
         assert kinds == ["ok"] + ["replay"] * 7
@@ -223,7 +227,12 @@ async def issued(maker, mill: Mill, quantity: str) -> tuple[uuid.UUID, uuid.UUID
 async def try_receive(  # type: ignore[no-untyped-def]
     maker, mill: Mill, order_id: uuid.UUID, material_id: uuid.UUID, qty: str, *, idem=None
 ) -> str:
-    ctx = ctx_for(mill.org_id, "operations.jobwork.order.receive", Scope.ORG)
+    ctx = ctx_for(
+        mill.org_id,
+        "operations.jobwork.order.receive",
+        Scope.ORG,
+        sub=uuid.uuid5(mill.org_id, "receiver"),
+    )
 
     async def work(s: AsyncSession) -> str:
         _o, _r, replayed = await services.receive_order(

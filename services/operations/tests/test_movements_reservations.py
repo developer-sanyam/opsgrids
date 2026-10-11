@@ -315,6 +315,29 @@ class TestExpiry:
                 event.event_type, 1, dict(event.payload), contracts_root=CONTRACTS_ROOT
             )
 
+    async def test_a_reservation_released_by_someone_else_is_not_reported_expired(
+        self, client, session, org_id, world, monkeypatch
+    ) -> None:
+        holder = mover(org_id, STOCK_RESERVE)
+        soon = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        made = (await call(client, holder, "POST", R, body(world, "30", expires_at=soon))).json()
+        await self._lapse(session, org_id, made["id"])
+        real = ledger.release
+
+        async def user_wins_the_race(sess, ctx, reservation_id, **kw):  # type: ignore[no-untyped-def]
+            # A person releases between the sweep's SELECT and its lock.
+            await real(sess, world.t.ctx, reservation_id)
+            return await real(sess, ctx, reservation_id, **kw)
+
+        monkeypatch.setattr(ledger, "release", user_wins_the_race)
+        async with session.begin():
+            result = await reservation_service.expire_due(session, org_id)
+        assert (result.expired, result.skipped) == (0, 1)
+        assert await events(session, "operations.inventory.reservation.expired") == []
+        reader = mover(org_id, STOCK_READ)
+        got = (await call(client, reader, "GET", f"{R}/{made['id']}")).json()
+        assert got["expired_at"] is None
+
     async def test_the_free_stock_can_be_reserved_again_after_expiry(
         self, client, session, org_id, world
     ) -> None:

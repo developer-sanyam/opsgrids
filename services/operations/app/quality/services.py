@@ -732,6 +732,13 @@ async def _sync_lot(session: AsyncSession, ctx: ScopeContext, inspection: Inspec
     if inspection.lot_id is None:
         return
     org_id = ctx.organization_id
+    # Sibling inspections hold different balance buckets, so the kernel locks do not serialise
+    # them. Take the lot row first: the status read below then sees whatever a sibling committed.
+    await session.execute(
+        select(Lot.id)
+        .where(Lot.organization_id == org_id, Lot.id == inspection.lot_id)
+        .with_for_update()
+    )
     statuses = (
         await session.execute(
             select(Inspection.status).where(

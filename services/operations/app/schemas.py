@@ -30,6 +30,7 @@ from pydantic import (
 
 from app import domain
 from app.inventory.quantity import MAX_ABS_MILLI, QTY_SCALE
+from app.jobwork.domain import RECEIVED_ON_FUTURE_TOLERANCE, ist_today
 
 #: Validates a non-empty string as an email address — used where the field is "email format or
 #: empty" rather than always-required, so `EmailStr` itself (which rejects empty) does not fit.
@@ -302,7 +303,7 @@ class ReceiveIn(BaseModel):
     @field_validator("received_date")
     @classmethod
     def _not_in_the_future(cls, value: date | None) -> date | None:
-        if value is not None and value > date.today():
+        if value is not None and value > ist_today() + RECEIVED_ON_FUTURE_TOLERANCE:
             raise ValueError("received_date cannot be in the future")
         return value
 

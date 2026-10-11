@@ -295,3 +295,53 @@ class TestOverdueSweep:
         # and the next pass, healthy again, still finds it: nothing was marked announced
         again = await JobWorkOverdueSweep(discovery_factory=discovery, work_scope=scope).tick()
         assert again.announced == 1
+
+
+class TestIstClock:
+    """Overdue is judged on the Indian date everywhere, as receipts and the challan series are."""
+
+    async def test_list_and_detail_use_the_ist_date_not_the_server_date(
+        self, client, mill, monkeypatch
+    ) -> None:
+        from app.jobwork import domain
+
+        order = await issued_order(client, mill, due_date=str(date.today() + timedelta(days=1)))
+        listed = await call(client, mill.org_id, "GET", "/orders?overdue=true")
+        assert listed.json()["items"] == []
+        # IST has moved two days on from the server's idea of today.
+        monkeypatch.setattr(domain, "ist_today", lambda now=None: date.today() + timedelta(days=2))
+        listed = await call(client, mill.org_id, "GET", "/orders?overdue=true")
+        assert [o["id"] for o in listed.json()["items"]] == [order["id"]]
+        detail = await call(client, mill.org_id, "GET", f"/orders/{order['id']}")
+        assert detail.json()["days_overdue"] == 1
+
+    async def test_the_sweep_defaults_to_the_ist_clock(self, stack) -> None:
+        from app.jobwork import domain
+
+        discovery, scope = stack
+        sweep = JobWorkOverdueSweep(discovery_factory=discovery, work_scope=scope)
+        assert sweep._today is domain.ist_today
+
+
+class TestKeyBelongsToCaller:
+    async def test_another_user_cannot_replay_or_claim_a_job_work_key(self, client, mill) -> None:
+        from tests.jobwork_fixtures import ALL_JW_ORG, order_body
+
+        idem = f"po-12-{uuid.uuid4().hex}"
+        first = await call(
+            client, mill.org_id, "POST", "/orders", json=order_body(mill), idem=idem
+        )
+        assert first.status_code == 201
+        same = await call(client, mill.org_id, "POST", "/orders", json=order_body(mill), idem=idem)
+        assert same.status_code == 200 and same.json()["id"] == first.json()["id"]
+        # A different person (a different permission set makes a different test user).
+        other = await call(
+            client,
+            mill.org_id,
+            "POST",
+            "/orders",
+            json=order_body(mill),
+            idem=idem,
+            perms=ALL_JW_ORG[:-1],
+        )
+        assert other.status_code == 409, other.text

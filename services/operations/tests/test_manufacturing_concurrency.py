@@ -90,7 +90,7 @@ async def never_negative(session, org_id: uuid.UUID) -> None:
 
 
 def ctx(m: Mfg, perm: str = "operations.manufacturing.production_order.issue"):  # type: ignore[no-untyped-def]
-    return ctx_for(m.org_id, perm, Scope.ORG)
+    return ctx_for(m.org_id, perm, Scope.ORG, sub=uuid.uuid5(m.org_id, perm))
 
 
 async def orders_for(client, m: Mfg, count: int, quantity: str) -> list[dict]:  # type: ignore[no-untyped-def]

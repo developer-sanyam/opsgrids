@@ -49,6 +49,7 @@ from app.inventory import tracking_services as tracking
 from app.inventory.ledger import MoveLine, PostedMove
 from app.inventory.quantity import QuantityError, canonical_uom_code, format_qty, parse_qty
 from app.inventory.tracking_schemas import LotIn, RollIn
+from app.jobwork import domain as jw_domain
 from app.models import (
     AuditLog,
     GoodsReceipt,
@@ -130,7 +131,7 @@ async def _next_receipt_number(session: AsyncSession, org_id: uuid.UUID) -> str:
         text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
         {"key": f"{org_id}:grn_number"},
     )
-    prefix = f"GRN-{date.today().year}-"
+    prefix = f"GRN-{jw_domain.ist_today().year}-"
     seq = await selectors.next_sequence(session, GoodsReceipt, org_id, prefix)
     return f"{prefix}{seq:04d}"
 
@@ -318,6 +319,11 @@ async def post_goods_receipt(
         if existing is not None:
             return _replayed(existing, digest)
     _check_po_receivable(po)
+    if payload.received_on < po.created_date:
+        raise ValidationProblem(
+            f"received_on {payload.received_on} is before {po.number} was raised on "
+            f"{po.created_date}"
+        )
     items = await _lock_items(session, org_id, {ln.sku for ln in po_lines.values()})
     ratios = await selectors.conversions_for_items(session, org_id, [i.id for i in items.values()])
 
@@ -837,7 +843,7 @@ async def receive_whole_purchase_order(
     ratios = await selectors.conversions_for_items(
         session, ctx.organization_id, [i.id for i in items.values()]
     )
-    landed = received_date or date.today()
+    landed = received_date or jw_domain.ist_today()
 
     specs: list[ReceiptLineIn] = []
     unmatched: list[str] = []

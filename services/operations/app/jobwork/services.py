@@ -226,6 +226,7 @@ async def create_order(
     org_id = ctx.organization_id
     request_hash = _hash(
         {
+            "actor": ctx.principal.sub,
             "supplier_id": supplier_id,
             "process": process,
             "due_date": due_date,
@@ -557,6 +558,7 @@ async def issue_order(
     order = await _lock_order(session, ctx, order_id)
     request_hash = _hash(
         {
+            "actor": ctx.principal.sub,
             "order_id": order.id,
             "vehicle_no": vehicle_no,
             "transporter_id": transporter_id,
@@ -645,7 +647,7 @@ async def issue_order(
         ctx,
         kind="relocation",
         lines=move_lines,
-        occurred_on=date.today(),
+        occurred_on=domain.ist_today(),
         reference_type=REFERENCE_TYPE,
         reference_id=order.id,
         note=f"Issued to job worker on {order.number}"[:500],
@@ -911,6 +913,7 @@ async def receive_order(
     order = await _lock_order(session, ctx, order_id)
     request_hash = _hash(
         {
+            "actor": ctx.principal.sub,
             "order_id": order.id,
             "received_on": received_on,
             "note": note,

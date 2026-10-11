@@ -417,9 +417,9 @@ def upgrade() -> None:
         sa.Column("short_closed", sa.Boolean(), server_default=sa.false(), nullable=False),
         schema=SCHEMA,
     )
-    # Defaults stay until `e1b6d4a8c273` has backfilled `received_milli` from whole units in
-    # batches (a full-table UPDATE here would hold row locks for the whole migration) and drops
-    # them; code from before this revision, still running mid-deploy, needs them to insert lines.
+    # Defaults stay for good: `e1b6d4a8c273` backfills `received_milli` from whole units in
+    # batches (a full-table UPDATE here would hold row locks for the whole migration), and code
+    # from before this revision, still running mid-deploy, needs them to insert lines.
     op.execute(
         f"ALTER TABLE {SCHEMA}.purchase_order_lines ADD CONSTRAINT "
         "ck_purchase_order_lines_received_milli_non_negative "
