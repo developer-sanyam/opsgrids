@@ -86,20 +86,6 @@ export function formatDate(iso: string | null): string {
   });
 }
 
-/** "2026-08-22T11:20:00Z" -> "22 Aug, 4:50 PM" (times shown in the org's IST wall clock). */
-export function formatDateTime(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  const date = d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "Asia/Kolkata" });
-  const time = d.toLocaleTimeString("en-IN", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-    timeZone: "Asia/Kolkata",
-  });
-  return `${date}, ${time}`;
-}
-
 /**
  * A relative timestamp against `now` (default the app's fixed NOW): "just now", "3 hr ago",
  * "Yesterday", "5 days ago", then an absolute date past a week.

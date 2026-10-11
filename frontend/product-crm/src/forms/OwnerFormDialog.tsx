@@ -13,8 +13,9 @@ interface OwnerFormDialogProps {
 
 /**
  * Add a rep to the directory — `POST /customers/owners`. The prerequisite write: a production
- * org starts with zero owners, and every company / contact / deal create needs one. There is no
- * edit or deactivate — the backend doesn't offer it, so this dialog only ever creates.
+ * org starts with zero owners, and every company / contact / deal create needs one. The backend
+ * also offers `PATCH /customers/owners/{owner_id}` to edit or deactivate a rep; this dialog does
+ * not use it yet, so it only ever creates.
  */
 export function OwnerFormDialog({ onClose, onSaved }: OwnerFormDialogProps) {
   const [fullName, setFullName] = useState("");

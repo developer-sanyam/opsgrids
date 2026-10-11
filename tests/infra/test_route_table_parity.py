@@ -387,3 +387,16 @@ def test_payment_serves_the_collections_webhook_and_buffers_what_the_gateway_all
     assert payment["put_status"][RAZORPAY_COLLECTIONS] == 405
     assert payment["put_status"][COLLECTIONS] == 405, "the neutral path is not mounted (ADR-0033)"
     assert payment["max_webhook_body_bytes"] == RAZORPAY_COLLECTIONS_BODY_CAP
+
+
+def test_the_crm_prefixes_are_identical_in_dev_and_prod() -> None:
+    """The dev table once routed `/api/v1/campaigns` and `/api/v1/tickets` to ports no service ever
+    listened on, and the prod table never had them. A CRM prefix in one table and not the other is
+    a route that is dead where it is listed or missing where it is needed."""
+
+    def crm_prefixes(path: Path) -> set[str]:
+        return {str(route["prefix"]) for route in _routes(path) if route.get("product") == "crm"}
+
+    dev, prod = crm_prefixes(DEV_ROUTES), crm_prefixes(PROD_ROUTES)
+    assert dev == prod, f"in dev only: {sorted(dev - prod)}; in prod only: {sorted(prod - dev)}"
+    assert dev, "no CRM prefixes found: this test would pass vacuously"

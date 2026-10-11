@@ -116,13 +116,13 @@ describe("usePlatformModules", () => {
     expect(screen.getByText("Operations & Inventory — https://ops.opsgrids.com")).toBeTruthy();
   });
 
-  it("resolves the sales entitlement to the CRM entry", () => {
+  it("a sales entitlement no longer resolves to CRM", () => {
     render(
       <Wrapper user={meWith()} grants={["sales.lead.record.read:ORG"]} entitlements={["sales"]}>
         <ModulesProbe />
       </Wrapper>,
     );
-    expect(screen.getByText("CRM — https://revenue.opsgrids.com")).toBeTruthy();
+    expect(screen.queryByText(/^CRM/)).toBeNull();
   });
 
   it("resolves hosts from the per-environment override", () => {

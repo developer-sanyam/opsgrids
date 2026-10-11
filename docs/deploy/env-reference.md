@@ -327,7 +327,7 @@ column) is the slice or release that introduced the key.
 | `EDGE_STATE_DIR` | optional; process environment only (not in `.env.example`) | no | absolute directory path | CHOOSE (leave unset) | no | any writable directory | /srv/opsgrids/state | remote.sh, preflight.sh, backup.sh, ops-monitor bind mount | no - default only | remote.sh does not read `.env`: setting it in `.env` splits the box's state directory in two |
 | `EDGE_MEMINFO_FILE` | optional; test seam, process environment only | no | path to a file containing a `MemTotal: <N> kB` line | test/dry-run seam | no | any readable file | /proc/meminfo | preflight.sh only | n/a - test seam | none |
 | `RUN_SWEEPS_IN_API` | optional; compose interpolation, not in `.env.example` | no | boolean string | CHOOSE (leave unset) | no | true \| false | true (compose) | document, operations, storefront | no - default only | slice/memory-headroom |
-| `EDGE_RELAY_SCHEMAS` | optional; compose interpolation, not in `.env.example` | no | comma-separated schema names | CHOOSE (leave unset) | no | schema names | two compose defaults: edge-relay 28 schemas (incl. `lead`); ops-monitor 27 (no `lead`) - see cross-slice note | edge-relay, ops-monitor | no - default only | remote.sh SERVICES_WITH_SCHEMA |
+| `EDGE_RELAY_SCHEMAS` | optional; compose interpolation, not in `.env.example` | no | comma-separated schema names | CHOOSE (leave unset) | no | schema names | one compose default of 29 schema names (incl. `lead`) in both edge-relay and ops-monitor, kept equal by `tests/infra/test_ops_monitor_compose_env.py` | edge-relay, ops-monitor | no - default only | remote.sh SERVICES_WITH_SCHEMA |
 | `ROUTES_SHA` | derived; never set by hand | no | 16 hex chars | DERIVED by remote.sh (sha256 of routes.prod.json) | no | - | `unset` (compose) | app-gateway | no | routes.prod.json |
 
 
@@ -825,8 +825,8 @@ a failure below may be partly an artefact of that merge; the ones marked *real* 
   `services/admin-gateway/routes.json`; OPM's lint refuses any route table naming a path ending `/metrics`.
 - *Artefact of my merge.* `tests/infra/test_io_outside_transaction.py` flags `services/payment/app/consumers.py:89`;
   I took INT's side of the io-outside-txn conflicts in payment code.
-- *Real, small.* Two compose defaults for `EDGE_RELAY_SCHEMAS` differ on INT: edge-relay's list includes `lead`
-  (`INT:compose.prod.yml:710`), ops-monitor's does not (`:770`), so its outbox check does not cover the `lead` schema.
+- *Fixed in R1.2b.* The two compose defaults for `EDGE_RELAY_SCHEMAS` are now the same 29 names, `lead` included, so
+  ops-monitor's outbox check covers the `lead` schema (`tests/infra/test_ops_monitor_compose_env.py` keeps them equal).
 - Resolved during the audit: (1) crm-leads added a `lead` API container and a `customer-worker` queue that ops-monitor's
   derived lists lacked; INT's `6c3196f` fixed it. (2) auth would have had two Alembic heads
   (`0c1a721d4214` from domain-verification, `5ba575e36b1a` from OC) and `INT:remote.sh:190` runs `alembic upgrade

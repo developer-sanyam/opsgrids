@@ -848,7 +848,7 @@ services:
       RABBITMQ_URL: amqp://opsgrids:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       MALLOC_ARENA_MAX: '2'
       MALLOC_TRIM_THRESHOLD_: '131072'
-      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm,console}
+      EDGE_RELAY_SCHEMAS: ${EDGE_RELAY_SCHEMAS:-auth,account,product,catalog,subscription,billing,metering,payment,notification,storefront,document,operations,approval,employee,attendance,leave,customer,deal,lead,project,timesheet,standup,projects,support,marketing,finance,scheduler,itsm,console}
       # B1 (round 2): the same variable docker compose itself already reads to decide which
       # containers to start — one source of truth for "what does this box run", so
       # OpsMonitorSettings can derive exactly which API containers/DLQ queues SHOULD exist
@@ -1466,11 +1466,11 @@ services:
     networks:
       - back
 
-  # The lead half of the `crm` product (ADR-0017). Publishes only — `crm.lead.converted` — and
-  # consumes nothing, so no dedicated worker: `edge-relay` drains its outbox like every other
-  # service that has no consumer of its own. Calls customer's and deal's `/internal/v1` on
-  # `:convert`, under a short-lived service token, the same shape notification uses to call
-  # customer today.
+  # The lead half of the `crm` product (ADR-0017). Publishes four event types, `crm.lead.created`,
+  # `.updated`, `.converted` and `.conversion_aborted`, and consumes nothing, so no dedicated
+  # worker: `edge-relay` drains its outbox like every other service that has no consumer of its
+  # own. Calls customer's and deal's `/internal/v1` on `:convert`, under a short-lived service
+  # token, the same shape notification uses to call customer today.
   lead:
     <<: *service-common
     profiles: ['crm']

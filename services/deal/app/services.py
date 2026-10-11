@@ -374,6 +374,12 @@ async def log_activity(
     `last_activity_at` staleness clock advances (monotonically) to `occurred_at`.
     """
     at = occurred_at or datetime.now(UTC)
+    if at.tzinfo is None:
+        # `ActivityIn` already reads an offset-less value as UTC for its future check
+        # (`schemas.py`). Keep reading it that way here: a naive instant cannot be compared
+        # with the deal's aware `last_activity_at` below, and it would reach the event with no
+        # offset, where a consumer comparing it with its own aware clock would fail.
+        at = at.replace(tzinfo=UTC)
 
     deal: Deal | None = None
     if deal_id is not None:

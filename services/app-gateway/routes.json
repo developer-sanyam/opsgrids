@@ -76,8 +76,6 @@
     { "prefix": "/api/v1/customers", "upstream": "http://localhost:8130", "product": "crm" },
     { "prefix": "/api/v1/contacts", "upstream": "http://localhost:8130", "product": "crm" },
     { "prefix": "/api/v1/deals", "upstream": "http://localhost:8131", "product": "crm" },
-    { "prefix": "/api/v1/campaigns", "upstream": "http://localhost:8132", "product": "crm" },
-    { "prefix": "/api/v1/tickets", "upstream": "http://localhost:8133", "product": "crm" },
     { "prefix": "/api/v1/leads", "upstream": "http://localhost:8135", "product": "crm" },
 
     { "prefix": "/api/v1/marketing", "upstream": "http://localhost:8134", "product": "marketing" },

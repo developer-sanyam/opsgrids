@@ -43,8 +43,8 @@ The five input classes or failure modes the spec implies and no acceptance crite
 
 1. **A converted lead whose contact has no WhatsApp number** (the common case: customer answers `phone: null` with a 200 for every contact that never had one, `services/customer/app/api/internal.py:159-161`): the Engage recipe's run must end `failed` with `recipient_missing` and queue nothing, and a rule must skip without raising. Pinned in Task R1.2.11 by `test_a_rule_on_a_contact_with_no_number_stages_nothing_and_does_not_fail` and `test_a_converted_contact_with_no_number_is_a_visible_failure_and_sends_nothing`.
 2. **A person retypes the "Send to" path in the Engage builder:** the first keystroke that leaves `…contact_id` drops `recipient_kind`, typing it back does not restore it, and the contact id is then read as a phone number; the run must fail `recipient_invalid` and message nobody. Pinned in Task R1.2.12 by the Builder test "loses the kind on the first edit that stops naming a contact id, and typing the path back does not restore it" and in Task R1.2.11 by `test_a_contact_id_read_as_an_address_is_refused_and_nothing_is_sent`.
-3. **An activity timestamp from an Indian client:** `+05:30` must keep its instant, and a wall clock sent with no offset (read as UTC) that is ahead of UTC must be refused and never stored shifted by five and a half hours. Pinned in Task R1.2.8 by `test_a_timestamp_with_a_non_utc_offset_keeps_its_instant` and `test_a_timestamp_with_no_offset_that_is_ahead_of_utc_is_refused`.
-4. **A bookmark to a placeholder route that is gone:** Reports, Integrations, Settings and Help must reach the app's own 404 page, and no rail entry may lead to a path the route table does not declare. Pinned in Task R1.2.22 by the four tests of `tests/infra/test_crm_spa_navigation.py`.
+3. **An activity timestamp from an Indian client:** `+05:30` must keep its instant. A wall clock sent with no offset is read as UTC: one that reads as the future (a client ahead of UTC sending "now") is refused, but one that reads as the past is accepted and stored as UTC, which is wrong by the client's offset (five and a half hours for India). The release does not correct that and cannot: only an offset puts the instant right, so the field's OpenAPI description tells a client to send one. Pinned in Task R1.2.8 by `test_a_timestamp_with_a_non_utc_offset_keeps_its_instant`, `test_a_timestamp_with_no_offset_that_is_ahead_of_utc_is_refused` and, for the limit, `test_a_past_wall_clock_with_no_offset_is_read_as_utc_and_not_corrected`. Rejecting a stamp with no offset outright (422) is the stricter alternative and changes an input that is accepted today: the owner's call at O-15.
+4. **A bookmark to a placeholder route that is gone:** Reports, Integrations, Settings and Help must reach the app's own 404 page, and no rail entry may lead to a path the route table does not declare. Pinned in Task R1.2.22 by the four tests of `tests/infra/test_crm_spa_navigation.py`. That file runs in the backend CI job, which a pull request that touches only `frontend/` does not start, so `tools/affected-areas.sh` counts an edit to `main.tsx`, `ui/useNavGroups.ts` or Engage's `recipes.ts` (the files the two guards read) as a backend change, pinned by `test_a_frontend_file_a_backend_guard_reads_reaches_the_backend_jobs` in `tests/infra/test_affected_areas.py`.
 5. **The 360's deal leg answering with something it cannot use even though its path is right:** a `size` above the route's declared maximum is a 422 and one item missing or nulling a field the leg parses fails the whole page, and both read as the same silent `null` section as the old 404. Pinned in Task R1.2.2 by `test_the_page_size_the_leg_asks_for_is_within_the_bound_the_route_declares` and `test_the_fields_the_leg_reads_are_always_sent_by_the_route`.
 
 ## Plan status
@@ -6596,7 +6596,7 @@ Run: `git status --short services/deal` Expected: no output.
 **Files:**
 - Modify: `services/deal/app/services.py:376` (`log_activity`)
 - Modify: `services/deal/tests/test_write_routes.py:16-28` (imports) and `TestLogActivity` (three new tests before
-  `test_a_reader_cannot_log_a_touch`, line 343)
+  `test_a_reader_cannot_log_a_touch`, line 343, and a fourth added at review)
 - Test: `services/deal/tests/test_write_routes.py::TestLogActivity::test_a_timestamp_without_an_offset_is_taken_as_utc`,
   `::test_a_timestamp_with_a_non_utc_offset_keeps_its_instant` and
   `::test_a_timestamp_with_no_offset_that_is_ahead_of_utc_is_refused` (the last two are the Review Focus line on
@@ -6682,8 +6682,8 @@ from app.models import Activity, AuditLog, Deal, OutboxEvent
     ) -> None:
         """A client in India sends `+05:30`. The instant is the same one in UTC: stored as that
         instant, published as that instant (the offset it was sent with is kept, and it is still
-        an offset) and the deal's staleness clock moves to it. Nothing is shifted by five and a
-        half hours."""
+        an offset) and the deal's staleness clock moves to it. A stamp that names its offset is
+        never re-read as another zone; one that does not is the next two tests."""
         principal = principal_for(
             org_id, ["crm.pipeline.activity.write:ORG"], subject_ref=data["subject_a"]
         )
@@ -6723,9 +6723,10 @@ from app.models import Activity, AuditLog, Deal, OutboxEvent
         self, client, session, org_id, data
     ) -> None:
         """No offset means UTC: the request model's reading, and the service's since this task. A
-        client in India that sends its own wall clock for "now" is up to five and a half hours
-        ahead of UTC, so it is refused as a time that has not happened and nothing is stored,
-        instead of being kept as a time that is wrong by the offset."""
+        client in India that sends its own wall clock for "now" reads as up to five and a half
+        hours ahead of UTC, so it is refused as a time that has not happened and nothing is
+        stored. That is all the check catches: a wall clock that reads as the past is accepted
+        (the next test)."""
         ahead = datetime.now(UTC) + timedelta(hours=5, minutes=30)
         principal = principal_for(
             org_id, ["crm.pipeline.activity.write:ORG"], subject_ref=data["subject_a"]
@@ -6757,6 +6758,16 @@ about what a missing offset means, and the two inputs beside it are the ones an 
 against HEAD without a database: the request model keeps `2026-09-02T14:45:00+05:30` as the instant
 `2026-09-02T09:15:00Z`, refuses a naive stamp five and a half hours ahead of UTC with `occurred_at cannot be in
 the future`, and accepts a naive stamp in the past and leaves it naive.)
+
+(Added at review, the limit of the convention. Reading a missing offset as UTC refuses only the stamps that read as
+the future: a client outside UTC that sends the wall clock of a touch that happened hours ago gets a 201 and a stored
+instant that is wrong by its offset, and nothing can tell. The SPA always sends `Z`, so the exposure is an API
+integrator outside UTC. So `ActivityIn.occurred_at` carries a description in `services/deal/app/schemas.py` that says
+to send an offset (with a sentence in the `ActivityIn` docstring), `libs/contracts/openapi/deal.json` is regenerated
+with `make openapi`, and a fourth characterization,
+`test_a_past_wall_clock_with_no_offset_is_read_as_utc_and_not_corrected`, pins the stored value. It passes before and
+after, and fails if the service starts guessing a zone. Rejecting a stamp with no offset with a 422 is the stricter
+alternative: it changes an input that is accepted today, so it is the owner's call at O-15.)
 
 - [ ] **Step 2: Run it and see it fail**
 
@@ -11187,7 +11198,7 @@ R1.2.5 ship as R1.2a, R1.2.6 to R1.2.25 as R1.2b.
 
 **Review focus for this release.** The input classes the spec implies and no acceptance criterion names, most likely first, each pinned by a test in the task that owns it unless it says otherwise. The plan's header names the five that matter most across the sub-project and points each at its pin; this list is the release's own, and several of its items are the same inputs seen from the task.
 
-1. **An `occurred_at` with no offset, with `+05:30`, or ahead of UTC.** A client that sends local time (`"2026-09-02T09:15:00"`) used to get a 500 from the service whenever the deal already had an activity, and a payload with no offset when it did not. Expected: 201, stored and published as UTC. An Indian client that sends `+05:30` must see the same instant kept, and one that sends its own wall clock for "now" without an offset is up to five and a half hours ahead of UTC and is refused, never stored shifted. Pinned by Task R1.2.8, the offset-less case as the red test and the other two as characterizations (strike-able; the base commit's behaviour for the first is inference, the tests are the proof).
+1. **An `occurred_at` with no offset, with `+05:30`, or ahead of UTC.** A client that sends local time (`"2026-09-02T09:15:00"`) used to get a 500 from the service whenever the deal already had an activity, and a payload with no offset when it did not. Expected: 201, stored and published as UTC. An Indian client that sends `+05:30` must see the same instant kept, and one that sends its own wall clock for "now" without an offset reads as up to five and a half hours ahead of UTC and is refused. A wall clock without an offset that reads as the past is accepted and stored as UTC, wrong by the client's offset: the field's description says to send one. Pinned by Task R1.2.8, the offset-less case as the red test and the other three as characterizations (strike-able; the base commit's behaviour for the first is inference, the tests are the proof).
 2. **A converted lead with no contact, a contact with no number, and a contact with no opt-in.** A phone-only lead converts with `contact_id: null`; a lead that came in with an email only converts to a contact with no number, which is the common case (`phone: null`, an ordinary state, `services/customer/app/api/internal.py:159-161`); and a contact the tenant never asked to market to must not receive a marketing welcome. Expected: a visible failed run (`recipient_missing`) in the first two cases (a skipped rule with a log line for a rule) and a recorded skip (`consent:no_opt_in`, no message queued) in the third. Pinned by Task R1.2.11 (the automation test, the two no-number tests, the two consent tests and the characterization of the no-purpose default that the recipe's `purpose: "marketing"` exists to avoid). A customer outage during the lookup is the A1 engine's retryable `contact_lookup_unavailable`, already covered (`services/notification/tests/test_a1_automations.py:552`).
 3. **A reader with only OWN grants in a tenant without HRMS opening a 360.** Such a reader has no `subject_ref`, so OWN matches nothing. Expected: 403 with deal never asked, and for a mixed grant a `crm` section that reads empty rather than `null`. Pinned by Task R1.2.2 (`TestOwnWithoutSubjectRef`); the underlying scope problem is R2.2's, not fixed here.
 4. **Typing a "Send to" path character by character.** The builder drops `recipient_kind` when the path stops ending in `contact_id` and does not bring it back when it ends in `contact_id` again, so a person who deletes one letter and retypes it ends up with a contact id read as a phone number (the helper text changes at once, which is the only signal). Task R1.2.12 pins the design's rule for single changes (`fireEvent.change`) and, as a characterization, the keystroke sequence (delete a letter, type it back: the kind is gone and the helper says address); Task R1.2.11 pins what the service does with the result (the id is refused as a phone number, `recipient_invalid`, and nothing is sent). Restoring the kind when the path is retyped is the reviewer's choice, and the typing test's comment says what it costs.

@@ -146,6 +146,12 @@ SUBSCRIBABLE_EVENTS: Final[tuple[str, ...]] = (
     # crm
     "crm.book.company.created",
     "crm.book.contact.created",
+    # Lead events carry ids and no address: only `converted` names a contact that exists, so a
+    # rule reaches it through `recipient_contact_path` (customer resolves the number).
+    "crm.lead.conversion_aborted",
+    "crm.lead.converted",
+    "crm.lead.created",
+    "crm.lead.updated",
     "crm.pipeline.activity.logged",
     "crm.pipeline.deal.created",
     "crm.pipeline.deal.stage_changed",

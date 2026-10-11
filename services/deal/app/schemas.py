@@ -152,12 +152,13 @@ class ActivityIn(BaseModel):
     naming nothing is not a timeline entry. `direction` only means something for a call or
     an email; naming it on a meeting, note or task is refused. `occurred_at` defaults to
     now and may backfill the past, but never the future — a touch cannot be logged before
-    it happens.
+    it happens. A value with no UTC offset is read as UTC, not as the caller's local time, so
+    a client outside UTC must send its offset: a past wall clock sent without one is stored
+    as UTC, wrong by that client's offset.
 
-    `owner_id` is deliberately absent here: an OWN-scoped caller can only ever log against
-    themselves, and the route forces it; only an ORG-scoped caller may attribute the entry
-    to someone else, which is why the field lives on the model but not on this contract —
-    see `app/api/routes.py`.
+    `owner_id` is optional: an ORG-scoped caller may attribute the entry to another rep, while
+    an OWN-scoped caller can only ever log against themselves and the route forces it, whatever
+    the body says — see `app/api/routes.py`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -169,7 +170,13 @@ class ActivityIn(BaseModel):
     company_id: uuid.UUID | None = None
     contact_id: uuid.UUID | None = None
     direction: ActivityDirection | None = None
-    occurred_at: datetime | None = None
+    occurred_at: datetime | None = Field(
+        default=None,
+        description=(
+            "RFC 3339 instant. A value with no UTC offset is read as UTC, so send an offset "
+            "such as 2026-09-02T14:45:00+05:30 or 2026-09-02T09:15:00Z."
+        ),
+    )
     #: ORG-scoped callers may attribute the entry to a different rep; OWN-scoped callers
     #: never may — the route always overrides this for them.
     owner_id: uuid.UUID | None = None

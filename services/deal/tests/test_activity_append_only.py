@@ -18,7 +18,7 @@ from sqlalchemy import text
 from app import selectors, services
 from platform_core.auth import Scope
 from tests.conftest import DEMO_NOW
-from tests.helpers import ctx_for
+from tests.helpers import activities_for_deal, ctx_for
 
 pytestmark = pytest.mark.integration
 
@@ -29,7 +29,7 @@ class TestActivityAppendOnly:
         ctx = ctx_for(org_id, "crm.pipeline.activity.write", Scope.ORG)
         deal = data["deal_a"]
         async with session.begin():
-            before = len(await selectors.activities_for_deal(session, org_id, deal.id))
+            before = len(await activities_for_deal(session, org_id, deal.id))
             await services.log_activity(
                 session,
                 ctx,
@@ -39,7 +39,7 @@ class TestActivityAppendOnly:
                 owner_id=data["subject_a"],
                 direction="outbound",
             )
-        after = await selectors.activities_for_deal(session, org_id, deal.id)
+        after = await activities_for_deal(session, org_id, deal.id)
         assert len(after) == before + 1
         assert after[0].subject == "Sent the pilot proposal"
 

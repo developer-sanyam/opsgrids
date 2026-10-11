@@ -19,10 +19,24 @@ export interface Recipe {
 
 export const RECIPES: Recipe[] = [
   {
-    id: "welcome-new-lead",
-    name: "Welcome a new lead",
-    description: "When a lead is created, send a WhatsApp welcome message.",
-    build: () => addStep(emptyGraph("crm.lead.created"), { from: "trigger" }, "send_message").graph,
+    id: "welcome-converted-lead",
+    name: "Welcome a converted lead",
+    description: "When a lead is converted, send the new contact a WhatsApp welcome message, if they have opted in.",
+    build: () => {
+      const graph = addStep(emptyGraph("crm.lead.converted"), { from: "trigger" }, "send_message").graph;
+      return replaceNode(graph, {
+        id: "send_message_1",
+        type: "send_message",
+        config: {
+          channel: "whatsapp",
+          template: { ref: "" },
+          recipient_path: "payload.contact_id",
+          recipient_kind: "contact_id",
+          variable_map: {},
+          purpose: "marketing",
+        },
+      });
+    },
   },
   {
     id: "invoice-follow-up",

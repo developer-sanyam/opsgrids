@@ -5,22 +5,16 @@ import { useAsync } from "@opsgrids/client";
 import {
   ActivityIcon,
   BuildingIcon,
-  FileTextIcon,
   HomeIcon,
   KanbanIcon,
-  LifeBuoyIcon,
-  PlugIcon,
-  SettingsIcon,
   TargetIcon,
   UserPlusIcon,
   UsersIcon,
 } from "@opsgrids/ui";
 import type { NavEntry, NavGroup } from "@opsgrids/ui";
 
-const PINNED: NavEntry[] = [
-  { to: "/settings", label: "Settings", icon: SettingsIcon },
-  { to: "/help", label: "Help & Getting Started", icon: LifeBuoyIcon },
-];
+/** Nothing is pinned to the rail's foot: every entry above it leads to a screen that exists. */
+const PINNED: NavEntry[] = [];
 
 /**
  * This product's navigation, for `AppShell`'s `nav`/`pinned` props. The Deals count is real
@@ -52,13 +46,11 @@ export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
       items: [
         { to: "/companies", label: "Companies", icon: BuildingIcon },
         { to: "/contacts", label: "Contacts", icon: UsersIcon },
-        { to: "/reports", label: "Reports", icon: FileTextIcon },
       ],
     },
     {
       title: "Workspace",
       items: [
-        { to: "/integrations", label: "Integrations", icon: PlugIcon },
         { to: "/team", label: "Team Members", icon: UserPlusIcon },
       ],
     },

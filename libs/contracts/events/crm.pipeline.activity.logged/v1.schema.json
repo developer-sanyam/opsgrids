@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/crm.pipeline.activity.logged/v1",
+  "title": "crm.pipeline.activity.logged",
+  "description": "One interaction was appended to the activity timeline, which is append-only. Ids and an enumeration only: the subject and the body never travel on the bus. `deal_id` and `contact_id` are null when the entry does not name one. `occurred_at` is when the interaction happened (it may be backdated, never in the future), not when it was logged, and always carries a UTC offset. Customer binds this event to advance the named contact's `last_activity_at`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "activity_id", "type", "deal_id", "contact_id", "occurred_at"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "activity_id": { "type": "string", "format": "uuid" },
+    "type": { "enum": ["call", "email", "meeting", "note", "task"] },
+    "deal_id": { "type": ["string", "null"], "format": "uuid" },
+    "contact_id": { "type": ["string", "null"], "format": "uuid" },
+    "occurred_at": { "type": "string", "format": "date-time" }
+  }
+}

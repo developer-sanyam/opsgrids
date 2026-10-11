@@ -8,10 +8,9 @@
  * `sso/platformHosts.ts`'s own allowlist: those stay as they are for now (§6), this is the one
  * place a *new* consumer — the shared shell — reads from.
  *
- * Two product keys fold into one entry on purpose:
- * - `crm` also answers to the `sales` entitlement/grant prefix some services still mint under.
- * - `operations` also answers to `inventory` — Operations and Inventory are one console
- *   (`ops.opsgrids.com`), not two nav entries.
+ * One product key folds into another entry on purpose: `operations` also answers to
+ * `inventory` — Operations and Inventory are one console (`ops.opsgrids.com`), not two nav
+ * entries.
  *
  * No `reports` entry: there is no Reports product today, and this file does not invent one.
  */
@@ -44,7 +43,7 @@ export interface PlatformProduct {
 }
 
 export const PLATFORM_PRODUCTS: readonly PlatformProduct[] = [
-  { key: "crm", displayName: "CRM", iconKey: "briefcase", entitlementKeys: ["crm", "sales"] },
+  { key: "crm", displayName: "CRM", iconKey: "briefcase", entitlementKeys: ["crm"] },
   {
     key: "operations",
     displayName: "Operations & Inventory",

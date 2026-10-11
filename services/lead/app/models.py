@@ -61,10 +61,6 @@ class Base(_Base):
 
 Base.metadata.schema = SCHEMA
 
-#: The lifecycle, in order. `domain.can_transition` is the only enforcement point — this
-#: constant lives here because the model docstring above is where a reader looks first.
-STATUSES: tuple[str, ...] = ("new", "working", "qualified", "disqualified", "converted")
-
 
 class Lead(Base, TenantBase):
     """One prospect, from capture to conversion (or disqualification).
@@ -92,11 +88,17 @@ class Lead(Base, TenantBase):
     phone_masked: Mapped[str | None] = mapped_column(String(40))
     #: The raw phone, sealed the same way as `email_enc`.
     phone_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
-    phone_index: Mapped[str | None] = mapped_column(String(64))
+    #: Dormant: nothing has computed it since R1.2b and nothing reads it (no selector, no index).
+    #: The column stays, because phone-based duplicate detection (R3.7) resumes writing it, with
+    #: an owner-run backfill for the leads captured in between. `deferred` keeps it out of every
+    #: statement this service issues, so a later change can drop the column and this attribute
+    #: together without breaking the code that is running.
+    phone_index: Mapped[str | None] = mapped_column(String(64), deferred=True)
 
     #: form | import | manual.
     source: Mapped[str] = mapped_column(String(40), nullable=False, default="manual")
-    #: new | working | qualified | disqualified | converted. See `STATUSES`.
+    #: new | working | qualified | disqualified | converted. `domain.STATUS_ORDER` is the one
+    #: list of them and `domain.can_transition` the only enforcement point.
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="new")
     #: The rep working the lead. Plain UUID into customer-service's rep directory
     #: (`customer.owners`) — never validated against it here, the same trust boundary

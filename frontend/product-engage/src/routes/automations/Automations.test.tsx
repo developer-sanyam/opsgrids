@@ -49,8 +49,8 @@ describe("states", () => {
     renderList();
     expect(await screen.findByText("No automations yet")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Start from a recipe" })).toBeTruthy();
-    const link = screen.getByRole("link", { name: /Welcome a new lead/ });
-    expect(link.getAttribute("href")).toBe("/automations/new?recipe=welcome-new-lead");
+    const link = screen.getByRole("link", { name: /Welcome a converted lead/ });
+    expect(link.getAttribute("href")).toBe("/automations/new?recipe=welcome-converted-lead");
   });
 
   it("names the filter, and offers to clear it, when nothing matches", async () => {
