@@ -47,8 +47,13 @@ from app.models import (
     OutboxEvent,
 )
 from platform_core.audit import record_audit
-from platform_core.auth import ScopeContext
-from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
+from platform_core.auth import Scope, ScopeContext
+from platform_core.errors import (
+    ConflictProblem,
+    ForbiddenProblem,
+    NotFoundProblem,
+    ValidationProblem,
+)
 from platform_core.events import publish_event
 from platform_core.logging import get_logger
 
@@ -889,6 +894,30 @@ def _lines(acc: dict[tuple[str, str, str, str, str], tuple[MoveLine, int]]) -> l
     ]
 
 
+async def _check_shortage_threshold(
+    session: AsyncSession, ctx: ScopeContext, shorts: list[tuple[str, int]]
+) -> None:
+    """A declared shortage writes stock off the vendor bucket: past the adjustment threshold it
+    needs the stock adjust permission at ORG as well as the right to receive (as quality scrap)."""
+    if not shorts:
+        return
+    from app.movements import common as movement_common
+    from app.movements import domain as movement_domain
+
+    settings = await movement_common.get_settings(session, ctx.organization_id)
+    threshold = settings.adjustment_approval_threshold_milli if settings else None
+    if not movement_domain.over_threshold(
+        threshold, [movement_domain.to_base_milli(milli, uom) for uom, milli in shorts]
+    ):
+        return
+    held = ctx.principal.scope_for("operations.inventory.stock.adjust")
+    if held is None or held.rank < Scope.ORG.rank:
+        raise ForbiddenProblem(
+            "Writing off this much needs the stock adjust permission: it is above the "
+            "adjustment approval threshold"
+        )
+
+
 async def receive_order(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -980,6 +1009,11 @@ async def receive_order(
         session, org_id, {location_id for *_rest, location_id in parsed}, warehouse_id=None
     )
 
+    await _check_shortage_threshold(
+        session,
+        ctx,
+        [(material.uom, short) for _l, material, _g, _r, short, _loc in parsed if short],
+    )
     good_status = "QUALITY_HOLD" if order.qc_required else "AVAILABLE"
     returns: dict[tuple[str, str, str, str, str], tuple[MoveLine, int]] = {}
     shortages: dict[tuple[str, str, str, str, str], tuple[MoveLine, int]] = {}
