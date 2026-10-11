@@ -9,8 +9,8 @@ import { dealImport } from "@/data/importExport/deals";
 import type { DealFilters } from "@/data/importExport/deals";
 import { companyName } from "@/data/lookups";
 import { STAGES } from "@/data/stages";
-import { cn, HandshakeIcon, ImportExportButton, KanbanIcon, LayoutIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
-import { formatDate, formatMoney } from "@/lib/format";
+import { formatMoney, cn, HandshakeIcon, ImportExportButton, KanbanIcon, LayoutIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
+import { formatDate } from "@/lib/format";
 import { Can, problemMessage, useAsync, useCan, useImportExport, useMutation } from "@opsgrids/client";
 import {
   Button,

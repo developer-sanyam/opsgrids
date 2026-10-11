@@ -3,10 +3,9 @@ import { useRef, useState } from "react";
 import { createCompany, updateCompany } from "@/api/client";
 import type { Company, CompanyStatus, Owner } from "@/api/types";
 import type { CompanyIn, CompanyPatch } from "@/api/wire";
-import { minorToInput, parseMinor } from "@/lib/money";
 import { maybe } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, Select, TextField, useFormDirty } from "@opsgrids/ui";
+import { FormDialog, minorToInput, parseMinor, Select, TextField, useFormDirty } from "@opsgrids/ui";
 import { OwnerPicker } from "./OwnerPicker";
 
 const STATUS_OPTIONS: { value: CompanyStatus; label: string }[] = [
@@ -47,7 +46,7 @@ export function CompanyFormDialog({
   const [country, setCountry] = useState(company?.country ?? "");
   const [status, setStatus] = useState<CompanyStatus>(company?.status ?? "prospect");
   const [revenue, setRevenue] = useState(
-    company ? minorToInput(company.annual_revenue_minor) : "",
+    company ? minorToInput(company.annual_revenue_minor, company.currency) : "",
   );
   const [currency, setCurrency] = useState(company?.currency ?? "INR");
 
@@ -81,7 +80,7 @@ export function CompanyFormDialog({
       setOwnerError("Choose an owner.");
       return;
     }
-    const parsed = parseMinor(revenue);
+    const parsed = parseMinor(revenue, currency.trim().toUpperCase() || "INR");
     if (!parsed.ok) {
       setRevenueError(parsed.message);
       return;
