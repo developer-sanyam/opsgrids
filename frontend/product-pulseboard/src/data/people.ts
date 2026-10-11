@@ -2,7 +2,7 @@
  * The delivery team roster fixture. Only used in fixture mode (`client.ts`'s `getPeople`) and to
  * build the fixture timesheets in `fixtures.ts` — the live roster comes from the project
  * service's `/projects/people` and is resolved by whichever screen needs a name, against the
- * people it actually fetched (see `KanbanBoard`, `StandupList`, `ProjectsPage`), never from this
+ * people it actually fetched (see `routes/Board.tsx`, `StandupList`, `ProjectsPage`), never from this
  * static list.
  */
 import type { Person } from "@/api/types";

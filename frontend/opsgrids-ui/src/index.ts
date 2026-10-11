@@ -95,6 +95,8 @@ export { RadioGroup } from "./components/RadioGroup";
 export type { RadioOption } from "./components/RadioGroup";
 export { RowActions } from "./components/RowActions";
 export type { RowAction } from "./components/RowActions";
+export { KanbanBoard } from "./components/KanbanBoard";
+export type { KanbanBoardProps, KanbanCardState, KanbanColumn, KanbanMoveResult } from "./components/KanbanBoard";
 export { SampleChip } from "./components/SampleChip";
 export { SearchInput } from "./components/SearchInput";
 export { Select } from "./components/Select";

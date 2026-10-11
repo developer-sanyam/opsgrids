@@ -1,28 +1,93 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { deleteTask, getPeople, getProjects, listTasks, updateTask } from "@/api/client";
 import type { Person, Project, Task, TaskStatus } from "@/api/types";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
   Announcer,
+  Avatar,
   Button,
   Card,
   ColumnsIcon,
   ConfirmDialog,
   EmptyState,
   ErrorState,
+  KanbanBoard,
   PageHeader,
   PlusIcon,
   Select,
   Skeleton,
+  Tag,
   useAnnounce,
   useToast,
 } from "@opsgrids/ui";
-import type { SelectOption } from "@opsgrids/ui";
-import { KanbanBoard, TASK_STATUS_META } from "@/ui";
+import type { KanbanCardState, KanbanColumn, SelectOption } from "@opsgrids/ui";
+import { formatHours } from "@/lib/format";
+import { PriorityPill, TASK_STATUS_META } from "@/ui";
 import { TaskFormDialog } from "./TaskFormDialog";
 
 const COLUMN_ORDER = ["backlog", "in_progress", "review", "done"] as const;
+const STATUS_TONE: Record<TaskStatus, KanbanColumn["tone"]> = {
+  backlog: "neutral",
+  in_progress: "info",
+  review: "warning",
+  done: "success",
+};
+const COLUMNS: KanbanColumn[] = COLUMN_ORDER.map((status) => ({
+  id: status,
+  label: TASK_STATUS_META[status].label,
+  tone: STATUS_TONE[status],
+}));
+
+/** One card's contents; the shared board draws the card and its move menu around them. */
+function TaskCard({
+  task,
+  assigneeName,
+  projectCode,
+  state,
+}: {
+  task: Task;
+  assigneeName: string;
+  projectCode: string;
+  state: KanbanCardState;
+}) {
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-semibold text-faint tnum">{task.key}</span>
+        <div className="flex items-center gap-1">
+          <PriorityPill priority={task.priority} />
+          {state.actions}
+        </div>
+      </div>
+
+      <p className="text-sm font-semibold leading-snug text-ink">{task.title}</p>
+
+      {task.tags.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {task.tags.map((tag) => (
+            <Tag key={tag} className="px-2 text-caption">
+              {tag}
+            </Tag>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="flex items-center justify-between border-t border-line pt-3">
+        <span className="inline-flex items-center gap-2 text-xs text-muted">
+          <Avatar name={assigneeName} size="xs" />
+          <span className="max-w-32 truncate">{assigneeName}</span>
+        </span>
+        <span className="flex items-center gap-2 text-xs font-semibold text-faint tnum">
+          <span>{projectCode}</span>
+          <span className="inline-flex h-5 items-center rounded-full bg-ground px-2 text-ink-soft">
+            {formatHours(task.estimate_hours)}
+          </span>
+        </span>
+      </div>
+    </>
+  );
+}
 
 interface BoardData {
   tasks: Task[];
@@ -64,7 +129,6 @@ function BoardContent() {
   const [assigneeFilter, setAssigneeFilter] = useState("");
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<Task | null>(null);
-  const [movingKey, setMovingKey] = useState<string | null>(null);
 
   const loadBoard = useCallback(async (): Promise<BoardData> => {
     const [tasksPage, people, projects] = await Promise.all([
@@ -95,22 +159,21 @@ function BoardContent() {
       onSuccess: (updated) => {
         setTasks((prev) => prev.map((t) => (t.key === updated.key ? updated : t)));
         announce(`${updated.key} moved to ${TASK_STATUS_META[updated.status].label}.`);
-        setMovingKey(null);
       },
       onError: (error, input) => {
         setTasks(previousTasksRef.current);
         toast.error(`Couldn't move ${input.key}`, { description: problemMessage(error) });
         announce(`${input.key} is back where it was — the move failed.`);
-        setMovingKey(null);
       },
     },
   );
 
-  function handleMove(task: Task, to: TaskStatus) {
+  // The board announces "Moving…"; the outcome is announced above.
+  async function handleMove(task: Task, to: string) {
+    const status = to as TaskStatus;
     previousTasksRef.current = tasks;
-    setMovingKey(task.key);
-    setTasks((prev) => prev.map((t) => (t.key === task.key ? { ...t, status: to } : t)));
-    void moveTask.mutate({ key: task.key, status: to });
+    setTasks((prev) => prev.map((t) => (t.key === task.key ? { ...t, status } : t)));
+    await moveTask.mutate({ key: task.key, status });
   }
 
   const remove = useMutation((task: Task) => deleteTask(task.key), {
@@ -122,6 +185,10 @@ function BoardContent() {
   });
 
   const canWrite = useCan("pulseboard.board.task.write");
+  const people = state.status === "success" ? state.data.people : null;
+  const projects = state.status === "success" ? state.data.projects : null;
+  const assigneeNameById = useMemo(() => new Map((people ?? []).map((p) => [p.id, p.name])), [people]);
+  const projectCodeById = useMemo(() => new Map((projects ?? []).map((p) => [p.id, p.code])), [projects]);
   const projectOptions: SelectOption[] = [
     { value: "", label: "All engagements" },
     ...(state.status === "success" ? state.data.projects.map((p) => ({ value: p.code, label: p.code })) : []),
@@ -202,14 +269,29 @@ function BoardContent() {
             />
           </Card>
         ) : (
-          <KanbanBoard
-            tasks={tasks}
-            people={state.data.people}
-            projects={state.data.projects}
-            canWrite={canWrite}
-            movingKey={movingKey}
+          <KanbanBoard<Task>
+            columns={COLUMNS}
+            items={tasks}
+            getItemId={(task) => task.key}
+            getColumnId={(task) => task.status}
+            renderCard={(task, cardState) => (
+              <TaskCard
+                task={task}
+                assigneeName={
+                  task.assignee_id === null ? "Unassigned" : (assigneeNameById.get(task.assignee_id) ?? "Unknown")
+                }
+                projectCode={projectCodeById.get(task.project_id) ?? "—"}
+                state={cardState}
+              />
+            )}
+            canMove={() => true}
             onMove={handleMove}
-            onDelete={setDeleting}
+            announce={(task, _from, to, result) =>
+              result === "moving" ? `Moving ${task.key} to ${TASK_STATUS_META[to as TaskStatus].label}…` : ""
+            }
+            moveMenuLabel={(task) => task.key}
+            getExtraActions={(task) => [{ label: "Delete", tone: "danger", onSelect: () => setDeleting(task) }]}
+            readOnly={!canWrite}
           />
         )
       ) : null}

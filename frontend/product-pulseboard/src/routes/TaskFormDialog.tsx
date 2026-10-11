@@ -30,7 +30,7 @@ interface FormErrors {
 }
 
 /** Create a board card. There is no edit-by-form for a card: its stage, assignee, estimate and
- * priority all move from the board itself (`KanbanBoard`'s row actions), which is the same
+ * priority all move from the board itself (the shared board's row actions in `Board.tsx`), which is the same
  * `PATCH /projects/tasks/{key}` this dialog's create leads into. */
 export function TaskFormDialog({
   projects,
