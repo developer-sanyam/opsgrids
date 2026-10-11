@@ -12,14 +12,18 @@ are what says so.
 from __future__ import annotations
 
 import ast
+import itertools
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
 
 import pytest
 from fastapi import APIRouter, Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import Select, column, select
+from sqlalchemy import false as sa_false
 
 import platform_core
 from platform_core import auth
@@ -387,3 +391,218 @@ class TestRequireOverHttp:
             response = await client.get("/api/v1/probe/read")
         assert response.status_code == 200
         assert response.json()["own_ref"] is None
+
+
+# ---------------------------------------------------------------------------------------------
+# The frozen oracle (DD-39). "Changes nothing by default" is a claim about the whole grid of
+# scope x ids x columns, not about the handful of paths the older tests walk.
+#
+# `_legacy_apply` and `_legacy_assert_can_touch` are the bodies of `ScopeContext.apply` and
+# `ScopeContext.assert_can_touch` as they read at main@caa7f112, copied verbatim apart from
+# `self` becoming `ctx`. They are never edited: the day they stop describing today's behaviour is
+# the day the platform has changed what OWN means for every product that did not opt in.
+# ---------------------------------------------------------------------------------------------
+
+OTHER = uuid.uuid4()
+LOCATIONS = ["MUM", "PUN"]
+_OWNER: Any = column("owner_id")
+_MANAGER: Any = column("manager_id")
+_LOCATION: Any = column("location_code")
+
+
+def _legacy_apply(
+    ctx: ScopeContext,
+    stmt: Any,
+    *,
+    owner_col: Any,
+    team_col: Any | None = None,
+    location_col: Any | None = None,
+) -> Any:
+    if ctx.scope is Scope.ORG:
+        return stmt
+    if ctx.scope is Scope.OWN:
+        if ctx.principal.subject_ref is None:
+            return stmt.where(sa_false())
+        return stmt.where(owner_col == ctx.principal.subject_ref)
+    if ctx.scope is Scope.TEAM:
+        if team_col is None:
+            raise ForbiddenProblem("TEAM scope is not supported on this resource")
+        if ctx.principal.subject_ref is None:
+            return stmt.where(sa_false())
+        return stmt.where(team_col == ctx.principal.subject_ref)
+    if ctx.scope is Scope.LOCATION:
+        if location_col is None:
+            raise ForbiddenProblem("LOCATION scope is not supported on this resource")
+        return stmt.where(location_col.in_(ctx.principal.locations))
+    raise ForbiddenProblem("Unknown scope")
+
+
+def _legacy_assert_can_touch(
+    ctx: ScopeContext,
+    *,
+    owner_id: uuid.UUID | None,
+    team_owner_id: uuid.UUID | None = None,
+    location_code: str | None = None,
+) -> None:
+    if ctx.scope is Scope.ORG:
+        return
+    subject = ctx.principal.subject_ref
+    if ctx.scope is Scope.OWN and subject is not None and owner_id == subject:
+        return
+    if ctx.scope is Scope.TEAM and subject is not None and team_owner_id == subject:
+        return
+    if ctx.scope is Scope.LOCATION:
+        if location_code is not None and location_code in ctx.principal.locations:
+            return
+        raise ForbiddenProblem("Out of scope for this resource")
+    raise ForbiddenProblem("Out of scope for this resource")
+
+
+def _outcome(call: Callable[[], Any]) -> tuple[Any, ...]:
+    """What a call did, in a form two calls can be compared by: the compiled SQL text and bound
+    parameters of the statement it returned, or the exception type and message it raised."""
+    try:
+        result = call()
+    except ForbiddenProblem as refused:
+        return ("raised", type(refused).__name__, str(refused))
+    if isinstance(result, Select):
+        compiled = result.compile()
+        return ("statement", str(compiled), compiled.params)
+    return ("returned", result)
+
+
+def _context(
+    scope: Scope,
+    subject_ref: uuid.UUID | None,
+    membership_id: uuid.UUID | None,
+    owner_subject: OwnerSubject | None = None,
+) -> ScopeContext:
+    """A context for the grid. `owner_subject=None` leaves the field unset, the way a hand-built
+    context does, so the default itself is under test."""
+    principal = Principal(
+        sub=uuid.uuid4(),
+        organization_id=ORG,
+        subject_ref=subject_ref,
+        membership_id=membership_id,
+        locations=LOCATIONS,
+    )
+    if owner_subject is None:
+        return ScopeContext(principal=principal, scope=scope, permission="x.y.z.read")
+    return ScopeContext(
+        principal=principal,
+        scope=scope,
+        permission="x.y.z.read",
+        owner_subject=owner_subject,
+    )
+
+
+def _swap_in_the_membership_id(ctx: ScopeContext) -> ScopeContext:
+    """The defect the oracle exists to catch, built from the same context: the employee-link
+    logic run against the caller's membership id instead."""
+    principal = ctx.principal.model_copy(update={"subject_ref": ctx.principal.membership_id})
+    return ctx.model_copy(update={"principal": principal})
+
+
+_ApplyFn = Callable[..., Any]
+_TouchFn = Callable[..., None]
+
+
+def _current_apply(ctx: ScopeContext, stmt: Any, **columns: Any) -> Any:
+    return ctx.apply(stmt, **columns)
+
+
+def _current_assert_can_touch(ctx: ScopeContext, **ids: Any) -> None:
+    ctx.assert_can_touch(**ids)
+
+
+def _apply_grid() -> Iterator[tuple[Scope, uuid.UUID | None, uuid.UUID | None, bool, bool]]:
+    """Scope x employee link set or null x membership id set or null x team column present or
+    absent x location column present or absent."""
+    yield from itertools.product(
+        Scope, (None, EMPLOYEE), (None, MEMBER), (False, True), (False, True)
+    )
+
+
+def _touch_grid() -> Iterator[tuple[Scope, uuid.UUID | None, uuid.UUID | None, Any, Any, Any]]:
+    """Scope x employee link x membership id x the row's owner x the row's team owner x the row's
+    location. Each id is absent, the caller's employee link, the caller's membership id, or a
+    stranger's; so every "equals" in the object check is both true and false somewhere."""
+    ids = (None, EMPLOYEE, MEMBER, OTHER)
+    yield from itertools.product(
+        Scope, (None, EMPLOYEE), (None, MEMBER), ids, ids, (None, "PUN", "DEL")
+    )
+
+
+#: One grid row where a candidate and the legacy logic disagree: the scope, the caller's employee
+#: link and membership id, and the arguments of the call.
+_Mismatch = tuple[Scope, uuid.UUID | None, uuid.UUID | None, dict[str, Any]]
+
+
+def _apply_mismatches(candidate: _ApplyFn, subject: OwnerSubject | None = None) -> list[_Mismatch]:
+    """Every grid row where `candidate` and the legacy `apply` disagree."""
+    mismatches: list[_Mismatch] = []
+    for scope, subject_ref, membership_id, with_team, with_location in _apply_grid():
+        ctx = _context(scope, subject_ref, membership_id, subject)
+        columns = {
+            "owner_col": _OWNER,
+            "team_col": _MANAGER if with_team else None,
+            "location_col": _LOCATION if with_location else None,
+        }
+        expected = _outcome(partial(_legacy_apply, ctx, select(_OWNER), **columns))
+        actual = _outcome(partial(candidate, ctx, select(_OWNER), **columns))
+        if actual != expected:
+            mismatches.append((scope, subject_ref, membership_id, columns))
+    return mismatches
+
+
+def _touch_mismatches(candidate: _TouchFn, subject: OwnerSubject | None = None) -> list[_Mismatch]:
+    """Every grid row where `candidate` and the legacy `assert_can_touch` disagree."""
+    mismatches: list[_Mismatch] = []
+    for scope, subject_ref, membership_id, owner_id, team_owner_id, location_code in _touch_grid():
+        ctx = _context(scope, subject_ref, membership_id, subject)
+        ids = {"owner_id": owner_id, "team_owner_id": team_owner_id, "location_code": location_code}
+        expected = _outcome(partial(_legacy_assert_can_touch, ctx, **ids))
+        actual = _outcome(partial(candidate, ctx, **ids))
+        if actual != expected:
+            mismatches.append((scope, subject_ref, membership_id, ids))
+    return mismatches
+
+
+class TestEmployeeLinkParity:
+    def test_every_combination_matches_the_pre_change_logic(self) -> None:
+        assert _apply_mismatches(_current_apply) == []
+        assert _touch_mismatches(_current_assert_can_touch) == []
+
+    def test_naming_the_employee_link_explicitly_changes_nothing(self) -> None:
+        subject = OwnerSubject.EMPLOYEE_LINK
+        assert _apply_mismatches(_current_apply, subject) == []
+        assert _touch_mismatches(_current_assert_can_touch, subject) == []
+
+    def test_org_returns_the_very_same_statement(self) -> None:
+        stmt = select(_OWNER)
+        ctx = _context(Scope.ORG, None, None)
+        assert ctx.apply(stmt, owner_col=_OWNER) is stmt
+
+    def test_the_grid_has_the_size_the_oracle_claims(self) -> None:
+        # 4 scopes x 2 x 2 x 2 x 2, and 4 scopes x 2 x 2 x 4 x 4 x 3: a grid that quietly shrank
+        # would still pass, so its size is pinned.
+        assert len(list(_apply_grid())) == 64
+        assert len(list(_touch_grid())) == 768
+
+    def test_the_oracle_catches_the_membership_id_leaking_into_apply(self) -> None:
+        def leaky(ctx: ScopeContext, stmt: Any, **columns: Any) -> Any:
+            return _legacy_apply(_swap_in_the_membership_id(ctx), stmt, **columns)
+
+        mismatches = _apply_mismatches(leaky)
+        # Both rungs that read the subject are caught, no other rung is touched, and a row only
+        # differs when the caller's two ids do.
+        assert {scope for scope, *_ in mismatches} == {Scope.OWN, Scope.TEAM}
+        assert all(sref != mem for _scope, sref, mem, _columns in mismatches)
+
+    def test_the_oracle_catches_the_membership_id_leaking_into_assert_can_touch(self) -> None:
+        def leaky(ctx: ScopeContext, **ids: Any) -> None:
+            _legacy_assert_can_touch(_swap_in_the_membership_id(ctx), **ids)
+
+        mismatches = _touch_mismatches(leaky)
+        assert {scope for scope, *_ in mismatches} == {Scope.OWN, Scope.TEAM}
+        assert all(sref != mem for _scope, sref, mem, _ids in mismatches)
