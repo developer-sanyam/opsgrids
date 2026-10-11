@@ -43,6 +43,14 @@ def include_object(obj, name, type_, reflected, compare_to) -> bool:  # type: ig
     return True
 
 
+def _is_downgrade() -> bool:
+    """An upgrade commits each revision on its own, so a long chain does not hold the early
+    revisions' ACCESS EXCLUSIVE locks to the end. A downgrade stays one transaction: its guards
+    refuse partway (stock in transit, rows that cannot be dropped) and must leave nothing undone."""
+    cmd = getattr(config.cmd_opts, "cmd", None)
+    return bool(cmd) and cmd[0].__name__ == "downgrade"
+
+
 def do_run_migrations(connection: Connection) -> None:
     connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{SCHEMA}"'))
     connection.commit()
@@ -54,6 +62,7 @@ def do_run_migrations(connection: Connection) -> None:
         version_table_schema=SCHEMA,
         compare_type=True,
         compare_server_default=True,
+        transaction_per_migration=not _is_downgrade(),
     )
     with context.begin_transaction():
         context.run_migrations()
