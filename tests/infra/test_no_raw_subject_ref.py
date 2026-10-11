@@ -28,6 +28,7 @@ ships it **empty**, because no service switches in R2.2; R2.7 fills it with `cus
 from __future__ import annotations
 
 import ast
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,6 +54,22 @@ SPELLINGS: frozenset[str] = frozenset({"subject_ref", "sref", "x-subject-ref"})
 #: the customer 360 used to spell `"X-Subject-Ref"` in its `_IDENTITY_HEADERS`; it now forwards
 #: platform-core's `FORWARDED_HEADERS` instead, so no CRM file spells the employee link at all.
 ALLOWED_STRING_SPELLINGS: dict[tuple[str, str], frozenset[str]] = {}
+
+#: THE RATCHET, until R2.7. Today's raw reads of the employee link in the three CRM services,
+#: counted per (file relative to `services/`, enclosing function): six, none in `lead` (customer's
+#: assignment check; deal's default owner, `owner=me` summary and activity forcing). A seventh
+#: read, or one of these vanishing before the flip, fails the test that compares them. R2.7
+#: replaces each with `ctx.own_ref` and deletes this constant, `KNOWN_STRING_SPELLINGS`, the two
+#: counting helpers and `TestRatchetUntilTheFlip`.
+KNOWN_RAW_READS: dict[tuple[str, str], int] = {
+    ("customer/app/services.py", "_assert_owner_assignable"): 1,
+    ("deal/app/api/routes.py", "create_deal"): 1,
+    ("deal/app/api/routes.py", "summary"): 2,
+    ("deal/app/api/routes.py", "log_activity"): 2,
+}
+
+#: The same ratchet for string spellings, counted per (file, holder): none today.
+KNOWN_STRING_SPELLINGS: dict[tuple[str, str], int] = {}
 
 #: The default subject, spelled the way a registration spells it.
 DEFAULT_SUBJECT = "OwnerSubject.EMPLOYEE_LINK"
@@ -269,6 +286,24 @@ def scan_service(service: str) -> dict[str, Scan]:
         )
         for path in service_files(service)
     }
+
+
+def raw_read_counts(services: tuple[str, ...]) -> dict[tuple[str, str], int]:
+    """Raw reads of the employee link per (file, enclosing function), over `services`."""
+    counts: Counter[tuple[str, str]] = Counter()
+    for service in services:
+        for relpath, scan in scan_service(service).items():
+            counts.update((relpath, site.function) for site in scan.raw_reads)
+    return dict(counts)
+
+
+def string_spelling_counts(services: tuple[str, ...]) -> dict[tuple[str, str], int]:
+    """String spellings of the employee link per (file, holding module-level name)."""
+    counts: Counter[tuple[str, str]] = Counter()
+    for service in services:
+        for relpath, scan in scan_service(service).items():
+            counts.update((relpath, holder) for _site, holder, _value in scan.strings)
+    return dict(counts)
 
 
 def registered_product(service: str) -> str | None:
@@ -594,3 +629,24 @@ class TestScansAreNotVacuous:
         # would hold for the wrong reason: an empty set equal to an empty set.
         for service in CRM_SERVICES:
             assert len(registration_subjects(service)) == 1, service
+
+
+# ---------------------------------------------------------------------------------------------
+# The ratchet. R2.7 deletes this class, `KNOWN_RAW_READS`, `KNOWN_STRING_SPELLINGS`, the two
+# counting helpers and the `Counter` import, and fills `OPTED_IN`; everything above stays.
+# ---------------------------------------------------------------------------------------------
+
+
+class TestRatchetUntilTheFlip:
+    def test_the_known_raw_reads_are_exactly_the_documented_six(self) -> None:
+        counts = raw_read_counts(CRM_SERVICES)
+        assert counts == KNOWN_RAW_READS
+        assert sum(counts.values()) == 6
+
+    def test_lead_reads_the_employee_link_nowhere(self) -> None:
+        assert raw_read_counts(("lead",)) == {}
+
+    def test_the_crm_services_spell_the_employee_link_as_no_string(self) -> None:
+        counts = string_spelling_counts(CRM_SERVICES)
+        assert counts == KNOWN_STRING_SPELLINGS
+        assert sum(counts.values()) == 0
