@@ -1085,8 +1085,10 @@ async def finalize_conversion(
     claim instead of overwriting whatever it moved to, and records why — including the ids of
     the records the calls already created, which nothing here can take back — and stages
     `crm.lead.conversion_aborted` so something that can (a consumer, later) knows they are
-    now orphans. An `owner_changed` abort also bumps `Lead.conversion_generation`, so the retry
-    creates fresh records for the new owner instead of reusing the old owner's.
+    now orphans. Every abort bumps `Lead.conversion_generation` by one, so the retry derives
+    ids no aborted attempt used (`domain.conversion_ids`) and creates fresh records instead of
+    reusing the abandoned ones: for a reassignment they belong to the old owner, and for a
+    status change a late cleanup of them must not be able to reach a retry that succeeded.
     """
     # `abort_reason`/`missing_claim` decide what to raise *after* the `async with` below exits —
     # never from inside it. Raising from inside a `session.begin()` block rolls the whole
@@ -1113,23 +1115,30 @@ async def finalize_conversion(
                 detail = "lead was reassigned before the conversion finished"
 
             if abort_reason is not None:
+                # Every abort moves the lead to a new generation (D-4), so the retry derives
+                # ids no aborted attempt used. For a reassignment that keeps the retry from
+                # handing the new owner a company and deal opened for the old one; for a status
+                # change it keeps a later cleanup of the abandoned records (R2.4) away from a
+                # retry that has since succeeded. The claim-id match above proves the row's
+                # generation is the one this attempt's ids were derived under: only the holder
+                # of the live claim can bump it, and a bump clears the claim.
+                aborted_generation = lead.conversion_generation
                 lead.conversion_claim_id = None
                 lead.conversion_claimed_at = None
                 lead.updated_by = str(ctx.principal.sub)
+                lead.conversion_generation += 1
                 orphans = {
                     "company_id": str(company_id),
                     "contact_id": str(contact_id) if contact_id else None,
                     "deal_id": str(deal_id),
                 }
-                abort_after: dict[str, Any] = {"reason": detail, **orphans}
-                if abort_reason == "owner_changed":
-                    # The records the abandoned attempt created were opened *for the old
-                    # owner*, so reusing them (same ids, idempotent-by-id) on the retry would
-                    # hand the new owner a company and deal that belong to someone else. A
-                    # new generation makes the retry create fresh ones for the new owner; the
-                    # old ones stay behind as the orphans this audit row and the event name.
-                    lead.conversion_generation += 1
-                    abort_after["conversion_generation"] = lead.conversion_generation
+                abort_after: dict[str, Any] = {
+                    "reason": detail,
+                    **orphans,
+                    "conversion_generation": lead.conversion_generation,
+                    "claim_id": str(claim_id),
+                    "aborted_generation": aborted_generation,
+                }
                 await session.flush()
                 record_audit(
                     session,

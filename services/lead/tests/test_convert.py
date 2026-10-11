@@ -717,3 +717,83 @@ class TestGenerationsAndDealNames:
         assert converted is not None
         assert converted.status == "converted"
         assert converted.converted_company_id == converted_company_id
+
+    async def test_a_status_change_mid_convert_aborts_and_the_retry_creates_fresh_records(
+        self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The twin of the owner-change test above, for the abort that used to leave the retry
+        on the same ids: a status change lands between claim and finalize, `:convert` aborts,
+        the rep re-qualifies the lead and converts again. Before every abort bumped the
+        generation the retry derived the aborted attempt's company, contact and deal ids again,
+        and a cleanup of that attempt's leftovers could then have destroyed the retry's."""
+        lead_id = data["lead_a_id"]
+        live_names: set[str] = set()
+        first_calls: list = []
+        _stateful_deal_service(monkeypatch, live_names, first_calls)
+
+        async def _company_then_a_disqualification(settings, organization_id, **kwargs):
+            first_calls.append(("company", kwargs))
+            # A writer these guards did not anticipate, landing in the gap between claim and
+            # finalize -- the session has no transaction open here, as during the real call.
+            async with session.begin():
+                await session.execute(
+                    text('UPDATE "lead"."leads" SET status = \'disqualified\' WHERE id = :id'),
+                    {"id": lead_id},
+                )
+            return kwargs["company_id"], kwargs["contact_id"]
+
+        monkeypatch.setattr(clients, "ensure_company_and_contact", _company_then_a_disqualification)
+
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        with pytest.raises(ConflictProblem, match="status changed"):
+            await services.convert_lead(session, ctx, lead_id)
+
+        first_company = next(kw for kind, kw in first_calls if kind == "company")
+        first_deal = next(kw for kind, kw in first_calls if kind == "deal")
+        first_ids = (
+            first_company["company_id"],
+            first_company["contact_id"],
+            first_deal["deal_id"],
+        )
+        assert first_ids == domain.conversion_ids(lead_id, 0)
+
+        async with session.begin():
+            lead = await selectors.get_lead(session, org_id, lead_id)
+        assert lead is not None
+        assert lead.status == "disqualified"
+        assert lead.conversion_claim_id is None
+        assert lead.conversion_generation == 1
+
+        # The rep re-qualifies the lead and converts it again.
+        async with session.begin():
+            await session.execute(
+                text('UPDATE "lead"."leads" SET status = \'qualified\' WHERE id = :id'),
+                {"id": lead_id},
+            )
+        retry_calls: list = []
+        _stateful_deal_service(monkeypatch, live_names, retry_calls)
+        _fake_ensure_company_and_contact(monkeypatch, retry_calls)
+        await services.convert_lead(session, ctx, lead_id)
+
+        retry_company = next(kw for kind, kw in retry_calls if kind == "company")
+        retry_deal = next(kw for kind, kw in retry_calls if kind == "deal")
+        retry_ids = (
+            retry_company["company_id"],
+            retry_company["contact_id"],
+            retry_deal["deal_id"],
+        )
+        assert retry_ids == domain.conversion_ids(lead_id, 1)
+        assert retry_company["company_id"] != first_company["company_id"]
+        assert retry_company["contact_id"] != first_company["contact_id"]
+        assert retry_deal["deal_id"] != first_deal["deal_id"]
+        # The aborted attempt's deal is still live and deal refuses a second live deal with
+        # one name, so the retry's name carries the new generation.
+        assert first_deal["name"] in live_names
+        assert retry_deal["name"] != first_deal["name"]
+        assert retry_deal["name"].endswith("/1")
+
+        async with session.begin():
+            converted = await selectors.get_lead(session, org_id, lead_id)
+        assert converted is not None
+        assert converted.status == "converted"
+        assert converted.conversion_generation == 1

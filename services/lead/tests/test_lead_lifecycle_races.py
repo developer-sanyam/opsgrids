@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -31,7 +32,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app import clients, selectors, services
+from app import clients, domain, selectors, services
 from app.config import settings
 from app.models import SCHEMA, AuditLog, OutboxEvent
 from app.schemas import LeadPatch
@@ -199,6 +200,13 @@ class TestFinalizeRefusesToOverwriteAMovedStatus:
 
 CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "libs" / "contracts"
 
+#: The two writes this file uses to stand in for "a writer these guards did not anticipate".
+_DISQUALIFY = 'UPDATE "lead"."leads" SET status = \'disqualified\' WHERE id = :id'
+_REQUALIFY = 'UPDATE "lead"."leads" SET status = \'qualified\' WHERE id = :id'
+_DISQUALIFY_AND_REASSIGN = (
+    'UPDATE "lead"."leads" SET status = \'disqualified\', owner_id = :owner WHERE id = :id'
+)
+
 
 class TestAnAbortedConversionLeavesATrail:
     """m7, fix round 3. When `finalize_conversion` refuses to write "converted" the records
@@ -297,6 +305,209 @@ class TestAnAbortedConversionLeavesATrail:
         assert lead.owner_id == new_owner
         assert lead.conversion_claim_id is None
         assert lead.converted_company_id is None
+
+    async def _requalify(self, session, lead_id) -> None:
+        """Put the lead back to `qualified`, the way a rep who re-qualified it would, so a retry
+        has something to claim."""
+        async with session.begin():
+            await session.execute(text(_REQUALIFY), {"id": lead_id})
+
+    async def _takeover_then_abort(self, session, org_id, lead_id):
+        """Attempt A claims; its lease runs out; attempt B takes the claim over and then aborts
+        because the status moved under it. Returns both claims -- A still holds its dead one."""
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        claim_a = await services.claim_conversion(session, ctx, lead_id)
+        async with session.begin():
+            await session.execute(
+                text('UPDATE "lead"."leads" SET conversion_claimed_at = :aged WHERE id = :id'),
+                {
+                    "aged": utcnow() - timedelta(seconds=domain.CONVERSION_LEASE_SECONDS + 5),
+                    "id": lead_id,
+                },
+            )
+        claim_b = await services.claim_conversion(session, ctx, lead_id)
+        async with session.begin():
+            await session.execute(text(_DISQUALIFY), {"id": lead_id})
+        with pytest.raises(ConflictProblem, match="status changed"):
+            await services.finalize_conversion(
+                session,
+                ctx,
+                lead_id=lead_id,
+                claim_id=claim_b.claim_id,
+                owner_id=claim_b.owner_id,
+                company_id=claim_b.company_id,
+                contact_id=claim_b.contact_id,
+                deal_id=claim_b.deal_id,
+            )
+        return claim_a, claim_b
+
+    async def test_a_status_abort_bumps_the_generation_and_names_it(
+        self, session, org_id, data
+    ) -> None:
+        claim = await self._abort(
+            session, org_id, data["lead_a_id"], sql=_DISQUALIFY, params={}, match="status changed"
+        )
+        audit, _event, lead = await self._trail(session, org_id, data["lead_a_id"])
+
+        assert claim.generation == 0
+        assert lead is not None
+        assert lead.conversion_generation == 1
+        # The audit row names the generation the attempt's ids were derived under, the
+        # generation the lead now derives from, and the claim that ended.
+        assert audit.after["aborted_generation"] == 0
+        assert audit.after["conversion_generation"] == 1
+        assert audit.after["claim_id"] == str(claim.claim_id)
+
+    async def test_an_owner_abort_bumps_exactly_once_and_names_the_old_generation(
+        self, session, org_id, data
+    ) -> None:
+        claim = await self._abort(
+            session,
+            org_id,
+            data["lead_a_id"],
+            sql='UPDATE "lead"."leads" SET owner_id = :owner WHERE id = :id',
+            params={"owner": uuid.uuid4()},
+            match="reassigned",
+        )
+        audit, _event, lead = await self._trail(session, org_id, data["lead_a_id"])
+
+        assert claim.generation == 0
+        assert lead is not None
+        assert lead.conversion_generation == 1  # not 2: the old owner_changed bump is not doubled
+        assert audit.after["aborted_generation"] == 0
+        assert audit.after["conversion_generation"] == 1
+        assert audit.after["claim_id"] == str(claim.claim_id)
+
+    async def test_an_abort_where_status_and_owner_both_moved_bumps_once_and_reports_status_changed(
+        self, session, org_id, data
+    ) -> None:
+        await self._abort(
+            session,
+            org_id,
+            data["lead_a_id"],
+            sql=_DISQUALIFY_AND_REASSIGN,
+            params={"owner": uuid.uuid4()},
+            match="status changed",
+        )
+        audit, event, lead = await self._trail(session, org_id, data["lead_a_id"])
+
+        # `finalize_conversion` reports one reason (status wins) and bumps once, whichever
+        # moved: what makes the retry's ids disjoint is the bump, not the reason.
+        assert event.payload["reason"] == "status_changed"
+        assert lead is not None
+        assert lead.conversion_generation == 1
+        assert audit.after["aborted_generation"] == 0
+        assert audit.after["conversion_generation"] == 1
+
+    async def test_a_second_abort_bumps_again_from_the_new_generation(
+        self, session, org_id, data
+    ) -> None:
+        lead_id = data["lead_a_id"]
+        first = await self._abort(
+            session, org_id, lead_id, sql=_DISQUALIFY, params={}, match="status changed"
+        )
+        await self._requalify(session, lead_id)
+        second = await self._abort(
+            session, org_id, lead_id, sql=_DISQUALIFY, params={}, match="status changed"
+        )
+
+        async with session.begin():
+            lead = await selectors.get_lead(session, org_id, lead_id)
+            audits = (
+                (
+                    await session.execute(
+                        select(AuditLog).where(
+                            AuditLog.action == "lead.conversion_aborted",
+                            AuditLog.entity_id == lead_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert (first.generation, second.generation) == (0, 1)
+        assert lead is not None
+        assert lead.conversion_generation == 2
+        assert sorted(a.after["aborted_generation"] for a in audits) == [0, 1]
+        assert sorted(a.after["conversion_generation"] for a in audits) == [1, 2]
+
+    @pytest.mark.parametrize(
+        ("sql", "params", "match"),
+        [
+            pytest.param(_DISQUALIFY, {}, "status changed", id="status"),
+            pytest.param(
+                'UPDATE "lead"."leads" SET owner_id = :owner WHERE id = :id',
+                {"owner": uuid.uuid4()},
+                "reassigned",
+                id="owner",
+            ),
+        ],
+    )
+    async def test_a_retried_convert_after_any_abort_derives_different_ids(
+        self, session, org_id, data, sql, params, match
+    ) -> None:
+        lead_id = data["lead_a_id"]
+        first = await self._abort(session, org_id, lead_id, sql=sql, params=params, match=match)
+        await self._requalify(session, lead_id)
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+        retry = await services.claim_conversion(session, ctx, lead_id)
+
+        first_ids = (first.company_id, first.contact_id, first.deal_id)
+        retry_ids = (retry.company_id, retry.contact_id, retry.deal_id)
+        assert (first.generation, retry.generation) == (0, 1)
+        assert set(retry_ids).isdisjoint(first_ids)
+        assert retry_ids == domain.conversion_ids(lead_id, 1)
+        assert retry.claim_id != first.claim_id
+
+    async def test_a_stale_claim_stages_no_second_event_and_bumps_nothing(
+        self, session, org_id, data
+    ) -> None:
+        lead_id = data["lead_a_id"]
+        claim_a, claim_b = await self._takeover_then_abort(session, org_id, lead_id)
+        ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
+
+        # A finally answers, still holding the claim B took over: a 409, and nothing written.
+        with pytest.raises(ConflictProblem, match="taken over"):
+            await services.finalize_conversion(
+                session,
+                ctx,
+                lead_id=lead_id,
+                claim_id=claim_a.claim_id,
+                owner_id=claim_a.owner_id,
+                company_id=claim_a.company_id,
+                contact_id=claim_a.contact_id,
+                deal_id=claim_a.deal_id,
+            )
+
+        async with session.begin():
+            lead = await selectors.get_lead(session, org_id, lead_id)
+            events = (
+                (
+                    await session.execute(
+                        select(OutboxEvent).where(
+                            OutboxEvent.event_type == "crm.lead.conversion_aborted",
+                            OutboxEvent.aggregate_id == lead_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            aborted_audits = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(AuditLog)
+                    .where(
+                        AuditLog.action == "lead.conversion_aborted",
+                        AuditLog.entity_id == lead_id,
+                    )
+                )
+            ).scalar_one()
+        assert claim_a.claim_id != claim_b.claim_id
+        assert lead is not None
+        assert lead.conversion_generation == 1  # B's abort bumped once; A's late call did not
+        assert len(events) == 1
+        assert aborted_audits == 1
 
 
 class TestUpdateLeadNeverHoldsTheRowAcrossTheDirectoryCall:

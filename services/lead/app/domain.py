@@ -131,11 +131,12 @@ def conversion_ids(
     coordination needed, and the ids are reproducible from `lead_id` alone even if the first
     attempt's response was lost before this service saw it.
 
-    `generation` is the one stored counter, and it exists for exactly one case: a record an
-    earlier attempt created was deleted afterwards, so its deterministic id can never be
-    reused (`Lead.conversion_generation`). Generation `0` derives exactly the ids this
-    function always has — nothing already handed out changes — and each later generation is a
-    fresh, equally reproducible set.
+    `generation` is the one stored counter (`Lead.conversion_generation`), and it exists so that
+    no attempt's ids are handed out twice. Every aborted conversion bumps it (the lead moved or
+    was reassigned while customer and deal were being asked), and so does customer reporting that
+    a record an earlier attempt created was deleted afterwards, whose deterministic id can never
+    be reused. Generation `0` derives exactly the ids this function always has — nothing already
+    handed out changes — and each later generation is a fresh, equally reproducible set.
     """
     suffix = "" if generation == 0 else f":{generation}"
     return (
