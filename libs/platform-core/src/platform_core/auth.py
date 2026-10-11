@@ -31,7 +31,7 @@ import jwt
 from fastapi import Depends, Request
 from jwt import PyJWKClient
 from pydantic import BaseModel, Field
-from sqlalchemy import Select
+from sqlalchemy import Select, or_
 from sqlalchemy import false as sa_false
 
 from platform_core.config import ServiceSettings
@@ -461,7 +461,8 @@ class ScopeContext(BaseModel):
         them carries a negative-authorization test.
 
         OWN and TEAM compare `own_ref`: the caller's employee link, or their membership id for
-        a product that declared `OwnerSubject.MEMBERSHIP`.
+        a product that declared `OwnerSubject.MEMBERSHIP`. On a membership subject, TEAM also
+        admits the caller's own rows (D-24).
         """
         if self.scope is Scope.ORG:
             return stmt
@@ -481,6 +482,10 @@ class ScopeContext(BaseModel):
                 # `team_col IS NULL`, which would return every unmanaged row in the tenant
                 # instead of nothing.
                 return stmt.where(sa_false())
+            if self.owner_subject is OwnerSubject.MEMBERSHIP:
+                # A manager's own rows stay inside their team scope (D-24): `scope_for`
+                # returns the widest grant only, so a TEAM holder has no OWN grant to fall back on.
+                return stmt.where(or_(owner_col == own, team_col == own))
             return stmt.where(team_col == own)
         if self.scope is Scope.LOCATION:
             if location_col is None:
@@ -502,7 +507,8 @@ class ScopeContext(BaseModel):
         object it could name.
 
         OWN and TEAM compare `own_ref`, exactly as `apply` does; a caller with none passes
-        neither (`None == None` must never admit a row).
+        neither (`None == None` must never admit a row). On a membership subject, TEAM also
+        admits the caller's own row (D-24).
         """
         if self.scope is Scope.ORG:
             return
@@ -511,6 +517,13 @@ class ScopeContext(BaseModel):
             return
         if self.scope is Scope.TEAM and own is not None and team_owner_id == own:
             return
+        if (
+            self.scope is Scope.TEAM
+            and self.owner_subject is OwnerSubject.MEMBERSHIP
+            and own is not None
+            and owner_id == own
+        ):
+            return  # the caller's own row, inside their team scope (D-24)
         if self.scope is Scope.LOCATION:
             if location_code is not None and location_code in self.principal.locations:
                 return
