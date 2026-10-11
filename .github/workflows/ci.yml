@@ -521,7 +521,7 @@ jobs:
         # compose container; this is the same script run from the runner, told where
         # init-db.sql is. The suite needs the broker's management port and MailHog too, which
         # the services above provide.
-        if: matrix.shard == 1
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         run: |
           PGPASSWORD=opsgrids psql -h localhost -U opsgrids -d opsgrids \
             -v ON_ERROR_STOP=1 -v init_sql=tools/dev-bootstrap/init-db.sql \
