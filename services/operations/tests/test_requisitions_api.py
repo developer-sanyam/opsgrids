@@ -11,9 +11,16 @@ import uuid
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
-from app.models import AuditLog, OutboxEvent, PurchaseOrder, PurchaseOrderLine, Supplier
+from app.models import (
+    AuditLog,
+    OutboxEvent,
+    PurchaseOrder,
+    PurchaseOrderLine,
+    PurchaseRequisition,
+    Supplier,
+)
 from platform_core.events import validate_event_schema
 from tests.helpers import as_principal, principal_for
 from tests.receiving_fixtures import (
@@ -189,7 +196,36 @@ class TestCreateAndEdit:
         assert response.status_code == 409
 
 
+class TestNumbering:
+    async def test_numbering_stays_numeric_past_9999(self, client, session, org_id, w) -> None:
+        first = await create(client, org_id, w)
+        year = first["number"].split("-")[1]
+        async with session.begin():
+            await session.execute(
+                update(PurchaseRequisition)
+                .where(PurchaseRequisition.id == uuid.UUID(first["id"]))
+                .values(number=f"PR-{year}-9999")
+            )
+        second = await create(client, org_id, w)
+        third = await create(client, org_id, w)
+        assert (second["number"], third["number"]) == (f"PR-{year}-10000", f"PR-{year}-10001")
+
+
 class TestLifecycle:
+    async def test_a_requester_cannot_approve_or_reject_their_own_requisition(
+        self, client, org_id, w
+    ) -> None:
+        me = principal_for(org_id, [REQ_WRITE, REQ_APPROVE])
+        with as_principal(me):
+            created = await client.post(API + PR, json=req_body(w))
+            rid = created.json()["id"]
+            await client.post(f"{API}{PR}/{rid}/submit", json={})
+            approve = await client.post(f"{API}{PR}/{rid}/approve", json={})
+            reject = await client.post(f"{API}{PR}/{rid}/reject", json={"reason": "no"})
+        assert (approve.status_code, reject.status_code) == (403, 403), approve.text
+        # a different approver still can
+        assert (await move(client, org_id, rid, "approve", [REQ_APPROVE])).status_code == 200
+
     async def test_submit_approve_convert_walks_to_a_draft_purchase_order(
         self, client, session, org_id, w
     ) -> None:

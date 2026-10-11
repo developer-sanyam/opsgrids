@@ -17,7 +17,7 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -43,7 +43,12 @@ from app.receiving.schemas import (
 )
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
-from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
+from platform_core.errors import (
+    ConflictProblem,
+    ForbiddenProblem,
+    NotFoundProblem,
+    ValidationProblem,
+)
 from platform_core.events import publish_event
 
 EVT_REQ_CREATED = "operations.procurement.purchase_requisition.created"
@@ -67,20 +72,7 @@ async def _next_number(session: AsyncSession, org_id: uuid.UUID) -> str:
         text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"{org_id}:pr_number"}
     )
     prefix = f"PR-{date.today().year}-"
-    current_max = (
-        await session.execute(
-            select(func.max(PurchaseRequisition.number)).where(
-                PurchaseRequisition.organization_id == org_id,
-                PurchaseRequisition.number.like(f"{prefix}%"),
-            )
-        )
-    ).scalar_one_or_none()
-    seq = 1
-    if current_max:
-        try:
-            seq = int(current_max.rsplit("-", 1)[-1]) + 1
-        except ValueError:
-            seq = 1
+    seq = await selectors.next_sequence(session, PurchaseRequisition, org_id, prefix)
     return f"{prefix}{seq:04d}"
 
 
@@ -314,6 +306,8 @@ async def _move(
     req = await _lock(session, ctx, req)
     if not domain.can_transition_requisition(req.status, new_status):
         raise ConflictProblem(f"Requisition {req.number} is {req.status} and cannot be {verb}")
+    if decision and req.created_by == str(ctx.principal.sub):
+        raise ForbiddenProblem("A requester cannot decide their own requisition")
     now = datetime.now(UTC)
     req.status = new_status
     req.updated_by = str(ctx.principal.sub)

@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -131,19 +131,7 @@ async def _next_receipt_number(session: AsyncSession, org_id: uuid.UUID) -> str:
         {"key": f"{org_id}:grn_number"},
     )
     prefix = f"GRN-{date.today().year}-"
-    current_max = (
-        await session.execute(
-            select(func.max(GoodsReceipt.number)).where(
-                GoodsReceipt.organization_id == org_id, GoodsReceipt.number.like(f"{prefix}%")
-            )
-        )
-    ).scalar_one_or_none()
-    seq = 1
-    if current_max:
-        try:
-            seq = int(current_max.rsplit("-", 1)[-1]) + 1
-        except ValueError:
-            seq = 1
+    seq = await selectors.next_sequence(session, GoodsReceipt, org_id, prefix)
     return f"{prefix}{seq:04d}"
 
 

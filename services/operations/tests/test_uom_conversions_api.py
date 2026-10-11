@@ -10,9 +10,14 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from app.models import AuditLog, UomConversion
+from app.config import settings
+from app.models import SCHEMA, AuditLog, InventoryItem, UomConversion
+from app.receiving import selectors
+from platform_core.db import TENANT_GUC
 from tests.helpers import as_principal, principal_for
 from tests.receiving_fixtures import (
     API,
@@ -196,6 +201,64 @@ class TestCrud:
 
 
 class TestGuards:
+    async def test_a_conversion_cannot_be_created_for_a_unit_an_open_po_already_received_in(
+        self, client, session, org_id, w
+    ) -> None:
+        # "carton" has no conversion, so the PO's quantity was read as stock units while receiving
+        po_id, lines = await make_po(
+            session,
+            w,
+            [{"sku": "BTN-14MM", "quantity": 10, "uom": "carton", "unit_price_minor": 100}],
+        )
+        with as_principal(principal_for(org_id, list(RECEIVE_PERMS))):
+            posted = await client.post(
+                f"{API}/operations/goods-receipts",
+                json={
+                    "purchase_order_id": str(po_id),
+                    "lines": [{"purchase_order_line_id": str(lines["BTN-14MM"]), "quantity": "4"}],
+                },
+                headers={"Idempotency-Key": uuid.uuid4().hex},
+            )
+        assert posted.status_code == 201, posted.text
+        created = await call(
+            client,
+            org_id,
+            ITEM_WRITE,
+            "POST",
+            url(w.buttons),
+            {"uom": "carton", "numerator": 24, "denominator": 1},
+        )
+        assert created.status_code == 409, created.text
+
+    async def test_changing_a_conversion_takes_the_items_lock_that_receipts_wait_on(
+        self, session, org_id, w
+    ) -> None:
+        engine = create_async_engine(settings().app_dsn)
+        bind = ("SELECT set_config(:g, :o, true)", {"g": TENANT_GUC, "o": str(org_id)})
+        path = f"SET LOCAL search_path = {SCHEMA}, public"
+        try:
+            async with (
+                engine.connect() as holder,
+                engine.connect() as other,
+                holder.begin(),
+                other.begin(),
+            ):
+                for conn in (holder, other):
+                    await conn.execute(text(bind[0]), bind[1])
+                    await conn.execute(text(path))
+                found = await selectors.get_conversion(
+                    AsyncSession(bind=holder), org_id, w.box_conversion_id, for_update=True
+                )
+                assert found is not None
+                with pytest.raises(DBAPIError):
+                    await other.execute(
+                        select(InventoryItem.id)
+                        .where(InventoryItem.id == w.buttons)
+                        .with_for_update(nowait=True)
+                    )
+        finally:
+            await engine.dispose()
+
     async def test_a_conversion_an_open_po_orders_in_cannot_be_deleted(
         self, client, session, org_id, w
     ) -> None:
@@ -235,6 +298,7 @@ class TestGuards:
                         }
                     ],
                 },
+                headers={"Idempotency-Key": uuid.uuid4().hex},
             )
         assert posted.status_code == 201, posted.text
         changed = await call(
@@ -278,6 +342,7 @@ class TestGuards:
                         }
                     ],
                 },
+                headers={"Idempotency-Key": uuid.uuid4().hex},
             )
         assert posted.json()["lines"][0]["received_qty"] == "24"
         await call(

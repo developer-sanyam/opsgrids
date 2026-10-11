@@ -51,7 +51,11 @@ def test_the_event_name_is_the_receiving_contract() -> None:
 async def receive(client, org_id, po_id, *lines, **extra):  # type: ignore[no-untyped-def]
     payload = {"purchase_order_id": str(po_id), "lines": list(lines), **extra}
     with as_principal(principal_for(org_id, list(RECEIVE_PERMS))):
-        response = await client.post(API + "/operations/goods-receipts", json=payload)
+        response = await client.post(
+            API + "/operations/goods-receipts",
+            json=payload,
+            headers={"Idempotency-Key": uuid.uuid4().hex},
+        )
     assert response.status_code == 201, response.text
     return response.json()
 

@@ -14,7 +14,9 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.config import settings
 from app.inventory.quantity import format_qty
 from app.inventory.reconcile import reconcile_organization
 from app.models import (
@@ -71,7 +73,7 @@ def body(po_id: uuid.UUID, *lines, **extra):  # type: ignore[no-untyped-def]
 
 
 async def post(client, org_id, payload, *, key: str | None = None, perms=RECEIVE_PERMS):  # type: ignore[no-untyped-def]
-    headers = {"Idempotency-Key": key} if key else {}
+    headers = {"Idempotency-Key": key or uuid.uuid4().hex}
     with as_principal(principal_for(org_id, list(perms))):
         return await client.post(API + GRN, json=payload, headers=headers)
 
@@ -131,6 +133,41 @@ def buttons_line(qty: int = 100, uom: str = "pcs", price: int = 245_00) -> dict:
 
 
 class TestExactPartialAndShort:
+    async def test_receipt_numbering_stays_numeric_past_9999(
+        self, client, session, org_id, w
+    ) -> None:
+        po_id, lines = await make_po(session, w, [buttons_line(100)])
+        first = await post(client, org_id, body(po_id, line(lines["BTN-14MM"], "10")))
+        year = first.json()["number"].split("-")[1]
+        # Receipts are append-only for the app role, so move the counter as the schema owner.
+        admin = create_async_engine(settings().admin_dsn)
+        async with admin.begin() as conn:
+            await conn.execute(
+                update(GoodsReceipt)
+                .where(GoodsReceipt.id == uuid.UUID(first.json()["id"]))
+                .values(number=f"GRN-{year}-9999")
+            )
+        await admin.dispose()
+        second = await post(client, org_id, body(po_id, line(lines["BTN-14MM"], "10")))
+        assert second.status_code == 201, second.text
+        third = await post(client, org_id, body(po_id, line(lines["BTN-14MM"], "10")))
+        assert third.status_code == 201, third.text
+        assert (second.json()["number"], third.json()["number"]) == (
+            f"GRN-{year}-10000",
+            f"GRN-{year}-10001",
+        )
+
+    async def test_a_receipt_without_an_idempotency_key_is_refused(
+        self, client, session, org_id, w
+    ) -> None:
+        po_id, lines = await make_po(session, w, [buttons_line(100)])
+        with as_principal(principal_for(org_id, list(RECEIVE_PERMS))):
+            response = await client.post(
+                API + GRN, json=body(po_id, line(lines["BTN-14MM"], "100"))
+            )
+        assert response.status_code == 422, response.text
+        assert await bucket(session, org_id, w.buttons, w.t.weaving) == 0
+
     async def test_an_exact_receipt_books_the_stock_and_completes_the_po(
         self, client, session, org_id, w
     ) -> None:

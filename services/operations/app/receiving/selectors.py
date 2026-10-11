@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import BigInteger, Select, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.inventory import quantity
@@ -125,7 +125,8 @@ async def get_conversion(
         )
     )
     if for_update:
-        stmt = stmt.with_for_update(of=UomConversion)
+        # the item too: receipts lock it before reading ratios, so a change waits for them
+        stmt = stmt.with_for_update(of=(UomConversion, InventoryItem))
     row = (await session.execute(stmt)).one_or_none()
     return (row[0], row[1], row[2]) if row else None
 
@@ -680,3 +681,16 @@ async def receiving_context(
         can_receive=po.status in ("approved", "partially_received"),
         lines=out,
     )
+
+
+async def next_sequence(session: AsyncSession, model: Any, org_id: uuid.UUID, prefix: str) -> int:
+    """Next number for `{prefix}{seq}`: the max compared as an integer, because as text "9999"
+    sorts above "10000". Call under the per-organization advisory lock."""
+    current = (
+        await session.execute(
+            select(func.max(cast(func.substr(model.number, len(prefix) + 1), BigInteger))).where(
+                model.organization_id == org_id, model.number.op("~")(f"^{prefix}[0-9]+$")
+            )
+        )
+    ).scalar_one_or_none()
+    return (current or 0) + 1

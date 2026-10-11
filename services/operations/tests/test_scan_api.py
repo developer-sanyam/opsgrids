@@ -11,6 +11,7 @@ from urllib.parse import quote
 import pytest
 
 from tests.helpers import as_principal, principal_for
+from tests.receiving_fixtures import PO_WRITE, RECEIPT_WRITE, RECEIVE_PERMS, STOCK_RECEIVE
 from tests.tracking_fixtures import (
     API,
     LOT_WRITE,
@@ -155,6 +156,18 @@ class TestCodesWithAwkwardCharacters:
 
 
 class TestAllowedActions:
+    async def test_receive_follows_the_receiving_permissions_not_purchase_order_write(
+        self, client, world
+    ) -> None:
+        async def actions(*perms: str) -> list[str]:
+            body = (await scan(client, world.org_id, "og:item:COT-180-NAVY", perms=perms)).json()
+            return body["allowed_actions"]
+
+        assert "receive" in await actions(STOCK_READ, *RECEIVE_PERMS)
+        assert "receive" not in await actions(STOCK_READ, PO_WRITE)
+        assert "receive" not in await actions(STOCK_READ, RECEIPT_WRITE)
+        assert "receive" not in await actions(STOCK_READ, STOCK_RECEIVE)
+
     async def test_actions_follow_the_callers_permissions(self, client, world) -> None:
         bare = (await scan(client, world.org_id, "og:roll:R-1")).json()
         assert bare["allowed_actions"] == ["view"]

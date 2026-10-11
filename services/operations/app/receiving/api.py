@@ -16,12 +16,11 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 
 from app import selectors as po_selectors
 from app.api.routes import (
     Entitled,
-    IdempotencyKey,
     InventoryRead,
     InventoryWrite,
     PoWrite,
@@ -54,6 +53,12 @@ from platform_core.errors import NotFoundProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
 router = APIRouter(tags=["receiving"])
+
+#: A receipt posts stock, so a retry must be a replay: the header is not optional here.
+RequiredIdempotencyKey = Annotated[
+    str,
+    Header(alias="Idempotency-Key", min_length=1, max_length=128, description="Required."),
+]
 
 ReqRead = Annotated[ScopeContext, Depends(require("operations.procurement.requisition.read"))]
 ReqWrite = Annotated[ScopeContext, Depends(require("operations.procurement.requisition.write"))]
@@ -362,7 +367,7 @@ async def post_goods_receipt(
     ctx: ReceiptWrite,
     stock_ctx: StockReceive,
     request: Request,
-    idempotency_key: IdempotencyKey = None,
+    idempotency_key: RequiredIdempotencyKey,
 ) -> GoodsReceiptOut:
     del stock_ctx  # its job is the permission check
     receipt, _move, replayed, _entries = await receipts.post_goods_receipt(

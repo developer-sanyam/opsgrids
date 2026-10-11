@@ -62,6 +62,18 @@ async def _open_lines_using(
     return [ln for ln in rows if ln.uom.strip() and quantity.canonical_uom_code(ln.uom) == code]
 
 
+async def _refuse_if_received(
+    session: AsyncSession, org_id: uuid.UUID, item: InventoryItem, code: str
+) -> None:
+    """A ratio that appears or changes after an open PO received in that unit would re-interpret
+    the quantity already booked."""
+    if any(ln.received_milli > 0 for ln in await _open_lines_using(session, org_id, item, code)):
+        raise ConflictProblem(
+            f"An open purchase order already received against {item.sku} in {code}; "
+            "changing the ratio now would re-interpret what it has received"
+        )
+
+
 async def create_conversion(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -87,6 +99,7 @@ async def create_conversion(
         numerator, denominator = domain.reduce_ratio(payload.numerator, payload.denominator)
     except quantity.QuantityError as exc:  # pragma: no cover - the schema already bounds both
         raise _unit_error(str(exc), "invalid_ratio") from exc
+    await _refuse_if_received(session, org_id, item, code)
     uom = await inv_services.resolve_or_create_uom(session, org_id, code, str(ctx.principal.sub))
     row_id = (
         await session.execute(
@@ -153,16 +166,7 @@ async def update_conversion(
     denominator = payload.denominator if payload.denominator is not None else row.denominator
     numerator, denominator = domain.reduce_ratio(numerator, denominator)
     if (numerator, denominator) != (row.numerator, row.denominator):
-        started = [
-            ln
-            for ln in await _open_lines_using(session, ctx.organization_id, item, uom.code)
-            if ln.received_milli > 0
-        ]
-        if started:
-            raise ConflictProblem(
-                f"An open purchase order already received against {item.sku} in {uom.code}; "
-                "changing the ratio now would re-interpret what it has received"
-            )
+        await _refuse_if_received(session, ctx.organization_id, item, uom.code)
     before = _snapshot(item, uom.code, row.numerator, row.denominator)
     row.numerator, row.denominator = numerator, denominator
     await session.flush()

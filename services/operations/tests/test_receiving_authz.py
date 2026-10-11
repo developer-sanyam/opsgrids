@@ -76,6 +76,7 @@ async def ids(client, session, org_id) -> Ids:
                 "purchase_order_id": str(po_id),
                 "lines": [{"purchase_order_line_id": str(lines["BTN-14MM"]), "quantity": "10"}],
             },
+            headers={"Idempotency-Key": uuid.uuid4().hex},
         )
     assert posted.status_code == 201, posted.text
     return Ids(
@@ -237,7 +238,12 @@ def _call(client, i: Ids, spec: Spec, perms: list[str], org: uuid.UUID):  # type
 
     async def run():  # type: ignore[no-untyped-def]
         with as_principal(principal_for(org, perms)):
-            return await client.request(method, API + path, json=json_body)
+            return await client.request(
+                method,
+                API + path,
+                json=json_body,
+                headers={"Idempotency-Key": uuid.uuid4().hex},
+            )
 
     return run()
 

@@ -33,7 +33,10 @@ from app.models import InventoryItem, Location, Lot, Roll, Warehouse
 from platform_core.auth import Principal
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 
-_ActionRule = tuple[ScanAction, str]
+_ActionRule = tuple[ScanAction, str | tuple[str, ...]]
+
+#: Receiving posts a goods receipt, which needs both of these (see app/receiving/api.py).
+_RECEIVE = ("operations.procurement.receipt.write", "operations.inventory.stock.receive")
 
 #: Which permission each action needs, per type. The server never *performs* an action here — it
 #: only tells the UI which buttons to draw; every action's own endpoint enforces its permission.
@@ -42,7 +45,7 @@ _RULES: dict[ScanType, tuple[_ActionRule, ...]] = {
         ("transfer", "operations.inventory.stock.transfer"),
         ("status_change", "operations.inventory.stock.transfer"),
         ("issue", "operations.inventory.stock.adjust"),
-        ("receive", "operations.procurement.purchase_order.write"),
+        ("receive", _RECEIVE),
         ("pick", "operations.fulfilment.task.execute"),
         ("inspect", "operations.quality.inspection.inspect"),
     ),
@@ -59,14 +62,18 @@ _RULES: dict[ScanType, tuple[_ActionRule, ...]] = {
     ),
     "location": (
         ("count", "operations.inventory.count.execute"),
-        ("receive", "operations.procurement.purchase_order.write"),
+        ("receive", _RECEIVE),
     ),
 }
 
 
 def allowed_actions(type_: ScanType, principal: Principal) -> list[ScanAction]:
     actions: list[ScanAction] = ["view"]
-    actions.extend(action for action, perm in _RULES[type_] if principal.has(perm))
+    actions.extend(
+        action
+        for action, perm in _RULES[type_]
+        if all(principal.has(p) for p in ((perm,) if isinstance(perm, str) else perm))
+    )
     return actions
 
 
