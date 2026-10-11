@@ -59,8 +59,10 @@ from platform_core.errors import (
 )
 from platform_core.internal_auth import (
     ADMIN_HOP_HEADER,
+    FORWARDED_HEADERS,
     GATEWAY_AUDIENCE,
     canonical_query,
+    forwarded_headers_digest,
     mint_service_token,
     sign_admin_hop,
 )
@@ -94,25 +96,10 @@ HOP_BY_HOP = frozenset(
 #: (BLOCKER 2 of the 2026-09-24 security review). Stripping it on *every* gateway — not only
 #: app-gateway — is what makes "app-gateway strips it inbound" true without a second,
 #: gateway-specific list to keep in sync with this one.
-SPOOFABLE = frozenset(
-    {
-        "x-internal-token",
-        "x-user-id",
-        "x-org-id",
-        "x-membership-id",
-        "x-subject-ref",
-        "x-roles",
-        "x-perms",
-        "x-entitlements",
-        "x-locations",
-        "x-amr",
-        "x-permission-version",
-        "x-session-id",
-        "x-audience",
-        "x-org-slug",
-        ADMIN_HOP_HEADER,
-    }
-)
+#:
+#: Every header the hop token binds (`FORWARDED_HEADERS`) is here by construction, so the two
+#: lists cannot drift apart.
+SPOOFABLE = frozenset({"x-internal-token", ADMIN_HOP_HEADER, *FORWARDED_HEADERS})
 
 #: Request headers dropped from a forwarded provider webhook (`GatewayPolicy.webhook_paths`):
 #: everything that only a browser session carries. `access-control-request-*` is matched by
@@ -606,6 +593,10 @@ def build_gateway(
             await enforce_rate_limit(bucket, limit=limit)
             if (slug := _slug_from_host(request)) is not None:
                 headers["x-org-slug"] = slug
+            # A hop that names nobody: it binds only the visitor's address and the slug, so a
+            # service recording where an anonymous request came from (a password reset) can
+            # believe it.
+            _sign_forwarded(headers, request, settings)
             return await _forward(request, route, headers, policy, full_path, settings)
 
         authorization = request.headers.get("Authorization", "")
@@ -650,18 +641,6 @@ def build_gateway(
         headers["x-user-id"] = str(claims["sub"])
         headers["x-org-id"] = org_id
         headers["x-audience"] = policy.audience
-        # The hop credential. Never the raw signing secret — that used to travel here on
-        # every request, and one header capture was a forever-valid key that could forge any
-        # identity against any service *and* mint `/internal/v1` tokens. What travels now is
-        # derived, expiring, channel-audienced (so it opens no internal endpoint), and bound
-        # to the one identity being forwarded: `_principal_from_gateway` refuses identity
-        # headers the token does not vouch for.
-        headers["x-internal-token"] = mint_service_token(
-            settings,
-            audience=GATEWAY_AUDIENCE,
-            caller="gateway",
-            claims={"uid": str(claims["sub"]), "org": org_id},
-        )
         for claim, header in (
             ("mem", "x-membership-id"),
             ("sref", "x-subject-ref"),
@@ -716,7 +695,32 @@ def build_gateway(
 
             headers["x-perms"] = ",".join(grants)
 
+        # Last, once every forwarded header is written — the token binds their digest.
+        _sign_forwarded(headers, request, settings, uid=str(claims["sub"]), org=org_id)
         return await _forward(request, route, headers, policy, full_path, settings)
+
+
+def _sign_forwarded(
+    headers: dict[str, str], request: Request, settings: ServiceSettings, **identity: str
+) -> None:
+    """Write the visitor's address and the hop credential.
+
+    Never the raw signing secret — that used to travel here on every request, and one header
+    capture was a forever-valid key that could forge any identity against any service *and*
+    mint `/internal/v1` tokens. What travels now is derived, expiring, channel-audienced (so it
+    opens no internal endpoint), and bound to what is being forwarded: the `uid`/`org` it names
+    and a digest of every `FORWARDED_HEADERS` value (`fwd`), so `_principal_from_gateway`
+    refuses a capture replayed with an escalated `X-Perms` or `X-Audience`.
+    """
+    if request.client is not None:
+        # Already the real visitor: `TrustForwardedForFromPrivatePeers` rewrote the peer.
+        headers["x-client-ip"] = request.client.host
+    headers["x-internal-token"] = mint_service_token(
+        settings,
+        audience=GATEWAY_AUDIENCE,
+        caller="gateway",
+        claims={**identity, "fwd": forwarded_headers_digest(headers)},
+    )
 
 
 def _normalize_path(raw: str) -> str:
@@ -902,13 +906,21 @@ async def _forward(
         response_headers = {
             k: v for k, v in response_headers.items() if not _is_cross_origin_response_header(k)
         }
+    # `items()` comma-joins repeated headers, which turns two cookies into one malformed one; each
+    # Set-Cookie must reach the browser as its own header line.
+    # (A webhook reply already lost its Set-Cookie above, so the pop finds none and adds none.)
+    cookies = (
+        upstream.headers.get_list("set-cookie") if response_headers.pop("set-cookie", None) else []
+    )
     body = await upstream.aread()
-    return Response(
+    response = Response(
         content=body,
         status_code=upstream.status_code,
         headers=response_headers,
         background=BackgroundTask(upstream.aclose),
     )
+    response.raw_headers.extend((b"set-cookie", c.encode("latin-1")) for c in cookies)
+    return response
 
 
 async def _send_riding_out_restarts(

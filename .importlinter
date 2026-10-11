@@ -81,6 +81,124 @@ forbidden_modules =
     app.fulfilment
     app.dispatch
 
+# Phase 5: manufacturing is a package with the same anatomy inside it, and it reaches stock only
+# through `app.inventory.ledger` (never the tables). It sits beside `inventory`, not under it, and
+# nothing else imports it but `app.main`, which mounts its router.
+[importlinter:contract:manufacturing-layers]
+name = operations manufacturing package: the same anatomy inside the package
+type = layers
+layers =
+    (app.manufacturing.api)
+    (app.manufacturing.services) | (app.manufacturing.bom_services)
+    (app.manufacturing.common)
+    (app.manufacturing.selectors)
+    (app.manufacturing.schemas)
+    (app.manufacturing.domain)
+    (app.manufacturing.models)
+
+[importlinter:contract:manufacturing-boundary]
+name = manufacturing must not import fulfilment, dispatch, orders, counting or channels
+type = forbidden
+source_modules =
+    app.manufacturing
+forbidden_modules =
+    app.fulfilment
+    app.dispatch
+    app.orders
+    app.counting
+    app.channels
+
+[importlinter:contract:mrp-layers]
+name = operations MRP package: the same anatomy inside the package
+type = layers
+layers =
+    (app.mrp.sweep) | (app.mrp.api)
+    (app.mrp.services)
+    (app.mrp.selectors)
+    (app.mrp.schemas)
+    (app.mrp.domain)
+    (app.mrp.models)
+
+# MRP reads orders, balances, POs and production orders through their *tables* (`app.models`,
+# `app.manufacturing.models`) and plans with manufacturing's pure arithmetic; it writes only its
+# own tables and never moves stock, so it needs neither the stock kernel nor any workflow module.
+[importlinter:contract:mrp-boundary]
+name = MRP must not import the ledger, fulfilment, dispatch, orders, counting or channels
+type = forbidden
+source_modules =
+    app.mrp
+forbidden_modules =
+    app.inventory.ledger
+    app.fulfilment
+    app.dispatch
+    app.orders
+    app.counting
+    app.channels
+# MRP raises purchase requisitions through `app.receiving.requisitions`, which only *reads* items
+# (`load_items`) and imports `app.services`. The two ignored edges are the only routes to the ledger
+# from there: that read helper, and `app.services`' lazy whole-PO receive. MRP calls neither.
+ignore_imports =
+    app.receiving.requisitions -> app.inventory.stock_ops
+    app.services -> app.receiving.receipts
+
+# Phases 2-8 follow the manufacturing/MRP shape: a package with the service anatomy inside it. The
+# workflow modules (`reservations`, `transfers`, `receipts`, ...) are the writes; each package's
+# selectors read, its schemas and domain sit below, and nothing below imports upward. `sweep` and
+# `api` are separate entrypoints that must not import each other.
+[importlinter:contract:movements-layers]
+name = operations movements package: the same anatomy inside the package
+type = layers
+# `adjustments` settles a transfer's pending shortage through `transfers`, which imports
+# `adjustments` at the top; the call is a lazy import inside the function (a top-level one would
+# be a cycle), so the dependency is real but one-way at runtime.
+ignore_imports =
+    app.movements.adjustments -> app.movements.transfers
+layers =
+    (app.movements.sweep) | (app.movements.api)
+    (app.movements.transfers)
+    (app.movements.adjustments) | (app.movements.reservations)
+    (app.movements.common)
+    (app.movements.selectors)
+    (app.movements.schemas)
+    (app.movements.domain)
+
+[importlinter:contract:receiving-layers]
+name = operations receiving package: the same anatomy inside the package
+type = layers
+# `app.receiving.requisitions` reaches `receipts` through `app.services.receive_purchase_order`,
+# which imports it lazily inside the function (a top-level import would be a cycle); the
+# dependency is real but one-way at runtime, so it is not a layer violation.
+ignore_imports =
+    app.services -> app.receiving.receipts
+layers =
+    (app.receiving.api)
+    (app.receiving.receipts) | (app.receiving.requisitions) | (app.receiving.conversions)
+    (app.receiving.selectors)
+    (app.receiving.schemas)
+    (app.receiving.domain)
+
+[importlinter:contract:quality-layers]
+name = operations quality package: the same anatomy inside the package
+type = layers
+layers =
+    (app.quality.api)
+    (app.quality.handoff)
+    (app.quality.services)
+    (app.quality.selectors)
+    (app.quality.schemas)
+    (app.quality.domain)
+
+[importlinter:contract:jobwork-layers]
+name = operations job work package: the same anatomy inside the package
+type = layers
+layers =
+    (app.jobwork.sweep) | (app.jobwork.api)
+    (app.jobwork.services)
+    (app.jobwork.numbering)
+    (app.jobwork.selectors)
+    (app.jobwork.schemas)
+    (app.jobwork.domain)
+
 [importlinter:contract:service-layers]
 name = the service anatomy, enforced: nothing imports upward, no cycles
 type = layers

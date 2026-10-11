@@ -48,6 +48,8 @@ class World:
     #: A second bin in the weaving warehouse (same warehouse as `t.weaving`).
     bin_b: uuid.UUID
     warehouse_weave: uuid.UUID
+    #: The finishing warehouse (`WH-FIN`), whose default bin is `t.finishing`.
+    warehouse_fin: uuid.UUID
     lot: uuid.UUID
     roll: uuid.UUID  # 82.5 m / 14.8 kg, opened into `t.weaving`
     lot_no: str
@@ -120,12 +122,20 @@ async def build_world(session: AsyncSession, org_id: uuid.UUID, *, open_roll: bo
             )
         bin_b_id = bin_b.id
         warehouse_id = warehouse.id
+        warehouse_fin_id = (
+            await session.execute(
+                select(Warehouse.id).where(
+                    Warehouse.organization_id == org_id, Warehouse.code == "WH-FIN"
+                )
+            )
+        ).scalar_one()
     assert isinstance(bin_b_id, uuid.UUID)
     return World(
         t=t,
         org_id=org_id,
         bin_b=bin_b_id,
         warehouse_weave=warehouse_id,
+        warehouse_fin=warehouse_fin_id,
         lot=lot.id,
         roll=roll.id,
         lot_no="LOT-A",

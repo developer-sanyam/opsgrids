@@ -155,6 +155,15 @@
       "resource": "worker"
     },
     {
+      "action": "configure",
+      "default_scope": "ORG",
+      "description": "Set the quantity thresholds above which transfers and adjustments need approval",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "control"
+    },
+    {
       "action": "execute",
       "default_scope": "ORG",
       "description": "Submit a counted quantity on a line in an active count session",
@@ -189,6 +198,24 @@
       "max_scope": "ORG",
       "module": "inventory",
       "resource": "count"
+    },
+    {
+      "action": "export",
+      "default_scope": "ORG",
+      "description": "Export inventory lists (items, locations, lots, rolls, stock, ledger) to a file",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "data"
+    },
+    {
+      "action": "import",
+      "default_scope": "ORG",
+      "description": "Bulk-import items, locations, lots, rolls and opening stock from a file",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "data"
     },
     {
       "action": "read",
@@ -281,6 +308,15 @@
       "resource": "stock"
     },
     {
+      "action": "receive",
+      "default_scope": "ORG",
+      "description": "Bring purchased stock onto the books through a goods receipt",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "stock"
+    },
+    {
       "action": "reconcile",
       "default_scope": "ORG",
       "description": "Check the stock ledger against balances and resolve discrepancies",
@@ -308,6 +344,42 @@
       "resource": "stock"
     },
     {
+      "action": "approve",
+      "default_scope": "ORG",
+      "description": "Approve or reject an inter-warehouse transfer directly",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "transfer"
+    },
+    {
+      "action": "dispatch",
+      "default_scope": "ORG",
+      "description": "Dispatch an approved transfer: stock leaves the source warehouse for in-transit",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "transfer"
+    },
+    {
+      "action": "receive",
+      "default_scope": "ORG",
+      "description": "Receive a transfer into the destination warehouse, and record any shortage",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "transfer"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Draft, edit, request and cancel inter-warehouse transfers",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "inventory",
+      "resource": "transfer"
+    },
+    {
       "action": "read",
       "default_scope": "ORG",
       "description": "See warehouses",
@@ -324,6 +396,150 @@
       "max_scope": "ORG",
       "module": "inventory",
       "resource": "warehouse"
+    },
+    {
+      "action": "approve",
+      "default_scope": "ORG",
+      "description": "Approve a draft job-work order, and close one once its reconciliation balances",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "jobwork",
+      "resource": "order"
+    },
+    {
+      "action": "issue",
+      "default_scope": "ORG",
+      "description": "Send an approved order's materials to the vendor: move the stock, cut the delivery challan and request an e-way bill",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "jobwork",
+      "resource": "order"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See job-work orders, their materials, receipts, challans and reconciliation",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "jobwork",
+      "resource": "order"
+    },
+    {
+      "action": "receive",
+      "default_scope": "ORG",
+      "description": "Take material back from the vendor \u2014 good, rejected or declared short",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "jobwork",
+      "resource": "order"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Draft, edit and cancel (before issue) job-work orders",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "jobwork",
+      "resource": "order"
+    },
+    {
+      "action": "publish",
+      "default_scope": "ORG",
+      "description": "Publish a draft BOM version (immutable from then on) or retire a published one",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "bom"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See BOMs, their versions and explosions",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "bom"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Create BOMs, edit draft versions and their components and substitutes, and set wastage thresholds",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "bom"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See MRP runs, the demand they planned from and their shortage tables",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "mrp"
+    },
+    {
+      "action": "requisition",
+      "default_scope": "ORG",
+      "description": "Request purchase requisitions for the purchased-item shortages of an MRP run",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "mrp"
+    },
+    {
+      "action": "run",
+      "default_scope": "ORG",
+      "description": "Start an MRP run over open orders, open production and manual demand",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "mrp"
+    },
+    {
+      "action": "approve",
+      "default_scope": "ORG",
+      "description": "Approve a production order, committing it to stock reservation and issue",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "production_order"
+    },
+    {
+      "action": "complete",
+      "default_scope": "ORG",
+      "description": "Record good output into finished goods and complete an order",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "production_order"
+    },
+    {
+      "action": "issue",
+      "default_scope": "ORG",
+      "description": "Start an order, reserve and issue its material to WIP, return unused material and write off wastage",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "production_order"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See production orders, their materials, WIP, outputs, wastage and variance",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "production_order"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Plan and edit draft production orders, choose substitutes, and cancel an order",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "manufacturing",
+      "resource": "production_order"
     },
     {
       "action": "accept",
@@ -454,6 +670,51 @@
     {
       "action": "read",
       "default_scope": "ORG",
+      "description": "See goods receipts and what can still be received against a purchase order",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "receipt"
+    },
+    {
+      "action": "write",
+      "default_scope": "ORG",
+      "description": "Post a goods receipt against a purchase order: partial, short or over-receipt within the item's tolerance (also needs inventory.stock.receive)",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "receipt"
+    },
+    {
+      "action": "approve",
+      "default_scope": "ORG",
+      "description": "Approve or reject a submitted purchase requisition",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "requisition"
+    },
+    {
+      "action": "read",
+      "default_scope": "OWN",
+      "description": "See purchase requisitions",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "requisition"
+    },
+    {
+      "action": "write",
+      "default_scope": "OWN",
+      "description": "Raise, edit, submit and cancel purchase requisitions; convert an approved one into a purchase order (which also needs purchase_order.write)",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "procurement",
+      "resource": "requisition"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
       "description": "See the supplier directory",
       "is_dangerous": false,
       "max_scope": "ORG",
@@ -468,6 +729,42 @@
       "max_scope": "ORG",
       "module": "procurement",
       "resource": "supplier"
+    },
+    {
+      "action": "approve",
+      "default_scope": "ORG",
+      "description": "Release held stock to available (all or part), and manage QC templates",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "quality",
+      "resource": "inspection"
+    },
+    {
+      "action": "inspect",
+      "default_scope": "ORG",
+      "description": "Open inspections (putting stock on quality hold), record readings, hold or send stock for rework",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "quality",
+      "resource": "inspection"
+    },
+    {
+      "action": "read",
+      "default_scope": "ORG",
+      "description": "See QC templates, inspections and their results",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "quality",
+      "resource": "inspection"
+    },
+    {
+      "action": "reject",
+      "default_scope": "ORG",
+      "description": "Reject held stock, and return it to the vendor or scrap it",
+      "is_dangerous": true,
+      "max_scope": "ORG",
+      "module": "quality",
+      "resource": "inspection"
     },
     {
       "action": "read",
@@ -591,6 +888,10 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.control.configure",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.count.execute",
           "scope": "ORG"
         },
@@ -604,6 +905,14 @@
         },
         {
           "code": "operations.inventory.count.review",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.data.export",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.data.import",
           "scope": "ORG"
         },
         {
@@ -647,6 +956,10 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.stock.receive",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.stock.reconcile",
           "scope": "ORG"
         },
@@ -659,11 +972,91 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.transfer.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.dispatch",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.receive",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.warehouse.read",
           "scope": "ORG"
         },
         {
           "code": "operations.inventory.warehouse.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.issue",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.receive",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.bom.publish",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.bom.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.bom.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.requisition",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.run",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.complete",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.issue",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.write",
           "scope": "ORG"
         },
         {
@@ -723,11 +1116,47 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.procurement.receipt.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.receipt.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.procurement.supplier.read",
           "scope": "ORG"
         },
         {
           "code": "operations.procurement.supplier.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.inspect",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.reject",
           "scope": "ORG"
         },
         {
@@ -758,7 +1187,7 @@
     {
       "code": "OPERATIONS_MANAGER",
       "cross_product": false,
-      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers lots and rolls, splits and merges rolls, moves stock between bins and statuses, and reads stock and the ledger (ADR-0014 Phase 1). Takes and refunds orders' online payments and reads the payment reconciliation. Does not create or rename warehouses, or connect or change the organization's payment-provider account \u2014 those stay with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
+      "description": "Raises, approves and receives purchase orders org-wide; maintains suppliers and inventory (including stock adjustments); reads warehouses. Accepts, cancels and hands over customer orders \u2014 the stock-commitment, stock-release and billing-gate steps \u2014 on top of the ordinary counter work every Operations user does, and hands orders to a carrier (the same billing gate, on the delivery path). Opens, reviews and closes cycle counts and approves the discrepancies they raise (ADR-0026). Registers lots and rolls, splits and merges rolls, moves stock between bins and statuses, and reads stock and the ledger (ADR-0014 Phase 1). Approves purchase requisitions and posts goods receipts \u2014 partial, short and over-receipt within tolerance (Phase 2). Drafts, approves, dispatches and receives inter-warehouse transfers (Phase 3); does not set the approval thresholds \u2014 that stays with the admin. Runs quality: inspects, releases and rejects held stock, and defines QC templates (Phase 4). Runs job work end to end: drafts, approves, issues material to a vendor, receives it back and closes the order once it reconciles. Exports the inventory lists (ADR-0027) \u2014 bulk import is dangerous and stays with the admin. Takes and refunds orders' online payments and reads the payment reconciliation. Does not create or rename warehouses, or connect or change the organization's payment-provider account \u2014 those stay with the admin. Creates floors and edits a draft layout's placements and walk graph, but does not publish one \u2014 a floor plan going live is as dangerous as it gets here, so that stays with the admin too.",
       "grants": [
         {
           "code": "operations.automation.alert.manage",
@@ -837,6 +1266,10 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.data.export",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.item.read",
           "scope": "ORG"
         },
@@ -869,6 +1302,10 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.stock.receive",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.stock.reserve",
           "scope": "ORG"
         },
@@ -877,7 +1314,87 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.transfer.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.dispatch",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.receive",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.issue",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.receive",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.jobwork.order.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.bom.publish",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.bom.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.bom.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.requisition",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.run",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.complete",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.issue",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.write",
           "scope": "ORG"
         },
         {
@@ -933,11 +1450,47 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.procurement.receipt.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.receipt.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.write",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.procurement.supplier.read",
           "scope": "ORG"
         },
         {
           "code": "operations.procurement.supplier.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.approve",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.inspect",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.reject",
           "scope": "ORG"
         },
         {
@@ -962,9 +1515,97 @@
       "name": "Procurement manager"
     },
     {
+      "code": "PRODUCTION_PLANNER",
+      "cross_product": false,
+      "description": "Plans production: maintains BOMs (drafts, components, substitutes) and wastage thresholds, plans production orders, and runs them \u2014 reserves and issues material to WIP, records output and wastage, returns what is unused and completes the order. Runs MRP and requests purchase requisitions for its shortages. Reads items, warehouses and locations. Does not publish a BOM version or approve an order \u2014 those two commit the business and stay with the manager and admin.",
+      "grants": [
+        {
+          "code": "operations.inventory.item.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.location.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.bom.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.bom.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.requisition",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.mrp.run",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.complete",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.issue",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.manufacturing.production_order.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Production planner"
+    },
+    {
+      "code": "QC_INSPECTOR",
+      "cross_product": false,
+      "description": "Inspects stock: sees QC templates and inspections, opens an inspection (which puts the quantity on quality hold), records readings, and keeps stock on hold or sends it for rework. Does not release or reject stock, or define templates \u2014 those are `approve` and `reject`, held by the manager and the admin, so the person measuring is never the person who decides (inventory plan Phase 4).",
+      "grants": [
+        {
+          "code": "operations.inventory.item.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.location.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.inspect",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.quality.inspection.read",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Quality inspector"
+    },
+    {
       "code": "OPERATIONS_WORKER",
       "cross_product": false,
-      "description": "The picker/packer role the worker PWA authenticates as (plan F3). Sees the task board and the worker roster read-only, executes only the tasks offered or accepted to them (`task.execute` tops out at OWN \u2014 even this role cannot execute another worker's task), sets their own presence, and confirms packages. Counts lines in whichever count session is open for their warehouse (ADR-0026) \u2014 never opens, reviews or closes one; that stays with the dispatcher (`OPERATIONS_MANAGER`). Moves stock between bins, puts stock on hold (a status change *into* quality hold, quarantine, damaged, rejected or blocked) but cannot release it back to available \u2014 that needs stock adjustment \u2014 and reads stock by location, lot and roll; does not register, split or merge lots or rolls. Does not offer, reassign or override a task either.",
+      "description": "The picker/packer role the worker PWA authenticates as (plan F3). Sees the task board and the worker roster read-only, executes only the tasks offered or accepted to them (`task.execute` tops out at OWN \u2014 even this role cannot execute another worker's task), sets their own presence, and confirms packages. Counts lines in whichever count session is open for their warehouse (ADR-0026) \u2014 never opens, reviews or closes one; that stays with the dispatcher (`OPERATIONS_MANAGER`). Moves stock between bins, puts stock on hold (a status change *into* quality hold, quarantine, damaged, rejected or blocked) but cannot release it back to available \u2014 that needs stock adjustment \u2014 and reads stock by location, lot and roll; does not register, split or merge lots or rolls. Receives goods against approved purchase orders (Phase 2) \u2014 reads POs, posts a goods receipt \u2014 but raises or approves none. Drafts, dispatches and receives inter-warehouse transfers but never approves one (Phase 3). Does not offer, reassign or override a task either.",
       "grants": [
         {
           "code": "operations.fulfilment.pack.execute",
@@ -1003,7 +1644,35 @@
           "scope": "ORG"
         },
         {
+          "code": "operations.inventory.stock.receive",
+          "scope": "ORG"
+        },
+        {
           "code": "operations.inventory.stock.transfer",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.dispatch",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.receive",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.transfer.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.receipt.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.receipt.write",
           "scope": "ORG"
         }
       ],
@@ -1012,9 +1681,63 @@
       "name": "Warehouse worker"
     },
     {
+      "code": "BUYER",
+      "cross_product": false,
+      "description": "Buys: raises and edits purchase orders org-wide, keeps the supplier directory, and works the requisition queue \u2014 raises requisitions and turns approved ones into draft purchase orders (inventory Phase 2). Sees goods receipts and stock to chase deliveries. Approves nothing \u2014 neither a purchase order nor a requisition, so the person who commits spend is never the person who asked for it \u2014 and does not post goods receipts or move stock; that is the warehouse's job.",
+      "grants": [
+        {
+          "code": "operations.inventory.item.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.location.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.stock.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.inventory.warehouse.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.purchase_order.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.receipt.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.requisition.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.supplier.read",
+          "scope": "ORG"
+        },
+        {
+          "code": "operations.procurement.supplier.write",
+          "scope": "ORG"
+        }
+      ],
+      "is_admin": false,
+      "is_default": false,
+      "name": "Buyer"
+    },
+    {
       "code": "OPERATIONS_USER",
       "cross_product": false,
-      "description": "Every person with an Operations seat. Raises and sees their own purchase orders, reads the shared suppliers, inventory, warehouses and locations, and runs the counter: creates and places customer orders, holds and releases them, and takes an order's payment online. Does not accept (commit stock to) or cancel an order, or refund a payment \u2014 those stay with the manager, the same split `purchase_order.approve` draws from `purchase_order.write`. Sees floors and published layouts (pick routing, the 3D viewer's data) read-only.",
+      "description": "Every person with an Operations seat. Raises and sees their own purchase orders and purchase requisitions, reads the shared suppliers, inventory, warehouses and locations, and runs the counter: creates and places customer orders, holds and releases them, and takes an order's payment online. Does not accept (commit stock to) or cancel an order, or refund a payment \u2014 those stay with the manager, the same split `purchase_order.approve` draws from `purchase_order.write`. Sees floors and published layouts (pick routing, the 3D viewer's data) read-only.",
       "grants": [
         {
           "code": "operations.inventory.item.read",
@@ -1050,6 +1773,14 @@
         },
         {
           "code": "operations.procurement.purchase_order.write",
+          "scope": "OWN"
+        },
+        {
+          "code": "operations.procurement.requisition.read",
+          "scope": "OWN"
+        },
+        {
+          "code": "operations.procurement.requisition.write",
           "scope": "OWN"
         },
         {

@@ -28,6 +28,7 @@ export function item(overrides: Partial<InventoryItemOut> = {}): InventoryItemOu
     track_expiry: false,
     track_quality: false,
     is_active: true,
+    receipt_tolerance_pct: "0",
     selling_price_minor: null,
     selling_price_currency: null,
     ...overrides,

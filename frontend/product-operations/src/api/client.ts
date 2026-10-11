@@ -42,10 +42,62 @@ import {
   WAREHOUSES,
 } from "./fixtures";
 import type {
+  BomComponentIn,
+  BomComponentPatch,
+  BomDetailOut,
+  BomIn,
+  BomOut,
+  BomPatch,
+  BomSubstituteIn,
+  BomVersionDetailOut,
+  BomVersionIn,
+  BomVersionPatch,
+  CompleteIn,
+  ExplosionOut,
+  IssueIn,
+  MaterialSubstituteIn,
+  OutputIn,
+  ProductionActionOut,
+  ProductionCancelIn,
+  MrpDemandOut,
+  MrpDemandSource,
+  MrpDemandSourcesOut,
+  MrpRunCreatedOut,
+  MrpRunIn,
+  MrpRunOut,
+  MrpRunStatus,
+  MrpShortageAction,
+  MrpShortageDetailOut,
+  MrpShortageOut,
+  ProductionOrderDetailOut,
+  ProductionOrderIn,
+  ProductionOrderOut,
+  ProductionOrderPatch,
+  ProductionOrderStatus,
+  RequisitionRequestIn,
+  RequisitionRequestOut,
+  ReserveIn,
+  ReturnIn,
+  WastageIn,
+  WastageThresholdIn,
+  WastageThresholdOut,
+  DispositionIn,
+  InspectionIn,
+  InspectionOut,
+  InspectionResultIn,
+  InspectionStatus,
+  QcKind,
+  QcTemplateIn,
+  QcTemplateOut,
+  QcTemplatePatch,
+  RejectIn,
+  ReleaseIn,
   AlertKind,
   AssignmentOfferOut,
   CancelIn,
   Category,
+  ChallanEwayIn,
+  ChallanOut,
   CountLineOut,
   CountLineReviewIn,
   CountLineReviewStatus,
@@ -54,6 +106,9 @@ import type {
   CountSessionOut,
   CountSessionStatus,
   DiscrepancyTrendPointOut,
+  GoodsReceiptIn,
+  GoodsReceiptOut,
+  GoodsReceiptSummaryOut,
   InventoryItemIn,
   InventoryItemOut,
   InventoryItemPatch,
@@ -72,6 +127,13 @@ import type {
   ChannelSyncType,
   ItemAttributeIn,
   ItemAttributeOut,
+  JobWorkIssueIn,
+  JobWorkOrderDetailOut,
+  JobWorkOrderIn,
+  JobWorkOrderOut,
+  JobWorkReceiveIn,
+  JobWorkReconciliationOut,
+  JobWorkStatus,
   ItemCategoryIn,
   ItemCategoryOut,
   ItemCategoryPatch,
@@ -113,7 +175,16 @@ import type {
   QuoteIn,
   QuoteOut,
   ReceiveIn,
+  ReceivingContextOut,
   ReconciliationOut,
+  RequisitionConvertIn,
+  RequisitionDecisionIn,
+  RequisitionIn,
+  RequisitionOut,
+  RequisitionPatch,
+  RequisitionRejectIn,
+  RequisitionStatus,
+  RequisitionSummaryOut,
   RouteOut,
   ShipmentAdvanceIn,
   ShipmentIn,
@@ -130,6 +201,9 @@ import type {
   TaskBacklogOut,
   TaskCancelIn,
   ThroughputOut,
+  UomConversionIn,
+  UomConversionOut,
+  UomConversionPatch,
   UomOut,
   WorkerIn,
   WorkerOut,
@@ -144,6 +218,7 @@ import type {
   WorkerWorkloadOut,
   ZoneBottleneckOut,
 } from "./types";
+import type { CursorPage } from "./trackingTypes";
 
 /** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures.
  *  Dev builds only: `import.meta.env.DEV` compiles to `false` in production, so a stray
@@ -473,6 +548,8 @@ export async function createPurchaseOrder(input: PurchaseOrderIn): Promise<Purch
         uom: l.uom ?? "",
         unit_price_minor: l.unit_price_minor ?? 0,
         received_qty: 0,
+        received_exact: "0",
+        short_closed: false,
       })),
     };
     PURCHASE_ORDERS.unshift(po);
@@ -518,6 +595,8 @@ export async function updatePurchaseOrder(
               uom: l.uom ?? "",
               unit_price_minor: l.unit_price_minor ?? 0,
               received_qty: 0,
+              received_exact: "0",
+              short_closed: false,
             })),
           }
         : {}),
@@ -588,7 +667,7 @@ export async function receivePurchaseOrder(id: string, input: ReceiveIn = {}): P
       ...po,
       status: "received",
       received_date: landed,
-      line_items: po.line_items.map((l) => ({ ...l, received_qty: l.quantity })),
+      line_items: po.line_items.map((l) => ({ ...l, received_qty: l.quantity, received_exact: String(l.quantity) })),
     };
     PURCHASE_ORDERS[index] = updated;
     const unmatched: string[] = [];
@@ -767,6 +846,7 @@ export async function createInventoryItem(input: InventoryItemIn): Promise<Inven
       track_expiry: input.track_expiry ?? false,
       track_quality: input.track_quality ?? false,
       is_active: input.is_active ?? true,
+      receipt_tolerance_pct: input.receipt_tolerance_pct ?? "0",
       // Fulfilment F2 (ADR-0024 §3): no create-item screen sets this yet — an item created here
       // starts with no selling price, the same as a freshly created live item would, and an order
       // line for it still needs its own explicit price.
@@ -835,6 +915,7 @@ export async function updateInventoryItem(
       ...(patch.track_roll !== undefined ? { track_roll: patch.track_roll } : {}),
       ...(patch.track_expiry !== undefined ? { track_expiry: patch.track_expiry } : {}),
       ...(patch.track_quality !== undefined ? { track_quality: patch.track_quality } : {}),
+      ...(patch.receipt_tolerance_pct !== undefined ? { receipt_tolerance_pct: patch.receipt_tolerance_pct } : {}),
       ...(patch.is_active !== undefined ? { is_active: patch.is_active } : {}),
     };
     INVENTORY[index] = updated;
@@ -2623,4 +2704,884 @@ export async function retryChannelSyncLog(
     `/operations/channels/${encodeURIComponent(channelId)}/sync-logs/${encodeURIComponent(logId)}/retry`,
     { method: "POST" },
   );
+}
+
+/* ------------------- receiving and purchase (inventory Phase 2) ------------------- */
+/*
+ * Live-only, like the payments calls above: these need server-side stock, tolerance and
+ * idempotency rules that a fixture would only fake. Every quantity travels as a decimal string
+ * (ADR-0014 §2) and money as integer minor units.
+ */
+
+export interface ListRequisitionsParams {
+  status?: RequisitionStatus | "all";
+  q?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/purchase-requisitions` — `operations.procurement.requisition.read`. */
+export async function listRequisitions(params: ListRequisitionsParams = {}): Promise<Page<RequisitionSummaryOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    q: params.q,
+    status: params.status === "all" ? undefined : params.status,
+  });
+  return apiRequest<Page<RequisitionSummaryOut>>(`/operations/purchase-requisitions${query}`);
+}
+
+export async function getRequisition(id: string): Promise<RequisitionOut> {
+  return apiRequest<RequisitionOut>(`/operations/purchase-requisitions/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/purchase-requisitions` — starts as a draft. */
+export async function createRequisition(input: RequisitionIn): Promise<RequisitionOut> {
+  return apiRequest<RequisitionOut>("/operations/purchase-requisitions", { method: "POST", body: input });
+}
+
+/** `PATCH /operations/purchase-requisitions/{id}` — draft only; `lines` replaces them. */
+export async function updateRequisition(id: string, patch: RequisitionPatch): Promise<RequisitionOut> {
+  return apiRequest<RequisitionOut>(`/operations/purchase-requisitions/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: patch,
+  });
+}
+
+function requisitionAction(id: string, action: string): string {
+  return `/operations/purchase-requisitions/${encodeURIComponent(id)}/${action}`;
+}
+
+export async function submitRequisition(id: string): Promise<RequisitionOut> {
+  return apiRequest<RequisitionOut>(requisitionAction(id, "submit"), { method: "POST" });
+}
+
+/** `operations.procurement.requisition.approve` (ORG). */
+export async function approveRequisition(id: string, input: RequisitionDecisionIn = {}): Promise<RequisitionOut> {
+  return apiRequest<RequisitionOut>(requisitionAction(id, "approve"), { method: "POST", body: input });
+}
+
+/** `operations.procurement.requisition.approve` (ORG). A reason is required. */
+export async function rejectRequisition(id: string, input: RequisitionRejectIn): Promise<RequisitionOut> {
+  return apiRequest<RequisitionOut>(requisitionAction(id, "reject"), { method: "POST", body: input });
+}
+
+export async function cancelRequisition(id: string, input: RequisitionDecisionIn = {}): Promise<RequisitionOut> {
+  return apiRequest<RequisitionOut>(requisitionAction(id, "cancel"), { method: "POST", body: input });
+}
+
+/** `POST .../convert` — needs `requisition.write` and `purchase_order.write`. Answers with the new
+ *  draft purchase order. */
+export async function convertRequisition(id: string, input: RequisitionConvertIn): Promise<PurchaseOrderOut> {
+  return apiRequest<PurchaseOrderOut>(requisitionAction(id, "convert"), { method: "POST", body: input });
+}
+
+/** `GET /operations/purchase-orders/{id}/receiving` — what can still be received, per line.
+ *  Advisory: the posting re-checks everything under the order's lock. */
+export async function getReceivingContext(poId: string): Promise<ReceivingContextOut> {
+  return apiRequest<ReceivingContextOut>(`/operations/purchase-orders/${encodeURIComponent(poId)}/receiving`);
+}
+
+/**
+ * `POST /operations/goods-receipts` — needs `receipt.write` and `stock.receive`. `idempotencyKey`
+ * is minted once per submission attempt and re-sent on a retry of the same attempt, so a retry
+ * after a lost answer replays the first posting (200, `replayed: true`) instead of receiving twice.
+ */
+export async function postGoodsReceipt(input: GoodsReceiptIn, idempotencyKey: string): Promise<GoodsReceiptOut> {
+  return apiRequest<GoodsReceiptOut>("/operations/goods-receipts", {
+    method: "POST",
+    body: input,
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+export interface ListGoodsReceiptsParams {
+  purchase_order_id?: string;
+  supplier_id?: string;
+  q?: string;
+  cursor?: string | null;
+  limit?: number;
+  signal?: AbortSignal;
+}
+
+/** `GET /operations/goods-receipts` — newest first, keyset-paginated: pass the last page's
+ *  `next_cursor` back as `cursor` to continue. */
+export async function listGoodsReceipts(
+  params: ListGoodsReceiptsParams = {},
+): Promise<CursorPage<GoodsReceiptSummaryOut>> {
+  const query = buildQuery({
+    purchase_order_id: params.purchase_order_id,
+    supplier_id: params.supplier_id,
+    q: params.q,
+    cursor: params.cursor ?? undefined,
+    limit: params.limit ?? DEFAULT_PAGE_SIZE,
+  });
+  return apiRequest<CursorPage<GoodsReceiptSummaryOut>>(`/operations/goods-receipts${query}`, {
+    signal: params.signal,
+  });
+}
+
+export async function getGoodsReceipt(id: string): Promise<GoodsReceiptOut> {
+  return apiRequest<GoodsReceiptOut>(`/operations/goods-receipts/${encodeURIComponent(id)}`);
+}
+
+/** `GET /operations/inventory/{item_id}/uom-conversions`. */
+export async function listUomConversions(itemId: string): Promise<UomConversionOut[]> {
+  return apiRequest<UomConversionOut[]>(`/operations/inventory/${encodeURIComponent(itemId)}/uom-conversions`);
+}
+
+/** `POST /operations/inventory/{item_id}/uom-conversions` — `operations.inventory.item.write`. */
+export async function createUomConversion(itemId: string, input: UomConversionIn): Promise<UomConversionOut> {
+  return apiRequest<UomConversionOut>(`/operations/inventory/${encodeURIComponent(itemId)}/uom-conversions`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+export async function updateUomConversion(id: string, patch: UomConversionPatch): Promise<UomConversionOut> {
+  return apiRequest<UomConversionOut>(`/operations/inventory/uom-conversions/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: patch,
+  });
+}
+
+/** 409 while an open purchase order still orders in that unit. */
+export async function deleteUomConversion(id: string): Promise<void> {
+  await apiRequest<undefined>(`/operations/inventory/uom-conversions/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+/* ------------------------------------ quality (inventory plan Phase 4) ------------------------------------ */
+/**
+ * QC templates, inspections, and the release / reject / disposition decisions over held stock.
+ * Live only — no fixture-mode branch, the same "live by default" shape counting above set: a
+ * fabricated inspection would mean fabricated stock movements.
+ *
+ * Every mutating call takes the `idempotencyKey` the screen minted for the action (see
+ * `useIdempotencyKey`): a retry after a lost answer is the same request, replayed by the server
+ * rather than acted on twice.
+ */
+
+const idem = (key: string | undefined): { headers: Record<string, string> } | Record<string, never> =>
+  key ? { headers: { "Idempotency-Key": key } } : {};
+
+export interface ListQcTemplatesParams {
+  kind?: QcKind | "all";
+  active?: boolean;
+  item_id?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/quality/templates` — `operations.quality.inspection.read:ORG`. */
+export async function listQcTemplates(params: ListQcTemplatesParams = {}): Promise<Page<QcTemplateOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    kind: params.kind === "all" ? undefined : params.kind,
+    active: params.active,
+    item_id: params.item_id,
+  });
+  return apiRequest<Page<QcTemplateOut>>(`/operations/quality/templates${query}`);
+}
+
+/** `GET /operations/quality/templates/{id}` — the parameters an inspection is judged against. */
+export async function getQcTemplate(id: string): Promise<QcTemplateOut> {
+  return apiRequest<QcTemplateOut>(`/operations/quality/templates/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/quality/templates` — `operations.quality.inspection.approve:ORG`. */
+export async function createQcTemplate(input: QcTemplateIn, idempotencyKey?: string): Promise<QcTemplateOut> {
+  return apiRequest<QcTemplateOut>("/operations/quality/templates", {
+    method: "POST",
+    body: input,
+    ...idem(idempotencyKey),
+  });
+}
+
+/** `PATCH /operations/quality/templates/{id}` — a supplied `params` replaces the whole list. */
+export async function updateQcTemplate(id: string, input: QcTemplatePatch): Promise<QcTemplateOut> {
+  return apiRequest<QcTemplateOut>(`/operations/quality/templates/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: input,
+  });
+}
+
+/** `DELETE /operations/quality/templates/{id}` — inspections already judged keep their results. */
+export async function deleteQcTemplate(id: string): Promise<void> {
+  await apiRequest<void>(`/operations/quality/templates/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export interface ListInspectionsParams {
+  status?: InspectionStatus | "all";
+  kind?: QcKind | "all";
+  item_id?: string;
+  lot_id?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/quality/inspections` — `operations.quality.inspection.read:ORG`. */
+export async function listInspections(params: ListInspectionsParams = {}): Promise<Page<InspectionOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    status: params.status === "all" ? undefined : params.status,
+    kind: params.kind === "all" ? undefined : params.kind,
+    item_id: params.item_id,
+    lot_id: params.lot_id,
+  });
+  return apiRequest<Page<InspectionOut>>(`/operations/quality/inspections${query}`);
+}
+
+export async function getInspection(id: string): Promise<InspectionOut> {
+  return apiRequest<InspectionOut>(`/operations/quality/inspections/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/quality/inspections` — `operations.quality.inspection.inspect:ORG`. Moves the
+ *  quantity AVAILABLE -> QUALITY_HOLD unless `hold_stock` is false; 409 if that much is not free. */
+export async function createInspection(input: InspectionIn, idempotencyKey?: string): Promise<InspectionOut> {
+  return apiRequest<InspectionOut>("/operations/quality/inspections", {
+    method: "POST",
+    body: input,
+    ...idem(idempotencyKey),
+  });
+}
+
+/** `PUT .../results` — replace-by-parameter-name; the server judges pass/fail. */
+export async function recordInspectionResults(
+  id: string,
+  results: InspectionResultIn[],
+): Promise<InspectionOut> {
+  return apiRequest<InspectionOut>(`/operations/quality/inspections/${encodeURIComponent(id)}/results`, {
+    method: "PUT",
+    body: { results },
+  });
+}
+
+export type InspectionStep = "hold" | "rework" | "reinspect";
+
+/** `POST .../hold | rework | reinspect` — `operations.quality.inspection.inspect:ORG`. */
+export async function stepInspection(
+  id: string,
+  step: InspectionStep,
+  note: string,
+  idempotencyKey?: string,
+): Promise<InspectionOut> {
+  return apiRequest<InspectionOut>(`/operations/quality/inspections/${encodeURIComponent(id)}/${step}`, {
+    method: "POST",
+    body: { note },
+    ...idem(idempotencyKey),
+  });
+}
+
+/** `POST .../release` — `operations.quality.inspection.approve:ORG`. Posts through the stock
+ *  kernel: QUALITY_HOLD -> AVAILABLE (and the remainder to a rejected bucket on a partial pass). */
+export async function releaseInspection(
+  id: string,
+  input: ReleaseIn,
+  idempotencyKey?: string,
+): Promise<InspectionOut> {
+  return apiRequest<InspectionOut>(`/operations/quality/inspections/${encodeURIComponent(id)}/release`, {
+    method: "POST",
+    body: input,
+    ...idem(idempotencyKey),
+  });
+}
+
+/** `POST .../reject` — `operations.quality.inspection.reject:ORG`. QUALITY_HOLD -> REJECTED/QUARANTINE. */
+export async function rejectInspection(
+  id: string,
+  input: RejectIn,
+  idempotencyKey?: string,
+): Promise<InspectionOut> {
+  return apiRequest<InspectionOut>(`/operations/quality/inspections/${encodeURIComponent(id)}/reject`, {
+    method: "POST",
+    body: input,
+    ...idem(idempotencyKey),
+  });
+}
+
+/** `POST .../disposition` — `operations.quality.inspection.reject:ORG`. Return to vendor or scrap. */
+export async function disposeInspection(
+  id: string,
+  input: DispositionIn,
+  idempotencyKey?: string,
+): Promise<InspectionOut> {
+  return apiRequest<InspectionOut>(`/operations/quality/inspections/${encodeURIComponent(id)}/disposition`, {
+    method: "POST",
+    body: input,
+    ...idem(idempotencyKey),
+  });
+}
+
+/* ------------------------------- manufacturing ------------------------------ */
+
+/**
+ * Inventory Phase 5 (`services/operations/app/manufacturing/api.py`). Live only, like counting and
+ * channels: a recipe and a production order are server-owned state with no fixture twin.
+ * Quantities travel as decimal strings in both directions and are never parsed here. Every
+ * mutating call that the server makes replayable takes an `Idempotency-Key`; the caller owns the
+ * key so a retry of the same submission reuses it.
+ */
+
+export interface MutationOptions {
+  idempotencyKey?: string;
+}
+
+function keyed(options: MutationOptions): { headers?: Record<string, string> } {
+  return options.idempotencyKey ? { headers: { "Idempotency-Key": options.idempotencyKey } } : {};
+}
+
+const MFG = "/operations/manufacturing";
+
+export interface ListBomsParams {
+  q?: string;
+  item_id?: string;
+  is_active?: boolean;
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/manufacturing/boms` — `operations.manufacturing.bom.read`. */
+export async function listBoms(params: ListBomsParams = {}): Promise<Page<BomOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    q: params.q,
+    item_id: params.item_id,
+    is_active: params.is_active,
+  });
+  return apiRequest<Page<BomOut>>(`${MFG}/boms${query}`);
+}
+
+/** `GET /operations/manufacturing/boms/{id}` — the BOM and its versions. */
+export async function getBom(id: string): Promise<BomDetailOut> {
+  return apiRequest<BomDetailOut>(`${MFG}/boms/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/manufacturing/boms` — `operations.manufacturing.bom.write`. Creates the BOM
+ *  with its first draft version. */
+export async function createBom(input: BomIn, options: MutationOptions = {}): Promise<BomDetailOut> {
+  return apiRequest<BomDetailOut>(`${MFG}/boms`, { method: "POST", body: input, ...keyed(options) });
+}
+
+/** `PATCH /operations/manufacturing/boms/{id}` — rename, describe or (de)activate. */
+export async function updateBom(id: string, patch: BomPatch): Promise<BomDetailOut> {
+  return apiRequest<BomDetailOut>(`${MFG}/boms/${encodeURIComponent(id)}`, { method: "PATCH", body: patch });
+}
+
+function versionPath(bomId: string, versionId: string): string {
+  return `${MFG}/boms/${encodeURIComponent(bomId)}/versions/${encodeURIComponent(versionId)}`;
+}
+
+/** `POST /operations/manufacturing/boms/{id}/versions` — a new draft, optionally copied from an
+ *  earlier version. 409 while a draft already exists. */
+export async function createBomVersion(
+  bomId: string,
+  input: BomVersionIn,
+  options: MutationOptions = {},
+): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(`${MFG}/boms/${encodeURIComponent(bomId)}/versions`, {
+    method: "POST",
+    body: input,
+    ...keyed(options),
+  });
+}
+
+/** `GET /operations/manufacturing/boms/{id}/versions/{versionId}` — components and substitutes. */
+export async function getBomVersion(bomId: string, versionId: string): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(versionPath(bomId, versionId));
+}
+
+/** `PATCH .../versions/{versionId}` — a draft's batch size, dates and notes. */
+export async function updateBomVersion(
+  bomId: string,
+  versionId: string,
+  patch: BomVersionPatch,
+): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(versionPath(bomId, versionId), { method: "PATCH", body: patch });
+}
+
+/** `DELETE .../versions/{versionId}` — discards a draft. */
+export async function discardBomVersion(bomId: string, versionId: string): Promise<void> {
+  await apiRequest<undefined>(versionPath(bomId, versionId), { method: "DELETE" });
+}
+
+/** `POST .../versions/{versionId}/components` — 409 when the BOM would contain itself. */
+export async function addBomComponent(
+  bomId: string,
+  versionId: string,
+  input: BomComponentIn,
+): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(`${versionPath(bomId, versionId)}/components`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/** `PATCH .../components/{componentId}`. */
+export async function updateBomComponent(
+  bomId: string,
+  versionId: string,
+  componentId: string,
+  patch: BomComponentPatch,
+): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(
+    `${versionPath(bomId, versionId)}/components/${encodeURIComponent(componentId)}`,
+    { method: "PATCH", body: patch },
+  );
+}
+
+/** `DELETE .../components/{componentId}`. */
+export async function removeBomComponent(bomId: string, versionId: string, componentId: string): Promise<void> {
+  await apiRequest<undefined>(`${versionPath(bomId, versionId)}/components/${encodeURIComponent(componentId)}`, {
+    method: "DELETE",
+  });
+}
+
+/** `POST .../components/{componentId}/substitutes` — 409 when the substitute would make the BOM
+ *  contain itself. */
+export async function addBomSubstitute(
+  bomId: string,
+  versionId: string,
+  componentId: string,
+  input: BomSubstituteIn,
+): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(
+    `${versionPath(bomId, versionId)}/components/${encodeURIComponent(componentId)}/substitutes`,
+    { method: "POST", body: input },
+  );
+}
+
+/** `DELETE .../components/{componentId}/substitutes/{substituteId}`. */
+export async function removeBomSubstitute(
+  bomId: string,
+  versionId: string,
+  componentId: string,
+  substituteId: string,
+): Promise<void> {
+  await apiRequest<undefined>(
+    `${versionPath(bomId, versionId)}/components/${encodeURIComponent(componentId)}/substitutes/${encodeURIComponent(substituteId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** `POST .../versions/{versionId}/publish` — `operations.manufacturing.bom.publish`. Immutable
+ *  from then on. */
+export async function publishBomVersion(
+  bomId: string,
+  versionId: string,
+  options: MutationOptions = {},
+): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(`${versionPath(bomId, versionId)}/publish`, {
+    method: "POST",
+    ...keyed(options),
+  });
+}
+
+/** `POST .../versions/{versionId}/retire` — `operations.manufacturing.bom.publish`. */
+export async function retireBomVersion(bomId: string, versionId: string): Promise<BomVersionDetailOut> {
+  return apiRequest<BomVersionDetailOut>(`${versionPath(bomId, versionId)}/retire`, { method: "POST" });
+}
+
+/** `GET .../versions/{versionId}/explosion?quantity=` — the multi-level requirement for a
+ *  quantity (decimal string) of the BOM's item. */
+export async function explodeBomVersion(
+  bomId: string,
+  versionId: string,
+  quantity: string,
+  params: { signal?: AbortSignal } = {},
+): Promise<ExplosionOut> {
+  return apiRequest<ExplosionOut>(`${versionPath(bomId, versionId)}/explosion${buildQuery({ quantity })}`, {
+    signal: params.signal,
+  });
+}
+
+export interface ListProductionOrdersParams {
+  status?: ProductionOrderStatus | "all";
+  item_id?: string;
+  q?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET /operations/manufacturing/orders` — `operations.manufacturing.production_order.read`. */
+export async function listProductionOrders(
+  params: ListProductionOrdersParams = {},
+): Promise<Page<ProductionOrderOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    status: params.status === "all" ? undefined : params.status,
+    item_id: params.item_id,
+    q: params.q,
+  });
+  return apiRequest<Page<ProductionOrderOut>>(`${MFG}/orders${query}`);
+}
+
+/** `POST /operations/manufacturing/orders` — `...production_order.write`. Pins the BOM version. */
+export async function createProductionOrder(
+  input: ProductionOrderIn,
+  options: MutationOptions = {},
+): Promise<ProductionOrderDetailOut> {
+  return apiRequest<ProductionOrderDetailOut>(`${MFG}/orders`, { method: "POST", body: input, ...keyed(options) });
+}
+
+function orderPath(orderId: string): string {
+  return `${MFG}/orders/${encodeURIComponent(orderId)}`;
+}
+
+/** `GET /operations/manufacturing/orders/{id}` — materials, picks, outputs, wastage, variance. */
+export async function getProductionOrder(id: string): Promise<ProductionOrderDetailOut> {
+  return apiRequest<ProductionOrderDetailOut>(orderPath(id));
+}
+
+/** `PATCH /operations/manufacturing/orders/{id}` — a draft order only. */
+export async function updateProductionOrder(
+  id: string,
+  patch: ProductionOrderPatch,
+): Promise<ProductionOrderDetailOut> {
+  return apiRequest<ProductionOrderDetailOut>(orderPath(id), { method: "PATCH", body: patch });
+}
+
+/** `POST .../orders/{id}/materials/{materialId}/substitute` — `...production_order.write`. */
+export async function setMaterialSubstitute(
+  orderId: string,
+  materialId: string,
+  input: MaterialSubstituteIn,
+): Promise<ProductionOrderDetailOut> {
+  return apiRequest<ProductionOrderDetailOut>(
+    `${orderPath(orderId)}/materials/${encodeURIComponent(materialId)}/substitute`,
+    { method: "POST", body: input },
+  );
+}
+
+function orderAction(
+  orderId: string,
+  action: string,
+  body: unknown,
+  options: MutationOptions,
+): Promise<ProductionActionOut> {
+  return apiRequest<ProductionActionOut>(`${orderPath(orderId)}/${action}`, {
+    method: "POST",
+    ...(body !== undefined ? { body } : {}),
+    ...keyed(options),
+  });
+}
+
+/** `POST .../orders/{id}/approve` — `...production_order.approve`. DRAFT -> APPROVED. */
+export function approveProductionOrder(orderId: string, options: MutationOptions = {}) {
+  return orderAction(orderId, "approve", undefined, options);
+}
+
+/** `POST .../orders/{id}/start` — `...production_order.issue`. APPROVED -> IN_PROGRESS. */
+export function startProductionOrder(orderId: string, options: MutationOptions = {}) {
+  return orderAction(orderId, "start", undefined, options);
+}
+
+/** `POST .../orders/{id}/cancel` — `...production_order.write`. Refused while material is in WIP. */
+export function cancelProductionOrder(orderId: string, input: ProductionCancelIn, options: MutationOptions = {}) {
+  return orderAction(orderId, "cancel", input, options);
+}
+
+/** `POST .../orders/{id}/reserve` — `...production_order.issue`. Shortages come back in the body. */
+export function reserveProductionMaterials(orderId: string, input: ReserveIn, options: MutationOptions = {}) {
+  return orderAction(orderId, "reserve", input, options);
+}
+
+/** `POST .../orders/{id}/issue` — `...production_order.issue`. AVAILABLE -> WIP. */
+export function issueProductionMaterials(orderId: string, input: IssueIn, options: MutationOptions = {}) {
+  return orderAction(orderId, "issue", input, options);
+}
+
+/** `POST .../orders/{id}/returns` — `...production_order.issue`. WIP -> AVAILABLE. */
+export function returnProductionMaterials(orderId: string, input: ReturnIn, options: MutationOptions = {}) {
+  return orderAction(orderId, "returns", input, options);
+}
+
+/** `POST .../orders/{id}/outputs` — `...production_order.complete`. Receives finished goods. */
+export function recordProductionOutput(orderId: string, input: OutputIn, options: MutationOptions = {}) {
+  return orderAction(orderId, "outputs", input, options);
+}
+
+/** `POST .../orders/{id}/wastage` — `...production_order.issue`. */
+export function recordProductionWastage(orderId: string, input: WastageIn, options: MutationOptions = {}) {
+  return orderAction(orderId, "wastage", input, options);
+}
+
+/** `POST .../orders/{id}/complete` — `...production_order.complete`. 409 when material is left in
+ *  WIP and no `leftover` choice was sent. */
+export function completeProductionOrder(orderId: string, input: CompleteIn, options: MutationOptions = {}) {
+  return orderAction(orderId, "complete", input, options);
+}
+
+/** `GET /operations/manufacturing/wastage-thresholds` — `...production_order.read`. */
+export async function listWastageThresholds(): Promise<WastageThresholdOut[]> {
+  return apiRequest<WastageThresholdOut[]>(`${MFG}/wastage-thresholds`);
+}
+
+/** `POST /operations/manufacturing/wastage-thresholds` — `...bom.write`. Upserts by item + type. */
+export async function setWastageThreshold(input: WastageThresholdIn): Promise<WastageThresholdOut> {
+  return apiRequest<WastageThresholdOut>(`${MFG}/wastage-thresholds`, { method: "POST", body: input });
+}
+
+/** `DELETE /operations/manufacturing/wastage-thresholds/{id}` — `...bom.write`. */
+export async function removeWastageThreshold(id: string): Promise<void> {
+  await apiRequest<undefined>(`${MFG}/wastage-thresholds/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/* ----------------------------------- MRP ----------------------------------- */
+
+/**
+ * Inventory Phase 7 (`services/operations/app/mrp/api.py`). Live only, like manufacturing. Demand
+ * and shortage quantities are decimal strings and are never parsed here. A run that is too large
+ * to compute inside the request answers `202` with `status: "QUEUED"`; the screen polls
+ * `getMrpRun` until the worker has finished it.
+ */
+
+const MRP = `${MFG}/mrp`;
+
+function mrpRunPath(runId: string): string {
+  return `${MRP}/runs/${encodeURIComponent(runId)}`;
+}
+
+/** `GET /operations/manufacturing/mrp/demand-sources` — `operations.manufacturing.mrp.read`. */
+export async function getMrpDemandSources(): Promise<MrpDemandSourcesOut> {
+  return apiRequest<MrpDemandSourcesOut>(`${MRP}/demand-sources`);
+}
+
+export interface ListMrpRunsParams {
+  status?: MrpRunStatus | "all";
+  q?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET .../mrp/runs` — newest first. */
+export async function listMrpRuns(params: ListMrpRunsParams = {}): Promise<Page<MrpRunOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    status: params.status === "all" ? undefined : params.status,
+    q: params.q,
+  });
+  return apiRequest<Page<MrpRunOut>>(`${MRP}/runs${query}`);
+}
+
+/** `POST .../mrp/runs` — `operations.manufacturing.mrp.run`. Computed inline when small, queued
+ *  for the worker when large (`status` says which). The caller owns the idempotency key. */
+export async function createMrpRun(
+  input: MrpRunIn,
+  options: MutationOptions = {},
+): Promise<MrpRunCreatedOut> {
+  return apiRequest<MrpRunCreatedOut>(`${MRP}/runs`, { method: "POST", body: input, ...keyed(options) });
+}
+
+/** `GET .../mrp/runs/{id}`. */
+export async function getMrpRun(runId: string): Promise<MrpRunOut> {
+  return apiRequest<MrpRunOut>(mrpRunPath(runId));
+}
+
+export interface ListMrpDemandsParams {
+  source_type?: MrpDemandSource | "all";
+  page?: number;
+  size?: number;
+}
+
+/** `GET .../mrp/runs/{id}/demands` — what the run planned from. */
+export async function listMrpDemands(
+  runId: string,
+  params: ListMrpDemandsParams = {},
+): Promise<Page<MrpDemandOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    source_type: params.source_type === "all" ? undefined : params.source_type,
+  });
+  return apiRequest<Page<MrpDemandOut>>(`${mrpRunPath(runId)}/demands${query}`);
+}
+
+export interface ListMrpShortagesParams {
+  action?: MrpShortageAction | "all";
+  requested?: boolean;
+  q?: string;
+  page?: number;
+  size?: number;
+}
+
+/** `GET .../mrp/runs/{id}/shortages` — the shortage table. */
+export async function listMrpShortages(
+  runId: string,
+  params: ListMrpShortagesParams = {},
+): Promise<Page<MrpShortageOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    action: params.action === "all" ? undefined : params.action,
+    requested: params.requested,
+    q: params.q,
+  });
+  return apiRequest<Page<MrpShortageOut>>(`${mrpRunPath(runId)}/shortages${query}`);
+}
+
+/** `GET .../mrp/runs/{id}/shortages/{shortageId}` — with its pegging. */
+export async function getMrpShortage(runId: string, shortageId: string): Promise<MrpShortageDetailOut> {
+  return apiRequest<MrpShortageDetailOut>(`${mrpRunPath(runId)}/shortages/${encodeURIComponent(shortageId)}`);
+}
+
+/** `POST .../mrp/runs/{id}/requisitions` — `operations.manufacturing.mrp.requisition`. Requests a
+ *  purchase requisition for purchased-item shortages (all un-requested ones when `shortage_ids`
+ *  is omitted). */
+export async function requestMrpRequisition(
+  runId: string,
+  input: RequisitionRequestIn,
+  options: MutationOptions = {},
+): Promise<RequisitionRequestOut> {
+  return apiRequest<RequisitionRequestOut>(`${mrpRunPath(runId)}/requisitions`, {
+    method: "POST",
+    body: input,
+    ...keyed(options),
+  });
+}
+
+/* ------------------------------ job work (Inventory plan Phase 6) ------------------------------ */
+/**
+ * Live only — no fixture-mode branch, the same shape counting/dispatch/channels set: every figure
+ * on these screens is a real read of the ledger-backed backend, and this module ships no
+ * synthetic job-work data to stand in for it.
+ *
+ * Every write that moves stock or numbers a document carries an `Idempotency-Key`. The caller
+ * mints it once per distinct submission (`lib/jobwork.ts` `newIdempotencyKey`) and **reuses it on
+ * a retry**: a double-click or a re-sent request after a dropped response is then a replay on the
+ * server, never a second issue or a second receipt.
+ */
+
+export interface ListJobWorkOrdersParams {
+  status?: JobWorkStatus | "all";
+  supplier_id?: string;
+  overdue?: boolean;
+  search?: string;
+  page?: number;
+  size?: number;
+}
+
+const JOBWORK = "/operations/jobwork";
+
+/** `GET /operations/jobwork/orders` — `operations.jobwork.order.read:ORG`. */
+export async function listJobWorkOrders(
+  params: ListJobWorkOrdersParams = {},
+): Promise<Page<JobWorkOrderOut>> {
+  const query = buildQuery({
+    page: params.page ?? 1,
+    size: params.size ?? DEFAULT_PAGE_SIZE,
+    status: params.status === "all" ? undefined : params.status,
+    supplier_id: params.supplier_id,
+    overdue: params.overdue ? true : undefined,
+    search: params.search,
+  });
+  return apiRequest<Page<JobWorkOrderOut>>(`${JOBWORK}/orders${query}`);
+}
+
+/** `GET /operations/jobwork/orders/{id}` — the order with its materials, receipts, challans and
+ *  reconciliation. */
+export async function getJobWorkOrder(id: string): Promise<JobWorkOrderDetailOut> {
+  return apiRequest<JobWorkOrderDetailOut>(`${JOBWORK}/orders/${encodeURIComponent(id)}`);
+}
+
+/** `POST /operations/jobwork/orders` — `operations.jobwork.order.write:ORG`. */
+export async function createJobWorkOrder(
+  input: JobWorkOrderIn,
+  idempotencyKey: string,
+): Promise<JobWorkOrderDetailOut> {
+  return apiRequest<JobWorkOrderDetailOut>(`${JOBWORK}/orders`, {
+    method: "POST",
+    body: input,
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+/** `POST …:approve` — `operations.jobwork.order.approve:ORG`. */
+export async function approveJobWorkOrder(
+  id: string,
+  idempotencyKey: string,
+): Promise<JobWorkOrderDetailOut> {
+  return apiRequest<JobWorkOrderDetailOut>(`${JOBWORK}/orders/${encodeURIComponent(id)}:approve`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+/** `POST …:cancel` — `operations.jobwork.order.write:ORG`; only before issue. */
+export async function cancelJobWorkOrder(
+  id: string,
+  reason: string,
+  idempotencyKey: string,
+): Promise<JobWorkOrderDetailOut> {
+  return apiRequest<JobWorkOrderDetailOut>(`${JOBWORK}/orders/${encodeURIComponent(id)}:cancel`, {
+    method: "POST",
+    body: { reason },
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+/** `POST …:issue` — `operations.jobwork.order.issue:ORG`. Moves the stock to the vendor's bucket
+ *  and cuts the delivery challan; 409 `insufficient-stock` names what is short. */
+export async function issueJobWorkOrder(
+  id: string,
+  input: JobWorkIssueIn,
+  idempotencyKey: string,
+): Promise<JobWorkOrderDetailOut> {
+  return apiRequest<JobWorkOrderDetailOut>(`${JOBWORK}/orders/${encodeURIComponent(id)}:issue`, {
+    method: "POST",
+    body: input,
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+/** `POST …:receive` — `operations.jobwork.order.receive:ORG`. Partial receipts are normal; 409
+ *  when a line asks for more than is still at the vendor. */
+export async function receiveJobWorkOrder(
+  id: string,
+  input: JobWorkReceiveIn,
+  idempotencyKey: string,
+): Promise<JobWorkOrderDetailOut> {
+  return apiRequest<JobWorkOrderDetailOut>(`${JOBWORK}/orders/${encodeURIComponent(id)}:receive`, {
+    method: "POST",
+    body: input,
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+/** `GET …/reconciliation` — sent / received / rejected / shortage and whether the documents and
+ *  the ledger agree. */
+export async function getJobWorkReconciliation(id: string): Promise<JobWorkReconciliationOut> {
+  return apiRequest<JobWorkReconciliationOut>(`${JOBWORK}/orders/${encodeURIComponent(id)}/reconciliation`);
+}
+
+/** `POST …:close` — `operations.jobwork.order.approve:ORG`. 409 unless the reconciliation
+ *  balances; the problem's `errors[0]` carries the figures. */
+export async function closeJobWorkOrder(
+  id: string,
+  idempotencyKey: string,
+): Promise<JobWorkOrderDetailOut> {
+  return apiRequest<JobWorkOrderDetailOut>(`${JOBWORK}/orders/${encodeURIComponent(id)}:close`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+  });
+}
+
+/** `GET /operations/jobwork/challans/{id}` — the frozen delivery challan (the print view). */
+export async function getChallan(id: string): Promise<ChallanOut> {
+  return apiRequest<ChallanOut>(`${JOBWORK}/challans/${encodeURIComponent(id)}`);
+}
+
+/** `POST …/challans/{id}:request-eway` — `operations.jobwork.order.issue:ORG`. Supplies the
+ *  transport facts and asks finance to consider an e-way bill. */
+export async function requestChallanEway(id: string, input: ChallanEwayIn): Promise<ChallanOut> {
+  return apiRequest<ChallanOut>(`${JOBWORK}/challans/${encodeURIComponent(id)}:request-eway`, {
+    method: "POST",
+    body: input,
+  });
 }

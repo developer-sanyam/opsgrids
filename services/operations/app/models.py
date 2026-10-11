@@ -263,8 +263,22 @@ class PurchaseOrderLine(Base, TenantBase):
     #: Line total = quantity * unit_price_minor. Stored so the lines foot to the PO total.
     amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     received_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: The exact cumulative quantity received against this line, in milli-units of the line's
+    #: **stock** UOM (the item's own unit — a receipt entered in boxes is converted first, see
+    #: `app.receiving.domain.to_stock_milli`). `received_qty` above is the whole-unit
+    #: compatibility view (`received_milli // 1000`); this is the figure partial, short and
+    #: over-receipt are decided on, always under the PO row's lock (inventory Phase 2).
+    received_milli: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    #: The buyer closed the line short: nothing more is expected, and it no longer holds the PO
+    #: open. A closed line takes no further receipt.
+    short_closed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     __table_args__ = (
+        CheckConstraint("received_milli >= 0", name="received_milli_non_negative"),
         Index(
             "ix_purchase_order_lines_org_po",
             "organization_id",
@@ -546,6 +560,17 @@ class InventoryItem(Base, TenantBase):
     #: deleted item cannot. Plain reference data today — nothing yet refuses a write because an
     #: item is inactive; that belongs to whichever later phase adds the transaction it should gate.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    #: How far above the ordered quantity a purchase-order line of this item may be received, in
+    #: basis points of the ordered quantity (500 = 5 %). 0 (the default) means exactly the
+    #: ordered quantity, never more. Integer basis points, not a float percentage, so the limit
+    #: is exact integer arithmetic (`app.receiving.domain.tolerance_limit_milli`).
+    receipt_tolerance_bp: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    #: The code printed on this item's label, or the manufacturer's EAN/UPC when it is the thing
+    #: that gets scanned (inventory Phase 9, ADR-0027). Unique per organization among live items;
+    #: `NULL` means "scan the SKU" — the label falls back to `og:item:<sku>`.
+    barcode: Mapped[str | None] = mapped_column(String(64))
 
     if TYPE_CHECKING:
         #: Physical stock in milli-units — every bucket except the off-site ones — and the open
@@ -568,6 +593,13 @@ class InventoryItem(Base, TenantBase):
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
+        Index(
+            "uq_inventory_items_org_barcode",
+            "organization_id",
+            "barcode",
+            unique=True,
+            postgresql_where=text("barcode IS NOT NULL AND deleted_at IS NULL"),
+        ),
         Index("ix_inventory_items_org_warehouse", "organization_id", "warehouse"),
         Index("ix_inventory_items_org_category", "organization_id", "category"),
         Index("ix_inventory_items_org_uom", "organization_id", "uom_id"),
@@ -579,6 +611,9 @@ class InventoryItem(Base, TenantBase):
         CheckConstraint(
             "selling_price_minor IS NULL OR selling_price_minor >= 0",
             name="selling_price_non_negative",
+        ),
+        CheckConstraint(
+            "receipt_tolerance_bp BETWEEN 0 AND 10000", name="receipt_tolerance_bp_range"
         ),
     )
 
@@ -792,6 +827,8 @@ class Lot(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     )
     lot_no: Mapped[str] = mapped_column(String(60), nullable=False)
     supplier_lot_no: Mapped[str | None] = mapped_column(String(60))
+    #: A code someone else printed (a supplier's lot label); `NULL` means "scan the lot number".
+    barcode: Mapped[str | None] = mapped_column(String(64))
     manufactured_on: Mapped[date | None] = mapped_column(Date)
     received_on: Mapped[date | None] = mapped_column(Date)
     expires_on: Mapped[date | None] = mapped_column(Date)
@@ -819,6 +856,13 @@ class Lot(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
         # discrepancies, rolls and lot_genealogy.
         UniqueConstraint("organization_id", "id", name="uq_lots_org_id"),
         Index("uq_lots_org_lot_no", "organization_id", "lot_no", unique=True),
+        Index(
+            "uq_lots_org_barcode",
+            "organization_id",
+            "barcode",
+            unique=True,
+            postgresql_where=text("barcode IS NOT NULL"),
+        ),
         Index("ix_lots_org_item", "organization_id", "inventory_item_id"),
         Index("ix_lots_org_created", "organization_id", text("created_at DESC"), text("id DESC")),
     )
@@ -845,6 +889,8 @@ class Roll(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     )
     lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     roll_no: Mapped[str] = mapped_column(String(60), nullable=False)
+    #: A code someone else printed (a mill's roll label); `NULL` means "scan the roll number".
+    barcode: Mapped[str | None] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(String(10), nullable=False, default="ACTIVE")
     primary_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
     secondary_milli: Mapped[int | None] = mapped_column(BigInteger)
@@ -889,6 +935,13 @@ class Roll(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
         ),
         UniqueConstraint("organization_id", "id", name="uq_rolls_org_id"),
         Index("uq_rolls_org_roll_no", "organization_id", "roll_no", unique=True),
+        Index(
+            "uq_rolls_org_barcode",
+            "organization_id",
+            "barcode",
+            unique=True,
+            postgresql_where=text("barcode IS NOT NULL"),
+        ),
         Index("ix_rolls_org_item", "organization_id", "inventory_item_id"),
         Index(
             "ix_rolls_org_lot",
@@ -1110,6 +1163,44 @@ class PutawayCapture(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
         # filters `created_at < cutoff` and batches `ORDER BY created_at, id` across every
         # organization, and no tenant-leading index can serve that.
         Index("ix_putaway_captures_created_at", "created_at"),
+    )
+
+
+class InventoryImportRun(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One committed bulk import (inventory Phase 9, ADR-0027) — append-only, written in the same
+    transaction as the rows it created. A preview or a refused import writes nothing here.
+
+    `idempotency_key` + `request_hash` make a retried commit a replay (the stored `summary` is
+    returned) and a reused key with a different file a 409, the same contract `inventory_moves`
+    gives a stock posting.
+    """
+
+    __tablename__ = "inventory_import_runs"
+
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: items | locations | lots | rolls | opening_stock
+    entity: Mapped[str] = mapped_column(String(20), nullable=False)
+    on_duplicate: Mapped[str] = mapped_column(String(10), nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    skipped_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: The response the first commit returned, replayed verbatim.
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        Index(
+            "uq_inventory_import_runs_org_key", "organization_id", "idempotency_key", unique=True
+        ),
+        Index(
+            "ix_inventory_import_runs_org_created",
+            "organization_id",
+            text("created_at DESC"),
+        ),
     )
 
 
@@ -1342,6 +1433,14 @@ class InventoryReservation(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     created_by: Mapped[str | None] = mapped_column(String(64))
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     closed_by: Mapped[str | None] = mapped_column(String(64))
+    #: Phase 3: a hold that lapses. `NULL` is a reservation that stays until something closes it
+    #: (an order's own, which `orders` releases or consumes). The expiry sweep releases the open
+    #: remainder of an active reservation past this instant, through the kernel's own `release`.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Set by the sweep (and nothing else) on the reservation it released for lapsing, so a list
+    #: can tell "expired" from "released by a person" without a second table.
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="", server_default="")
 
     __table_args__ = (
         CheckConstraint("quantity_milli > 0", name="quantity_positive"),
@@ -1365,6 +1464,19 @@ class InventoryReservation(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
             "organization_id",
             "balance_id",
             postgresql_where=text("status = 'active'"),
+        ),
+        # The expiry sweep's one question: which active reservations are past due?
+        Index(
+            "ix_inventory_reservations_org_expires_active",
+            "organization_id",
+            "expires_at",
+            postgresql_where=text("status = 'active' AND expires_at IS NOT NULL"),
+        ),
+        Index(
+            "ix_inventory_reservations_org_created",
+            "organization_id",
+            text("created_at DESC"),
+            text("id DESC"),
         ),
     )
 
@@ -3105,6 +3217,1071 @@ class ChannelSyncLog(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
             "ix_channel_sync_logs_org_channel_at", "organization_id", "channel_id", "attempted_at"
         ),
         Index("ix_channel_sync_logs_org_channel_status", "organization_id", "channel_id", "status"),
+    )
+
+
+# ------------------------------------------------------------------ receiving (inventory Phase 2)
+
+#: The requisition state machine's vocabulary; `app.receiving.domain.REQUISITION_TRANSITIONS` is
+#: the map. DRAFT -> SUBMITTED -> APPROVED -> CONVERTED is the happy path.
+REQUISITION_STATUSES = ("DRAFT", "SUBMITTED", "APPROVED", "REJECTED", "CONVERTED", "CANCELLED")
+_REQ_STATUS_SQL = ", ".join(f"'{s}'" for s in REQUISITION_STATUSES)
+#: How one goods-receipt line stood against its purchase-order line when it was posted.
+RECEIPT_OUTCOMES = ("PARTIAL", "EXACT", "SHORT", "OVER")
+_RECEIPT_OUTCOME_SQL = ", ".join(f"'{s}'" for s in RECEIPT_OUTCOMES)
+
+
+class PurchaseRequisition(Base, TenantBase):
+    """An internal request to buy (inventory Phase 2): lines of items and quantities, approved by
+    someone with `requisition.approve`, then converted into a draft purchase order.
+    `requested_by_id` is the directory id used for OWN scope (never a foreign key).
+    `converted_po_id` is a real in-schema foreign key — set once, on conversion."""
+
+    __tablename__ = "purchase_requisitions"
+
+    number: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="DRAFT")
+    requested_by_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    requested_by: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    warehouse_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.warehouses.id", ondelete="RESTRICT")
+    )
+    needed_by: Mapped[date | None] = mapped_column(Date)
+    reason: Mapped[str | None] = mapped_column(Text)
+    #: The approver's / rejecter's / canceller's note.
+    decision_note: Mapped[str | None] = mapped_column(Text)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_by: Mapped[str | None] = mapped_column(String(64))
+    converted_po_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.purchase_orders.id", ondelete="RESTRICT")
+    )
+    #: The MRP requisition request this was made from — set only by the MRP consumer, never from
+    #: user input, and unique per organization so a redelivery cannot make a second one.
+    mrp_request_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+    __table_args__ = (
+        Index(
+            "uq_purchase_requisitions_org_mrp_request",
+            "organization_id",
+            "mrp_request_id",
+            unique=True,
+            postgresql_where=text("mrp_request_id IS NOT NULL"),
+        ),
+        CheckConstraint(f"status IN ({_REQ_STATUS_SQL})", name="status_known"),
+        CheckConstraint(
+            "(status = 'CONVERTED') = (converted_po_id IS NOT NULL)", name="converted_matches_po"
+        ),
+        UniqueConstraint("organization_id", "number", name="uq_purchase_requisitions_org_number"),
+        Index("ix_purchase_requisitions_org_status", "organization_id", "status"),
+        Index("ix_purchase_requisitions_org_requester", "organization_id", "requested_by_id"),
+        Index(
+            "ix_purchase_requisitions_org_created",
+            "organization_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+    )
+
+
+class PurchaseRequisitionLine(Base, TenantBase):
+    """One requested item. `quantity_milli` is in the item's own stock UOM."""
+
+    __tablename__ = "purchase_requisition_lines"
+
+    requisition_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.purchase_requisitions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    suggested_supplier_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.suppliers.id", ondelete="RESTRICT")
+    )
+    #: Per stock unit, integer minor units — an estimate the buyer may overwrite on conversion.
+    est_unit_price_minor: Mapped[int | None] = mapped_column(BigInteger)
+    note: Mapped[str | None] = mapped_column(String(300))
+
+    __table_args__ = (
+        CheckConstraint("quantity_milli > 0", name="quantity_positive"),
+        CheckConstraint(
+            "est_unit_price_minor IS NULL OR est_unit_price_minor >= 0", name="price_non_negative"
+        ),
+        Index(
+            "ix_purchase_requisition_lines_org_req", "organization_id", "requisition_id", "line_no"
+        ),
+    )
+
+
+class GoodsReceipt(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One posted delivery against a purchase order (inventory Phase 2): immutable once written
+    (`UPDATE`/`DELETE` revoked) — a mistake is corrected by a later document, never an edit. The
+    stock it put on the books is the `inventory_moves` row with `reference_type='goods_receipt'`
+    and `reference_id=<this id>`. `idempotency_key` + `request_hash` make a retried POST a replay
+    (`uq_goods_receipts_org_key`)."""
+
+    __tablename__ = "goods_receipts"
+
+    number: Mapped[str] = mapped_column(String(40), nullable=False)
+    purchase_order_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.purchase_orders.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    supplier_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.suppliers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    received_on: Mapped[date] = mapped_column(Date, nullable=False)
+    #: The supplier's delivery challan / invoice number.
+    delivery_note: Mapped[str | None] = mapped_column(String(80))
+    note: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="POSTED")
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint("status IN ('POSTED')", name="status_known"),
+        CheckConstraint(
+            "(idempotency_key IS NULL) = (request_hash IS NULL)", name="key_matches_hash"
+        ),
+        UniqueConstraint("organization_id", "number", name="uq_goods_receipts_org_number"),
+        Index(
+            "uq_goods_receipts_org_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index("ix_goods_receipts_org_po", "organization_id", "purchase_order_id"),
+        Index("ix_goods_receipts_org_supplier", "organization_id", "supplier_id"),
+        Index(
+            "ix_goods_receipts_org_created",
+            "organization_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+    )
+
+
+class GoodsReceiptLine(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One line of a receipt: what was entered (`entered_milli` of `entered_uom`), what it was in
+    the item's stock UOM (`received_milli`), and the figures the tolerance decision was made on —
+    ordered, previously received, cumulative after, the item's tolerance then — snapshotted, so
+    the audit of an over- or short-receipt never depends on what the item or PO says later.
+    `inventory_item_id`/`location_id` are NULL for a PO line whose SKU is no stocked item (a
+    service line): accounted, but no stock posted. `roll_ids` lists the rolls this line created."""
+
+    __tablename__ = "goods_receipt_lines"
+
+    goods_receipt_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.goods_receipts.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    purchase_order_line_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.purchase_order_lines.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    inventory_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.inventory_items.id", ondelete="RESTRICT")
+    )
+    location_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
+    )
+    stock_status: Mapped[str | None] = mapped_column(String(20))
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    supplier_lot_no: Mapped[str | None] = mapped_column(String(60))
+    roll_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    entered_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    entered_uom: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    received_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ordered_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    prior_received_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    cumulative_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tolerance_bp: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    close_short: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    outcome: Mapped[str] = mapped_column(String(8), nullable=False)
+    unit_cost_minor: Mapped[int | None] = mapped_column(BigInteger)
+    unit_cost_currency: Mapped[str | None] = mapped_column(String(3))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"outcome IN ({_RECEIPT_OUTCOME_SQL})", name="outcome_known"),
+        CheckConstraint("received_milli >= 0", name="received_non_negative"),
+        CheckConstraint("entered_milli >= 0", name="entered_non_negative"),
+        CheckConstraint("tolerance_bp BETWEEN 0 AND 10000", name="tolerance_range"),
+        ForeignKeyConstraint(
+            ["organization_id", "lot_id"],
+            ["operations.lots.organization_id", "operations.lots.id"],
+            name="fk_goods_receipt_lines_org_lot",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_goods_receipt_lines_org_receipt", "organization_id", "goods_receipt_id", "line_no"
+        ),
+        Index("ix_goods_receipt_lines_org_po_line", "organization_id", "purchase_order_line_id"),
+    )
+
+
+# ------------------------------------------------------------------ movements and control (Phase 3)
+
+TRANSFER_STATUSES = (
+    "DRAFT",
+    "REQUESTED",
+    "APPROVED",
+    "IN_TRANSIT",
+    "RECEIVED",
+    "CANCELLED",
+    "REJECTED",
+)
+_TRANSFER_STATUS_SQL = ", ".join(f"'{s}'" for s in TRANSFER_STATUSES)
+ADJUSTMENT_STATUSES = ("PENDING_APPROVAL", "APPLIED", "REJECTED", "CANCELLED", "FAILED")
+_ADJUSTMENT_STATUS_SQL = ", ".join(f"'{s}'" for s in ADJUSTMENT_STATUSES)
+
+
+class InventoryControlSettings(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One row per organization: the thresholds above which a transfer or an adjustment needs the
+    approval service (ADR-0006), and the document-number counters.
+
+    A threshold is milli-units of **each line's own item UOM** (an item is never summed with a
+    different unit's). `NULL` means "no threshold": a transfer then needs a direct sign-off by a
+    holder of `inventory.transfer.approve`, and an adjustment applies at once. The counters are
+    advanced with `INSERT .. ON CONFLICT DO UPDATE .. RETURNING`, so two creates never share a
+    number and the row is a short-lived lock, not a hot spot.
+    """
+
+    __tablename__ = "inventory_control_settings"
+
+    transfer_approval_threshold_milli: Mapped[int | None] = mapped_column(BigInteger)
+    adjustment_approval_threshold_milli: Mapped[int | None] = mapped_column(BigInteger)
+    next_transfer_no: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default=text("1")
+    )
+    next_adjustment_no: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default=text("1")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(
+            "transfer_approval_threshold_milli IS NULL OR transfer_approval_threshold_milli > 0",
+            name="transfer_threshold_positive",
+        ),
+        CheckConstraint(
+            "adjustment_approval_threshold_milli IS NULL "
+            "OR adjustment_approval_threshold_milli > 0",
+            name="adjustment_threshold_positive",
+        ),
+        CheckConstraint(
+            "next_transfer_no >= 1 AND next_adjustment_no >= 1", name="counters_positive"
+        ),
+        Index("uq_inventory_control_settings_org", "organization_id", unique=True),
+    )
+
+
+class StockTransfer(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """An inter-warehouse transfer document (ADR-0014 §6, Phase 3). Moves stock out of the source
+    warehouse into the `IN_TRANSIT` bucket at dispatch and into the destination at receipt — it
+    never writes a quantity itself; every movement is `ledger.post_move`.
+
+    `approval_route` is decided when the transfer is requested: `AUTO` (a threshold is set and
+    every line is under it — approved on the spot), `DIRECT` (no threshold — a holder of
+    `inventory.transfer.approve` other than the requester signs off), or `SERVICE` (at or over the
+    threshold — routed through the approval service over events, ADR-0006; the answer comes back
+    as `core.approval.request.decided`).
+    """
+
+    __tablename__ = "stock_transfers"
+
+    number: Mapped[str] = mapped_column(String(30), nullable=False)
+    from_warehouse_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.warehouses.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    to_warehouse_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.warehouses.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="DRAFT")
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    expected_on: Mapped[date | None] = mapped_column(Date)
+    approval_route: Mapped[str | None] = mapped_column(String(8))
+    approval_request_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    approver_name: Mapped[str | None] = mapped_column(String(200))
+    requested_by: Mapped[str | None] = mapped_column(String(64))
+    requested_by_employee_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_by: Mapped[str | None] = mapped_column(String(64))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_comment: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    dispatched_by: Mapped[str | None] = mapped_column(String(64))
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_by: Mapped[str | None] = mapped_column(String(64))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_reason: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    created_by: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"status IN ({_TRANSFER_STATUS_SQL})", name="status_known"),
+        CheckConstraint("from_warehouse_id <> to_warehouse_id", name="warehouses_differ"),
+        CheckConstraint(
+            "approval_route IS NULL OR approval_route IN ('AUTO', 'DIRECT', 'SERVICE')",
+            name="approval_route_known",
+        ),
+        Index("uq_stock_transfers_org_number", "organization_id", "number", unique=True),
+        Index(
+            "uq_stock_transfers_org_idempotency_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index(
+            "ix_stock_transfers_org_created",
+            "organization_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+        Index("ix_stock_transfers_org_status", "organization_id", "status"),
+        Index(
+            "ix_stock_transfers_org_approval_request",
+            "organization_id",
+            "approval_request_id",
+            postgresql_where=text("approval_request_id IS NOT NULL"),
+        ),
+    )
+
+
+class StockTransferLine(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One bucket of a transfer: `quantity_milli` is what was asked for; `dispatched_milli` what
+    left the source (all of it, at dispatch); `received_milli` + `shortage_milli` what the
+    destination has accounted for. `received + shortage <= dispatched <= quantity` is a CHECK."""
+
+    __tablename__ = "stock_transfer_lines"
+
+    transfer_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.stock_transfers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    from_location_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.locations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: Where the in-transit stock is held: the destination warehouse's default bin, fixed at
+    #: dispatch so a receipt takes it from exactly where it was put.
+    in_transit_location_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
+    )
+    to_location_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.locations.id", ondelete="RESTRICT")
+    )
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    dispatched_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    received_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    shortage_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    #: A shortage at or over the adjustment threshold, held while its adjustment request awaits a
+    #: decision: still in transit, but spoken for — it can be neither received nor reported short
+    #: again. Approval moves it into `shortage_milli`; rejection or cancellation releases it.
+    pending_shortage_milli: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+
+    __table_args__ = (
+        CheckConstraint("quantity_milli > 0", name="quantity_positive"),
+        CheckConstraint(
+            "dispatched_milli >= 0 AND received_milli >= 0 AND shortage_milli >= 0 "
+            "AND pending_shortage_milli >= 0 "
+            "AND dispatched_milli <= quantity_milli "
+            "AND received_milli + shortage_milli + pending_shortage_milli <= dispatched_milli",
+            name="quantities_within",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "lot_id"],
+            ["operations.lots.organization_id", "operations.lots.id"],
+            name="fk_stock_transfer_lines_org_lot",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "roll_id"],
+            ["operations.rolls.organization_id", "operations.rolls.id"],
+            name="fk_stock_transfer_lines_org_roll",
+            ondelete="RESTRICT",
+        ),
+        Index("uq_stock_transfer_lines_transfer_no", "transfer_id", "line_no", unique=True),
+        Index("ix_stock_transfer_lines_org_transfer", "organization_id", "transfer_id"),
+        Index("ix_stock_transfer_lines_org_item", "organization_id", "inventory_item_id"),
+    )
+
+
+class StockTransferTransition(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """Append-only trail of a transfer's state changes (the `order_transitions` shape):
+    `UPDATE`/`DELETE` revoked from the app role."""
+
+    __tablename__ = "stock_transfer_transitions"
+
+    transfer_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.stock_transfers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    from_status: Mapped[str | None] = mapped_column(String(12))
+    to_status: Mapped[str] = mapped_column(String(12), nullable=False)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"to_status IN ({_TRANSFER_STATUS_SQL})", name="to_status_known"),
+        Index(
+            "ix_stock_transfer_transitions_org_transfer",
+            "organization_id",
+            "transfer_id",
+            "created_at",
+        ),
+    )
+
+
+class AdjustmentRequest(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """A stock adjustment with its reason and evidence — **every** adjustment made through
+    `/operations/inventory/adjustments` is one of these, applied at once when under the
+    organization's threshold and held `PENDING_APPROVAL` (routed through the approval service,
+    ADR-0006) when at or over it. Applying posts one `adjustment` move through `ledger.post_move`
+    under a deterministic idempotency key, so a redelivered decision cannot post twice.
+
+    `evidence_document_id` is a plain UUID into the document service (ADR-0009) — no foreign key
+    crosses a schema boundary.
+    """
+
+    __tablename__ = "adjustment_requests"
+
+    number: Mapped[str] = mapped_column(String(30), nullable=False)
+    inventory_item_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inventory_items.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.locations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    stock_status: Mapped[str] = mapped_column(String(20), nullable=False, default="AVAILABLE")
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    quantity_delta_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: The transfer line whose shortage this request writes off, when it came from a receipt.
+    transfer_line_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    reason: Mapped[str] = mapped_column(String(20), nullable=False)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    evidence_document_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    occurred_on: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING_APPROVAL")
+    approval_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    approval_request_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    approver_name: Mapped[str | None] = mapped_column(String(200))
+    decided_by_name: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_comment: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    requested_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    requested_by_employee_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    applied_move_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.inventory_moves.id", ondelete="RESTRICT")
+    )
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_reason: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    cancelled_by: Mapped[str | None] = mapped_column(String(64))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"status IN ({_ADJUSTMENT_STATUS_SQL})", name="status_known"),
+        CheckConstraint(f"stock_status IN ({_STATUS_SQL})", name="stock_status_known"),
+        CheckConstraint("quantity_delta_milli <> 0", name="delta_non_zero"),
+        CheckConstraint(
+            "reason IN ('damaged', 'lost', 'found', 'consumed', 'returned', 'other')",
+            name="reason_known",
+        ),
+        CheckConstraint(
+            "NOT approval_required OR evidence_document_id IS NOT NULL",
+            name="approval_needs_evidence",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "lot_id"],
+            ["operations.lots.organization_id", "operations.lots.id"],
+            name="fk_adjustment_requests_org_lot",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "roll_id"],
+            ["operations.rolls.organization_id", "operations.rolls.id"],
+            name="fk_adjustment_requests_org_roll",
+            ondelete="RESTRICT",
+        ),
+        Index("uq_adjustment_requests_org_number", "organization_id", "number", unique=True),
+        Index(
+            "uq_adjustment_requests_org_idempotency_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index(
+            "ix_adjustment_requests_org_created",
+            "organization_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+        Index("ix_adjustment_requests_org_status", "organization_id", "status"),
+        Index(
+            "ix_adjustment_requests_org_approval_request",
+            "organization_id",
+            "approval_request_id",
+            postgresql_where=text("approval_request_id IS NOT NULL"),
+        ),
+    )
+
+
+# ------------------------------------------------------------------ quality (plan Phase 4)
+#
+# `item_id`, `location_id`, `lot_id`, `roll_id`, `template_id` and `supplier_id` on these tables are
+# **plain indexed UUIDs, never foreign keys** (docs/inventory/quality.md §2): an inspection is a
+# record about stock at a moment (`create_inspection` validates the lot and roll against Phase 1's
+# tables when it is opened, but the row keeps no FK to them) — it must
+# survive an item being renamed, a location being retired or a template being replaced, and must
+# not be able to block any of those. Every read re-checks organization on the referenced row.
+
+QC_KINDS = ("incoming", "in-process", "finished")
+QC_PARAM_KINDS = ("numeric", "pass_fail")
+INSPECTION_STATUSES = ("PENDING", "PASSED", "FAILED", "HOLD", "REWORK", "PARTIAL_PASS")
+_QC_KIND_SQL = ", ".join(f"'{k}'" for k in QC_KINDS)
+_INSPECTION_STATUS_SQL = ", ".join(f"'{s}'" for s in INSPECTION_STATUSES)
+
+
+class QcTemplate(Base, TenantBase):
+    """A reusable checklist of measurable parameters for one kind of inspection."""
+
+    __tablename__ = "qc_templates"
+
+    code: Mapped[str] = mapped_column(String(40), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    #: incoming | in-process | finished.
+    kind: Mapped[str] = mapped_column(String(12), nullable=False)
+    #: Optional narrowing to one item; plain UUID, no FK (see section comment).
+    item_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    description: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    create_key: Mapped[str | None] = mapped_column(String(128))
+    create_hash: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(f"kind IN ({_QC_KIND_SQL})", name="kind_known"),
+        Index(
+            "uq_qc_templates_org_code",
+            "organization_id",
+            "code",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "uq_qc_templates_org_create_key",
+            "organization_id",
+            "create_key",
+            unique=True,
+            postgresql_where=text("create_key IS NOT NULL"),
+        ),
+        Index("ix_qc_templates_org_kind", "organization_id", "kind"),
+    )
+
+
+class QcTemplateParam(Base, TenantBase):
+    """One measurable check. Bounds are milli-scaled integers (three implied decimals) — the same
+    exact-decimal representation quantities use; a float never touches one."""
+
+    __tablename__ = "qc_template_params"
+
+    template_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.qc_templates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    #: numeric | pass_fail.
+    kind: Mapped[str] = mapped_column(String(10), nullable=False, default="numeric")
+    unit: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    min_milli: Mapped[int | None] = mapped_column(BigInteger)
+    max_milli: Mapped[int | None] = mapped_column(BigInteger)
+    #: A failed critical parameter makes release impossible (domain.can_release).
+    is_critical: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('numeric', 'pass_fail')", name="kind_known"),
+        CheckConstraint(
+            "min_milli IS NULL OR max_milli IS NULL OR min_milli <= max_milli",
+            name="bounds_ordered",
+        ),
+        CheckConstraint(
+            "kind = 'numeric' OR (min_milli IS NULL AND max_milli IS NULL)",
+            name="pass_fail_has_no_bounds",
+        ),
+        Index(
+            "uq_qc_template_params_template_name",
+            "organization_id",
+            "template_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_qc_template_params_org_template", "organization_id", "template_id"),
+    )
+
+
+class Inspection(Base, TenantBase):
+    """One quality inspection of a quantity of stock (plan Phase 4).
+
+    `status` runs `app.quality.domain.INSPECTION_TRANSITIONS`. The inspected quantity sits in the
+    `QUALITY_HOLD` bucket from the moment the inspection is opened (or was received there), and
+    leaves it only through the kernel — released to `AVAILABLE`, rejected to `REJECTED` /
+    `QUARANTINE`, and finally disposed of (return to vendor / scrap) out of the rejected bucket.
+    """
+
+    __tablename__ = "inspections"
+
+    #: incoming | in-process | finished.
+    kind: Mapped[str] = mapped_column(String(12), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="PENDING")
+    template_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    item_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    location_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    supplier_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    reference_type: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    reference_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    accepted_milli: Mapped[int | None] = mapped_column(BigInteger)
+    rejected_milli: Mapped[int | None] = mapped_column(BigInteger)
+    #: Where rejected stock was parked: REJECTED | QUARANTINE.
+    rejected_bucket: Mapped[str | None] = mapped_column(String(20))
+    notes: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    hold_move_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    decision_move_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    decided_by: Mapped[str | None] = mapped_column(String(64))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    #: NONE | RETURN_TO_VENDOR | SCRAP — the follow-on for rejected stock.
+    disposition: Mapped[str] = mapped_column(String(20), nullable=False, default="NONE")
+    disposition_move_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    disposition_note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    disposition_reference: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    disposed_by: Mapped[str | None] = mapped_column(String(64))
+    disposed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    create_key: Mapped[str | None] = mapped_column(String(128))
+    create_hash: Mapped[str | None] = mapped_column(String(64))
+    decision_key: Mapped[str | None] = mapped_column(String(128))
+    decision_hash: Mapped[str | None] = mapped_column(String(64))
+    disposition_key: Mapped[str | None] = mapped_column(String(128))
+    disposition_hash: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(f"kind IN ({_QC_KIND_SQL})", name="kind_known"),
+        CheckConstraint(f"status IN ({_INSPECTION_STATUS_SQL})", name="status_known"),
+        CheckConstraint("quantity_milli > 0", name="quantity_positive"),
+        CheckConstraint(
+            "accepted_milli IS NULL OR (accepted_milli >= 0 AND accepted_milli <= quantity_milli)",
+            name="accepted_within_quantity",
+        ),
+        CheckConstraint(
+            "rejected_milli IS NULL OR (rejected_milli >= 0 AND rejected_milli <= quantity_milli)",
+            name="rejected_within_quantity",
+        ),
+        CheckConstraint(
+            "rejected_bucket IS NULL OR rejected_bucket IN ('REJECTED', 'QUARANTINE')",
+            name="rejected_bucket_known",
+        ),
+        CheckConstraint(
+            "disposition IN ('NONE', 'RETURN_TO_VENDOR', 'SCRAP')", name="disposition_known"
+        ),
+        Index("ix_inspections_org_status", "organization_id", "status"),
+        Index("ix_inspections_org_item", "organization_id", "item_id"),
+        Index("ix_inspections_org_lot", "organization_id", "lot_id"),
+        Index("ix_inspections_org_roll", "organization_id", "roll_id"),
+        Index("ix_inspections_org_location", "organization_id", "location_id"),
+        Index(
+            "uq_inspections_org_create_key",
+            "organization_id",
+            "create_key",
+            unique=True,
+            postgresql_where=text("create_key IS NOT NULL"),
+        ),
+    )
+
+
+class InspectionResult(Base, TenantBase):
+    """One measured parameter on an inspection. The parameter's name, bounds and criticality are
+    **snapshotted** at record time, so editing or deleting the template later never changes what
+    an inspection was judged against. `passed` is computed on the server, never trusted."""
+
+    __tablename__ = "inspection_results"
+
+    inspection_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.inspections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    param_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    param_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    param_kind: Mapped[str] = mapped_column(String(10), nullable=False, default="numeric")
+    unit: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    min_milli: Mapped[int | None] = mapped_column(BigInteger)
+    max_milli: Mapped[int | None] = mapped_column(BigInteger)
+    is_critical: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: The measured value for a numeric parameter; NULL for pass_fail.
+    value_milli: Mapped[int | None] = mapped_column(BigInteger)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    recorded_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint("param_kind IN ('numeric', 'pass_fail')", name="param_kind_known"),
+        Index(
+            "uq_inspection_results_inspection_param",
+            "organization_id",
+            "inspection_id",
+            "param_name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_inspection_results_org_inspection", "organization_id", "inspection_id"),
+    )
+
+
+# ------------------------------------------------------------------ job work (Phase 6)
+
+JOB_WORK_STATUSES = (
+    "DRAFT",
+    "APPROVED",
+    "ISSUED",
+    "PARTIALLY_RECEIVED",
+    "RECEIVED",
+    "CLOSED",
+    "CANCELLED",
+)
+_JOB_WORK_STATUS_SQL = ", ".join(f"'{s}'" for s in JOB_WORK_STATUSES)
+#: Where an order is while stock sits at the vendor — the states the overdue sweep watches.
+JOB_WORK_OPEN_AT_VENDOR = ("ISSUED", "PARTIALLY_RECEIVED")
+EWAY_STATUSES = ("NOT_REQUIRED", "REQUESTED", "GENERATED", "FAILED")
+_EWAY_STATUS_SQL = ", ".join(f"'{s}'" for s in EWAY_STATUSES)
+
+
+class JobWorkOrder(Base, TenantBase):
+    """Material sent to an outside processor (a dyer, a stitcher, a finisher) and expected back
+    (Inventory plan Phase 6). The document half of the story: the **stock** half lives in the
+    ledger, moved only through `app.inventory.ledger.post_move` — material at the vendor sits in
+    the `AT_JOB_WORKER` bucket, which is reported separately from on-hand (ADR-0014 §3).
+
+    `supplier_id` is a plain indexed UUID, never a foreign key — the vendor is a `suppliers` row
+    in this schema today, but nothing here may assume that stays true (CLAUDE.md: no FK that
+    would stop a later split). The same goes for `source_warehouse_id` and `receive_location_id`.
+
+    `status` runs `app.jobwork.domain.JOB_WORK_TRANSITIONS`. Being **overdue** is not a status:
+    it is derived (`due_date` passed while the order is still at the vendor), because a status
+    nobody can move out of except by receiving would be a second source of truth.
+
+    `transition_keys` maps an `Idempotency-Key` to the status it produced, so a retried approve /
+    cancel / close replays instead of answering 409 for a request that already succeeded. It is
+    read and written only under the order's own row lock.
+    """
+
+    __tablename__ = "job_work_orders"
+
+    number: Mapped[str] = mapped_column(String(40), nullable=False)
+    supplier_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: What the vendor does — "Dyeing", "Stitching". Free text; a process master is a later phase.
+    process: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="DRAFT")
+    due_date: Mapped[date | None] = mapped_column(Date)
+    source_warehouse_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: Where good and rejected goods land on return, unless a receipt line says otherwise.
+    receive_location_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: Returned goods go to `QUALITY_HOLD` and a QC hand-off event is emitted (the quality module
+    #: is built elsewhere and consumes the event; nothing here depends on it).
+    qc_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    notes: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    approved_by: Mapped[str | None] = mapped_column(String(64))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Set by the overdue sweep the first time it announces this order — one notification per
+    #: order, not one per tick.
+    overdue_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    transition_keys: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"status IN ({_JOB_WORK_STATUS_SQL})", name="status_known"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        Index("uq_job_work_orders_org_number", "organization_id", "number", unique=True),
+        Index(
+            "uq_job_work_orders_org_idempotency_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index("ix_job_work_orders_org_status", "organization_id", "status"),
+        Index("ix_job_work_orders_org_supplier", "organization_id", "supplier_id"),
+        Index(
+            "ix_job_work_orders_org_due_open",
+            "organization_id",
+            "due_date",
+            postgresql_where=text("status IN ('ISSUED', 'PARTIALLY_RECEIVED')"),
+        ),
+    )
+
+
+class JobWorkMaterial(Base, TenantBase):
+    """One bucket's worth of material on a job-work order.
+
+    `quantity_milli` is what was planned (and, once issued, sent: `sent_milli` is set to it at
+    issue). `received_milli` / `rejected_milli` / `shortage_milli` only ever grow, each by a
+    receipt, and `received + rejected + shortage <= sent` is a CHECK — so the reconciliation
+    identity `sent = received + rejected + shortage + outstanding` cannot be violated by a bug in
+    any one write path. `item_id`, `lot_id`, `roll_id`, `location_id` are plain UUIDs (lots and
+    rolls arrive from another branch).
+    """
+
+    __tablename__ = "job_work_materials"
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.job_work_orders.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    item_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: The bucket the material is issued **from**, and the `AT_JOB_WORKER` bucket's location.
+    location_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: Snapshots, so the challan and the screens never depend on a later edit of the item.
+    sku: Mapped[str] = mapped_column(String(60), nullable=False, default="")
+    uom: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    unit_value_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
+    quantity_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sent_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    received_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    rejected_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    shortage_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint("quantity_milli > 0", name="quantity_positive"),
+        CheckConstraint(
+            "sent_milli >= 0 AND received_milli >= 0 AND rejected_milli >= 0 "
+            "AND shortage_milli >= 0",
+            name="figures_non_negative",
+        ),
+        CheckConstraint(
+            "received_milli + rejected_milli + shortage_milli <= sent_milli",
+            name="accounted_within_sent",
+        ),
+        CheckConstraint("sent_milli = 0 OR sent_milli = quantity_milli", name="sent_is_planned"),
+        Index(
+            "uq_job_work_materials_bucket",
+            "organization_id",
+            "order_id",
+            "item_id",
+            "location_id",
+            "lot_id",
+            "roll_id",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+        ),
+        Index("uq_job_work_materials_line", "organization_id", "order_id", "line_no", unique=True),
+        Index("ix_job_work_materials_org_item", "organization_id", "item_id"),
+    )
+
+
+class JobWorkReceipt(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """One material's share of one receipt from the vendor — append-only (`job_work_receipts`
+    joins `APPEND_ONLY_TABLES`): a wrong receipt is never edited, the figures it moved are on the
+    ledger. A receipt document (`receipt_no`) is one row per material it covers.
+
+    `received_milli` came back good (into `good_status`), `rejected_milli` came back unusable
+    (into `REJECTED`), `shortage_milli` is declared lost at the vendor (written off the
+    `AT_JOB_WORKER` bucket through an adjustment). At least one is positive.
+    """
+
+    __tablename__ = "job_work_receipts"
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.job_work_orders.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    material_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.job_work_materials.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    receipt_no: Mapped[str] = mapped_column(String(40), nullable=False)
+    received_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    rejected_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    shortage_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    location_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    #: AVAILABLE, or QUALITY_HOLD when the order asked for a QC hand-off.
+    good_status: Mapped[str] = mapped_column(String(20), nullable=False, default="AVAILABLE")
+    qc_handoff: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    received_on: Mapped[date] = mapped_column(Date, nullable=False)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    return_move_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    shortage_move_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint(
+            "received_milli >= 0 AND rejected_milli >= 0 AND shortage_milli >= 0",
+            name="figures_non_negative",
+        ),
+        CheckConstraint(
+            "received_milli + rejected_milli + shortage_milli > 0", name="moves_something"
+        ),
+        Index("ix_job_work_receipts_org_order", "organization_id", "order_id", "created_at"),
+        Index("ix_job_work_receipts_org_material", "organization_id", "material_id"),
+        Index(
+            "uq_job_work_receipts_org_key_material",
+            "organization_id",
+            "idempotency_key",
+            "material_id",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
+
+
+class Challan(Base, TenantBase):
+    """The delivery challan that goes with material to a job worker (CGST Rule 55).
+
+    **Immutable once issued** — a database trigger refuses any change to the number, the order,
+    the supplier, the goods snapshot or the value (`migrations/versions/d7b3e5a19f62_job_work.py`);
+    only the e-way-bill facts (`eway_*`, and the transport fields that feed it) move afterwards,
+    because they are filled in by a later step and, eventually, by finance. Numbers come from a
+    gapless per-organization, per-financial-year series (`app.jobwork.numbering`).
+
+    The e-way bill itself is **not** built here: `eway_status` records only that this module asked
+    finance to consider one (`operations.jobwork.challan.eway_requested`, fire-and-forget, the
+    same hook `operations.dispatch.shipment.eway_requested` set) and what finance later answers.
+    """
+
+    __tablename__ = "challans"
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.job_work_orders.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    challan_number: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: DELIVERY (to the vendor) — the only kind issued today; the column leaves room for a
+    #: return challan without a migration of meaning.
+    kind: Mapped[str] = mapped_column(String(12), nullable=False, default="DELIVERY")
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    supplier_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    supplier_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    process: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    #: The goods, frozen at issue: `[{sku, uom, quantity, unit_value_minor, value_minor, ...}]`.
+    lines: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    total_value_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
+    #: Transport facts — the caller's, not derivable; feed finance's e-way machinery.
+    vehicle_no: Mapped[str | None] = mapped_column(String(20))
+    transporter_id: Mapped[str | None] = mapped_column(String(30))
+    distance_km: Mapped[int | None] = mapped_column(Integer)
+    eway_status: Mapped[str] = mapped_column(String(14), nullable=False, default="NOT_REQUIRED")
+    eway_bill_no: Mapped[str | None] = mapped_column(String(20))
+    eway_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    move_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('DELIVERY')", name="kind_known"),
+        CheckConstraint(f"eway_status IN ({_EWAY_STATUS_SQL})", name="eway_status_known"),
+        CheckConstraint("total_value_minor >= 0", name="value_non_negative"),
+        CheckConstraint("distance_km IS NULL OR distance_km >= 0", name="distance_non_negative"),
+        Index("uq_challans_org_number", "organization_id", "challan_number", unique=True),
+        Index(
+            "uq_challans_org_idempotency_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index("ix_challans_org_order", "organization_id", "order_id"),
     )
 
 

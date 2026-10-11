@@ -73,6 +73,12 @@ export function formatDate(iso: string | null): string {
   });
 }
 
+/** "24 Aug 2026 to open-ended", "Always" when neither end is set — an effective-date window. */
+export function formatDateRange(from: string | null, to: string | null): string {
+  if (!from && !to) return "Always";
+  return `${from ? formatDate(from) : "Any time"} to ${to ? formatDate(to) : "open-ended"}`;
+}
+
 /** Date and time together, the viewer's own local zone — for a timestamp where *when today* it
  *  happened matters (a sync attempt, a health check), not just which day. */
 export function formatDateTime(iso: string | null): string {

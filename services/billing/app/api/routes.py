@@ -54,7 +54,7 @@ async def list_invoices(session: SessionDep, ctx: InvoiceRead) -> list[InvoiceOu
 
 @router.get("/invoices/{invoice_id}", response_model=InvoiceOut, summary="One invoice")
 async def get_invoice(invoice_id: uuid.UUID, session: SessionDep, ctx: InvoiceRead) -> InvoiceOut:
-    invoice = await selectors.get_invoice(session, invoice_id)
+    invoice = await selectors.get_invoice(session, invoice_id, organization_id=ctx.organization_id)
     if invoice is None or invoice.state == INVOICE_DRAFT:
         # A billing-run draft is invisible to the customer until it is finalized.
         raise NotFoundProblem("No such invoice")
@@ -74,7 +74,9 @@ async def credit_balance(
     """Balance is derived, never stored: a `SUM` over the ledger rows whose validity window
     covers this instant. A lapsed grant is already gone from it, with nothing having run."""
     at = datetime.now(UTC)
-    balance = await selectors.credit_balance(session, currency=currency, at=at)
+    balance = await selectors.credit_balance(
+        session, organization_id=ctx.organization_id, currency=currency, at=at
+    )
     return CreditBalanceOut(
         organization_id=ctx.organization_id,
         currency=currency.upper(),

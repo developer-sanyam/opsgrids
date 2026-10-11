@@ -181,6 +181,47 @@ class TestIdentityForwarding:
         assert upstream.header("x-org-id") == ORG
         assert upstream.header("x-internal-token")
 
+    async def test_the_hop_token_binds_every_forwarded_header(
+        self, client: AsyncClient, mint, upstream: EchoUpstream
+    ) -> None:
+        """A captured hop token must not be replayable with an escalated `X-Perms` or
+        `X-Audience`: it binds a digest of every forwarded header, the visitor's resolved
+        address among them — never an address the caller wrote."""
+        from app.config import settings
+        from platform_core.internal_auth import forwarded_headers_digest, verify_gateway_token
+
+        await client.get(
+            STAFF_ROUTE,
+            headers={
+                **auth(mint(staff=True)),
+                "X-Forwarded-For": "198.51.100.9",
+                "X-Client-Ip": "203.0.113.66",
+            },
+        )
+        forwarded = upstream.last["headers"]
+        claims = verify_gateway_token(settings(), forwarded["x-internal-token"])
+        assert forwarded["x-client-ip"] == "198.51.100.9"
+        assert claims["fwd"] == forwarded_headers_digest(forwarded)
+
+    async def test_operator_sign_in_carries_the_visitors_address_under_a_hop_naming_nobody(
+        self, client: AsyncClient, upstream: EchoUpstream
+    ) -> None:
+        """Anonymous, so the address is bound by a hop token that names no user and no
+        organization. (The admin-hop signature on the same request is `test_hop_signing`'s.)"""
+        from app.config import settings
+        from platform_core.internal_auth import forwarded_headers_digest, verify_gateway_token
+
+        await client.post(
+            "/api/v1/auth/operator/login",
+            json={"email": "a@example.com", "password": "x"},
+            headers={"X-Forwarded-For": "198.51.100.10"},
+        )
+        forwarded = upstream.last["headers"]
+        claims = verify_gateway_token(settings(), forwarded["x-internal-token"])
+        assert forwarded["x-client-ip"] == "198.51.100.10"
+        assert claims["fwd"] == forwarded_headers_digest(forwarded)
+        assert "uid" not in claims and "org" not in claims
+
     async def test_client_supplied_staff_claims_are_stripped(
         self, client: AsyncClient, mint, upstream: EchoUpstream
     ) -> None:
@@ -210,6 +251,21 @@ class TestRateLimiting:
         redis.fail = True
         response = await client.get(STAFF_ROUTE, headers=auth(mint(staff=True)))
         assert response.status_code == 503
+
+    async def test_two_visitors_behind_the_same_proxy_get_two_different_buckets(
+        self, client: AsyncClient, redis: FakeRedis, upstream: EchoUpstream
+    ) -> None:
+        """Without this, every anonymous caller behind Caddy shared one 30/min bucket, so
+        anyone could lock all staff out of operator sign-in by sending 31 requests."""
+        for addr in ("198.51.100.1", "198.51.100.2"):
+            await client.post(
+                "/api/v1/auth/operator/login",
+                json={"email": "a@example.com", "password": "x"},
+                headers={"X-Forwarded-For": addr},
+            )
+        buckets = {k for k in redis.store if k.startswith("rl:anon:")}
+        assert any("198.51.100.1" in b for b in buckets)
+        assert any("198.51.100.2" in b for b in buckets)
 
 
 class TestPermissionResolution:

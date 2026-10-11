@@ -42,6 +42,7 @@ from app.models import (
     Uom,
     Warehouse,
 )
+from app.receiving import domain as receiving_domain
 from app.schemas import (
     InventoryItemPatch,
     ItemAttributeIn,
@@ -133,6 +134,20 @@ async def _resolve_location_parent(
     if parent is None or parent.warehouse_id != warehouse_id:
         raise ValidationProblem("parent_id does not match an existing location in this warehouse")
     return parent_id
+
+
+def _tolerance_bp(pct: str) -> int:
+    """A wire tolerance percentage -> integer basis points, a 422 if it is not 0-100 with at most
+    two decimals."""
+    try:
+        return receiving_domain.parse_tolerance_pct(pct)
+    except ValueError as exc:
+        raise ValidationProblem(
+            str(exc),
+            errors=[
+                {"field": "receipt_tolerance_pct", "code": "invalid_tolerance", "message": str(exc)}
+            ],
+        ) from exc
 
 
 async def _flush_item(session: AsyncSession, item: InventoryItem) -> None:
@@ -1018,8 +1033,10 @@ async def create_inventory_item(
     track_expiry: bool = False,
     track_quality: bool = False,
     is_active: bool = True,
+    receipt_tolerance_pct: str = "0",
     selling_price_minor: int | None = None,
     selling_price_currency: str | None = None,
+    barcode: str | None = None,
     request: Request | None = None,
 ) -> InventoryItem:
     """Create an inventory item at its warehouse's default bin. `unit_value_minor` is per-unit
@@ -1042,6 +1059,12 @@ async def create_inventory_item(
         raise ConflictProblem(f"An inventory item with SKU {sku!r} already exists")
     if await inv_selectors.get_item_variant_by_sku(session, ctx.organization_id, sku):
         raise ConflictProblem(f"A variant with SKU {sku!r} already exists")
+    if barcode is not None and await inv_selectors.item_barcode_taken(
+        session, ctx.organization_id, barcode
+    ):
+        raise _duplicate("barcode", f"Barcode {barcode!r} is already in use")
+    if await inv_selectors.item_barcode_taken(session, ctx.organization_id, sku, only_barcode=True):
+        raise _duplicate("sku", f"SKU {sku!r} is already in use as another item's barcode")
     home = await _home_for(session, ctx.organization_id, warehouse) if warehouse else None
     resolved_uom = (
         await resolve_or_create_uom(session, ctx.organization_id, uom, str(ctx.principal.sub))
@@ -1076,6 +1099,8 @@ async def create_inventory_item(
         track_expiry=track_expiry,
         track_quality=track_quality,
         is_active=is_active,
+        receipt_tolerance_bp=_tolerance_bp(receipt_tolerance_pct),
+        barcode=barcode,
         selling_price_minor=selling_price_minor,
         selling_price_currency=(
             selling_price_currency.upper() if selling_price_currency else selling_price_currency
@@ -1149,6 +1174,9 @@ async def update_inventory_item(
     at a place.
     """
     changes = payload.model_dump(exclude_unset=True)
+    if "receipt_tolerance_pct" in changes:
+        # Stored as integer basis points; the wire carries the percentage string.
+        changes["receipt_tolerance_bp"] = _tolerance_bp(changes.pop("receipt_tolerance_pct"))
     new_home: Location | None = None
     if "warehouse" in changes and changes["warehouse"] != item.warehouse:
         new_home = await _home_for(session, ctx.organization_id, changes["warehouse"])
@@ -1184,6 +1212,15 @@ async def update_inventory_item(
         )
     if changes.get("selling_price_currency"):
         changes["selling_price_currency"] = changes["selling_price_currency"].upper()
+    # `exclude_unset` already dropped an omitted barcode, so an explicit null here clears it.
+    if (
+        changes.get("barcode") is not None
+        and changes["barcode"] != item.barcode
+        and await inv_selectors.item_barcode_taken(
+            session, ctx.organization_id, changes["barcode"], exclude=item.id
+        )
+    ):
+        raise _duplicate("barcode", f"Barcode {changes['barcode']!r} is already in use")
 
     before = {field: getattr(item, field) for field in changes}
     old_home = item.home_location_id
@@ -1702,49 +1739,6 @@ async def adjust_stock(
         actor=_actor(ctx),
     )
     return item
-
-
-async def receive_into_home(
-    session: AsyncSession,
-    ctx: ScopeContext,
-    item: InventoryItem,
-    *,
-    quantity: int,
-    purchase_order_id: uuid.UUID,
-    occurred_on: date,
-    unit_cost_minor: int | None = None,
-    unit_cost_currency: str | None = None,
-    request: Request | None = None,
-) -> uuid.UUID:
-    """Post a purchase-order line's receipt (whole units) into the item's home bucket; returns
-    the ledger entry id. `item` must be locked by the caller.
-
-    `unit_cost_currency` is the PO's currency, not necessarily the item's: a receipt is recorded
-    in whatever currency it was actually priced in, never converted (ADR-0014 §8). One of
-    `unit_cost_minor` / `unit_cost_currency` given without the other is a bug in the caller — the
-    kernel refuses it rather than guessing.
-    """
-    posted = await ledger.post_move(
-        session,
-        ctx,
-        kind="receipt",
-        lines=[
-            MoveLine(
-                item_id=item.id,
-                location_id=_home(item),
-                quantity_milli=quantity * QTY_SCALE,
-                unit_cost_minor=unit_cost_minor,
-                unit_cost_currency=unit_cost_currency,
-            )
-        ],
-        reference_type="purchase_order",
-        reference_id=purchase_order_id,
-        occurred_on=occurred_on,
-        request=request,
-    )
-    item.stocked_at = occurred_on
-    await _flush_item(session, item)
-    return posted.entries[0].id
 
 
 # ------------------------------------------------------------------ reconciliation

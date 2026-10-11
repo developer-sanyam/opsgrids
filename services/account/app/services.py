@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, delete, text, update
+from sqlalchemy import CursorResult, delete, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -1051,6 +1051,12 @@ async def set_member_roles(
     The bump is what makes a revocation take effect on the next request rather than when
     the access token happens to expire.
     """
+    if membership.is_owner and "ORG_OWNER" not in role_codes:
+        # The same rule as `revoke_member`: emptying the owner's roles is removing them.
+        raise BusinessRuleProblem(
+            "The owner's ORG_OWNER role cannot be removed. Transfer ownership first, so the "
+            "account is never left with nobody who can administer it."
+        )
     before = sorted(mr.role.code for mr in membership.roles)
 
     resolved = await _resolve_assignable_roles(session, ctx, role_codes)
@@ -2230,6 +2236,114 @@ class ReconcileSummary:
     admin_grant: AdminGrant
 
 
+#: Permission splits that must reach customer-authored roles too. Widening a template never
+#: touches those (ADR-0007 §4), so a capability that moved to new permissions would silently
+#: leave them: `(product, held, also_needed)` gives every role holding `held` the others at the
+#: scope it already holds — ORG only, the floor of the routes that use them; narrower holders are
+#: reported in `skipped_customer_roles`.
+_CARRY_FORWARD: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "operations",
+        "operations.procurement.purchase_order.write",
+        ("operations.procurement.receipt.write", "operations.inventory.stock.receive"),
+    ),
+)
+
+
+_CARRY_FORWARD_ACTION = "permissions.carry_forward"
+
+
+async def _carry_forward_grants(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    product: str,
+    diff: RegistrationDiff,
+    *,
+    acting_as: str,
+    dry_run: bool,
+) -> None:
+    """Union the `_CARRY_FORWARD` permissions into the organization's customer-authored roles —
+    **once per organization and rule**. It migrates roles that predate the split; running it on
+    every reconcile would undo an admin's deliberate removal (a buyer who must not receive) with a
+    grant nobody made. A marker audit row records that a rule ran, and each grant it adds gets its
+    own audit row."""
+    rules = [(held, needed) for p, held, needed in _CARRY_FORWARD if p == product]
+    marked = {
+        row
+        for (row,) in (
+            await session.execute(
+                select(AuditLog.after["rule"].astext).where(
+                    AuditLog.organization_id == org_id,
+                    AuditLog.action == _CARRY_FORWARD_ACTION,
+                    AuditLog.entity == "organization",
+                    AuditLog.entity_id == org_id,
+                )
+            )
+        )
+    }
+    rules = [(held, needed) for held, needed in rules if f"{product}:{held}" not in marked]
+    if not rules:
+        return
+    roles = await selectors.customer_roles(session, org_id)
+    for role in roles:
+        before = sorted(f"{g.permission.code}:{g.scope}" for g in role.grants)
+        existing = {g.permission.code for g in role.grants}
+        changed = False
+        for held, needed in rules:
+            source = next((g for g in role.grants if g.permission.code == held), None)
+            if source is None:
+                continue
+            if source.scope != "ORG":
+                # The receive routes demand ORG scope: carrying a narrower grant restores
+                # nothing (403), and lifting it would be a privilege grant nobody made. Report.
+                if role.code not in diff.skipped_customer_roles:
+                    diff.skipped_customer_roles.append(role.code)
+                continue
+            for code in needed:
+                permission = await selectors.get_permission_by_code(session, code)
+                if permission is None or code in existing:
+                    continue
+                scope = min_scope(source.scope, permission.max_scope)
+                session.add(RolePermission(role=role, permission=permission, scope=scope))
+                existing.add(code)
+                diff.grants_added.append((role.code, code, scope))
+                changed = True
+                if not dry_run:
+                    record_audit(
+                        session,
+                        AuditLog,
+                        organization_id=org_id,
+                        actor_id=None,
+                        acting_as=acting_as,
+                        action="role.grant_carried_forward",
+                        entity="role",
+                        entity_id=role.id,
+                        after={"role": role.code, "permission": code, "scope": scope},
+                        reason=f"carried forward from {held}",
+                    )
+        if changed:
+            diff.role_grants_before[role.code] = before
+            diff.role_grants_after[role.code] = sorted(
+                f"{g.permission.code}:{g.scope}" for g in role.grants
+            )
+    if dry_run:
+        return
+    for held, needed in rules:
+        # Not marked while a permission is unregistered: the rule has not been able to run yet.
+        if all([await selectors.get_permission_by_code(session, code) for code in needed]):
+            record_audit(
+                session,
+                AuditLog,
+                organization_id=org_id,
+                actor_id=None,
+                acting_as=acting_as,
+                action=_CARRY_FORWARD_ACTION,
+                entity="organization",
+                entity_id=org_id,
+                after={"rule": f"{product}:{held}"},
+            )
+
+
 async def reconcile_registration(
     session: AsyncSession,
     org_id: uuid.UUID,
@@ -2276,6 +2390,9 @@ async def reconcile_registration(
     happened when nothing was meant to.
     """
     diff = await install_registration(session, org_id, registration)
+    await _carry_forward_grants(
+        session, org_id, registration.product, diff, acting_as=acting_as, dry_run=dry_run
+    )
 
     admin_grant = AdminGrant()
     if product_active and admin_role_codes:

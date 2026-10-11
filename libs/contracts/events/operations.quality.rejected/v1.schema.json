@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.quality.rejected/v1",
+  "title": "operations.quality.rejected",
+  "description": "Held stock was rejected: moved QUALITY_HOLD -> `bucket` (REJECTED or QUARANTINE) through `post_move`. Published for a full rejection (FAILED) and for the rejected remainder of a PARTIAL_PASS. `rejected_milli` is the quantity rejected by this decision.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "inspection_id",
+    "item_id",
+    "location_id",
+    "lot_id",
+    "roll_id",
+    "quantity_milli",
+    "status",
+    "rejected_milli",
+    "bucket",
+    "reason",
+    "move_id"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "inspection_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "item_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "location_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "lot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "roll_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "quantity_milli": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "FAILED",
+        "PARTIAL_PASS"
+      ]
+    },
+    "rejected_milli": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "bucket": {
+      "type": "string",
+      "enum": [
+        "REJECTED",
+        "QUARANTINE"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "move_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  }
+}

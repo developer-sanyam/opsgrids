@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.transfer.dispatched/v1",
+  "title": "operations.inventory.transfer.dispatched",
+  "description": "Stock left the source warehouse for the destination's IN_TRANSIT bucket (one `relocation` move). Physical on-hand fell at the source; the stock is not in the destination's yet.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "transfer_id",
+    "number",
+    "from_warehouse_id",
+    "to_warehouse_id",
+    "move_id",
+    "in_transit_location_id",
+    "lines"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "transfer_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string"
+    },
+    "from_warehouse_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "to_warehouse_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "move_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "in_transit_location_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "lines": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "line_id",
+          "inventory_item_id",
+          "lot_id",
+          "roll_id",
+          "quantity"
+        ],
+        "properties": {
+          "line_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "inventory_item_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "lot_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "roll_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "quantity": {
+            "type": "string",
+            "pattern": "^-?\\d+(\\.\\d{1,3})?$"
+          }
+        }
+      }
+    }
+  }
+}

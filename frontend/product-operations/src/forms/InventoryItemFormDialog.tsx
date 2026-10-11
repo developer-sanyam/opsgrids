@@ -39,6 +39,8 @@ const CATEGORY_OPTIONS: { value: Category; label: string }[] = [
 ];
 
 const SKU_PATTERN = /^[A-Za-z0-9._-]+$/;
+/** The server's `TolerancePct`: up to three whole numbers' worth of digits, at most two decimals. */
+const TOLERANCE_PATTERN = /^\d{1,3}(\.\d{1,2})?$/;
 
 const STEPS: StepItem[] = [
   { id: "details", title: "Item details", description: "Identity, stock and value" },
@@ -94,6 +96,8 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
   const [isActive, setIsActive] = useState(item?.is_active ?? true);
   const [textile, setTextile] = useState<Record<string, string>>({});
   const [textileErrors, setTextileErrors] = useState<Record<string, string>>({});
+  const [tolerance, setTolerance] = useState(item?.receipt_tolerance_pct ?? "0");
+  const [toleranceError, setToleranceError] = useState<string | undefined>(undefined);
 
   const [skuError, setSkuError] = useState<string | undefined>(undefined);
   const [nameError, setNameError] = useState<string | undefined>(undefined);
@@ -143,7 +147,8 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
     hsnCode !== (item?.hsn_code ?? "") ||
     tracking.join(",") !== TRACKING_OPTIONS.filter((o) => item?.[o.value]).map((o) => o.value).join(",") ||
     isActive !== (item?.is_active ?? true) ||
-    Object.values(textile).some((v) => v !== "");
+    Object.values(textile).some((v) => v !== "") ||
+    tolerance !== (item?.receipt_tolerance_pct ?? "0");
 
   const detailsInvalid = Boolean(
     skuError ??
@@ -232,6 +237,11 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
       setStep(0);
       return;
     }
+    setToleranceError(undefined);
+    if (!TOLERANCE_PATTERN.test(tolerance.trim())) {
+      setToleranceError("Enter a percentage with at most two decimals, like 2.5.");
+      return;
+    }
     // `validateDetails` above already refused an empty category — this is only for the
     // narrowing, so the payload below can carry a `Category` rather than `Category | ""`.
     if (category === "") return;
@@ -266,6 +276,7 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
         secondary_uom_id: secondaryUomId === "" ? null : secondaryUomId,
         hsn_code: hsnCode.trim(),
         ...trackingFlags,
+        receipt_tolerance_pct: tolerance.trim(),
         is_active: isActive,
       };
       void save.mutate({ body: patch, attributes: [] });
@@ -287,6 +298,7 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
       ...(secondaryUomId === "" ? {} : { secondary_uom_id: secondaryUomId }),
       hsn_code: hsnCode.trim(),
       ...trackingFlags,
+      receipt_tolerance_pct: tolerance.trim(),
       is_active: isActive,
     };
     void save.mutate({ body: input, attributes: preset.attributes });
@@ -434,6 +446,16 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
             onChange={(e) => setHsnCode(e.target.value)}
             placeholder="e.g. 5208"
             helper="Tax classification, optional."
+          />
+          <TextField
+            label="Receipt tolerance (%)"
+            inputMode="decimal"
+            value={tolerance}
+            onChange={(e) => setTolerance(e.target.value)}
+            helper="How far over the ordered quantity a delivery may go and still be received."
+            {...((toleranceError ?? save.fieldErrors.receipt_tolerance_pct) !== undefined
+              ? { error: toleranceError ?? save.fieldErrors.receipt_tolerance_pct }
+              : {})}
           />
           <div className="col-span-full grid gap-4 sm:grid-cols-2">
             <CheckboxGroup

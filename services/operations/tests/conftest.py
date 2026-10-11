@@ -43,6 +43,35 @@ from tests.helpers import ctx_for
 
 TENANT_TABLES = (
     "putaway_captures",
+    "stock_transfer_transitions",
+    "stock_transfer_lines",
+    "stock_transfers",
+    "adjustment_requests",
+    "inventory_control_settings",
+    "inspection_results",
+    "inspections",
+    "qc_template_params",
+    "qc_templates",
+    "mrp_shortage_lines",
+    "mrp_shortages",
+    "mrp_demands",
+    "mrp_runs",
+    "manufacturing_requests",
+    "wastage_thresholds",
+    "production_genealogy",
+    "production_wastage",
+    "production_outputs",
+    "production_picks",
+    "production_materials",
+    "production_orders",
+    "bom_substitutes",
+    "bom_components",
+    "bom_versions",
+    "boms",
+    "challans",
+    "job_work_receipts",
+    "job_work_materials",
+    "job_work_orders",
     "channel_sync_logs",
     "channel_order_imports",
     "channel_sku_mappings",
@@ -66,8 +95,13 @@ TENANT_TABLES = (
     "order_lines",
     "orders",
     "fulfilment_settings",
+    "goods_receipt_lines",
+    "goods_receipts",
+    "purchase_requisition_lines",
+    "purchase_requisitions",
     "purchase_order_lines",
     "purchase_orders",
+    "inventory_import_runs",
     "roll_events",
     "lot_genealogy",
     "inventory_discrepancies",
@@ -127,6 +161,12 @@ async def session(org_id: uuid.UUID) -> AsyncIterator[AsyncSession]:
 
         @event.listens_for(s.sync_session, "after_begin")
         def _bind(_session, _transaction, connection) -> None:  # type: ignore[no-untyped-def]
+            # A SAVEPOINT also fires `after_begin`. The GUC is already set for the enclosing
+            # transaction (by this hook, or by `get_tenant_session` for the principal of the
+            # request), and re-stamping the fixture's org here would silently turn a request made
+            # as another tenant, inside a savepoint, into one made as this one.
+            if getattr(_transaction, "nested", False):
+                return
             connection.exec_driver_sql(f"SELECT set_config('{TENANT_GUC}', '{org_id}', true)")
 
         yield s

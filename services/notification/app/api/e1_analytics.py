@@ -23,6 +23,7 @@ from app import e1_analytics, e1_tracking
 from app.api.engage import _PUBLIC_HEADERS, CampaignRead, Entitled, PlainSessionDep, SessionDep
 from app.e1_schemas import CampaignAnalyticsOut, EmailOverviewOut
 from app.models import CampaignRecipient
+from platform_core.auth import client_ip
 from platform_core.db import set_tenant
 from platform_core.errors import NotFoundProblem, ValidationProblem
 
@@ -32,13 +33,6 @@ public_router = APIRouter(tags=["engage-public"])
 #: Repeated fetches must reach us: an image cached by an intermediary would hide every later open.
 _NO_STORE = {**_PUBLIC_HEADERS, "Cache-Control": "no-store, max-age=0"}
 _NOT_FOUND = "This link is not valid"
-
-
-def _client_ip(request: Request) -> str | None:
-    """Read for classification only (Apple's proxy range) and dropped: never stored or logged."""
-    return request.headers.get("x-forwarded-for") or (
-        request.client.host if request.client else None
-    )
 
 
 async def _recipient_context(session, organization_id: uuid.UUID, recipient_id: uuid.UUID):  # type: ignore[no-untyped-def]
@@ -67,7 +61,7 @@ async def track_open(token: str, request: Request, session: PlainSessionDep) -> 
         if context is not None:
             campaign_id, sent_at = context
             device, machine = e1_tracking.classify(
-                request.headers.get("user-agent"), client_ip=_client_ip(request), sent_at=sent_at
+                request.headers.get("user-agent"), client_ip=client_ip(request), sent_at=sent_at
             )
             await e1_tracking.record_event(
                 session,
@@ -106,7 +100,7 @@ async def track_click(token: str, request: Request, session: PlainSessionDep) ->
         ):
             raise NotFoundProblem(_NOT_FOUND, headers=_NO_STORE)
         device, machine = e1_tracking.classify(
-            request.headers.get("user-agent"), client_ip=_client_ip(request), sent_at=context[1]
+            request.headers.get("user-agent"), client_ip=client_ip(request), sent_at=context[1]
         )
         await e1_tracking.record_event(
             session,

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.stock.adjusted/v1",
+  "title": "operations.inventory.stock.adjusted",
+  "description": "The item-level adjust/count endpoint changed an item's home bucket (whole units).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "inventory_item_id",
+    "sku",
+    "movement_id",
+    "quantity_delta",
+    "on_hand_after",
+    "kind"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "inventory_item_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "sku": {
+      "type": "string"
+    },
+    "movement_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "quantity_delta": {
+      "type": "integer"
+    },
+    "on_hand_after": {
+      "type": "integer"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "adjustment",
+        "count"
+      ]
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "description": "Shared test vectors for the inventory scan payload (ADR-0027). The Python implementation (services/operations/app/inventory/barcode.py) and the TypeScript one (frontend/product-operations/src/lib/scanPayload.ts) are both checked against this file.",
+  "format": [
+    { "type": "item", "code": "FAB-001", "payload": "og:item:FAB-001" },
+    { "type": "lot", "code": "LOT-2026/10-A", "payload": "og:lot:LOT-2026/10-A" },
+    { "type": "roll", "code": "R-1", "payload": "og:roll:R-1" },
+    { "type": "location", "code": "WH1-A-01", "payload": "og:location:WH1-A-01" },
+    { "type": "item", "code": "8901234567890", "payload": "og:item:8901234567890" },
+    { "type": "roll", "code": "A:B:C", "payload": "og:roll:A:B:C" },
+    { "type": "item", "code": "with space", "payload": "og:item:with space" }
+  ],
+  "parse": [
+    { "input": "og:item:FAB-001", "type": "item", "code": "FAB-001" },
+    { "input": "  og:lot:LOT-2026/10-A\r\n", "type": "lot", "code": "LOT-2026/10-A" },
+    { "input": "og:roll:A:B:C", "type": "roll", "code": "A:B:C" },
+    { "input": "8901234567890", "type": null, "code": "8901234567890" },
+    { "input": "BIN-07", "type": null, "code": "BIN-07" }
+  ],
+  "reject": [
+    "",
+    "   ",
+    "og:",
+    "og:item",
+    "og:item:",
+    "og:box:X1",
+    "og:item:café",
+    "og:item:tab\there",
+    "og:lot:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  ]
+}

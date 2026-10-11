@@ -78,7 +78,9 @@ async def finalize_invoice(
     async with session.begin():
         await _bind(session, payload.organization_id, request)
         invoice = await services.finalize_invoice(session, payload, request=request)
-        fresh = await services.require_invoice(session, invoice.id)
+        fresh = await services.require_invoice(
+            session, invoice.id, organization_id=payload.organization_id
+        )
         return InvoiceOut.model_validate(fresh)
 
 
@@ -196,9 +198,13 @@ async def void_invoice(
 ) -> InvoiceOut:
     async with session.begin():
         await _bind(session, payload.organization_id, request)
-        invoice = await services.require_invoice(session, invoice_id)
+        invoice = await services.require_invoice(
+            session, invoice_id, organization_id=payload.organization_id
+        )
         invoice = await services.void_invoice(session, invoice, payload, request=request)
-        fresh = await services.require_invoice(session, invoice.id)
+        fresh = await services.require_invoice(
+            session, invoice.id, organization_id=payload.organization_id
+        )
         return InvoiceOut.model_validate(fresh)
 
 
@@ -253,14 +259,16 @@ async def get_credit_pack(
     """
     async with session.begin():
         await _bind(session, organization_id, request)
-        pack = await selectors.get_credit_entry(session, pack_id)
+        pack = await selectors.get_credit_entry(session, pack_id, organization_id=organization_id)
         if pack is None:
             raise NotFoundProblem("No such credit ledger entry")
         if pack.entry_type != CREDIT_GRANT:
             raise BusinessRuleProblem(
                 f"entry {pack.id} is a {pack.entry_type}, not a grant, so it is not a pack"
             )
-        remaining = await selectors.pack_remaining(session, pack.id)
+        remaining = await selectors.pack_remaining(
+            session, pack.id, organization_id=organization_id
+        )
         at = datetime.now(UTC)
         return CreditPackOut(
             id=pack.id,

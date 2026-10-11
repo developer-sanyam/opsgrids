@@ -112,7 +112,7 @@ class _FakeSmtp:
         self.wire.smtp.append(self.session)
         self.wire.touch("smtp")
 
-    def starttls(self) -> None:
+    def starttls(self, context: Any = None) -> None:
         self.session["tls"] = True
 
     def login(self, user: str, password: str) -> None:

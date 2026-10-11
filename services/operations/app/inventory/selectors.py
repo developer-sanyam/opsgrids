@@ -33,6 +33,7 @@ from app.models import (
     Warehouse,
     WarehouseFloor,
 )
+from app.receiving import domain as receiving_domain
 from app.schemas import (
     InventoryDiscrepancyOut,
     InventoryItemOut,
@@ -106,8 +107,8 @@ def inventory_stmt(
 async def get_inventory_by_sku(
     session: AsyncSession, org_id: uuid.UUID, sku: str, *, for_update: bool = False
 ) -> InventoryItem | None:
-    """Fetch by SKU — used by the demo seed for idempotency, and by `receive_purchase_order`
-    (locked) to match a PO line against a stocked item."""
+    """Fetch by SKU — used by the demo seed for idempotency, and by the goods-receipt
+    path (`app.receiving.receipts`, locked) to match a PO line against a stocked item."""
     stmt = select(InventoryItem).where(
         InventoryItem.sku == sku,
         InventoryItem.organization_id == org_id,
@@ -116,6 +117,29 @@ async def get_inventory_by_sku(
     if for_update:
         stmt = stmt.with_for_update(of=InventoryItem)
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def item_barcode_taken(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    barcode: str,
+    *,
+    exclude: uuid.UUID | None = None,
+    only_barcode: bool = False,
+) -> bool:
+    """Whether a live item of this organization already carries `barcode` — or has it as its SKU,
+    unless `only_barcode`. A scan matches either column, so a barcode equal to another item's SKU
+    would make that SKU unscannable; `only_barcode` is the reverse check, for a new SKU."""
+    stmt = select(InventoryItem.id).where(
+        InventoryItem.organization_id == org_id,
+        InventoryItem.barcode == barcode
+        if only_barcode
+        else or_(InventoryItem.barcode == barcode, InventoryItem.sku == barcode),
+        InventoryItem.deleted_at.is_(None),
+    )
+    if exclude is not None:
+        stmt = stmt.where(InventoryItem.id != exclude)
+    return (await session.execute(stmt.limit(1))).first() is not None
 
 
 async def get_inventory_item(
@@ -598,7 +622,7 @@ async def count_open_purchase_orders_for_warehouse(
             PurchaseOrder.organization_id == org_id,
             PurchaseOrder.warehouse == warehouse_name,
             PurchaseOrder.deleted_at.is_(None),
-            PurchaseOrder.status.in_(("draft", "approved")),
+            PurchaseOrder.status.in_(("draft", "approved", "partially_received")),
         )
     )
     return (await session.execute(stmt)).scalar_one()
@@ -757,8 +781,10 @@ def inventory_out(item: InventoryItem) -> InventoryItemOut:
         track_expiry=item.track_expiry,
         track_quality=item.track_quality,
         is_active=item.is_active,
+        receipt_tolerance_pct=receiving_domain.format_tolerance_pct(item.receipt_tolerance_bp),
         selling_price_minor=item.selling_price_minor,
         selling_price_currency=item.selling_price_currency,
+        barcode=item.barcode,
     )
 
 

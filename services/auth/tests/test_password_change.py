@@ -26,7 +26,7 @@ from sqlalchemy import func, select
 
 from app import security, services
 from app.models import Credential, OutboxEvent, RefreshToken, Session
-from platform_core.errors import ForbiddenProblem, UnauthorizedProblem
+from platform_core.errors import UnauthorizedProblem
 from tests.conftest import ORG_A, PASSWORD, USER, FakeEntitlements
 from tests.test_mfa_enrolment import (
     WRONG_PASSWORD_X,
@@ -343,9 +343,10 @@ class TestAWrongCurrentPassword:
         assert live_refresh == 0
         assert (await _audit(session, "auth.password_change_failed"))[-1].after["locked"] is True
 
-        # Sign-in is locked too, even for the right password, and the dead session's bearer is
-        # refused outright without touching the counter.
-        with pytest.raises(ForbiddenProblem, match="temporarily locked"):
+        # Sign-in is locked too, even for the right password (the generic 401, so the lock does
+        # not confirm the account exists), and the dead session's bearer is refused outright
+        # without touching the counter.
+        with pytest.raises(UnauthorizedProblem, match=services.INVALID):
             await services.login(
                 session,
                 cfg=cfg,

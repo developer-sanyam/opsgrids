@@ -156,6 +156,18 @@ class Settings(ServiceSettings):
     run_consumers_in_api: bool = False
 
     @model_validator(mode="after")
+    def _unsubscribe_secret_is_real_on_a_real_box(self) -> Settings:
+        """Empty env vars fall back to the committed `dev-only-` default, which would let anyone
+        who has read the repo forge unsubscribe and tracking tokens. Refused outside development."""
+        if self.environment in ("production", "staging", "uat") and (
+            self.engage_unsubscribe_secret.get_secret_value().startswith(("dev-only-", "ci-only-"))
+        ):
+            raise ValueError(
+                f"engage_unsubscribe_secret must be a real secret in {self.environment}"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _apply_graph_version(self) -> Settings:
         """`WHATSAPP_GRAPH_VERSION` replaces the version segment of `whatsapp_api_base`, so every
         Graph caller (sends, template sync, signup) moves with one config change."""

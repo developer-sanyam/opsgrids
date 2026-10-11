@@ -498,6 +498,7 @@ async def post_opening_stock(
         idempotency_key=idempotency_key,
         occurred_on_explicit=_was_explicit(payload),
         request=request,
+        fresh_buckets_only=True,
     )
     _status_for(response, posted.replayed)
     return stock_ops.move_out(posted)

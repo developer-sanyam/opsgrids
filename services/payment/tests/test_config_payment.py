@@ -39,6 +39,7 @@ _MARKER = "SECRETMARKERabcdef0123"  # pragma: allowlist secret
 _PRODUCTION_SECRETS: dict[str, Any] = {
     "internal_service_token": SecretStr("a" * 48),
     "pii_encryption_key": SecretStr("b" * 48),
+    "razorpay_webhook_secret": SecretStr("c" * 48),
 }
 
 
@@ -74,6 +75,22 @@ def build(**kwargs: Any) -> Settings:
 def refused(match: str, **kwargs: Any) -> None:
     with pytest.raises(ValidationError, match=match):
         build(**kwargs)
+
+
+class TestTheWebhookSecret:
+    """Empty env vars are ignored, so an unset RAZORPAY_WEBHOOK_SECRET used to fall back to the
+    committed dev default — and anyone who read the repo could sign a payment-captured event."""
+
+    @pytest.mark.parametrize("environment", ["production", "staging", "uat"])
+    def test_the_committed_default_is_refused_on_a_real_box(self, environment: str) -> None:
+        refused(
+            "razorpay_webhook_secret",
+            environment=environment,
+            razorpay_webhook_secret=SecretStr("dev-only-razorpay-webhook-secret"),
+        )
+
+    def test_the_default_still_works_in_development(self) -> None:
+        assert build().razorpay_webhook_secret.get_secret_value().startswith("dev-only-")
 
 
 class TestAnUnconfiguredBox:
@@ -445,6 +462,7 @@ class TestTheStagingTestKeysOverride:
             "ENVIRONMENT": "production",
             "INTERNAL_SERVICE_TOKEN": "a" * 48,
             "PII_ENCRYPTION_KEY": "b" * 48,
+            "RAZORPAY_WEBHOOK_SECRET": "c" * 48,
             "PAYMENT_WIRE": "live",
             "RAZORPAY_KEY_ID": RZP_TEST_ID,
             "RAZORPAY_KEY_SECRET": RZP_SECRET,
@@ -575,6 +593,7 @@ class TestPreflightAgreesWithStartUp:
             "ENVIRONMENT": "production",
             "INTERNAL_SERVICE_TOKEN": "a" * 48,
             "PII_ENCRYPTION_KEY": "b" * 48,
+            "RAZORPAY_WEBHOOK_SECRET": "c" * 48,
             **env,
         }.items():
             monkeypatch.setenv(name, value)

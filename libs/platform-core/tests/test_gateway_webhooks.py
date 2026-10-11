@@ -68,7 +68,7 @@ class _FakeRedis:
 class _Upstream:
     def __init__(self) -> None:
         self.calls: list[httpx.Request] = []
-        self.response_headers: dict[str, str] = {}
+        self.response_headers: dict[str, str] | list[tuple[str, str]] = {}
 
     async def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
@@ -339,6 +339,25 @@ class TestNoCredentialSurface:
 
         assert upstream.calls[0].headers["x-org-slug"] == "a"
         assert "set-cookie" in headers
+
+    async def test_every_cookie_the_service_sets_reaches_the_browser_as_its_own_header(
+        self, app: FastAPI, upstream: _Upstream
+    ) -> None:
+        """Two Set-Cookie headers must not be comma-joined into one: the browser would read a
+        single malformed cookie and drop the refresh token an SSO callback sets."""
+        upstream.response_headers = [
+            ("set-cookie", "binder=; Max-Age=0; Path=/"),
+            ("set-cookie", "refresh=abc; Path=/api/v1/auth"),
+        ]
+
+        transport = httpx.ASGITransport(app=app, client=("203.0.113.7", 4433))
+        async with httpx.AsyncClient(transport=transport, base_url="http://a.b.c") as client:
+            response = await client.post(LOGIN, content=b"{}")
+
+        assert response.headers.get_list("set-cookie") == [
+            "binder=; Max-Age=0; Path=/",
+            "refresh=abc; Path=/api/v1/auth",
+        ]
 
 
 class TestOwnRateLimitBuckets:

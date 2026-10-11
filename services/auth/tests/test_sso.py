@@ -36,7 +36,8 @@ from httpx import AsyncClient
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import oidc, services
+from app import oidc, security, services
+from app.api.routes import SSO_BINDER_COOKIE, _set_binder_cookie
 from app.config import Settings
 from app.deps import get_idp
 from app.directory import DirectoryDomain, DirectoryUser, HttpDirectory
@@ -139,6 +140,7 @@ async def _install_config(
     enabled: bool = True,
     allowed_domains: list[str] | None = None,
     issuer: str = ISSUER,
+    enforce_sso: bool = False,
 ) -> OrgIdpConfig:
     """Write an IdP configuration the way an administrator would, tenant bound.
 
@@ -161,6 +163,7 @@ async def _install_config(
         token_endpoint=TOKEN,
         jwks_uri=JWKS_URI,
         allowed_domains=allowed_domains or [],
+        enforce_sso=enforce_sso,
     )
     session.add(row)
     await session.commit()
@@ -1951,6 +1954,113 @@ class TestOverHttp:
         assert cfg.refresh_cookie_name in done.cookies
         assert "refresh_token" not in done.json()
 
+    async def _start(self, client: AsyncClient, idp) -> dict[str, Any]:
+        app.dependency_overrides[get_idp] = lambda: idp
+        started = await client.get("/api/v1/auth/sso/start", params={"email": EMAIL})
+        assert started.status_code == 200, started.text
+        body: dict[str, Any] = started.json()
+        idp.next_id_token = idp.issue_id_token(nonce=_query(body["authorization_url"])["nonce"])
+        return body
+
+    async def test_start_binds_the_flow_to_the_browser_with_a_cookie(
+        self, client: AsyncClient, idp, redis, configured
+    ) -> None:
+        app.dependency_overrides[get_idp] = lambda: idp
+        started = await client.get("/api/v1/auth/sso/start", params={"email": EMAIL})
+        assert started.status_code == 200, started.text
+        set_cookie = started.headers["set-cookie"].lower()
+        assert set_cookie.startswith(SSO_BINDER_COOKIE + "=")
+        assert "httponly" in set_cookie
+        assert "samesite=lax" in set_cookie
+        assert "path=/;" in set_cookie or set_cookie.endswith("path=/")
+
+    async def test_a_callback_without_the_binding_cookie_is_refused_and_keeps_the_state(
+        self, client: AsyncClient, cfg, idp, redis, configured
+    ) -> None:
+        """Login CSRF: an attacker's own `code`+`state`, replayed in a victim's browser, must
+        not sign the victim in as the attacker. The victim's browser never ran this `/start`,
+        so it holds no binder. Refused before the state is consumed, so a stray hit cannot
+        burn the real browser's sign-in either."""
+        body = await self._start(client, idp)
+        binder = client.cookies.get(SSO_BINDER_COOKIE)
+        assert binder
+        client.cookies.clear()
+
+        refused = await client.get(
+            "/api/v1/auth/sso/callback", params={"code": "abc", "state": body["state"]}
+        )
+        assert refused.status_code == 401, refused.text
+        assert cfg.refresh_cookie_name not in refused.cookies
+
+        client.cookies.set(SSO_BINDER_COOKIE, binder)
+        done = await client.get(
+            "/api/v1/auth/sso/callback", params={"code": "abc", "state": body["state"]}
+        )
+        assert done.status_code == 200, done.text
+
+    async def test_a_callback_with_the_wrong_binding_cookie_is_refused(
+        self, client: AsyncClient, cfg, idp, redis, configured
+    ) -> None:
+        body = await self._start(client, idp)
+        client.cookies.clear()
+        client.cookies.set(SSO_BINDER_COOKIE, "not-the-binder")
+
+        refused = await client.get(
+            "/api/v1/auth/sso/callback", params={"code": "abc", "state": body["state"]}
+        )
+        assert refused.status_code == 401, refused.text
+        assert cfg.refresh_cookie_name not in refused.cookies
+
+    async def test_the_right_cookie_signs_in_once_and_sets_only_the_refresh_cookie(
+        self, client: AsyncClient, cfg, idp, redis, configured
+    ) -> None:
+        """The binder is left to its TTL rather than deleted: a sibling flow in the same browser
+        still needs it, and one Set-Cookie is all a successful callback sends."""
+        body = await self._start(client, idp)
+        binder = client.cookies.get(SSO_BINDER_COOKIE)
+
+        done = await client.get(
+            "/api/v1/auth/sso/callback", params={"code": "abc", "state": body["state"]}
+        )
+        assert done.status_code == 200, done.text
+        set_cookies = done.headers.get_list("set-cookie")
+        assert len(set_cookies) == 1
+        assert set_cookies[0].startswith(cfg.refresh_cookie_name + "=")
+
+        # Still single-use: the same state with the same (re-presented) binder is dead.
+        client.cookies.set(SSO_BINDER_COOKIE, binder)
+        replay = await client.get(
+            "/api/v1/auth/sso/callback", params={"code": "abc", "state": body["state"]}
+        )
+        assert replay.status_code == 401, replay.text
+
+    async def test_a_second_start_in_the_same_browser_does_not_break_the_first(
+        self, client: AsyncClient, cfg, idp, redis, configured
+    ) -> None:
+        """Two tabs, or a double click on "Sign in": both flows ride the browser's one binder."""
+        first = await self._start(client, idp)
+        first_nonce = _query(first["authorization_url"])["nonce"]
+        await self._start(client, idp)
+
+        idp.next_id_token = idp.issue_id_token(nonce=first_nonce)
+        done = await client.get(
+            "/api/v1/auth/sso/callback", params={"code": "abc", "state": first["state"]}
+        )
+        assert done.status_code == 200, done.text
+        assert cfg.refresh_cookie_name in done.cookies
+
+    def test_the_binding_cookie_is_host_prefixed_and_secure_outside_local(self, cfg) -> None:
+        from fastapi import Response
+
+        response = Response()
+        _set_binder_cookie(response, cfg.model_copy(update={"environment": "production"}), "b")
+        set_cookie = response.headers["set-cookie"]
+        # `__Host-`: Secure, Path=/, no Domain - a sibling subdomain cannot plant or overwrite it.
+        assert set_cookie.startswith("__Host-" + SSO_BINDER_COOKIE + "=b;")
+        lowered = set_cookie.lower()
+        assert "secure" in lowered and "httponly" in lowered and "samesite=lax" in lowered
+        assert "path=/" in lowered and "domain=" not in lowered
+
     async def test_start_needs_an_email_or_a_domain(self, client: AsyncClient) -> None:
         assert (await client.get("/api/v1/auth/sso/start")).status_code == 422
 
@@ -2003,3 +2113,214 @@ class TestOverHttp:
         assert response.status_code == 200, response.text
         assert response.json()["jwks_uri"] == JWKS_URI
         assert CLIENT_SECRET not in response.text
+
+
+# --------------------------------------------------------------------- enforce_sso
+
+
+async def _set_enforce_sso(
+    session: AsyncSession, on: bool, organization_id: uuid.UUID = ORG_A
+) -> None:
+    """Flip the switch the way an administrator's save would, after sessions already exist."""
+    async with session.begin():
+        await set_tenant(session, organization_id)
+        row = (
+            await session.execute(
+                select(OrgIdpConfig).where(OrgIdpConfig.organization_id == organization_id)
+            )
+        ).scalar_one()
+        row.enforce_sso = on
+
+
+async def _password_login(
+    session: AsyncSession,
+    cfg: Settings,
+    pair: KeyPair,
+    directory: FakeDirectory,
+    *,
+    org_hint: str | None = None,
+) -> services.LoginOutcome:
+    return await services.login(
+        session,
+        cfg=cfg,
+        pair=pair,
+        directory=directory,
+        entitlements=FakeEntitlements(),
+        email=EMAIL,
+        password=PASSWORD,
+        org_hint=org_hint,
+    )
+
+
+class TestEnforceSso:
+    """`enforce_sso` on an *enabled* configuration means the organization accepts only
+    sessions its own identity provider asserted (`idp == "oidc:<organization_id>"`). Every
+    path that mints or renews a token for it is refused for any other session: password,
+    social sign-in, a second factor finishing a password sign-in, organization selection,
+    switching in, and refresh — which also ends the session, since it was minted before the
+    organization turned password sign-in off."""
+
+    async def test_a_password_sign_in_is_refused(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        await _install_config(session, cfg, enforce_sso=True)
+
+        with pytest.raises(ForbiddenProblem, match="single sign-on"):
+            await _password_login(session, cfg, pair, directory)
+        await session.rollback()
+        assert await _refresh_token_count(session) == 0
+
+    async def test_enforcement_on_a_disabled_configuration_locks_nobody_out(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        """The control: with the provider turned off there is no SSO path to require, and
+        refusing passwords too would lock the whole organization out."""
+        await _install_config(session, cfg, enabled=False, enforce_sso=True)
+
+        outcome = await _password_login(session, cfg, pair, directory)
+        assert outcome.status == "complete"
+
+    async def test_an_sso_sign_in_still_works_and_refreshes(
+        self, session, cfg, pair, directory, idp, store
+    ) -> None:
+        await _install_config(session, cfg, enforce_sso=True)
+
+        issued = await _sign_in(session, cfg, pair, directory, idp, store)
+        assert issued.organization_id == ORG_A
+        rotated = await services.rotate_refresh(
+            session,
+            entitlements=FakeEntitlements(),
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            raw_token=issued.refresh_token,
+        )
+        assert rotated.organization_id == ORG_A
+
+    async def test_choosing_the_enforcing_organization_after_a_password_sign_in_is_refused(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        directory.users = [user_in_two_orgs()]
+        await _install_config(session, cfg, enforce_sso=True)
+
+        outcome = await _password_login(session, cfg, pair, directory)
+        assert outcome.status == "org_selection_required"
+        assert outcome.pre_auth_token
+
+        with pytest.raises(ForbiddenProblem, match="single sign-on"):
+            await services.select_organization(
+                session,
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                entitlements=FakeEntitlements(),
+                pre_auth_token=outcome.pre_auth_token,
+                organization_id=ORG_A,
+            )
+        await session.rollback()
+
+        # The organization that does not enforce SSO is still reachable from the same sign-in.
+        issued = await services.select_organization(
+            session,
+            cfg=cfg,
+            pair=pair,
+            directory=directory,
+            entitlements=FakeEntitlements(),
+            pre_auth_token=outcome.pre_auth_token,
+            organization_id=ORG_B,
+        )
+        assert issued.organization_id == ORG_B
+
+    async def test_a_password_session_cannot_switch_into_the_enforcing_organization(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        directory.users = [user_in_two_orgs()]
+        await _install_config(session, cfg, enforce_sso=True)
+
+        outcome = await _password_login(session, cfg, pair, directory, org_hint="beta")
+        assert outcome.issued is not None
+        assert outcome.issued.organization_id == ORG_B
+
+        with pytest.raises(ForbiddenProblem, match="single sign-on"):
+            await services.switch_organization(
+                session,
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                entitlements=FakeEntitlements(),
+                session_id=outcome.issued.session_id,
+                user_id=USER,
+                organization_id=ORG_A,
+            )
+
+    async def test_refresh_ends_a_password_session_once_enforcement_turns_on(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        await _install_config(session, cfg, enforce_sso=False)
+        outcome = await _password_login(session, cfg, pair, directory)
+        assert outcome.issued is not None
+
+        await _set_enforce_sso(session, True)
+
+        with pytest.raises(UnauthorizedProblem):
+            await services.rotate_refresh(
+                session,
+                entitlements=FakeEntitlements(),
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                raw_token=outcome.issued.refresh_token,
+            )
+        await session.rollback()
+        revoked = (
+            await session.execute(
+                select(Session.revoked_at, Session.revoked_reason).where(
+                    Session.id == outcome.issued.session_id
+                )
+            )
+        ).one()
+        assert revoked.revoked_at is not None
+        assert revoked.revoked_reason == "sso_enforced"
+
+    async def test_a_second_factor_does_not_finish_a_password_sign_in(
+        self, session, cfg, pair, directory, registered
+    ) -> None:
+        factor, secret, _ = await services.begin_mfa_enrolment(
+            session, USER, account_email=EMAIL, cfg=cfg
+        )
+        step = int(time.time()) // 30
+        await services.confirm_mfa_enrolment(
+            session,
+            factor_id=factor.id,
+            user_id=USER,
+            code=security._totp_at(secret, step),
+            cfg=cfg,
+        )
+        await _install_config(session, cfg, enforce_sso=True)
+
+        outcome = await _password_login(session, cfg, pair, directory)
+        assert outcome.status == "mfa_required"
+        assert outcome.pre_auth_token
+
+        with pytest.raises(ForbiddenProblem, match="single sign-on"):
+            await services.verify_mfa(
+                session,
+                cfg=cfg,
+                pair=pair,
+                directory=directory,
+                entitlements=FakeEntitlements(),
+                pre_auth_token=outcome.pre_auth_token,
+                code=security._totp_at(secret, step + 1),
+            )
+
+    async def test_the_login_route_answers_sso_required(
+        self, client: AsyncClient, session, cfg, registered
+    ) -> None:
+        await _install_config(session, cfg, enforce_sso=True)
+
+        response = await client.post(
+            "/api/v1/auth/login", json={"email": EMAIL, "password": PASSWORD}
+        )
+        assert response.status_code == 403, response.text
+        assert response.json()["type"].endswith("/sso-required")
+        assert cfg.refresh_cookie_name not in response.cookies

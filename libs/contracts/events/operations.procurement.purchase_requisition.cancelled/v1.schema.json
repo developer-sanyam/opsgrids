@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.procurement.purchase_requisition.cancelled/v1",
+  "title": "operations.procurement.purchase_requisition.cancelled",
+  "description": "A requisition that had not been converted was cancelled; `note` is the optional reason.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "requisition_id",
+    "number",
+    "status"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "requisition_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "DRAFT",
+        "SUBMITTED",
+        "APPROVED",
+        "REJECTED",
+        "CONVERTED",
+        "CANCELLED"
+      ]
+    },
+    "note": {
+      "type": "string"
+    }
+  }
+}

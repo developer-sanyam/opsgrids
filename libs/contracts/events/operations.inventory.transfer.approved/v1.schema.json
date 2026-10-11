@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.inventory.transfer.approved/v1",
+  "title": "operations.inventory.transfer.approved",
+  "description": "A requested transfer was approved: automatically (under the threshold), directly by a holder of inventory.transfer.approve, or by the approval service.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "transfer_id",
+    "number",
+    "from_warehouse_id",
+    "to_warehouse_id",
+    "approval_route",
+    "approved_by"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "transfer_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string"
+    },
+    "from_warehouse_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "to_warehouse_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "approval_route": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "AUTO",
+        "DIRECT",
+        "SERVICE",
+        null
+      ]
+    },
+    "approved_by": {
+      "type": "string"
+    }
+  }
+}

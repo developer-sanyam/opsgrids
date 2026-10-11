@@ -25,10 +25,13 @@ def principal_for(
     entitlements: list[str] | None = None,
     locations: list[str] | None = None,
     amr: list[str] | None = None,
+    sub: uuid.UUID | None = None,
 ) -> Principal:
-    """The principal the gateway would have forwarded for an operations caller."""
+    """The principal the gateway would have forwarded for an operations caller. `sub` is a fresh
+    user unless given — pass one to be the same person across requests (idempotency keys replay
+    only for the user who made them)."""
     return Principal(
-        sub=uuid.uuid4(),
+        sub=sub or uuid.uuid4(),
         organization_id=org_id,
         membership_id=uuid.uuid4(),
         subject_ref=subject_ref,
@@ -46,12 +49,22 @@ def ctx_for(
     *,
     subject_ref: uuid.UUID | None = None,
     locations: list[str] | None = None,
+    sub: uuid.UUID | None = None,
 ) -> ScopeContext:
     """A scope context as `require(...)` would have built it."""
     principal = principal_for(
-        org_id, [f"{permission}:{scope.value}"], subject_ref=subject_ref, locations=locations
+        org_id,
+        [f"{permission}:{scope.value}"],
+        subject_ref=subject_ref,
+        locations=locations,
+        sub=sub,
     )
     return ScopeContext(principal=principal, scope=scope, permission=permission)
+
+
+def same_caller(org_id: uuid.UUID, perms: list[str]) -> uuid.UUID:
+    """One stable user per (organization, permission set), for helpers that retry as a person."""
+    return uuid.uuid5(org_id, ",".join(sorted(perms)))
 
 
 @contextlib.contextmanager

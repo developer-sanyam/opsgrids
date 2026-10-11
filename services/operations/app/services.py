@@ -31,7 +31,6 @@ from starlette.requests import Request
 
 from app import domain, selectors
 from app.inventory import selectors as inv_selectors
-from app.inventory import services as inv_services
 from app.models import (
     AuditLog,
     OutboxEvent,
@@ -378,6 +377,7 @@ async def create_purchase_order(
                 unit_price_minor=unit_price_minor,
                 amount_minor=domain.line_amount_minor(quantity, unit_price_minor),
                 received_qty=int(spec.get("received_qty", 0)),
+                received_milli=int(spec.get("received_qty", 0)) * 1000,
             )
         )
     await session.flush()
@@ -491,6 +491,15 @@ async def raise_purchase_order(
     return po
 
 
+async def _lock_po(session: AsyncSession, po: PurchaseOrder) -> None:
+    """Re-read the PO under `FOR UPDATE` before judging its status. The route loaded it with a
+    plain SELECT; a concurrent goods receipt (which locks) may have moved it since."""
+    await session.refresh(po, with_for_update=True)
+    # The route's load filtered `deleted_at`, but only before this lock: a delete may have won.
+    if po.deleted_at is not None:
+        raise NotFoundProblem("Purchase order not found")
+
+
 async def update_purchase_order(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -504,6 +513,7 @@ async def update_purchase_order(
     order's lines in this transaction (drafts only, so nothing has been received against them).
     Changing `supplier_id` re-copies `supplier_name`/`category` and moves `open_pos` between the
     two suppliers."""
+    await _lock_po(session, po)
     if po.status != "draft":
         raise ConflictProblem(
             f"Purchase order {po.number} is {po.status}; only a draft can be edited"
@@ -632,6 +642,7 @@ async def delete_purchase_order(
 ) -> None:
     """Soft-delete a **draft** purchase order. An approved-or-later PO is a commitment; the path
     off it is cancel, not delete."""
+    await _lock_po(session, po)
     if po.status != "draft":
         raise ConflictProblem(
             f"Purchase order {po.number} is {po.status}; only a draft can be deleted — cancel it "
@@ -679,6 +690,7 @@ async def approve_purchase_order(
     """`draft -> approved`. Bumps the supplier's lifetime `spend_minor` by the PO's derived
     total — only when the PO's currency matches the supplier's; a mismatch is skipped and noted
     in the audit row rather than silently mixing currencies in one running total."""
+    await _lock_po(session, po)
     if not domain.can_transition_po(po.status, "approved"):
         raise ConflictProblem(f"Purchase order {po.number} is {po.status} and cannot be approved")
 
@@ -732,107 +744,33 @@ async def receive_purchase_order(
     request: Request | None = None,
     unmatched_out: list[str] | None = None,
 ) -> PurchaseOrder:
-    """Mark a purchase order received: move it to `received`, stamp the delivery date, fill in
-    each line's `received_qty` to the ordered quantity, and post the stock. Only an *approved*
-    PO can be received — approval is a prerequisite gate, not a skippable commitment step, so a
-    draft (not yet signed off by an ORG-scope approver), an already-received, a closed or a
-    cancelled PO is refused.
+    """Receive a purchase order's whole outstanding quantity in one go — the single-shot endpoint
+    (`POST /purchase-orders/{id}/receive`), now a thin wrapper over the goods-receipt path
+    (`app.receiving.receipts`, inventory Phase 2): one receipt for every line's outstanding
+    quantity, so the PO's `received_qty`/`received_milli`, its status (`received`), the ledger
+    move, the lots and the events are all the receipt's, not a second implementation.
 
-    Each line whose `sku` matches a live inventory item in the org gets a `receipt` movement of
-    `+quantity`, referencing this PO. A line with no matching SKU is a service/logistics line,
-    not an error — it posts nothing, and its SKU is listed in `unmatched_skus` on the audit row
-    and the event payload so that is visible rather than silent.
+    Only an *approved* (or already partially received) PO can be received — approval is a
+    prerequisite gate, not a skippable commitment step, so a draft, an already-received, a closed
+    or a cancelled PO is refused. A line with no matching inventory SKU is a service/logistics
+    line, not an error: it posts no stock, and its SKU is listed in `unmatched_out` and on the
+    audit row and event payload so that is visible rather than silent.
 
-    The ledger row's cost is recorded in **the PO's currency**, not the item's: `unit_price_minor`
-    is priced in `po.currency`, and a receipt in a currency other than the item's `currency` is
-    common (an item's stock value can be set in the org's home currency while a supplier bills in
-    their own) and is never converted here — that would be inventing an exchange rate nobody
-    agreed to (ADR-0014 §8).
+    The ledger row's cost is recorded in **the PO's currency**, not the item's, and is never
+    converted (ADR-0014 §8). Partial, short and over-receipt are `POST /goods-receipts`.
     """
-    if not domain.can_transition_po(po.status, "received"):
-        if po.status == "draft":
-            raise ConflictProblem(
-                f"Purchase order {po.number} is draft and must be approved before it can be "
-                "received"
-            )
-        raise ConflictProblem(f"Purchase order {po.number} is {po.status} and cannot be received")
+    # Imported here: `app.receiving.receipts` builds on this module's supplier rollup and event
+    # names, so a top-level import would be a cycle.
+    from app.receiving import receipts
 
-    landed = received_date or datetime.now(UTC).date()
-    po.status = "received"
-    po.received_date = landed
-    po.updated_by = str(ctx.principal.sub)
-    po.updated_at = datetime.now(UTC)
-
-    lines = await selectors.lines_for(session, ctx.organization_id, po.id)
-    unmatched_skus: list[str] = []
-    matched_lines: list[dict[str, Any]] = []
-    for line in lines:
-        line.received_qty = line.quantity
-        line.updated_by = str(ctx.principal.sub)
-        item = await inv_selectors.get_inventory_by_sku(
-            session, ctx.organization_id, line.sku, for_update=True
-        )
-        if item is None:
-            unmatched_skus.append(line.sku)
-            continue
-        movement_id = await inv_services.receive_into_home(
-            session,
-            ctx,
-            item,
-            quantity=line.quantity,
-            purchase_order_id=po.id,
-            occurred_on=landed,
-            unit_cost_minor=line.unit_price_minor,
-            unit_cost_currency=po.currency,
-            request=request,
-        )
-        matched_lines.append(
-            {"sku": line.sku, "movement_id": str(movement_id), "quantity": line.quantity}
-        )
-    await session.flush()
-
-    # Spend was already committed once, at approve time — the only way into `received` now that
-    # `approved` is a prerequisite. Receiving only closes out the supplier's open-PO count.
-    await _bump_supplier(session, ctx.organization_id, po.supplier_id, open_pos=-1)
-
-    record_audit(
+    return await receipts.receive_whole_purchase_order(
         session,
-        AuditLog,
-        organization_id=ctx.organization_id,
-        actor_id=ctx.principal.sub,
-        action="purchase_order.received",
-        entity="purchase_order",
-        entity_id=po.id,
-        after={
-            "number": po.number,
-            "status": "received",
-            "received_date": landed.isoformat(),
-            "unmatched_skus": unmatched_skus,
-        },
+        ctx,
+        po,
+        received_date=received_date,
         request=request,
+        unmatched_out=unmatched_out,
     )
-    publish_event(
-        session,
-        OutboxEvent,
-        organization_id=ctx.organization_id,
-        event_type=EVT_PO_RECEIVED,
-        aggregate_type="purchase_order",
-        aggregate_id=po.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "purchase_order_id": str(po.id),
-            "number": po.number,
-            "received_date": landed.isoformat(),
-            "unmatched_skus": unmatched_skus,
-            "matched_lines": matched_lines,
-        },
-        actor=_actor(ctx),
-    )
-    # The route answers with these: a line that posted no stock is something the person who
-    # just clicked Receive needs to see, not something to be found in the audit log later.
-    if unmatched_out is not None:
-        unmatched_out.extend(unmatched_skus)
-    return po
 
 
 async def close_purchase_order(
@@ -843,6 +781,7 @@ async def close_purchase_order(
     request: Request | None = None,
 ) -> PurchaseOrder:
     """`received -> closed`. The terminal, ordinary end of the lifecycle — nothing else changes."""
+    await _lock_po(session, po)
     if not domain.can_transition_po(po.status, "closed"):
         raise ConflictProblem(f"Purchase order {po.number} is {po.status} and cannot be closed")
 
@@ -899,6 +838,7 @@ async def cancel_purchase_order(
     reverses nothing (no spend was ever committed) and stays at `write:OWN`, the same as
     deleting one.
     """
+    await _lock_po(session, po)
     if not domain.can_transition_po(po.status, "cancelled"):
         raise ConflictProblem(f"Purchase order {po.number} is {po.status} and cannot be cancelled")
 

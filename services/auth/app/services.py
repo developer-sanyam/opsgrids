@@ -36,6 +36,7 @@ from datetime import UTC, datetime, timedelta
 
 import idna
 from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -63,8 +64,8 @@ from app.models import (
 from app.provisioning import ProvisioningClient
 from platform_core import pii
 from platform_core.audit import record_audit
-from platform_core.auth import Principal
-from platform_core.cache import cache_delete, cache_get, cache_set
+from platform_core.auth import Principal, client_ip
+from platform_core.cache import cache_delete, cache_get, cache_set, enforce_rate_limit
 from platform_core.db import assert_tenant, set_tenant
 from platform_core.errors import (
     BusinessRuleProblem,
@@ -72,6 +73,7 @@ from platform_core.errors import (
     ForbiddenProblem,
     NotFoundProblem,
     ProblemError,
+    RateLimitedProblem,
     UnauthorizedProblem,
     UpstreamUnavailableProblem,
     ValidationProblem,
@@ -162,14 +164,21 @@ async def set_password(
     credential.must_change_password = must_change
     credential.failed_attempts = 0
     credential.locked_until = None
+    # A reset link was issued against the old password; it must not outlive it.
+    await session.execute(
+        update(PasswordResetToken)
+        .where(PasswordResetToken.user_id == user_id, PasswordResetToken.used_at.is_(None))
+        .values(used_at=datetime.now(UTC))
+    )
     return credential
 
 
 # --------------------------------------------------------------------- sign-in
 
 
-#: One message for a locked password, shared by sign-in and the re-authentication that account
-#: security changes (enrolling a second factor) ask for, so the two can never drift apart.
+#: One message for a locked password, shared by the signed-in re-authentications (changing the
+#: password, enrolling a second factor) so they can never drift apart. Anonymous sign-in never
+#: shows it: there a lock answers the generic `INVALID`, so it cannot confirm an account exists.
 PASSWORD_LOCKED_MESSAGE = (
     "This account is temporarily locked after several failed attempts. "
     "Try again shortly, or reset the password."
@@ -204,7 +213,13 @@ def _register_password_failure(credential: Credential, cfg: Settings) -> bool:
 async def _verify_credentials(
     session: AsyncSession, cfg: Settings, directory: Directory, email: str, password: str
 ) -> tuple[DirectoryUser, Credential]:
-    """Check an email and password, or raise the same error whichever part was wrong."""
+    """Check an email and password, or raise the same error whichever part was wrong.
+
+    Mirrors `_verify_staff` (MINOR 11 of the 2026-09-24 review): unknown, wrong password, locked
+    and deactivated all get the one `INVALID` 401, and the Argon2 comparison runs on every path,
+    so neither the answer nor its timing tells an anonymous caller an account exists or is in a
+    special state. A locked account's answer ignores the password, so it is no password oracle.
+    """
     invalid = UnauthorizedProblem(INVALID)
 
     user = await directory.find_by_email(email)
@@ -214,24 +229,38 @@ async def _verify_credentials(
         security.verify_password(None, password)
         raise invalid
 
-    credential = await get_or_create_credential(session, user.user_id)
+    # Locked, as `change_password` does: parallel guesses each count, and a sign-in queues behind
+    # a concurrent reset instead of verifying the old password and outliving it. The insert gives
+    # a member with no password yet a row to queue on; a plain INSERT would race a parallel guess
+    # into a primary-key 500 that an unknown email never produces.
+    await session.execute(
+        pg_insert(Credential).values(user_id=user.user_id).on_conflict_do_nothing()
+    )
+    credential = await session.get(
+        Credential, user.user_id, with_for_update=True, populate_existing=True
+    )
+    if credential is None:  # unreachable: the insert above, or a sibling's, made the row
+        raise invalid
 
-    # Lockout is checked *before* the password, so hammering a locked account cannot be
-    # used to test candidate passwords.
     now = datetime.now(UTC)
-    if credential.locked_until and credential.locked_until > now:
-        raise ForbiddenProblem(PASSWORD_LOCKED_MESSAGE)
+    locked = bool(credential.locked_until and credential.locked_until > now)
+    password_ok = security.verify_password(credential.password_hash, password)
 
-    if not user.is_active:
-        raise ForbiddenProblem("This account has been deactivated")
+    if locked:
+        # Already locked: nothing to count, and the same answer whatever `password_ok` is.
+        raise invalid
 
-    if not security.verify_password(credential.password_hash, password):
+    if not password_ok:
         _register_password_failure(credential, cfg)
         # Committed *before* raising. Staging it in the caller's transaction meant the
         # rollback that accompanies a failed sign-in also discarded the attempt — so the
         # counter never grew and the lockout never fired. Rate limiting has to outlive
         # the request it is rate limiting.
         await session.commit()
+        raise invalid
+
+    # Password correct. Only now is a deactivated account refused — after the same Argon2 cost.
+    if not user.is_active:
         raise invalid
 
     # Raising the cost factor propagates as people sign in — the only moment the
@@ -283,7 +312,7 @@ async def start_session(
         idp=idp,
         sso_domain=sso_domain,
         expires_at=datetime.now(UTC) + timedelta(days=cfg.session_ttl_days),
-        ip=request.client.host if request and request.client else None,
+        ip=client_ip(request),
         user_agent=request.headers.get("user-agent") if request else None,
     )
     session.add(row)
@@ -357,8 +386,15 @@ async def issue_for(
     function every path that mints a token actually calls, so it is also the one place a
     *future* caller cannot forget to check it: minting for the wrong organization from a
     federated session is refused here even if whatever called this never thought to ask.
+
+    **`enforce_sso` is enforced here for the same reason**: sign-in, organization selection, a
+    second factor, social sign-in, switching and refresh all reach this, so none of them can
+    mint for an organization that turned password sign-in off unless the session came through
+    that organization's own provider (`_sso_enforced_against`).
     """
     _assert_organization_unpinned_or_matches(auth_session, membership.organization_id)
+    if await _sso_enforced_against(session, auth_session, membership.organization_id):
+        raise SsoRequiredProblem(SSO_REQUIRED_MESSAGE)
     granted = await entitlements.for_organization(membership.organization_id)
     auth_session.active_org_id = membership.organization_id
 
@@ -864,6 +900,21 @@ async def rotate_refresh(
         await session.commit()
         raise UnauthorizedProblem("Your access to that organization has ended.")
 
+    if await _sso_enforced_against(session, auth_session, membership.organization_id):
+        # The organization turned password sign-in off after this session was minted. Ended,
+        # not merely refused, so it cannot go on to mint through `switch_organization` either;
+        # committed because the exception below rolls the route's transaction back.
+        await _revoke_session(session, auth_session.id, reason="sso_enforced")
+        log.warning(
+            "auth.refresh_sso_enforced",
+            session_id=str(auth_session.id),
+            organization_id=str(membership.organization_id),
+        )
+        await session.commit()
+        raise UnauthorizedProblem(
+            "This organization now requires single sign-on. Please sign in again."
+        )
+
     if grace_hit:
         # Every check above just re-ran against `stored`'s own row — nothing left to write:
         # the rotation that actually spent this token already recorded `rotated_at`, and this
@@ -1058,6 +1109,49 @@ def _assert_organization_unpinned_or_matches(
             "This session was started through single sign-on and is bound to one "
             "organization. Sign in again to reach a different one."
         )
+
+
+class SsoRequiredProblem(ForbiddenProblem):
+    """The organization turned password sign-in off (`OrgIdpConfig.enforce_sso`) and this
+    session was not asserted by its own identity provider. Its own slug so a sign-in page can
+    send the person to single sign-on instead of showing a dead end."""
+
+    problem_type = "sso-required"
+    title = "Single sign-on required"
+
+
+SSO_REQUIRED_MESSAGE = (
+    "This organization requires single sign-on. Sign in through your organization's "
+    "identity provider."
+)
+
+
+async def _sso_enforced_against(
+    session: AsyncSession, auth_session: Session, organization_id: uuid.UUID
+) -> bool:
+    """Whether `organization_id` accepts only its own SSO and `auth_session` is not that.
+
+    Only an *enabled* configuration enforces: turning the provider off leaves no SSO path to
+    require, and refusing passwords as well would lock the whole organization out. A session
+    pinned to this organization (`idp == "oidc:<organization_id>"`) is exactly what it asks
+    for; everything else — password, social `oauth:<provider>`, SSO for another organization —
+    is refused. Not cached: the switch must bite on the very next mint.
+    """
+    if _federated_organization_pin(auth_session) == organization_id:
+        return False
+    # `org_idp_configs` is RLS-protected; binding to the organization this transaction is
+    # about to mint for is what every caller would bind to anyway.
+    await set_tenant(session, organization_id)
+    found = await session.scalar(
+        select(OrgIdpConfig.id)
+        .where(
+            OrgIdpConfig.organization_id == organization_id,
+            OrgIdpConfig.enabled.is_(True),
+            OrgIdpConfig.enforce_sso.is_(True),
+        )
+        .limit(1)
+    )
+    return found is not None
 
 
 def _pinned_sso_cache_key(organization_id: uuid.UUID, sso_domain: str) -> str:
@@ -1288,6 +1382,10 @@ async def change_password(
     await session.commit()
 
 
+#: Reset emails per account per hour. Caps inbox flooding and the shared mailbox's send quota.
+PASSWORD_RESETS_PER_HOUR = 3
+
+
 def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -1308,6 +1406,12 @@ async def request_password_reset(
     user = await directory.find_by_email(email)
     if user is None or not user.is_active:
         return
+    try:
+        await enforce_rate_limit(
+            f"pwreset:{user.user_id}", limit=PASSWORD_RESETS_PER_HOUR, window_seconds=3600
+        )
+    except RateLimitedProblem:
+        return  # silently: a 429 here would confirm the account exists
 
     raw = secrets.token_urlsafe(32)
     session.add(
@@ -1315,7 +1419,8 @@ async def request_password_reset(
             user_id=user.user_id,
             token_hash=_hash_token(raw),
             expires_at=datetime.now(UTC) + timedelta(minutes=cfg.password_reset_ttl_minutes),
-            requested_ip=request.client.host if request and request.client else None,
+            # The visitor, as the gateway resolved and bound it — not the gateway's own address.
+            requested_ip=client_ip(request),
         )
     )
     # The email goes out through notify-service, from the outbox — so a crash between
@@ -1346,6 +1451,20 @@ async def confirm_password_reset(
     invalid = NotFoundProblem("That reset link is not valid")
     stmt = select(PasswordResetToken).where(PasswordResetToken.token_hash == _hash_token(raw_token))
     row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise invalid
+    # Credential first, then the link — the order `change_password` and `set_password`'s voiding
+    # of every other link take them in — so two resets (or a reset and a change) for one person
+    # queue on the credential instead of deadlocking. The insert gives a person with no password
+    # yet a row to queue on.
+    await session.execute(
+        pg_insert(Credential).values(user_id=row.user_id).on_conflict_do_nothing()
+    )
+    await session.get(Credential, row.user_id, with_for_update=True)
+    # Re-read under its lock, fresh: a sibling reset that just committed may have voided it.
+    row = (
+        await session.execute(stmt.with_for_update().execution_options(populate_existing=True))
+    ).scalar_one_or_none()
     if row is None or row.used_at is not None or row.expires_at <= datetime.now(UTC):
         raise invalid
 
@@ -2624,6 +2743,9 @@ async def step_up(
             "a one-time code. Sign in with your password and two-factor authentication to "
             "reveal protected details."
         )
+    # Mints a token without `issue_for`, so the organization's `enforce_sso` is checked here.
+    if await _sso_enforced_against(session, auth_session, principal.organization_id):
+        raise SsoRequiredProblem(SSO_REQUIRED_MESSAGE)
 
     credential = await session.get(Credential, principal.sub, with_for_update=True)
     if (

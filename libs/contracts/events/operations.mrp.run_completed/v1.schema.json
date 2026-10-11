@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.mrp.run_completed/v1",
+  "title": "operations.mrp.run_completed",
+  "description": "An MRP run finished (inline or in the worker) and its demand, shortages and result hash are stored.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "run_id",
+    "number",
+    "execution",
+    "plan_date",
+    "demand_count",
+    "items_planned",
+    "shortage_count",
+    "buy_count",
+    "make_count",
+    "result_hash"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "run_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "number": {
+      "type": "string"
+    },
+    "execution": {
+      "enum": [
+        "SYNC",
+        "WORKER"
+      ]
+    },
+    "plan_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "demand_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "items_planned": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "shortage_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "buy_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "make_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "result_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

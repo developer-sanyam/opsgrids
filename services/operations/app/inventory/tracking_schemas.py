@@ -76,6 +76,8 @@ class LotIn(BaseModel):
     source_type: str | None = Field(default=None, min_length=1, max_length=30)
     source_id: UUID | None = None
     attributes: dict[str, AttributeValue] = Field(default_factory=dict)
+    #: A code someone else printed (a supplier's lot label); unique across the organization.
+    barcode: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[!-~]+$")
 
     @field_validator("attributes")
     @classmethod
@@ -103,6 +105,7 @@ class LotPatch(BaseModel):
     expires_on: date | None = None
     quality_status: LotQualityStatus | None = None
     attributes: dict[str, AttributeValue] | None = None
+    barcode: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[!-~]+$")
 
     @field_validator("attributes")
     @classmethod
@@ -143,6 +146,7 @@ class LotOut(BaseModel):
     source_type: str | None
     source_id: str | None
     attributes: dict[str, Any]
+    barcode: str | None = None
     #: Physical stock of this lot across every bucket (not off-site statuses), exact.
     on_hand_qty: Qty
     created_at: datetime
@@ -181,6 +185,8 @@ class RollIn(BaseModel):
     gsm: int | None = Field(default=None, gt=0, le=100_000)
     shade: str | None = Field(default=None, min_length=1, max_length=40)
     grade: str | None = Field(default=None, min_length=1, max_length=20)
+    #: A code someone else printed (a mill's roll label); unique across the organization.
+    barcode: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[!-~]+$")
 
     @model_validator(mode="after")
     def _secondary_pair(self) -> Self:
@@ -201,6 +207,7 @@ class RollPatch(BaseModel):
     gsm: int | None = Field(default=None, gt=0, le=100_000)
     shade: str | None = Field(default=None, min_length=1, max_length=40)
     grade: str | None = Field(default=None, min_length=1, max_length=20)
+    barcode: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[!-~]+$")
 
     @model_validator(mode="after")
     def _secondary_pair(self) -> Self:
@@ -231,6 +238,7 @@ class RollOut(BaseModel):
     shade: str | None
     grade: str | None
     parent_roll_id: str | None
+    barcode: str | None = None
     #: Physical stock of this roll across every bucket (not off-site statuses), exact.
     on_hand_qty: Qty
     created_at: datetime

@@ -15,15 +15,7 @@
       href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <script>
-      // Apply the stored theme before first paint so there is no flash of the wrong palette.
-      try {
-        var t = localStorage.getItem("opsgrids.pulseboard.theme");
-        document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
-      } catch (e) {
-        document.documentElement.setAttribute("data-theme", "light");
-      }
-    </script>
+    <script src="/theme-init.js"></script>
     <title>PulseBoard</title>
   </head>
   <body>

@@ -58,6 +58,12 @@ ID_TOKEN_ALGORITHMS = ("RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS
 DEFAULT_SCOPES = ("openid", "email", "profile")
 
 _STATE_PREFIX = "sso:state:"
+_BINDER_PREFIX = "sso:binder:"
+
+
+def _sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
 
 T = TypeVar("T")
 
@@ -613,6 +619,38 @@ class StateStore:
                 "Single sign-on is temporarily unavailable. Please try again."
             )
         return state
+
+    async def bind(self, state: str, binder: str, *, ttl_seconds: int) -> None:
+        """Remember which browser `state` was issued to: the SHA-256 of a secret that only that
+        browser holds (in a cookie), never the secret itself."""
+        try:
+            await self._redis.set(_BINDER_PREFIX + state, _sha256(binder), ex=ttl_seconds)
+        except Exception as exc:
+            log.error("sso.state_store_unavailable", error=str(exc)[:120])
+            raise UpstreamUnavailableProblem(
+                "Single sign-on is temporarily unavailable. Please try again."
+            ) from exc
+
+    async def check_binding(self, state: str, binder: str | None) -> None:
+        """Refuse a callback arriving in a browser other than the one `state` was bound to.
+
+        A read, not a delete: the state itself is still consumed (single-use) by `consume`,
+        and only a browser that proved the binding gets that far. A missing binding refuses —
+        a state issued without one is not one this check can vouch for. Same answer as a dead
+        state, for the reason `consume` gives.
+        """
+        try:
+            stored = await self._redis.get(_BINDER_PREFIX + state)
+        except Exception as exc:
+            log.error("sso.state_store_unavailable", error=str(exc)[:120])
+            raise UpstreamUnavailableProblem(
+                "Single sign-on is temporarily unavailable. Please try again."
+            ) from exc
+        if isinstance(stored, bytes):
+            stored = stored.decode("utf-8")
+        if not binder or stored is None or not secrets.compare_digest(stored, _sha256(binder)):
+            log.warning("sso.state_binding_mismatch")
+            raise SsoExchangeProblem("That sign-in has expired. Please start again.")
 
     async def consume(
         self,

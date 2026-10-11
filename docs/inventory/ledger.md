@@ -31,7 +31,7 @@ page is the reference.
 | `inventory_moves` | one header per posting: kind, reason, reference, idempotency key | INSERT only |
 | `inventory_ledger` | one row per bucket delta (formerly `stock_movements`, same row ids) | INSERT only |
 | `inventory_balances` | current quantity + reserved per bucket, projection of the ledger | yes (kernel only) |
-| `inventory_reservations` | promised stock; open remainder cached on the balance | yes (kernel only) |
+| `inventory_reservations` | promised stock; open remainder cached on the balance; optional expiry (Phase 3) | yes (kernel only) |
 | `inventory_discrepancies` | drift the reconciler found | yes |
 
 Bucket = `(item, location, status, lot, roll)`. `lot`/`roll` are nullable UUIDs until Phase 1
@@ -302,10 +302,72 @@ enforcement incl. cross-tenant, RLS, append-only privileges, refusing downgrade,
 
 ### Deferred
 
-`uom_conversions` (per-item box = 12 pcs) already exists as a table but has **no API and is not applied in
-quantity handling**: wiring a container unit through opening, transfer and split touches the item master's UOM
-rules, and a half-applied conversion is worse than none. It lands with the receiving slice (Phase 2), where
-`box` quantities first appear on a document.
+`uom_conversions` (per-item box = 12 pcs) existed as a table with no API and was not applied in quantity
+handling; **Phase 2 delivered it** (below, and [receiving.md](receiving.md)).
+
+## Receiving (Phase 2, migration `c5e91a7d3b28`)
+
+The goods receipt is the ledger's first document-driven writer: **one `receipt` move per receipt**, built
+by `app/receiving/receipts.py` and posted through `post_move` like everything else
+(`reference_type='goods_receipt'`, `reference_id=<receipt id>`). It adds four tables — `purchase_requisitions`
+and `_lines`, `goods_receipts` and `_lines` (the receipt pair is append-only, `UPDATE`/`DELETE` revoked) — and
+three columns: `purchase_order_lines.received_milli` / `short_closed` and
+`inventory_items.receipt_tolerance_bp`. No new bucket dimension and no new move kind: a receipt is a
+`receipt` move whose lines carry the `lot_id`/`roll_id` the lot and roll tables Phase 1 created.
+
+Things the ledger now sees that it did not before:
+
+- **`QUALITY_HOLD` receipts.** An item that tracks quality (or a line with `hold`) is received straight into
+  the `QUALITY_HOLD` bucket — a receipt line with that status, never an `AVAILABLE` receipt followed by a
+  status change — so the stock is never available for a moment it should not have been. Physical on-hand
+  includes it; available excludes it.
+- **One roll per ledger line.** A roll-tracked delivery posts one line per roll (each its own bucket), and the
+  rolls add up to the delivery exactly.
+- **Two receipt lines in one bucket** are merged into one move line (quantities add; unit cost is the
+  quantity-weighted mean, half-to-even), because the kernel allows each bucket once per move.
+- **Cost** per line is the PO line's price in the PO's currency (never converted, ADR-0014 §8), converted to
+  a price per *stock* unit when the PO is priced in a container unit (`100.00` per box of 12 is `8.33` per
+  piece, rounded half-to-even once). A PO priced in a unit with no recorded relation to the stock unit passes
+  its price through unchanged, exactly as the single-shot receipt always did.
+- **Unit conversion** (`uom_conversions`): item-specific rational ratios (`numerator/denominator`, lowest
+  terms) and the fixed registry, applied in `app/receiving/domain.py::to_stock_milli` — exact `Fraction`
+  arithmetic, a result that is not a whole milli-unit (or not a whole unit for a discrete stock unit) is
+  refused, never rounded. Opening, transfer and split still take quantities in the stock unit only: a
+  container unit appears on a *document* (a receipt, a PO line), not on a bucket operation.
+
+The reconciler is unchanged and stays clean after every receipt path (`tests/test_goods_receipts_api.py`,
+`tests/test_receiving_concurrency.py`).
+
+## Movements and control (Phase 3, migration `c5a82f6d3b19`)
+
+The full reference is [movements.md](movements.md); what changes in the ledger's own terms:
+
+- **The `IN_TRANSIT` bucket is now written.** An inter-warehouse transfer's dispatch is one `relocation`
+  move (`reference_type = stock_transfer`) out of the source bin's `AVAILABLE` bucket into `IN_TRANSIT` at
+  the destination warehouse's default bin, lot and roll intact. Its receipt is a `relocation` out of
+  `IN_TRANSIT` into the chosen bin (`stock_transfer_receipt`), and a shortage is an `adjustment` (reason
+  `lost`, `stock_transfer_shortage`) out of `IN_TRANSIT`, so the in-transit figure drains to exactly zero.
+  `IN_TRANSIT` stays outside on-hand: `GET /operations/inventory/in-transit` reports it beside the
+  warehouse's physical figure, never inside it. No new move kind (ADR-0014 §12's rule, extended).
+- **Reservations have an HTTP create, a list and an expiry.** `inventory_reservations` gains
+  `expires_at` / `expired_at` / `note`; `ledger.reserve` takes `expires_at` and `note`; a sweep releases a
+  lapsed reservation through `ledger.release` (key `expire:<id>`). The kernel's guarantees — the bucket lock,
+  `reserved <= quantity`, the count-below-reserved refusal — are untouched.
+- **An adjustment can wait.** `adjustment_requests` holds every adjustment made with a reason and
+  evidence; at or over the organization's threshold the move is posted only when the approval service says
+  yes (`adjustment-request:<id>` is its idempotency key), otherwise at once.
+- **Idempotency keys the new paths use:** `transfer:<id>:dispatch`, `transfer:<id>:receive:<client key>`,
+  `transfer:<id>:shortage:<client key>`, `adjustment-request:<id>`, `expire:<id>`.
+- **Reconciler:** unchanged, and clean after every Phase 3 test (`assert_reconciled`), including after the
+  50-way reservation race, the double dispatch, and a partial receipt with a shortage.
+
+## Scan, import and export (Phase 9)
+
+Stock still enters only through `post_move`. The bulk import posts opening stock through
+`stock_ops.post_opening_stock` (one `opening` move per 100 lines, `reference_type=opening_stock`),
+inside an all-or-nothing transaction, and refuses a bucket that already holds stock. Migration
+`d9a4c6e1b3f7` adds `barcode` to `inventory_items`, `lots` and `rolls` and the append-only
+`inventory_import_runs`. See [scan-import.md](scan-import.md).
 
 ## Storage put-away, warehouse coordinates and the map reads
 
@@ -353,4 +415,5 @@ restricted to `receiving`/`staging` sources.
 ## Not in Phase 0
 
 Costing layers and every later phase (lots, rolls, multi-location moves and locations got their HTTP
-APIs in Phase 1 — see above). See [plan.md](plan.md).
+APIs in Phase 1 — see above; transfers, reservation APIs and approval-gated adjustments in Phase 3 — see
+above). See [plan.md](plan.md).

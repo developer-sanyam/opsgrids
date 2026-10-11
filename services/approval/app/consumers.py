@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -45,9 +45,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import ProcessedEvent
 from app.services import (
+    REQUEST_TYPE_INVENTORY_ADJUSTMENT,
+    REQUEST_TYPE_INVENTORY_TRANSFER,
     REQUEST_TYPE_LEAVE,
+    apply_inventory_outcome,
     apply_leave_outcome,
     apply_regularization_outcome,
+    open_inventory_request,
     open_leave_request,
     open_regularization_request,
     upsert_hierarchy_node,
@@ -482,6 +486,198 @@ async def on_leave_cancelled(envelope: dict[str, Any]) -> None:
     )
 
 
+# --------------------------------------------------------------------- routing (inventory Phase 3)
+
+#: Contract strings from operations (`services/operations/app/movements/common.py`), named here
+#: rather than imported (CLAUDE.md). Two request types, each with the same trio as leave's:
+#: `.requested` opens a request (only when the producer says `approval_required` — an
+#: auto-approved or directly-approved transfer never reaches this service), `.applied` is the
+#: return leg once a decision lands, `.cancelled` withdraws a still-pending one.
+EVT_INVENTORY_TRANSFER_REQUESTED = "operations.inventory.transfer.requested"
+EVT_INVENTORY_TRANSFER_APPLIED = "operations.inventory.transfer.applied"
+EVT_INVENTORY_TRANSFER_CANCELLED = "operations.inventory.transfer.cancelled"
+EVT_INVENTORY_ADJUSTMENT_REQUESTED = "operations.inventory.adjustment.requested"
+EVT_INVENTORY_ADJUSTMENT_APPLIED = "operations.inventory.adjustment.applied"
+EVT_INVENTORY_ADJUSTMENT_CANCELLED = "operations.inventory.adjustment.cancelled"
+
+INVENTORY_EVENTS = (
+    EVT_INVENTORY_TRANSFER_REQUESTED,
+    EVT_INVENTORY_TRANSFER_APPLIED,
+    EVT_INVENTORY_TRANSFER_CANCELLED,
+    EVT_INVENTORY_ADJUSTMENT_REQUESTED,
+    EVT_INVENTORY_ADJUSTMENT_APPLIED,
+    EVT_INVENTORY_ADJUSTMENT_CANCELLED,
+)
+
+
+async def _inventory_requested(
+    envelope: dict[str, Any], *, request_type: str, id_key: str, label: str
+) -> None:
+    """Opens an inventory request (ADR-0006 §4). Payload: `organization_id,
+    <id_key> (-> source_ref), approval_required, employee_id (-> requester), summary, reason
+    (-> request_note)`. A request that does not need approval is a processed no-op."""
+    event_id = uuid.UUID(envelope["event_id"])
+    payload = envelope["payload"]
+    organization_id = _tenant_from_envelope(envelope)
+    if organization_id is None:
+        return
+
+    opened = False
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info(f"{label}.requested.duplicate", event_id=str(event_id))
+            return
+        if payload.get("approval_required") and payload.get("employee_id"):
+            request = await open_inventory_request(
+                session,
+                request_type=request_type,
+                organization_id=organization_id,
+                source_ref=uuid.UUID(str(payload[id_key])),
+                requester_employee_id=uuid.UUID(str(payload["employee_id"])),
+                summary=dict(payload.get("summary") or {}),
+                request_note=payload.get("reason"),
+            )
+            opened = request is not None
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    log.info(
+        f"{label}.requested.processed",
+        event_id=str(event_id),
+        organization_id=str(organization_id),
+        opened=opened,
+    )
+
+
+async def _inventory_applied(
+    envelope: dict[str, Any], *, request_type: str, id_key: str, label: str
+) -> None:
+    """Records operations' return leg (ADR-0006 §12): `outcome` is `applied|failed`. Payload:
+    `organization_id, <id_key> (-> source_ref), approval_request_id, request_type, outcome,
+    failure_reason?`. An event with no `approval_request_id` — an adjustment that needed no
+    approval — has nothing here to record."""
+    event_id = uuid.UUID(envelope["event_id"])
+    payload = envelope["payload"]
+    organization_id = _tenant_from_envelope(envelope)
+    if organization_id is None:
+        return
+
+    applied = False
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info(f"{label}.applied.duplicate", event_id=str(event_id))
+            return
+        if payload.get("approval_request_id"):
+            request = await apply_inventory_outcome(
+                session,
+                request_type=request_type,
+                organization_id=organization_id,
+                source_ref=uuid.UUID(str(payload[id_key])),
+                outcome=str(payload["outcome"]),
+                failure_reason=payload.get("failure_reason"),
+            )
+            applied = request is not None
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    log.info(
+        f"{label}.applied.processed",
+        event_id=str(event_id),
+        organization_id=str(organization_id),
+        applied=applied,
+    )
+
+
+async def _inventory_cancelled(
+    envelope: dict[str, Any], *, request_type: str, id_key: str, label: str
+) -> None:
+    """Withdraws a still-pending inventory request (`withdraw_request`) — operations' own
+    cancellation of something nobody has decided yet. Cancelling an already-decided or a
+    never-routed one needs no action here: `withdraw_request` no-ops on both."""
+    event_id = uuid.UUID(envelope["event_id"])
+    payload = envelope["payload"]
+    organization_id = _tenant_from_envelope(envelope)
+    if organization_id is None:
+        return
+
+    withdrawn = False
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info(f"{label}.cancelled.duplicate", event_id=str(event_id))
+            return
+        request = await withdraw_request(
+            session,
+            organization_id=organization_id,
+            request_type=request_type,
+            source_ref=uuid.UUID(str(payload[id_key])),
+        )
+        withdrawn = request is not None
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+    log.info(
+        f"{label}.cancelled.processed",
+        event_id=str(event_id),
+        organization_id=str(organization_id),
+        withdrawn=withdrawn,
+    )
+
+
+Handler = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+def _bind_inventory(
+    request_type: str, id_key: str, label: str, events: tuple[str, str, str]
+) -> tuple[Handler, Handler, Handler]:
+    """One request type's three handlers, registered on the consumer and returned so each is also
+    a named module-level function a test can call directly."""
+    requested, applied, cancelled = events
+
+    async def on_requested(envelope: dict[str, Any]) -> None:
+        await _inventory_requested(envelope, request_type=request_type, id_key=id_key, label=label)
+
+    async def on_applied(envelope: dict[str, Any]) -> None:
+        await _inventory_applied(envelope, request_type=request_type, id_key=id_key, label=label)
+
+    async def on_cancelled(envelope: dict[str, Any]) -> None:
+        await _inventory_cancelled(envelope, request_type=request_type, id_key=id_key, label=label)
+
+    on_requested.__name__ = f"on_{label}_requested"
+    on_applied.__name__ = f"on_{label}_applied"
+    on_cancelled.__name__ = f"on_{label}_cancelled"
+    consumer.on(requested)(on_requested)
+    consumer.on(applied)(on_applied)
+    consumer.on(cancelled)(on_cancelled)
+    return on_requested, on_applied, on_cancelled
+
+
+(
+    on_inventory_transfer_requested,
+    on_inventory_transfer_applied,
+    on_inventory_transfer_cancelled,
+) = _bind_inventory(
+    REQUEST_TYPE_INVENTORY_TRANSFER,
+    "transfer_id",
+    "inventory_transfer",
+    (
+        EVT_INVENTORY_TRANSFER_REQUESTED,
+        EVT_INVENTORY_TRANSFER_APPLIED,
+        EVT_INVENTORY_TRANSFER_CANCELLED,
+    ),
+)
+(
+    on_inventory_adjustment_requested,
+    on_inventory_adjustment_applied,
+    on_inventory_adjustment_cancelled,
+) = _bind_inventory(
+    REQUEST_TYPE_INVENTORY_ADJUSTMENT,
+    "adjustment_id",
+    "inventory_adjustment",
+    (
+        EVT_INVENTORY_ADJUSTMENT_REQUESTED,
+        EVT_INVENTORY_ADJUSTMENT_APPLIED,
+        EVT_INVENTORY_ADJUSTMENT_CANCELLED,
+    ),
+)
+
+
 async def main() -> None:
     cfg = settings()
     engine = init_engine(cfg)
@@ -491,7 +687,10 @@ async def main() -> None:
     await assert_app_role(engine, environment=cfg.environment)
     log.info(
         "approval.consumer.bindings",
-        routing_keys=list(HIERARCHY_EVENTS) + list(REGULARIZATION_EVENTS) + list(LEAVE_EVENTS),
+        routing_keys=list(HIERARCHY_EVENTS)
+        + list(REGULARIZATION_EVENTS)
+        + list(LEAVE_EVENTS)
+        + list(INVENTORY_EVENTS),
     )
     await consumer.run()
 

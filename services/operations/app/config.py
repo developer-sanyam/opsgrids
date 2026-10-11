@@ -19,6 +19,10 @@ class Settings(ServiceSettings):
     #: delayed shipment (fulfilment plan §4; F12) — far more often than the nightly reconciliation,
     #: since these are conditions an operator should hear about within minutes.
     alert_interval_seconds: float = 900
+    #: How often the job-work overdue sweep (Inventory plan Phase 6, `app.jobwork.sweep`) looks for
+    #: orders past their due date with material still at the vendor. Each order is announced once
+    #: (`overdue_notified_at`), so this only bounds how late the announcement can be.
+    jobwork_overdue_interval_seconds: float = 3600
     #: Runs the reconcile sweep as a supervised background task inside the API process itself
     #: instead of `operations-cron`'s own container (the memory-headroom slice's fix round 2:
     #: a background process costs about as much as an API one — see memory-budget.json's own
@@ -30,6 +34,11 @@ class Settings(ServiceSettings):
     #: comment — but pointless). The edge runs exactly one `operations` API replica, so this
     #: flag being on there is never a double-run either.
     run_sweeps_in_api: bool = False
+    #: An MRP run over more open demand lines than this is queued for the worker sweep
+    #: (`app.mrp.sweep`) instead of running inside the request (inventory plan Phase 7).
+    mrp_sync_max_demands: int = 200
+    #: How often the MRP worker sweep looks for queued runs.
+    mrp_sweep_interval_seconds: float = 30
     #: Runs this service's event consumers (`app/consumers.py` — the fulfilment offer-expiry
     #: sweep and the order-cancellation cascade, ADR-0025 §3/§1) as a supervised background task
     #: inside the API process, the same worker-folding shape eleven other services already use
@@ -44,6 +53,11 @@ class Settings(ServiceSettings):
     #: `app.channels.sweep.ChannelSyncSweep`). Short relative to the daily reconcile sweep — a
     #: real channel integration is polled on the order of minutes, not once a day.
     channel_sync_interval_seconds: float = 300
+    #: How often the reservation-expiry sweep (inventory Phase 3,
+    #: `app.movements.sweep.ReservationExpirySweep`) releases reservations past their
+    #: `expires_at` — the same cadence as the channel sweep: a lapsed hold is freed within
+    #: minutes, and a pass with nothing due is one indexed query.
+    reservation_expiry_interval_seconds: float = 300
     #: The self-hosted sandbox marketplace's base URL (`app.channels.mock_marketplace`) —
     #: platform configuration, not a value a tenant supplies (`app.channels.mock_provider`'s own
     #: module docstring: the same "fixed, operator-configured base" reasoning
