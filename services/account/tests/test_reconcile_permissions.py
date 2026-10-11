@@ -54,7 +54,7 @@ from app.catalogue import (
     load_product_manifest,
 )
 from app.config import settings
-from app.models import Membership, Organization, OutboxEvent
+from app.models import Membership, Organization, OutboxEvent, Role, RolePermission
 from app.schemas import GrantIn, OrganizationIn, RoleIn
 from platform_core.auth import Scope
 from platform_core.cache import permission_version_key
@@ -736,3 +736,63 @@ class TestFleetReconcileIsOneTransactionPerOrganization:
 
         assert redis.store.get(permission_version_key(str(org.id))) == "1"
         assert permission_version_key(str(other_org.id)) not in redis.store
+
+
+class TestPurchaseOrderHoldersKeepReceiving:
+    """Operations split receiving out of `purchase_order.write` into `receipt.write` and
+    `stock.receive`. A customer-authored role that could receive only because it held
+    `purchase_order.write` would lose that at deploy, and ADR-0007 §4 means the template
+    widening never reaches it, so this one carry-forward does, at the scope it already holds."""
+
+    PO_WRITE = "operations.procurement.purchase_order.write"
+    NEW = ("operations.procurement.receipt.write", "operations.inventory.stock.receive")
+
+    async def _customer_role(
+        self, session: AsyncSession, org_id: uuid.UUID, code: str, grants: dict[str, str]
+    ) -> None:
+        role = Role(organization_id=org_id, code=code, name=code, is_system=False)
+        session.add(role)
+        await session.flush()
+        for permission_code, scope in grants.items():
+            permission = await selectors.get_permission_by_code(session, permission_code)
+            assert permission is not None
+            session.add(RolePermission(role_id=role.id, permission_id=permission.id, scope=scope))
+
+    async def _grants(self, session: AsyncSession, org_id: uuid.UUID, code: str) -> set[str]:
+        role = await selectors.get_role_by_code(session, org_id, code)
+        assert role is not None
+        return {f"{g.permission.code}:{g.scope}" for g in role.grants}
+
+    async def test_a_customer_role_holding_po_write_gains_the_receive_permissions(
+        self, session: AsyncSession, org: Organization, redis: FakeRedis
+    ) -> None:
+        manifest = load_product_manifest("operations")
+        assert manifest is not None
+        async with session.begin():
+            await services.install_registration(session, org.id, manifest.registration)
+            await self._customer_role(session, org.id, "CX_CLERK", {self.PO_WRITE: "ORG"})
+            await self._customer_role(session, org.id, "CX_OWN_CLERK", {self.PO_WRITE: "OWN"})
+            await self._customer_role(
+                session, org.id, "CX_READER", {"operations.procurement.purchase_order.read": "ORG"}
+            )
+
+        async with session.begin():
+            first = await services.reconcile_registration(
+                session, org.id, manifest.registration, acting_as="test"
+            )
+        assert first.changed is True
+
+        async with session.begin():
+            buyer = await self._grants(session, org.id, "CX_CLERK")
+            own = await self._grants(session, org.id, "CX_OWN_CLERK")
+            reader = await self._grants(session, org.id, "CX_READER")
+        assert buyer == {f"{c}:ORG" for c in (self.PO_WRITE, *self.NEW)}
+        # the same scope, never wider: an OWN holder stays OWN
+        assert own == {f"{self.PO_WRITE}:OWN", *(f"{c}:OWN" for c in self.NEW)}
+        assert reader == {"operations.procurement.purchase_order.read:ORG"}
+
+        async with session.begin():
+            second = await services.reconcile_registration(
+                session, org.id, manifest.registration, acting_as="test"
+            )
+        assert second.changed is False

@@ -2230,6 +2230,51 @@ class ReconcileSummary:
     admin_grant: AdminGrant
 
 
+#: Permission splits that must reach customer-authored roles too. Widening a template never
+#: touches those (ADR-0007 §4), so a capability that moved to new permissions would silently
+#: leave them: `(product, held, also_needed)` gives every role holding `held` the others at the
+#: scope it already holds.
+_CARRY_FORWARD: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "operations",
+        "operations.procurement.purchase_order.write",
+        ("operations.procurement.receipt.write", "operations.inventory.stock.receive"),
+    ),
+)
+
+
+async def _carry_forward_grants(
+    session: AsyncSession, org_id: uuid.UUID, product: str, diff: RegistrationDiff
+) -> None:
+    """Union the `_CARRY_FORWARD` permissions into the organization's customer-authored roles."""
+    rules = [(held, needed) for p, held, needed in _CARRY_FORWARD if p == product]
+    if not rules:
+        return
+    roles = await selectors.customer_roles(session, org_id)
+    for role in roles:
+        before = sorted(f"{g.permission.code}:{g.scope}" for g in role.grants)
+        existing = {g.permission.code for g in role.grants}
+        changed = False
+        for held, needed in rules:
+            source = next((g for g in role.grants if g.permission.code == held), None)
+            if source is None:
+                continue
+            for code in needed:
+                permission = await selectors.get_permission_by_code(session, code)
+                if permission is None or code in existing:
+                    continue
+                scope = min_scope(source.scope, permission.max_scope)
+                session.add(RolePermission(role=role, permission=permission, scope=scope))
+                existing.add(code)
+                diff.grants_added.append((role.code, code, scope))
+                changed = True
+        if changed:
+            diff.role_grants_before[role.code] = before
+            diff.role_grants_after[role.code] = sorted(
+                f"{g.permission.code}:{g.scope}" for g in role.grants
+            )
+
+
 async def reconcile_registration(
     session: AsyncSession,
     org_id: uuid.UUID,
@@ -2276,6 +2321,7 @@ async def reconcile_registration(
     happened when nothing was meant to.
     """
     diff = await install_registration(session, org_id, registration)
+    await _carry_forward_grants(session, org_id, registration.product, diff)
 
     admin_grant = AdminGrant()
     if product_active and admin_role_codes:

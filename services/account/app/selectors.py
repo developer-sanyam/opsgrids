@@ -574,6 +574,12 @@ async def get_role_by_code(session: AsyncSession, org_id: uuid.UUID, code: str) 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def customer_roles(session: AsyncSession, org_id: uuid.UUID) -> list[Role]:
+    """The organization's customer-authored roles (system roles come from templates)."""
+    stmt = select(Role).where(Role.organization_id == org_id, Role.is_system.is_(False))
+    return list((await session.execute(stmt)).scalars().all())
+
+
 async def role_held_by_a_membership(
     session: AsyncSession, org_id: uuid.UUID, role_id: uuid.UUID
 ) -> bool:

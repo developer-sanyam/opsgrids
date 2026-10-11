@@ -29,8 +29,8 @@ DRAFT --submit--> SUBMITTED --approve--> APPROVED --convert--> CONVERTED
 `REQUISITION_TRANSITIONS` in `domain.py` is the map; every other move is a 409, including a no-op.
 A decision locks the requisition row first and re-reads the status under the lock, so two people
 deciding the same requisition cannot both succeed. `approve` and `reject` need
-`requisition.approve` (ORG-floored — a requester cannot approve their own request); `reject`
-requires a reason.
+`requisition.approve` (ORG-floored — a requester cannot approve or reject their own request: the server refuses with 403 when the
+decider is the creator); `reject` requires a reason.
 
 **Convert** (`requisition.write` **and** `purchase_order.write`) creates **one draft purchase
 order** with the supplier you name, a line per requisition line, through the PO module's own
@@ -155,6 +155,10 @@ into `QUALITY_HOLD`. `receive_into_home` is gone.
 Earlier in the phase it needed `purchase_order.write` alone, which let a buyer (or a default-seat user
 at OWN) put stock on the books without any warehouse permission; that gap is closed. `OPERATIONS_ADMIN` and
 `OPERATIONS_MANAGER` hold all three; `OPERATIONS_USER` and `BUYER` do not and receive nothing.
+
+**Customer-authored roles.** Template widening never reaches them (ADR-0007 §4), so
+`reconcile_permissions.py operations` additionally grants `receipt.write` and `stock.receive`, at the
+scope already held, to every customer-authored role holding `purchase_order.write`. Idempotent.
 
 ## Permissions (operations catalogue)
 
