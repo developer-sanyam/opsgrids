@@ -89,8 +89,11 @@ class Deal(Base, TenantBase):
     value_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
 
-    #: lead | qualified | proposal | negotiation | closed_won | closed_lost.
-    stage: Mapped[str] = mapped_column(String(20), nullable=False, default="lead")
+    #: A stage **key** of the organization's pipeline (`pipeline_stages.key`, or the virtual
+    #: default's — see `app.pipeline`). Never defaulted here: `services.create_deal` always names
+    #: one, the pipeline's entry stage when the caller does not. No foreign key and no CHECK, so
+    #: a vocabulary change is not a migration; the service layer validates the key.
+    stage: Mapped[str] = mapped_column(String(20), nullable=False)
     #: The rep who runs the deal — the OWN-scope column. Plain UUID into the rep directory.
     owner_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     #: Win likelihood, 0-100. 100 once won, 0 once lost.
