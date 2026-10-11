@@ -99,6 +99,12 @@ extend-exclude = [
     "frontend/product-storefront/tools/art/*.py",
 ]
 
+[tool.ruff.format]
+# The design specs and plans quote partial code (a method without its class, a call without its
+# function), and formatting such a fragment rewrites it into something else — a dedented method,
+# a tuple where a string was. They are notes about code, not code, so they are not formatted.
+exclude = ["docs/superpowers/**/*.md"]
+
 [tool.ruff.lint]
 select = [
     "E", "W",   # pycodestyle
