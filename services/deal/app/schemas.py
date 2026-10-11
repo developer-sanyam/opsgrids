@@ -19,7 +19,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from app.pipeline import KEY_PATTERN
+from app.pipeline import KEY_PATTERN, Outcome
 
 
 def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
@@ -136,7 +136,13 @@ class StageMoveIn(BaseModel):
 class DealOut(BaseModel):
     """Mirrors the SPA's `Deal`. `value_minor` is minor units of `currency`; `probability`
     is 0-100; a past `close_date` on an open deal reads as overdue; `last_activity_at` is
-    the staleness clock (NULL: never touched)."""
+    the staleness clock (NULL: never touched).
+
+    The `stage_*` fields resolve `stage` against the organization's pipeline so a reader never
+    needs the key list: `stage_outcome` is what to test (`open`, `won`, `lost`), `stage_label`
+    what to show, `stage_position` where it sits (-1 for a key the pipeline cannot resolve, which
+    also reads `open` and is labelled by its own key), `stage_is_last_open` whether it is the
+    last active open stage. `closed_at` is set once, when the deal first reaches a closing stage."""
 
     id: str
     name: str
@@ -151,6 +157,11 @@ class DealOut(BaseModel):
     created_at: datetime
     last_activity_at: datetime | None
     source: str
+    stage_label: str
+    stage_outcome: Outcome
+    stage_position: int
+    stage_is_last_open: bool
+    closed_at: datetime | None
 
 
 # ------------------------------------------------------------------ activities

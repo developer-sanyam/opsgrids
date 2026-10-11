@@ -27,6 +27,9 @@ from app.models import Activity, Deal, Pipeline, PipelineStage
 from app.pipeline import DEFAULT_PIPELINE, Outcome, PipelineSpec, StageSpec, Tone
 from app.schemas import ActivityOut, DealOut
 from platform_core.auth import ScopeContext
+from platform_core.logging import get_logger
+
+log = get_logger("deal.selectors")
 
 # ------------------------------------------------------------------ the pipeline
 
@@ -97,14 +100,21 @@ def deals_stmt(
     *,
     q: str | None = None,
     stage: str | None = None,
+    outcome: Outcome | None = None,
     owner_id: uuid.UUID | None = None,
     company_id: uuid.UUID | None = None,
+    spec: PipelineSpec = DEFAULT_PIPELINE,
 ) -> Select[Any]:
     """Scope-filtered deal list. `ctx.apply` is the enforcement point. The search matches
     the deal name — the field the SPA filters on; `owner_id` narrows to one rep's deals
     the way the board's owner dropdown does, and `company_id` to one account's deals (both
     *filters* within scope, never a widening) — the index `ix_deals_org_company` backs the
-    latter, so a company's deals card stops fetching the whole board client-side."""
+    latter, so a company's deals card stops fetching the whole board client-side.
+
+    `outcome` selects by what the stage *means* — `open`, `won` or `lost` — through the
+    pipeline's own stages, never by a key: `open` is everything that is not won or lost, so a
+    deal sitting in a stage the pipeline cannot resolve is still open, as `domain.is_open`
+    says. `stage` stays an unvalidated key: an unknown one returns an empty page."""
     stmt = select(Deal).where(
         Deal.organization_id == ctx.organization_id,
         Deal.deleted_at.is_(None),
@@ -115,6 +125,10 @@ def deals_stmt(
         stmt = stmt.where(func.lower(Deal.name).like(f"%{q.lower()}%"))
     if stage:
         stmt = stmt.where(Deal.stage == stage)
+    if outcome == "open":
+        stmt = stmt.where(Deal.stage.not_in((*spec.keys_of("won"), *spec.keys_of("lost"))))
+    elif outcome is not None:
+        stmt = stmt.where(Deal.stage.in_(spec.keys_of(outcome)))
     if owner_id is not None:
         stmt = stmt.where(Deal.owner_id == owner_id)
     if company_id is not None:
@@ -207,7 +221,19 @@ async def all_activities(
 # ------------------------------------------------------------------ projections (ORM → wire)
 
 
-def deal_out(deal: Deal) -> DealOut:
+def deal_out(deal: Deal, spec: PipelineSpec) -> DealOut:
+    """The wire shape of a deal, its `stage` key resolved against the pipeline.
+
+    A key the pipeline cannot resolve — a stage row someone removed by hand, a deal imported
+    ahead of its stage — renders `open`, labelled by its own key, at position -1, and logs the
+    deal and organization ids. It never raises: one bad row must not blank a list."""
+    stage = spec.get(deal.stage)
+    if stage is None:
+        log.warning(
+            "deal.stage.unresolved",
+            deal_id=str(deal.id),
+            organization_id=str(deal.organization_id),
+        )
     return DealOut(
         id=str(deal.id),
         name=deal.name,
@@ -222,6 +248,11 @@ def deal_out(deal: Deal) -> DealOut:
         created_at=deal.created_at,
         last_activity_at=deal.last_activity_at,
         source=deal.source,
+        stage_label=stage.label if stage is not None else deal.stage,
+        stage_outcome=stage.outcome if stage is not None else "open",
+        stage_position=stage.position if stage is not None else -1,
+        stage_is_last_open=spec.is_last_open(deal.stage),
+        closed_at=deal.closed_at,
     )
 
 

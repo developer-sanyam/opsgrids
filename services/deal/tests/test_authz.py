@@ -267,6 +267,11 @@ class TestEndpointAuthorization:
             "created_at",
             "last_activity_at",
             "source",
+            "stage_label",
+            "stage_outcome",
+            "stage_position",
+            "stage_is_last_open",
+            "closed_at",
         }
         assert isinstance(row["value_minor"], int)
 

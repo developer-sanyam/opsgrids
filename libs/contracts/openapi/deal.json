@@ -322,12 +322,24 @@
         "type": "object"
       },
       "DealOut": {
-        "description": "Mirrors the SPA's `Deal`. `value_minor` is minor units of `currency`; `probability`\nis 0-100; a past `close_date` on an open deal reads as overdue; `last_activity_at` is\nthe staleness clock (NULL: never touched).",
+        "description": "Mirrors the SPA's `Deal`. `value_minor` is minor units of `currency`; `probability`\nis 0-100; a past `close_date` on an open deal reads as overdue; `last_activity_at` is\nthe staleness clock (NULL: never touched).\n\nThe `stage_*` fields resolve `stage` against the organization's pipeline so a reader never\nneeds the key list: `stage_outcome` is what to test (`open`, `won`, `lost`), `stage_label`\nwhat to show, `stage_position` where it sits (-1 for a key the pipeline cannot resolve, which\nalso reads `open` and is labelled by its own key), `stage_is_last_open` whether it is the\nlast active open stage. `closed_at` is set once, when the deal first reaches a closing stage.",
         "properties": {
           "close_date": {
             "format": "date",
             "title": "Close Date",
             "type": "string"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
           },
           "company_id": {
             "title": "Company Id",
@@ -390,6 +402,27 @@
             "title": "Stage",
             "type": "string"
           },
+          "stage_is_last_open": {
+            "title": "Stage Is Last Open",
+            "type": "boolean"
+          },
+          "stage_label": {
+            "title": "Stage Label",
+            "type": "string"
+          },
+          "stage_outcome": {
+            "enum": [
+              "open",
+              "won",
+              "lost"
+            ],
+            "title": "Stage Outcome",
+            "type": "string"
+          },
+          "stage_position": {
+            "title": "Stage Position",
+            "type": "integer"
+          },
           "value_minor": {
             "title": "Value Minor",
             "type": "integer"
@@ -408,7 +441,12 @@
           "close_date",
           "created_at",
           "last_activity_at",
-          "source"
+          "source",
+          "stage_label",
+          "stage_outcome",
+          "stage_position",
+          "stage_is_last_open",
+          "closed_at"
         ],
         "title": "DealOut",
         "type": "object"
@@ -889,6 +927,29 @@
                 }
               ],
               "title": "Stage"
+            }
+          },
+          {
+            "description": "Select by what the stage means: open, won or lost \u2014 never by key",
+            "in": "query",
+            "name": "outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "open",
+                    "won",
+                    "lost"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Select by what the stage means: open, won or lost \u2014 never by key",
+              "title": "Outcome"
             }
           },
           {

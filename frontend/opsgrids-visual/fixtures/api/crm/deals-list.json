@@ -13,7 +13,12 @@
       "close_date": "2026-09-30",
       "created_at": "2026-03-10T04:30:00Z",
       "last_activity_at": "2026-09-13T08:00:00Z",
-      "source": "referral"
+      "source": "referral",
+      "stage_label": "Negotiation",
+      "stage_outcome": "open",
+      "stage_position": 3,
+      "stage_is_last_open": true,
+      "closed_at": null
     },
     {
       "id": "e0000000-0000-4000-8000-000000000002",
@@ -28,7 +33,12 @@
       "close_date": "2026-10-12",
       "created_at": "2026-04-11T04:30:00Z",
       "last_activity_at": "2026-09-12T08:00:00Z",
-      "source": "inbound"
+      "source": "inbound",
+      "stage_label": "Proposal",
+      "stage_outcome": "open",
+      "stage_position": 2,
+      "stage_is_last_open": false,
+      "closed_at": null
     },
     {
       "id": "e0000000-0000-4000-8000-000000000003",
@@ -43,7 +53,12 @@
       "close_date": "2026-11-04",
       "created_at": "2026-05-12T04:30:00Z",
       "last_activity_at": "2026-09-11T08:00:00Z",
-      "source": "outbound"
+      "source": "outbound",
+      "stage_label": "Qualified",
+      "stage_outcome": "open",
+      "stage_position": 1,
+      "stage_is_last_open": false,
+      "closed_at": null
     },
     {
       "id": "e0000000-0000-4000-8000-000000000004",
@@ -58,7 +73,12 @@
       "close_date": "2026-09-02",
       "created_at": "2026-06-13T04:30:00Z",
       "last_activity_at": "2026-09-10T08:00:00Z",
-      "source": "partner"
+      "source": "partner",
+      "stage_label": "Closed Won",
+      "stage_outcome": "won",
+      "stage_position": 4,
+      "stage_is_last_open": false,
+      "closed_at": "2026-09-10T08:00:00Z"
     },
     {
       "id": "e0000000-0000-4000-8000-000000000005",
@@ -73,7 +93,12 @@
       "close_date": "2026-09-12",
       "created_at": "2026-07-14T04:30:00Z",
       "last_activity_at": null,
-      "source": "inbound"
+      "source": "inbound",
+      "stage_label": "Negotiation",
+      "stage_outcome": "open",
+      "stage_position": 3,
+      "stage_is_last_open": true,
+      "closed_at": null
     },
     {
       "id": "e0000000-0000-4000-8000-000000000006",
@@ -88,7 +113,12 @@
       "close_date": "2026-10-18",
       "created_at": "2026-08-15T04:30:00Z",
       "last_activity_at": "2026-09-08T08:00:00Z",
-      "source": "event"
+      "source": "event",
+      "stage_label": "Proposal",
+      "stage_outcome": "open",
+      "stage_position": 2,
+      "stage_is_last_open": false,
+      "closed_at": null
     },
     {
       "id": "e0000000-0000-4000-8000-000000000007",
@@ -103,7 +133,12 @@
       "close_date": "2026-12-01",
       "created_at": "2026-03-16T04:30:00Z",
       "last_activity_at": "2026-09-07T08:00:00Z",
-      "source": "outbound"
+      "source": "outbound",
+      "stage_label": "Qualified",
+      "stage_outcome": "open",
+      "stage_position": 1,
+      "stage_is_last_open": false,
+      "closed_at": null
     },
     {
       "id": "e0000000-0000-4000-8000-000000000008",
@@ -118,7 +153,12 @@
       "close_date": "2026-12-15",
       "created_at": "2026-04-17T04:30:00Z",
       "last_activity_at": "2026-09-06T08:00:00Z",
-      "source": "inbound"
+      "source": "inbound",
+      "stage_label": "Lead",
+      "stage_outcome": "open",
+      "stage_position": 0,
+      "stage_is_last_open": false,
+      "closed_at": null
     },
     {
       "id": "e0000000-0000-4000-8000-000000000009",
@@ -133,7 +173,12 @@
       "close_date": "2026-11-20",
       "created_at": "2026-05-18T04:30:00Z",
       "last_activity_at": "2026-09-05T08:00:00Z",
-      "source": "event"
+      "source": "event",
+      "stage_label": "Lead",
+      "stage_outcome": "open",
+      "stage_position": 0,
+      "stage_is_last_open": false,
+      "closed_at": null
     },
     {
       "id": "e0000000-0000-4000-8000-000000000010",
@@ -148,7 +193,12 @@
       "close_date": "2026-10-05",
       "created_at": "2026-06-19T04:30:00Z",
       "last_activity_at": null,
-      "source": "referral"
+      "source": "referral",
+      "stage_label": "Proposal",
+      "stage_outcome": "open",
+      "stage_position": 2,
+      "stage_is_last_open": false,
+      "closed_at": null
     },
     {
       "id": "e0000000-0000-4000-8000-000000000011",
@@ -163,7 +213,12 @@
       "close_date": "2026-11-11",
       "created_at": "2026-07-20T04:30:00Z",
       "last_activity_at": "2026-09-13T08:00:00Z",
-      "source": "inbound"
+      "source": "inbound",
+      "stage_label": "Qualified",
+      "stage_outcome": "open",
+      "stage_position": 1,
+      "stage_is_last_open": false,
+      "closed_at": null
     },
     {
       "id": "e0000000-0000-4000-8000-000000000012",
@@ -178,7 +233,12 @@
       "close_date": "2026-12-20",
       "created_at": "2026-08-21T04:30:00Z",
       "last_activity_at": "2026-09-12T08:00:00Z",
-      "source": "outbound"
+      "source": "outbound",
+      "stage_label": "Lead",
+      "stage_outcome": "open",
+      "stage_position": 0,
+      "stage_is_last_open": false,
+      "closed_at": null
     },
     {
       "id": "e0000000-0000-4000-8000-000000000013",
@@ -193,7 +253,12 @@
       "close_date": "2026-08-28",
       "created_at": "2026-03-22T04:30:00Z",
       "last_activity_at": "2026-09-11T08:00:00Z",
-      "source": "outbound"
+      "source": "outbound",
+      "stage_label": "Closed Lost",
+      "stage_outcome": "lost",
+      "stage_position": 5,
+      "stage_is_last_open": false,
+      "closed_at": "2026-09-11T08:00:00Z"
     },
     {
       "id": "e0000000-0000-4000-8000-000000000014",
@@ -208,7 +273,12 @@
       "close_date": "2026-09-26",
       "created_at": "2026-04-23T04:30:00Z",
       "last_activity_at": "2026-09-10T08:00:00Z",
-      "source": "referral"
+      "source": "referral",
+      "stage_label": "Negotiation",
+      "stage_outcome": "open",
+      "stage_position": 3,
+      "stage_is_last_open": true,
+      "closed_at": null
     },
     {
       "id": "e0000000-0000-4000-8000-000000000015",
@@ -223,7 +293,12 @@
       "close_date": "2026-08-19",
       "created_at": "2026-05-24T04:30:00Z",
       "last_activity_at": null,
-      "source": "inbound"
+      "source": "inbound",
+      "stage_label": "Closed Won",
+      "stage_outcome": "won",
+      "stage_position": 4,
+      "stage_is_last_open": false,
+      "closed_at": null
     },
     {
       "id": "e0000000-0000-4000-8000-000000000016",
@@ -238,7 +313,12 @@
       "close_date": "2026-10-29",
       "created_at": "2026-06-25T04:30:00Z",
       "last_activity_at": "2026-09-08T08:00:00Z",
-      "source": "partner"
+      "source": "partner",
+      "stage_label": "Proposal",
+      "stage_outcome": "open",
+      "stage_position": 2,
+      "stage_is_last_open": false,
+      "closed_at": null
     }
   ],
   "total": 16,

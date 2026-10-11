@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import domain, scope, selectors, services
 from app.config import settings
 from app.models import SCHEMA
+from app.pipeline import Outcome
 from app.schemas import (
     ActivityIn,
     ActivityOut,
@@ -87,12 +88,25 @@ async def list_deals(
     params: PageQuery,
     q: Annotated[str | None, Query(description="Deal name")] = None,
     stage: Annotated[str | None, Query()] = None,
+    outcome: Annotated[
+        Outcome | None,
+        Query(description="Select by what the stage means: open, won or lost — never by key"),
+    ] = None,
     owner_id: Annotated[uuid.UUID | None, Query()] = None,
     company_id: Annotated[uuid.UUID | None, Query(description="One account's deals only")] = None,
 ) -> Page[DealOut]:
-    stmt = selectors.deals_stmt(ctx, q=q, stage=stage, owner_id=owner_id, company_id=company_id)
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    stmt = selectors.deals_stmt(
+        ctx,
+        q=q,
+        stage=stage,
+        outcome=outcome,
+        owner_id=owner_id,
+        company_id=company_id,
+        spec=spec,
+    )
     rows, total = await paginate(session, stmt, params)
-    return Page.build([selectors.deal_out(d) for d in rows], total=total, params=params)
+    return Page.build([selectors.deal_out(d, spec) for d in rows], total=total, params=params)
 
 
 @router.post(
@@ -128,7 +142,8 @@ async def create_deal(
         source=payload.source,
         request=request,
     )
-    return selectors.deal_out(deal)
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    return selectors.deal_out(deal, spec)
 
 
 @router.get(
@@ -281,7 +296,8 @@ async def read_deal(deal_id: uuid.UUID, session: SessionDep, ctx: DealRead) -> D
     if deal is None:
         raise NotFoundProblem("That deal is not part of this organization")
     ctx.assert_can_touch(owner_id=deal.owner_id)
-    return selectors.deal_out(deal)
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    return selectors.deal_out(deal, spec)
 
 
 @router.patch(
@@ -302,7 +318,8 @@ async def update_deal(
         raise NotFoundProblem("That deal is not part of this organization")
     ctx.assert_can_touch(owner_id=deal.owner_id)
     updated = await services.update_deal(session, ctx, deal, payload, request=request)
-    return selectors.deal_out(updated)
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    return selectors.deal_out(updated, spec)
 
 
 @router.delete(
@@ -347,4 +364,5 @@ async def move_deal_stage(
         probability=payload.probability,
         request=request,
     )
-    return selectors.deal_out(updated)
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    return selectors.deal_out(updated, spec)
