@@ -152,7 +152,8 @@ export type {
   ZoneLookup,
   ZoneResolution,
 } from "./lib/datetime";
-export { formatDelta, initials } from "./lib/format";
+export { currencyExponent, formatDelta, formatMoney, initials, minorToInput, parseMinor, toMajor } from "./lib/format";
+export type { MoneyOptions, MoneyParse } from "./lib/format";
 export { moduleIcon } from "./lib/moduleIcons";
 export { encodeQr, qrPathData } from "./lib/qr";
 export type { EncodeOptions, QrLevel, QrMatrix } from "./lib/qr";

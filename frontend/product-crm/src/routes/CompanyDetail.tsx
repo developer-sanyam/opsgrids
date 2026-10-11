@@ -5,7 +5,7 @@ import { deleteCompany, getCompany, listActivities, listContacts, listDeals } fr
 import { useDirectory } from "@/data/directoryContext";
 import { ownerById } from "@/data/lookups";
 import { isOpen } from "@/data/stages";
-import { formatDate, formatMoney, formatMoneyCompact } from "@/lib/format";
+import { formatDate } from "@/lib/format";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
   ActivityTimeline,
@@ -30,6 +30,7 @@ import {
   HandshakeIcon,
   MapPinIcon,
   useToast,
+  formatMoney,
 } from "@opsgrids/ui";
 import { CompanyFormDialog } from "@/forms/CompanyFormDialog";
 import { ContactFormDialog } from "@/forms/ContactFormDialog";
@@ -160,7 +161,7 @@ export function CompanyDetailPage() {
                     <div className="flex flex-col items-end gap-3">
                       <div className="flex flex-col items-end">
                         <span className="display text-[2rem] font-extrabold leading-none tnum">
-                          {formatMoneyCompact(openValue, c.currency)}
+                          {formatMoney(openValue, c.currency, { compact: true })}
                         </span>
                         <span className="text-sm text-muted">open pipeline</span>
                       </div>

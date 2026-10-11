@@ -11,7 +11,7 @@ import {
   ownerById,
 } from "@/data/lookups";
 import { isOpen, STAGES } from "@/data/stages";
-import { formatDate, formatMoney, formatRelative } from "@/lib/format";
+import { formatDate, formatRelative } from "@/lib/format";
 import { RevealableField } from "@/reveal/RevealableField";
 import {
   Can,
@@ -36,7 +36,7 @@ import {
   Skeleton,
   StagePill,
 } from "@/ui";
-import { ActivityIcon, ArrowLeftIcon, BuildingIcon, MailIcon, StepUpDialog, useToast } from "@opsgrids/ui";
+import { formatMoney, ActivityIcon, ArrowLeftIcon, BuildingIcon, MailIcon, StepUpDialog, useToast } from "@opsgrids/ui";
 import { DealFormDialog } from "@/forms/DealFormDialog";
 import { ActivityFormDialog } from "@/forms/ActivityFormDialog";
 

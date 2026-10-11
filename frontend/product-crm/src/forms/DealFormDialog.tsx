@@ -3,10 +3,9 @@ import { useMemo, useRef, useState } from "react";
 import { createDeal, updateDeal } from "@/api/client";
 import type { Company, Contact, Deal, DealStage, Owner } from "@/api/types";
 import { STAGES } from "@/data/stages";
-import { minorToInput, parseMinor } from "@/lib/money";
 import { maybe } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, Select, TextField, useFormDirty } from "@opsgrids/ui";
+import { FormDialog, minorToInput, parseMinor, Select, TextField, useFormDirty } from "@opsgrids/ui";
 import { OwnerPicker } from "./OwnerPicker";
 
 interface DealFormDialogProps {
@@ -41,7 +40,7 @@ export function DealFormDialog({
   const [companyId, setCompanyId] = useState(deal?.company_id ?? defaultCompanyId ?? "");
   const [primaryContactId, setPrimaryContactId] = useState(deal?.primary_contact_id ?? "");
   const [ownerId, setOwnerId] = useState(deal?.owner_id ?? "");
-  const [value, setValue] = useState(deal ? minorToInput(deal.value_minor) : "");
+  const [value, setValue] = useState(deal ? minorToInput(deal.value_minor, deal.currency) : "");
   const [currency, setCurrency] = useState(deal?.currency ?? "INR");
   const [closeDate, setCloseDate] = useState(deal?.close_date ?? "");
   const [stage, setStage] = useState<DealStage>(deal?.stage ?? "lead");
@@ -111,7 +110,7 @@ export function DealFormDialog({
       setOwnerError("Choose an owner.");
       return;
     }
-    const parsed = parseMinor(value);
+    const parsed = parseMinor(value, currency.trim().toUpperCase() || "INR");
     if (!parsed.ok) {
       setValueError(parsed.message);
       return;

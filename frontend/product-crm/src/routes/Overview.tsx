@@ -9,7 +9,7 @@ import type { Scope } from "@opsgrids/client";
 import { useDirectory } from "@/data/directoryContext";
 import { needsAttention } from "@/data/derive";
 import { getMySubjectRef } from "@/lib/subject";
-import { formatMoneyCompact, nowIso } from "@/lib/format";
+import { nowIso } from "@/lib/format";
 import {
   ActivityTimeline,
   BarList,
@@ -37,6 +37,7 @@ import {
   TargetIcon,
   UserPlusIcon,
   useToast,
+  formatMoney,
 } from "@opsgrids/ui";
 import { DealFormDialog } from "@/forms/DealFormDialog";
 
@@ -246,7 +247,7 @@ export function OverviewPage() {
           {summary.status === "success" ? (
             <MetricCard
               label="Open Pipeline"
-              value={formatMoneyCompact(summary.data.pipeline_value_minor, summary.data.currency)}
+              value={formatMoney(summary.data.pipeline_value_minor, summary.data.currency, { compact: true })}
               icon={<BanknoteIcon className="size-5" />}
               tone="accent"
               size={metricSize}
@@ -258,7 +259,7 @@ export function OverviewPage() {
           {deals.status === "success" ? (
             <MetricCard
               label="Won This Month"
-              value={formatMoneyCompact(wonThisMonth.valueMinor, currency)}
+              value={formatMoney(wonThisMonth.valueMinor, currency, { compact: true })}
               icon={<HandshakeIcon className="size-5" />}
               tone="positive"
               size={metricSize}
@@ -302,7 +303,7 @@ export function OverviewPage() {
             }
           >
             {summary.status === "success" ? (
-              <BarList label="Open pipeline value by stage" items={funnelItems} formatValue={(v) => formatMoneyCompact(v, summary.data.currency)} />
+              <BarList label="Open pipeline value by stage" items={funnelItems} formatValue={(v) => formatMoney(v, summary.data.currency, { compact: true })} />
             ) : null}
           </ChartCard>
         </div>

@@ -1,7 +1,6 @@
 /**
- * Formatting helpers for OpsGrids Revenue. Money is always passed as an integer count of **minor
- * units** (paise for INR) plus an ISO currency — these are the only place minor units become a
- * human string, so the rest of the app never divides by 100 by hand.
+ * Date and name formatting for OpsGrids Revenue. Money is formatted by `formatMoney` from
+ * `@opsgrids/ui`, the one place minor units become a human string.
  */
 
 import { USE_FIXTURES } from "@/api/client";
@@ -19,60 +18,6 @@ const FIXTURE_NOW_ISO = "2026-08-24T18:30:00Z";
  */
 export function nowIso(): string {
   return USE_FIXTURES ? FIXTURE_NOW_ISO : new Date().toISOString();
-}
-
-const CURRENCY_SYMBOL: Record<string, string> = {
-  INR: "₹",
-  USD: "$",
-  EUR: "€",
-  GBP: "£",
-};
-
-function symbolFor(currency: string): string {
-  return CURRENCY_SYMBOL[currency] ?? `${currency} `;
-}
-
-/**
- * Full money, grouped in the Indian system: `12,50,00,000` minor units of INR -> "₹12,50,00,000".
- * No fractional paise — deal values are whole rupees.
- */
-export function formatMoney(minor: number, currency = "INR"): string {
-  const major = minor / 100;
-  if (currency === "INR") {
-    return `₹${Math.round(major).toLocaleString("en-IN")}`;
-  }
-  try {
-    return new Intl.NumberFormat("en-IN", {
-      style: "currency",
-      currency,
-      maximumFractionDigits: 0,
-    }).format(major);
-  } catch {
-    return `${symbolFor(currency)}${Math.round(major).toLocaleString("en-IN")}`;
-  }
-}
-
-/** Drop a trailing ".0" from a one-decimal string: "3.0" -> "3", "3.2" -> "3.2". */
-function trim(n: number): string {
-  return n.toFixed(1).replace(/\.0$/, "");
-}
-
-/**
- * Compact money for tight surfaces (KPIs, kanban cards), using Indian crore/lakh:
- * `32,00,00,000` minor INR -> "₹3.2 Cr"; `95,00,000` minor -> "₹95 L".
- */
-export function formatMoneyCompact(minor: number, currency = "INR"): string {
-  const major = minor / 100;
-  const sym = symbolFor(currency);
-  if (currency === "INR") {
-    if (major >= 1e7) return `${sym}${trim(major / 1e7)} Cr`;
-    if (major >= 1e5) return `${sym}${trim(major / 1e5)} L`;
-    return `${sym}${Math.round(major).toLocaleString("en-IN")}`;
-  }
-  if (major >= 1e9) return `${sym}${trim(major / 1e9)}B`;
-  if (major >= 1e6) return `${sym}${trim(major / 1e6)}M`;
-  if (major >= 1e3) return `${sym}${trim(major / 1e3)}K`;
-  return `${sym}${Math.round(major)}`;
 }
 
 /** "2026-09-30" -> "30 Sep 2026". Returns "—" for a missing date. */
