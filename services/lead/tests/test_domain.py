@@ -4,7 +4,9 @@ these run in plain Python and never need a database.
 
 from __future__ import annotations
 
+import json
 import uuid
+from pathlib import Path
 
 from app import domain
 
@@ -152,3 +154,33 @@ class TestRoundRobin:
         owner, cursor = domain.next_owner(owners, 101)
         assert owner == owners[1]  # 101 % 2 == 1
         assert cursor == 2
+
+
+class TestConversionIdVectors:
+    """Lead's `conversion_ids` is the original; deal and customer hold copies that the same
+    committed vectors pin (`libs/contracts/vectors/conversion_ids.v1.json`)."""
+
+    VECTORS = (
+        Path(__file__).resolve().parents[3]
+        / "libs"
+        / "contracts"
+        / "vectors"
+        / "conversion_ids.v1.json"
+    )
+
+    def test_conversion_ids_match_the_committed_vectors(self) -> None:
+        data = json.loads(self.VECTORS.read_text())
+        assert len(data["vectors"]) == 24
+        for v in data["vectors"]:
+            got = domain.conversion_ids(uuid.UUID(v["lead_id"]), v["generation"])
+            assert tuple(str(i) for i in got) == (v["company_id"], v["contact_id"], v["deal_id"])
+
+    def test_generation_zero_has_no_suffix(self) -> None:
+        lead_id = uuid.uuid4()
+        company, _, _ = domain.conversion_ids(lead_id, 0)
+        assert company == uuid.uuid5(domain._CONVERSION_NAMESPACE, f"{lead_id}:company")
+        assert domain.conversion_ids(lead_id, 1)[0] != company
+
+    def test_the_namespace_constant_equals_the_vector_files_namespace(self) -> None:
+        data = json.loads(self.VECTORS.read_text())
+        assert str(domain._CONVERSION_NAMESPACE) == data["namespace"]
