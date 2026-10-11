@@ -529,6 +529,11 @@ async def request_requisition(
         rows = [r for r in rows if r.action == "BUY" and r.requisition_request_id is None]
         if not rows:
             raise ConflictProblem("There is nothing left in this run to requisition")
+    # Held to commit: a concurrent request from another run cannot see this one's uncommitted
+    # marks, so without it both would pass the check below and purchasing would get two drafts.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), {"k": f"mrp-req:{org_id}"}
+    )
     # an item an earlier run's request has already put in purchasing's hands is not asked for twice
     on_its_way = await selectors.items_already_requested(
         session, org_id, run_id, (r.item_id for r in rows)

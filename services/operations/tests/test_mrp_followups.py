@@ -3,6 +3,7 @@ the sync size cap, and not re-requesting a shortage that is already on its way."
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
@@ -303,3 +304,24 @@ class TestNoDoubleRequest:
         await admin_session.commit()
         again = await _request(client, org, second["id"])
         assert again.status_code == 201, again.text
+
+
+@pytest.mark.usefixtures("_engine")
+class TestCrossRunRequestsAreSerialised:
+    async def test_a_request_waits_for_the_organizations_requisition_lock(
+        self, client, session, admin_session, p: Plant
+    ) -> None:
+        """Two planners requesting the same item from two runs would each miss the other's
+        uncommitted request; the check-then-mark is taken under one per-organization lock."""
+        org = p.org_id
+        await add_sales_order(session, org, "SO-1", [(p.m.shirt, "10")])
+        first = await start_run(client, org, sources=["SALES_ORDER"])
+        async with admin_session.begin():
+            await admin_session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                {"k": f"mrp-req:{org}"},
+            )
+            task = asyncio.create_task(_request(client, org, first["id"]))
+            await asyncio.sleep(1)
+            assert not task.done(), "the request did not wait for the lock"
+        assert (await task).status_code == 201
