@@ -228,6 +228,9 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "organization_id", "bom_version_id", "line_no", name="uq_bom_components_line"
         ),
+        sa.UniqueConstraint(
+            "organization_id", "bom_version_id", "component_item_id", name="uq_bom_components_item"
+        ),
         schema=SCHEMA,
     )
     _org_index("bom_components")

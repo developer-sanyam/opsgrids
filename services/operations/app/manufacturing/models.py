@@ -170,6 +170,9 @@ class BomComponent(Base, UUIDPrimaryKeyMixin, OrgScopedMixin, TimestampMixin):
         UniqueConstraint(
             "organization_id", "bom_version_id", "line_no", name="uq_bom_components_line"
         ),
+        UniqueConstraint(
+            "organization_id", "bom_version_id", "component_item_id", name="uq_bom_components_item"
+        ),
         Index("ix_bom_components_org_version", "organization_id", "bom_version_id"),
         Index("ix_bom_components_org_item", "organization_id", "component_item_id"),
     )

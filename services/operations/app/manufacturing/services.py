@@ -146,6 +146,10 @@ def _transition(order: ProductionOrder, ctx: ScopeContext, to: str) -> str:
     return before
 
 
+class _KernelReplay(Exception):
+    """The stock kernel already holds this post, so none of its bookkeeping may be repeated."""
+
+
 def _key(order: ProductionOrder, op: str, key: str | None, n: int = 0) -> str | None:
     """The kernel idempotency key for the n-th move of one HTTP request, when it has one."""
     if key is None:
@@ -838,22 +842,27 @@ async def _reserve_into_pick(
     if pick is None:
         pick = _new_pick(ctx, order, material, location_id, lot_id, roll_id)
     total = pick.reserved_milli + quantity_milli
-    async with session.begin_nested():
-        if pick.reservation_id is not None and pick.reserved_milli > 0:
-            await ledger.release(session, ctx, pick.reservation_id, request=request)
-        made = await ledger.reserve(
-            session,
-            ctx,
-            item_id=material.item_id,
-            location_id=location_id,
-            quantity_milli=total,
-            lot_id=lot_id,
-            roll_id=roll_id,
-            reference_type=_REF,
-            reference_id=order.id,
-            idempotency_key=_key(order, "reserve", key, n),
-            request=request,
-        )
+    try:
+        async with session.begin_nested():
+            if pick.reservation_id is not None and pick.reserved_milli > 0:
+                await ledger.release(session, ctx, pick.reservation_id, request=request)
+            made = await ledger.reserve(
+                session,
+                ctx,
+                item_id=material.item_id,
+                location_id=location_id,
+                quantity_milli=total,
+                lot_id=lot_id,
+                roll_id=roll_id,
+                reference_type=_REF,
+                reference_id=order.id,
+                idempotency_key=_key(order, "reserve", key, n),
+                request=request,
+            )
+            if made.replayed:  # already reserved by an earlier attempt: undo the release above
+                raise _KernelReplay
+    except _KernelReplay:
+        return
     pick.reservation_id = made.reservation.id
     pick.reserved_milli = total
     material.reserved_milli += quantity_milli
@@ -1145,7 +1154,7 @@ async def issue_materials(
                 roll_id=t.pick.roll_id,
             )
         )
-    await ledger.post_move(
+    posted = await ledger.post_move(
         session,
         ctx,
         kind="relocation",
@@ -1158,6 +1167,9 @@ async def issue_materials(
         occurred_on_explicit=False,
         request=request,
     )
+    if posted.replayed:  # the kernel already holds this move: counting it again would double-issue
+        claim.done(order.id)
+        return ActionResult(order, replayed=True)
 
     if order.status == "APPROVED":
         _start(session, ctx, order)
@@ -1302,7 +1314,7 @@ async def _post_returns(
                 roll_id=pick.roll_id,
             )
         )
-    await ledger.post_move(
+    posted = await ledger.post_move(
         session,
         ctx,
         kind="relocation",
@@ -1315,6 +1327,8 @@ async def _post_returns(
         occurred_on_explicit=False,
         request=request,
     )
+    if posted.replayed:
+        return
     for pick, _target, quantity in plan:
         pick.returned_milli += quantity
         pick.updated_at = datetime.now(UTC)
@@ -1509,6 +1523,10 @@ async def record_output(
         request=request,
     )
 
+    if receipt.replayed or (consume_move is not None and consume_move.replayed):
+        claim.done(order.id)
+        return ActionResult(order, replayed=True)
+
     output = ProductionOutput(
         organization_id=org_id,
         production_order_id=order.id,
@@ -1666,6 +1684,8 @@ async def _scrap(
         occurred_on_explicit=False,
         request=request,
     )
+    if move.replayed:
+        return
     event_id = uuid.uuid4()
     for pick, q in draws:
         pick.wasted_milli += q

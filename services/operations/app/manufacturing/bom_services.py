@@ -63,9 +63,20 @@ async def get_version_or_404(
     return version
 
 
+async def lock_graph(session: AsyncSession, org_id: uuid.UUID) -> None:
+    """Serialise every writer of this organization's BOM graph until commit. Always taken before
+    any version row lock (`_draft`, `publish_version`), so the order is advisory -> row on every
+    path and cannot deadlock; re-taking it later in the same transaction is a no-op. Under READ
+    COMMITTED each later statement sees what the previous holder committed."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), {"k": f"bom-graph:{org_id}"}
+    )
+
+
 async def _draft(
     session: AsyncSession, org_id: uuid.UUID, bom_id: uuid.UUID, version_id: uuid.UUID
 ) -> tuple[Bom, BomVersion]:
+    await lock_graph(session, org_id)
     bom = await get_bom_or_404(session, org_id, bom_id)
     version = await get_version_or_404(session, org_id, bom_id, version_id, for_update=True)
     if version.status != "DRAFT":
@@ -86,9 +97,7 @@ async def assert_no_cycle(
 
     Serialised per organization: two BOMs publishing (or gaining a component) at once each see
     the other as a draft and would both pass, closing a cycle between them."""
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), {"k": f"bom-graph:{org_id}"}
-    )
+    await lock_graph(session, org_id)
     edges: dict[str, set[str]] = {str(root_item_id): {str(c) for c in child_items}}
     frontier = set(child_items)
     seen: set[uuid.UUID] = {root_item_id}
@@ -436,6 +445,17 @@ async def add_component(
     quantity = common.qty(payload.quantity, item.uom)
     scrap = common.pct(payload.scrap_percent)
     common.check_window(payload.effective_from, payload.effective_to)
+    # The version row is locked, so no concurrent add can slip a second line past this check.
+    if (
+        await session.execute(
+            select(BomComponent.id).where(
+                BomComponent.organization_id == org_id,
+                BomComponent.bom_version_id == version.id,
+                BomComponent.component_item_id == item.id,
+            )
+        )
+    ).first() is not None:
+        raise ConflictProblem(f"{item.sku} is already a component of this BOM version")
     children = await _children(session, org_id, version)
     await assert_no_cycle(session, org_id, bom.item_id, children | {item.id})
     line_no = (
@@ -716,6 +736,7 @@ async def publish_version(
     claim = await common.claim(
         session, ctx, key, scope=f"bom.version.publish:{version_id}", payload={}
     )
+    await lock_graph(session, org_id)
     bom = await get_bom_or_404(session, org_id, bom_id)
     version = await get_version_or_404(session, org_id, bom_id, version_id, for_update=True)
     if claim.replay:
