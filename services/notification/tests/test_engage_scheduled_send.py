@@ -30,7 +30,7 @@ from app.transports import RecordingTransport
 from platform_core.auth import Scope
 from platform_core.db import dispose_engine, init_engine
 from platform_core.errors import BusinessRuleProblem
-from platform_core.events import validate_event_schema
+from platform_core.events import EventConsumer, validate_event_schema
 from tests.helpers import ctx_for, envelope_for
 from tests.test_engage_campaigns import (
     CAMPAIGNS,
@@ -106,10 +106,11 @@ async def test_a_scheduled_campaign_is_not_sent_before_its_time_and_is_sent_once
     assert await _staged(session, services.EVT_CAMPAIGN_SEND_REQUESTED) == []
     (requested,) = await _staged(session, SCHEDULE_REQUESTED)
     assert requested.payload["due_at"] == first.astimezone(UTC).isoformat()
-    assert requested.payload["target"]["event_type"] == services.EVT_CAMPAIGN_SEND_REQUESTED
+    # `notification.`-namespaced: the scheduler drops any target its requester does not own.
+    assert requested.payload["target"]["event_type"] == services.EVT_CAMPAIGN_SEND_DUE
     # What the scheduler will publish must satisfy the committed contract, `scheduled_for` and all.
     validate_event_schema(
-        services.EVT_CAMPAIGN_SEND_REQUESTED,
+        services.EVT_CAMPAIGN_SEND_DUE,
         1,
         requested.payload["target"]["payload"],
         contracts_root=CONTRACTS_ROOT,
@@ -325,3 +326,22 @@ async def test_schedule_endpoint_needs_a_future_timezone_aware_time(client, sess
     assert ok.json()["scheduled_at"] is not None
     # A scheduled campaign is not a draft: sending it now is refused rather than double-sent.
     assert again.status_code == 409
+
+
+async def test_the_worker_consumes_the_scheduled_send_target(monkeypatch) -> None:
+    """The queue binds exactly the routing keys `register` declares handlers for, so the target
+    `schedule_send` hands the scheduler must be one of them, and must reach the expansion."""
+    fresh = EventConsumer(amqp_url="amqp://unused", queue_name="notification.events")
+    monkeypatch.setattr(consumers, "consumer", fresh)
+    seen: list[dict[str, Any]] = []
+
+    async def fake_expand(envelope: dict[str, Any]) -> str:
+        seen.append(envelope)
+        return "expanded"
+
+    monkeypatch.setattr(consumers, "expand_campaign_send", fake_expand)
+    consumers.register()
+    (handler,) = fresh._handlers[services.EVT_CAMPAIGN_SEND_DUE]
+    envelope = {"event_type": services.EVT_CAMPAIGN_SEND_DUE}
+    await handler(envelope)
+    assert seen == [envelope]

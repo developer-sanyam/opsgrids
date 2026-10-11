@@ -392,6 +392,7 @@ def register(
         await expand_campaign_send(envelope)
 
     consumer.on(services.EVT_CAMPAIGN_SEND_REQUESTED)(on_campaign_send)
+    consumer.on(services.EVT_CAMPAIGN_SEND_DUE)(on_campaign_send)
 
     async def on_ab_decide(envelope: dict[str, Any]) -> None:
         await decide_ab_test(envelope)

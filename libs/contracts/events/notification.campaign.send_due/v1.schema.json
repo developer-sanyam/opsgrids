@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/notification.campaign.send_due/v1",
+  "title": "notification.campaign.send_due",
+  "description": "Internal to notification. A scheduled campaign send (`POST /engage/campaigns/{id}/schedule`) is due. Staged by `notification.services.schedule_send` as the target of a `platform.schedule.requested` (ADR-0015); the scheduler republishes it unchanged at `due_at`, and `notification.consumers.expand_campaign_send` handles it exactly like `engage.campaign.campaign.send_requested`. `notification.` because the scheduler only delivers events namespaced under the requesting service. `scheduled_for` — the instant the request was made for — is what lets the handler drop a firing a reschedule or a cancel has since superseded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "campaign_id", "scheduled_for"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "campaign_id": { "type": "string", "format": "uuid" },
+    "scheduled_for": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The `scheduled_at` this firing was requested for, compared with the campaign's current `scheduled_at` before it is activated."
+    }
+  }
+}
