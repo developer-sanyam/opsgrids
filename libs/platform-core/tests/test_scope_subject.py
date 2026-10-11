@@ -17,6 +17,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Annotated, Any
 
 import pytest
@@ -24,6 +25,7 @@ from fastapi import APIRouter, Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import Select, column, select
 from sqlalchemy import false as sa_false
+from starlette.requests import Request
 
 import platform_core
 from platform_core import auth
@@ -33,6 +35,8 @@ from platform_core.auth import (
     Principal,
     Scope,
     ScopeContext,
+    _principal_from_claims,
+    _principal_from_gateway,
     get_principal,
     owner_subject_for,
     register_scope_resolver,
@@ -40,7 +44,13 @@ from platform_core.auth import (
     reset_scope_resolvers,
 )
 from platform_core.config import ServiceSettings
-from platform_core.errors import ForbiddenProblem
+from platform_core.errors import ForbiddenProblem, UnauthorizedProblem
+from platform_core.gateway import SPOOFABLE
+from platform_core.internal_auth import (
+    GATEWAY_AUDIENCE,
+    forwarded_headers_digest,
+    mint_service_token,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ORG = uuid.uuid4()
@@ -606,3 +616,96 @@ class TestEmployeeLinkParity:
         mismatches = _touch_mismatches(leaky)
         assert {scope for scope, *_ in mismatches} == {Scope.OWN, Scope.TEAM}
         assert all(sref != mem for _scope, sref, mem, _ids in mismatches)
+
+
+# ---------------------------------------------------------------------------------------------
+# Where the two ids come from. No token or gateway change is part of this release, so the
+# premise that `mem` and `sref` already arrive in a `Principal` is pinned here: until now nothing
+# in libs/platform-core tested `_principal_from_claims`, or the forwarded `X-Membership-Id` and
+# `X-Subject-Ref`, at all.
+# ---------------------------------------------------------------------------------------------
+
+USER = uuid.uuid4()
+
+
+def _request(headers: dict[str, str], cfg: ServiceSettings) -> Request:
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/v1/anything",
+        "query_string": b"",
+        "headers": [(name.lower().encode(), value.encode()) for name, value in headers.items()],
+        "app": SimpleNamespace(state=SimpleNamespace(settings=cfg)),
+    }
+    return Request(scope)
+
+
+def _forwarded(cfg: ServiceSettings, extra: dict[str, str] | None = None) -> Request:
+    """What a service receives from the gateway: a hop token that vouches for `USER` in `ORG`,
+    the identity headers, and whichever further headers (`X-Membership-Id`, `X-Subject-Ref`)
+    `extra` adds. The hop token binds the digest of those headers, as the gateway's does."""
+    headers = {"X-User-Id": str(USER), "X-Org-Id": str(ORG), **(extra or {})}
+    hop = mint_service_token(
+        cfg,
+        audience=GATEWAY_AUDIENCE,
+        caller="gateway",
+        claims={
+            "uid": str(USER),
+            "org": str(ORG),
+            "fwd": forwarded_headers_digest(_request(headers, cfg).headers),
+        },
+    )
+    return _request({"X-Internal-Token": hop, **headers}, cfg)
+
+
+class TestPrincipalMapping:
+    def test_mem_and_sref_claims_fill_membership_id_and_subject_ref(self) -> None:
+        claims = {
+            "sub": str(USER),
+            "act_org": str(ORG),
+            "mem": str(MEMBER),
+            "sref": str(EMPLOYEE),
+        }
+        principal = _principal_from_claims(claims)
+        assert principal.membership_id == MEMBER
+        assert principal.subject_ref == EMPLOYEE
+
+    def test_a_crm_only_token_has_a_membership_and_no_employee_link(self) -> None:
+        principal = _principal_from_claims(
+            {"sub": str(USER), "act_org": str(ORG), "mem": str(MEMBER)}
+        )
+        assert principal.membership_id == MEMBER
+        assert principal.subject_ref is None
+
+    def test_forwarded_x_membership_id_and_x_subject_ref_fill_the_same_fields(self) -> None:
+        cfg = _Settings()
+        request = _forwarded(cfg, {"X-Membership-Id": str(MEMBER), "X-Subject-Ref": str(EMPLOYEE)})
+        principal = get_principal(request)
+        assert principal.membership_id == MEMBER
+        assert principal.subject_ref == EMPLOYEE
+        assert principal.organization_id == ORG
+
+    def test_a_forwarded_identity_with_neither_header_has_neither_id(self) -> None:
+        cfg = _Settings()
+        principal = _principal_from_gateway(_forwarded(cfg), cfg)
+        assert principal is not None
+        assert principal.membership_id is None
+        assert principal.subject_ref is None
+
+    def test_a_malformed_x_membership_id_is_a_401_naming_the_header(self) -> None:
+        cfg = _Settings()
+        request = _forwarded(cfg, {"X-Membership-Id": "not-a-uuid"})
+        with pytest.raises(UnauthorizedProblem, match="Malformed X-Membership-Id") as refused:
+            _principal_from_gateway(request, cfg)
+        assert refused.value.status_code == 401
+
+    def test_a_malformed_x_subject_ref_is_a_401_naming_the_header(self) -> None:
+        cfg = _Settings()
+        request = _forwarded(cfg, {"X-Subject-Ref": "not-a-uuid"})
+        with pytest.raises(UnauthorizedProblem, match="Malformed X-Subject-Ref"):
+            _principal_from_gateway(request, cfg)
+
+    def test_the_gateway_strips_both_ids_from_an_inbound_request(self) -> None:
+        # A caller must not be able to assert either id; only the gateway, from a verified token,
+        # may set them. Membership becomes an authorization input for CRM in R2.7.
+        assert {"x-membership-id", "x-subject-ref"} <= SPOOFABLE
