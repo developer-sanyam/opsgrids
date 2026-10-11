@@ -37,7 +37,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict
@@ -77,9 +77,9 @@ MISSING_UPSTREAMS: Final[tuple[SectionName, ...]] = ("orders", "finance", "suppo
 #: It is exactly the set the hop token binds — drop one and the upstream refuses the digest.
 _IDENTITY_HEADERS: Final = ("Authorization", "X-Internal-Token", *FORWARDED_HEADERS)
 
-#: Deal stages that are still in play, least to most advanced.
-_OPEN_STAGES: Final = ("lead", "qualified", "proposal", "negotiation")
-#: An open deal at or above this probability, or in negotiation, makes the account "hot".
+#: An open deal at or above this probability, or in its pipeline's last open stage, makes the
+#: account "hot". Which stages are open, and how far along each is, is deal's to say: this module
+#: reads the outcome and position deal returns on every row and holds no list of stage keys.
 _HOT_PROBABILITY: Final = 70
 #: The deal list is bounded; an account with more open deals than this is reported by what fits.
 _DEAL_PAGE_SIZE: Final = 200
@@ -129,10 +129,17 @@ def forwarded_identity(headers: Mapping[str, str]) -> dict[str, str]:
 
 
 class _DealRow(BaseModel):
-    # An upstream may add fields; only these two are read here.
+    # An upstream may add fields; only these are read here. The `stage_*` fields are required on
+    # purpose: a deal row without them (an older deal image during a deploy, or a contract that
+    # drifted) fails the parse, the CRM section degrades to null and is named in `unavailable`
+    # — the one outcome that cannot mislead. A key-literal fallback would be exactly the
+    # hard-coded stage list this module no longer has.
     model_config = ConfigDict(extra="ignore")
 
     stage: str
+    stage_outcome: Literal["open", "won", "lost"]
+    stage_position: int
+    stage_is_last_open: bool
     probability: int
     created_at: datetime
 
@@ -164,9 +171,10 @@ async def fetch_crm(
         raise UpstreamUnavailable(f"deal returned {response.status_code}")
     page = _DealPage.model_validate(response.json())
 
-    open_deals = [d for d in page.items if d.stage in _OPEN_STAGES]
-    stage = max((d.stage for d in open_deals), key=_OPEN_STAGES.index, default=None)
-    hot = any(d.stage == "negotiation" or d.probability >= _HOT_PROBABILITY for d in open_deals)
+    open_deals = [d for d in page.items if d.stage_outcome == "open"]
+    furthest = max(open_deals, key=lambda d: d.stage_position, default=None)
+    stage = furthest.stage if furthest is not None else None
+    hot = any(d.probability >= _HOT_PROBABILITY or d.stage_is_last_open for d in open_deals)
     latest = max((d.created_at for d in page.items), default=None)
     return CrmSection(stage=stage, open_opportunities=len(open_deals), hot=hot), latest
 

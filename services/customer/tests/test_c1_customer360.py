@@ -117,15 +117,47 @@ WHATSAPP_ONLY = {
 }
 
 
-def _deal(stage: str, probability: int, created: str = "2026-09-01T00:00:00+00:00") -> dict:
+#: What deal reports for each of the default pipeline's six stages on every deal row
+#: (`DealOut.stage_outcome`, `stage_position`, `stage_is_last_open`): (outcome, position, whether
+#: it is the pipeline's last open stage).
+DEFAULT_STAGES = {
+    "lead": ("open", 0, False),
+    "qualified": ("open", 1, False),
+    "proposal": ("open", 2, False),
+    "negotiation": ("open", 3, True),
+    "closed_won": ("won", 4, False),
+    "closed_lost": ("lost", 5, False),
+}
+
+
+def _row(
+    key: str,
+    outcome: str,
+    position: int,
+    last_open: bool,
+    probability: int,
+    created: str = "2026-09-01T00:00:00+00:00",
+) -> dict:
+    """One deal row as `GET /api/v1/deals` returns it, for any stage of any pipeline."""
     return {
         "id": str(uuid.uuid4()),
         "name": "Deal",
-        "stage": stage,
+        "stage": key,
+        "stage_label": key,
+        "stage_outcome": outcome,
+        "stage_position": position,
+        "stage_is_last_open": last_open,
         "probability": probability,
         "created_at": created,
+        "closed_at": None,
         "value_minor": 100,
     }
+
+
+def _deal(stage: str, probability: int, created: str = "2026-09-01T00:00:00+00:00") -> dict:
+    """A deal in one of the default pipeline's six stages."""
+    outcome, position, last_open = DEFAULT_STAGES[stage]
+    return _row(stage, outcome, position, last_open, probability, created)
 
 
 class Fake:
@@ -592,3 +624,101 @@ class TestMasking:
             assert "210" not in str(call.url)
             assert call.content == b""
         assert json.loads(response.text)["customer"]["id"] == str(data["contact_a_id"])
+
+
+class TestCrmSectionReadsOutcomes:
+    """The CRM section is built from what deal says each stage *means* on every deal row — its
+    outcome, its position and whether it is the last open stage — and holds no list of stage
+    keys. The six legacy stages must read exactly as they always did; a stage of the
+    organization's own must read the same way."""
+
+    async def crm(self, client, org_id, data, fake, items: list[dict]) -> dict:
+        fake(deal=lambda r: httpx.Response(200, json={"items": items}))
+        with as_principal(_reader(org_id)):
+            response = await _get(client, data["contact_a_id"])
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    async def test_the_furthest_open_stage_is_the_highest_position(
+        self, client, org_id, data, fake
+    ) -> None:
+        body = await self.crm(
+            client,
+            org_id,
+            data,
+            fake,
+            [
+                _row("scoping", "open", 1, False, 10),
+                _row("discovery", "open", 0, False, 10),
+                _row("signed", "won", 9, False, 100),
+            ],
+        )
+        assert body["crm"] == {"stage": "scoping", "open_opportunities": 2, "hot": False}
+
+    @pytest.mark.parametrize("stage", list(DEFAULT_STAGES))
+    @pytest.mark.parametrize("probability", [10, 69, 70, 95])
+    async def test_hot_when_a_deal_is_in_the_last_open_stage_or_at_or_above_70(
+        self, client, org_id, data, fake, stage: str, probability: int
+    ) -> None:
+        """The legacy six, over the whole grid of stage and probability: identical to the rule the
+        module used to hold (`negotiation` or 70 and over, among the four open stages)."""
+        body = await self.crm(client, org_id, data, fake, [_deal(stage, probability)])
+        is_open = stage in ("lead", "qualified", "proposal", "negotiation")
+        assert body["crm"] == {
+            "stage": stage if is_open else None,
+            "open_opportunities": 1 if is_open else 0,
+            "hot": is_open and (stage == "negotiation" or probability >= 70),
+        }
+
+    async def test_a_deal_in_the_last_open_stage_of_a_custom_pipeline_is_hot_at_any_probability(
+        self, client, org_id, data, fake
+    ) -> None:
+        body = await self.crm(client, org_id, data, fake, [_row("quote", "open", 2, True, 5)])
+        assert body["crm"] == {"stage": "quote", "open_opportunities": 1, "hot": True}
+
+    async def test_closed_deals_are_not_open_opportunities_by_outcome(
+        self, client, org_id, data, fake
+    ) -> None:
+        body = await self.crm(
+            client,
+            org_id,
+            data,
+            fake,
+            [_row("signed", "won", 9, False, 99), _row("walked", "lost", 10, False, 99)],
+        )
+        assert body["crm"] == {"stage": None, "open_opportunities": 0, "hot": False}
+
+    async def test_a_custom_stage_key_is_reported_verbatim(
+        self, client, org_id, data, fake
+    ) -> None:
+        body = await self.crm(client, org_id, data, fake, [_row("discovery", "open", 0, False, 10)])
+        assert body["crm"]["stage"] == "discovery"
+
+    async def test_a_deal_row_without_stage_outcome_degrades_the_crm_section_and_names_it(
+        self, client, org_id, data, fake
+    ) -> None:
+        """No key-literal fallback: a row from a deal image that predates the field makes the
+        section `null` and listed, never a guess from the stage key."""
+        stale = _deal("negotiation", 80)
+        del stale["stage_outcome"]
+        body = await self.crm(client, org_id, data, fake, [stale])
+        assert body["crm"] is None
+        assert "crm" in body["unavailable"]
+        assert body["channels"]["whatsapp"] is not None
+
+    def test_the_deal_row_fields_the_360_reads_are_declared_by_the_deal_contract(self) -> None:
+        """The committed OpenAPI document is deal's contract (`DEAL_ROUTES` parsed it); if the
+        fields this module reads left it, the 360 would degrade for every contact and no unit
+        test here would notice."""
+        schema = DEAL_ROUTES.document["components"]["schemas"]["DealOut"]
+        read = {
+            "stage",
+            "stage_outcome",
+            "stage_position",
+            "stage_is_last_open",
+            "probability",
+            "created_at",
+        }
+        assert read <= set(schema["properties"])
+        assert read <= set(schema["required"])
+        assert set(c1_360._DealRow.model_fields) == read, "the 360 reads these six and no more"

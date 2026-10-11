@@ -586,6 +586,7 @@
         "type": "object"
       },
       "CrmSection": {
+        "description": "What the account's deals say, as deal reads them for the *caller's* scope.\n\n`stage` is the key of the furthest open deal, by its position in its own pipeline.\n`open_opportunities` counts deals whose stage outcome is `open`. `hot` is true when any\nopen deal has a probability of 70 or more, or sits in its pipeline's last open stage.",
         "properties": {
           "hot": {
             "title": "Hot",

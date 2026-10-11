@@ -265,8 +265,8 @@ and decodes the service token it carried.
 
 | # | Caller | Calls | Client code | Verdict |
 |---|---|---|---|---|
-| A1 | customer's 360 | deal `GET /api/v1/deals`, forwarding the caller's identity | `services/customer/app/c1_360.py:172-176` builds `{deal_internal_url}{DEAL_LIST_PATH}`, where `DEAL_LIST_PATH` is `/api/v1/deals` | was a path defect (it asked for `/deals`, which deal answers 404); fixed in R1.2a, and the 360's own test and the guard now check the path against deal's real route table |
-| A2 | customer's 360 | notification `GET /internal/v1/contacts/{contact_id}/messaging-summary` | `services/customer/app/c1_360.py:206-209`; route `services/notification/app/api/c1_internal.py:81-86` | correct |
+| A1 | customer's 360 | deal `GET /api/v1/deals`, forwarding the caller's identity | `services/customer/app/c1_360.py:165-169` builds `{deal_internal_url}{DEAL_LIST_PATH}`, where `DEAL_LIST_PATH` is `/api/v1/deals` | was a path defect (it asked for `/deals`, which deal answers 404); fixed in R1.2a, and the 360's own test and the guard now check the path against deal's real route table |
+| A2 | customer's 360 | notification `GET /internal/v1/contacts/{contact_id}/messaging-summary` | `services/customer/app/c1_360.py:200-203`; route `services/notification/app/api/c1_internal.py:81-86` | correct |
 | A3 | lead | customer `POST …/leads:convert` | `services/lead/app/clients.py:104-105` | correct |
 | A4 | lead | deal `POST …/leads:convert` | `services/lead/app/clients.py:184-185` | correct |
 | A5 | lead | customer `POST …/owners:validate` | `services/lead/app/clients.py:249-250` | correct |
