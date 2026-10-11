@@ -148,6 +148,11 @@ ignore_imports =
 [importlinter:contract:movements-layers]
 name = operations movements package: the same anatomy inside the package
 type = layers
+# `adjustments` settles a transfer's pending shortage through `transfers`, which imports
+# `adjustments` at the top; the call is a lazy import inside the function (a top-level one would
+# be a cycle), so the dependency is real but one-way at runtime.
+ignore_imports =
+    app.movements.adjustments -> app.movements.transfers
 layers =
     (app.movements.sweep) | (app.movements.api)
     (app.movements.transfers)

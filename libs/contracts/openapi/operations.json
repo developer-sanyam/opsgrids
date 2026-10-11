@@ -6462,6 +6462,11 @@
             ],
             "title": "Distance Km"
           },
+          "inter_state": {
+            "default": false,
+            "title": "Inter State",
+            "type": "boolean"
+          },
           "note": {
             "default": "",
             "maxLength": 500,
