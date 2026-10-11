@@ -326,6 +326,14 @@ async def _locked(
     return transfer
 
 
+async def lock_transfer_and_lines(
+    session: AsyncSession, org_id: uuid.UUID, transfer_id: uuid.UUID
+) -> None:
+    """The transfer, then its lines: the order `receive_transfer` takes before any balance."""
+    transfer = await _locked(session, org_id, transfer_id)
+    await sel.transfer_lines(session, org_id, transfer.id, for_update=True)
+
+
 async def update_draft(
     session: AsyncSession,
     ctx: ScopeContext,

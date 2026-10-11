@@ -4,14 +4,17 @@ settles the line (written off) or releases it (rejected / cancelled)."""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app import consumers
 from app.config import settings
-from app.models import AdjustmentRequest, StockTransferLine
+from app.models import AdjustmentRequest, InventoryBalance, StockTransfer, StockTransferLine
 from platform_core.db import dispose_engine, init_engine
 from tests import test_movements_transfers as base
 from tests.inventory_fixtures import q
@@ -167,6 +170,44 @@ class TestPendingShortageIsReserved:
         assert line.pending_shortage_milli == 0 and line.shortage_milli == 0
         again = await _receive(client, org_id, tid, line_id, received="5")
         assert again.status_code == 200, again.text
+
+
+class TestDecisionLocksInReceiptOrder:
+    async def test_the_consumer_takes_the_transfer_before_the_in_transit_balance(
+        self, client, session, admin_session, org_id, world
+    ) -> None:
+        """`receive_transfer` locks transfer, lines, then balances. The decision consumer must
+        take the same order, or a decision and a receipt on one transfer deadlock. With the transfer
+        held elsewhere, the consumer must be waiting for it without yet holding the balance."""
+        tid, _line_id, adj_id = await _pending_setup(client, session, org_id, world)
+        probe_engine = create_async_engine(settings().admin_dsn)
+        try:
+            async with admin_session.begin():
+                await admin_session.execute(
+                    select(StockTransfer.id)
+                    .where(StockTransfer.id == uuid.UUID(tid))
+                    .with_for_update()
+                )
+                task = asyncio.create_task(
+                    consumers.approval_request_decided(_decided(org_id, adj_id, "approved"))
+                )
+                await asyncio.sleep(1)
+                assert not task.done()
+                async with AsyncSession(probe_engine) as probe, probe.begin():
+                    try:
+                        await probe.execute(
+                            select(InventoryBalance.id)
+                            .where(
+                                InventoryBalance.organization_id == org_id,
+                                InventoryBalance.status == "IN_TRANSIT",
+                            )
+                            .with_for_update(nowait=True)
+                        )
+                    except DBAPIError as exc:  # pragma: no cover - the failure being tested
+                        raise AssertionError("the consumer holds the balance lock") from exc
+            await task
+        finally:
+            await probe_engine.dispose()
 
 
 class TestTransferMovesUseTheIndianDate:

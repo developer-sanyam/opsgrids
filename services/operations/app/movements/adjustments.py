@@ -16,6 +16,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -23,7 +24,7 @@ from app.inventory import ledger, stock_ops
 from app.inventory import selectors as inv_selectors
 from app.inventory.ledger import MoveLine
 from app.inventory.quantity import format_qty
-from app.models import AdjustmentRequest, InventoryItem
+from app.models import AdjustmentRequest, InventoryItem, StockTransferLine
 from app.movements import common
 from app.movements import selectors as sel
 from app.movements.domain import (
@@ -369,6 +370,21 @@ async def apply_approval_decision(
         await _release_transfer_line(session, ctx, row, written_off=False)
         return "rejected"
 
+    if row.transfer_line_id is not None:
+        # receive_transfer locks transfer -> lines -> balances; take the same order before _apply
+        # locks the IN_TRANSIT balance, or a decision and a receipt on one transfer deadlock.
+        from app.movements import transfers  # transfers imports this module
+
+        transfer_id = (
+            await session.execute(
+                select(StockTransferLine.transfer_id).where(
+                    StockTransferLine.organization_id == org_id,
+                    StockTransferLine.id == row.transfer_line_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if transfer_id is not None:
+            await transfers.lock_transfer_and_lines(session, org_id, transfer_id)
     try:
         item: InventoryItem | None = (
             await stock_ops.load_items(session, org_id, [row.inventory_item_id])
