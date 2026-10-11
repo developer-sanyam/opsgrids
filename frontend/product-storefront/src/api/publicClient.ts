@@ -227,7 +227,6 @@ export async function submitEnquiry(input: EnquiryInput): Promise<EnquiryReceipt
   const missing =
     input.store.trim() === "" ||
     input.name.trim() === "" ||
-    input.company.trim() === "" ||
     input.email.trim() === "" ||
     input.requirement.trim() === "";
   if (missing) throw new Error("Some required details are missing. Check the fields above.");

@@ -176,6 +176,7 @@ export function PromoBanner({ settings, width }: SectionRenderProps) {
           <ImagePlate
             seed={`promo-${heading ?? "banner"}`}
             src={resolveImageSrc(image)}
+            alt={str(settings, "imageAlt", "")}
             style={{ aspectRatio: "4 / 3", minHeight: 0, border: "none", objectFit: "contain" }}
           />
         ) : null}

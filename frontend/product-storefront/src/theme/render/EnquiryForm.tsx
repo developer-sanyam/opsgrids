@@ -37,7 +37,6 @@ const EMPTY: FormFields = {
 function validate(values: FormFields, askGstin: boolean, whatsappOptIn: boolean): Errors {
   const errors: Errors = {};
   if (values.name.trim() === "") errors.name = "Enter your name.";
-  if (values.company.trim() === "") errors.company = "Enter your company name.";
   if (values.email.trim() === "") errors.email = "Enter an email address we can reply to.";
   else if (!EMAIL.test(values.email.trim())) errors.email = "That email address doesn't look right.";
   if (whatsappOptIn && !WHATSAPP.test(values.phone.replace(/[\s\-().]/g, "")))
@@ -121,7 +120,12 @@ export function EnquiryForm({ settings }: SectionRenderProps) {
     }
   }
 
-  function field(key: keyof FormFields, label: string, type: "text" | "email" | "tel" | "textarea") {
+  function field(
+    key: keyof FormFields,
+    label: string,
+    type: "text" | "email" | "tel" | "textarea",
+    required = false,
+  ) {
     const id = `${base}-${key}`;
     const errorId = `${id}-error`;
     const error = errors[key];
@@ -129,6 +133,7 @@ export function EnquiryForm({ settings }: SectionRenderProps) {
       id,
       name: key,
       value: values[key],
+      required,
       "aria-invalid": error ? true : undefined,
       "aria-describedby": error ? errorId : undefined,
       style: { ...fieldStyle, borderColor: error ? T.accent : T.border },
@@ -137,9 +142,19 @@ export function EnquiryForm({ settings }: SectionRenderProps) {
     };
     return (
       <div key={key} style={{ display: "flex", flexDirection: "column", gap: step(0.25) }}>
-        <label htmlFor={id} style={{ fontFamily: T.fontBody, fontSize: "0.8125rem", fontWeight: 600, color: T.text }}>
-          {label}
-        </label>
+        {/* The house required mark: a red asterisk for the eye, outside the `<label>` so the
+            accessible name stays the label's words; `required` on the control is what a screen
+            reader announces. */}
+        <span style={{ display: "inline-flex", alignItems: "baseline", gap: step(0.25) }}>
+          <label htmlFor={id} style={{ fontFamily: T.fontBody, fontSize: "0.8125rem", fontWeight: 600, color: T.text }}>
+            {label}
+          </label>
+          {required ? (
+            <span aria-hidden className="font-bold text-negative">
+              *
+            </span>
+          ) : null}
+        </span>
         {type === "textarea" ? <textarea rows={3} {...shared} /> : <input type={type} {...shared} />}
         {/* `ThemeTokens` has no semantic colour — a theme names one accent and nothing else — so an
             error is marked by weight, position and wording, never by a tint that would read as
@@ -191,11 +206,11 @@ export function EnquiryForm({ settings }: SectionRenderProps) {
       ) : null}
 
       <form onSubmit={onSubmit} noValidate style={{ display: "flex", flexDirection: "column", gap: step(0.6) }}>
-        {field("name", "Your name", "text")}
-        {field("company", "Company", "text")}
-        {field("email", "Email", "email")}
+        {field("name", "Your name", "text", true)}
+        {field("company", "Company (optional)", "text")}
+        {field("email", "Email", "email", true)}
         {field("phone", "Phone (optional)", "tel")}
-        {field("requirement", "What do you need?", "textarea")}
+        {field("requirement", "What do you need?", "textarea", true)}
         {askQuantity ? field("quantity", "Quantity (optional)", "text") : null}
         {askGstin ? field("gstin", "GSTIN (optional)", "text") : null}
         {/* Marketing consent is opt-in and never pre-ticked; ticking it is recorded as the

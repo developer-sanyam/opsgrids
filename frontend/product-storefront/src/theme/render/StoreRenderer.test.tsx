@@ -37,6 +37,16 @@ describe("the store's chrome", () => {
     const nav = screen.getByRole("navigation", { name: "Store" });
     expect(nav.querySelectorAll("a")).toHaveLength(foundry.pages.length);
   });
+
+  it("opens with a skip link that hands focus to the main region", () => {
+    renderStore("foundry", "/");
+
+    const skip = screen.getByRole("link", { name: "Skip to content" });
+    const main = screen.getByRole("main");
+    expect(skip.getAttribute("href")).toBe(`#${main.id}`);
+    skip.click();
+    expect(document.activeElement).toBe(main);
+  });
 });
 
 describe("a theme's tokens", () => {

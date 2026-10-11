@@ -18,6 +18,8 @@ interface EditorToolbarProps {
   pageId: string;
   device: Device;
   dirty: boolean;
+  /** Sections still showing a theme's bracketed stand-in text — see `sectionsWithPlaceholders`. */
+  placeholderCount: number;
   canUndo: boolean;
   canRedo: boolean;
   canEdit: boolean;
@@ -40,6 +42,7 @@ export function EditorToolbar({
   pageId,
   device,
   dirty,
+  placeholderCount,
   canUndo,
   canRedo,
   canEdit,
@@ -94,6 +97,13 @@ export function EditorToolbar({
       </div>
 
       <div className="flex flex-wrap items-center gap-2 pb-1">
+        {/* A warning, not a block: saving is still allowed, but a theme's [Customer name] must not
+            reach buyers looking like a real testimonial without the merchant having been told. */}
+        {placeholderCount > 0 ? (
+          <Tag tone="warning">
+            {placeholderCount === 1 ? "1 section" : `${placeholderCount} sections`} still show [placeholder] text
+          </Tag>
+        ) : null}
         {dirty ? (
           <Tag tone="warning">Unsaved changes</Tag>
         ) : (

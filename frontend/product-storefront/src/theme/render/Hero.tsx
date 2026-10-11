@@ -182,6 +182,7 @@ export function Hero({ settings, stacked, width }: SectionRenderProps) {
         <ImagePlate
           seed={`hero-${heading}`}
           src={resolveImageSrc(image)}
+          alt={str(settings, "imageAlt", "")}
           style={{
             position: "absolute",
             inset: 0,
@@ -229,7 +230,7 @@ export function Hero({ settings, stacked, width }: SectionRenderProps) {
     >
       {copy}
       {showPlate ? (
-        <ImagePlate seed={`hero-${heading}`} src={resolveImageSrc(image)} style={{ minHeight: step(11) }} />
+        <ImagePlate seed={`hero-${heading}`} src={resolveImageSrc(image)} alt={str(settings, "imageAlt", "")} style={{ minHeight: step(11) }} />
       ) : null}
     </section>
   );

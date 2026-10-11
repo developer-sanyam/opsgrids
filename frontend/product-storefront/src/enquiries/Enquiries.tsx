@@ -3,6 +3,7 @@ import { useState } from "react";
 import { ApiError, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
   Button,
+  ConfirmDialog,
   Dialog,
   EmptyState,
   ErrorState,
@@ -22,12 +23,13 @@ import {
 import type { Column, StatusTone, TableSelection } from "@opsgrids/ui";
 
 import { downloadCsv } from "@/lib/csv";
-import { getEnquiry, listEnquiries, updateEnquiryStatus } from "./api";
+import { deleteEnquiry, getEnquiry, listEnquiries, updateEnquiryStatus } from "./api";
 import { ENQUIRY_TRANSITIONS } from "./types";
 import type { EnquiryOut, EnquiryStatus } from "./types";
 
 const WRITE = "storefront.sales.enquiry.write";
 const READ = "storefront.sales.enquiry.read";
+const DELETE = "storefront.sales.enquiry.delete";
 
 const STATUS_OPTIONS = [
   { value: "", label: "Any status" },
@@ -172,7 +174,10 @@ function EnquiryDetail({
 }
 
 export function EnquiriesPage() {
+  const toast = useToast();
   const canRead = useCan(READ, "ORG");
+  const canDelete = useCan(DELETE, "ORG");
+  const [deleting, setDeleting] = useState<EnquiryOut | null>(null);
   const [rawQuery, setRawQuery] = useState("");
   const query = useDebouncedValue(rawQuery);
   const [status, setStatus] = useState<EnquiryStatus | "">("");
@@ -202,6 +207,19 @@ export function EnquiriesPage() {
           label: (e) => e.name,
         }
       : undefined;
+
+  const erase = useMutation((enquiry: EnquiryOut) => deleteEnquiry(enquiry.id), {
+    onSuccess: (_result, enquiry) => {
+      setDeleting(null);
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(enquiry.id);
+        return next;
+      });
+      toast.success(`Enquiry from ${enquiry.name} deleted.`);
+      enquiries.reload();
+    },
+  });
 
   function exportSelectedEnquiries() {
     if (enquiries.status !== "success") return;
@@ -332,7 +350,13 @@ export function EnquiriesPage() {
                       align: "right",
                       mobile: "actions",
                       render: (e) => (
-                        <RowActions label={e.name} actions={[{ label: "View", onSelect: () => setOpenId(e.id) }]} />
+                        <RowActions
+                          label={e.name}
+                          actions={[
+                            { label: "View", onSelect: () => setOpenId(e.id) },
+                            { label: "Delete", tone: "danger", onSelect: () => setDeleting(e), hidden: !canDelete },
+                          ]}
+                        />
                       ),
                     },
                   ] satisfies Column<EnquiryOut>[]
@@ -362,6 +386,21 @@ export function EnquiriesPage() {
           onChanged={() => enquiries.reload()}
         />
       ) : null}
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => {
+          setDeleting(null);
+          erase.reset();
+        }}
+        onConfirm={() => deleting && void erase.mutate(deleting)}
+        title="Delete this enquiry?"
+        body={`The enquiry from ${deleting?.name}, with their email, phone and any WhatsApp opt-in it holds, is erased. This can't be undone.`}
+        confirmLabel="Delete"
+        pendingLabel="Deleting…"
+        pending={erase.pending}
+        {...(erase.error instanceof ApiError ? { error: erase.error.message } : {})}
+      />
     </div>
   );
 }

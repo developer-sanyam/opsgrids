@@ -93,12 +93,12 @@ const FOOTER = {
   col3Links: "The catalogue | /store/catalogue\nHow delivery works | /store/product\nHome | /store",
   col4Title: "Talk to us",
   col4Links:
-    "+91 22 4000 1180 | tel:+912240001180\nhelp@example.co.in | mailto:help@example.co.in\nEvery day, 6am to midnight",
+    "[Phone number]\nhelp@example.co.in | mailto:help@example.co.in\nEvery day, 6am to midnight",
   socialTitle: "Follow",
   socialLinks: "Instagram | https://instagram.com\nX | https://x.com",
   paymentTitle: "We accept",
   paymentMethods: "UPI\nVisa\nMastercard\nRuPay\nNet banking\nCash on delivery",
-  legalText: "© 2026 QuickCart Retail Pvt Ltd · GSTIN 27AABCQ0000Q1ZR · All prices in INR, inclusive of GST",
+  legalText: "© [Year] [Legal entity name] · GSTIN [Your GSTIN] · All prices in INR, inclusive of GST",
   columns: 4,
 };
 

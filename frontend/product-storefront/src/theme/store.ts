@@ -106,3 +106,19 @@ export function navPlacement(page: Pick<PageDoc, "nav">): NavPlacement {
 export function pagesInNav(store: Pick<StoreDoc, "pages">, placement: NavPlacement): PageDoc[] {
   return store.pages.filter((page) => navPlacement(page) === placement);
 }
+
+/** A `[Like this]` stand-in the shipped themes leave for the merchant to replace. */
+const PLACEHOLDER = /\[[^[\]\n]+\]/;
+
+/**
+ * Every section still carrying a bracketed placeholder — a testimonial, a client name, a founding
+ * year the theme could not know. The themes ship these instead of invented proof, so the editor
+ * says how many remain rather than letting one go live looking like a real claim.
+ */
+export function sectionsWithPlaceholders(store: Pick<StoreDoc, "pages">): SectionInstance[] {
+  return store.pages.flatMap((page) =>
+    page.sections.filter((section) =>
+      Object.values(section.settings).some((value) => typeof value === "string" && PLACEHOLDER.test(value)),
+    ),
+  );
+}

@@ -988,7 +988,8 @@ class EnquiryCreate(BaseModel):
 
     store: Slug
     name: Annotated[str, Field(min_length=1, max_length=ENQUIRY_NAME_LENGTH)]
-    company: Annotated[str, Field(min_length=1, max_length=ENQUIRY_COMPANY_LENGTH)]
+    #: Optional: a consumer buyer has no company. Stored as "" (the column stays NOT NULL).
+    company: Annotated[str, Field(max_length=ENQUIRY_COMPANY_LENGTH)] = ""
     email: Annotated[EmailStr, Field(max_length=254)]
     phone: Annotated[str, Field(max_length=40)] | None = None
     gstin: Annotated[str, Field(max_length=ENQUIRY_GSTIN_LENGTH)] | None = None

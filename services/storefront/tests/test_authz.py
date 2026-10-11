@@ -21,6 +21,7 @@ from tests.helpers import (
     ALL_PERMISSIONS,
     CATALOGUE_READ,
     CATALOGUE_WRITE,
+    ENQUIRY_DELETE,
     ENQUIRY_READ,
     ENQUIRY_UNMASK,
     ENQUIRY_WRITE,
@@ -97,6 +98,7 @@ ROUTES: list[tuple[str, str, str]] = [
     ("GET", f"/api/v1/storefront/enquiries/{ENQUIRY_ID}", ENQUIRY_READ),
     ("PATCH", f"/api/v1/storefront/enquiries/{ENQUIRY_ID}", ENQUIRY_WRITE),
     ("POST", f"/api/v1/storefront/enquiries/{ENQUIRY_ID}:reveal", ENQUIRY_UNMASK),
+    ("DELETE", f"/api/v1/storefront/enquiries/{ENQUIRY_ID}", ENQUIRY_DELETE),
 ]
 
 _BODIES: dict[tuple[str, str], dict] = {

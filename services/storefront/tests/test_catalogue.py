@@ -32,6 +32,7 @@ def test_the_permissions_are_exactly_what_the_adrs_and_gaps_name() -> None:
         "storefront.sales.enquiry.read",
         "storefront.sales.enquiry.write",
         "storefront.sales.enquiry.unmask",
+        "storefront.sales.enquiry.delete",
     ]
 
 
@@ -39,7 +40,7 @@ def test_there_is_no_fifth_permission_for_the_demand_report() -> None:
     """Folded into `zone.read` (ADR-0010 §9). Nobody has asked for a read-the-demand-but-not-the-
     zones role, and a fifth permission is a fifth thing to deliver. The trade, plainly: anyone
     who can see the zones can see which postal codes were turned away."""
-    assert len(STOREFRONT.specs) == 9
+    assert len(STOREFRONT.specs) == 10  # the tenth is enquiry erasure, not a demand reader
 
 
 @pytest.mark.parametrize("spec", STOREFRONT.specs, ids=lambda s: s.code("storefront"))
