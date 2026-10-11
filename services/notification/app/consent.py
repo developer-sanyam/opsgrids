@@ -74,7 +74,16 @@ STATUSES: Final[tuple[str, ...]] = (OPTED_IN, OPTED_OUT)
 #: What a person may claim through the API. Every other source is written only by this service
 #: (see `SYSTEM_SOURCES`), so a caller cannot forge a customer's own STOP or a provider's bounce
 #: — the reason `SuppressionIn` has no `reason` field either.
-API_SOURCES: Final[tuple[str, ...]] = ("checkout", "web_form", "import", "admin", "api")
+#: `in_person` and `phone_call` are staff recording what a person told them (the contact view).
+API_SOURCES: Final[tuple[str, ...]] = (
+    "checkout",
+    "web_form",
+    "import",
+    "admin",
+    "api",
+    "in_person",
+    "phone_call",
+)
 SOURCE_INBOUND_KEYWORD: Final = "inbound_keyword"
 SOURCE_UNSUBSCRIBE_LINK: Final = "unsubscribe_link"
 #: Meta told us: a `user_preferences` webhook (`stop` / `resume` marketing) or a delivery failure
@@ -86,7 +95,10 @@ SOURCE_BOUNCE: Final = "bounce"
 SOURCE_COMPLAINT: Final = "complaint"
 #: Unverified consent: an existing contact carried over when the ledger was introduced.
 SOURCE_LEGACY_IMPORT: Final = "legacy_import"
+#: A buyer ticked the enquiry form's WhatsApp opt-in (`consumers.record_storefront_opt_in`).
+SOURCE_STOREFRONT_ENQUIRY: Final = "storefront_enquiry"
 SYSTEM_SOURCES: Final[tuple[str, ...]] = (
+    SOURCE_STOREFRONT_ENQUIRY,
     SOURCE_INBOUND_KEYWORD,
     SOURCE_UNSUBSCRIBE_LINK,
     SOURCE_META_PREFERENCE,

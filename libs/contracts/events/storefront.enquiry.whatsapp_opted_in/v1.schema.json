@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/storefront.enquiry.whatsapp_opted_in/v1",
+  "title": "storefront.enquiry.whatsapp_opted_in",
+  "description": "A buyer ticked the enquiry form's WhatsApp marketing opt-in (ENGAGE-02). Staged in the same transaction as the enquiry by services/storefront/app/services.py:create_enquiry_for_store. Carries the id only: the buyer's number is sealed PII and never travels on an event. Consumed by notification (`consumers.record_storefront_opt_in`), which reads the number through storefront's audited `GET /internal/v1/enquiries/{id}/whatsapp-opt-in` and records an `opted_in` whatsapp/marketing consent event with source `storefront_enquiry`. The envelope's `organization_id` and `occurred_at` are authoritative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["enquiry_id"],
+  "properties": {
+    "enquiry_id": { "type": "string", "format": "uuid" }
+  }
+}

@@ -289,6 +289,30 @@ export interface SuppressionOut {
   created_at: string;
 }
 
+/** `ConsentEventOut` — one consent-ledger event. `address` is always the mask. */
+export interface ConsentEventOut {
+  id: string;
+  channel: "whatsapp" | "email" | "sms";
+  purpose: "marketing" | "transactional";
+  status: "opted_in" | "opted_out";
+  source: string;
+  evidence: string | null;
+  address: string;
+  contact_id: string | null;
+  recorded_by: string | null;
+  occurred_at: string;
+  created_at: string;
+}
+
+/** How staff say they were told: the subset of `ConsentApiSource` the contact view offers. */
+export type WhatsAppOptInSource = "in_person" | "phone_call" | "web_form";
+
+/** `ConsentRecordedOut` — the event, and whether the decision now allows sending. */
+export interface ConsentRecordedOut {
+  event: ConsentEventOut;
+  effective: { allowed: boolean; reason: string };
+}
+
 /**
  * `platform_core.pagination.Page` — the envelope every list route on this service returns. All
  * five fields are present on the wire; `pages` is `0` for an empty result rather than `1`.

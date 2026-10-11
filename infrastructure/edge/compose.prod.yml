@@ -1188,6 +1188,10 @@ services:
       CUSTOMER_INTERNAL_URL: http://customer:8000
       # Conversation assignment checks the assignee's membership here; unset, it is localhost.
       ACCOUNT_INTERNAL_URL: http://account:8000
+      # A storefront buyer's WhatsApp opt-in (ENGAGE-02): the number is read here, audited.
+      # storefront is under the `storefront` profile; without it the event is retried, then
+      # dead-lettered, and nothing is recorded.
+      STOREFRONT_INTERNAL_URL: http://storefront:8000
       # Engage (services/notification/app/services.py's `request_send`/`_check_public_base`):
       # both must be real before a campaign can be sent at all outside `local`/`test`/`ci` — an
       # unsigned or `http://`/`localhost` link is refused at the send gate, not just warned

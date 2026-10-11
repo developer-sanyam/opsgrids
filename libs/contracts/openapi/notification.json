@@ -1127,7 +1127,7 @@
       },
       "ConsentEventIn": {
         "additionalProperties": false,
-        "description": "Record that somebody opted in or out. `source` and `evidence` are required: a bare \"yes\" is\nexactly what the ledger exists to replace.\n\nName the subject by `address` or, for an email contact, by `contact_id` (the address is then\ntaken from the contact, sealed, and never returned). `evidence` is a short reference \u2014\n\"checkout order 1042\", \"signup form, 2026-09-20\" \u2014 never the address itself; a request whose\nevidence contains the address is refused.",
+        "description": "Record that somebody opted in or out. `source` and `evidence` are required: a bare \"yes\" is\nexactly what the ledger exists to replace.\n\nName the subject by `address` or, for an email contact, by `contact_id` (the address is then\ntaken from the contact, sealed, and never returned). A WhatsApp or SMS event may give both:\n`address` is the number, and `contact_id` links that number to the contact, which is how a\nWhatsApp campaign reaches the contact. An `opted_out` naming only a WhatsApp or SMS\n`contact_id` withdraws the number that contact's newest event on the channel named.\n`evidence` is a short reference \u2014\n\"checkout order 1042\", \"signup form, 2026-09-20\" \u2014 never the address itself; a request whose\nevidence contains the address is refused.",
         "properties": {
           "address": {
             "anyOf": [
@@ -1208,7 +1208,9 @@
               "web_form",
               "import",
               "admin",
-              "api"
+              "api",
+              "in_person",
+              "phone_call"
             ],
             "title": "Source",
             "type": "string"

@@ -713,6 +713,15 @@ async def get_contact(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def contact_by_index_including_deleted(
+    session: AsyncSession, org_id: uuid.UUID, index: str
+) -> Contact | None:
+    """The contact row holding this address, deleted or not — `uq_contact_org_email` spans both,
+    so a writer that would create one must know about a deleted row too."""
+    stmt = select(Contact).where(Contact.organization_id == org_id, Contact.email_index == index)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def contacts_by_index(
     session: AsyncSession, org_id: uuid.UUID, indexes: list[str]
 ) -> dict[str, Contact]:
@@ -1302,8 +1311,12 @@ def consent_events_stmt(
     purpose: str | None = None,
     status: str | None = None,
     subject_index: str | None = None,
+    linked_contact_id: uuid.UUID | None = None,
 ) -> Select[Any]:
-    """Scope-filtered consent history, newest first. `ctx.apply` is the enforcement point."""
+    """Scope-filtered consent history, newest first. `ctx.apply` is the enforcement point.
+
+    `linked_contact_id` keeps every event about any number an event linked to that contact —
+    including a STOP from that number, which names no contact."""
     stmt = select(ConsentEvent).where(ConsentEvent.organization_id == ctx.organization_id)
     stmt = ctx.apply(stmt, owner_col=ConsentEvent.recorded_by)
     if channel:
@@ -1314,9 +1327,38 @@ def consent_events_stmt(
         stmt = stmt.where(ConsentEvent.status == status)
     if subject_index:
         stmt = stmt.where(ConsentEvent.subject_index == subject_index)
+    if linked_contact_id is not None:
+        linked = select(ConsentEvent.subject_index).where(
+            ConsentEvent.organization_id == ctx.organization_id,
+            ConsentEvent.contact_id == linked_contact_id,
+            ConsentEvent.channel == channel,
+        )
+        stmt = stmt.where(ConsentEvent.subject_index.in_(linked))
     return stmt.order_by(
         ConsentEvent.occurred_at.desc(), ConsentEvent.created_at.desc(), ConsentEvent.id.desc()
     )
+
+
+async def latest_linked_consent_event(
+    session: AsyncSession, org_id: uuid.UUID, contact_id: uuid.UUID, channel: str
+) -> ConsentEvent | None:
+    """The newest event that linked `contact_id` to an address on `channel` — the number a
+    withdrawal from the contact view is about."""
+    stmt = (
+        select(ConsentEvent)
+        .where(
+            ConsentEvent.organization_id == org_id,
+            ConsentEvent.contact_id == contact_id,
+            ConsentEvent.channel == channel,
+        )
+        .order_by(
+            ConsentEvent.occurred_at.desc(),
+            ConsentEvent.created_at.desc(),
+            ConsentEvent.id.desc(),
+        )
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def get_consent_event(

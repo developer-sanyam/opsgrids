@@ -110,6 +110,24 @@ describe("submitEnquiry", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("sends the WhatsApp opt-in only when the buyer ticked it", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve(respond(201, { id: "enq-1", received_at: "2026-09-21T00:00:00Z" })),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await submitEnquiry({ ...VALID, phone: "+91 98765 43210", whatsappOptIn: true });
+    await submitEnquiry({ ...VALID, whatsappOptIn: false });
+
+    const bodies = fetchMock.mock.calls.map(
+      (call) => JSON.parse((call[1] as RequestInit).body as string) as Record<string, unknown>,
+    );
+    expect(bodies[0]?.whatsapp_marketing_opt_in).toBe(true);
+    expect(bodies[1]).not.toHaveProperty("whatsapp_marketing_opt_in");
+  });
+
   it("POSTs the exact public path with phone/gstin nulled when blank, and echoes the line list", async () => {
     const fetchMock = vi
       .fn()

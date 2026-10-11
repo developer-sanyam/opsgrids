@@ -1052,6 +1052,19 @@ async def list_enquiries(
     return await paginate(session, stmt, params)
 
 
+async def get_whatsapp_opted_in_enquiry(
+    session: AsyncSession, organization_id: uuid.UUID, enquiry_id: uuid.UUID
+) -> Enquiry | None:
+    """An enquiry whose buyer ticked the WhatsApp opt-in, for a service caller with no scope
+    context: the organization filter is explicit, and RLS backs it."""
+    stmt = select(Enquiry).where(
+        Enquiry.organization_id == organization_id,
+        Enquiry.id == enquiry_id,
+        Enquiry.whatsapp_opt_in_at.is_not(None),
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def get_enquiry(
     session: AsyncSession, ctx: ScopeContext, enquiry_id: uuid.UUID
 ) -> Enquiry | None:

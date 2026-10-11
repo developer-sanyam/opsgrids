@@ -549,7 +549,9 @@ ConsentStatus = Literal["opted_in", "opted_out"]
 #: `unsubscribe_link`, `bounce`, `complaint`, `legacy_import`) are not writable — the same reason
 #: `SuppressionIn` has no `reason` — but they do appear in what is read back, so the read side
 #: types `source` as a plain string.
-ConsentApiSource = Literal["checkout", "web_form", "import", "admin", "api"]
+ConsentApiSource = Literal[
+    "checkout", "web_form", "import", "admin", "api", "in_person", "phone_call"
+]
 
 
 class ConsentEventIn(BaseModel):
@@ -557,7 +559,11 @@ class ConsentEventIn(BaseModel):
     exactly what the ledger exists to replace.
 
     Name the subject by `address` or, for an email contact, by `contact_id` (the address is then
-    taken from the contact, sealed, and never returned). `evidence` is a short reference —
+    taken from the contact, sealed, and never returned). A WhatsApp or SMS event may give both:
+    `address` is the number, and `contact_id` links that number to the contact, which is how a
+    WhatsApp campaign reaches the contact. An `opted_out` naming only a WhatsApp or SMS
+    `contact_id` withdraws the number that contact's newest event on the channel named.
+    `evidence` is a short reference —
     "checkout order 1042", "signup form, 2026-09-20" — never the address itself; a request whose
     evidence contains the address is refused.
     """

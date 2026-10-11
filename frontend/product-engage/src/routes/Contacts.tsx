@@ -27,6 +27,7 @@ import {
 import type { Column, TableSelection } from "@/ui";
 import { ContactFormDialog } from "./ContactFormDialog";
 import { ContactImportDialog } from "./ContactImportDialog";
+import { WhatsAppConsentDialog } from "./WhatsAppConsentDialog";
 
 /**
  * The organization's contacts — addresses masked everywhere, exactly as `_contact_out` returns
@@ -52,6 +53,7 @@ function Contacts() {
   const [importing, setImporting] = useState(false);
   const [editing, setEditing] = useState<ContactOut | null>(null);
   const [deleting, setDeleting] = useState<ContactOut | null>(null);
+  const [consentFor, setConsentFor] = useState<ContactOut | null>(null);
   const [deleteFailure, setDeleteFailure] = useState<string | null>(null);
   const [deletePending, setDeletePending] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -118,6 +120,7 @@ function Contacts() {
         <RowActions
           label={contact.name === "" ? contact.email : contact.name}
           actions={[
+            { label: "WhatsApp opt-in", onSelect: () => setConsentFor(contact) },
             { label: "Edit", onSelect: () => setEditing(contact), hidden: !canWrite },
             { label: "Delete", tone: "danger", onSelect: () => setDeleting(contact), hidden: !canWrite },
           ]}
@@ -268,6 +271,14 @@ function Contacts() {
           reload(`Import finished: ${result.created} created, ${result.updated} updated, ${result.invalid} invalid.`)
         }
       />
+
+      {consentFor !== null ? (
+        <WhatsAppConsentDialog
+          contact={consentFor}
+          onClose={() => setConsentFor(null)}
+          onChanged={announce}
+        />
+      ) : null}
 
       <ConfirmDialog
         open={deleting !== null}

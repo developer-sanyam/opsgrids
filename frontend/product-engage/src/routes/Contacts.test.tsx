@@ -216,6 +216,27 @@ describe("editing a contact", () => {
   });
 });
 
+describe("WhatsApp opt-in", () => {
+  it("opens the contact's WhatsApp consent from the row, for a reader too", async () => {
+    vi.spyOn(client, "listContacts").mockResolvedValue(page([MASKED]));
+    const history = vi
+      .spyOn(client, "listWhatsAppConsent")
+      .mockResolvedValue({ items: [], total: 0, page: 1, size: 25, pages: 0 });
+    const user = userEvent.setup();
+    render(
+      <PermissionProvider grants={["engage.audience.contact.read:ORG"]}>
+        <MemoryRouter>
+          <ContactsPage />
+        </MemoryRouter>
+      </PermissionProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "WhatsApp opt-in Priya Raghavan" }));
+    expect(await screen.findByText(/No WhatsApp opt-in on record/)).toBeTruthy();
+    expect(history).toHaveBeenCalledWith(MASKED.id);
+  });
+});
+
 describe("permission gating", () => {
   it("hides Import, Add, Edit and Delete for a viewer with no contact.write grant", async () => {
     vi.spyOn(client, "listContacts").mockResolvedValue(page([MASKED]));

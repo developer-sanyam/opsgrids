@@ -130,6 +130,22 @@ every time. A caller may claim only `checkout`, `web_form`, `import`, `admin`, `
 sources (`inbound_keyword`, `unsubscribe_link`, `bounce`, `complaint`, `legacy_import`) cannot be
 forged, for the reason `SuppressionIn` has no `reason` field.
 
+**WhatsApp opt-in capture (ENGAGE-02, 2026-10-12).** Two capture surfaces now write WhatsApp
+marketing `opted_in`, so §5's "needs an explicit `opted_in`" is reachable without the raw API:
+
+- The Engage contact view records one through `POST /consent/events` naming both the number and
+  the `contact_id` (the link a WhatsApp campaign reaches the contact by), with the new API sources
+  `in_person` and `phone_call` (or `web_form`). Withdrawing sends `opted_out` with the
+  `contact_id` alone: the number on record for that contact is opted out, because staff only ever
+  see it masked. `GET /consent/events?contact_id=…&channel=whatsapp` returns every event about any
+  number linked to the contact, a STOP that named no contact included.
+- The storefront enquiry form's unticked-by-default box. Storefront stamps
+  `enquiries.whatsapp_opt_in_at` and stages `storefront.enquiry.whatsapp_opted_in` (ids only);
+  notification's consumer reads the number from storefront's audited, notification-only
+  `GET /internal/v1/enquiries/{id}/whatsapp-opt-in`, links or creates the Engage contact for the
+  buyer's email (creating one attests **nothing** about email), and appends the event with the new
+  system source `storefront_enquiry`, idempotent per enquiry.
+
 ## Why
 
 - **One decision beats two stores that agree by convention.** A function every path calls cannot be

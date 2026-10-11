@@ -210,6 +210,8 @@ export interface EnquiryInput {
   quantity: string;
   gstin: string;
   lines: EnquiryLineInput[];
+  /** The form's unticked-by-default WhatsApp marketing box; needs a number with its country code. */
+  whatsappOptIn?: boolean;
 }
 
 export interface EnquiryReceipt {
@@ -245,6 +247,8 @@ export async function submitEnquiry(input: EnquiryInput): Promise<EnquiryReceipt
         requirement: input.requirement.trim(),
         quantity: input.quantity.trim(),
         lines: input.lines,
+        // Sent only when ticked; the server defaults it to false.
+        ...(input.whatsappOptIn === true ? { whatsapp_marketing_opt_in: true } : {}),
       }),
     });
   } catch {

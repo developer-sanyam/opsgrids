@@ -1170,20 +1170,27 @@ async def list_consent_events(
     contact_id: uuid.UUID | None = None,
 ) -> Page[ConsentEventOut]:
     subject_index: str | None = None
+    linked_contact_id: uuid.UUID | None = None
     if contact_id is not None:
         contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
         if contact is None:
             raise NotFoundProblem("No such contact")
-        # A contact is an email subject: their history is every email event for that address,
-        # whether or not it was recorded against this contact id.
-        subject_index = contact.email_index
-        channel = "email"
+        if channel in (None, "email"):
+            # A contact is an email subject: their history is every email event for that
+            # address, whether or not it was recorded against this contact id.
+            subject_index = contact.email_index
+            channel = "email"
+        else:
+            # A number is linked to a contact by an event naming both; its history is every
+            # event about that number, a STOP that named no contact included.
+            linked_contact_id = contact_id
     stmt = selectors.consent_events_stmt(
         ctx,
         channel=channel,
         purpose=purpose,
         status=event_status,
         subject_index=subject_index,
+        linked_contact_id=linked_contact_id,
     )
     rows, total = await paginate(session, stmt, params)
     return Page.build([_consent_event_out(r) for r in rows], total=total, params=params)

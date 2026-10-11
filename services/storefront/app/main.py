@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from app.api.internal import router as internal_router
 from app.api.public import router as public_router
 from app.api.routes import router
+from app.api.service_internal import router as service_internal_router
 from app.config import assert_directory_role_configured, settings
 from app.cron import DomainSweep
 from app.models import OutboxEvent
@@ -85,3 +86,5 @@ app = create_app(
     redis=True,
     outbox_model=OutboxEvent,
 )
+# Service-to-service, outside `/api/v1` and out of the public schema, like notification's own.
+app.include_router(service_internal_router)

@@ -11,10 +11,12 @@ import type { SectionRenderProps } from "./types";
 
 /** The fields this form's own inputs collect — `store` and `lines` are assembled at submit time
  *  from the section's `storeSlug` setting and the buyer's line list, not typed by hand. */
-type FormFields = Omit<EnquiryInput, "store" | "lines">;
+type FormFields = Omit<EnquiryInput, "store" | "lines" | "whatsappOptIn">;
 type Errors = Partial<Record<keyof FormFields, string>>;
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// The E.164 rule the WhatsApp consent ledger applies, once separators are stripped.
+const WHATSAPP = /^\+[1-9]\d{7,14}$/;
 const GSTIN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
 
 const EMPTY: FormFields = {
@@ -32,12 +34,14 @@ const EMPTY: FormFields = {
  * re-checked by `submitEnquiry`, which is what the real endpoint will do; this pass only saves the
  * buyer a round trip.
  */
-function validate(values: FormFields, askGstin: boolean): Errors {
+function validate(values: FormFields, askGstin: boolean, whatsappOptIn: boolean): Errors {
   const errors: Errors = {};
   if (values.name.trim() === "") errors.name = "Enter your name.";
   if (values.company.trim() === "") errors.company = "Enter your company name.";
   if (values.email.trim() === "") errors.email = "Enter an email address we can reply to.";
   else if (!EMAIL.test(values.email.trim())) errors.email = "That email address doesn't look right.";
+  if (whatsappOptIn && !WHATSAPP.test(values.phone.replace(/[\s\-().]/g, "")))
+    errors.phone = "For WhatsApp, add your number with its country code, like +91 98765 43210.";
   if (values.requirement.trim() === "") errors.requirement = "Tell us which line you need.";
   if (askGstin && values.gstin.trim() !== "" && !GSTIN.test(values.gstin.trim().toUpperCase()))
     errors.gstin = "A GSTIN is 15 characters, like 27AABCU9603R1ZX.";
@@ -63,6 +67,7 @@ export function EnquiryForm({ settings }: SectionRenderProps) {
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [whatsappOptIn, setWhatsappOptIn] = useState(false);
   const { lines } = useLineList();
 
   const askQuantity = bool(settings, "showQuantity", true);
@@ -87,7 +92,7 @@ export function EnquiryForm({ settings }: SectionRenderProps) {
       setFailure("This block has no store handle set, so nothing can be sent yet.");
       return;
     }
-    const found = validate(values, askGstin);
+    const found = validate(values, askGstin, whatsappOptIn);
     setErrors(found);
     setFailure(null);
     if (Object.keys(found).length > 0) return;
@@ -96,6 +101,7 @@ export function EnquiryForm({ settings }: SectionRenderProps) {
     try {
       await submitEnquiry({
         ...values,
+        whatsappOptIn,
         store: slug,
         lines: [...lines.values()].map((line) => ({
           product_id: line.productId,
@@ -105,6 +111,7 @@ export function EnquiryForm({ settings }: SectionRenderProps) {
       });
       setDone(true);
       setValues(EMPTY);
+      setWhatsappOptIn(false);
     } catch (error) {
       // The entered data stays exactly where it was — a failed send must never cost the buyer
       // the paragraph they just typed.
@@ -191,6 +198,24 @@ export function EnquiryForm({ settings }: SectionRenderProps) {
         {field("requirement", "What do you need?", "textarea")}
         {askQuantity ? field("quantity", "Quantity (optional)", "text") : null}
         {askGstin ? field("gstin", "GSTIN (optional)", "text") : null}
+        {/* Marketing consent is opt-in and never pre-ticked; ticking it is recorded as the
+            buyer's own WhatsApp opt-in on this store's consent ledger. */}
+        <label
+          htmlFor={`${base}-whatsapp`}
+          style={{ display: "flex", gap: step(0.4), alignItems: "flex-start", fontFamily: T.fontBody, fontSize: "0.8125rem", color: T.text }}
+        >
+          <input
+            id={`${base}-whatsapp`}
+            type="checkbox"
+            checked={whatsappOptIn}
+            onChange={(event) => setWhatsappOptIn(event.target.checked)}
+            style={{ marginTop: "0.2em" }}
+          />
+          <span>
+            Send me offers and updates on WhatsApp (optional). Uses the phone number above; reply
+            STOP at any time to stop.
+          </span>
+        </label>
         <div style={{ marginTop: step(0.3) }}>
           <ActionButton disabled={submitting}>
             {submitting ? "Sending…" : str(settings, "submitLabel", "Send enquiry")}

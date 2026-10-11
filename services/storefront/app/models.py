@@ -814,6 +814,10 @@ class Enquiry(Base, TenantBase):
     lines: Mapped[list[Any]] = mapped_column(JSONB, nullable=False)
     #: new | contacted | won | lost. `domain.assert_enquiry_transition` is the state machine.
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="new")
+    #: When the buyer ticked the form's WhatsApp marketing opt-in; null when they did not. The
+    #: consent itself is recorded on notification's ledger; this is what lets notification read
+    #: the number for a ticked enquiry and no other.
+    whatsapp_opt_in_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         CheckConstraint(
