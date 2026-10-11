@@ -27,6 +27,7 @@ from decimal import Decimal
 from typing import Protocol
 from uuid import UUID
 
+from platform_core import gst
 from platform_core.money import Money, total
 
 
@@ -439,3 +440,63 @@ def subscription_invoice_number(key: str, period_start: datetime, attempt: int =
     digest = hashlib.sha256(key.encode()).hexdigest()[:10].upper()
     number = f"INV-{day}-{digest}"
     return number if attempt == 0 else f"{number}-{attempt + 1}"
+
+
+# --------------------------------------------------------------------- GST (ADR-0004 Q1)
+# Groundwork only: nothing in finalize calls these yet, so no invoice changes until the supplier
+# settings are configured and a later slice wires them in.
+
+#: The prefix of the supplier's tax-invoice series, by series (ADR-0004 Q1 decision 4). The
+#: credit-note series has no decided format yet, so it is absent and refused rather than guessed.
+TAX_INVOICE_PREFIXES: dict[str, str] = {"invoice": "OG"}
+
+#: CGST Rule 46(b): the serial is at most 16 characters.
+MAX_TAX_INVOICE_NUMBER_LENGTH = 16
+
+
+def place_of_supply(
+    *, supplier_state_code: str, buyer_gstin: str | None, profile_state_code: str | None
+) -> str:
+    """The GST state code the supply is made in: the buyer GSTIN's state (B2B); without one, the
+    profile's state if an address is on record; otherwise the supplier's own (IGST Act s.12(2)).
+
+    A malformed GSTIN or an unknown state code raises rather than falling through to the next
+    rule — a wrong place of supply picks the wrong tax head, which is a refund claim, not a
+    rounding difference.
+    """
+    if buyer_gstin:
+        return gst.parse_gstin(buyer_gstin).state_code
+    state = profile_state_code or supplier_state_code
+    if state not in gst.GST_STATE_CODES:
+        raise ValueError(f"{state!r} is not a GST state code")
+    return state
+
+
+def tax_heads(
+    total_minor: int, *, supplier_state_code: str, place_of_supply: str, supply_type: str = "b2b"
+) -> gst.TaxSplit:
+    """Split the invoice's GST total (computed once on the subtotal) into its heads.
+
+    IGST takes all of it when the place of supply is outside the supplier's state, or when the
+    recipient is SEZ or export (inter-state by statute). Otherwise CGST is `⌊total / 2⌋` and SGST
+    the remainder, so the heads always add back to the total.
+    """
+    intra = gst.is_intra_state(
+        supply_type=supply_type,
+        seller_state_code=supplier_state_code,
+        place_of_supply=place_of_supply,
+    )
+    return gst.split_gst_total(total_minor, intra_state=intra)
+
+
+def tax_invoice_number(series: str, financial_year: str, seq: int) -> str:
+    """`OG/2627/000001`: series prefix, the financial year's two two-digit halves, the serial."""
+    prefix = TAX_INVOICE_PREFIXES.get(series)
+    if prefix is None:
+        raise ValueError(f"no number format is decided for the {series!r} series")
+    if seq < 1:
+        raise ValueError("a tax-invoice serial starts at 1")
+    number = f"{prefix}/{financial_year[2:4]}{financial_year[5:7]}/{seq:06d}"
+    if len(number) > MAX_TAX_INVOICE_NUMBER_LENGTH:
+        raise ValueError(f"{number!r} exceeds Rule 46's 16 characters")
+    return number

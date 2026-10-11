@@ -299,6 +299,39 @@ class TaxRate(Base):
     )
 
 
+class TaxInvoiceSeries(Base):
+    """The supplier's GST tax-invoice counter: one row per `(series, financial_year)`.
+
+    **An explicit RLS exemption**, beside `tax_rates` (ADR-0002 §5, ADR-0004 Q1 decision 4). The
+    series belongs to the supplier — the legal entity operating the deployment — not to a
+    tenant: CGST Rule 46(b) wants one consecutive serial per financial year under one GSTIN, so a
+    per-organization counter would not comply. It therefore carries no `organization_id` and no
+    policy; the app role may SELECT/INSERT/UPDATE it but not DELETE (re-revoked in env.py).
+
+    `services.allocate_tax_invoice_number` is the only writer: a single atomic
+    `INSERT ... ON CONFLICT DO UPDATE ... RETURNING` inside the caller's transaction, so racing
+    allocations serialize on this row's lock and a rolled-back transaction consumes no number
+    (which a `SEQUENCE` would not guarantee).
+    """
+
+    __tablename__ = "tax_invoice_series"
+
+    #: `invoice` | `credit_note` — independent counters.
+    series: Mapped[str] = mapped_column(String(20), primary_key=True)
+    #: India's financial year, April to March (`platform_core.gst.financial_year`), e.g. `2026-27`.
+    financial_year: Mapped[str] = mapped_column(String(7), primary_key=True)
+    #: The last serial handed out in this series and year.
+    last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("series IN ('invoice', 'credit_note')", name="series_known"),
+        CheckConstraint("last_seq >= 1", name="last_seq_positive"),
+    )
+
+
 class OutboxEvent(Base, OutboxMixin):
     """Domain events staged in the same transaction as the change they describe."""
 
