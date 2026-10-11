@@ -419,6 +419,11 @@ class ScopeContext(BaseModel):
     principal: Principal
     scope: Scope
     permission: str
+    #: Whose id OWN and TEAM compare. Snapshotted by `require()` from the product's resolver
+    #: registration; a hand-built context takes the default, the employee link, which is
+    #: harmless for the ORG contexts a service builds for itself (ORG returns before any subject
+    #: is read).
+    owner_subject: OwnerSubject = OwnerSubject.EMPLOYEE_LINK
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -428,6 +433,18 @@ class ScopeContext(BaseModel):
 
     @property
     def subject_ref(self) -> uuid.UUID | None:
+        return self.principal.subject_ref
+
+    @property
+    def own_ref(self) -> uuid.UUID | None:
+        """The id this context's OWN and TEAM rungs compare a row's owner with.
+
+        The caller's membership id when the product declared `OwnerSubject.MEMBERSHIP`, the
+        employee link otherwise; `None` when the caller has no such id, which matches no row.
+        `subject_ref` keeps meaning the raw employee link, for HR code that really means it.
+        """
+        if self.owner_subject is OwnerSubject.MEMBERSHIP:
+            return self.principal.membership_id
         return self.principal.subject_ref
 
     def apply[S: Select[Any]](
@@ -523,7 +540,15 @@ def require(
         if amr and not amr.issubset(set(principal.amr)):
             missing = ", ".join(sorted(amr - set(principal.amr)))
             raise ForbiddenProblem(f"Additional authentication required: {missing}")
-        return ScopeContext(principal=principal, scope=scope, permission=permission)
+        # Read here, per request and after every permission check above, so the subject is the
+        # one registered by now: a route module builds this dependency at import, usually before
+        # its service's own `scope.register()` line has run.
+        return ScopeContext(
+            principal=principal,
+            scope=scope,
+            permission=permission,
+            owner_subject=owner_subject_for(permission),
+        )
 
     return _dependency
 
