@@ -799,3 +799,38 @@ class TestPurchaseOrderHoldersKeepReceiving:
                 session, org.id, manifest.registration, acting_as="test"
             )
         assert second.changed is False
+
+    async def test_a_deliberate_removal_survives_the_next_reconcile(
+        self, session: AsyncSession, org: Organization, redis: FakeRedis
+    ) -> None:
+        """The carry-forward is a one-time migration per organization: an admin who strips the
+        receive grants from a buyer role to keep buying apart from receiving must not see them
+        come back on the next rollout."""
+        from sqlalchemy import delete
+
+        manifest = load_product_manifest("operations")
+        assert manifest is not None
+        async with session.begin():
+            await services.install_registration(session, org.id, manifest.registration)
+            await self._customer_role(session, org.id, "CX_BUYER", {self.PO_WRITE: "ORG"})
+        async with session.begin():
+            await services.reconcile_registration(
+                session, org.id, manifest.registration, acting_as="test"
+            )
+        async with session.begin():
+            role = await selectors.get_role_by_code(session, org.id, "CX_BUYER")
+            assert role is not None
+            keep = {g.id for g in role.grants if g.permission.code == self.PO_WRITE}
+            await session.execute(
+                delete(RolePermission).where(
+                    RolePermission.role_id == role.id, RolePermission.id.not_in(keep)
+                )
+            )
+        session.expire_all()  # the role's grants were loaded before the delete
+        async with session.begin():
+            again = await services.reconcile_registration(
+                session, org.id, manifest.registration, acting_as="test"
+            )
+            buyer = await self._grants(session, org.id, "CX_BUYER")
+        assert again.changed is False
+        assert buyer == {f"{self.PO_WRITE}:ORG"}
