@@ -1,6 +1,6 @@
 """What the deal reads say about a deal's stage once its key is resolved against the
 organization's pipeline: `stage_label`, `stage_outcome`, `stage_position`, `stage_is_last_open`
-and `closed_at` on every deal, and the `outcome` filter on the list.
+and `closed_at` on every deal, the `outcome` filter on the list, and the summary's rollups.
 
 Every deal read loads the pipeline once and resolves each row against it, so a custom stage is
 as readable as a legacy one — and a stored key the pipeline cannot resolve renders as an open
@@ -239,3 +239,41 @@ class TestOutcomeFilter:
             theirs = [row["name"] for row in await list_deals(client, "&outcome=won")]
         assert mine == ["Fleet telematics rollout"]
         assert theirs == [], "the won deal belongs to the other rep"
+
+
+class TestSummary:
+    async def test_the_funnel_rows_carry_the_stage_outcome(self, client, org_id, data) -> None:
+        with as_principal(reader(org_id)):
+            body = (await client.get("/api/v1/deals/summary")).json()
+        assert [(row["stage"], row["outcome"]) for row in body["funnel"]] == [
+            ("lead", "open"),
+            ("qualified", "open"),
+            ("proposal", "open"),
+            ("negotiation", "open"),
+        ]
+        assert body["open_deals"] == 1
+        assert body["win_rate_pct"] == 100
+        assert body["won_value_minor"] == 21_000_000 * 100
+
+    async def test_the_summary_follows_the_organizations_own_stages(
+        self, client, session, admin_session, org_id
+    ) -> None:
+        await install_pipeline(admin_session, org_id)
+        await make_deal(session, org_id, name="Early", stage="discovery", value_minor=100)
+        await make_deal(session, org_id, name="Late", stage="quote", value_minor=200)
+        await make_deal(session, org_id, name="Signed", stage="won", value_minor=300)
+        await make_deal(session, org_id, name="Gone", stage="lost", value_minor=50)
+        with as_principal(reader(org_id)):
+            body = (await client.get("/api/v1/deals/summary")).json()
+        assert body["open_deals"] == 2
+        assert body["pipeline_value_minor"] == 300
+        assert body["weighted_pipeline_minor"] == 130  # 100 x 10% + 200 x 60%
+        assert body["won_value_minor"] == 300
+        assert body["win_rate_pct"] == 50  # one won of two decided
+        assert [
+            (r["stage"], r["label"], r["outcome"], r["count"], r["pct"]) for r in body["funnel"]
+        ] == [
+            ("discovery", "Discovery", "open", 1, 50),
+            ("scoping", "Scoping", "open", 0, 0),
+            ("quote", "Quote", "open", 1, 100),
+        ]

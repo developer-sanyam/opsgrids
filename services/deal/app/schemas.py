@@ -251,10 +251,12 @@ class ActivityOut(BaseModel):
 class StageRollupOut(BaseModel):
     """One column of the pipeline funnel — count and summed open value per stage, with
     `pct` scaled to the richest stage so the bars read as a funnel. Mirrors the SPA's
-    `StageRollup` (and its `stageFunnel` arithmetic in `data/derive.ts`)."""
+    `StageRollup` (and its `stageFunnel` arithmetic in `data/derive.ts`). `outcome` is the
+    stage's outcome; the funnel lists open stages, so it is `open` today."""
 
     stage: StageKey
     label: str
+    outcome: Outcome
     count: int
     value_minor: int
     pct: int
@@ -284,18 +286,18 @@ class SummaryOut(BaseModel):
     pipeline_value_minor: int
     #: Probability-weighted open pipeline (the forecast), in minor units.
     weighted_pipeline_minor: int
-    #: How many deals are open (not closed-won or closed-lost).
+    #: How many deals are open (their stage's outcome is `open`).
     open_deals: int
-    #: closed-won / decided, 0-100. Open deals do not drag the rate down.
+    #: won / decided, 0-100, by outcome. Open deals do not drag the rate down.
     win_rate_pct: int
-    #: Total value won across closed-won deals, in minor units.
+    #: Total value won across deals in a stage whose outcome is `won`, in minor units.
     won_value_minor: int
     #: Touches logged in the trailing seven days.
     activities_this_week: int
     currency: str
     #: `None` until a dated pipeline-value history exists — see the class docstring.
     trend: list[TrendPointOut] | None = None
-    #: The by-stage funnel over the four open stages, in board order.
+    #: The by-stage funnel over the active open stages, in board order.
     funnel: list[StageRollupOut] = Field(default_factory=list)
 
 

@@ -189,20 +189,24 @@ async def summary(
             )
         resolved_owner_id = ctx.subject_ref
 
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
     deals = await selectors.all_deals(session, ctx, owner_id=resolved_owner_id)
     activities = await selectors.all_activities(session, ctx, owner_id=resolved_owner_id)
-    open_value = domain.pipeline_value_minor(deals)
+    open_value = domain.pipeline_value_minor(deals, spec)
     currency = deals[0].currency if deals else "INR"
     return SummaryOut(
         pipeline_value_minor=open_value,
-        weighted_pipeline_minor=domain.weighted_pipeline_minor(deals),
-        open_deals=domain.open_count(deals),
-        win_rate_pct=domain.win_rate_pct(deals),
-        won_value_minor=domain.won_value_minor(deals),
+        weighted_pipeline_minor=domain.weighted_pipeline_minor(deals, spec),
+        open_deals=domain.open_count(deals, spec),
+        win_rate_pct=domain.win_rate_pct(deals, spec),
+        won_value_minor=domain.won_value_minor(deals, spec),
         activities_this_week=domain.activities_this_week(activities),
         currency=currency,
         trend=None,
-        funnel=domain.stage_funnel(deals),
+        funnel=[
+            {**row, "outcome": spec.outcome_of(str(row["stage"]))}
+            for row in domain.stage_funnel(deals, spec)
+        ],
     )
 
 

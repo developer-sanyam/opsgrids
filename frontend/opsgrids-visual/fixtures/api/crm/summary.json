@@ -10,6 +10,7 @@
     {
       "stage": "lead",
       "label": "Lead",
+      "outcome": "open",
       "count": 3,
       "value_minor": 74000000,
       "pct": 4
@@ -17,6 +18,7 @@
     {
       "stage": "qualified",
       "label": "Qualified",
+      "outcome": "open",
       "count": 3,
       "value_minor": 785000000,
       "pct": 42
@@ -24,6 +26,7 @@
     {
       "stage": "proposal",
       "label": "Proposal",
+      "outcome": "open",
       "count": 4,
       "value_minor": 272500000,
       "pct": 15
@@ -31,6 +34,7 @@
     {
       "stage": "negotiation",
       "label": "Negotiation",
+      "outcome": "open",
       "count": 3,
       "value_minor": 736000000,
       "pct": 39
@@ -38,6 +42,7 @@
     {
       "stage": "closed_won",
       "label": "Won",
+      "outcome": "won",
       "count": 2,
       "value_minor": 343500000,
       "pct": 0
@@ -45,6 +50,7 @@
     {
       "stage": "closed_lost",
       "label": "Lost",
+      "outcome": "lost",
       "count": 1,
       "value_minor": 160000000,
       "pct": 0

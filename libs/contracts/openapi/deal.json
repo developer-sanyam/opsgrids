@@ -703,7 +703,7 @@
         "type": "object"
       },
       "StageRollupOut": {
-        "description": "One column of the pipeline funnel \u2014 count and summed open value per stage, with\n`pct` scaled to the richest stage so the bars read as a funnel. Mirrors the SPA's\n`StageRollup` (and its `stageFunnel` arithmetic in `data/derive.ts`).",
+        "description": "One column of the pipeline funnel \u2014 count and summed open value per stage, with\n`pct` scaled to the richest stage so the bars read as a funnel. Mirrors the SPA's\n`StageRollup` (and its `stageFunnel` arithmetic in `data/derive.ts`). `outcome` is the\nstage's outcome; the funnel lists open stages, so it is `open` today.",
         "properties": {
           "count": {
             "title": "Count",
@@ -711,6 +711,15 @@
           },
           "label": {
             "title": "Label",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "open",
+              "won",
+              "lost"
+            ],
+            "title": "Outcome",
             "type": "string"
           },
           "pct": {
@@ -730,6 +739,7 @@
         "required": [
           "stage",
           "label",
+          "outcome",
           "count",
           "value_minor",
           "pct"
