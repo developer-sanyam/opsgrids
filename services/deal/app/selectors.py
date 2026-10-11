@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Activity, Deal, Pipeline, PipelineStage
 from app.pipeline import DEFAULT_PIPELINE, Outcome, PipelineSpec, StageSpec, Tone
-from app.schemas import ActivityOut, DealOut
+from app.schemas import ActivityOut, DealOut, PipelineRefOut, StageListOut, StageOut
 from platform_core.auth import ScopeContext
 from platform_core.logging import get_logger
 
@@ -90,6 +90,19 @@ async def load_pipeline_spec(session: AsyncSession, organization_id: uuid.UUID) 
         name=pipeline.name,
         materialised=True,
     )
+
+
+async def live_deal_counts_by_stage(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> dict[str, int]:
+    """How many **live** (not soft-deleted) deals sit in each stage key, organization-wide, in
+    one grouped query. Deal-derived data: the route that serves it decides who may see it."""
+    stmt = (
+        select(Deal.stage, func.count())
+        .where(Deal.organization_id == organization_id, Deal.deleted_at.is_(None))
+        .group_by(Deal.stage)
+    )
+    return dict((await session.execute(stmt)).tuples().all())
 
 
 # ------------------------------------------------------------------ deals
@@ -254,6 +267,40 @@ def deal_out(deal: Deal, spec: PipelineSpec) -> DealOut:
         stage_is_last_open=spec.is_last_open(deal.stage),
         closed_at=deal.closed_at,
     )
+
+
+def stage_list_out(
+    spec: PipelineSpec,
+    *,
+    include_archived: bool = False,
+    counts: dict[str, int] | None = None,
+) -> StageListOut:
+    """`GET /deals/stages`' body. Stages come out in position order; archived ones only when
+    asked for. `counts` is None unless the caller may see deal-derived figures, and then no stage
+    is given a `deal_count` at all (the field is absent, never zero)."""
+    items: list[StageOut] = []
+    for stage in sorted(spec.stages, key=lambda s: (s.position, s.key)):
+        if stage.archived and not include_archived:
+            continue
+        fields: dict[str, Any] = {
+            "id": stage.id,
+            "key": stage.key,
+            "label": stage.label,
+            "position": stage.position,
+            "outcome": stage.outcome,
+            "default_probability": stage.default_probability,
+            "tone": stage.tone,
+            "archived": stage.archived,
+        }
+        if counts is not None:
+            fields["deal_count"] = counts.get(stage.key, 0)
+        items.append(StageOut(**fields))
+    pipeline = (
+        PipelineRefOut(id=spec.id, key=spec.key, name=spec.name)
+        if spec.materialised and spec.id is not None
+        else None
+    )
+    return StageListOut(pipeline=pipeline, materialised=spec.materialised, stages=items)
 
 
 def activity_out(activity: Activity) -> ActivityOut:

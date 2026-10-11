@@ -36,6 +36,7 @@ from app.schemas import (
     DealOut,
     DealPatch,
     ServiceInfo,
+    StageListOut,
     StageMoveIn,
     SummaryOut,
 )
@@ -208,6 +209,44 @@ async def summary(
             for row in domain.stage_funnel(deals, spec)
         ],
     )
+
+
+# Declared before `/deals/{deal_id}` — Starlette matches in declaration order, so `stages` never
+# falls into the detail route (a UUID that is not one would answer 422 instead of the list).
+@router.get(
+    "/deals/stages",
+    response_model=StageListOut,
+    response_model_exclude_unset=True,
+    summary="The pipeline's stages — what a deal's stage key means",
+    dependencies=[Entitled],
+)
+async def list_stages(
+    session: SessionDep,
+    ctx: DealRead,
+    include_archived: Annotated[
+        bool, Query(description="Also list archived stages (deals may still sit in them)")
+    ] = False,
+    include: Annotated[
+        Literal["counts"] | None,
+        Query(
+            description="`counts` adds the number of live deals in each stage — for a caller "
+            "who reads deals organization-wide only; ignored for anyone else"
+        ),
+    ] = None,
+) -> StageListOut:
+    """The organization's pipeline, or the virtual default when it has none stored.
+
+    Stage rows are tenant configuration, like the rep roster, so the list has no scope floor:
+    an OWN-scoped rep still needs every stage's label to read their own deals. A `GET` never
+    materialises the default, and never writes. `deal_count` is deal-derived data, so it follows
+    the deal read's scope as `GET /deals/summary` does: it is returned only for a caller whose
+    `crm.pipeline.deal.read` grant is ORG, counts live deals only, and is *absent* — not zero —
+    for everyone else."""
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    counts: dict[str, int] | None = None
+    if include == "counts" and ctx.scope is Scope.ORG:
+        counts = await selectors.live_deal_counts_by_stage(session, ctx.organization_id)
+    return selectors.stage_list_out(spec, include_archived=include_archived, counts=counts)
 
 
 @router.get(

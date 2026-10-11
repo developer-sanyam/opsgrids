@@ -655,6 +655,31 @@
         "title": "Page[DealOut]",
         "type": "object"
       },
+      "PipelineRefOut": {
+        "description": "Which pipeline the stage list belongs to. Absent (`null` in `StageListOut`) while the\norganization is on the virtual default and has no pipeline row.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "name"
+        ],
+        "title": "PipelineRefOut",
+        "type": "object"
+      },
       "ServiceInfo": {
         "properties": {
           "schema_name": {
@@ -671,6 +696,39 @@
           "schema_name"
         ],
         "title": "ServiceInfo",
+        "type": "object"
+      },
+      "StageListOut": {
+        "description": "`GET /deals/stages`: the pipeline a deal's `stage` key is read against.",
+        "properties": {
+          "materialised": {
+            "title": "Materialised",
+            "type": "boolean"
+          },
+          "pipeline": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PipelineRefOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/StageOut"
+            },
+            "title": "Stages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "pipeline",
+          "materialised",
+          "stages"
+        ],
+        "title": "StageListOut",
         "type": "object"
       },
       "StageMoveIn": {
@@ -700,6 +758,87 @@
           "stage"
         ],
         "title": "StageMoveIn",
+        "type": "object"
+      },
+      "StageOut": {
+        "description": "One stage of the organization's pipeline. `id` is null for a stage of the virtual\ndefault, which has no row. `deal_count` is deal-derived data and appears only when asked for\n(`include=counts`) **and** the caller reads deals at ORG scope; it is *absent*, never zero,\notherwise \u2014 the route serializes with `response_model_exclude_unset`, so a stage built\nwithout it carries no such key.",
+        "properties": {
+          "archived": {
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "deal_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deal Count"
+          },
+          "default_probability": {
+            "title": "Default Probability",
+            "type": "integer"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "key": {
+            "pattern": "^[a-z0-9_]{1,20}$",
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "open",
+              "won",
+              "lost"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          },
+          "tone": {
+            "enum": [
+              "neutral",
+              "info",
+              "success",
+              "warning",
+              "danger"
+            ],
+            "title": "Tone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "label",
+          "position",
+          "outcome",
+          "default_probability",
+          "tone",
+          "archived"
+        ],
+        "title": "StageOut",
         "type": "object"
       },
       "StageRollupOut": {
@@ -1248,6 +1387,71 @@
           }
         },
         "summary": "Log a call, email, meeting, note or task",
+        "tags": [
+          "deal"
+        ]
+      }
+    },
+    "/api/v1/deals/stages": {
+      "get": {
+        "description": "The organization's pipeline, or the virtual default when it has none stored.\n\nStage rows are tenant configuration, like the rep roster, so the list has no scope floor:\nan OWN-scoped rep still needs every stage's label to read their own deals. A `GET` never\nmaterialises the default, and never writes. `deal_count` is deal-derived data, so it follows\nthe deal read's scope as `GET /deals/summary` does: it is returned only for a caller whose\n`crm.pipeline.deal.read` grant is ORG, counts live deals only, and is *absent* \u2014 not zero \u2014\nfor everyone else.",
+        "operationId": "list_stages_api_v1_deals_stages_get",
+        "parameters": [
+          {
+            "description": "Also list archived stages (deals may still sit in them)",
+            "in": "query",
+            "name": "include_archived",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Also list archived stages (deals may still sit in them)",
+              "title": "Include Archived",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "`counts` adds the number of live deals in each stage \u2014 for a caller who reads deals organization-wide only; ignored for anyone else",
+            "in": "query",
+            "name": "include",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "const": "counts",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`counts` adds the number of live deals in each stage \u2014 for a caller who reads deals organization-wide only; ignored for anyone else",
+              "title": "Include"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StageListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The pipeline's stages \u2014 what a deal's stage key means",
         "tags": [
           "deal"
         ]

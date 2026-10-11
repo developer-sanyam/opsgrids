@@ -19,7 +19,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from app.pipeline import KEY_PATTERN, Outcome
+from app.pipeline import KEY_PATTERN, Outcome, Tone
 
 
 def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
@@ -243,6 +243,46 @@ class ActivityOut(BaseModel):
     owner_id: str
     occurred_at: datetime
     direction: ActivityDirection | None
+
+
+# ------------------------------------------------------------------ stages
+
+
+class PipelineRefOut(BaseModel):
+    """Which pipeline the stage list belongs to. Absent (`null` in `StageListOut`) while the
+    organization is on the virtual default and has no pipeline row."""
+
+    id: uuid.UUID
+    key: str
+    name: str
+
+
+class StageOut(BaseModel):
+    """One stage of the organization's pipeline. `id` is null for a stage of the virtual
+    default, which has no row. `deal_count` is deal-derived data and appears only when asked for
+    (`include=counts`) **and** the caller reads deals at ORG scope; it is *absent*, never zero,
+    otherwise — the route serializes with `response_model_exclude_unset`, so a stage built
+    without it carries no such key."""
+
+    id: uuid.UUID | None
+    key: StageKey
+    label: str
+    position: int
+    outcome: Outcome
+    default_probability: int
+    tone: Tone
+    archived: bool
+    deal_count: int | None = None
+
+
+class StageListOut(BaseModel):
+    """`GET /deals/stages`: the pipeline a deal's `stage` key is read against."""
+
+    pipeline: PipelineRefOut | None
+    #: False for the virtual default (nothing stored for the organization), true once its six
+    #: rows exist. The route is read-only: a `GET` never materialises.
+    materialised: bool
+    stages: list[StageOut]
 
 
 # ------------------------------------------------------------------ summary rollups
