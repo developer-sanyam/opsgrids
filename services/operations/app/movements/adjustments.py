@@ -50,6 +50,7 @@ async def create_adjustment(
     idempotency_key: str | None,
     request: Request | None = None,
     stock_status: str | None = None,
+    transfer_line_id: uuid.UUID | None = None,
 ) -> tuple[AdjustmentRequest, bool]:
     """Returns `(row, replayed)`. `row.status` is `APPLIED` (applied now) or `PENDING_APPROVAL`.
 
@@ -118,6 +119,7 @@ async def create_adjustment(
         lot_id=payload.lot_id,
         roll_id=payload.roll_id,
         quantity_delta_milli=delta,
+        transfer_line_id=transfer_line_id,
         reason=payload.reason,
         note=payload.note,
         evidence_document_id=payload.evidence_document_id,
@@ -297,7 +299,18 @@ async def cancel_adjustment(
         request=request,
     )
     await session.flush()
+    await _release_transfer_line(session, ctx, row, written_off=False)
     return row
+
+
+async def _release_transfer_line(
+    session: AsyncSession, ctx: ScopeContext, row: AdjustmentRequest, *, written_off: bool
+) -> None:
+    """A transfer-shortage request reached a final state: settle or release its line."""
+    if row.transfer_line_id is not None:
+        from app.movements import transfers  # transfers imports this module
+
+        await transfers.settle_pending_shortage(session, ctx, row, written_off=written_off)
 
 
 # ------------------------------------------------------------------ the approval service's answer
@@ -353,6 +366,7 @@ async def apply_approval_decision(
         row.updated_at = _now()
         await session.flush()
         _emit_applied(session, ctx, row, None, decision="rejected", request=None)
+        await _release_transfer_line(session, ctx, row, written_off=False)
         return "rejected"
 
     try:
@@ -377,5 +391,7 @@ async def apply_approval_decision(
         row.updated_at = _now()
         await session.flush()
         _emit_applied(session, ctx, row, item, decision="approved", request=None)
+        await _release_transfer_line(session, ctx, row, written_off=False)
         return "failed"
+    await _release_transfer_line(session, ctx, row, written_off=True)
     return "approved"

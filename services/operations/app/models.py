@@ -3611,13 +3611,20 @@ class StockTransferLine(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     dispatched_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     received_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     shortage_milli: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    #: A shortage at or over the adjustment threshold, held while its adjustment request awaits a
+    #: decision: still in transit, but spoken for — it can be neither received nor reported short
+    #: again. Approval moves it into `shortage_milli`; rejection or cancellation releases it.
+    pending_shortage_milli: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
 
     __table_args__ = (
         CheckConstraint("quantity_milli > 0", name="quantity_positive"),
         CheckConstraint(
             "dispatched_milli >= 0 AND received_milli >= 0 AND shortage_milli >= 0 "
+            "AND pending_shortage_milli >= 0 "
             "AND dispatched_milli <= quantity_milli "
-            "AND received_milli + shortage_milli <= dispatched_milli",
+            "AND received_milli + shortage_milli + pending_shortage_milli <= dispatched_milli",
             name="quantities_within",
         ),
         ForeignKeyConstraint(
@@ -3696,6 +3703,8 @@ class AdjustmentRequest(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     lot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     roll_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     quantity_delta_milli: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: The transfer line whose shortage this request writes off, when it came from a receipt.
+    transfer_line_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     reason: Mapped[str] = mapped_column(String(20), nullable=False)
     note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     evidence_document_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))

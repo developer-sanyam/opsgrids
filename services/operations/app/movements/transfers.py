@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -34,6 +34,7 @@ from app.inventory import ledger, stock_ops
 from app.inventory import selectors as inv_selectors
 from app.inventory.ledger import MoveLine
 from app.inventory.quantity import format_qty
+from app.jobwork import domain as jw_domain
 from app.models import (
     AdjustmentRequest,
     InventoryItem,
@@ -672,6 +673,80 @@ async def _locked_or_none(
     return await sel.get_transfer(session, org_id, transfer_id, for_update=True)
 
 
+async def settle_pending_shortage(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    row: AdjustmentRequest,
+    *,
+    written_off: bool,
+) -> None:
+    """The adjustment request behind a held shortage was decided. Written off: the units become
+    the line's `shortage_milli`, and the transfer completes if nothing else is outstanding.
+    Rejected, cancelled or failed: the hold is released and the units stay in transit to be
+    received or reported again."""
+    org_id = ctx.organization_id
+    line_id = row.transfer_line_id
+    if line_id is None:
+        return
+    transfer_id = (
+        await session.execute(
+            select(StockTransferLine.transfer_id).where(
+                StockTransferLine.organization_id == org_id, StockTransferLine.id == line_id
+            )
+        )
+    ).scalar_one_or_none()
+    if transfer_id is None:
+        return
+    transfer = await _locked(session, org_id, transfer_id)
+    lines = await sel.transfer_lines(session, org_id, transfer.id, for_update=True)
+    units = -row.quantity_delta_milli
+    for line in lines:
+        if line.id == line_id:
+            line.pending_shortage_milli = max(0, line.pending_shortage_milli - units)
+            if written_off:
+                line.shortage_milli += units
+    await session.flush()
+    complete = (
+        written_off
+        and transfer.status == "IN_TRANSIT"
+        and all(
+            ln.received_milli + ln.shortage_milli == ln.dispatched_milli
+            and ln.pending_shortage_milli == 0
+            for ln in lines
+        )
+    )
+    if complete:
+        _step(session, transfer, "RECEIVED", actor=_actor_str(ctx), note="")
+        transfer.completed_at = _now()
+        transfer.updated_at = _now()
+        stock_ops.stage(
+            session,
+            ctx,
+            action="stock_transfer.received",
+            event_type=common.EVT_TRANSFER_RECEIVED,
+            entity="stock_transfer",
+            entity_id=transfer.id,
+            after={"complete": True, "adjustment_id": str(row.id)},
+            payload=_transfer_event(
+                transfer,
+                complete=True,
+                receipt_move_id=None,
+                shortage_move_id=str(row.applied_move_id) if row.applied_move_id else None,
+                lines=[
+                    {
+                        "line_id": str(line_id),
+                        "inventory_item_id": str(row.inventory_item_id),
+                        "received": "0",
+                        "shortage": format_qty(units),
+                    }
+                ],
+            ),
+            reason=None,
+            request=None,
+        )
+        await session.flush()
+
+
 async def apply_approval_decision(
     session: AsyncSession,
     org_id: uuid.UUID,
@@ -820,7 +895,7 @@ async def dispatch_transfer(
         ctx,
         kind="relocation",
         lines=move_lines,
-        occurred_on=date.today(),
+        occurred_on=jw_domain.ist_today(),
         reference_type="stock_transfer",
         reference_id=transfer.id,
         note=payload.note or f"Dispatch of {transfer.number}",
@@ -991,7 +1066,12 @@ async def receive_transfer(
                 f"{item.sku}: nothing received and nothing short",
                 errors=[{"field": field, "code": "empty", "message": "nothing to record"}],
             )
-        remaining = line.dispatched_milli - line.received_milli - line.shortage_milli
+        remaining = (
+            line.dispatched_milli
+            - line.received_milli
+            - line.shortage_milli
+            - line.pending_shortage_milli
+        )
         if received + short > remaining:
             raise ConflictProblem(
                 f"{item.sku}: only {format_qty(remaining)} is still in transit; cannot account "
@@ -1017,7 +1097,7 @@ async def receive_transfer(
             to_location = line.to_location_id or default_bin.id
         plan.append((line, item, received, short, to_location))
 
-    today = date.today()
+    today = jw_domain.ist_today()
     stem = None
     if idempotency_key is not None:
         khash, bhash = _key_digests(idempotency_key, payload)
@@ -1067,10 +1147,9 @@ async def receive_transfer(
 
     # A shortage is a write-off. One that reaches the adjustment threshold is not ours to post:
     # it becomes an adjustment request (reason, evidence, approval) and the stock stays in transit
-    # until it is decided. Such a shortage is NOT booked on the line below, so the line and the
-    # transfer stay open while the units are still in transit; if approval rejects it, they stay
-    # in the in-transit report for a person to resolve. shortcut: nothing reopens or closes the
-    # line when the request is decided, upgrade when a transfer-aware approval hook exists.
+    # until it is decided. Such a shortage is held on the line as `pending_shortage_milli` (so it
+    # cannot be received or reported again) and `settle_pending_shortage` books or releases it
+    # when the adjustment is approved, rejected or cancelled.
     settings = await common.get_settings(session, org_id)
     threshold = settings.adjustment_approval_threshold_milli if settings else None
     direct: list[tuple[StockTransferLine, int]] = []
@@ -1099,6 +1178,7 @@ async def receive_transfer(
             idempotency_key=f"{shortage_key}:{line.id}" if shortage_key else None,
             request=request,
             stock_status="IN_TRANSIT",
+            transfer_line_id=line.id,
         )
     shortages = merge_amounts(
         (
@@ -1147,7 +1227,9 @@ async def receive_transfer(
     settled: list[dict[str, Any]] = []
     for line, _item, received, short, to_location in plan:
         if line.id in pending:
-            short = 0  # awaiting an adjustment decision: still in transit, not written off
+            # awaiting an adjustment decision: still in transit, reserved, not yet written off
+            line.pending_shortage_milli += short
+            short = 0
         line.received_milli += received
         line.shortage_milli += short
         if received:

@@ -25,7 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import delete, func, select, text, update
@@ -35,6 +35,7 @@ from starlette.requests import Request
 from app.inventory import ledger
 from app.inventory.ledger import MoveLine
 from app.inventory.quantity import QuantityError, format_qty, parse_qty
+from app.jobwork import domain as jw_domain
 from app.models import (
     AuditLog,
     Inspection,
@@ -363,7 +364,7 @@ async def _post(
             )
             for status, milli in lines
         ],
-        occurred_on=date.today(),
+        occurred_on=jw_domain.ist_today(),
         reason=reason,
         reference_type="inspection",
         reference_id=inspection.id,
