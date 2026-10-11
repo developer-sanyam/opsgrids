@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime, timedelta, timezone
 
 #: `JobWorkOrder.status` -> where it may go. `PARTIALLY_RECEIVED -> PARTIALLY_RECEIVED` is not an
 #: edge: a second partial receipt leaves the status where it is, and the service skips the move.
@@ -54,10 +54,38 @@ def can_transition(current: str, new: str) -> bool:
     return new in JOB_WORK_TRANSITIONS.get(current, frozenset())
 
 
-def eway_required(total_value_minor: int, currency: str) -> bool:
-    """Whether a challan's consignment value crosses the e-way-bill threshold. India-specific, so
-    only INR is ever considered."""
-    return currency == "INR" and total_value_minor > EWAY_VALUE_THRESHOLD_MINOR
+def eway_required(total_value_minor: int, currency: str, *, inter_state: bool = False) -> bool:
+    """Whether a challan needs an e-way bill. India-specific, so only INR is ever considered.
+
+    GST rule applied (docs/inventory/jobwork.md is silent on it): goods sent to a job worker in
+    another state need an e-way bill whatever their value (CGST Rule 138(1), job-work proviso);
+    intra-state, the INR 50,000 threshold applies. The service holds no state data for the
+    supplier or site, so the caller says whether the movement is inter-state."""
+    if currency != "INR":
+        return False
+    return inter_state or total_value_minor > EWAY_VALUE_THRESHOLD_MINOR
+
+
+IST = timezone(timedelta(hours=5, minutes=30), "Asia/Kolkata")
+#: How far ahead of today (IST) a receipt may be dated — covers a clock a day out and the
+#: date line, not backdating the future.
+RECEIVED_ON_FUTURE_TOLERANCE = timedelta(days=1)
+
+
+def ist_today(now: datetime | None = None) -> date:
+    """Today's date in India. Challan series and receipt dates are statutory Indian dates, not
+    the server's local date."""
+    return (now or datetime.now(UTC)).astimezone(IST).date()
+
+
+def received_on_problem(received_on: date, today: date, issued_on: date) -> str | None:
+    """Why a receipt date is unacceptable, or None. Not before the goods were sent, not in the
+    future beyond tolerance."""
+    if received_on > today + RECEIVED_ON_FUTURE_TOLERANCE:
+        return f"received_on {received_on} is in the future"
+    if received_on < issued_on:
+        return f"received_on {received_on} is before the material was sent on {issued_on}"
+    return None
 
 
 def is_overdue(status: str, due_date: date | None, today: date) -> bool:

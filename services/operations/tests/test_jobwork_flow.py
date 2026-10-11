@@ -547,7 +547,39 @@ class TestChallanAndEway:
         assert again.status_code == 409  # a generated bill is not re-requested
 
 
+class TestEwayGuards:
+    async def test_repeating_the_same_request_is_a_noop(self, client, session, mill) -> None:
+        order = await issued_order(client, mill)
+        challan_id = order["challans"][0]["id"]
+        body = {"distance_km": 250, "vehicle_no": "KA01XY9999"}
+        for _ in range(2):
+            r = await call(
+                client, mill.org_id, "POST", f"/challans/{challan_id}:request-eway", json=body
+            )
+            assert r.status_code == 200, r.text
+        assert len(await events(session, "operations.jobwork.challan.eway_requested")) == 1
+
+    async def test_inter_state_issue_requests_a_bill_below_the_threshold(
+        self, client, mill
+    ) -> None:
+        order = await create_order(
+            client, mill, materials=[{"item_id": str(mill.fabric), "quantity": "10"}]
+        )
+        await approve(client, mill, order["id"])
+        issued = await issue(client, mill, order["id"], body={"inter_state": True})
+        assert issued["challans"][0]["eway_status"] == "REQUESTED"
+
+
 class TestReceive:
+    async def test_a_future_or_pre_issue_received_on_is_refused(self, client, mill) -> None:
+        order = await issued_order(client, mill)
+        material = order["materials"][0]["id"]
+        for day in ("2999-01-01", "2000-01-01"):
+            r = await receive(
+                client, mill, order["id"], [receipt_line(material, received="1")], received_on=day
+            )
+            assert r.status_code == 422, (day, r.text)
+
     async def test_partial_receipts_do_exact_arithmetic_and_balance_the_ledger(
         self, client, session, mill
     ) -> None:

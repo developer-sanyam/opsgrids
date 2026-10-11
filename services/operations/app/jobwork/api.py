@@ -283,6 +283,7 @@ async def issue_order(
         vehicle_no=body.vehicle_no,
         transporter_id=body.transporter_id,
         distance_km=body.distance_km,
+        inter_state=body.inter_state,
         note=body.note,
         idempotency_key=idempotency_key,
         request=request,

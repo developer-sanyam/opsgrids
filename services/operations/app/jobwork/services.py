@@ -543,6 +543,7 @@ async def issue_order(
     distance_km: int | None,
     note: str,
     idempotency_key: str,
+    inter_state: bool = False,
     request: Request | None = None,
 ) -> tuple[JobWorkOrder, Challan, bool]:
     """Send the materials to the vendor: move stock `AVAILABLE -> AT_JOB_WORKER`, cut the delivery
@@ -560,6 +561,7 @@ async def issue_order(
             "vehicle_no": vehicle_no,
             "transporter_id": transporter_id,
             "distance_km": distance_km,
+            "inter_state": inter_state,
             "note": note,
         }
     )
@@ -657,7 +659,7 @@ async def issue_order(
         m.updated_at = datetime.now(UTC)
 
     number = await numbering.next_challan_number(session, org_id)
-    required = domain.eway_required(total_value, currency)
+    required = domain.eway_required(total_value, currency, inter_state=inter_state)
     now = datetime.now(UTC)
     challan = Challan(
         organization_id=org_id,
@@ -792,6 +794,14 @@ async def request_eway(
         raise ConflictProblem(
             f"{challan.challan_number} already has e-way bill {challan.eway_bill_no}"
         )
+    # Idempotent: the same facts on an already-requested challan change nothing, emit nothing.
+    if (
+        challan.eway_status == "REQUESTED"
+        and challan.distance_km == distance_km
+        and vehicle_no in (None, challan.vehicle_no)
+        and transporter_id in (None, challan.transporter_id)
+    ):
+        return challan
     order = await selectors.get_order(session, ctx.organization_id, challan.order_id)
     if order is None:
         raise NotFoundProblem("That challan's order is not part of this organization")
@@ -1006,7 +1016,11 @@ async def receive_order(
     # balances, the reverse of the roll -> balance order a concurrent split or merge relies on.
     await ledger.validate_tracking(session, org_id, [*_lines(returns), *_lines(shortages)])
 
-    when = received_on or date.today()
+    when = received_on or domain.ist_today()
+    if received_on is not None:
+        issued_on = domain.ist_today(order.issued_at) if order.issued_at else received_on
+        if problem := domain.received_on_problem(received_on, domain.ist_today(), issued_on):
+            raise ValidationProblem(problem)
     return_move = None
     short_move = None
     if returns:

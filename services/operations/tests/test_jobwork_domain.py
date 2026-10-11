@@ -136,3 +136,26 @@ class TestEway:
         assert not domain.eway_required(50_000_00, "INR")
         assert domain.eway_required(50_000_01, "INR")
         assert not domain.eway_required(10_000_000_00, "USD")
+
+    def test_inter_state_job_work_needs_a_bill_whatever_the_value(self) -> None:
+        assert domain.eway_required(1, "INR", inter_state=True)
+        assert not domain.eway_required(1, "INR", inter_state=False)
+        assert not domain.eway_required(1, "USD", inter_state=True)
+
+
+class TestIstDates:
+    def test_the_financial_year_turns_over_at_ist_midnight(self) -> None:
+        from datetime import UTC, datetime
+
+        # 00:30 IST on 1 April is still 31 March in UTC.
+        today = domain.ist_today(datetime(2027, 3, 31, 19, 0, tzinfo=UTC))
+        assert today == date(2027, 4, 1)
+        assert domain.financial_year(today) == "27-28"
+
+    def test_received_on_bounds(self) -> None:
+        today, issued = date(2026, 10, 11), date(2026, 10, 1)
+        assert domain.received_on_problem(today, today, issued) is None
+        assert domain.received_on_problem(date(2026, 10, 12), today, issued) is None  # tolerance
+        assert domain.received_on_problem(issued, today, issued) is None
+        assert domain.received_on_problem(date(2026, 10, 13), today, issued)
+        assert domain.received_on_problem(date(2026, 9, 30), today, issued)

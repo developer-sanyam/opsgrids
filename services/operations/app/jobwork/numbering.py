@@ -27,7 +27,7 @@ from typing import Any
 from sqlalchemy import Integer, cast, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.jobwork.domain import financial_year
+from app.jobwork.domain import financial_year, ist_today
 from app.models import Challan, JobWorkOrder, JobWorkReceipt
 
 #: Zero-padded to four digits, but the sequence itself is read numerically, so the 10 000th
@@ -94,7 +94,7 @@ async def next_challan_number(
     session: AsyncSession, organization_id: uuid.UUID, *, today: date | None = None
 ) -> str:
     """`DC/{fy}/{seq:04d}` — a financial-year series, e.g. `DC/26-27/0001`."""
-    fy = financial_year(today or date.today())
+    fy = financial_year(today or ist_today())
     return await _next(
         session,
         organization_id,

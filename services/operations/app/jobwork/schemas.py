@@ -84,6 +84,8 @@ class JobWorkIssueIn(BaseModel):
     vehicle_no: str | None = Field(default=None, max_length=20)
     transporter_id: str | None = Field(default=None, max_length=30)
     distance_km: int | None = Field(default=None, ge=0, le=5000)
+    #: The vendor is in another state — an e-way bill is then required whatever the value.
+    inter_state: bool = False
     note: str = Field(default="", max_length=500)
 
 
