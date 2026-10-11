@@ -18,7 +18,14 @@ from sqlalchemy import select, update
 
 from app import consumers
 from app.config import settings
-from app.models import Inspection, InventoryItem, OutboxEvent, ProcessedEvent
+from app.models import (
+    AuditLog,
+    Inspection,
+    InventoryItem,
+    Lot,
+    OutboxEvent,
+    ProcessedEvent,
+)
 from app.quality import handoff
 from app.receiving import receipts
 from platform_core.db import dispose_engine, init_engine
@@ -324,3 +331,162 @@ class TestRefusalsDoNotPoisonTheQueue:
         await consumers.goods_receipt_qc_requested(envelope)
         assert await inspections(session, org_id) == []
         assert await inspections(session, other) == []
+
+
+async def lot_status(session, org_id: uuid.UUID, lot_id: uuid.UUID) -> str:  # type: ignore[no-untyped-def]
+    async with session.begin():
+        return (
+            await session.execute(
+                select(Lot.quality_status).where(Lot.organization_id == org_id, Lot.id == lot_id)
+            )
+        ).scalar_one()
+
+
+async def two_roll_lot(client, session, org_id, w: RWorld):  # type: ignore[no-untyped-def]
+    """A quality-tracked, roll-tracked receipt handed off: one lot, two rolls, two inspections."""
+    async with session.begin():
+        await session.execute(
+            update(InventoryItem)
+            .where(InventoryItem.organization_id == org_id, InventoryItem.id == w.fabric)
+            .values(track_quality=True)
+        )
+    po_id, lines = await make_po(
+        session, w, [{"sku": "COT-180-NAVY", "quantity": 100, "uom": "m", "unit_price_minor": 1}]
+    )
+    receipt = await receive(
+        client,
+        org_id,
+        po_id,
+        line(
+            lines["COT-180-NAVY"],
+            "80",
+            lot={"supplier_lot_no": "MILL-9"},
+            rolls=[{"primary_qty": "50"}, {"primary_qty": "30"}],
+        ),
+    )
+    [envelope] = await staged_envelopes(session, org_id)
+    await consumers.goods_receipt_qc_requested(envelope)
+    first, second = await inspections(session, org_id)
+    return uuid.UUID(receipt["lines"][0]["lot_id"]), first, second
+
+
+async def decide(client, org_id, insp, action: str, body: dict) -> None:  # type: ignore[no-untyped-def]
+    response = await quality_call(
+        client, org_id, "POST", f"/inspections/{insp.id}/{action}", json=body
+    )
+    assert response.status_code == 200, response.text
+
+
+class TestLotQualityStatusFollowsTheInspections:
+    async def test_the_lot_is_approved_only_once_every_roll_is_decided(
+        self, client, session, org_id, w: RWorld
+    ) -> None:
+        lot_id, first, second = await two_roll_lot(client, session, org_id, w)
+        assert await lot_status(session, org_id, lot_id) == "PENDING"
+        await decide(client, org_id, first, "release", {"note": "ok"})
+        assert await lot_status(session, org_id, lot_id) == "PENDING"
+        await decide(client, org_id, second, "release", {"note": "ok"})
+        assert await lot_status(session, org_id, lot_id) == "APPROVED"
+
+    async def test_a_held_inspection_puts_the_lot_on_hold(
+        self, client, session, org_id, w: RWorld
+    ) -> None:
+        lot_id, first, _ = await two_roll_lot(client, session, org_id, w)
+        await decide(client, org_id, first, "hold", {"note": "look again"})
+        assert await lot_status(session, org_id, lot_id) == "ON_HOLD"
+
+    async def test_rejecting_every_roll_rejects_the_lot_and_disposal_keeps_it_so(
+        self, client, session, org_id, w: RWorld
+    ) -> None:
+        lot_id, first, second = await two_roll_lot(client, session, org_id, w)
+        await decide(client, org_id, first, "reject", {"reason": "torn"})
+        assert await lot_status(session, org_id, lot_id) == "PENDING"
+        await decide(client, org_id, second, "reject", {"reason": "torn"})
+        assert await lot_status(session, org_id, lot_id) == "REJECTED"
+        await decide(client, org_id, first, "disposition", {"action": "SCRAP"})
+        assert await lot_status(session, org_id, lot_id) == "REJECTED"
+
+    async def test_a_lot_with_some_good_stock_is_approved(
+        self, client, session, org_id, w: RWorld
+    ) -> None:
+        lot_id, first, second = await two_roll_lot(client, session, org_id, w)
+        await decide(client, org_id, first, "release", {"note": "ok"})
+        await decide(client, org_id, second, "reject", {"reason": "torn"})
+        assert await lot_status(session, org_id, lot_id) == "APPROVED"
+
+
+class TestTrackQualityIsCapturedAtReceipt:
+    async def test_the_event_carries_the_flag_each_line_was_received_under(
+        self, client, session, org_id, w: RWorld
+    ) -> None:
+        po_id, lines = await make_po(
+            session,
+            w,
+            [
+                {"sku": "DYE-RED-01", "quantity": 10, "uom": "kg", "unit_price_minor": 90},
+                {"sku": "BTN-14MM", "quantity": 100, "uom": "pcs", "unit_price_minor": 2},
+            ],
+        )
+        await receive(
+            client, org_id, po_id, line(lines["DYE-RED-01"], "10"), line(lines["BTN-14MM"], "100")
+        )
+        [envelope] = await staged_envelopes(session, org_id)
+        flags = {ln["sku"]: ln["track_quality"] for ln in envelope["payload"]["lines"]}
+        assert flags == {"DYE-RED-01": True, "BTN-14MM": False}
+
+    async def test_switching_the_flag_off_before_consumption_still_opens_the_inspection(
+        self, client, session, org_id, w: RWorld
+    ) -> None:
+        po_id, lines = await make_po(
+            session, w, [{"sku": "DYE-RED-01", "quantity": 10, "uom": "kg", "unit_price_minor": 90}]
+        )
+        await receive(client, org_id, po_id, line(lines["DYE-RED-01"], "10"))
+        [envelope] = await staged_envelopes(session, org_id)
+        async with session.begin():
+            await session.execute(
+                update(InventoryItem)
+                .where(InventoryItem.organization_id == org_id, InventoryItem.id == w.dye)
+                .values(track_quality=False)
+            )
+        await consumers.goods_receipt_qc_requested(envelope)
+        assert len(await inspections(session, org_id)) == 1
+
+    async def test_a_skipped_bucket_leaves_an_audit_row(
+        self, client, session, org_id, w: RWorld
+    ) -> None:
+        po_id, lines = await make_po(
+            session, w, [{"sku": "DYE-RED-01", "quantity": 10, "uom": "kg", "unit_price_minor": 90}]
+        )
+        receipt = await receive(client, org_id, po_id, line(lines["DYE-RED-01"], "10"))
+        [envelope] = await staged_envelopes(session, org_id)
+        manual = await quality_call(
+            client,
+            org_id,
+            "POST",
+            "/inspections",
+            json={
+                "kind": "incoming",
+                "item_id": str(w.dye),
+                "location_id": str(w.t.weaving),
+                "quantity": "10",
+                "hold_stock": False,
+            },
+        )
+        assert manual.status_code == 201, manual.text
+        await consumers.goods_receipt_qc_requested(envelope)
+        async with session.begin():
+            rows = (
+                (
+                    await session.execute(
+                        select(AuditLog).where(
+                            AuditLog.organization_id == org_id,
+                            AuditLog.action == "goods_receipt.qc_handoff_skipped",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        [row] = rows
+        assert str(row.entity_id) == receipt["id"]
+        assert str(w.dye) in row.after["skipped"][0]["bucket"] and row.after["skipped"][0]["reason"]

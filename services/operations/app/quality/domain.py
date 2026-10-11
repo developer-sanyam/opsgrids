@@ -47,6 +47,18 @@ def can_transition_inspection(current: str, new: str) -> bool:
     return new in INSPECTION_TRANSITIONS.get(current, frozenset())
 
 
+def lot_quality_status(inspection_statuses: Iterable[str]) -> str:
+    """A lot's `quality_status` from the statuses of every inspection over it: anything still open
+    keeps it `PENDING` (`ON_HOLD` when one is on hold); once all are decided it is `APPROVED` if
+    any stock was released, else `REJECTED`."""
+    statuses = set(inspection_statuses)
+    if "HOLD" in statuses:
+        return "ON_HOLD"
+    if statuses & {"PENDING", "REWORK"}:
+        return "PENDING"
+    return "APPROVED" if statuses & {"PASSED", "PARTIAL_PASS"} else "REJECTED"
+
+
 @dataclass(frozen=True, slots=True)
 class ParamSpec:
     """The slice of a template parameter judging needs."""

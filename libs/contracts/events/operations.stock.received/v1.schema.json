@@ -66,6 +66,7 @@
           "inventory_item_id",
           "location_id",
           "status",
+          "track_quality",
           "lot_id",
           "roll_ids",
           "received_qty",
@@ -101,6 +102,10 @@
               "string",
               "null"
             ]
+          },
+          "track_quality": {
+            "type": "boolean",
+            "description": "Whether the item tracked quality when the receipt was posted; the quality hand-off opens inspections from this, not from the item's current flag."
           },
           "lot_id": {
             "type": [

@@ -36,9 +36,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.inventory.quantity import format_qty
-from app.models import Inspection, InventoryItem, LedgerEntry
+from app.models import AuditLog, Inspection, LedgerEntry
 from app.quality import services
 from app.quality.schemas import InspectionIn
+from platform_core.audit import record_audit
 from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 
@@ -137,24 +138,16 @@ async def open_for_goods_receipt(
     supplier_id = uuid.UUID(str(payload["supplier_id"]))
     move_id = uuid.UUID(str(payload["move_id"]))
 
-    held_items = {
+    # `track_quality` is the receipt's own snapshot, so a later change to the item cannot drop it.
+    tracked = {
         uuid.UUID(str(line["inventory_item_id"]))
         for line in payload["lines"]
-        if line.get("inventory_item_id") and line.get("status") == "QUALITY_HOLD"
+        if line.get("inventory_item_id")
+        and line.get("status") == "QUALITY_HOLD"
+        and line.get("track_quality")
     }
-    if not held_items:
+    if not tracked:
         return result
-    tracked = set(
-        (
-            await session.execute(
-                select(InventoryItem.id).where(
-                    InventoryItem.organization_id == org_id,
-                    InventoryItem.id.in_(held_items),
-                    InventoryItem.track_quality.is_(True),
-                )
-            )
-        ).scalars()
-    )
     entries = (
         (
             await session.execute(
@@ -201,4 +194,16 @@ async def open_for_goods_receipt(
             result.skipped.append((label, exc.detail))
             continue
         result.opened.append(inspection)
+    if result.skipped:
+        # Observable, not just logged: a held bucket nobody inspects is stock stuck on hold.
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=org_id,
+            actor_id=ctx.principal.sub,
+            action="goods_receipt.qc_handoff_skipped",
+            entity="goods_receipt",
+            entity_id=receipt_id,
+            after={"skipped": [{"bucket": b, "reason": why} for b, why in result.skipped]},
+        )
     return result

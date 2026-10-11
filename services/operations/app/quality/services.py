@@ -28,7 +28,7 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -41,6 +41,7 @@ from app.models import (
     InspectionResult,
     InventoryItem,
     Location,
+    Lot,
     OutboxEvent,
     QcTemplate,
     QcTemplateParam,
@@ -724,6 +725,30 @@ def _replay_or_none(
     return True
 
 
+async def _sync_lot(session: AsyncSession, ctx: ScopeContext, inspection: Inspection) -> None:
+    """Keep the inspected lot's `quality_status` in step with all the inspections over it (a
+    roll-tracked receipt opens one per roll). Called after every status change, so it is a no-op
+    write when nothing moved."""
+    if inspection.lot_id is None:
+        return
+    org_id = ctx.organization_id
+    statuses = (
+        await session.execute(
+            select(Inspection.status).where(
+                Inspection.organization_id == org_id, Inspection.lot_id == inspection.lot_id
+            )
+        )
+    ).scalars()
+    await session.execute(
+        update(Lot)
+        .where(Lot.organization_id == org_id, Lot.id == inspection.lot_id)
+        .values(
+            quality_status=domain.lot_quality_status(statuses),
+            updated_by=str(ctx.principal.sub),
+        )
+    )
+
+
 def _move_to(
     inspection: Inspection,
     new_status: str,
@@ -761,6 +786,7 @@ async def _simple_transition(
         return inspection
     before = _move_to(inspection, to_status, ctx, key=idempotency_key, request_hash=request_hash)
     await session.flush()
+    await _sync_lot(session, ctx, inspection)
     _audit(
         session,
         ctx,
@@ -945,6 +971,7 @@ async def release(
     inspection.decided_at = datetime.now(UTC)
     inspection.decision_note = payload.note
     await session.flush()
+    await _sync_lot(session, ctx, inspection)
     _audit(
         session,
         ctx,
@@ -1028,6 +1055,7 @@ async def reject(
     inspection.decided_at = datetime.now(UTC)
     inspection.decision_note = reason
     await session.flush()
+    await _sync_lot(session, ctx, inspection)
     _audit(
         session,
         ctx,
@@ -1104,6 +1132,7 @@ async def dispose(
     inspection.updated_by = str(ctx.principal.sub)
     inspection.updated_at = datetime.now(UTC)
     await session.flush()
+    await _sync_lot(session, ctx, inspection)
     _audit(
         session,
         ctx,

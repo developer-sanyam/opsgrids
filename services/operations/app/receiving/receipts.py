@@ -762,6 +762,8 @@ def _stage(
             "inventory_item_id": str(ln.item.id) if ln.item else None,
             "location_id": str(ln.location_id) if ln.location_id else None,
             "status": ln.status,
+            # Snapshot: the quality hand-off acts on what was true at receipt, not at consumption.
+            "track_quality": bool(ln.item and ln.item.track_quality),
             "lot_id": str(ln.lot_id) if ln.lot_id else None,
             "roll_ids": [str(r) for r in ln.roll_ids],
             "received_qty": format_qty(ln.received),
