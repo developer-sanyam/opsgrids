@@ -1483,6 +1483,8 @@ async def fold_status(
     occurred_at: datetime,
     error_code: str | None = None,
     error_detail: str | None = None,
+    pricing_category: str | None = None,
+    billable: bool | None = None,
 ) -> Message | None:
     """Apply one provider receipt to the message it concerns.
 
@@ -1520,6 +1522,13 @@ async def fold_status(
             status=status,
         )
         return None
+
+    if pricing_category is not None or billable is not None:
+        # Recorded whatever the state ladder says: a `delivered` that arrives after `read` is not
+        # progress, but the pricing it carries is still what Meta billed this message as.
+        message.pricing_category = pricing_category or message.pricing_category
+        message.billable = billable if billable is not None else message.billable
+        await session.flush()
 
     if not domain.advances(message.state, status):
         log.info(

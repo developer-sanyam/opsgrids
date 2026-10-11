@@ -97,3 +97,35 @@ def estimate_minor(messages: int, rate_per_1000_minor: int) -> int:
     if messages < 0 or rate_per_1000_minor < 0:
         raise ValueError("messages and rate must not be negative")
     return (messages * rate_per_1000_minor + 500) // 1000
+
+
+#: Meta's per-message `pricing.category` values that are priced as one of the four categories
+#: above under another name. Anything else Meta reports (`service`, `referral_conversion`, a
+#: category added later) is a free message, priced as `service`.
+META_CATEGORY_ALIASES: Final[dict[str, str]] = {
+    "marketing": "marketing",
+    "marketing_lite": "marketing",
+    "utility": "utility",
+    "authentication": "authentication",
+    # shortcut: priced at the domestic authentication rate; Meta's authentication-international
+    # rate is higher in some markets. Add a fifth category if a customer sends OTPs abroad.
+    "authentication_international": "authentication",
+}
+
+
+def billing_category(meta_category: str) -> str:
+    """The rate-card category a message Meta billed as `meta_category` is priced under."""
+    return META_CATEGORY_ALIASES.get(meta_category, "service")
+
+
+def market_code(number: str, codes: set[str] | frozenset[str]) -> str:
+    """The longest calling code in `codes` that prefixes `number`'s digits, else `''` (Other).
+
+    Calling codes are at most three digits, but a market can be narrower than its code (+77
+    Kazakhstan inside +7 Russia), so the longest *listed* prefix wins, up to four digits.
+    """
+    digits = "".join(ch for ch in number if ch.isdigit())
+    for length in range(min(4, len(digits)), 0, -1):
+        if digits[:length] in codes:
+            return digits[:length]
+    return ""

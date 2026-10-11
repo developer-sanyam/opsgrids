@@ -57,6 +57,29 @@ describe("WhatsApp analytics", () => {
     expect(screen.getByText(/not from Meta.s invoice/)).toBeTruthy();
   });
 
+  it("breaks the cost down by automation and conversation, and says how much Meta priced itself", async () => {
+    vi.spyOn(analytics, "getWhatsAppOverview").mockResolvedValue({
+      ...WHATSAPP,
+      cost: {
+        ...WHATSAPP.cost,
+        priced_by_meta: 11000,
+        by_source: [
+          { kind: "automation", key: "diwali", label: "diwali", messages: 9000, amount: { amount_minor: 706140, currency: "INR" } },
+          { kind: "conversation", key: "c-1", label: "+91•••01", messages: 3, amount: { amount_minor: 35, currency: "INR" } },
+        ],
+      },
+    });
+    mount();
+
+    const table = await screen.findByRole("table", { name: "Estimated WhatsApp cost by automation and conversation" });
+    expect(table.textContent).toContain("Automation");
+    expect(table.textContent).toContain("diwali");
+    expect(table.textContent).toContain("₹7,061.40");
+    expect(table.textContent).toContain("Conversation");
+    expect(table.textContent).toContain("+91•••01");
+    expect(screen.getByText(/11,000 of 12,000 messages were priced from Meta.s own delivery receipts/)).toBeTruthy();
+  });
+
   it("has an empty state for every card when there was nothing to count", async () => {
     vi.spyOn(analytics, "getWhatsAppOverview").mockResolvedValue(WHATSAPP_EMPTY);
     mount();

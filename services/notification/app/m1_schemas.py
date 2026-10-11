@@ -2,9 +2,10 @@
 
 Published API surface: a change here is a contract change. Times are ISO-8601 UTC. Every money
 value is `{amount_minor: int, currency: str}` — integer minor units, never a float — and every
-cost is an **estimate**: `estimated` is always `true`, and the rates behind it are the
-organization's own override or, failing that, the platform's *placeholder* defaults
-(`placeholder-2026-09`), which are not Meta's real rates for any country.
+cost is an **estimate**: `estimated` is always `true`. A message is priced by the category and
+billable flag Meta reported on its delivery receipt (or its template's category until one lands),
+at the rate for its recipient's market: the organization's own override or, failing that, the
+platform card seeded from Meta's published INR rates (`meta-inr-2026-10-01`).
 
 Buckets are **UTC calendar days** (`series[].date`). A range is two inclusive UTC dates.
 """
@@ -79,6 +80,19 @@ class CostCategory(BaseModel):
     amount: Money
 
 
+class CostSource(BaseModel):
+    """What one automation or inbox conversation cost in the window (billable messages only)."""
+
+    #: `automation` (the rule that sent it) or `conversation` (a reply in an inbox thread).
+    kind: Literal["automation", "conversation"]
+    #: The rule code, or the conversation id.
+    key: str
+    #: The rule code, or the conversation's **masked** number.
+    label: str
+    messages: int
+    amount: Money
+
+
 class RateCardRef(BaseModel):
     """Which rates produced the cost, so a reader can tell a placeholder from a real figure."""
 
@@ -88,16 +102,21 @@ class RateCardRef(BaseModel):
     source: Literal["platform_default", "organization", "mixed"]
     #: True when any rate in use is a shipped placeholder.
     placeholder: bool
-    #: `placeholder-2026-09` or `organization`.
+    #: The platform card's label (`meta-inr-2026-10-01`), `organization`, or a placeholder label.
     version: str
 
 
 class Cost(BaseModel):
     total: Money
-    #: Always true. Meta bills on its own schedule and country; this is messages x a rate card.
+    #: Always true. Meta's list rates per market and category, without volume tiers or tax.
     estimated: Literal[True] = True
     by_category: list[CostCategory]
     rate_card: RateCardRef
+    #: How many of the sent messages Meta itself priced (a receipt carried a `pricing` object);
+    #: the rest are estimated from their template's category and assumed billable.
+    priced_by_meta: int = 0
+    #: The most expensive automations and inbox conversations, most expensive first (at most 10).
+    by_source: list[CostSource] = Field(default_factory=list)
 
 
 class WhatsAppOverview(BaseModel):
@@ -161,11 +180,15 @@ class HubOverview(BaseModel):
 
 
 class RateOut(BaseModel):
+    #: The market's calling-code prefix (`91`); `""` is every market no other row claims.
+    calling_code: str = ""
+    #: Meta's name for the market ("India", "North America", "Other").
+    market: str = ""
     category: MessageCategory
     amount_minor_per_1000_messages: int
     currency: str
     effective_from: date
-    #: `platform_default` (a shipped placeholder) or `organization`.
+    #: `platform_default` (the platform's card) or `organization`.
     source: Literal["platform_default", "organization"]
     placeholder: bool
 
@@ -214,6 +237,30 @@ class RateCardIn(BaseModel):
         return rates
 
 
+class PlatformRateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    calling_code: str = Field(pattern=r"^[0-9]{0,4}$")
+    market: str = Field(min_length=1, max_length=60)
+    category: MessageCategory
+    amount_minor_per_1000_messages: int = Field(ge=0, le=10_000_000_000)
+    currency: str = Field(min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")
+
+
+class PlatformRateCardIn(BaseModel):
+    """Staff: add or replace price points on the platform rate table (every tenant's default).
+
+    Rows not named are left alone, so publishing a changed market is one row, not the whole card.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    effective_from: date
+    #: Where the figures came from, e.g. `meta-inr-2027-01-01`. Shown to tenants as the version.
+    label: str = Field(min_length=1, max_length=60)
+    rates: list[PlatformRateIn] = Field(min_length=1, max_length=1000)
+
+
 __all__ = [
     "ActivityItem",
     "CategoryCount",
@@ -221,10 +268,13 @@ __all__ = [
     "ChannelStatus",
     "Cost",
     "CostCategory",
+    "CostSource",
     "FailureReason",
     "HubCosts",
     "HubOverview",
     "Money",
+    "PlatformRateCardIn",
+    "PlatformRateIn",
     "RateCardIn",
     "RateCardOut",
     "RateCardRef",

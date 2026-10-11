@@ -17,9 +17,12 @@ not a licence to skip the predicate.
   * `sent` = current state `sent`, `delivered` or `read` (handed to WhatsApp, not failed);
     `delivered` = `delivered` or `read`; `read` = `read`; `failed` = `failed`. So
     `sent >= delivered >= read`, and `sent + failed` is everything that left the queue.
-  * Category is the *template's* Meta category; a message with no provider template is a
-    free-text reply inside the service window and is `service`.
-  * Cost is estimated on the `sent` set, per category, `messages x rate / 1000`, half-up.
+  * Category is what Meta's `pricing` object on a delivery receipt said (`messages.
+    pricing_category`); until a receipt says, the *template's* Meta category, and a message with
+    no provider template is a free-text reply inside the service window and is `service`.
+  * Cost is estimated on the billable part of the `sent` set (`billable` not false: Meta said it
+    charges, or no receipt has said yet), per recipient market (longest calling-code prefix of
+    `to_address`) and category, `messages x rate / 1000`, half-up once per market and category.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ from app.m1_schemas import (
     ChannelStatus,
     Cost,
     CostCategory,
+    CostSource,
     FailureReason,
     HubCosts,
     HubOverview,
@@ -70,6 +74,7 @@ from app.models import (
 )
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
+from platform_core.db import set_tenant
 from platform_core.logging import get_logger
 
 log = get_logger("notification.m1_analytics")
@@ -86,7 +91,7 @@ MAX_FAILURE_REASONS: Final = 10
 MAX_ACTIVITY: Final = 10
 
 #: Most price points one organization can accumulate before the read stops looking further back.
-_RATE_ROWS_CAP: Final = 400
+_RATE_ROWS_CAP: Final = 2000
 
 
 # --------------------------------------------------------------------------- failure labels
@@ -197,11 +202,19 @@ async def outbound_series(
 def _category_expr() -> Any:
     """The Meta category a message is billed under.
 
-    The template's own category when it is one of the three Meta prices; `service` when there is
-    no provider template at all (a free-text reply inside the 24-hour window); and, for a message
-    whose template row has since gone, `marketing` if the staging bucket said so, else `utility`.
+    **What Meta said**, when a status receipt carried a `pricing` object: its category folded onto
+    the four priced ones (`m1_cost.META_CATEGORY_ALIASES`; anything else Meta reports is free,
+    `service`). Otherwise an estimate: the template's own category when it is one of the three
+    Meta prices; `service` when there is no provider template at all (a free-text reply inside
+    the 24-hour window); and, for a message whose template row has since gone, `marketing` if the
+    staging bucket said so, else `utility`.
     """
     return case(
+        *[
+            (Message.pricing_category == meta, priced)
+            for meta, priced in m1_cost.META_CATEGORY_ALIASES.items()
+        ],
+        (Message.pricing_category.is_not(None), "service"),
         (
             ProviderTemplate.category.in_(("marketing", "utility", "authentication")),
             ProviderTemplate.category,
@@ -212,32 +225,147 @@ def _category_expr() -> Any:
     )
 
 
+def _with_template(stmt: Any) -> Any:
+    """Left-join the message's provider template. The join is on the template's unique
+    `(organization_id, code, channel)`, so it matches at most one row and never fans a message
+    out into two."""
+    return stmt.select_from(Message).outerjoin(
+        ProviderTemplate,
+        (ProviderTemplate.organization_id == Message.organization_id)
+        & (ProviderTemplate.channel == "whatsapp")
+        & (ProviderTemplate.code == Message.provider_template_code)
+        & ProviderTemplate.deleted_at.is_(None),
+    )
+
+
+#: The first four digits of the recipient number: enough for the longest market prefix (`m1_cost.
+#: market_code`), and few enough that grouping by it stays a handful of rows per market.
+def _number_prefix() -> Any:
+    return func.left(func.regexp_replace(Message.to_address, "[^0-9]", "", "g"), 4)
+
+
+#: A message Meta has not said is free. Null (no receipt priced it yet) is estimated as billable.
+_BILLABLE = Message.billable.is_not(False)
+
+
+@dataclass(frozen=True, slots=True)
+class CostGroup:
+    """Sent messages of one billing category to one number prefix."""
+
+    category: str
+    prefix: str
+    messages: int
+    billable: int
+    priced_by_meta: int
+
+
 async def sent_by_category(
     session: AsyncSession, org: uuid.UUID, window: DateWindow
 ) -> dict[str, int]:
-    """Messages in the `sent` set per billing category. One grouped query, one left join.
+    """Messages in the `sent` set per billing category."""
+    counts = dict.fromkeys(CATEGORIES, 0)
+    for group in await cost_groups(session, org, window):
+        counts[group.category] += group.messages
+    return counts
 
-    The join is on the template's unique `(organization_id, code, channel)`, so it can match at
-    most one row and never fans a message out into two.
-    """
+
+async def cost_groups(session: AsyncSession, org: uuid.UUID, window: DateWindow) -> list[CostGroup]:
+    """The `sent` set grouped by billing category and number prefix, with how many of each are
+    billable and how many Meta itself priced. One grouped query, one left join."""
     category = _category_expr().label("category")
+    prefix = _number_prefix().label("prefix")
     stmt = (
-        select(category, func.count().label("messages"))
-        .select_from(Message)
-        .outerjoin(
-            ProviderTemplate,
-            (ProviderTemplate.organization_id == Message.organization_id)
-            & (ProviderTemplate.channel == "whatsapp")
-            & (ProviderTemplate.code == Message.provider_template_code)
-            & ProviderTemplate.deleted_at.is_(None),
+        _with_template(
+            select(
+                category,
+                prefix,
+                func.count().label("messages"),
+                func.count().filter(_BILLABLE).label("billable"),
+                func.count(Message.pricing_category).label("priced_by_meta"),
+            )
         )
         .where(*_outbound_in_window(org, window), Message.state.in_(SENT_STATES))
-        .group_by(category)
+        .group_by(category, prefix)
     )
-    counts = dict.fromkeys(CATEGORIES, 0)
-    for row in (await session.execute(stmt)).all():
-        counts[row.category] = row.messages
-    return counts
+    return [
+        CostGroup(r.category, r.prefix or "", r.messages, r.billable, r.priced_by_meta)
+        for r in (await session.execute(stmt)).all()
+    ]
+
+
+#: How many (source, category, prefix) groups the per-source read considers. shortcut: ordered by
+#: message count, not cost, so a source with few but expensive messages past the cap is missed;
+#: compute cost in SQL if an organization ever has more than this many paying sources a window.
+_SOURCE_GROUPS_CAP: Final = 500
+#: How many sources one response lists.
+MAX_COST_SOURCES: Final = 10
+
+
+@dataclass(frozen=True, slots=True)
+class SourceGroup:
+    kind: str
+    key: str
+    category: str
+    prefix: str
+    billable: int
+
+
+async def source_groups(
+    session: AsyncSession, org: uuid.UUID, window: DateWindow
+) -> list[SourceGroup]:
+    """Billable, paying (non-`service`) sent messages grouped by what sent them: the automation
+    (`rule_code`) or the inbox conversation. One grouped query, bounded by `_SOURCE_GROUPS_CAP`."""
+    category = _category_expr().label("category")
+    prefix = _number_prefix().label("prefix")
+    stmt = (
+        _with_template(
+            select(
+                Message.rule_code,
+                Message.conversation_id,
+                category,
+                prefix,
+                func.count().label("billable"),
+            )
+        )
+        .where(
+            *_outbound_in_window(org, window),
+            Message.state.in_(SENT_STATES),
+            _BILLABLE,
+            _category_expr() != "service",
+            (Message.rule_code.is_not(None)) | (Message.conversation_id.is_not(None)),
+        )
+        .group_by(Message.rule_code, Message.conversation_id, category, prefix)
+        .order_by(func.count().desc())
+        .limit(_SOURCE_GROUPS_CAP)
+    )
+    out: list[SourceGroup] = []
+    for r in (await session.execute(stmt)).all():
+        # A conversation reply is attributed to its thread; a rule-driven send to its rule.
+        if r.conversation_id is not None:
+            out.append(
+                SourceGroup(
+                    "conversation", str(r.conversation_id), r.category, r.prefix or "", r.billable
+                )
+            )
+        else:
+            out.append(
+                SourceGroup("automation", str(r.rule_code), r.category, r.prefix or "", r.billable)
+            )
+    return out
+
+
+async def conversation_labels(
+    session: AsyncSession, org: uuid.UUID, ids: list[uuid.UUID]
+) -> dict[str, str]:
+    """The **masked** number of each conversation, never the real one."""
+    if not ids:
+        return {}
+    rows = await session.execute(
+        select(Conversation.id, Conversation.wa_address_masked).where(
+            Conversation.organization_id == org, Conversation.id.in_(ids)
+        )
+    )
+    return {str(r.id): r.wa_address_masked for r in rows.all()}
 
 
 #: Meta's own error code out of the JSON body a refused dispatch recorded, else the HTTP status
@@ -476,52 +604,83 @@ async def _rate_rows(session: AsyncSession, org: uuid.UUID) -> list[MessagingRat
     return list((await session.execute(stmt)).scalars().all())
 
 
-def pick_rates(
+def pick_market_rates(
     rows: list[MessagingRateCard], org: uuid.UUID, as_of: date
-) -> dict[str, MessagingRateCard]:
-    """The one rate per category in force on `as_of`.
+) -> dict[tuple[str, str], MessagingRateCard]:
+    """The one rate per `(calling code, category)` in force on `as_of`.
 
     Precedence, per category:
 
-      1. the organization's own row with the latest `effective_from` on or before `as_of`;
-      2. else the platform default with the latest `effective_from` on or before `as_of`;
-      3. else, for a range that predates every row, the *earliest* row there is (the
+      1. the organization's own rows, when any is in force for that category (an organization
+         override is all-markets, so it prices every number);
+      2. else the platform's rows: per market, the latest `effective_from` on or before `as_of`;
+      3. else, for a range that predates every row, the *earliest* row per market there is (the
          organization's before the platform's) — an estimate over old history uses the oldest
          known price rather than pricing it at zero.
 
     An organization override always beats the default once it is in force, whatever the two
-    `effective_from` dates are relative to each other.
+    `effective_from` dates are relative to each other. Only the organization's own rows and the
+    platform tenant's are ever considered.
     """
-    picked: dict[str, MessagingRateCard] = {}
+    picked: dict[tuple[str, str], MessagingRateCard] = {}
     for category in CATEGORIES:
         mine = [r for r in rows if r.category == category and r.organization_id == org]
         base = [r for r in rows if r.category == category and r.organization_id == PLATFORM_ORG]
-        chosen: MessagingRateCard | None = None
+        chosen: dict[str, MessagingRateCard] = {}
         for pool in (mine, base):
-            in_force = [r for r in pool if r.effective_from <= as_of]
-            if in_force:
-                chosen = max(in_force, key=lambda r: r.effective_from)
+            for r in pool:
+                if r.effective_from <= as_of:
+                    code = r.calling_code or ""
+                    if code not in chosen or r.effective_from > chosen[code].effective_from:
+                        chosen[code] = r
+            if chosen:
                 break
-        if chosen is None:
+        if not chosen:
             for pool in (mine, base):
-                if pool:
-                    chosen = min(pool, key=lambda r: r.effective_from)
+                for r in pool:
+                    code = r.calling_code or ""
+                    if code not in chosen or r.effective_from < chosen[code].effective_from:
+                        chosen[code] = r
+                if chosen:
                     break
-        if chosen is not None:
-            picked[category] = chosen
+        for code, r in chosen.items():
+            picked[(code, category)] = r
     return picked
 
 
-def _rate_card_ref(picked: dict[str, MessagingRateCard], org: uuid.UUID) -> RateCardRef:
-    own = [r.organization_id == org for r in picked.values()]
+def pick_rates(
+    rows: list[MessagingRateCard], org: uuid.UUID, as_of: date
+) -> dict[str, MessagingRateCard]:
+    """The all-markets ("Other") rate per category in force on `as_of` — see
+    `pick_market_rates` for the precedence."""
+    return {
+        category: r
+        for (code, category), r in pick_market_rates(rows, org, as_of).items()
+        if code == ""
+    }
+
+
+def rate_for(
+    picked: dict[tuple[str, str], MessagingRateCard], number: str, category: str
+) -> MessagingRateCard | None:
+    """The rate a message to `number` (or a prefix of it) in `category` is priced at."""
+    codes = {code for code, cat in picked if cat == category}
+    return picked.get((m1_cost.market_code(number, codes), category))
+
+
+def _rate_card_ref(picked: Any, org: uuid.UUID) -> RateCardRef:
+    rows: list[MessagingRateCard] = list(picked.values())
+    own = [r.organization_id == org for r in rows]
     if own and all(own):
         source = "organization"
     elif any(own):
         source = "mixed"
     else:
         source = "platform_default"
-    placeholder = any(r.is_placeholder for r in picked.values())
-    version = next((r.label for r in picked.values() if r.is_placeholder), "organization")
+    placeholder = any(r.is_placeholder for r in rows)
+    version = next((r.label for r in rows if r.is_placeholder), None)
+    if version is None:
+        version = "organization" if source == "organization" else rows[0].label if rows else ""
     return RateCardRef(source=source, placeholder=placeholder, version=version)
 
 
@@ -530,27 +689,42 @@ _PLACEHOLDER_NOTE: Final = (
     "country. Enter your real per-1000 rates to make the cost estimate meaningful."
 )
 _OVERRIDE_NOTE: Final = "Rates entered by your organization. Costs are estimates, not invoices."
+_META_NOTE: Final = (
+    "Meta's published per-message list rates for each recipient market ({label}). Messages are "
+    "priced by the category and billable flag Meta reports on each delivery receipt; volume-tier "
+    "discounts and taxes are not applied, so this is an estimate, not your Meta invoice."
+)
 
 
 async def read_rate_card(session: AsyncSession, org: uuid.UUID, *, as_of: date) -> RateCardOut:
-    picked = pick_rates(await _rate_rows(session, org), org, as_of)
+    picked = pick_market_rates(await _rate_rows(session, org), org, as_of)
     ref = _rate_card_ref(picked, org)
+    if ref.placeholder:
+        note = _PLACEHOLDER_NOTE
+    elif ref.source == "organization":
+        note = _OVERRIDE_NOTE
+    else:
+        note = _META_NOTE.format(label=ref.version)
+    order = {c: i for i, c in enumerate(CATEGORIES)}
     return RateCardOut(
         channel="whatsapp",
         placeholder=ref.placeholder,
         version=ref.version,
-        note=_PLACEHOLDER_NOTE if ref.placeholder else _OVERRIDE_NOTE,
+        note=note,
         rates=[
             RateOut(
-                category=c,
-                amount_minor_per_1000_messages=picked[c].amount_minor_per_1000_messages,
-                currency=picked[c].currency,
-                effective_from=picked[c].effective_from,
-                source="organization" if picked[c].organization_id == org else "platform_default",
-                placeholder=picked[c].is_placeholder,
+                calling_code=code,
+                market=r.market or ("Other" if code == "" else ""),
+                category=category,
+                amount_minor_per_1000_messages=r.amount_minor_per_1000_messages,
+                currency=r.currency,
+                effective_from=r.effective_from,
+                source="organization" if r.organization_id == org else "platform_default",
+                placeholder=r.is_placeholder,
             )
-            for c in CATEGORIES
-            if c in picked
+            for (code, category), r in sorted(
+                picked.items(), key=lambda kv: (kv[0][0] == "", kv[0][0], order[kv[0][1]])
+            )
         ],
     )
 
@@ -573,6 +747,8 @@ async def override_rate_card(
         stmt = pg_insert(MessagingRateCard).values(
             organization_id=org,
             channel="whatsapp",
+            calling_code="",
+            market="",
             category=category,
             amount_minor_per_1000_messages=amount,
             currency=currency,
@@ -584,7 +760,13 @@ async def override_rate_card(
         )
         await session.execute(
             stmt.on_conflict_do_update(
-                index_elements=["organization_id", "channel", "category", "effective_from"],
+                index_elements=[
+                    "organization_id",
+                    "channel",
+                    "calling_code",
+                    "category",
+                    "effective_from",
+                ],
                 set_={
                     "amount_minor_per_1000_messages": amount,
                     "currency": currency,
@@ -615,6 +797,87 @@ async def override_rate_card(
     await session.flush()
 
 
+@dataclass(frozen=True, slots=True)
+class PlatformRate:
+    calling_code: str
+    market: str
+    category: str
+    amount_minor_per_1000_messages: int
+    currency: str
+
+
+async def override_platform_rates(
+    session: AsyncSession,
+    *,
+    operator_id: uuid.UUID,
+    rates: list[PlatformRate],
+    effective_from: date,
+    label: str,
+    request: Request | None = None,
+) -> None:
+    """Staff write of the **platform** rate table (every tenant's default), in the caller's
+    transaction, bound to the platform tenant so the forced RLS policy admits exactly these rows.
+    Idempotent per `(market, category, effective_from)`; a later day adds a price point and
+    nothing earlier is edited or deleted. Audited under the platform tenant."""
+    await set_tenant(session, PLATFORM_ORG)
+    actor = str(operator_id)
+    for rate in rates:
+        values = {
+            "market": rate.market,
+            "amount_minor_per_1000_messages": rate.amount_minor_per_1000_messages,
+            "currency": rate.currency,
+            "label": label,
+            "is_placeholder": False,
+            "deleted_at": None,
+            "updated_by": actor,
+        }
+        await session.execute(
+            pg_insert(MessagingRateCard)
+            .values(
+                organization_id=PLATFORM_ORG,
+                channel="whatsapp",
+                calling_code=rate.calling_code,
+                category=rate.category,
+                effective_from=effective_from,
+                created_by=actor,
+                **values,
+            )
+            .on_conflict_do_update(
+                index_elements=[
+                    "organization_id",
+                    "channel",
+                    "calling_code",
+                    "category",
+                    "effective_from",
+                ],
+                set_={**values, "updated_at": func.now()},
+            )
+        )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=PLATFORM_ORG,
+        actor_id=operator_id,
+        action="messaging_rate_card.platform_updated",
+        entity="messaging_rate_card",
+        after={
+            "effective_from": effective_from.isoformat(),
+            "label": label,
+            "rates": [
+                {
+                    "calling_code": r.calling_code,
+                    "category": r.category,
+                    "amount_minor_per_1000_messages": r.amount_minor_per_1000_messages,
+                    "currency": r.currency,
+                }
+                for r in rates
+            ],
+        },
+        request=request,
+    )
+    await session.flush()
+
+
 # --------------------------------------------------------------------------- assembly
 
 
@@ -623,45 +886,94 @@ def _money(amount_minor: int, currency: str) -> Money:
 
 
 def build_cost(
-    by_category: dict[str, int], picked: dict[str, MessagingRateCard], org: uuid.UUID
+    by_category: dict[str, int],
+    picked: dict[str, MessagingRateCard] | dict[tuple[str, str], MessagingRateCard],
+    org: uuid.UUID,
+    *,
+    groups: list[CostGroup] | None = None,
+    sources: list[SourceGroup] | None = None,
+    source_labels: dict[str, str] | None = None,
 ) -> Cost:
-    """Price each category once (half-up), then sum the already-rounded amounts.
+    """Price each `(market, category)` once (half-up), then sum the already-rounded amounts.
 
-    Summing rounded per-category amounts (rather than rounding a grand total) is the rule the
-    contract states, and it means the rows shown always add up to the total shown. A category
-    with no rate row (or one in a different currency) is priced at zero.
+    Summing rounded amounts (rather than rounding a grand total) is the rule the contract states,
+    and it means the rows shown always add up to the total shown. `groups` carries the billable
+    count per number prefix; without it every message in `by_category` is billable and priced at
+    the all-markets rate. A category with no rate row (or one in a different currency) is priced
+    at zero. `sources` are priced the same way and listed most expensive first.
     """
-    currency = next(iter(picked.values())).currency if picked else "INR"
-    lines: list[CostCategory] = []
-    total = 0
-    for category in CATEGORIES:
-        messages = by_category.get(category, 0)
-        rate = picked.get(category)
+    market_rates: dict[tuple[str, str], MessagingRateCard] = {
+        (k if isinstance(k, tuple) else ("", k)): r for k, r in picked.items()
+    }
+    if groups is None:
+        groups = [CostGroup(c, "", n, n, 0) for c, n in by_category.items()]
+    rates = list(market_rates.values())
+    currency = rates[0].currency if rates else "INR"
+
+    def usable(rate: MessagingRateCard | None, category: str) -> MessagingRateCard | None:
         if rate is not None and rate.currency != currency:
-            # The API only ever writes one currency across all four categories, so this is a row
-            # edited by hand. One total cannot span two currencies; the odd one is left unpriced
-            # (and said so in the log) rather than added to the wrong unit.
+            # The API only ever writes one currency per card, so this is a row edited by hand.
+            # One total cannot span two currencies; the odd one is left unpriced (and said so in
+            # the log) rather than added to the wrong unit.
             log.warning(
                 "notification.analytics.rate_card_mixed_currency",
                 organization_id=str(org),
                 category=category,
             )
-            rate = None
-        amount = (
-            m1_cost.estimate_minor(messages, rate.amount_minor_per_1000_messages) if rate else 0
+            return None
+        return rate
+
+    def price(counts: dict[tuple[str, str], int]) -> dict[str, int]:
+        """Rounded amount per category, from billable counts per (prefix, category), rounded
+        once per (market, category)."""
+        per_market: dict[tuple[str, str], int] = {}
+        for (prefix, category), n in counts.items():
+            codes = {code for code, cat in market_rates if cat == category}
+            key = (m1_cost.market_code(prefix, codes), category)
+            per_market[key] = per_market.get(key, 0) + n
+        amounts: dict[str, int] = {}
+        for (code, category), n in per_market.items():
+            rate = usable(market_rates.get((code, category)), category)
+            amount = m1_cost.estimate_minor(n, rate.amount_minor_per_1000_messages) if rate else 0
+            amounts[category] = amounts.get(category, 0) + amount
+        return amounts
+
+    billable: dict[tuple[str, str], int] = {}
+    for g in groups:
+        billable[(g.prefix, g.category)] = billable.get((g.prefix, g.category), 0) + g.billable
+    amounts = price(billable)
+
+    lines = [
+        CostCategory(
+            category=c, messages=by_category.get(c, 0), amount=_money(amounts.get(c, 0), currency)
         )
-        total += amount
-        lines.append(
-            CostCategory(
-                category=category,
-                messages=messages,
-                amount=_money(amount, currency),
+        for c in CATEGORIES
+    ]
+
+    by_source: dict[tuple[str, str], dict[tuple[str, str], int]] = {}
+    for s in sources or []:
+        counts = by_source.setdefault((s.kind, s.key), {})
+        counts[(s.prefix, s.category)] = counts.get((s.prefix, s.category), 0) + s.billable
+    source_lines = sorted(
+        (
+            CostSource(
+                kind=kind,
+                key=key,
+                label=(source_labels or {}).get(key, key),
+                messages=sum(counts.values()),
+                amount=_money(sum(price(counts).values()), currency),
             )
-        )
+            for (kind, key), counts in by_source.items()
+        ),
+        key=lambda line: (-line.amount.amount_minor, line.kind, line.key),
+    )[:MAX_COST_SOURCES]
+
     return Cost(
-        total=_money(total, currency),
+        total=_money(sum(amounts.values()), currency),
         by_category=lines,
-        rate_card=_rate_card_ref(picked, org),
+        rate_card=_rate_card_ref(market_rates, org),
+        priced_by_meta=sum(g.priced_by_meta for g in groups),
+        by_source=source_lines,
     )
 
 
@@ -686,7 +998,7 @@ def _series_out(rows: list[DayRow], window: DateWindow) -> list[SeriesPoint]:
 async def whatsapp_overview(
     session: AsyncSession, org: uuid.UUID, window: DateWindow
 ) -> WhatsAppOverview:
-    """The WhatsApp dashboard for `window`. Nine grouped statements, none inside a loop."""
+    """The WhatsApp dashboard for `window`. Eleven grouped statements, none inside a loop."""
     rows = await outbound_series(session, org, window)
     sent = sum(r.sent for r in rows)
     delivered = sum(r.delivered for r in rows)
@@ -695,14 +1007,21 @@ async def whatsapp_overview(
     queued = sum(r.queued for r in rows)
     suppressed = sum(r.suppressed for r in rows)
 
-    categories = await sent_by_category(session, org, window)
+    groups = await cost_groups(session, org, window)
+    categories = dict.fromkeys(CATEGORIES, 0)
+    for group in groups:
+        categories[group.category] += group.messages
+    sources = await source_groups(session, org, window)
+    labels = await conversation_labels(
+        session, org, [uuid.UUID(s.key) for s in sources if s.kind == "conversation"]
+    )
     replies, inbound = await reply_counts(session, org, window)
     reasons = await failure_reasons(session, org, window)
     activity = await recent_activity(session, org, window)
     counts = await totals(session, org)
 
     as_of = min(window.date_to, datetime.now(UTC).date())
-    picked = pick_rates(await _rate_rows(session, org), org, as_of)
+    picked = pick_market_rates(await _rate_rows(session, org), org, as_of)
 
     return WhatsAppOverview(
         sent=sent,
@@ -726,7 +1045,9 @@ async def whatsapp_overview(
         ],
         recent_activity=activity,
         totals=counts,
-        cost=build_cost(categories, picked, org),
+        cost=build_cost(
+            categories, picked, org, groups=groups, sources=sources, source_labels=labels
+        ),
     )
 
 

@@ -401,6 +401,12 @@ class Message(Base, TenantBase):
     provider_error_detail: Mapped[str | None] = mapped_column(Text)
     #: Provider-side identifier, kept for support requests about a specific message.
     provider_message_id: Mapped[str | None] = mapped_column(String(200))
+    #: What Meta's `pricing` object on a status webhook said this message was billed as
+    #: (`marketing`, `utility`, `authentication_international`, `service`, ...), verbatim, and
+    #: whether it was billable at all. Null until a receipt carrying one lands; the cost read
+    #: (`app/m1_analytics.py`) falls back to the template's category for such a message.
+    pricing_category: Mapped[str | None] = mapped_column(String(40))
+    billable: Mapped[bool | None] = mapped_column(Boolean)
 
     __table_args__ = (
         # The dispatcher's claim query: pending rows for this org, oldest first.
