@@ -339,6 +339,22 @@ CurrentPrincipal = Annotated[Principal, Depends(get_principal)]
 # --------------------------------------------------------------------- scope resolution
 
 
+class OwnerSubject(enum.StrEnum):
+    """Whose id OWN and TEAM compare a row's owner column with.
+
+    A product declares it once, when it registers its scope resolver
+    (``register_scope_resolver(..., owner_subject=...)``); ``require()`` snapshots it onto the
+    ``ScopeContext``, and ``ScopeContext.own_ref`` is the one accessor that reads it.
+    """
+
+    #: ``Principal.subject_ref`` — the caller's employee link. Today's behaviour, and the default
+    #: for every product that does not say otherwise.
+    EMPLOYEE_LINK = "employee_link"
+    #: ``Principal.membership_id`` — the caller's membership in the organization. What a product
+    #: with no HR link (a CRM-only tenant's rep) needs.
+    MEMBERSHIP = "membership"
+
+
 class ScopeResolver(Protocol):
     """How one product turns a scope into a filter.
 
@@ -352,11 +368,49 @@ class ScopeResolver(Protocol):
     def location_column(self) -> Any | None: ...
 
 
-_resolvers: dict[str, Callable[[], ScopeResolver]] = {}
+_resolvers: dict[str, tuple[Callable[[], ScopeResolver], OwnerSubject]] = {}
 
 
-def register_scope_resolver(product: str, factory: Callable[[], ScopeResolver]) -> None:
-    _resolvers[product] = factory
+def register_scope_resolver(
+    product: str,
+    factory: Callable[[], ScopeResolver],
+    *,
+    owner_subject: OwnerSubject = OwnerSubject.EMPLOYEE_LINK,
+) -> None:
+    """Declare how `product` scopes its rows, and whose id its OWN and TEAM rungs compare.
+
+    Runs at import in each service's routes module, and one process may reach it twice for the
+    same product (customer registers `crm` from two modules), so it is idempotent: the same
+    subject again is a no-op that keeps the first factory. A **different** subject raises —
+    silently flipping which id a product's scope compares is a scope defect, not a last-write-
+    wins convenience.
+    """
+    existing = _resolvers.get(product)
+    if existing is not None:
+        if existing[1] is not owner_subject:
+            raise ValueError(
+                f"scope resolver for {product!r} is already registered with owner subject "
+                f"{existing[1].value!r}; refusing to re-register it as {owner_subject.value!r}"
+            )
+        return
+    _resolvers[product] = (factory, owner_subject)
+
+
+def owner_subject_for(permission: str) -> OwnerSubject:
+    """The subject the product that owns `permission` declared; the employee link when none did.
+
+    The product is the text before the first dot. A miss is safe by construction: a permission
+    whose prefix is not a registered product (notification registers `notification` while its
+    Engage routes require `engage.*` codes; `core` has no resolver) keeps today's behaviour.
+    """
+    entry = _resolvers.get(permission.partition(".")[0])
+    return entry[1] if entry is not None else OwnerSubject.EMPLOYEE_LINK
+
+
+def reset_scope_resolvers() -> None:
+    """Empty the registry. Tests only: import order and test pollution must never decide
+    which subject a context carries. No file under `services/*/app` may call this."""
+    _resolvers.clear()
 
 
 class ScopeContext(BaseModel):
@@ -567,6 +621,7 @@ def require_service_token(request: Request) -> None:
 __all__ = [
     "OPERATOR_AUDIENCE",
     "CurrentPrincipal",
+    "OwnerSubject",
     "Principal",
     "Scope",
     "ScopeContext",
@@ -574,10 +629,12 @@ __all__ = [
     "client_ip",
     "decode_token",
     "get_principal",
+    "owner_subject_for",
     "register_scope_resolver",
     "require",
     "require_operator",
     "require_product",
     "require_service_token",
     "reset_jwks_cache",
+    "reset_scope_resolvers",
 ]
