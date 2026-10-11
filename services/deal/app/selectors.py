@@ -23,7 +23,7 @@ from typing import Any, cast
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Activity, Deal, Pipeline, PipelineStage
+from app.models import Activity, AuditLog, Deal, Pipeline, PipelineStage
 from app.pipeline import DEFAULT_PIPELINE, Outcome, PipelineSpec, StageSpec, Tone
 from app.schemas import ActivityOut, DealOut, PipelineRefOut, StageListOut, StageOut
 from platform_core.auth import ScopeContext
@@ -172,6 +172,48 @@ async def get_deal_by_id_any_state(
     `get_company_by_id_any_state`)."""
     stmt = select(Deal).where(Deal.id == deal_id, Deal.organization_id == org_id)
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_deal_for_update_any_state(
+    session: AsyncSession, org_id: uuid.UUID, deal_id: uuid.UUID
+) -> Deal | None:
+    """`get_deal_by_id_any_state`, row-locked: the aborted-conversion cleanup decides and deletes
+    under this lock, so a rep's edit or move cannot land between its check and its delete.
+    `populate_existing` so a row already in the identity map is re-read under the lock."""
+    stmt = (
+        select(Deal)
+        .where(Deal.id == deal_id, Deal.organization_id == org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def audit_rows_for_deal(
+    session: AsyncSession, org_id: uuid.UUID, deal_id: uuid.UUID, *, limit: int = 2
+) -> list[tuple[str, str | None]]:
+    """`(action, acting_as)` of a deal's first `limit` audit rows, oldest first."""
+    stmt = (
+        select(AuditLog.action, AuditLog.acting_as)
+        .where(
+            AuditLog.organization_id == org_id,
+            AuditLog.entity == "deal",
+            AuditLog.entity_id == deal_id,
+        )
+        .order_by(AuditLog.at)
+        .limit(limit)
+    )
+    return [(row.action, row.acting_as) for row in (await session.execute(stmt)).all()]
+
+
+async def count_activities_for_deal(
+    session: AsyncSession, org_id: uuid.UUID, deal_id: uuid.UUID
+) -> int:
+    """Every activity ever logged against the deal (the table is append-only)."""
+    stmt = select(func.count()).where(
+        Activity.organization_id == org_id, Activity.deal_id == deal_id
+    )
+    return int((await session.execute(stmt)).scalar_one())
 
 
 async def get_deal_by_name(session: AsyncSession, org_id: uuid.UUID, name: str) -> Deal | None:

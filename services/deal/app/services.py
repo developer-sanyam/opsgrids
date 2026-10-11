@@ -252,6 +252,39 @@ def lead_conversion_ctx(organization_id: uuid.UUID, actor_id: uuid.UUID | None) 
     )
 
 
+def service_ctx(organization_id: uuid.UUID) -> ScopeContext:
+    """The scope context deal's own consumers write under (the aborted-conversion cleanup).
+
+    `sub` is the stable all-zero id, so the write is attributable to "the platform"; no
+    membership and no subject, so nothing OWN-scoped can ever run under it. ORG scope: the
+    event names the record directly. The permission only gives the write path a context."""
+    principal = Principal(
+        sub=uuid.UUID(int=0),
+        organization_id=organization_id,
+        membership_id=None,
+        perms=[f"{_LEAD_CONVERSION_PERMISSION}:ORG"],
+        entitlements=["crm"],
+    )
+    return ScopeContext(
+        principal=principal, scope=Scope.ORG, permission=_LEAD_CONVERSION_PERMISSION
+    )
+
+
+async def is_pristine_lead_deal(
+    session: AsyncSession, organization_id: uuid.UUID, deal_id: uuid.UUID
+) -> bool:
+    """True iff the deal was created by lead's conversion and nothing has happened to it since:
+    its audit history is exactly one row, `deal.created` with `acting_as = 'lead'`, and no
+    activity names it. An id with no rows is False (callers handle absent and soft-deleted).
+
+    The one predicate the aborted-conversion handler and the references probe share, so deal
+    never deletes a deal the probe counted and the probe never discounts a deal deal keeps."""
+    rows = await selectors.audit_rows_for_deal(session, organization_id, deal_id)
+    if rows != [("deal.created", "lead")]:
+        return False
+    return await selectors.count_activities_for_deal(session, organization_id, deal_id) == 0
+
+
 # ------------------------------------------------------------------ stage resolution
 
 
@@ -460,10 +493,15 @@ async def delete_deal(
     deal: Deal,
     *,
     request: Request | None = None,
+    acting_as: str | None = None,
+    reason: str | None = None,
 ) -> None:
     """Soft-delete a deal. Never a SQL DELETE: `activities.deal_id` is a real FK
     `ON DELETE CASCADE`, and a hard delete would cascade into the append-only timeline and
-    hit its trigger. A soft delete leaves the activities exactly where they are."""
+    hit its trigger. A soft delete leaves the activities exactly where they are.
+
+    `acting_as` and `reason` land on the audit row when a consumer, not a person, deletes
+    (the aborted-conversion cleanup names itself and the lead and generation it acted on)."""
     before_deleted_at = deal.deleted_at
     deal.deleted_at = utcnow()
     deal.updated_by = str(ctx.principal.sub)
@@ -479,6 +517,8 @@ async def delete_deal(
         entity_id=deal.id,
         before={"deleted_at": before_deleted_at},
         after={"deleted_at": deal.deleted_at},
+        reason=reason,
+        acting_as=acting_as,
         request=request,
     )
     publish_event(
