@@ -79,6 +79,16 @@ _NO_ID = uuid.UUID(int=0)
 Bucket = tuple[str, str, str, str, str]
 
 
+def client_move_key(key: str | None) -> str | None:
+    """A caller-supplied `Idempotency-Key` as the ledger stores it. Internal workflows write their
+    moves under predictable keys (`transfer:<id>:dispatch`, `qc:...`) in the same unique index, so
+    a raw client key could squat one of them and block the real move for good; hashing puts every
+    client key in its own `client:` namespace (and keeps it inside the 128-character column)."""
+    if key is None:
+        return None
+    return "client:" + hashlib.sha256(key.encode()).hexdigest()[:40]
+
+
 def _bucket_key(
     item_id: uuid.UUID,
     location_id: uuid.UUID,

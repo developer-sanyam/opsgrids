@@ -488,7 +488,7 @@ class TestBinTransferIsUnchanged:
         assert len(await outbox_rows(session, pw.org_id, event_type=EVT_PUTAWAY)) == 1
         assert await count(session, PutawayCapture, pw.org_id) == 1
 
-    async def test_a_transfer_needs_no_key_and_stores_it_unprefixed(
+    async def test_a_transfer_needs_no_key_and_stores_it_client_namespaced(
         self, client, session, pw
     ) -> None:
         no_key = await call(
@@ -511,7 +511,8 @@ class TestBinTransferIsUnchanged:
                     select(InventoryMove).where(InventoryMove.id == keyed.json()["move_id"])
                 )
             ).scalar_one()
-        assert move.idempotency_key == "raw-key"  # the put-away prefix is the put-away's own
+        # Client-namespaced, never given the put-away prefix (that is put-away's own).
+        assert move.idempotency_key == ledger.client_move_key("raw-key")
 
     @pytest.mark.parametrize("kind", ["zone", "rack", "receiving", "staging", "quarantine", "dock"])
     async def test_a_transfer_still_goes_into_any_kind_of_location(

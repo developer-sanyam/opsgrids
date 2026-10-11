@@ -577,6 +577,7 @@ async def split_roll(
     exactly. The parent's stock leaves and the children's arrives in one `relocation` move — and
     a roll whose stock is reserved is refused by the kernel, with the reservations named.
     """
+    idempotency_key = ledger.client_move_key(idempotency_key)
     org_id = ctx.organization_id
     # The roll lock first, then everything else — see the module docstring.
     parent = (await sel.lock_rolls(session, org_id, [roll_id])).get(roll_id)
@@ -813,6 +814,7 @@ async def merge_rolls(
     stock in the named bucket, or it is refused. Each source's whole balance leaves and their sum
     arrives on the result, whose weight is the sum of the sources' weights (only if every source
     was weighed). Returns the move, the result's id and the sources' ids."""
+    idempotency_key = ledger.client_move_key(idempotency_key)
     org_id = ctx.organization_id
     source_ids = sorted(set(payload.roll_ids))
     locked = await sel.lock_rolls(session, org_id, source_ids)

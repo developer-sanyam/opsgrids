@@ -265,14 +265,6 @@ async def post_opening_stock(
 
     settings = await movement_common.get_settings(session, ctx.organization_id)
     threshold = settings.adjustment_approval_threshold_milli if settings else None
-    if movement_domain.over_threshold(
-        threshold,
-        [movement_domain.to_base_milli(ln.quantity_milli, items[ln.item_id].uom) for ln in lines],
-    ):
-        raise ConflictProblem(
-            "Opening stock this size needs approval: use POST /operations/inventory/adjustments "
-            "with a reason and the evidence document"
-        )
     posted = await ledger.post_move(
         session,
         ctx,
@@ -281,12 +273,22 @@ async def post_opening_stock(
         occurred_on=payload.occurred_on,
         reference_type="opening_stock",
         note=payload.note,
-        idempotency_key=idempotency_key,
+        idempotency_key=ledger.client_move_key(idempotency_key),
         occurred_on_explicit=occurred_on_explicit,
         request=request,
     )
     if posted.replayed:
         return posted
+    # After the post so a replay of an accepted opening still answers 200 if the threshold was
+    # lowered since; this request rolls back with the refusal.
+    if movement_domain.over_threshold(
+        threshold,
+        [movement_domain.to_base_milli(ln.quantity_milli, items[ln.item_id].uom) for ln in lines],
+    ):
+        raise ConflictProblem(
+            "Opening stock this size needs approval: use POST /operations/inventory/adjustments "
+            "with a reason and the evidence document"
+        )
     if fresh_buckets_only and threshold is not None:
         for ln in lines:
             used = (
@@ -462,7 +464,7 @@ async def transfer_stock(
         roll_id=payload.roll_id,
         occurred_on=payload.occurred_on,
         note=payload.note,
-        idempotency_key=idempotency_key,
+        idempotency_key=ledger.client_move_key(idempotency_key),
         occurred_on_explicit=occurred_on_explicit,
         reference_type="bin_transfer",
         reference_id=None,
@@ -771,7 +773,7 @@ async def change_stock_status(
         occurred_on=payload.occurred_on,
         reference_type="status_change",
         note=payload.note,
-        idempotency_key=idempotency_key,
+        idempotency_key=ledger.client_move_key(idempotency_key),
         occurred_on_explicit=occurred_on_explicit,
         request=request,
     )

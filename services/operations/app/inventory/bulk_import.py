@@ -832,6 +832,7 @@ async def run_import(
                         else None,
                         occurred_on_explicit=False,
                         request=request,
+                        fresh_buckets_only=True,  # the same rule as the single-record route
                     )
                     await nested.commit()
                 except (ProblemError, IntegrityError) as exc:
