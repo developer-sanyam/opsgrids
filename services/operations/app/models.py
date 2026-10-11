@@ -3256,8 +3256,18 @@ class PurchaseRequisition(Base, TenantBase):
     converted_po_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("operations.purchase_orders.id", ondelete="RESTRICT")
     )
+    #: The MRP requisition request this was made from — set only by the MRP consumer, never from
+    #: user input, and unique per organization so a redelivery cannot make a second one.
+    mrp_request_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
 
     __table_args__ = (
+        Index(
+            "uq_purchase_requisitions_org_mrp_request",
+            "organization_id",
+            "mrp_request_id",
+            unique=True,
+            postgresql_where=text("mrp_request_id IS NOT NULL"),
+        ),
         CheckConstraint(f"status IN ({_REQ_STATUS_SQL})", name="status_known"),
         CheckConstraint(
             "(status = 'CONVERTED') = (converted_po_id IS NOT NULL)", name="converted_matches_po"

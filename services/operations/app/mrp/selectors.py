@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from sqlalchemy import Select, String, cast, func, or_, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.inventory.quantity import format_qty, is_discrete
@@ -174,8 +174,8 @@ async def items_already_requested(
     session: AsyncSession, org_id: uuid.UUID, run_id: uuid.UUID, item_ids: Iterable[uuid.UUID]
 ) -> set[uuid.UUID]:
     """Items another run's shortage has already asked purchasing for, where that request is still
-    on its way: no requisition has been made from it yet, or the one made (it names the request
-    id in its reason, see `services.requisition_for_request`) is not cancelled, rejected or
+    on its way: no requisition has been made from it yet, or the one made (it carries the request
+    id in `mrp_request_id`, see `services.requisition_for_request`) is not cancelled, rejected or
     converted into a purchase order."""
     ids = set(item_ids)
     if not ids:
@@ -185,7 +185,7 @@ async def items_already_requested(
         .where(
             PurchaseRequisition.organization_id == org_id,
             PurchaseRequisition.status.in_(("CANCELLED", "REJECTED", "CONVERTED")),
-            PurchaseRequisition.reason.contains(cast(MrpShortage.requisition_request_id, String)),
+            PurchaseRequisition.mrp_request_id == MrpShortage.requisition_request_id,
         )
         .exists()
     )

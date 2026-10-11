@@ -231,6 +231,46 @@ class TestRequisitionConsumer:
         await consumers.mrp_requisition_requested(envelope)
         assert await _requisitions(session, org) == []
 
+    async def test_a_user_requisition_quoting_the_request_id_does_not_swallow_the_request(
+        self, client, session, p: Plant
+    ) -> None:
+        from app.receiving import requisitions as requisitions_service
+        from app.receiving.schemas import RequisitionIn, RequisitionLineIn
+        from platform_core.auth import Scope
+        from tests.helpers import ctx_for
+
+        org = p.org_id
+        await add_sales_order(session, org, "SO-1", [(p.m.shirt, "10")])
+        run = await start_run(client, org, sources=["SALES_ORDER"])
+        out = (await _request(client, org, run["id"])).json()
+        envelope = await _requested_event(session, org, out["request_id"])
+        user = ctx_for(org, "operations.procurement.requisition.write", Scope.ORG)
+        async with session.begin():
+            spoof = await requisitions_service.create_requisition(
+                session,
+                user,
+                RequisitionIn(
+                    reason=f"MRP request {out['request_id']} (typed by hand)",
+                    lines=[RequisitionLineIn(inventory_item_id=p.t.fabric, quantity="1")],
+                ),
+            )
+        await consumers.mrp_requisition_requested(envelope)
+        reqs = await _requisitions(session, org)
+        assert len(reqs) == 2
+        async with session.begin():
+            linked = (
+                (
+                    await session.execute(
+                        select(MrpShortage.requisition_id).where(
+                            MrpShortage.requisition_request_id == uuid.UUID(out["request_id"])
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert linked and spoof.id not in linked
+
 
 @pytest.mark.usefixtures("_engine")
 class TestNoDoubleRequest:

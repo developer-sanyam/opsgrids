@@ -621,8 +621,9 @@ async def requisition_for_request(
     session: AsyncSession, org_id: uuid.UUID, payload: dict[str, Any]
 ) -> PurchaseRequisition | None:
     """Turn an `operations.mrp.requisition_requested` payload into one DRAFT purchase requisition
-    that purchasing reviews, submits and converts as usual. Idempotent on the request id, which
-    the requisition's reason carries: a redelivery, even under a new event id, finds it and does
+    that purchasing reviews, submits and converts as usual. Idempotent on the request id, kept in
+    the requisition's own `mrp_request_id` column (the reason text is free for users to edit and
+    is never consulted): a redelivery, even under a new event id, finds it and does
     nothing. Attributed to the planner who asked (audit actor, and the requester id for OWN scope
     when the event carries their directory reference); a payload without one falls to the system.
     Returns the requisition made, or None when it already existed."""
@@ -632,7 +633,7 @@ async def requisition_for_request(
         await session.execute(
             select(PurchaseRequisition.id).where(
                 PurchaseRequisition.organization_id == org_id,
-                PurchaseRequisition.reason.contains(marker),
+                PurchaseRequisition.mrp_request_id == request_id,
             )
         )
     ).first()
@@ -668,6 +669,8 @@ async def requisition_for_request(
             ],
         ),
     )
+    req.mrp_request_id = request_id
+    await session.flush()
     await session.execute(
         update(MrpShortage)
         .where(
