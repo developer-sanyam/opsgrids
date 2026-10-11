@@ -12,6 +12,7 @@ from app.api.e1_analytics import router as e1_router
 from app.api.engage import public_router as engage_public_router
 from app.api.engage import router as engage_router
 from app.api.inbox import router as inbox_router
+from app.api.m1_analytics import admin_router as m1_admin_router
 from app.api.m1_analytics import router as m1_analytics_router
 from app.api.routes import router
 from app.api.w1_signup import router as w1_signup_router
@@ -139,6 +140,7 @@ app = create_app(
         inbox_router,
         w2_templates_router,
         m1_analytics_router,
+        m1_admin_router,
         a1_automations_router,
         e1_router,
         e1_public_router,

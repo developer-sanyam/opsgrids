@@ -9,7 +9,7 @@ recipient was drawn into. Check constraints keep the settings in range.
 Downgrade drops the constraints and columns (any A/B configuration is lost with them).
 
 Revision ID: d3b8f2a6c915
-Revises: f1c8a2d5b7e4
+Revises: c7d2a9e4f1b6
 Create Date: 2026-10-12 10:00:00.000000
 """
 
@@ -21,7 +21,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "d3b8f2a6c915"  # pragma: allowlist secret
-down_revision: str | None = "f1c8a2d5b7e4"  # pragma: allowlist secret
+down_revision: str | None = "c7d2a9e4f1b6"  # pragma: allowlist secret
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

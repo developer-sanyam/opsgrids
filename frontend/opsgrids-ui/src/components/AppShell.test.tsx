@@ -230,6 +230,27 @@ describe("AppShell — command menu", () => {
     await user.keyboard("{Control>}k{/Control}");
     expect(await screen.findByRole("combobox")).toBeTruthy();
   });
+
+  it("hands the typed query to the app's results and lists what comes back", async () => {
+    const user = userEvent.setup();
+    const onQueryChange = vi.fn();
+    const onSelect = vi.fn();
+    renderShell({
+      search: {
+        placeholder: "Search deals",
+        results: {
+          onQueryChange,
+          status: "success",
+          partial: false,
+          items: [{ key: "crm-deal-1", label: "Acme renewal", group: "Deals", onSelect }],
+        },
+      },
+    });
+    await user.keyboard("{Control>}k{/Control}");
+    await user.type(await screen.findByRole("combobox"), "acme");
+    expect(onQueryChange).toHaveBeenLastCalledWith("acme");
+    expect(screen.getByRole("option", { name: "Acme renewal" })).toBeTruthy();
+  });
 });
 
 describe("AppShell — sign out", () => {

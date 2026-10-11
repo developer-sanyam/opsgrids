@@ -3,29 +3,82 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { deleteTask, getAllMembers, getAllProjects, getAllTasks, updateTask } from "@/api/client";
 import type { MemberOut, ProjectOut, TaskOut, TaskStage } from "@/api/types";
 import { STAGE_LABEL } from "@/data/labels";
-import { today } from "@/lib/format";
+import { daysBetween, formatDateShort, today } from "@/lib/format";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
 import {
   Announcer,
+  Avatar,
   Button,
   Card,
+  ClockIcon,
   ColumnsIcon,
   ConfirmDialog,
   EmptyState,
   ErrorState,
+  KanbanBoard,
   PageHeader,
   PlusIcon,
   Select,
   Skeleton,
+  cn,
   useAnnounce,
   useToast,
 } from "@opsgrids/ui";
-import type { SelectOption } from "@opsgrids/ui";
-import { KanbanBoard } from "@/ui";
+import type { KanbanCardState, KanbanColumn, SelectOption } from "@opsgrids/ui";
+import { PriorityPill } from "@/ui";
 import { TaskFormDialog } from "./TaskFormDialog";
 
 const COLUMN_ORDER: TaskStage[] = ["backlog", "in_progress", "review", "done"];
+const STAGE_TONE: Record<TaskStage, KanbanColumn["tone"]> = {
+  backlog: "neutral",
+  in_progress: "info",
+  review: "warning",
+  done: "success",
+};
 const WRITE = "projects.board.task.write";
+
+/** One card's contents; the shared board draws the card and its move menu around them. */
+function TaskCard({ task, now, state }: { task: TaskOut; now: string; state: KanbanCardState }) {
+  const overdue = task.due_date !== null && task.stage !== "done" && daysBetween(now, task.due_date) < 0;
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2">
+        <span className="inline-flex h-5 items-center rounded-full bg-ground px-2 text-caption font-bold tnum text-muted">
+          {task.project_code}
+        </span>
+        <div className="flex items-center gap-1">
+          <PriorityPill priority={task.priority} />
+          {state.actions}
+        </div>
+      </div>
+
+      <p className="text-sm font-semibold leading-snug text-ink">{task.title}</p>
+
+      <div className="flex items-center justify-between gap-2">
+        <span className="inline-flex min-w-0 items-center gap-2 text-xs text-muted">
+          <Avatar name={task.assignee.name} size="xs" />
+          <span className="max-w-32 truncate">{task.assignee.name}</span>
+        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          {task.due_date ? (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 text-caption font-semibold tnum",
+                overdue ? "text-danger" : "text-faint",
+              )}
+            >
+              <ClockIcon className="size-3.5" />
+              {formatDateShort(task.due_date)}
+            </span>
+          ) : null}
+          <span className="inline-flex h-5 items-center rounded-full bg-accent-soft px-2 text-caption font-bold tnum text-accent-ink">
+            {task.points}
+          </span>
+        </div>
+      </div>
+    </>
+  );
+}
 
 interface BoardData {
   tasks: TaskOut[];
@@ -65,7 +118,6 @@ function BoardContent() {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<TaskOut | null>(null);
   const [deleting, setDeleting] = useState<TaskOut | null>(null);
-  const [movingId, setMovingId] = useState<string | null>(null);
 
   const loadBoard = useCallback(async (): Promise<BoardData> => {
     const [tasks, projects, members] = await Promise.all([
@@ -98,22 +150,21 @@ function BoardContent() {
       onSuccess: (updated) => {
         setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
         announce(`${updated.title} moved to ${STAGE_LABEL[updated.stage]}.`);
-        setMovingId(null);
       },
       onError: (error) => {
         setTasks(previousTasksRef.current);
         toast.error("Couldn't move that card", { description: problemMessage(error) });
         announce(`The move failed — the card is back where it was: ${problemMessage(error)}`);
-        setMovingId(null);
       },
     },
   );
 
-  function handleMove(task: TaskOut, to: TaskStage) {
+  // The board announces "Moving…"; the outcome is announced above, with the server's own reason.
+  async function handleMove(task: TaskOut, to: string) {
+    const stage = to as TaskStage;
     previousTasksRef.current = tasks;
-    setMovingId(task.id);
-    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, stage: to } : t)));
-    void moveTask.mutate({ id: task.id, stage: to });
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, stage } : t)));
+    await moveTask.mutate({ id: task.id, stage });
   }
 
   const remove = useMutation((task: TaskOut) => deleteTask(task.id), {
@@ -213,14 +264,28 @@ function BoardContent() {
             />
           </Card>
         ) : (
-          <KanbanBoard
-            tasks={visibleTasks}
-            now={today()}
-            canWrite={canWrite}
-            movingId={movingId}
+          <KanbanBoard<TaskOut>
+            columns={COLUMN_ORDER.map((stage) => ({
+              id: stage,
+              label: STAGE_LABEL[stage],
+              tone: STAGE_TONE[stage],
+              summary: `${visibleTasks.filter((t) => t.stage === stage).reduce((sum, t) => sum + t.points, 0)} pts`,
+            }))}
+            items={visibleTasks}
+            getItemId={(task) => task.id}
+            getColumnId={(task) => task.stage}
+            renderCard={(task, cardState) => <TaskCard task={task} now={today()} state={cardState} />}
+            canMove={() => true}
             onMove={handleMove}
-            onEdit={setEditing}
-            onDelete={setDeleting}
+            announce={(task, _from, to, result) =>
+              result === "moving" ? `Moving ${task.title} to ${STAGE_LABEL[to as TaskStage]}…` : ""
+            }
+            moveMenuLabel={(task) => task.title}
+            getExtraActions={(task) => [
+              { label: "Edit", onSelect: () => setEditing(task) },
+              { label: "Delete", tone: "danger", onSelect: () => setDeleting(task) },
+            ]}
+            readOnly={!canWrite}
           />
         )
       ) : null}

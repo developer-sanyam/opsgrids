@@ -40,11 +40,13 @@ from app.models import (
     EmailDomain,
     ProviderAccount,
     ProviderTemplate,
+    Segment,
     Sender,
     Suppression,
     Template,
 )
 from app.schemas import (
+    CampaignChannel,
     CampaignIn,
     CampaignOut,
     CampaignPatch,
@@ -88,6 +90,9 @@ from app.schemas import (
     ProviderTemplateIn,
     ProviderTemplateOut,
     RecipientStatus,
+    SegmentCountOut,
+    SegmentIn,
+    SegmentOut,
     SenderIn,
     SenderOut,
     SetupOut,
@@ -1398,14 +1403,91 @@ async def remove_list_members(
     return ListMembersOut(changed=changed, unknown=[str(u) for u in unknown])
 
 
+# --------------------------------------------------------------------- segments
+
+
+def _segment_out(row: Segment) -> SegmentOut:
+    return SegmentOut(
+        id=str(row.id),
+        name=row.name,
+        list_id=str(row.list_id) if row.list_id else None,
+        created_within_days=row.created_within_days,
+        active_within_days=row.active_within_days,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+@router.get(
+    "/engage/segments",
+    response_model=Page[SegmentOut],
+    summary="Saved audience filters, by name",
+    dependencies=[Entitled],
+)
+async def list_segments(session: SessionDep, ctx: ListRead, params: PageQuery) -> Page[SegmentOut]:
+    rows, total = await paginate(session, selectors.segments_stmt(ctx), params)
+    return Page.build([_segment_out(r) for r in rows], total=total, params=params)
+
+
+@router.post(
+    "/engage/segments",
+    response_model=SegmentOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Save an audience filter",
+    dependencies=[Entitled],
+)
+async def create_segment(
+    body: SegmentIn, session: SessionDep, ctx: ListWrite, request: Request
+) -> SegmentOut:
+    row = await services.create_segment(session, ctx, **body.model_dump(), request=request)
+    return _segment_out(row)
+
+
+@router.delete(
+    "/engage/segments/{segment_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Delete a segment no campaign uses",
+    dependencies=[Entitled],
+)
+async def remove_segment(
+    segment_id: uuid.UUID, session: SessionDep, ctx: ListWrite, request: Request
+) -> Response:
+    await services.delete_segment(session, ctx, segment_id=segment_id, request=request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/engage/segments/{segment_id}/count",
+    response_model=SegmentCountOut,
+    summary="How many contacts a campaign on this channel would reach right now",
+    dependencies=[Entitled],
+)
+async def count_segment(
+    segment_id: uuid.UUID, channel: CampaignChannel, session: SessionDep, ctx: ListRead
+) -> SegmentCountOut:
+    row = await selectors.get_segment(session, ctx.organization_id, segment_id)
+    if row is None:
+        raise NotFoundProblem("No such segment")
+    count = await selectors.count_audience(session, ctx, channel=channel, segment=row)
+    return SegmentCountOut(channel=channel, recipients=count)
+
+
 # --------------------------------------------------------------------- campaigns
 
 
 def _campaign_out(row: Campaign, counts: dict[str, int]) -> CampaignOut:
+    if row.channel == "whatsapp":
+        # No recipient rows: each recipient is a staged message, counted on the campaign.
+        counts = {"sent": row.sent_count, "suppressed": row.suppressed_count}
     return CampaignOut(
         id=str(row.id),
         name=row.name,
-        sender_id=str(row.sender_id),
+        channel=row.channel,
+        sender_id=str(row.sender_id) if row.sender_id else None,
+        provider_template_id=str(row.provider_template_id) if row.provider_template_id else None,
+        template_values=row.template_values,
+        segment_id=str(row.segment_id) if row.segment_id else None,
         subject=row.subject,
         html_body=row.html_body,
         text_body=row.text_body,

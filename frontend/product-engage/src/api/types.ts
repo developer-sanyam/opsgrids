@@ -421,7 +421,9 @@ export interface ListMembersOut {
 export type CampaignStatus = "draft" | "scheduled" | "sending" | "paused" | "sent" | "cancelled";
 /** `list` addresses one named list; `all_sendable` addresses every contact this organization may
  *  mail (every contact minus every suppression). */
-export type CampaignAudience = "list" | "all_sendable";
+export type CampaignAudience = "list" | "all_sendable" | "segment";
+/** An email campaign goes out as a sender; a WhatsApp campaign sends one approved template. */
+export type CampaignChannel = "email" | "whatsapp";
 /** `sending` (the driver's in-flight claim lease) is folded into `queued` on the wire — see
  *  `_campaign_out`'s docstring in `engage.py` — so this app never has a fifth value to render. */
 export type RecipientStatus = "queued" | "sent" | "failed" | "suppressed";
@@ -433,7 +435,14 @@ export type AbMetric = "open" | "click";
 
 export interface CampaignIn {
   name: string;
-  sender_id: string;
+  channel?: CampaignChannel;
+  /** Required for email, absent for WhatsApp. */
+  sender_id?: string;
+  /** Required for WhatsApp: an approved template. */
+  provider_template_id?: string;
+  /** The template's variables, the same for every recipient, by key or 1-based position. */
+  template_values?: Record<string, string>;
+  segment_id?: string | null;
   subject?: string;
   html_body?: string;
   text_body?: string;
@@ -459,6 +468,9 @@ export interface CampaignIn {
 export interface CampaignPatch {
   name?: string;
   sender_id?: string;
+  provider_template_id?: string;
+  template_values?: Record<string, string>;
+  segment_id?: string | null;
   subject?: string;
   html_body?: string;
   text_body?: string;
@@ -477,6 +489,31 @@ export interface CampaignPatch {
   ab_split_percent?: number;
   ab_metric?: AbMetric;
   ab_wait_minutes?: number;
+}
+
+/** `POST /engage/segments`. A saved filter over the contact book, evaluated when a campaign
+ *  sends. Every field narrows; none at all is everyone. */
+export interface SegmentIn {
+  name: string;
+  list_id?: string | null;
+  created_within_days?: number | null;
+  active_within_days?: number | null;
+}
+
+export interface SegmentOut {
+  id: string;
+  name: string;
+  list_id: string | null;
+  created_within_days: number | null;
+  active_within_days: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** `GET /engage/segments/{id}/count?channel=…` — who a campaign on that channel would reach now. */
+export interface SegmentCountOut {
+  channel: CampaignChannel;
+  recipients: number;
 }
 
 /** `POST /engage/campaigns/{campaign_id}/schedule`. Also how an already-`scheduled` campaign is
@@ -502,7 +539,12 @@ export interface CampaignStats {
 export interface CampaignOut {
   id: string;
   name: string;
-  sender_id: string;
+  channel: CampaignChannel;
+  /** Null for a WhatsApp campaign. */
+  sender_id: string | null;
+  provider_template_id: string | null;
+  template_values: Record<string, string>;
+  segment_id: string | null;
   subject: string;
   html_body: string;
   text_body: string;

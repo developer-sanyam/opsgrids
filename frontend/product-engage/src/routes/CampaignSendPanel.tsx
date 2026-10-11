@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { Can } from "@opsgrids/client";
 import { CalendarIcon, MailIcon, SendIcon } from "@opsgrids/ui";
 
-import { sendCampaign } from "@/api/client";
+import { countSegment, sendCampaign } from "@/api/client";
 import type { CampaignOut } from "@/api/types";
 import { formatNumber } from "@/lib/format";
 import type { ResolvedLists } from "@/lib/refs";
@@ -38,7 +38,18 @@ import { CampaignTestSendDialog } from "./CampaignTestSendDialog";
  * not be read (a role without the list read) is "the list chosen for this campaign" — never "not
  * found", which would be a claim about the service.
  */
-function audienceSummary(campaign: CampaignOut, resolved: ResolvedLists): string {
+function audienceSummary(
+  campaign: CampaignOut,
+  resolved: ResolvedLists,
+  reach: number | null = null,
+): string {
+  if (campaign.audience === "segment") {
+    const who =
+      campaign.channel === "whatsapp" ? "who opted in to WhatsApp marketing" : "who may be emailed";
+    return reach === null
+      ? `the contacts in the segment chosen for this campaign ${who}`
+      : `${formatNumber(reach)} ${reach === 1 ? "contact" : "contacts"} in the segment chosen for this campaign ${who}, as of now`;
+  }
   if (campaign.audience === "all_sendable") {
     return "everyone you may mail — every contact except addresses on your Suppressions list";
   }
@@ -113,6 +124,25 @@ export function CampaignSendPanel({
   const [reason, setReason] = useState<SendGateReason | null>(null);
   const [testing, setTesting] = useState(false);
   const [scheduling, setScheduling] = useState(false);
+  /* The segment's reach on this channel, counted now; a segment re-evaluates when it sends. */
+  const [reach, setReach] = useState<number | null>(null);
+  const whatsapp = campaign.channel === "whatsapp";
+  const via = whatsapp ? "on WhatsApp, as its approved template," : `as ${senderLabel}`;
+
+  useEffect(() => {
+    setReach(null);
+    if (campaign.audience !== "segment" || campaign.segment_id === null) return;
+    let live = true;
+    countSegment(campaign.segment_id, campaign.channel).then(
+      (out) => {
+        if (live) setReach(out.recipients);
+      },
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [campaign.audience, campaign.segment_id, campaign.channel]);
 
   async function send() {
     if (pending) return;
@@ -147,9 +177,10 @@ export function CampaignSendPanel({
         }
       >
         <p className="text-sm text-muted">
-          Sends the saved draft as {senderLabel} to {audienceSummary(campaign, resolved)}. The service
-          checks the sender, its domain, your provider connection and the unsubscribe link before it
-          lets anything go.
+          Sends the saved draft {via} to {audienceSummary(campaign, resolved, reach)}.{" "}
+          {whatsapp
+            ? "The service checks the template is approved, WhatsApp is connected and every recipient's opt-in before it lets anything go."
+            : "The service checks the sender, its domain, your provider connection and the unsubscribe link before it lets anything go."}
         </p>
 
         <div aria-live="polite" className="empty:hidden">
@@ -181,14 +212,16 @@ export function CampaignSendPanel({
           >
             Send campaign
           </Button>
-          <Button
-            variant="outline"
-            onClick={() => setTesting(true)}
-            disabled={dirty}
-            leadingIcon={<MailIcon className="size-4" />}
-          >
-            Send a preview
-          </Button>
+          {whatsapp ? null : (
+            <Button
+              variant="outline"
+              onClick={() => setTesting(true)}
+              disabled={dirty}
+              leadingIcon={<MailIcon className="size-4" />}
+            >
+              Send a preview
+            </Button>
+          )}
           <Button
             variant="outline"
             onClick={() => setScheduling(true)}
@@ -212,7 +245,7 @@ export function CampaignSendPanel({
         onConfirm={() => void send()}
         tone="primary"
         title="Send this campaign now?"
-        body={`“${campaign.name}” goes out as ${senderLabel} to ${audienceSummary(campaign, resolved)}. You can cancel it while it is sending, but a message that has already left cannot be recalled.`}
+        body={`“${campaign.name}” goes out ${via} to ${audienceSummary(campaign, resolved, reach)}. You can cancel it while it is sending, but a message that has already left cannot be recalled.`}
         confirmLabel="Send campaign"
         pendingLabel="Sending…"
         pending={pending}

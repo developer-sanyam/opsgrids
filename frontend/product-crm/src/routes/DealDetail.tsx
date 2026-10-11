@@ -11,8 +11,8 @@ import {
   ownerById,
 } from "@/data/lookups";
 import { isOpen, STAGES } from "@/data/stages";
-import { formatDate, formatMoney, formatRelative } from "@/lib/format";
-import { RevealableField } from "@/reveal/RevealableField";
+import { formatDate, formatRelative } from "@/lib/format";
+import { RevealField } from "@/reveal/RevealField";
 import {
   Can,
   problemMessage,
@@ -36,7 +36,7 @@ import {
   Skeleton,
   StagePill,
 } from "@/ui";
-import { ActivityIcon, ArrowLeftIcon, BuildingIcon, MailIcon, StepUpDialog, useToast } from "@opsgrids/ui";
+import { formatMoney, ActivityIcon, ArrowLeftIcon, BuildingIcon, MailIcon, StepUpDialog, useToast } from "@opsgrids/ui";
 import { DealFormDialog } from "@/forms/DealFormDialog";
 import { ActivityFormDialog } from "@/forms/ActivityFormDialog";
 
@@ -321,7 +321,7 @@ export function DealDetailPage() {
                             <MailIcon className="size-4 text-faint" />
                             {primary.email}
                           </a>
-                          <RevealableField
+                          <RevealField
                             kind="phone"
                             masked={primary.phone}
                             subject="contact"

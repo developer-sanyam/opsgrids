@@ -8,7 +8,6 @@ import { companyImport } from "@/data/importExport/companies";
 import type { CompanyFilters } from "@/data/importExport/companies";
 import { ownerName } from "@/data/lookups";
 import { downloadCsv } from "@/lib/csv";
-import { formatMoneyCompact } from "@/lib/format";
 import { Can, problemMessage, useAsync, useCan, useImportExport, useMutation } from "@opsgrids/client";
 import {
   Avatar,
@@ -28,7 +27,7 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column, TableSelection } from "@/ui";
-import { BuildingIcon, DownloadIcon, GlobeIcon, ImportExportButton, MapPinIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
+import { formatMoney, BuildingIcon, DownloadIcon, GlobeIcon, ImportExportButton, MapPinIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
 import { CompanyFormDialog } from "@/forms/CompanyFormDialog";
 
 type StatusFilter = CompanyStatus | "all";
@@ -119,7 +118,7 @@ function buildColumns(
       align: "right",
       render: (c) => (
         <span className="tnum font-semibold text-ink">
-          {formatMoneyCompact(c.annual_revenue_minor, c.currency)}
+          {formatMoney(c.annual_revenue_minor, c.currency, { compact: true })}
         </span>
       ),
     },
@@ -236,7 +235,7 @@ export function CompaniesPage() {
       { header: "City", value: (c) => c.city },
       { header: "Status", value: (c) => c.status },
       { header: "Owner", value: (c) => ownerName(owners, c.owner_id) },
-      { header: "Annual revenue", value: (c) => formatMoneyCompact(c.annual_revenue_minor, c.currency) },
+      { header: "Annual revenue", value: (c) => formatMoney(c.annual_revenue_minor, c.currency, { compact: true }) },
     ]);
   }
 

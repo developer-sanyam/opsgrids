@@ -4,11 +4,11 @@
 row, told apart by `organization_id`:
 
   * the **platform default**, under the nil UUID (the platform tenant, the same convention the
-    platform password-reset rule uses). Shipped by the migration, `is_placeholder = true` and
-    labelled `placeholder-2026-09`. These figures are **not** Meta's published rates for any
-    particular country: they exist so an estimate is never blank, and they must be replaced with
-    the organization's real rates (`PUT /engage/analytics/rate-card`) before anyone reads a
-    cost off them as more than an order of magnitude.
+    platform password-reset rule uses): one row per recipient **market** (`calling_code`, `''`
+    for "Other") and category, seeded from Meta's published INR rate card effective 2026-10-01
+    (`META_RATE_LABEL`, migration `c7d2a9e4f1b6`) and maintained by staff through
+    `PUT /admin/engage/whatsapp-rate-card`. The first shipped rows (`placeholder-2026-09`) were
+    soft-deleted by that migration.
   * an **organization override**, written by that organization. Precedence is decided in
     `m1_analytics.effective_rates`: for one category, an organization's own row that is already in
     force beats the platform default, and the latest `effective_from` wins within either.
@@ -35,8 +35,14 @@ from platform_core.models import TenantBase
 #: The platform tenant. Default rate-card rows live under it; nothing else writes there.
 PLATFORM_ORG_ID = "00000000-0000-0000-0000-000000000000"
 
-#: The label the shipped defaults carry, so an API consumer (and the UI) can say what they are.
+#: The label the first shipped defaults carried. Soft-deleted by `c7d2a9e4f1b6`; kept so a
+#: reader of an old row (and that migration's downgrade) can still say what it was.
 PLACEHOLDER_LABEL = "placeholder-2026-09"
+
+#: The label of the platform rows seeded from Meta's published INR rate card, effective
+#: 2026-10-01 (see migration `c7d2a9e4f1b6` for the source). Staff replace it through
+#: `PUT /admin/engage/whatsapp-rate-card` when Meta publishes a new card.
+META_RATE_LABEL = "meta-inr-2026-10-01"
 
 
 class MessagingRateCard(Base, TenantBase):
@@ -46,6 +52,13 @@ class MessagingRateCard(Base, TenantBase):
 
     #: whatsapp today; a column so the same card can price SMS later.
     channel: Mapped[str] = mapped_column(String(20), nullable=False, default="whatsapp")
+    #: The recipient market, as an ITU calling-code prefix (`91`, `1`, `77`); `''` is "Other",
+    #: every number no longer prefix claims. A message is priced by its number's longest match.
+    calling_code: Mapped[str] = mapped_column(
+        String(4), nullable=False, default="", server_default=""
+    )
+    #: Meta's name for the market ("India", "North America", "Other"), for display only.
+    market: Mapped[str] = mapped_column(String(60), nullable=False, default="", server_default="")
     #: marketing | utility | authentication | service. `service` is the free-text reply inside
     #: the 24-hour window, which Meta does not charge for.
     category: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -57,10 +70,11 @@ class MessagingRateCard(Base, TenantBase):
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="INR")
     #: The first UTC day this price applies to.
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)
-    #: `placeholder-2026-09` for the shipped defaults, `organization` for an override.
+    #: Where the figures came from: `meta-inr-2026-10-01` for the seeded platform card,
+    #: `organization` for an override.
     label: Mapped[str] = mapped_column(String(60), nullable=False, default="organization")
-    #: True only for the shipped defaults. Surfaced in the API so nobody mistakes them for Meta's
-    #: real rates.
+    #: True only for the first shipped (now soft-deleted) defaults. Surfaced in the API so nobody
+    #: mistakes a placeholder for Meta's real rates.
     is_placeholder: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     __table_args__ = (
@@ -70,12 +84,14 @@ class MessagingRateCard(Base, TenantBase):
         ),
         CheckConstraint("channel IN ('whatsapp')", name="channel"),
         CheckConstraint("amount_minor_per_1000_messages >= 0", name="amount_nonnegative"),
+        CheckConstraint("calling_code ~ '^[0-9]{0,4}$'", name="calling_code"),
         UniqueConstraint(
             "organization_id",
             "channel",
+            "calling_code",
             "category",
             "effective_from",
-            name="uq_messaging_rate_cards_org_price_point",
+            name="uq_messaging_rate_cards_org_market_price_point",
         ),
     )
 

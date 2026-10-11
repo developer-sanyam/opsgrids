@@ -57,3 +57,22 @@ export const WithFallback: Story = {
     await canvas.findByText("Search deals for “acme”");
   },
 };
+
+/** Server rows for "de" listed after the matched "Deals", with a partial-results status line. */
+export const WithResults: Story = {
+  args: {
+    results: {
+      onQueryChange: fn(),
+      status: "success",
+      partial: true,
+      items: [
+        { key: "crm-company-1", label: "Delta Logistics", group: "Companies", onSelect: fn() },
+        { key: "crm-lead-1", label: "Devika Rao", group: "Leads", onSelect: fn() },
+      ],
+    },
+  },
+  play: async ({ canvas, userEvent }) => {
+    await userEvent.type(canvas.getByRole("combobox"), "de");
+    await canvas.findByText("Some results may be missing");
+  },
+};

@@ -192,6 +192,10 @@ class StatusUpdate:
     #: Meta's own error code and title when `status` is `failed`, for an operator to act on.
     error_code: str | None = None
     error_detail: str | None = None
+    #: Meta's `pricing.category` and `pricing.billable` when the status carried a `pricing`
+    #: object (per-message pricing): what this message is billed as. None when it did not.
+    pricing_category: str | None = None
+    billable: bool | None = None
     #: The provider's own status object, whole. Never persisted in the clear — its only use is
     #: `services.record_dead_letter` sealing it into `InboundDeadLetter.raw_enc` so a parked
     #: status can be replayed after a fix, the same reasoning `InboundMessage.raw` documents.
@@ -255,6 +259,11 @@ def _status_from(raw: dict[str, Any]) -> StatusUpdate | None:
 
     errors = raw.get("errors") or []
     first = errors[0] if errors else {}
+    pricing = raw.get("pricing")
+    if not isinstance(pricing, dict):
+        pricing = {}
+    category = pricing.get("category")
+    billable = pricing.get("billable")
 
     return StatusUpdate(
         provider_message_id=str(provider_message_id),
@@ -263,6 +272,8 @@ def _status_from(raw: dict[str, Any]) -> StatusUpdate | None:
         occurred_at=_timestamp(raw.get("timestamp")),
         error_code=str(first.get("code")) if first.get("code") is not None else None,
         error_detail=(first.get("title") or first.get("message")) or None,
+        pricing_category=str(category)[:40] if category else None,
+        billable=billable if isinstance(billable, bool) else None,
         raw=raw,
     )
 

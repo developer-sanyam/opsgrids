@@ -11,7 +11,15 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 Channel = Literal["email", "whatsapp", "in_app"]
 TemplateCategory = Literal["utility", "marketing", "authentication"]
@@ -557,7 +565,9 @@ class ConsentEventIn(BaseModel):
     exactly what the ledger exists to replace.
 
     Name the subject by `address` or, for an email contact, by `contact_id` (the address is then
-    taken from the contact, sealed, and never returned). `evidence` is a short reference —
+    taken from the contact, sealed, and never returned). A WhatsApp or SMS event may give both:
+    `address` is the number, and `contact_id` links that number to the contact, which is how a
+    WhatsApp campaign reaches the contact. `evidence` is a short reference —
     "checkout order 1042", "signup form, 2026-09-20" — never the address itself; a request whose
     evidence contains the address is refused.
     """
@@ -679,7 +689,10 @@ class ListMembersOut(BaseModel):
 # --------------------------------------------------------------------- engage campaigns
 
 CampaignStatus = Literal["draft", "scheduled", "sending", "paused", "sent", "cancelled"]
-CampaignAudience = Literal["list", "all_sendable"]
+CampaignAudience = Literal["list", "all_sendable", "segment"]
+CampaignChannel = Literal["email", "whatsapp"]
+#: Fixed values for a WhatsApp template's variables, by variable key or 1-based position.
+TemplateValues = dict[str, Annotated[str, StringConstraints(max_length=1024)]]
 RecipientStatus = Literal["queued", "sent", "failed", "suppressed"]
 
 
@@ -703,12 +716,17 @@ class CampaignIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=200)
-    sender_id: uuid.UUID
+    #: email (the default) needs `sender_id`; whatsapp needs `provider_template_id` instead.
+    channel: CampaignChannel = "email"
+    sender_id: uuid.UUID | None = None
+    provider_template_id: uuid.UUID | None = None
+    template_values: TemplateValues = Field(default_factory=dict, max_length=50)
     subject: str = Field(default="", max_length=255)
     html_body: str = Field(default="", max_length=500_000)
     text_body: str = Field(default="", max_length=500_000)
     audience: CampaignAudience = "all_sendable"
     list_id: uuid.UUID | None = None
+    segment_id: uuid.UUID | None = None
     scheduled_at: datetime | None = None
     #: Off by default. On rewrites this campaign's links / adds a pixel through signed tracking
     #: URLs on the platform's domain (slice E1).
@@ -765,6 +783,9 @@ class CampaignPatch(BaseModel):
     text_body: str | None = Field(default=None, max_length=500_000)
     audience: CampaignAudience | None = None
     list_id: uuid.UUID | None = None
+    segment_id: uuid.UUID | None = None
+    provider_template_id: uuid.UUID | None = None
+    template_values: TemplateValues | None = Field(default=None, max_length=50)
     scheduled_at: datetime | None = None
     track_opens: bool | None = None
     track_clicks: bool | None = None
@@ -793,7 +814,12 @@ class CampaignStats(BaseModel):
 class CampaignOut(BaseModel):
     id: str
     name: str
-    sender_id: str
+    channel: CampaignChannel = "email"
+    #: Null for a WhatsApp campaign.
+    sender_id: str | None
+    provider_template_id: str | None = None
+    template_values: dict[str, str] = Field(default_factory=dict)
+    segment_id: str | None = None
     subject: str
     html_body: str
     text_body: str
@@ -824,6 +850,38 @@ class CampaignOut(BaseModel):
     ab_decided_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class SegmentIn(BaseModel):
+    """A saved filter over the contact book. Every field narrows; none at all is everyone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+    #: Only contacts on this list.
+    list_id: uuid.UUID | None = None
+    #: Only contacts added in the last N days.
+    created_within_days: int | None = Field(default=None, ge=1, le=3650)
+    #: Only contacts a campaign email was sent to in the last N days.
+    active_within_days: int | None = Field(default=None, ge=1, le=3650)
+
+
+class SegmentOut(BaseModel):
+    id: str
+    name: str
+    list_id: str | None
+    created_within_days: int | None
+    active_within_days: int | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SegmentCountOut(BaseModel):
+    """How many contacts a campaign on `channel` would reach right now: in the segment, with a
+    standing marketing opt-in for that channel, and (for email) not suppressed."""
+
+    channel: CampaignChannel
+    recipients: int
 
 
 class CampaignRecipientOut(BaseModel):

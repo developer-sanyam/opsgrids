@@ -6,7 +6,7 @@ import type { LeadStatus } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
 import { ownerById } from "@/data/lookups";
 import { formatDate } from "@/lib/format";
-import { RevealableField } from "@/reveal/RevealableField";
+import { RevealField } from "@/reveal/RevealField";
 import {
   Can,
   problemMessage,
@@ -236,7 +236,7 @@ export function LeadDetailPage() {
                   <Card className="flex flex-col gap-3 p-6">
                     <SectionHeader title="Contact" />
                     <div className="flex flex-col gap-1.5 text-sm">
-                      <RevealableField
+                      <RevealField
                         kind="email"
                         masked={l.email}
                         subject="lead"
@@ -245,7 +245,7 @@ export function LeadDetailPage() {
                         resetKey={l.id}
                         load={(headers) => revealLeadField(l.id, "email", headers)}
                       />
-                      <RevealableField
+                      <RevealField
                         kind="phone"
                         masked={l.phone}
                         subject="lead"

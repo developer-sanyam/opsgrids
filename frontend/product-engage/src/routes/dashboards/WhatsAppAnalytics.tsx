@@ -91,9 +91,44 @@ function EstimatedCostTable({ cost }: { cost: MessagingCost }) {
           </tr>
         </tfoot>
       </table>
+      {cost.by_source !== undefined && cost.by_source.length > 0 ? (
+        <table className="w-full text-sm">
+          <caption className="sr-only">Estimated WhatsApp cost by automation and conversation</caption>
+          <thead>
+            <tr className="text-left text-xs font-bold uppercase tracking-wider text-faint">
+              <th scope="col" className="py-2 pr-4 font-bold">
+                Sent by
+              </th>
+              <th scope="col" className="py-2 pr-4 text-right font-bold">
+                Messages
+              </th>
+              <th scope="col" className="py-2 text-right font-bold">
+                Estimated cost
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {cost.by_source.map((row) => (
+              <tr key={`${row.kind}:${row.key}`} className="border-t border-line">
+                <th scope="row" className="py-3 pr-4 text-left font-medium text-ink">
+                  <span className="text-muted">{row.kind === "automation" ? "Automation" : "Conversation"}</span>{" "}
+                  {row.label}
+                </th>
+                <td className="tnum py-3 pr-4 text-right text-ink">{formatNumber(row.messages)}</td>
+                <td className="tnum py-3 text-right text-ink">{formatMoney(row.amount)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
       <p className="text-xs text-muted">
-        Estimated from the rate card on file, not from Meta&rsquo;s invoice. Check the rates before
-        relying on this figure.
+        Estimated at Meta&rsquo;s list rate for each recipient&rsquo;s country, not from Meta&rsquo;s invoice
+        (volume discounts and tax are not applied).
+        {cost.priced_by_meta !== undefined
+          ? ` ${formatNumber(cost.priced_by_meta)} of ${formatNumber(
+              cost.by_category.reduce((sum, row) => sum + row.messages, 0),
+            )} messages were priced from Meta’s own delivery receipts; the rest by their template’s category.`
+          : null}
       </p>
     </div>
   );

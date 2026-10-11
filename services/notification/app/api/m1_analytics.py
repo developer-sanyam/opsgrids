@@ -27,13 +27,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import m1_analytics
 from app.m1_cost import DateWindow, RangeError, resolve_window
-from app.m1_schemas import HubOverview, RateCardIn, RateCardOut, WhatsAppOverview
-from platform_core.auth import Scope, ScopeContext, require, require_product
+from app.m1_schemas import (
+    HubOverview,
+    PlatformRateCardIn,
+    RateCardIn,
+    RateCardOut,
+    WhatsAppOverview,
+)
+from platform_core.auth import (
+    Principal,
+    Scope,
+    ScopeContext,
+    require,
+    require_operator,
+    require_product,
+)
 from platform_core.cache import enforce_rate_limit
-from platform_core.db import get_tenant_session
+from platform_core.db import get_session, get_tenant_session
 from platform_core.errors import ValidationProblem
 
 router = APIRouter(tags=["engage-analytics"])
+#: The operator surface: fronted by admin-gateway as `staff_only`, never by app-gateway.
+admin_router = APIRouter(prefix="/admin/engage", tags=["engage-analytics-admin"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 Entitled = Depends(require_product("engage"))
@@ -44,6 +59,9 @@ AnalyticsRead = Annotated[
 RateCardWrite = Annotated[
     ScopeContext, Depends(require("engage.setup.whatsapp.write", minimum=Scope.ORG))
 ]
+#: The platform rate table prices every tenant's dashboard, so it is a billing-staff change.
+OperatorBilling = Annotated[Principal, Depends(require_operator(roles={"owner", "billing_ops"}))]
+AppSessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 #: Each overview runs several grouped queries over up to a year of messages, so it is throttled per
 #: organization. Generous for a dashboard that refreshes now and then, tight enough that a script
@@ -89,10 +107,13 @@ def query_window(date_from: date | None, date_to: date | None) -> DateWindow:
     description=(
         "Computed on demand from the message ledger. Buckets are **UTC calendar days**; `from` and "
         "`to` are inclusive UTC dates (default: the last 30 days). `cost` is an ESTIMATE "
-        "(`estimated: true`): messages x rate / 1000 in integer minor units, rounded half-up per "
-        "category, using the organization's rate card. Until the organization enters its own "
-        "rates, the rate card is the platform's PLACEHOLDER defaults (`placeholder-2026-09`), "
-        "which are not Meta's real rates for any country."
+        "(`estimated: true`) in integer minor units: each billable message is priced at the rate "
+        "for its recipient's market (longest calling-code prefix) and the category Meta reported "
+        "on its delivery receipt (the template's category until a receipt lands), rounded half-up "
+        "per market and category. The rates are the organization's own override or, failing "
+        "that, the platform card seeded from Meta's published INR list rates "
+        "(`meta-inr-2026-10-01`); volume tiers and tax are not applied. `by_source` lists the most "
+        "expensive automations and inbox conversations."
     ),
     dependencies=[Entitled],
 )
@@ -114,8 +135,8 @@ async def whatsapp_overview(
     description=(
         "WhatsApp numbers computed here; email numbers come from the email analytics overview "
         "and are `null` when that module is not deployed. Same UTC-day range semantics and the "
-        "same cost caveats as the WhatsApp overview: the cost is an estimate from PLACEHOLDER "
-        "rates until the organization overrides the rate card."
+        "same cost caveats as the WhatsApp overview: the cost is an estimate from Meta's list "
+        "rates (or the organization's override), not an invoice."
     ),
     dependencies=[Entitled],
 )
@@ -135,11 +156,11 @@ async def hub_overview(
     response_model=RateCardOut,
     summary="The per-1000-message rates behind the cost estimate",
     description=(
-        "The rate in force today for each message category. The shipped defaults are "
-        "PLACEHOLDERS (`placeholder-2026-09`, INR paise per 1000 messages: marketing 78460, "
-        "utility 11500, authentication 11500, service 0), not Meta's published rates. Real rates "
-        "for the organization's country must be entered with PUT. `placeholder` is true while any "
-        "rate in force is a shipped default."
+        "The rate in force today for each market (`calling_code`, `''` = every other market) "
+        "and message category, in minor units per 1000 messages. Unless the organization has "
+        "entered its own rates with PUT, these are the platform's, seeded from Meta's published "
+        "INR rate card effective 2026-10-01 (`meta-inr-2026-10-01`) and maintained by staff. "
+        "`placeholder` is true only while a rate in force is an unverified placeholder."
     ),
     dependencies=[Entitled],
 )
@@ -174,3 +195,41 @@ async def override_rate_card(
         request=request,
     )
     return await m1_analytics.read_rate_card(session, ctx.organization_id, as_of=today)
+
+
+@admin_router.put(
+    "/whatsapp-rate-card",
+    response_model=RateCardOut,
+    summary="Staff: add or replace price points on the platform WhatsApp rate table",
+    description=(
+        "Operator only (`owner` or `billing_ops`). Upserts one platform row per market and "
+        "category for `effective_from`, labelled `label` (e.g. `meta-inr-2027-01-01`, the source "
+        "of the figures); rows not named are left alone and earlier price points are kept. Every "
+        "tenant without its own override prices from this table. Audited under the platform "
+        "tenant. Returns the card as a tenant with no override now sees it."
+    ),
+)
+async def override_platform_rate_card(
+    body: PlatformRateCardIn, session: AppSessionDep, operator: OperatorBilling, request: Request
+) -> RateCardOut:
+    async with session.begin():
+        await m1_analytics.override_platform_rates(
+            session,
+            operator_id=operator.sub,
+            rates=[
+                m1_analytics.PlatformRate(
+                    calling_code=r.calling_code,
+                    market=r.market,
+                    category=r.category,
+                    amount_minor_per_1000_messages=r.amount_minor_per_1000_messages,
+                    currency=r.currency,
+                )
+                for r in body.rates
+            ],
+            effective_from=body.effective_from,
+            label=body.label,
+            request=request,
+        )
+        return await m1_analytics.read_rate_card(
+            session, m1_analytics.PLATFORM_ORG, as_of=datetime.now(UTC).date()
+        )
