@@ -227,3 +227,57 @@ async def test_references_never_counts_another_tenants_deals(
 
 def test_the_route_is_absent_from_the_public_openapi() -> None:
     assert not [path for path in app.openapi()["paths"] if "/references" in path]
+
+
+async def test_the_two_services_predicates_agree(
+    client: AsyncClient, session: AsyncSession, org_id: uuid.UUID, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The predicate, the route's exclusion and deal's own handler (in `log_only`) give the same
+    answer for a pristine, an active, a moved and an edited orphan."""
+    from app import consumers
+    from app.schemas import DealPatch
+    from platform_core.db import dispose_engine, init_engine
+    from tests.helpers import aborted_envelope
+
+    cfg = settings().model_copy(update={"crm_conversion_cleanup_mode": "log_only"})
+    monkeypatch.setattr(consumers, "settings", lambda: cfg)
+    write = ctx_for(org_id, "crm.pipeline.deal.write", Scope.ORG)
+    fixtures: dict[str, tuple[uuid.UUID, uuid.UUID]] = {}
+    async with session.begin():
+        for kind in ("pristine", "activity", "moved", "edited"):
+            lead_id = uuid.uuid4()
+            company = uuid.uuid4()
+            deal = await services.create_deal(
+                session,
+                services.lead_conversion_ctx(org_id, None),
+                name=f"Deal {kind}",
+                company_id=company,
+                owner_id=uuid.uuid4(),
+                value_minor=0,
+                close_date=date(2026, 12, 31),
+                deal_id=consumers.domain.conversion_ids(lead_id, 0)[2],
+                acting_as="lead",
+            )
+            if kind == "activity":
+                await _activity(session, org_id, deal_id=deal.id)
+            elif kind == "moved":
+                await services.move_stage(session, write, deal, new_stage="proposal")
+            elif kind == "edited":
+                await services.update_deal(session, write, deal, DealPatch(value_minor=1))
+            fixtures[kind] = (lead_id, company)
+
+    init_engine(settings())
+    try:
+        for kind, (lead_id, company) in fixtures.items():
+            deal_id = consumers.domain.conversion_ids(lead_id, 0)[2]
+            async with session.begin():
+                predicate = await services.is_pristine_lead_deal(session, org_id, deal_id)
+            body = (await _get(client, org_id, company_id=company, exclude_deal_id=deal_id)).json()
+            excluded = body["company_deal_count"] == 0
+            outcome = await consumers.run_conversion_cleanup(
+                aborted_envelope(organization_id=org_id, lead_id=lead_id)
+            )
+            handler = outcome.deal == "would_delete"
+            assert predicate == excluded == handler == (kind == "pristine"), kind
+    finally:
+        await dispose_engine()
