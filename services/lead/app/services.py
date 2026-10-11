@@ -71,9 +71,10 @@ log = get_logger("lead.services")
 EVT_LEAD_CREATED = "crm.lead.created"
 EVT_LEAD_UPDATED = "crm.lead.updated"
 EVT_LEAD_CONVERTED = "crm.lead.converted"
-#: Staged when `finalize_conversion` refuses to write "converted" — the records customer and
-#: deal already created for the attempt are still there, and this is the hook a consumer would
-#: use to clean them up (see ADR-0017's note: no consumer acts on it yet).
+#: Staged by `_stage_conversion_aborted`, and only there, when `finalize_conversion` refuses to
+#: write "converted" — the records customer and deal already created for the attempt are still
+#: there. The payload names the attempt's `generation` and `claim_id`: a consumer re-derives the
+#: attempt's ids from `(lead_id, generation)` with `domain.conversion_ids` (R2.4).
 EVT_LEAD_CONVERSION_ABORTED = "crm.lead.conversion_aborted"
 
 #: How far out a converted lead's deal defaults to closing. A lead carries no close date of
@@ -1054,6 +1055,52 @@ async def claim_conversion(
         )
 
 
+def _stage_conversion_aborted(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    lead: Lead,
+    *,
+    reason: str,
+    claim_id: uuid.UUID,
+    generation: int,
+    company_id: uuid.UUID,
+    contact_id: uuid.UUID | None,
+    deal_id: uuid.UUID,
+) -> None:
+    """Stage `crm.lead.conversion_aborted` in the caller's transaction. This is the **only**
+    place the event is built (`tests/test_aborted_event_builder.py` keeps it that way): its
+    committed schema is closed (`additionalProperties: false`), so one builder is one place to
+    keep the payload true to it.
+
+    `generation` is the value **before** the bump this abort caused, so
+    `domain.conversion_ids(lead_id, generation)` re-derives the three ids the aborted attempt
+    used; `claim_id` names the attempt that ended. `company_id`, `contact_id` and `deal_id` are
+    the ids the abort *names*: for a finalize abort the ones customer and deal returned, which
+    may be records customer matched by name or email, and for `record_deleted` the ones derived
+    at `generation` (nothing was returned). Either way they prove nothing about who created the
+    records. Ids only: no name, no email, no phone.
+    """
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_LEAD_CONVERSION_ABORTED,
+        aggregate_type="lead",
+        aggregate_id=lead.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "lead_id": str(lead.id),
+            "reason": reason,
+            "generation": generation,
+            "claim_id": str(claim_id),
+            "company_id": str(company_id),
+            "contact_id": str(contact_id) if contact_id else None,
+            "deal_id": str(deal_id),
+        },
+        actor=_actor(ctx),
+    )
+
+
 async def finalize_conversion(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -1155,20 +1202,16 @@ async def finalize_conversion(
                     after=abort_after,
                     request=request,
                 )
-                publish_event(
+                _stage_conversion_aborted(
                     session,
-                    OutboxEvent,
-                    organization_id=ctx.organization_id,
-                    event_type=EVT_LEAD_CONVERSION_ABORTED,
-                    aggregate_type="lead",
-                    aggregate_id=lead.id,
-                    payload={
-                        "organization_id": str(ctx.organization_id),
-                        "lead_id": str(lead.id),
-                        "reason": abort_reason,
-                        **orphans,
-                    },
-                    actor=_actor(ctx),
+                    ctx,
+                    lead,
+                    reason=abort_reason,
+                    claim_id=claim_id,
+                    generation=aborted_generation,
+                    company_id=company_id,
+                    contact_id=contact_id,
+                    deal_id=deal_id,
                 )
             else:
                 lead.status = "converted"

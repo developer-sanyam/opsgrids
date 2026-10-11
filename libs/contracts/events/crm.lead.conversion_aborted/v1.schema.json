@@ -2,14 +2,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "opsgrids://contracts/crm.lead.conversion_aborted/v1",
   "title": "crm.lead.conversion_aborted",
-  "description": "A lead's conversion reached its final step and was refused: the lead's status or owner changed after the conversion was claimed. The company, contact and deal named here were already created in customer and deal and are now orphans of an abandoned attempt — this is the hook something that can clean them up would consume. contact_id is null when the lead carried no email.",
+  "description": "A lead's conversion attempt ended without writing 'converted': the lead's status or owner changed after the conversion was claimed (status_changed, owner_changed). Every abort bumps the lead's conversion generation, so a retried conversion derives ids no aborted attempt used. `generation` is the value before that bump: a consumer re-derives the attempt's company, contact and deal ids from (lead_id, generation) and must ignore an event that carries none. The ids named here are the ones customer and deal returned, which may be records customer matched by name or email rather than created; they prove nothing about provenance. contact_id is null when the lead carried no email.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["organization_id", "lead_id", "reason", "company_id", "contact_id", "deal_id"],
+  "required": [
+    "organization_id", "lead_id", "reason", "generation", "claim_id",
+    "company_id", "contact_id", "deal_id"
+  ],
   "properties": {
     "organization_id": { "type": "string", "format": "uuid" },
     "lead_id": { "type": "string", "format": "uuid" },
     "reason": { "enum": ["status_changed", "owner_changed"] },
+    "generation": { "type": "integer", "minimum": 0 },
+    "claim_id": { "type": "string", "format": "uuid" },
     "company_id": { "type": "string", "format": "uuid" },
     "contact_id": { "type": ["string", "null"], "format": "uuid" },
     "deal_id": { "type": "string", "format": "uuid" }

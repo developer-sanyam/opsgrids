@@ -509,6 +509,89 @@ class TestAnAbortedConversionLeavesATrail:
         assert len(events) == 1
         assert aborted_audits == 1
 
+    @pytest.mark.parametrize(
+        ("sql", "params", "match"),
+        [
+            pytest.param(_DISQUALIFY, {}, "status changed", id="status"),
+            pytest.param(
+                'UPDATE "lead"."leads" SET owner_id = :owner WHERE id = :id',
+                {"owner": uuid.uuid4()},
+                "reassigned",
+                id="owner",
+            ),
+        ],
+    )
+    async def test_the_event_names_the_generation_the_abort_started_from(
+        self, session, org_id, data, sql, params, match
+    ) -> None:
+        lead_id = data["lead_a_id"]
+        claim = await self._abort(session, org_id, lead_id, sql=sql, params=params, match=match)
+        audit, event, lead = await self._trail(session, org_id, lead_id)
+
+        payload = dict(event.payload)
+        validate_event_schema(
+            "crm.lead.conversion_aborted", 1, payload, contracts_root=CONTRACTS_ROOT
+        )
+        # The value BEFORE the bump -- the audit row's post-bump value minus one -- so a
+        # consumer re-deriving from it reaches the ids this attempt used and no later one's.
+        assert payload["generation"] == claim.generation == 0
+        assert payload["generation"] == audit.after["conversion_generation"] - 1
+        assert lead is not None
+        assert lead.conversion_generation == payload["generation"] + 1
+        assert domain.conversion_ids(lead_id, payload["generation"]) == (
+            uuid.UUID(payload["company_id"]),
+            uuid.UUID(payload["contact_id"]),
+            uuid.UUID(payload["deal_id"]),
+        )
+
+    async def test_a_second_abort_event_names_generation_one(self, session, org_id, data) -> None:
+        lead_id = data["lead_a_id"]
+        await self._abort(
+            session, org_id, lead_id, sql=_DISQUALIFY, params={}, match="status changed"
+        )
+        await self._requalify(session, lead_id)
+        second = await self._abort(
+            session, org_id, lead_id, sql=_DISQUALIFY, params={}, match="status changed"
+        )
+
+        async with session.begin():
+            events = (
+                (
+                    await session.execute(
+                        select(OutboxEvent).where(
+                            OutboxEvent.event_type == "crm.lead.conversion_aborted",
+                            OutboxEvent.aggregate_id == lead_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        payloads = sorted((dict(e.payload) for e in events), key=lambda p: p["generation"])
+        for payload in payloads:
+            validate_event_schema(
+                "crm.lead.conversion_aborted", 1, payload, contracts_root=CONTRACTS_ROOT
+            )
+        assert [p["generation"] for p in payloads] == [0, 1]
+        # The second event names the second attempt: its claim and the ids of generation one.
+        assert payloads[1]["claim_id"] == str(second.claim_id)
+        assert payloads[1]["company_id"] == str(domain.conversion_ids(lead_id, 1)[0])
+
+    async def test_the_payload_carries_the_claim_id_of_the_attempt_that_ended(
+        self, session, org_id, data
+    ) -> None:
+        lead_id = data["lead_a_id"]
+        claim_a, claim_b = await self._takeover_then_abort(session, org_id, lead_id)
+        audit, event, _lead = await self._trail(session, org_id, lead_id)
+
+        validate_event_schema(
+            "crm.lead.conversion_aborted", 1, dict(event.payload), contracts_root=CONTRACTS_ROOT
+        )
+        # B ended the attempt. A's claim id is the dead one and must never be named.
+        assert claim_a.claim_id != claim_b.claim_id
+        assert event.payload["claim_id"] == str(claim_b.claim_id)
+        assert audit.after["claim_id"] == str(claim_b.claim_id)
+
 
 class TestUpdateLeadNeverHoldsTheRowAcrossTheDirectoryCall:
     """Fix round 4, finding 4: `update_lead` used to lock the lead's row and *then* ask
