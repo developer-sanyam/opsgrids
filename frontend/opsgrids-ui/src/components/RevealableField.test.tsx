@@ -44,9 +44,9 @@ describe("RevealableField", () => {
 
   it("shows a revealed text value as text, named by its own label and noun", () => {
     render(
-      <RevealableField kind="text" label="PAN" noun="PAN" masked="••••••234F" canReveal field={field({ value: "ABCDE1234F" })} stepUpIdle />,
+      <RevealableField kind="text" label="PAN" noun="PAN" masked="••••••234Q" canReveal field={field({ value: "AAPPK1234Q" })} stepUpIdle />,
     );
-    expect(screen.getByText("ABCDE1234F")).toBeTruthy();
+    expect(screen.getByText("AAPPK1234Q")).toBeTruthy();
     expect(screen.queryByRole("link")).toBeNull();
     expect(screen.getByRole("button", { name: "Hide PAN" })).toBeTruthy();
   });

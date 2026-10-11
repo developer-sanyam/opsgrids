@@ -196,9 +196,9 @@ function Profile({ data, revealSlot }: { data: Customer360ViewModel; revealSlot:
         {present(customer.phone) ? (
           <ProfileField label="Phone" mono>
             {customer.phone}
+            {revealSlot !== undefined ? <span className="mt-1 flex justify-end font-sans">{revealSlot}</span> : null}
           </ProfileField>
         ) : null}
-        {revealSlot !== undefined ? <div className="flex justify-end">{revealSlot}</div> : null}
         {present(customer.email) ? (
           <ProfileField label="Email" mono>
             {customer.email}

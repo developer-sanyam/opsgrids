@@ -30,7 +30,7 @@ export const RevealedEmail: Story = {
 
 /** An HRMS identifier: plain text, named by its own label. */
 export const RevealedText: Story = {
-  args: { kind: "text", label: "PAN", noun: "PAN", masked: "••••••234F", field: { ...MASKED, value: "ABCDE1234F" } },
+  args: { kind: "text", label: "PAN", noun: "PAN", masked: "••••••234Q", field: { ...MASKED, value: "AAPPK1234Q" } },
 };
 
 export const Refused: Story = {

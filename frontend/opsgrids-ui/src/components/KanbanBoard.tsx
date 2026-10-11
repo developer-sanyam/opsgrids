@@ -168,7 +168,13 @@ export function KanbanBoard<T>({
       && columnOf(dragged) !== column.id && canMove(dragged, column.id);
 
   return (
-    <div className="flex snap-x gap-4 overflow-x-auto pb-2">
+    <div
+      role="group"
+      aria-label="Board columns"
+      // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scroll container must be keyboard-reachable (WCAG 2.1.1), even when no card in it takes focus.
+      tabIndex={0}
+      className="flex snap-x gap-4 overflow-x-auto rounded-card pb-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+    >
       {shown.map((column) => {
         const columnItems = items.filter((item) => columnOf(item) === column.id);
         const hasMore = column.total !== undefined && column.total > columnItems.length;
@@ -239,7 +245,9 @@ export function KanbanBoard<T>({
                     className={cn(
                       "flex flex-col gap-3 rounded-tile border border-line bg-surface p-3 shadow-card transition-opacity focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
                       !readOnly && "cursor-grab active:cursor-grabbing",
-                      (dragging || moving) && "opacity-50",
+                      // Not faded while moving: the card stays readable at full contrast.
+                      dragging && "opacity-50",
+                      moving && "border-dashed border-accent",
                     )}
                   >
                     {renderCard(item, { dragging, moving, actions })}

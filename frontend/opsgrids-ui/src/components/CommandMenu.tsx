@@ -193,23 +193,25 @@ export function CommandMenu({ open, onClose, items, placeholder, fallback, resul
               No matches for &ldquo;{query.trim()}&rdquo;.
             </p>
           ) : displayed.length === 0 ? null : (
-            <ul id={listboxId} role="listbox" aria-label={placeholder}>
+            <div id={listboxId} role="listbox" aria-label={placeholder}>
               {groups.map((group) => (
-                <li key={group}>
-                  <p className="px-3 pb-1 pt-2 text-caption font-bold uppercase tracking-wider text-faint">
+                <div key={group} role="group" aria-label={group}>
+                  <p aria-hidden className="px-3 pb-1 pt-2 text-caption font-bold uppercase tracking-wider text-faint">
                     {group}
                   </p>
-                  <ul>
+                  <div>
                     {displayed
                       .map((item, index) => ({ item, index }))
                       .filter(({ item }) => item.group === group)
                       .map(({ item, index }) => {
                         const Icon = item.icon;
                         return (
-                          <li
+                          <div
                             key={item.key}
                             id={optionId(item.key)}
                             role="option"
+                            // Named by the input's aria-activedescendant; the input keeps real focus.
+                            tabIndex={-1}
                             aria-selected={index === activeIndex}
                             onMouseEnter={() => setActiveIndex(index)}
                             onMouseDown={(event) => {
@@ -225,13 +227,13 @@ export function CommandMenu({ open, onClose, items, placeholder, fallback, resul
                           >
                             {Icon ? <Icon className="size-4.5 shrink-0" aria-hidden /> : null}
                             <span className="truncate">{item.label}</span>
-                          </li>
+                          </div>
                         );
                       })}
-                  </ul>
-                </li>
+                  </div>
+                </div>
               ))}
-            </ul>
+            </div>
           )}
           {results !== undefined ? (
             // Always mounted while results are wired: a live region must exist before its text does.

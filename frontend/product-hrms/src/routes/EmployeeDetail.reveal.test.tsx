@@ -36,7 +36,7 @@ const EMPLOYEE: EmployeeOut = {
     date_of_birth: "••/••/1994",
     personal_email: "a•••@mail.example",
     personal_phone: "•••••• 4821",
-    pan: "••••••234F",
+    pan: "••••••234Q",
     aadhaar: null,
     uan: null,
     esi: null,
@@ -90,7 +90,7 @@ beforeEach(() => {
         organization_id: "org-1",
         membership_id: "mem-1",
       }),
-    [UNMASK]: () => json({ pan: "ABCDE1234F" }),
+    [UNMASK]: () => json({ pan: "AAPPK1234Q" }),
   };
   vi.stubGlobal(
     "fetch",
@@ -136,7 +136,7 @@ describe("EmployeeDetail reveal", () => {
     expect(screen.getByRole("dialog", { name: "Confirm it's you" })).toBeTruthy();
     await user.type(screen.getByRole("textbox", { name: /6-digit code/ }), "123456");
 
-    expect(await screen.findByText("ABCDE1234F")).toBeTruthy();
+    expect(await screen.findByText("AAPPK1234Q")).toBeTruthy();
     const unmask = calls.filter((call) => call.key === UNMASK);
     expect(unmask).toHaveLength(1);
     expect(unmask[0]?.authorization).toBe(`Bearer ${STEP_UP_TOKEN}`);
@@ -144,13 +144,13 @@ describe("EmployeeDetail reveal", () => {
     expect(screen.queryByText(/A second factor is required/)).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Hide PAN" }));
-    await waitFor(() => expect(screen.queryByText("ABCDE1234F")).toBeNull());
-    expect(screen.getByText("••••••234F")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText("AAPPK1234Q")).toBeNull());
+    expect(screen.getByText("••••••234Q")).toBeTruthy();
   });
 
   it("offers no Reveal without the permission, and makes no call", async () => {
     renderPage([]);
-    expect(await screen.findByText("••••••234F")).toBeTruthy();
+    expect(await screen.findByText("••••••234Q")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Reveal/ })).toBeNull();
     expect(calls).toHaveLength(0);
   });
