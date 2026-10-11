@@ -73,16 +73,20 @@ class TestExpectedNamesFromProfiles:
         queues = expected_dlq_queues(["hrms"])
         assert queues == [*CORE_DLQ_QUEUES, "approval.events", "attendance.events", "leave.events"]
 
-    def test_a_profile_with_no_worker_adds_containers_but_no_queues(self) -> None:
-        """`crm` runs the `customer`, `deal` and `lead` APIs and one worker (customer's) — the
-        lead and deal services have no consumer, so only `customer.events` is added."""
+    def test_crm_runs_customers_and_deals_workers_and_leads_none(self) -> None:
+        """`crm` runs the `customer`, `deal` and `lead` APIs; customer and deal each fold a
+        consumer into their API process (deal's since CRM R2.4); lead has no consumer."""
         assert expected_api_containers(["crm"]) == [
             *CORE_API_CONTAINERS,
             "customer",
             "deal",
             "lead",
         ]
-        assert expected_dlq_queues(["crm"]) == [*CORE_DLQ_QUEUES, "customer.events"]
+        assert expected_dlq_queues(["crm"]) == [
+            *CORE_DLQ_QUEUES,
+            "customer.events",
+            "deal.events",
+        ]
 
     def test_every_profile_together_is_the_full_platform(self) -> None:
         all_profiles = [

@@ -79,19 +79,25 @@ x-service-env: &service-env
   DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
   # On, by this default, on the edge: every service that used to have its own `*-worker`
   # container (account, product, subscription, payment, notification, approval, attendance,
-  # leave, customer, finance) now runs that worker's loops — consumers, dispatchers, sweeps,
+  # leave, customer, finance, and deal since CRM R2.4) now runs that worker's loops — consumers, dispatchers, sweeps,
   # drivers, whatever `bin/worker` ran — as supervised background tasks inside the API process
   # itself, on their own bulkhead engine (`create_bulkhead_engine`), instead of a second
   # container idling at ~90 MB apiece (the worker-folding follow-up to the memory-headroom
   # slice, which already folded every service's `*-cron` sweep the same way — see each folded
   # `*-worker` container's own comment, below). A service with no field named
   # `run_consumers_in_api` (every service that never had a worker: `auth`, `app-gateway`,
-  # `catalog`, `billing`, `metering`, `deal`, `lead`, `project`, `timesheet`, `standup`,
+  # `catalog`, `billing`, `metering`, `lead`, `project`, `timesheet`, `standup`,
   # `projects`, `support`, `marketing`, `itsm`) simply ignores this — `ServiceSettings` is
   # `extra="ignore"`, so an unused env var here is inert, not an error. Rollback is `false`
-  # here plus `split-workers` added to `EDGE_PROFILES` (RUNBOOK.md) — the ten `*-worker`
+  # here plus `split-workers` added to `EDGE_PROFILES` (RUNBOOK.md) — the eleven `*-worker`
   # containers below still exist, unchanged, behind that profile, off by default.
   RUN_CONSUMERS_IN_API: ${RUN_CONSUMERS_IN_API:-true}
+  # What deal's and customer's `crm.lead.conversion_aborted` handlers do with an aborted lead
+  # conversion's orphan records: `log_only` (this default) decides and logs and writes nothing;
+  # `on` soft-deletes provable orphans; `off` ignores the event. Only the owner sets `on`, in the
+  # box `.env`, after the soak (RUNBOOK.md, "CRM: aborted-conversion cleanup"). Deliberately not
+  # in `.env.example`: a key there becomes a preflight prerequisite.
+  CRM_CONVERSION_CLEANUP_MODE: ${CRM_CONVERSION_CLEANUP_MODE:-log_only}
   JWKS_URL: http://auth:8000/.well-known/jwks.json
   JWT_ISSUER: ${JWT_ISSUER}
   JWT_KID: ${JWT_KID}
@@ -1469,6 +1475,16 @@ services:
     environment: *service-env
     networks:
       - back
+
+  # Binds `crm.lead.conversion_aborted` to clean up an aborted conversion's orphan deal
+  # (app/consumers.py, CRM R2.4). Off by default — see `account-worker`'s own comment: the
+  # consumer runs inside `deal`'s own API process; this container is the `split-workers` rollback.
+  deal-worker:
+    <<: *background
+    profiles: ['split-workers']
+    image: opsgrids-edge/deal
+    command: ['./bin/worker']
+    environment: *service-env
 
   # The lead half of the `crm` product (ADR-0017). Publishes four event types, `crm.lead.created`,
   # `.updated`, `.converted` and `.conversion_aborted`, and consumes nothing, so no dedicated
