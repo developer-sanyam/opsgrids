@@ -6,9 +6,9 @@ import type { Deal, DealStage } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
 import { companyName, ownerName } from "@/data/lookups";
 import { isOpen, STAGES } from "@/data/stages";
-import { Avatar, CalendarIcon, GripIcon, Select, cn } from "@opsgrids/ui";
+import { formatMoney, Avatar, CalendarIcon, GripIcon, Select, cn } from "@opsgrids/ui";
 import { problemMessage, useMutation } from "@opsgrids/client";
-import { formatDate, formatMoneyCompact } from "@/lib/format";
+import { formatDate } from "@/lib/format";
 
 const STAGE_OPTIONS = STAGES.map((s) => ({ value: s.stage, label: s.label }));
 
@@ -66,7 +66,7 @@ function DealCard({
 
       <div className="flex items-center justify-between gap-2">
         <span className="tnum text-sm font-extrabold text-ink">
-          {formatMoneyCompact(deal.value_minor, deal.currency)}
+          {formatMoney(deal.value_minor, deal.currency, { compact: true })}
         </span>
         <span className="inline-flex items-center gap-1 text-xs text-muted tnum">
           <CalendarIcon className="size-3.5 text-faint" />
@@ -200,7 +200,7 @@ export function KanbanBoard({ groups, canMove, onMoved, onMoveFailed, reload }: 
                   {deals.length}
                 </span>
                 <span className="ml-auto tnum text-xs font-semibold text-muted">
-                  {formatMoneyCompact(columnValue, currency)}
+                  {formatMoney(columnValue, currency, { compact: true })}
                 </span>
               </header>
 

@@ -14,6 +14,7 @@
  */
 
 import { ApiError, apiRequest } from "@opsgrids/client";
+import type { RevealRequestOptions } from "@opsgrids/client";
 
 import {
   ATTENDANCE_TODAY,
@@ -188,11 +189,14 @@ export async function transitionEmployee(
 export async function unmaskEmployeePii(
   employeeId: string,
   body: PiiUnmaskIn,
+  /** `revealRequest(headers)`: the step-up token as the call's only bearer. */
+  reveal?: RevealRequestOptions,
 ): Promise<EmployeePiiUnmasked> {
   if (USE_FIXTURES) return settle(__unmaskFixturePii(employeeId, body));
   return apiRequest<EmployeePiiUnmasked>(`/employees/${employeeId}/pii/unmask`, {
     method: "POST",
     body,
+    ...reveal,
   });
 }
 

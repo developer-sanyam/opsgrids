@@ -307,12 +307,27 @@ function ReportView({
             <dd className="text-ink">{audienceLabel}</dd>
           </div>
         </dl>
+        {campaign.ab_test === true ? (
+          <p className="text-sm text-ink">
+            {campaign.ab_winner
+              ? `A/B test: version ${campaign.ab_winner.toUpperCase()} won on ${campaign.ab_metric === "click" ? "click" : "open"} rate and went to everyone not in a test group.`
+              : `A/B test: each version goes to ${formatNumber(campaign.ab_split_percent ?? 10)}% of the audience; the winner by ${campaign.ab_metric === "click" ? "click" : "open"} rate goes to the rest after ${formatNumber((campaign.ab_wait_minutes ?? 240) / 60)} hours.`}
+          </p>
+        ) : null}
         <CampaignPreview
           subject={campaign.subject}
           html={campaign.html_body}
           text={campaign.text_body}
           heading="h3"
         />
+        {campaign.ab_test === true ? (
+          <CampaignPreview
+            subject={campaign.subject_b ?? ""}
+            html={campaign.html_body_b ?? ""}
+            text={campaign.text_body_b ?? ""}
+            heading="h3"
+          />
+        ) : null}
       </Card>
 
       <ConfirmDialog

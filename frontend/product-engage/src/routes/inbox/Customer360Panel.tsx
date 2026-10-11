@@ -1,14 +1,13 @@
 import { useId, useState } from "react";
-import type { ReactNode } from "react";
 
 import { ApiError, getPlatformHost, useAsync } from "@opsgrids/client";
-import { ArrowUpRight, CheckCircleIcon, ClockIcon, UserIcon, formatDuration } from "@opsgrids/ui";
+import { ArrowUpRight, CheckCircleIcon, ClockIcon, Customer360View, UserIcon, formatDuration } from "@opsgrids/ui";
 
 import { getCustomer360 } from "@/api/customer360";
-import type { Customer360, Money } from "@/api/customer360";
+import type { Customer360 } from "@/api/customer360";
 import { crmContactsUrl } from "@/lib/dashboard";
 import { formatInstant } from "@/lib/format";
-import { Button, Card, EmptyState, InlineAlert, Skeleton, StatusBadge, Tag } from "@/ui";
+import { Button, Card, EmptyState, InlineAlert, Skeleton } from "@/ui";
 
 /**
  * The customer beside a conversation: who they are, whether they may be messaged, and what the
@@ -23,10 +22,13 @@ import { Button, Card, EmptyState, InlineAlert, Skeleton, StatusBadge, Tag } fro
  *
  * Links go to routes that exist in the other apps today, by plain `href`; a section whose app has
  * no route for it (there is no orders screen for a customer) simply has no link.
+ *
+ * The profile and the section rows are the shared `Customer360View`; this panel keeps the fetch,
+ * its card, its one live region, the failure messages and the Engage-only channel and quick
+ * action blocks.
  */
 
-const SECTIONS = ["crm", "orders", "finance", "support"] as const;
-type SectionKey = (typeof SECTIONS)[number];
+type SectionKey = "crm" | "orders" | "finance" | "support";
 
 const SECTION_LABEL: Record<SectionKey, string> = {
   crm: "CRM",
@@ -36,227 +38,25 @@ const SECTION_LABEL: Record<SectionKey, string> = {
 };
 
 /** Where "View" goes, per section. `null` means the app has no route for it, so there is no link. */
-function sectionHref(key: SectionKey): string | null {
-  switch (key) {
+function sectionHref(name: string): string | null {
+  switch (name) {
     case "crm":
       return crmContactsUrl();
     case "finance":
       return `${getPlatformHost("finance")}/invoices`;
     case "support":
       return `${getPlatformHost("support")}/queue`;
-    case "orders":
+    default:
       return null;
   }
-}
-
-function initials(name: string): string {
-  const letters = name
-    .split(/\s+/)
-    .filter((part) => part !== "")
-    .slice(0, 2)
-    .map((part) => part.charAt(0).toUpperCase());
-  return letters.join("");
-}
-
-/** Integer minor units in, a currency string out. The division is display-only, and the
- *  currency's own minor-unit count is read from `Intl` rather than assumed to be two. */
-function formatMoney({ amount_minor, currency }: Money): string {
-  try {
-    const formatter = new Intl.NumberFormat(undefined, { style: "currency", currency });
-    const digits = formatter.resolvedOptions().maximumFractionDigits ?? 2;
-    return formatter.format(amount_minor / 10 ** digits);
-  } catch {
-    return `${amount_minor} ${currency}`;
-  }
-}
-
-function formatDay(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
-
-function plural(count: number, one: string, many: string): string {
-  return `${count} ${count === 1 ? one : many}`;
 }
 
 function isUnavailable(data: Customer360, key: SectionKey): boolean {
   return data[key] === null || data.unavailable.includes(key);
 }
 
-function ViewLink({ href, label }: { href: string; label: string }) {
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      aria-label={label}
-      className="inline-flex shrink-0 items-center gap-1 rounded-tile text-sm font-medium text-accent hover:text-accent-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-    >
-      View
-      <ArrowUpRight className="size-3.5" aria-hidden />
-    </a>
-  );
-}
-
-function SectionRow({
-  label,
-  href,
-  children,
-}: {
-  label: string;
-  href: string | null;
-  children: ReactNode;
-}) {
-  return (
-    <li className="flex items-start justify-between gap-3 border-t border-line py-3 first:border-t-0">
-      <div className="flex min-w-0 flex-col gap-1">
-        <h3 className="text-sm font-semibold text-ink">{label}</h3>
-        {children}
-      </div>
-      {href !== null ? <ViewLink href={href} label={`View ${label} records`} /> : null}
-    </li>
-  );
-}
-
 function NotAvailable() {
   return <p className="text-sm text-muted">Not available</p>;
-}
-
-function Line({ children }: { children: ReactNode }) {
-  return <p className="text-sm text-muted">{children}</p>;
-}
-
-function SectionBody({ data, section }: { data: Customer360; section: SectionKey }) {
-  const { crm, orders, finance, support } = data;
-
-  if (section === "crm" && crm !== null) {
-    return (
-      <>
-        <Line>
-          {crm.stage !== null ? `Stage: ${crm.stage}` : "No stage set"} ·{" "}
-          {plural(crm.open_opportunities, "open opportunity", "open opportunities")}
-        </Line>
-        {crm.hot ? (
-          <span>
-            <Tag tone="warning">Hot</Tag>
-          </span>
-        ) : null}
-      </>
-    );
-  }
-  if (section === "orders" && orders !== null) {
-    return (
-      <>
-        <Line>
-          {plural(orders.count_90d, "order", "orders")} in the last 90 days ·{" "}
-          {formatMoney(orders.total_90d)}
-        </Line>
-        {orders.latest !== null ? (
-          <Line>
-            Latest {orders.latest.number} · {orders.latest.status} ·{" "}
-            {formatMoney(orders.latest.total)}
-          </Line>
-        ) : null}
-      </>
-    );
-  }
-  if (section === "finance" && finance !== null) {
-    return (
-      <>
-        <Line>
-          {formatMoney(finance.outstanding)} outstanding ·{" "}
-          {plural(finance.overdue_count, "overdue invoice", "overdue invoices")}
-        </Line>
-        {finance.latest_invoice !== null ? (
-          <Line>
-            Latest {finance.latest_invoice.number} · {finance.latest_invoice.status} · due{" "}
-            {formatDay(finance.latest_invoice.due_on)}
-          </Line>
-        ) : null}
-      </>
-    );
-  }
-  if (section === "support" && support !== null) {
-    return (
-      <Line>
-        {plural(support.open_tickets, "open ticket", "open tickets")} of {support.total_tickets}
-      </Line>
-    );
-  }
-  return <NotAvailable />;
-}
-
-function ProfileField({
-  label,
-  mono = false,
-  children,
-}: {
-  label: string;
-  mono?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <div className="flex justify-between gap-3">
-      <dt className="shrink-0 text-muted">{label}</dt>
-      <dd className={`min-w-0 break-all text-right text-ink ${mono ? "font-mono" : ""}`}>
-        {children}
-      </dd>
-    </div>
-  );
-}
-
-function Profile({ data }: { data: Customer360 }) {
-  const headingId = useId();
-  const { customer } = data;
-  const place = [customer.company, customer.city].filter((part) => part !== null).join(" · ");
-  return (
-    <section aria-labelledby={headingId} className="flex flex-col gap-3">
-      <div className="flex items-center gap-3">
-        <span
-          aria-hidden
-          className="flex size-10 shrink-0 items-center justify-center rounded-full bg-accent/10 text-sm font-semibold text-accent"
-        >
-          {initials(customer.name)}
-        </span>
-        <div className="flex min-w-0 flex-col gap-1">
-          <h3 id={headingId} className="truncate text-sm font-semibold text-ink">
-            {customer.name}
-          </h3>
-          <span>
-            <StatusBadge status={customer.status} label={customer.status === "active" ? "Active" : "Inactive"} />
-          </span>
-        </div>
-      </div>
-
-      <dl className="flex flex-col gap-1 text-sm">
-        <ProfileField label="Phone" mono>
-          {customer.phone}
-        </ProfileField>
-        <ProfileField label="Email" mono>
-          {customer.email}
-        </ProfileField>
-        {place !== "" ? <ProfileField label="Company">{place}</ProfileField> : null}
-        <ProfileField label="Customer since">{formatDay(customer.since)}</ProfileField>
-        <ProfileField label="Owner">
-          {customer.owner !== null ? customer.owner.name : "No owner assigned"}
-        </ProfileField>
-      </dl>
-
-      {customer.tags.length > 0 ? (
-        <ul aria-label="Tags" className="flex flex-wrap gap-2">
-          {customer.tags.map((tag) => (
-            <li key={tag}>
-              <Tag>{tag}</Tag>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </section>
-  );
 }
 
 function windowLine(openUntil: string | null): string {
@@ -358,31 +158,10 @@ function QuickActions({ data }: { data: Customer360 }) {
 }
 
 function Loaded({ data }: { data: Customer360 }) {
-  const modulesId = useId();
   return (
     <div className="flex flex-col gap-4">
-      <Profile data={data} />
+      <Customer360View data={data} sectionLabel={(name) => SECTION_LABEL[name as SectionKey] ?? name} sectionHref={sectionHref} />
       <Channels data={data} />
-      <section aria-labelledby={modulesId} className="flex flex-col">
-        <h3 id={modulesId} className="sr-only">
-          Across OpsGrids
-        </h3>
-        <ul className="flex flex-col">
-          {SECTIONS.map((key) => (
-            <SectionRow
-              key={key}
-              label={SECTION_LABEL[key]}
-              href={isUnavailable(data, key) ? null : sectionHref(key)}
-            >
-              {isUnavailable(data, key) ? (
-                <NotAvailable />
-              ) : (
-                <SectionBody data={data} section={key} />
-              )}
-            </SectionRow>
-          ))}
-        </ul>
-      </section>
       <QuickActions data={data} />
     </div>
   );

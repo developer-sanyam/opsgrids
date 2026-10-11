@@ -31,6 +31,7 @@ import {
   WHATSAPP_TEMPLATES,
 } from "./fixtures";
 import type {
+  CampaignChannel,
   CampaignIn,
   CampaignOut,
   CampaignPatch,
@@ -64,6 +65,9 @@ import type {
   ProviderTemplateIn,
   ProviderTemplateOut,
   RecipientStatus,
+  SegmentCountOut,
+  SegmentIn,
+  SegmentOut,
   SenderIn,
   SenderOut,
   SetupOut,
@@ -648,6 +652,34 @@ export async function removeListMembers(
   return apiRequest<ListMembersOut>(
     `/engage/lists/${encodeURIComponent(listId)}/members/remove`,
     { method: "POST", body: input },
+  );
+}
+
+/* --------------------------------------- segments --------------------------------------- */
+
+/** Saved audience filters, by name — `GET /engage/segments`. One full page: a picker. */
+export async function listSegments(): Promise<Page<SegmentOut>> {
+  if (USE_FIXTURES) return settle(fixturePage<SegmentOut>([]));
+  const query = new URLSearchParams({ size: String(FULL_PAGE) });
+  return apiRequest<Page<SegmentOut>>(`/engage/segments?${query.toString()}`);
+}
+
+/** Save an audience filter — `POST /engage/segments`. */
+export async function createSegment(input: SegmentIn): Promise<SegmentOut> {
+  if (USE_FIXTURES) refuseWithoutService("Saving a segment");
+  return apiRequest<SegmentOut>("/engage/segments", { method: "POST", body: input });
+}
+
+/** How many contacts a campaign on `channel` would reach right now —
+ *  `GET /engage/segments/{segment_id}/count`. */
+export async function countSegment(
+  segmentId: string,
+  channel: CampaignChannel,
+): Promise<SegmentCountOut> {
+  if (USE_FIXTURES) return settle({ channel, recipients: 0 });
+  const query = new URLSearchParams({ channel });
+  return apiRequest<SegmentCountOut>(
+    `/engage/segments/${encodeURIComponent(segmentId)}/count?${query.toString()}`,
   );
 }
 

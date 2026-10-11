@@ -51,6 +51,8 @@
     { "prefix": "/api/v1/admin/credit-ledger", "upstream": "http://localhost:8160", "staff_only": true },
     { "prefix": "/api/v1/admin/invoices", "upstream": "http://localhost:8160", "staff_only": true },
 
+    { "prefix": "/api/v1/admin/engage", "upstream": "http://localhost:8151", "staff_only": true },
+
     { "prefix": "/api/v1/webhooks", "upstream": "http://localhost:8163" }
   ]
 }

@@ -11,7 +11,15 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 Channel = Literal["email", "whatsapp", "in_app"]
 TemplateCategory = Literal["utility", "marketing", "authentication"]
@@ -685,7 +693,10 @@ class ListMembersOut(BaseModel):
 # --------------------------------------------------------------------- engage campaigns
 
 CampaignStatus = Literal["draft", "scheduled", "sending", "paused", "sent", "cancelled"]
-CampaignAudience = Literal["list", "all_sendable"]
+CampaignAudience = Literal["list", "all_sendable", "segment"]
+CampaignChannel = Literal["email", "whatsapp"]
+#: Fixed values for a WhatsApp template's variables, by variable key or 1-based position.
+TemplateValues = dict[str, Annotated[str, StringConstraints(max_length=1024)]]
 RecipientStatus = Literal["queued", "sent", "failed", "suppressed"]
 
 
@@ -700,23 +711,42 @@ def _reject_header_injection(value: str) -> str:
     return value
 
 
+#: What picks an A/B test's winner: the share of each version's delivered recipients who opened,
+#: or who clicked.
+AbMetric = Literal["open", "click"]
+
+
 class CampaignIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=200)
-    sender_id: uuid.UUID
+    #: email (the default) needs `sender_id`; whatsapp needs `provider_template_id` instead.
+    channel: CampaignChannel = "email"
+    sender_id: uuid.UUID | None = None
+    provider_template_id: uuid.UUID | None = None
+    template_values: TemplateValues = Field(default_factory=dict, max_length=50)
     subject: str = Field(default="", max_length=255)
     html_body: str = Field(default="", max_length=500_000)
     text_body: str = Field(default="", max_length=500_000)
     audience: CampaignAudience = "all_sendable"
     list_id: uuid.UUID | None = None
+    segment_id: uuid.UUID | None = None
     scheduled_at: datetime | None = None
     #: Off by default. On rewrites this campaign's links / adds a pixel through signed tracking
     #: URLs on the platform's domain (slice E1).
     track_opens: bool = False
     track_clicks: bool = False
+    #: A/B test: version B of the subject and body, the share of the audience each version is
+    #: tested on, the metric that picks the winner and how long to wait before picking it.
+    ab_test: bool = False
+    subject_b: str = Field(default="", max_length=255)
+    html_body_b: str = Field(default="", max_length=500_000)
+    text_body_b: str = Field(default="", max_length=500_000)
+    ab_split_percent: int = Field(default=10, ge=1, le=50)
+    ab_metric: AbMetric = "open"
+    ab_wait_minutes: int = Field(default=240, ge=15, le=10080)
 
-    @field_validator("subject")
+    @field_validator("subject", "subject_b")
     @classmethod
     def _subject_no_crlf(cls, value: str) -> str:
         return _reject_header_injection(value)
@@ -757,11 +787,21 @@ class CampaignPatch(BaseModel):
     text_body: str | None = Field(default=None, max_length=500_000)
     audience: CampaignAudience | None = None
     list_id: uuid.UUID | None = None
+    segment_id: uuid.UUID | None = None
+    provider_template_id: uuid.UUID | None = None
+    template_values: TemplateValues | None = Field(default=None, max_length=50)
     scheduled_at: datetime | None = None
     track_opens: bool | None = None
     track_clicks: bool | None = None
+    ab_test: bool | None = None
+    subject_b: str | None = Field(default=None, max_length=255)
+    html_body_b: str | None = Field(default=None, max_length=500_000)
+    text_body_b: str | None = Field(default=None, max_length=500_000)
+    ab_split_percent: int | None = Field(default=None, ge=1, le=50)
+    ab_metric: AbMetric | None = None
+    ab_wait_minutes: int | None = Field(default=None, ge=15, le=10080)
 
-    @field_validator("subject")
+    @field_validator("subject", "subject_b")
     @classmethod
     def _subject_no_crlf(cls, value: str | None) -> str | None:
         return value if value is None else _reject_header_injection(value)
@@ -778,7 +818,12 @@ class CampaignStats(BaseModel):
 class CampaignOut(BaseModel):
     id: str
     name: str
-    sender_id: str
+    channel: CampaignChannel = "email"
+    #: Null for a WhatsApp campaign.
+    sender_id: str | None
+    provider_template_id: str | None = None
+    template_values: dict[str, str] = Field(default_factory=dict)
+    segment_id: str | None = None
     subject: str
     html_body: str
     text_body: str
@@ -796,8 +841,51 @@ class CampaignOut(BaseModel):
     #: Whether opens / clicks are tracked for this campaign (off by default).
     track_opens: bool = False
     track_clicks: bool = False
+    #: A/B test settings; `ab_winner` (`a` | `b`) and `ab_decided_at` are set by the service once
+    #: the wait is over, null until then.
+    ab_test: bool = False
+    subject_b: str = ""
+    html_body_b: str = ""
+    text_body_b: str = ""
+    ab_split_percent: int = 10
+    ab_metric: AbMetric = "open"
+    ab_wait_minutes: int = 240
+    ab_winner: Literal["a", "b"] | None = None
+    ab_decided_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class SegmentIn(BaseModel):
+    """A saved filter over the contact book. Every field narrows; none at all is everyone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+    #: Only contacts on this list.
+    list_id: uuid.UUID | None = None
+    #: Only contacts added in the last N days.
+    created_within_days: int | None = Field(default=None, ge=1, le=3650)
+    #: Only contacts a campaign email was sent to in the last N days.
+    active_within_days: int | None = Field(default=None, ge=1, le=3650)
+
+
+class SegmentOut(BaseModel):
+    id: str
+    name: str
+    list_id: str | None
+    created_within_days: int | None
+    active_within_days: int | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SegmentCountOut(BaseModel):
+    """How many contacts a campaign on `channel` would reach right now: in the segment, with a
+    standing marketing opt-in for that channel, and (for email) not suppressed."""
+
+    channel: CampaignChannel
+    recipients: int
 
 
 class CampaignRecipientOut(BaseModel):

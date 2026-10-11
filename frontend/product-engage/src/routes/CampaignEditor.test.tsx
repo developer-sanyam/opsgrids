@@ -700,6 +700,72 @@ describe("a new campaign", () => {
     expect(await screen.findByRole("button", { name: "Send campaign" })).toBeTruthy();
   });
 
+  it("drafts an A/B test with version B, its split, metric and wait, and turns on the tracking it needs", async () => {
+    vi.spyOn(client, "listSenders").mockResolvedValue(page([TESTED]));
+    vi.spyOn(client, "listDomains").mockResolvedValue(page([VERIFIED]));
+    vi.spyOn(client, "listLists").mockResolvedValue(page([LIST]));
+    const create = vi.spyOn(client, "createCampaign").mockResolvedValue({ ...DRAFT, id: "new-id" });
+    vi.spyOn(client, "getCampaign").mockResolvedValue({ ...DRAFT, id: "new-id" });
+    vi.spyOn(client, "listCampaignRecipients").mockResolvedValue(page([]));
+    const user = userEvent.setup();
+    renderNew();
+
+    await user.type(await screen.findByLabelText("Campaign name"), "Diwali");
+    await user.selectOptions(screen.getByLabelText("Send as"), TESTED.id);
+    await user.type(screen.getByLabelText("Subject"), "Subject A");
+    await user.type(screen.getByLabelText(/^Plain-text body/), "Body A");
+    await user.click(screen.getByLabelText(/A\/B test two versions/));
+    await user.type(screen.getByLabelText("Version B subject"), "Subject B");
+    await user.type(screen.getByLabelText(/Version B plain-text body/), "Body B");
+    const split = screen.getByLabelText(/Test group size/);
+    await user.clear(split);
+    await user.type(split, "15");
+    await user.selectOptions(screen.getByLabelText("Pick the winner by"), "click");
+    const wait = screen.getByLabelText(/Wait before picking/);
+    await user.clear(wait);
+    await user.type(wait, "6");
+    await user.click(screen.getByRole("button", { name: "Create draft" }));
+
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith({
+        name: "Diwali",
+        sender_id: TESTED.id,
+        subject: "Subject A",
+        html_body: "",
+        text_body: "Body A",
+        audience: "all_sendable",
+        ab_test: true,
+        subject_b: "Subject B",
+        html_body_b: "",
+        text_body_b: "Body B",
+        ab_split_percent: 15,
+        ab_metric: "click",
+        ab_wait_minutes: 360,
+        track_clicks: true,
+      }),
+    );
+  });
+
+  it("refuses an A/B split outside 1 to 50 per cent inline", async () => {
+    vi.spyOn(client, "listSenders").mockResolvedValue(page([TESTED]));
+    vi.spyOn(client, "listDomains").mockResolvedValue(page([VERIFIED]));
+    vi.spyOn(client, "listLists").mockResolvedValue(page([LIST]));
+    const create = vi.spyOn(client, "createCampaign");
+    const user = userEvent.setup();
+    renderNew();
+
+    await user.type(await screen.findByLabelText("Campaign name"), "Diwali");
+    await user.selectOptions(screen.getByLabelText("Send as"), TESTED.id);
+    await user.click(screen.getByLabelText(/A\/B test two versions/));
+    const split = screen.getByLabelText(/Test group size/);
+    await user.clear(split);
+    await user.type(split, "60");
+    await user.click(screen.getByRole("button", { name: "Create draft" }));
+
+    expect(await screen.findByText("Test each version on 1 to 50 per cent of the audience.")).toBeTruthy();
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it("marks every missing required field at once, and names a list when the audience is one", async () => {
     vi.spyOn(client, "listSenders").mockResolvedValue(page([TESTED]));
     vi.spyOn(client, "listDomains").mockResolvedValue(page([VERIFIED]));

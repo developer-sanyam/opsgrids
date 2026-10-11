@@ -38,6 +38,50 @@ describe("campaign analytics", () => {
     expect(screen.queryByText("12,842")).toBeNull();
   });
 
+  it("compares an A/B test's two versions and names the winner", async () => {
+    vi.spyOn(analytics, "getCampaignAnalytics").mockResolvedValue({
+      ...CAMPAIGN,
+      ab_test: {
+        metric: "open",
+        split_percent: 10,
+        wait_minutes: 240,
+        winner: "b",
+        decided_at: "2026-10-05T14:00:00+00:00",
+        variants: [
+          { variant: "a", subject: "Subject A", recipients: 100, delivered: 98, opened: 20, clicked: 2, open_rate: 0.2041, click_rate: 0.0204 },
+          { variant: "b", subject: "Subject B", recipients: 100, delivered: 99, opened: 35, clicked: 3, open_rate: 0.3535, click_rate: 0.0303 },
+        ],
+      },
+    });
+    mount();
+
+    const table = await screen.findByRole("table", { name: "A/B test results" });
+    expect(table.textContent).toContain("Subject A");
+    expect(table.textContent).toContain("Subject B");
+    expect(table.textContent).toContain("35.4%");
+    expect(screen.getByText(/Version B won on open rate/)).toBeTruthy();
+  });
+
+  it("says an A/B test is still waiting for its winner", async () => {
+    vi.spyOn(analytics, "getCampaignAnalytics").mockResolvedValue({
+      ...CAMPAIGN,
+      ab_test: {
+        metric: "click",
+        split_percent: 20,
+        wait_minutes: 120,
+        winner: null,
+        decided_at: null,
+        variants: [
+          { variant: "a", subject: "Subject A", recipients: 10, delivered: 0, opened: 0, clicked: 0, open_rate: 0, click_rate: 0 },
+          { variant: "b", subject: "Subject B", recipients: 10, delivered: 0, opened: 0, clicked: 0, open_rate: 0, click_rate: 0 },
+        ],
+      },
+    });
+    mount();
+
+    expect(await screen.findByText(/winner by click rate after 2 hours/)).toBeTruthy();
+  });
+
   it("asks for the campaign named in the URL", async () => {
     const read = vi.spyOn(analytics, "getCampaignAnalytics").mockResolvedValue(CAMPAIGN);
     mount();

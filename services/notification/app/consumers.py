@@ -339,6 +339,30 @@ async def wake_automation_run(
     return outcome
 
 
+async def decide_ab_test(envelope: dict[str, Any]) -> str:
+    """Pick an email campaign's A/B winner once its wait is over (the scheduler republishes
+    `notification.campaign.ab_decide_due` at the due time, ADR-0015). Idempotent twice over: the
+    event id goes through the ledger, and `services.decide_ab_test` never re-decides a campaign
+    that already has a winner. Returns the winner or why nothing was decided."""
+    event_id = uuid.UUID(str(envelope["event_id"]))
+    organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload = envelope.get("payload") or {}
+    if str(payload.get("organization_id", organization_id)) != str(organization_id):
+        log.error("campaign.ab_decide.envelope_payload_org_mismatch")
+        return "mismatch"
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            return "redelivered"
+        outcome = await services.decide_ab_test(
+            session,
+            organization_id=organization_id,
+            campaign_id=uuid.UUID(str(payload["campaign_id"])),
+        )
+        mark_processed(session, ProcessedEvent, event_id, str(envelope["event_type"]))
+    log.info("campaign.ab_decide", outcome=outcome)
+    return outcome
+
+
 async def run_whatsapp_setup(envelope: dict[str, Any]) -> str:
     """Run one WhatsApp Embedded Signup (slice W1). The steps, their idempotency and their
     failure handling live in `app/w1_setup.py`; this binds them to this process's tenant scope."""
@@ -368,6 +392,11 @@ def register(
         await expand_campaign_send(envelope)
 
     consumer.on(services.EVT_CAMPAIGN_SEND_REQUESTED)(on_campaign_send)
+
+    async def on_ab_decide(envelope: dict[str, Any]) -> None:
+        await decide_ab_test(envelope)
+
+    consumer.on(services.EVT_CAMPAIGN_AB_DECIDE)(on_ab_decide)
 
     async def on_inbound_received(envelope: dict[str, Any]) -> None:
         await fold_inbound_contact(envelope, resolve_contact)

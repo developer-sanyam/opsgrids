@@ -277,6 +277,8 @@ async def receive(request: Request, directory: DirectorySessionDep) -> Response:
                         occurred_at=update.occurred_at,
                         error_code=update.error_code,
                         error_detail=update.error_detail,
+                        pricing_category=update.pricing_category,
+                        billable=update.billable,
                     )
                     if (
                         update.status == webhooks.STATUS_FAILED

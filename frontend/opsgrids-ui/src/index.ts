@@ -35,7 +35,7 @@ export type { CheckboxOption } from "./components/CheckboxGroup";
 export { Combobox } from "./components/Combobox";
 export type { ComboboxCopy, ComboboxOption } from "./components/Combobox";
 export { CommandMenu } from "./components/CommandMenu";
-export type { CommandMenuItem } from "./components/CommandMenu";
+export type { CommandMenuItem, CommandMenuResults } from "./components/CommandMenu";
 export { ConfirmDialog } from "./components/ConfirmDialog";
 export { CopyField } from "./components/CopyField";
 export { DataTable } from "./components/DataTable";
@@ -95,6 +95,16 @@ export { RadioGroup } from "./components/RadioGroup";
 export type { RadioOption } from "./components/RadioGroup";
 export { RowActions } from "./components/RowActions";
 export type { RowAction } from "./components/RowActions";
+export { Customer360View } from "./components/Customer360View";
+export type { Customer360Money, Customer360ViewModel } from "./components/Customer360View";
+export { REVEAL_VISIBLE_SECONDS, RevealableField } from "./components/RevealableField";
+export type { RevealedFieldView } from "./components/RevealableField";
+export { DetailList, PropertyRow } from "./components/DetailList";
+export type { DetailItem } from "./components/DetailList";
+export { SavedViewMenu } from "./components/SavedViewMenu";
+export type { SavedViewItem, SavedViewMenuProps, SavedViewVisibility } from "./components/SavedViewMenu";
+export { KanbanBoard } from "./components/KanbanBoard";
+export type { KanbanBoardProps, KanbanCardState, KanbanColumn, KanbanMoveResult } from "./components/KanbanBoard";
 export { SampleChip } from "./components/SampleChip";
 export { SearchInput } from "./components/SearchInput";
 export { Select } from "./components/Select";
@@ -152,7 +162,8 @@ export type {
   ZoneLookup,
   ZoneResolution,
 } from "./lib/datetime";
-export { formatDelta, initials } from "./lib/format";
+export { currencyExponent, formatDelta, formatMoney, initials, minorToInput, parseMinor, toMajor } from "./lib/format";
+export type { MoneyOptions, MoneyParse } from "./lib/format";
 export { moduleIcon } from "./lib/moduleIcons";
 export { encodeQr, qrPathData } from "./lib/qr";
 export type { EncodeOptions, QrLevel, QrMatrix } from "./lib/qr";

@@ -3,14 +3,25 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, Can, fieldErrorMap, usePermissionStatus } from "@opsgrids/client";
 import { SendIcon } from "@opsgrids/ui";
 
-import { createCampaign, editCampaign } from "@/api/client";
+import {
+  countSegment,
+  createCampaign,
+  editCampaign,
+  listSegments,
+  listWhatsAppTemplates,
+} from "@/api/client";
 import type {
+  AbMetric,
   CampaignAudience,
+  CampaignChannel,
   CampaignIn,
   CampaignOut,
   CampaignPatch,
+  ProviderTemplateOut,
+  SegmentOut,
   SenderOut,
 } from "@/api/types";
+import { formatNumber } from "@/lib/format";
 import { failureMessage } from "@/lib/errors";
 import { failureText, partialNotice } from "@/lib/refs";
 import type { Refs, ResolvedLists } from "@/lib/refs";
@@ -18,6 +29,7 @@ import type { GateField } from "@/lib/sendGate";
 import { Button, Card, FormSection, InlineAlert, RadioGroup, Select, TextArea, TextField } from "@/ui";
 import type { SelectOption } from "@/ui";
 import { CampaignPreview } from "./CampaignPreview";
+import { SegmentFormDialog } from "./SegmentFormDialog";
 import { TestSendDialog } from "./TestSendDialog";
 
 /**
@@ -47,12 +59,24 @@ import { TestSendDialog } from "./TestSendDialog";
 
 interface Values {
   name: string;
+  channel: CampaignChannel;
   senderId: string;
+  templateId: string;
+  templateValues: Record<string, string>;
   audience: CampaignAudience;
   listId: string;
+  segmentId: string;
   subject: string;
   htmlBody: string;
   textBody: string;
+  abTest: boolean;
+  subjectB: string;
+  htmlBodyB: string;
+  textBodyB: string;
+  /** Kept as typed, so a half-typed number is not coerced under the person's cursor. */
+  abSplitPercent: string;
+  abMetric: AbMetric;
+  abWaitHours: string;
 }
 
 type Errors = Partial<Record<keyof Values, string>>;
@@ -65,12 +89,35 @@ const BODY_MAX = 500_000;
 const WIRE_FIELDS: Record<string, keyof Values> = {
   name: "name",
   sender_id: "senderId",
+  provider_template_id: "templateId",
   audience: "audience",
   list_id: "listId",
+  segment_id: "segmentId",
   subject: "subject",
   html_body: "htmlBody",
   text_body: "textBody",
+  subject_b: "subjectB",
+  html_body_b: "htmlBodyB",
+  text_body_b: "textBodyB",
+  ab_split_percent: "abSplitPercent",
+  ab_metric: "abMetric",
+  ab_wait_minutes: "abWaitHours",
 };
+
+const VERSION_OPTIONS = [
+  { value: "one", label: "One version", description: "Everyone gets the subject and body above." },
+  {
+    value: "ab",
+    label: "A/B test two versions",
+    description:
+      "A share of the audience gets each version; after the wait, the one with the better open or click rate goes to everyone else.",
+  },
+];
+
+const METRIC_OPTIONS = [
+  { value: "open", label: "Open rate" },
+  { value: "click", label: "Click rate" },
+];
 
 const AUDIENCE_OPTIONS = [
   {
@@ -84,17 +131,60 @@ const AUDIENCE_OPTIONS = [
     label: "One list",
     description: "Only the contacts on a list you choose. Suppressed addresses are still skipped.",
   },
+  {
+    value: "segment",
+    label: "A segment",
+    description:
+      "A saved filter, worked out again when the campaign sends. Only contacts who opted in to this channel are reached.",
+  },
+];
+
+const CHANNEL_OPTIONS = [
+  { value: "email", label: "Email", description: "Your own subject and body, sent as one of your senders." },
+  {
+    value: "whatsapp",
+    label: "WhatsApp",
+    description:
+      "One of your Meta-approved templates, sent only to contacts whose WhatsApp number opted in to marketing messages.",
+  },
 ];
 
 function seed(campaign: CampaignOut | null): Values {
   return {
     name: campaign?.name ?? "",
+    channel: campaign?.channel ?? "email",
     senderId: campaign?.sender_id ?? "",
+    templateId: campaign?.provider_template_id ?? "",
+    templateValues: campaign?.template_values ?? {},
     audience: campaign?.audience ?? "all_sendable",
     listId: campaign?.list_id ?? "",
+    segmentId: campaign?.segment_id ?? "",
     subject: campaign?.subject ?? "",
     htmlBody: campaign?.html_body ?? "",
     textBody: campaign?.text_body ?? "",
+    abTest: campaign?.ab_test ?? false,
+    subjectB: campaign?.subject_b ?? "",
+    htmlBodyB: campaign?.html_body_b ?? "",
+    textBodyB: campaign?.text_body_b ?? "",
+    abSplitPercent: String(campaign?.ab_split_percent ?? 10),
+    abMetric: campaign?.ab_metric ?? "open",
+    abWaitHours: String((campaign?.ab_wait_minutes ?? 240) / 60),
+  };
+}
+
+/** The A/B fields as the service takes them, or nothing for a single-version campaign — plus the
+ *  tracking the chosen metric reads, which the send gate otherwise refuses. */
+function abFields(values: Values): Partial<CampaignIn> {
+  if (!values.abTest) return {};
+  return {
+    ab_test: true,
+    subject_b: values.subjectB,
+    html_body_b: values.htmlBodyB,
+    text_body_b: values.textBodyB,
+    ab_split_percent: Number(values.abSplitPercent),
+    ab_metric: values.abMetric,
+    ab_wait_minutes: Math.round(Number(values.abWaitHours) * 60),
+    ...(values.abMetric === "open" ? { track_opens: true } : { track_clicks: true }),
   };
 }
 
@@ -102,28 +192,67 @@ function validate(values: Values): Errors {
   const errors: Errors = {};
   if (values.name.trim() === "") errors.name = "Give the campaign a name so you can find it later.";
   else if (values.name.trim().length > NAME_MAX) errors.name = `A name can be at most ${NAME_MAX} characters.`;
-  if (values.senderId === "") errors.senderId = "Choose the sender this campaign goes out as.";
+  if (values.channel === "email" && values.senderId === "") {
+    errors.senderId = "Choose the sender this campaign goes out as.";
+  }
+  if (values.channel === "whatsapp" && values.templateId === "") {
+    errors.templateId = "Choose the approved template this campaign sends.";
+  }
   if (values.audience === "list" && values.listId === "") {
     errors.listId = "Choose which list this campaign goes to.";
+  }
+  if (values.audience === "segment" && values.segmentId === "") {
+    errors.segmentId = "Choose which segment this campaign goes to.";
   }
   if (values.subject.length > SUBJECT_MAX) {
     errors.subject = `A subject can be at most ${SUBJECT_MAX} characters.`;
   }
   if (values.htmlBody.length > BODY_MAX) errors.htmlBody = "The HTML body is too long to send.";
   if (values.textBody.length > BODY_MAX) errors.textBody = "The plain-text body is too long to send.";
+  if (values.abTest) {
+    const split = Number(values.abSplitPercent);
+    if (!Number.isInteger(split) || split < 1 || split > 50) {
+      errors.abSplitPercent = "Test each version on 1 to 50 per cent of the audience.";
+    }
+    const minutes = Number(values.abWaitHours) * 60;
+    if (!Number.isFinite(minutes) || minutes < 15 || minutes > 10080) {
+      errors.abWaitHours = "Wait between a quarter of an hour and 168 hours (a week).";
+    }
+    if (values.subjectB.length > SUBJECT_MAX) {
+      errors.subjectB = `A subject can be at most ${SUBJECT_MAX} characters.`;
+    }
+    if (values.htmlBodyB.length > BODY_MAX) errors.htmlBodyB = "The HTML body is too long to send.";
+    if (values.textBodyB.length > BODY_MAX) errors.textBodyB = "The plain-text body is too long to send.";
+  }
   return errors;
 }
 
 function toCreate(values: Values): CampaignIn {
   return {
     name: values.name.trim(),
-    sender_id: values.senderId,
-    subject: values.subject,
-    html_body: values.htmlBody,
-    text_body: values.textBody,
+    // Email is the service's default channel, so an email draft's body is what it always was.
+    ...(values.channel === "email"
+      ? {
+          sender_id: values.senderId,
+          subject: values.subject,
+          html_body: values.htmlBody,
+          text_body: values.textBody,
+        }
+      : {
+          channel: "whatsapp",
+          provider_template_id: values.templateId,
+          template_values: values.templateValues,
+        }),
     audience: values.audience,
     ...(values.audience === "list" ? { list_id: values.listId } : {}),
+    ...abFields(values),
+    ...(values.audience === "segment" ? { segment_id: values.segmentId } : {}),
   };
+}
+
+function sameValues(a: Record<string, string>, b: Record<string, string>): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  return [...keys].every((key) => (a[key] ?? "") === (b[key] ?? ""));
 }
 
 /** Only what differs from the saved draft. `audience` and `list_id` travel together because the
@@ -132,18 +261,39 @@ function toCreate(values: Values): CampaignIn {
 function toPatch(values: Values, saved: CampaignOut): CampaignPatch {
   return {
     ...(values.name.trim() === saved.name ? {} : { name: values.name.trim() }),
-    ...(values.senderId === saved.sender_id ? {} : { sender_id: values.senderId }),
+    ...(values.channel === "email" && values.senderId !== saved.sender_id
+      ? { sender_id: values.senderId }
+      : {}),
+    ...(values.channel === "whatsapp" && values.templateId !== (saved.provider_template_id ?? "")
+      ? { provider_template_id: values.templateId }
+      : {}),
+    ...(values.channel === "whatsapp" && !sameValues(values.templateValues, saved.template_values)
+      ? { template_values: values.templateValues }
+      : {}),
     ...(values.subject === saved.subject ? {} : { subject: values.subject }),
     ...(values.htmlBody === saved.html_body ? {} : { html_body: values.htmlBody }),
     ...(values.textBody === saved.text_body ? {} : { text_body: values.textBody }),
+    ...abPatch(values, saved),
     ...(values.audience === saved.audience &&
-    (values.audience === "list" ? values.listId : null) === saved.list_id
+    (values.audience === "list" ? values.listId : null) === saved.list_id &&
+    (values.audience === "segment" ? values.segmentId : null) === saved.segment_id
       ? {}
       : {
           audience: values.audience,
           ...(values.audience === "list" ? { list_id: values.listId } : {}),
+          ...(values.audience === "segment" ? { segment_id: values.segmentId } : {}),
         }),
   };
+}
+
+/** The A/B fields that differ from the saved draft; turning the test off sends just that. */
+function abPatch(values: Values, saved: CampaignOut): CampaignPatch {
+  if (!values.abTest) return saved.ab_test === true ? { ab_test: false } : {};
+  const wanted = abFields(values) as Record<string, unknown>;
+  const held = saved as unknown as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(wanted).filter(([key, value]) => held[key] !== value),
+  ) as CampaignPatch;
 }
 
 function isDirty(values: Values, saved: CampaignOut | null): boolean {
@@ -183,6 +333,36 @@ export function CampaignForm({
      sender, so the option turns over on the provider's answer without a second read. */
   const [tested, setTested] = useState<Record<string, SenderOut>>({});
   const [testNotice, setTestNotice] = useState<string | null>(null);
+  const [segments, setSegments] = useState<SegmentOut[]>([]);
+  const [templates, setTemplates] = useState<ProviderTemplateOut[]>([]);
+  const [creatingSegment, setCreatingSegment] = useState(false);
+  /* Who a campaign on this channel would reach in the chosen segment right now — `null` while
+     unknown (no segment chosen, still counting, or the count could not be read). */
+  const [reach, setReach] = useState<number | null>(null);
+
+  // A refused read leaves its picker empty; the service's own 422 names a missing choice.
+  useEffect(() => {
+    listSegments().then((page) => setSegments(page.items), () => setSegments([]));
+    listWhatsAppTemplates().then(
+      (page) => setTemplates(page.items.filter((t) => t.channel === "whatsapp")),
+      () => setTemplates([]),
+    );
+  }, []);
+
+  useEffect(() => {
+    setReach(null);
+    if (values.audience !== "segment" || values.segmentId === "") return;
+    let live = true;
+    countSegment(values.segmentId, values.channel).then(
+      (out) => {
+        if (live) setReach(out.recipients);
+      },
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [values.audience, values.segmentId, values.channel]);
 
   const senderRef = useRef<HTMLSelectElement>(null);
   const listRef = useRef<HTMLSelectElement>(null);
@@ -289,6 +469,21 @@ export function CampaignForm({
     });
   }
 
+  const segmentOptions: SelectOption[] = segments.map((segment) => ({
+    value: segment.id,
+    label: segment.name,
+  }));
+  if (values.segmentId !== "" && !segmentOptions.some((o) => o.value === values.segmentId)) {
+    segmentOptions.push({ value: values.segmentId, label: "The segment chosen for this campaign" });
+  }
+  const chosenTemplate = templates.find((t) => t.id === values.templateId) ?? null;
+  const templateOptions: SelectOption[] = templates
+    .filter((t) => t.sendable || t.id === values.templateId)
+    .map((t) => ({ value: t.id, label: `${t.provider_name} (${t.language})` }));
+  if (values.templateId !== "" && !templateOptions.some((o) => o.value === values.templateId)) {
+    templateOptions.push({ value: values.templateId, label: "The template chosen for this campaign" });
+  }
+
   const sendersNotice = partialNotice(refs.senders, "senders");
   const listsNotice = partialNotice(refs.lists, "lists");
 
@@ -387,6 +582,46 @@ export function CampaignForm({
             {...(errors.name !== undefined ? { error: errors.name } : {})}
           />
 
+          {/* The channel is fixed once drafted: an email draft and a WhatsApp draft hold different
+              fields, and the service does not convert one into the other. */}
+          {campaign === null ? (
+            <RadioGroup
+              legend="Channel"
+              name="campaign-channel"
+              value={values.channel}
+              onChange={(value) => set("channel", value as CampaignChannel)}
+              options={CHANNEL_OPTIONS.map((option) => ({ ...option, disabled: locked }))}
+            />
+          ) : null}
+
+          {values.channel === "whatsapp" ? (
+            <div className="flex flex-col gap-4">
+              <Select
+                label="Template"
+                value={values.templateId}
+                onChange={(event) => set("templateId", event.target.value)}
+                options={templateOptions}
+                placeholder={templateOptions.length === 0 ? "No approved templates yet" : "Choose a template"}
+                helper="Only templates Meta has approved can be sent."
+                disabled={locked}
+                required
+                {...(errors.templateId !== undefined ? { error: errors.templateId } : {})}
+              />
+              {(chosenTemplate?.variables ?? []).map((variable, index) => (
+                <TextField
+                  key={variable.key}
+                  label={`Template value {{${index + 1}}} (${variable.key})`}
+                  value={values.templateValues[variable.key] ?? ""}
+                  onChange={(event) =>
+                    set("templateValues", { ...values.templateValues, [variable.key]: event.target.value })
+                  }
+                  helper="The same for every recipient."
+                  maxLength={1024}
+                  readOnly={locked}
+                />
+              ))}
+            </div>
+          ) : (
           <div className="flex flex-col gap-2">
             {refs.senders.error !== null ? (
               <InlineAlert tone="warning" live="off" title="Couldn't load your senders">
@@ -435,6 +670,7 @@ export function CampaignForm({
               ) : null}
             </div>
           </div>
+          )}
 
           <RadioGroup
             legend="Who receives it"
@@ -470,6 +706,33 @@ export function CampaignForm({
             </div>
           ) : null}
 
+          {values.audience === "segment" ? (
+            <div className="flex flex-col items-start gap-2">
+              <Select
+                label="Segment"
+                value={values.segmentId}
+                onChange={(event) => set("segmentId", event.target.value)}
+                options={segmentOptions}
+                placeholder={segmentOptions.length === 0 ? "No segments yet" : "Choose a segment"}
+                disabled={locked}
+                required
+                {...(errors.segmentId !== undefined ? { error: errors.segmentId } : {})}
+              />
+              <p aria-live="polite" className="text-sm text-muted">
+                {reach === null
+                  ? ""
+                  : `${formatNumber(reach)} ${reach === 1 ? "contact" : "contacts"} would receive this right now.`}
+              </p>
+              <Can permission="engage.audience.list.write" scope="ORG">
+                <Button variant="outline" size="sm" onClick={() => setCreatingSegment(true)} disabled={locked}>
+                  New segment
+                </Button>
+              </Can>
+            </div>
+          ) : null}
+
+          {values.channel === "email" ? (
+          <>
           <TextField
             ref={subjectRef}
             label="Subject"
@@ -505,6 +768,84 @@ export function CampaignForm({
             readOnly={locked}
             {...(errors.textBody !== undefined ? { error: errors.textBody } : {})}
           />
+
+          <RadioGroup
+            legend="Versions"
+            name="campaign-versions"
+            value={values.abTest ? "ab" : "one"}
+            onChange={(value) => set("abTest", value === "ab")}
+            options={VERSION_OPTIONS.map((option) => ({ ...option, disabled: locked }))}
+          />
+
+          {values.abTest ? (
+            <>
+              <TextField
+                label="Version B subject"
+                value={values.subjectB}
+                onChange={(event) => set("subjectB", event.target.value)}
+                helper="Required before it can be sent."
+                maxLength={SUBJECT_MAX}
+                readOnly={locked}
+                {...(errors.subjectB !== undefined ? { error: errors.subjectB } : {})}
+              />
+              <TextArea
+                label="Version B HTML body"
+                value={values.htmlBodyB}
+                onChange={(event) => set("htmlBodyB", event.target.value)}
+                rows={8}
+                spellCheck={false}
+                optional
+                readOnly={locked}
+                {...(errors.htmlBodyB !== undefined ? { error: errors.htmlBodyB } : {})}
+              />
+              <TextArea
+                label="Version B plain-text body"
+                value={values.textBodyB}
+                onChange={(event) => set("textBodyB", event.target.value)}
+                rows={5}
+                optional
+                helper="Write at least one of version B's HTML and plain-text bodies."
+                readOnly={locked}
+                {...(errors.textBodyB !== undefined ? { error: errors.textBodyB } : {})}
+              />
+              <TextField
+                label="Test group size (% of the audience for each version)"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={50}
+                value={values.abSplitPercent}
+                onChange={(event) => set("abSplitPercent", event.target.value)}
+                helper="10 sends version A to 10% and version B to another 10%; the other 80% get the winner."
+                readOnly={locked}
+                {...(errors.abSplitPercent !== undefined ? { error: errors.abSplitPercent } : {})}
+              />
+              <Select
+                label="Pick the winner by"
+                value={values.abMetric}
+                onChange={(event) => set("abMetric", event.target.value as AbMetric)}
+                options={METRIC_OPTIONS}
+                helper="Turns on open or click tracking for this campaign, which picking a winner needs."
+                disabled={locked}
+                {...(errors.abMetric !== undefined ? { error: errors.abMetric } : {})}
+              />
+              <TextField
+                label="Wait before picking (hours)"
+                type="number"
+                inputMode="decimal"
+                min={0.25}
+                max={168}
+                step={0.25}
+                value={values.abWaitHours}
+                onChange={(event) => set("abWaitHours", event.target.value)}
+                helper="Counted from when the campaign starts sending."
+                readOnly={locked}
+                {...(errors.abWaitHours !== undefined ? { error: errors.abWaitHours } : {})}
+              />
+            </>
+          ) : null}
+          </>
+          ) : null}
           </FormSection>
 
           <div className="flex flex-wrap items-center gap-3">
@@ -525,8 +866,25 @@ export function CampaignForm({
       </Card>
 
       <Card className="p-6 lg:col-span-2 lg:self-start">
-        <CampaignPreview subject={values.subject} html={values.htmlBody} text={values.textBody} />
+        {values.channel === "email" ? (
+          <CampaignPreview subject={values.subject} html={values.htmlBody} text={values.textBody} />
+        ) : (
+          <p className="whitespace-pre-wrap text-sm text-ink">
+            {chosenTemplate?.preview_text ?? "Choose a template to see what recipients get."}
+          </p>
+        )}
       </Card>
+
+      <SegmentFormDialog
+        open={creatingSegment}
+        lists={resolved.lists}
+        onClose={() => setCreatingSegment(false)}
+        onSaved={(segment) => {
+          setSegments((current) => [...current, segment]);
+          set("segmentId", segment.id);
+          setCreatingSegment(false);
+        }}
+      />
 
       <TestSendDialog
         sender={testing}

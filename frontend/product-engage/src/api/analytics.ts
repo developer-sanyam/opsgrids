@@ -72,11 +72,24 @@ export interface CostByCategory {
   amount: Money;
 }
 
+/** What one automation (its rule code) or inbox conversation (its masked number) cost. */
+export interface CostBySource {
+  kind: "automation" | "conversation";
+  key: string;
+  label: string;
+  messages: number;
+  amount: Money;
+}
+
 /** `estimated` is always `true`: the rate card is an estimate, never an invoice. */
 export interface MessagingCost {
   total: Money;
   estimated: true;
   by_category: CostByCategory[];
+  /** How many sent messages Meta priced on its own delivery receipt (WhatsApp overview only). */
+  priced_by_meta?: number;
+  /** The most expensive automations and conversations, most expensive first (WhatsApp only). */
+  by_source?: CostBySource[];
 }
 
 /** `GET /engage/analytics/whatsapp/overview?from&to`. */
@@ -151,6 +164,28 @@ export interface CampaignAnalytics {
   series: { date: string; opens: number; clicks: number }[];
   /** Whether opens and clicks were tracked for this campaign. Off means "not measured", not zero. */
   tracking: { opens: boolean; clicks: boolean };
+  /** The A/B test's two groups and its winner; absent or null for a campaign that is not one. */
+  ab_test?: AbTest | null;
+}
+
+export interface AbVariant {
+  variant: "a" | "b";
+  subject: string;
+  recipients: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  open_rate: number;
+  click_rate: number;
+}
+
+export interface AbTest {
+  metric: "open" | "click";
+  split_percent: number;
+  wait_minutes: number;
+  winner: "a" | "b" | null;
+  decided_at: string | null;
+  variants: AbVariant[];
 }
 
 /* ------------------------------------ hub ----------------------------------- */

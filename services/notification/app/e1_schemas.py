@@ -29,6 +29,31 @@ class TrackingFlags(BaseModel):
     clicks: bool
 
 
+class AbVariantOut(BaseModel):
+    """One A/B test group: recipients drawn into it, and what they did. Same definitions as the
+    campaign's own figures (human events only; rates are fractions of `delivered`)."""
+
+    variant: Literal["a", "b"]
+    subject: str
+    recipients: int
+    delivered: int
+    opened: int
+    clicked: int
+    open_rate: float
+    click_rate: float
+
+
+class AbTestOut(BaseModel):
+    metric: Literal["open", "click"]
+    #: The share of the audience each version was tested on.
+    split_percent: int
+    wait_minutes: int
+    #: `a` | `b` once decided; null while the test is still running.
+    winner: Literal["a", "b"] | None
+    decided_at: str | None
+    variants: list[AbVariantOut]
+
+
 class CampaignAnalyticsOut(BaseModel):
     recipients: int
     #: Accepted by the provider (the recipient reached `sent`). Not proof of inbox placement.
@@ -50,6 +75,8 @@ class CampaignAnalyticsOut(BaseModel):
     series: list[CampaignSeriesPoint]
     #: Off means "not measured", not zero.
     tracking: TrackingFlags
+    #: The A/B test's groups and winner; null for a campaign that is not an A/B test.
+    ab_test: AbTestOut | None = None
 
 
 class EmailSeriesPoint(BaseModel):

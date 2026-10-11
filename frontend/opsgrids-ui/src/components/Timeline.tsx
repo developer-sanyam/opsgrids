@@ -28,8 +28,13 @@ export interface TimelineEntry {
 }
 
 interface TimelineProps {
-  /** Chronological, oldest first: the history reads as a story. */
+  /** Rendered as given. Oldest first by default: the history reads as a story. */
   entries: TimelineEntry[];
+  /**
+   * Which way `entries` run: `asc` (oldest first, the default) or `desc` (newest first, a feed).
+   * The entries are never re-sorted; this only says which end is the recent one to keep.
+   */
+  order?: "asc" | "desc" | undefined;
   /**
    * Collapse to the most recent N when there are more. An escalation ladder can reach 32 rungs,
    * and the recent end is the one being read.
@@ -39,6 +44,8 @@ interface TimelineProps {
   expandLabel?: ((total: number) => string) | undefined;
   /** Rendered instead of a blank card when the history is empty. */
   emptyMessage?: string | undefined;
+  /** Under the entries — a "Load more" for a feed that pages. */
+  footer?: ReactNode | undefined;
   className?: string | undefined;
 }
 
@@ -52,9 +59,11 @@ interface TimelineProps {
  */
 export function Timeline({
   entries,
+  order = "asc",
   collapseAfter,
   expandLabel = (total) => `Show all ${total} events`,
   emptyMessage = "Nothing has happened yet.",
+  footer,
   className,
 }: TimelineProps) {
   const [expanded, setExpanded] = useState(false);
@@ -69,6 +78,8 @@ export function Timeline({
     !expanded &&
     entries.length > collapseAfter;
   const hiddenCount = collapsed ? entries.length - collapseAfter : 0;
+  // Newest first keeps the head and reveals below it; oldest first keeps the tail and reveals above.
+  const firstRevealedIndex = order === "desc" ? (collapseAfter ?? 0) : 0;
 
   const expand = useCallback(() => {
     shouldFocusRef.current = true;
@@ -85,23 +96,25 @@ export function Timeline({
     return <p className="text-sm text-muted">{emptyMessage}</p>;
   }
 
+  const expander = collapsed ? (
+    <button
+      type="button"
+      onClick={expand}
+      aria-expanded={expanded}
+      className="self-start rounded-tile text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
+    >
+      {expandLabel(entries.length)}
+    </button>
+  ) : null;
+
   return (
     <div className={cn("flex flex-col gap-3", className)}>
-      {collapsed ? (
-        <button
-          type="button"
-          onClick={expand}
-          aria-expanded={expanded}
-          className="self-start rounded-tile text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
-        >
-          {expandLabel(entries.length)}
-        </button>
-      ) : null}
+      {order === "asc" ? expander : null}
       <ol className="flex flex-col gap-4">
         {entries.map((entry, index) => {
-          const isHidden = collapsed && index < hiddenCount;
+          const isHidden = collapsed && (order === "desc" ? index >= firstRevealedIndex : index < hiddenCount);
           if (isHidden) return null;
-          const revealed = expanded && index === 0;
+          const revealed = expanded && index === firstRevealedIndex;
           return (
             <li
               key={entry.id}
@@ -136,6 +149,8 @@ export function Timeline({
           );
         })}
       </ol>
+      {order === "desc" ? expander : null}
+      {footer}
     </div>
   );
 }

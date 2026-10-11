@@ -45,5 +45,4 @@ export { healthColor } from "./healthColor";
 export { Burndown } from "./Burndown";
 export { HealthBreakdown } from "./HealthBreakdown";
 export { NeedsAttention } from "./NeedsAttention";
-export { KanbanBoard } from "./KanbanBoard";
 export { GanttTimeline } from "./GanttTimeline";

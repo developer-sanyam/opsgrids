@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import ColumnElement, Select, exists, func, literal, or_, select, tuple_, union_all
@@ -37,6 +38,7 @@ from app.models import (
     ProviderAccount,
     ProviderTemplate,
     Rule,
+    Segment,
     Sender,
     Suppression,
     Template,
@@ -778,6 +780,7 @@ async def sendable_contacts(
     limit: int = 1000,
     after_id: uuid.UUID | None = None,
     list_id: uuid.UUID | None = None,
+    segment: Segment | None = None,
     lock: bool = False,
 ) -> list[Contact]:
     """Contacts a campaign may send to: the organization's contacts minus every suppressed
@@ -801,12 +804,25 @@ async def sendable_contacts(
     mode because it is the one lock that never conflicts with another `expand_campaign` page
     reading the same contact for a different campaign, or with an ordinary read.
     """
+    stmt = _email_audience_stmt(select(Contact), ctx, list_id, segment)
+    if after_id is not None:
+        stmt = stmt.where(Contact.id > after_id)
+    stmt = stmt.order_by(Contact.id.asc()).limit(limit)
+    if lock:
+        stmt = stmt.with_for_update(key_share=True)
+    return list((await session.execute(stmt)).scalars())
+
+
+def _email_audience_stmt(
+    stmt: Select[Any], ctx: ScopeContext, list_id: uuid.UUID | None, segment: Segment | None
+) -> Select[Any]:
+    """`sendable_contacts`'s predicate on any select over `Contact` — see its docstring."""
     suppressed = exists().where(
         Suppression.organization_id == Contact.organization_id,
         Suppression.email_index == Contact.email_index,
         Suppression.deleted_at.is_(None),
     )
-    stmt = select(Contact).where(
+    stmt = stmt.where(
         Contact.organization_id == ctx.organization_id,
         Contact.deleted_at.is_(None),
         ~suppressed,
@@ -818,22 +834,167 @@ async def sendable_contacts(
             subject_index=Contact.email_index,
         ),
     )
-    stmt = ctx.apply(stmt, owner_col=Contact.created_by)
+    return _narrow_audience(ctx.apply(stmt, owner_col=Contact.created_by), list_id, segment)
+
+
+def _in_list(list_id: Any) -> ColumnElement[bool]:
+    return exists().where(
+        ContactListMember.organization_id == Contact.organization_id,
+        ContactListMember.list_id == list_id,
+        ContactListMember.contact_id == Contact.id,
+    )
+
+
+def _narrow_audience(
+    stmt: Select[Any], list_id: uuid.UUID | None, segment: Segment | None
+) -> Select[Any]:
+    """A select over `Contact` narrowed to one list's members, or to a segment's filter.
+
+    A segment is evaluated now, against today's contacts: its windows are relative to the moment
+    of the read, which for a campaign is expansion."""
     if list_id is not None:
-        # Narrowed to one list's members: the audience a list campaign sends to.
+        stmt = stmt.where(_in_list(list_id))
+    if segment is None:
+        return stmt
+    now = datetime.now(UTC)
+    if segment.list_id is not None:
+        stmt = stmt.where(_in_list(segment.list_id))
+    if segment.created_within_days is not None:
+        stmt = stmt.where(Contact.created_at >= now - timedelta(days=segment.created_within_days))
+    if segment.active_within_days is not None:
+        since = now - timedelta(days=segment.active_within_days)
         stmt = stmt.where(
             exists().where(
-                ContactListMember.organization_id == Contact.organization_id,
-                ContactListMember.list_id == list_id,
-                ContactListMember.contact_id == Contact.id,
+                CampaignRecipient.organization_id == Contact.organization_id,
+                CampaignRecipient.contact_id == Contact.id,
+                CampaignRecipient.status == "sent",
+                CampaignRecipient.sent_at >= since,
             )
         )
+    return stmt
+
+
+@dataclass(frozen=True)
+class WhatsAppRecipient:
+    """One contact a WhatsApp campaign may reach, and the number to reach them on — sealed, as
+    the consent ledger holds it."""
+
+    contact_id: uuid.UUID
+    number_enc: bytes
+    number_index: str
+
+
+def _whatsapp_audience_stmt(
+    ctx: ScopeContext, list_id: uuid.UUID | None, segment: Segment | None
+) -> Select[Any]:
+    """Contacts with a WhatsApp number on the consent ledger whose latest marketing event is an
+    opt-in, with that number. The number is the one an opt-in naming the contact recorded
+    (`record_consent_event` with `contact_id`); a contact with several takes the newest. The
+    ledger decides per *number*, so a STOP from that number — which names no contact — still
+    wins here."""
+    event = aliased(ConsentEvent)
+    stmt = (
+        select(Contact.id, event.subject_enc, event.subject_index)
+        .join(
+            event,
+            (event.organization_id == Contact.organization_id)
+            & (event.contact_id == Contact.id)
+            & (event.channel == "whatsapp")
+            & (event.purpose == "marketing")
+            & (event.status == "opted_in"),
+        )
+        .where(
+            Contact.organization_id == ctx.organization_id,
+            Contact.deleted_at.is_(None),
+            latest_consent_is(
+                "opted_in",
+                organization_id=event.organization_id,
+                channel="whatsapp",
+                purpose="marketing",
+                subject_index=event.subject_index,
+            ),
+        )
+    )
+    stmt = _narrow_audience(ctx.apply(stmt, owner_col=Contact.created_by), list_id, segment)
+    return stmt.distinct(Contact.id).order_by(
+        Contact.id.asc(), event.occurred_at.desc(), event.created_at.desc()
+    )
+
+
+async def whatsapp_recipients(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    limit: int = 1000,
+    after_id: uuid.UUID | None = None,
+    list_id: uuid.UUID | None = None,
+    segment: Segment | None = None,
+) -> list[WhatsAppRecipient]:
+    """A WhatsApp campaign's audience, keyset-paged by contact id like `sendable_contacts`."""
+    stmt = _whatsapp_audience_stmt(ctx, list_id, segment)
     if after_id is not None:
         stmt = stmt.where(Contact.id > after_id)
-    stmt = stmt.order_by(Contact.id.asc()).limit(limit)
-    if lock:
-        stmt = stmt.with_for_update(key_share=True)
-    return list((await session.execute(stmt)).scalars())
+    rows = (await session.execute(stmt.limit(limit))).all()
+    return [WhatsAppRecipient(r[0], r[1], r[2]) for r in rows]
+
+
+async def count_audience(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    channel: str,
+    list_id: uuid.UUID | None = None,
+    segment: Segment | None = None,
+) -> int:
+    """How many contacts a campaign on `channel` would reach right now."""
+    if channel == "whatsapp":
+        inner = _whatsapp_audience_stmt(ctx, list_id, segment).subquery()
+    else:
+        inner = _email_audience_stmt(select(Contact.id), ctx, list_id, segment).subquery()
+    return int((await session.execute(select(func.count()).select_from(inner))).scalar_one())
+
+
+# --------------------------------------------------------------------- engage segments
+
+
+def segments_stmt(ctx: ScopeContext) -> Select[Any]:
+    stmt = select(Segment).where(
+        Segment.organization_id == ctx.organization_id, Segment.deleted_at.is_(None)
+    )
+    stmt = ctx.apply(stmt, owner_col=Segment.created_by)
+    return stmt.order_by(Segment.name.asc(), Segment.id.asc())
+
+
+async def get_segment(
+    session: AsyncSession, org_id: uuid.UUID, segment_id: uuid.UUID
+) -> Segment | None:
+    stmt = select(Segment).where(
+        Segment.id == segment_id, Segment.organization_id == org_id, Segment.deleted_at.is_(None)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_segment_by_name(
+    session: AsyncSession, org_id: uuid.UUID, name: str
+) -> Segment | None:
+    stmt = select(Segment).where(
+        Segment.name == name, Segment.organization_id == org_id, Segment.deleted_at.is_(None)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def segments_using_list(session: AsyncSession, org_id: uuid.UUID, list_id: uuid.UUID) -> int:
+    stmt = select(func.count()).where(Segment.organization_id == org_id, Segment.list_id == list_id)
+    return int((await session.execute(stmt)).scalar_one())
+
+
+async def campaigns_using_segment(
+    session: AsyncSession, org_id: uuid.UUID, segment_id: uuid.UUID
+) -> int:
+    stmt = select(func.count()).where(
+        Campaign.organization_id == org_id, Campaign.segment_id == segment_id
+    )
+    return int((await session.execute(stmt)).scalar_one())
 
 
 # --------------------------------------------------------------------- engage lists

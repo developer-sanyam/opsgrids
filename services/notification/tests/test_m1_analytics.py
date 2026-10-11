@@ -23,7 +23,7 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy import select, text
 
-from app.m1_models import PLACEHOLDER_LABEL, MessagingRateCard
+from app.m1_models import META_RATE_LABEL, MessagingRateCard
 from app.main import app
 from app.models import (
     AuditLog,
@@ -164,7 +164,8 @@ async def seed_ledger(session, org: uuid.UUID) -> dict[str, uuid.UUID]:
 
     sent 7, delivered 3, read 1, failed 4, queued 1, suppressed 1
     by category: marketing 5, utility 1, authentication 0, service 1
-    estimated cost at the placeholder rates: 392 + 12 + 0 + 0 = 404 paise
+    estimated cost at Meta's India rates (the window predates the card, so its earliest
+    rates apply): 432 + 12 + 0 + 0 = 444 paise
     replies 1 of 2 inbound
     """
     ids: dict[str, uuid.UUID] = {}
@@ -398,7 +399,7 @@ async def test_failures_are_grouped_by_the_last_recorded_reason(client, session,
     assert sum(r["count"] for r in reasons.values()) == body["failed"]
 
 
-async def test_cost_is_an_estimate_in_integer_minor_units_at_the_placeholder_rates(
+async def test_cost_is_an_estimate_in_integer_minor_units_at_metas_india_rates(
     client, session, org_id
 ) -> None:
     await seed_ledger(session, org_id)
@@ -406,19 +407,20 @@ async def test_cost_is_an_estimate_in_integer_minor_units_at_the_placeholder_rat
         body = (await client.get(WA, params=RANGE)).json()
     cost = body["cost"]
     assert cost["estimated"] is True
-    assert cost["total"] == {"amount_minor": 404, "currency": "INR"}
+    assert cost["total"] == {"amount_minor": 444, "currency": "INR"}
     lines = {c["category"]: c for c in cost["by_category"]}
-    # 5 x 78460 / 1000 = 392.3 -> 392, and 1 x 11500 / 1000 = 11.5 -> 12 (half up).
-    assert lines["marketing"]["amount"] == {"amount_minor": 392, "currency": "INR"}
+    # Every ledger number is +91: 5 x 86310 / 1000 = 431.55 -> 432, and 1 x 11500 / 1000 =
+    # 11.5 -> 12 (half up).
+    assert lines["marketing"]["amount"] == {"amount_minor": 432, "currency": "INR"}
     assert lines["utility"]["amount"] == {"amount_minor": 12, "currency": "INR"}
     assert lines["authentication"]["amount"]["amount_minor"] == 0
     assert lines["service"]["amount"]["amount_minor"] == 0
     assert lines["service"]["messages"] == 1
-    assert sum(c["amount"]["amount_minor"] for c in cost["by_category"]) == 404
+    assert sum(c["amount"]["amount_minor"] for c in cost["by_category"]) == 444
     assert cost["rate_card"] == {
         "source": "platform_default",
-        "placeholder": True,
-        "version": PLACEHOLDER_LABEL,
+        "placeholder": False,
+        "version": META_RATE_LABEL,
     }
     # No float anywhere: every amount is a JSON integer.
     assert isinstance(cost["total"]["amount_minor"], int)
@@ -508,10 +510,10 @@ async def test_another_organizations_data_never_leaks_in(
     assert "190" not in {r["code"] for r in body["failures_by_reason"]}
     assert body["inbound_messages"] == 2
     assert body["totals"]["active_conversations"] == 2
-    assert body["cost"]["total"] == {"amount_minor": 404, "currency": "INR"}
+    assert body["cost"]["total"] == {"amount_minor": 444, "currency": "INR"}
     # Neither the other tenant's USD override nor its template category reaches this tenant.
     assert {r["currency"] for r in card["rates"]} == {"INR"}
-    assert card["placeholder"] is True
+    assert (card["placeholder"], card["version"]) == (False, META_RATE_LABEL)
 
     # And the reverse: the other organization sees only its own.
     with as_principal(viewer(other)):
@@ -665,24 +667,24 @@ def card_body(*, marketing: int = 90000, currency: str = "INR", effective_from: 
     return body
 
 
-async def test_the_shipped_defaults_are_labelled_placeholders(client, org_id) -> None:
+async def test_the_shipped_defaults_are_metas_rates_not_placeholders(client, org_id) -> None:
     with as_principal(viewer(org_id)):
         response = await client.get(CARD)
     assert response.status_code == 200
     body = response.json()
-    assert body["placeholder"] is True
+    assert body["placeholder"] is False
     assert body["estimated"] is True
-    assert body["version"] == PLACEHOLDER_LABEL
-    assert "PLACEHOLDER" in body["note"]
-    rates = {r["category"]: r for r in body["rates"]}
-    assert {c: r["amount_minor_per_1000_messages"] for c, r in rates.items()} == {
-        "marketing": 78460,
-        "utility": 11500,
-        "authentication": 11500,
+    assert body["version"] == META_RATE_LABEL
+    assert "Meta" in body["note"]
+    other = {r["category"]: r for r in body["rates"] if r["calling_code"] == ""}
+    assert {c: r["amount_minor_per_1000_messages"] for c, r in other.items()} == {
+        "marketing": 442480,
+        "utility": 56410,
+        "authentication": 56410,
         "service": 0,
     }
-    assert all(r["source"] == "platform_default" and r["placeholder"] for r in rates.values())
-    assert all(r["currency"] == "INR" for r in rates.values())
+    assert all(r["source"] == "platform_default" and not r["placeholder"] for r in body["rates"])
+    assert all(r["currency"] == "INR" for r in body["rates"])
 
 
 async def test_an_override_takes_precedence_and_is_no_longer_a_placeholder(
@@ -705,22 +707,29 @@ async def test_the_override_prices_the_estimate_from_its_effective_date(
     client, session, org_id
 ) -> None:
     await seed_ledger(session, org_id)
+    # One more promo, on a day the platform's Meta card (from 2026-10-01) is in force and before
+    # the override below takes effect.
+    async with session.begin():
+        session.add(message(org_id, "sent", datetime(2026, 10, 2, tzinfo=UTC), template="promo"))
     today = datetime.now(UTC).date()
     with as_principal(admin(org_id)):
-        # Effective today: a window that ended on 2026-09-12 predates it, so it is still priced
-        # at the placeholder default; a window that runs up to today is priced at the override.
+        # Effective today: a window that ended before today predates it, so it is still priced
+        # at the platform default; a window that runs up to today is priced at the override.
         assert (
             await client.put(CARD, json=card_body(effective_from=today.isoformat()))
         ).status_code == 200
-        old_window = (await client.get(WA, params=RANGE)).json()
+        old_window = (
+            await client.get(WA, params={"from": "2026-10-02", "to": "2026-10-02"})
+        ).json()
         through_today = (
             await client.get(WA, params={"from": "2026-09-10", "to": today.isoformat()})
         ).json()
-    assert old_window["cost"]["total"]["amount_minor"] == 404
-    assert old_window["cost"]["rate_card"]["placeholder"] is True
-    # The range now also reaches the promo message sent at midnight on the 13th, so marketing is
-    # 6 x 90000/1000 = 540, and utility 1 x 20000/1000 = 20: 560.
-    assert through_today["cost"]["total"] == {"amount_minor": 560, "currency": "INR"}
+    # 1 x 86310 / 1000 = 86.31 -> 86, at Meta's India marketing rate.
+    assert old_window["cost"]["total"]["amount_minor"] == 86
+    assert old_window["cost"]["rate_card"]["source"] == "platform_default"
+    # The range now also reaches the promo message sent at midnight on the 13th and the one on
+    # 2026-10-02, so marketing is 7 x 90000/1000 = 630, and utility 1 x 20000/1000 = 20: 650.
+    assert through_today["cost"]["total"] == {"amount_minor": 650, "currency": "INR"}
     assert through_today["cost"]["rate_card"] == {
         "source": "organization",
         "placeholder": False,
@@ -733,7 +742,7 @@ async def test_a_future_dated_override_leaves_the_default_in_force(client, org_i
     with as_principal(admin(org_id)):
         assert (await client.put(CARD, json=card_body(effective_from=future))).status_code == 200
         got = (await client.get(CARD)).json()
-    assert got["placeholder"] is True
+    assert (got["placeholder"], got["version"]) == (False, META_RATE_LABEL)
     assert all(r["source"] == "platform_default" for r in got["rates"])
 
 
@@ -788,8 +797,8 @@ async def test_one_organizations_override_never_changes_anothers_estimate(
     with as_principal(viewer(org_id)):
         body = (await client.get(WA, params=RANGE)).json()
         card = (await client.get(CARD)).json()
-    assert body["cost"]["total"]["amount_minor"] == 404
-    assert card["placeholder"] is True
+    assert body["cost"]["total"]["amount_minor"] == 444
+    assert (card["placeholder"], card["version"]) == (False, META_RATE_LABEL)
 
 
 @pytest.mark.parametrize(
@@ -853,11 +862,12 @@ async def test_the_platform_default_rows_cannot_be_written_by_a_tenant(session, 
             await session.execute(
                 text(
                     "SELECT count(*) FROM notification.messaging_rate_cards "
-                    "WHERE organization_id = '00000000-0000-0000-0000-000000000000'"
+                    "WHERE organization_id = '00000000-0000-0000-0000-000000000000' "
+                    "AND deleted_at IS NULL"
                 )
             )
         ).scalar_one()
-        assert visible == 4
+        assert visible == 42 * 4  # Meta's INR card: 42 market prefixes x 4 categories
         updated = await session.execute(
             text(
                 "UPDATE notification.messaging_rate_cards SET amount_minor_per_1000_messages = 0 "
@@ -906,7 +916,7 @@ async def test_the_hub_passes_the_window_to_the_email_overview_and_returns_its_r
     assert calls == [(org_id, date(2026, 9, 10), date(2026, 9, 12))]
     assert body["email"] == email
     assert body["whatsapp"]["sent"] == 7
-    assert body["whatsapp"]["cost"]["total"]["amount_minor"] == 404
+    assert body["whatsapp"]["cost"]["total"]["amount_minor"] == 444
 
 
 async def test_the_hub_accepts_a_pydantic_result_from_the_email_overview(
@@ -936,7 +946,7 @@ async def test_the_hub_degrades_to_email_null_when_the_email_module_cannot_be_im
     assert body["email"] is None
     # The WhatsApp half is untouched by the missing module.
     assert body["whatsapp"]["sent"] == 7
-    assert body["costs"]["total"] == {"amount_minor": 404, "currency": "INR"}
+    assert body["costs"]["total"] == {"amount_minor": 444, "currency": "INR"}
 
 
 async def test_an_error_inside_the_email_overview_is_not_swallowed(

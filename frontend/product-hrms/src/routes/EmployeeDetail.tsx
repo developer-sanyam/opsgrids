@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { ApiError, problemMessage, useCan } from "@opsgrids/client";
+import { ApiError, revealRequest, useCan, useRevealedField, useStepUp } from "@opsgrids/client";
+import type { RevealHeaders, UseStepUpResult } from "@opsgrids/client";
 import {
   ArrowLeftIcon,
   Avatar,
@@ -9,17 +10,18 @@ import {
   Button,
   Card,
   ErrorState,
-  EyeIcon,
   InlineAlert,
   MapPinIcon,
   PageHeader,
+  RevealableField,
   SectionHeader,
   Skeleton,
+  StepUpDialog,
   UsersIcon,
   useToast,
 } from "@opsgrids/ui";
 
-import { getEmployee, listEmployeeReports, unmaskEmployeePii } from "@/api/client";
+import { getEmployee, listEmployeeReports, unmaskEmployeePii, USE_FIXTURES } from "@/api/client";
 import { getChain } from "@/api/approvals";
 import { getOrgUnitNameById } from "@/api/orgUnits";
 import type {
@@ -216,97 +218,98 @@ function ApprovalChainSection({ employeeId, firstName }: { employeeId: string; f
   );
 }
 
-const SENSITIVE_FIELDS: { key: SensitiveField; label: string }[] = [
-  { key: "date_of_birth", label: "Date of birth" },
-  { key: "personal_email", label: "Personal email" },
-  { key: "personal_phone", label: "Personal phone" },
-  { key: "pan", label: "PAN" },
-  { key: "aadhaar", label: "Aadhaar" },
-  { key: "uan", label: "UAN" },
-  { key: "esi", label: "ESI" },
-  { key: "bank_account", label: "Bank account" },
+const SENSITIVE_FIELDS: { key: SensitiveField; label: string; noun: string; kind: "phone" | "email" | "text" }[] = [
+  { key: "date_of_birth", label: "Date of birth", noun: "date of birth", kind: "text" },
+  { key: "personal_email", label: "Personal email", noun: "personal email", kind: "email" },
+  { key: "personal_phone", label: "Personal phone", noun: "personal phone", kind: "phone" },
+  { key: "pan", label: "PAN", noun: "PAN", kind: "text" },
+  { key: "aadhaar", label: "Aadhaar", noun: "Aadhaar", kind: "text" },
+  { key: "uan", label: "UAN", noun: "UAN", kind: "text" },
+  { key: "esi", label: "ESI", noun: "ESI", kind: "text" },
+  { key: "bank_account", label: "Bank account", noun: "bank account", kind: "text" },
 ];
 
-/** The masked PII block, with a per-field "Reveal" that unmasks transiently — never cached, never
- *  survives navigating away. `hrms.people.employee.read_sensitive` gates the button; a 403 says a
- *  second factor is needed rather than "no access", because the grant alone is not enough — the
- *  token also needs an `amr` step-up no login flow issues yet (see the report). */
+/** What fixture mode hands the unmask call in place of a step-up token: fixtures read no header. */
+const NO_STEP_UP: RevealHeaders = { Authorization: "" };
+
+/** One sealed field: the shared reveal hook and field, unmasking only this field on a code. */
+function PiiField({
+  employeeId,
+  field,
+  masked,
+  canReveal,
+  stepUp,
+}: {
+  employeeId: string;
+  field: (typeof SENSITIVE_FIELDS)[number];
+  masked: string;
+  canReveal: boolean;
+  stepUp: UseStepUpResult;
+}) {
+  const revealed = useRevealedField({
+    resetKey: employeeId,
+    // Fixture mode has no auth service to step up against (shortcut: no fixture step-up exists).
+    stepUp: USE_FIXTURES ? { ...stepUp, run: (reveal) => reveal(NO_STEP_UP) } : stepUp,
+    subject: "employee",
+    noun: field.noun,
+    load: async (headers) =>
+      (await unmaskEmployeePii(employeeId, { fields: [field.key] }, revealRequest(headers)))[field.key] ?? null,
+  });
+  return (
+    <div className="flex flex-col gap-1 rounded-tile bg-ground px-3 py-2">
+      <dt className="text-xs font-semibold uppercase tracking-wide text-faint">{field.label}</dt>
+      <dd className="text-sm text-ink">
+        <RevealableField
+          kind={field.kind}
+          label={field.label}
+          noun={field.noun}
+          masked={masked}
+          canReveal={canReveal}
+          field={revealed}
+          stepUpIdle={stepUp.state === "idle"}
+        />
+      </dd>
+    </div>
+  );
+}
+
+/** The masked PII block. Each field reveals behind a one-time code (the unmask route needs
+ *  `amr` `otp`, which a step-up token carries), shows in place for a short while and hides again;
+ *  the value is never cached and never survives another record or leaving the page.
+ *  `hrms.people.employee.read_sensitive` gates the buttons; the server decides. */
 function PiiSection({ employee }: { employee: EmployeeOut }) {
   const canReadSensitive = useCan("hrms.people.employee.read_sensitive", "OWN");
-  const [revealed, setRevealed] = useState<Partial<Record<SensitiveField, string>>>({});
-  const [stepUpNeeded, setStepUpNeeded] = useState(false);
-  const [pending, setPending] = useState<SensitiveField | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  // Never cached across a different employee's record.
-  useEffect(() => {
-    setRevealed({});
-    setStepUpNeeded(false);
-    setError(null);
-  }, [employee.id]);
-
-  async function reveal(field: SensitiveField) {
-    setPending(field);
-    setError(null);
-    try {
-      const result = await unmaskEmployeePii(employee.id, { fields: [field] });
-      setRevealed((prev) => ({ ...prev, [field]: result[field] ?? "—" }));
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 403) {
-        setStepUpNeeded(true);
-      } else {
-        setError(problemMessage(err));
-      }
-    } finally {
-      setPending(null);
-    }
-  }
+  const stepUp = useStepUp();
 
   if (!employee.pii) return null;
+  const pii = employee.pii;
 
   return (
     <Card className="p-6">
-      <SectionHeader title="Sensitive details" subtitle="Masked by default." />
-      <div className="mt-4 flex flex-col gap-3">
-        {stepUpNeeded ? (
-          <InlineAlert tone="warning" title="A second factor is required to reveal this.">
-            Sign in again with a one-time code, then try again.
-          </InlineAlert>
+      <SectionHeader title="Sensitive details" subtitle="Masked by default. Revealing one needs a one-time code and is recorded." />
+      <dl className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {SENSITIVE_FIELDS.map((field) => {
+          const masked = pii[field.key];
+          if (masked === null) return null;
+          return (
+            <PiiField
+              key={field.key}
+              employeeId={employee.id}
+              field={field}
+              masked={masked}
+              canReveal={canReadSensitive}
+              stepUp={stepUp}
+            />
+          );
+        })}
+        {pii.bank_ifsc ? (
+          <div className="flex flex-col gap-1 rounded-tile bg-ground px-3 py-2">
+            <dt className="text-xs font-semibold uppercase tracking-wide text-faint">Bank IFSC</dt>
+            <dd className="tnum text-sm text-ink">{pii.bank_ifsc}</dd>
+          </div>
         ) : null}
-        {error ? <InlineAlert tone="danger" title={error} /> : null}
-        <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {SENSITIVE_FIELDS.map(({ key, label }) => {
-            const masked = employee.pii?.[key] ?? null;
-            if (masked === null) return null;
-            const value = revealed[key];
-            return (
-              <div key={key} className="flex items-center justify-between gap-3 rounded-tile bg-ground/60 px-3 py-2.5">
-                <div className="flex flex-col">
-                  <dt className="text-xs font-semibold uppercase tracking-wide text-faint">{label}</dt>
-                  <dd className="tnum text-sm text-ink">{value ?? masked}</dd>
-                </div>
-                {canReadSensitive && value === undefined ? (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    leadingIcon={<EyeIcon className="size-4" />}
-                    loading={pending === key}
-                    onClick={() => void reveal(key)}
-                  >
-                    Reveal
-                  </Button>
-                ) : null}
-              </div>
-            );
-          })}
-          {employee.pii.bank_ifsc ? (
-            <div className="flex flex-col rounded-tile bg-ground/60 px-3 py-2.5">
-              <dt className="text-xs font-semibold uppercase tracking-wide text-faint">Bank IFSC</dt>
-              <dd className="tnum text-sm text-ink">{employee.pii.bank_ifsc}</dd>
-            </div>
-          ) : null}
-        </dl>
-      </div>
+      </dl>
+      <StepUpDialog {...stepUp.dialogProps} />
     </Card>
   );
 }

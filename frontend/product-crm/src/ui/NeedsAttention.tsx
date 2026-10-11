@@ -10,8 +10,8 @@ import {
   ClockIcon,
   EmptyState,
   cn,
+  formatMoney,
 } from "@opsgrids/ui";
-import { formatMoneyCompact } from "@/lib/format";
 import { OwnerBadge } from "./OwnerBadge";
 
 const REASON_META: Record<
@@ -62,7 +62,7 @@ export function NeedsAttention({ items }: { items: AttentionItem[] }) {
               </div>
               <div className="flex shrink-0 flex-col items-end gap-1 leading-tight">
                 <span className="tnum text-sm font-bold text-ink">
-                  {formatMoneyCompact(deal.value_minor, deal.currency)}
+                  {formatMoney(deal.value_minor, deal.currency, { compact: true })}
                 </span>
                 <span className={cn("rounded-full px-2 py-0.5 text-[0.7rem] font-semibold", meta.tone)}>
                   {detail}

@@ -32,6 +32,7 @@ function Probe({ query, debounceMs = 5 }: { query: string; debounceMs?: number |
     <div>
       <p>status: {state.status}</p>
       <p>partial: {String(state.partial)}</p>
+      <p>blocked: {state.blocked ?? "none"}</p>
       {state.error ? <p>error: {state.error.message}</p> : null}
       <ul>
         {state.groups.map((group) => (
@@ -223,5 +224,47 @@ describe("useGlobalSearch", () => {
     await waitFor(() => expect(screen.getByText("status: success")).toBeTruthy());
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect((fetchMock.mock.calls[0]?.[0] as string).includes("q=ana")).toBe(true);
+  });
+
+  it("leads_source: searches CRM leads by name, linking each to its lead page", async () => {
+    const fetchMock = fetchRouter({
+      "/leads": () =>
+        respond(page([{ id: "l-1", full_name: "Devika Rao", status: "qualified", source: "referral" }])),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Harness query="devika" grants={["crm.lead.lead.read:ORG"]} entitlements={["crm"]} />);
+
+    await waitFor(() => expect(screen.getByText("group: Leads")).toBeTruthy());
+    expect(
+      screen.getByText("Devika Rao — https://revenue.opsgrids.com/leads/l-1 (qualified · referral)"),
+    ).toBeTruthy();
+    const urls = fetchMock.mock.calls.map((call) => call[0] as string);
+    expect(urls.some((url) => url.includes("/leads?q=devika&size=5"))).toBe(true);
+  });
+
+  it.each(["asha@example.com", "+91 98765 43210", "(080) 4123-4567", "9876543210"])(
+    "identifier_guard_makes_no_request for %s",
+    async (identifier) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<Harness query={identifier} grants={["crm.lead.lead.read:ORG"]} entitlements={["crm"]} />);
+
+      await waitFor(() => expect(screen.getByText("blocked: identifier")).toBeTruthy());
+      expect(screen.getByText("status: idle")).toBeTruthy();
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still searches a name with a short number in it", async () => {
+    const fetchMock = fetchRouter({});
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Harness query="Acme 2024" grants={["crm.lead.lead.read:ORG"]} entitlements={["crm"]} />);
+
+    await waitFor(() => expect(screen.getByText("status: success")).toBeTruthy());
+    expect(screen.getByText("blocked: none")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalled();
   });
 });

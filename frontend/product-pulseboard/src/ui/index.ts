@@ -28,6 +28,5 @@ export { PROJECT_STATUS_META, TASK_STATUS_META } from "./statusMeta";
 export { UtilizationTrend } from "./UtilizationTrend";
 export { ProjectHealth } from "./ProjectHealth";
 export { NeedsAttention } from "./NeedsAttention";
-export { KanbanBoard } from "./KanbanBoard";
 export { TimeGrid } from "./TimeGrid";
 export { StandupList } from "./StandupList";

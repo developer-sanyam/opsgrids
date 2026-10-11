@@ -121,6 +121,8 @@ async def _replay_row(session: AsyncSession, row: InboundDeadLetter) -> tuple[bo
                     occurred_at=update.occurred_at,
                     error_code=update.error_code,
                     error_detail=update.error_detail,
+                    pricing_category=update.pricing_category,
+                    billable=update.billable,
                 )
         else:
             log.warning("replay.unknown_kind", dead_letter_id=str(row.id), kind=row.kind)
