@@ -21,7 +21,7 @@ Downgrade deletes the seeded Meta rows, restores the placeholders, removes any r
 specific market (the old table cannot say which market it was for), and drops the columns.
 
 Revision ID: c7d2a9e4f1b6
-Revises: f1c8a2d5b7e4
+Revises: b3d7e1f9a2c4
 Create Date: 2026-10-12 09:00:00.000000
 """
 
@@ -33,7 +33,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c7d2a9e4f1b6"  # pragma: allowlist secret
-down_revision: str | None = "f1c8a2d5b7e4"  # pragma: allowlist secret
+down_revision: str | None = "b3d7e1f9a2c4"  # pragma: allowlist secret
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
