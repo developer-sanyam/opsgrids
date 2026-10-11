@@ -1,6 +1,122 @@
 {
   "components": {
     "schemas": {
+      "AbTestOut": {
+        "properties": {
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "metric": {
+            "enum": [
+              "open",
+              "click"
+            ],
+            "title": "Metric",
+            "type": "string"
+          },
+          "split_percent": {
+            "title": "Split Percent",
+            "type": "integer"
+          },
+          "variants": {
+            "items": {
+              "$ref": "#/components/schemas/AbVariantOut"
+            },
+            "title": "Variants",
+            "type": "array"
+          },
+          "wait_minutes": {
+            "title": "Wait Minutes",
+            "type": "integer"
+          },
+          "winner": {
+            "anyOf": [
+              {
+                "enum": [
+                  "a",
+                  "b"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Winner"
+          }
+        },
+        "required": [
+          "metric",
+          "split_percent",
+          "wait_minutes",
+          "winner",
+          "decided_at",
+          "variants"
+        ],
+        "title": "AbTestOut",
+        "type": "object"
+      },
+      "AbVariantOut": {
+        "description": "One A/B test group: recipients drawn into it, and what they did. Same definitions as the\ncampaign's own figures (human events only; rates are fractions of `delivered`).",
+        "properties": {
+          "click_rate": {
+            "title": "Click Rate",
+            "type": "number"
+          },
+          "clicked": {
+            "title": "Clicked",
+            "type": "integer"
+          },
+          "delivered": {
+            "title": "Delivered",
+            "type": "integer"
+          },
+          "open_rate": {
+            "title": "Open Rate",
+            "type": "number"
+          },
+          "opened": {
+            "title": "Opened",
+            "type": "integer"
+          },
+          "recipients": {
+            "title": "Recipients",
+            "type": "integer"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "variant": {
+            "enum": [
+              "a",
+              "b"
+            ],
+            "title": "Variant",
+            "type": "string"
+          }
+        },
+        "required": [
+          "variant",
+          "subject",
+          "recipients",
+          "delivered",
+          "opened",
+          "clicked",
+          "open_rate",
+          "click_rate"
+        ],
+        "title": "AbVariantOut",
+        "type": "object"
+      },
       "ActivityItem": {
         "properties": {
           "at": {
@@ -314,6 +430,16 @@
       },
       "CampaignAnalyticsOut": {
         "properties": {
+          "ab_test": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AbTestOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "bounced": {
             "title": "Bounced",
             "type": "integer"
@@ -396,6 +522,34 @@
       "CampaignIn": {
         "additionalProperties": false,
         "properties": {
+          "ab_metric": {
+            "default": "open",
+            "enum": [
+              "open",
+              "click"
+            ],
+            "title": "Ab Metric",
+            "type": "string"
+          },
+          "ab_split_percent": {
+            "default": 10,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Ab Split Percent",
+            "type": "integer"
+          },
+          "ab_test": {
+            "default": false,
+            "title": "Ab Test",
+            "type": "boolean"
+          },
+          "ab_wait_minutes": {
+            "default": 240,
+            "maximum": 10080.0,
+            "minimum": 15.0,
+            "title": "Ab Wait Minutes",
+            "type": "integer"
+          },
           "audience": {
             "default": "all_sendable",
             "enum": [
@@ -419,6 +573,12 @@
             "default": "",
             "maxLength": 500000,
             "title": "Html Body",
+            "type": "string"
+          },
+          "html_body_b": {
+            "default": "",
+            "maxLength": 500000,
+            "title": "Html Body B",
             "type": "string"
           },
           "list_id": {
@@ -493,6 +653,12 @@
             "title": "Subject",
             "type": "string"
           },
+          "subject_b": {
+            "default": "",
+            "maxLength": 255,
+            "title": "Subject B",
+            "type": "string"
+          },
           "template_values": {
             "additionalProperties": {
               "maxLength": 1024,
@@ -506,6 +672,12 @@
             "default": "",
             "maxLength": 500000,
             "title": "Text Body",
+            "type": "string"
+          },
+          "text_body_b": {
+            "default": "",
+            "maxLength": 500000,
+            "title": "Text Body B",
             "type": "string"
           },
           "track_clicks": {
@@ -527,6 +699,57 @@
       },
       "CampaignOut": {
         "properties": {
+          "ab_decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ab Decided At"
+          },
+          "ab_metric": {
+            "default": "open",
+            "enum": [
+              "open",
+              "click"
+            ],
+            "title": "Ab Metric",
+            "type": "string"
+          },
+          "ab_split_percent": {
+            "default": 10,
+            "title": "Ab Split Percent",
+            "type": "integer"
+          },
+          "ab_test": {
+            "default": false,
+            "title": "Ab Test",
+            "type": "boolean"
+          },
+          "ab_wait_minutes": {
+            "default": 240,
+            "title": "Ab Wait Minutes",
+            "type": "integer"
+          },
+          "ab_winner": {
+            "anyOf": [
+              {
+                "enum": [
+                  "a",
+                  "b"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ab Winner"
+          },
           "audience": {
             "enum": [
               "list",
@@ -576,6 +799,11 @@
           },
           "html_body": {
             "title": "Html Body",
+            "type": "string"
+          },
+          "html_body_b": {
+            "default": "",
+            "title": "Html Body B",
             "type": "string"
           },
           "id": {
@@ -677,6 +905,11 @@
             "title": "Subject",
             "type": "string"
           },
+          "subject_b": {
+            "default": "",
+            "title": "Subject B",
+            "type": "string"
+          },
           "template_values": {
             "additionalProperties": {
               "type": "string"
@@ -686,6 +919,11 @@
           },
           "text_body": {
             "title": "Text Body",
+            "type": "string"
+          },
+          "text_body_b": {
+            "default": "",
+            "title": "Text Body B",
             "type": "string"
           },
           "track_clicks": {
@@ -730,6 +968,58 @@
         "additionalProperties": false,
         "description": "Partial edit of a draft. An absent field is left alone.",
         "properties": {
+          "ab_metric": {
+            "anyOf": [
+              {
+                "enum": [
+                  "open",
+                  "click"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ab Metric"
+          },
+          "ab_split_percent": {
+            "anyOf": [
+              {
+                "maximum": 50.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ab Split Percent"
+          },
+          "ab_test": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ab Test"
+          },
+          "ab_wait_minutes": {
+            "anyOf": [
+              {
+                "maximum": 10080.0,
+                "minimum": 15.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ab Wait Minutes"
+          },
           "audience": {
             "anyOf": [
               {
@@ -757,6 +1047,18 @@
               }
             ],
             "title": "Html Body"
+          },
+          "html_body_b": {
+            "anyOf": [
+              {
+                "maxLength": 500000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Html Body B"
           },
           "list_id": {
             "anyOf": [
@@ -843,6 +1145,18 @@
             ],
             "title": "Subject"
           },
+          "subject_b": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject B"
+          },
           "template_values": {
             "anyOf": [
               {
@@ -870,6 +1184,18 @@
               }
             ],
             "title": "Text Body"
+          },
+          "text_body_b": {
+            "anyOf": [
+              {
+                "maxLength": 500000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Body B"
           },
           "track_clicks": {
             "anyOf": [

@@ -430,6 +430,9 @@ export type RecipientStatus = "queued" | "sent" | "failed" | "suppressed";
 
 /** `POST /engage/campaigns`. A draft — nothing is queued to send until `sendCampaign` is called
  *  and the service's send gate lets it through. */
+/** What picks an A/B test's winner: the open rate or the click rate of each version. */
+export type AbMetric = "open" | "click";
+
 export interface CampaignIn {
   name: string;
   channel?: CampaignChannel;
@@ -446,6 +449,18 @@ export interface CampaignIn {
   audience?: CampaignAudience;
   list_id?: string | null;
   scheduled_at?: string | null;
+  /** Open/click tracking (off by default). An A/B test needs the one its metric reads. */
+  track_opens?: boolean;
+  track_clicks?: boolean;
+  /** A/B test: version B, the share of the audience each version is tested on (1–50), the metric
+   *  that picks the winner and the wait in minutes (15–10080) before it is picked. */
+  ab_test?: boolean;
+  subject_b?: string;
+  html_body_b?: string;
+  text_body_b?: string;
+  ab_split_percent?: number;
+  ab_metric?: AbMetric;
+  ab_wait_minutes?: number;
 }
 
 /** `PATCH /engage/campaigns/{campaign_id}`. Refused once the campaign has left `draft` — what a
@@ -462,6 +477,18 @@ export interface CampaignPatch {
   audience?: CampaignAudience;
   list_id?: string | null;
   scheduled_at?: string | null;
+  /** Open/click tracking (off by default). An A/B test needs the one its metric reads. */
+  track_opens?: boolean;
+  track_clicks?: boolean;
+  /** A/B test: version B, the share of the audience each version is tested on (1–50), the metric
+   *  that picks the winner and the wait in minutes (15–10080) before it is picked. */
+  ab_test?: boolean;
+  subject_b?: string;
+  html_body_b?: string;
+  text_body_b?: string;
+  ab_split_percent?: number;
+  ab_metric?: AbMetric;
+  ab_wait_minutes?: number;
 }
 
 /** `POST /engage/segments`. A saved filter over the contact book, evaluated when a campaign
@@ -532,6 +559,18 @@ export interface CampaignOut {
    *  unless `status === "paused"`. */
   pause_reason: string;
   stats: CampaignStats;
+  track_opens?: boolean;
+  track_clicks?: boolean;
+  /** A/B test settings; `ab_winner` is set by the service once the wait is over. */
+  ab_test?: boolean;
+  subject_b?: string;
+  html_body_b?: string;
+  text_body_b?: string;
+  ab_split_percent?: number;
+  ab_metric?: AbMetric;
+  ab_wait_minutes?: number;
+  ab_winner?: "a" | "b" | null;
+  ab_decided_at?: string | null;
   created_at: string;
   updated_at: string;
 }

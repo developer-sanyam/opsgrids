@@ -20,7 +20,7 @@ import {
 import type { BarListItem, DonutSlice } from "@opsgrids/ui";
 
 import { getCampaignAnalytics } from "@/api/analytics";
-import type { CampaignAnalytics } from "@/api/analytics";
+import type { AbTest, CampaignAnalytics } from "@/api/analytics";
 import { getCampaign } from "@/api/client";
 import type { CampaignOut } from "@/api/types";
 import { formatInstant, formatNumber } from "@/lib/format";
@@ -278,6 +278,52 @@ function CampaignDetails({ campaign }: { campaign: CampaignOut }) {
   );
 }
 
+function waitLabel(minutes: number): string {
+  const hours = minutes / 60;
+  return hours === 1 ? "1 hour" : `${formatNumber(hours)} hours`;
+}
+
+/** The two test groups side by side. Rates are worked out from the counts, over delivered — the
+ *  same basis the service picked the winner on. */
+function AbTestResults({ test }: { test: AbTest }) {
+  const metric = test.metric === "open" ? "open rate" : "click rate";
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-sm text-ink">
+        {test.winner === null
+          ? `Each version went to ${formatNumber(test.split_percent)}% of the audience. The service picks the winner by ${metric} after ${waitLabel(test.wait_minutes)}, then sends it to everyone else.`
+          : `Version ${test.winner.toUpperCase()} won on ${metric} and went to the rest of the audience.`}
+      </p>
+      <table className="w-full text-sm">
+        <caption className="sr-only">A/B test results</caption>
+        <thead>
+          <tr className="text-left text-xs font-bold uppercase tracking-wider text-faint">
+            <th scope="col" className="py-2 pr-4 font-bold">Version</th>
+            <th scope="col" className="py-2 pr-4 font-bold">Subject</th>
+            <th scope="col" className="py-2 pr-4 text-right font-bold">Delivered</th>
+            <th scope="col" className="py-2 pr-4 text-right font-bold">Open rate</th>
+            <th scope="col" className="py-2 text-right font-bold">Click rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {test.variants.map((row) => (
+            <tr key={row.variant} className="border-t border-line">
+              <th scope="row" className="py-3 pr-4 text-left font-medium text-ink">
+                {row.variant.toUpperCase()}
+                {test.winner === row.variant ? " (winner)" : ""}
+              </th>
+              <td className="py-3 pr-4 text-ink">{row.subject}</td>
+              <td className="tnum py-3 pr-4 text-right text-ink">{formatNumber(row.delivered)}</td>
+              <td className="tnum py-3 pr-4 text-right text-ink">{percentOf(row.opened, row.delivered) ?? "–"}</td>
+              <td className="tnum py-3 text-right text-ink">{percentOf(row.clicked, row.delivered) ?? "–"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function Content({ data, campaign }: { data: CampaignAnalytics | null; campaign: CampaignOut | null }) {
   const loading = data === null;
 
@@ -296,6 +342,12 @@ function Content({ data, campaign }: { data: CampaignAnalytics | null; campaign:
   return (
     <>
       <KpiGrid label="Campaign totals" kpis={data === null ? null : kpis(data)} columns={5} />
+
+      {data?.ab_test ? (
+        <ChartCard title="A/B test">
+          <AbTestResults test={data.ab_test} />
+        </ChartCard>
+      ) : null}
 
       <div className="grid gap-4 lg:grid-cols-3">
         <ChartCard title="Opens by device" loading={loading} skeleton="donut">

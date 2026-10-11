@@ -24,7 +24,7 @@ from datetime import UTC, date, datetime, timedelta
 from html import escape as html_escape
 from typing import Any, Final, Literal, cast
 
-from sqlalchemy import CursorResult, case, delete, func, select, update
+from sqlalchemy import CursorResult, case, delete, func, select, text, true, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,7 +42,9 @@ from app import (
     whatsapp_provider,
 )
 from app.config import Settings, settings
+from app.e1_models import EmailEvent
 from app.models import (
+    SCHEMA,
     AuditLog,
     Campaign,
     CampaignRecipient,
@@ -4899,6 +4901,27 @@ async def change_list_members(
 
 EVT_CAMPAIGN_SEND_REQUESTED = "engage.campaign.campaign.send_requested"
 EVT_CAMPAIGN_CANCELLED = "engage.campaign.campaign.cancelled"
+#: Internal to notification: an A/B test's wait is over. Staged as the target of a
+#: `platform.schedule.requested` (ADR-0015) at expansion; `notification.` because the scheduler only
+#: delivers events namespaced under the requesting service.
+EVT_CAMPAIGN_AB_DECIDE = "notification.campaign.ab_decide_due"
+
+
+def ab_group_size(audience: int, percent: int) -> int:
+    """How many recipients each A/B test group gets: `percent` of the audience, rounded down,
+    but never an empty group while there is anyone at all to test on."""
+    return 0 if audience <= 0 else max(1, audience * percent // 100)
+
+
+def ab_pick_winner(*, delivered_a: int, hits_a: int, delivered_b: int, hits_b: int) -> str:
+    """`a` or `b`: the higher `hits / delivered`, compared exactly (cross-multiplied, no float). A
+    tie, or no data either way, keeps `a` — the version the campaign was written as."""
+    if delivered_b == 0:
+        return "a"
+    if delivered_a == 0:
+        return "b" if hits_b > 0 else "a"
+    return "b" if hits_b * delivered_a > hits_a * delivered_b else "a"
+
 
 #: What the fan-out stamps on rows it creates. It acts on an event, not for a person.
 CAMPAIGN_ACTOR = "system:engage-campaign"
@@ -5171,6 +5194,15 @@ async def _ensure_campaign_sendable(
         raise BusinessRuleProblem("Add a subject before sending.")
     if not (row.text_body.strip() or row.html_body.strip()):
         raise BusinessRuleProblem("Add a body before sending.")
+    if row.ab_test:
+        if not row.subject_b.strip():
+            raise BusinessRuleProblem("Add a subject for version B before sending the A/B test.")
+        if not (row.text_body_b.strip() or row.html_body_b.strip()):
+            raise BusinessRuleProblem("Add a body for version B before sending the A/B test.")
+        if row.ab_metric == "open" and not row.track_opens:
+            raise BusinessRuleProblem("Turn on open tracking to pick the A/B winner by opens.")
+        if row.ab_metric == "click" and not row.track_clicks:
+            raise BusinessRuleProblem("Turn on click tracking to pick the A/B winner by clicks.")
 
     sender = (
         await selectors.get_sender(session, ctx.organization_id, row.sender_id)
@@ -5619,8 +5651,155 @@ async def expand_campaign(
         after = contacts[-1].id
     if campaign.expanded_at is None:
         campaign.expanded_at = datetime.now(UTC)
+        if campaign.ab_test:
+            await _start_ab_test(session, campaign)
     await _fold_campaign_counts(session, campaign)
     return True
+
+
+async def _start_ab_test(session: AsyncSession, campaign: Campaign) -> None:
+    """Draw the two test groups and ask the scheduler to decide once the wait is over. Runs once,
+    in the transaction that first expands the campaign (`expanded_at` is set once), so a
+    redelivered expansion neither redraws the groups nor asks twice.
+
+    The groups are the first `2k` recipients in `md5(id)` order — random, since the ids are
+    random, and stable for the statement — `a` for the first `k`, `b` for the next. Everyone else
+    keeps `variant` null and waits, `queued`, for the winner (`_claim_recipient_rows`).
+    """
+    total = (
+        await session.execute(
+            select(func.count())
+            .select_from(CampaignRecipient)
+            .where(
+                CampaignRecipient.organization_id == campaign.organization_id,
+                CampaignRecipient.campaign_id == campaign.id,
+            )
+        )
+    ).scalar_one()
+    each = ab_group_size(int(total), campaign.ab_split_percent)
+    await session.execute(
+        text(
+            f"""
+            WITH ranked AS (
+                SELECT id, row_number() OVER (ORDER BY md5(id::text)) AS rn
+                  FROM {SCHEMA}.campaign_recipients
+                 WHERE organization_id = :org AND campaign_id = :campaign)
+            UPDATE {SCHEMA}.campaign_recipients cr
+               SET variant = CASE WHEN ranked.rn <= :each THEN 'a' ELSE 'b' END
+              FROM ranked
+             WHERE cr.id = ranked.id AND ranked.rn <= 2 * :each
+            """  # noqa: S608 - only the schema constant is interpolated; values are bound
+        ).bindparams(org=campaign.organization_id, campaign=campaign.id, each=each)
+    )
+    due_at = datetime.now(UTC) + timedelta(minutes=campaign.ab_wait_minutes)
+    schedule_event(
+        session,
+        OutboxEvent,
+        organization_id=campaign.organization_id,
+        due_at=due_at,
+        idempotency_key=f"engage-campaign-ab-decide:{campaign.id}",
+        target_event_type=EVT_CAMPAIGN_AB_DECIDE,
+        target_aggregate_type="campaign",
+        target_aggregate_id=campaign.id,
+        target_payload={
+            "organization_id": str(campaign.organization_id),
+            "campaign_id": str(campaign.id),
+        },
+        target_actor={"type": "system", "id": CAMPAIGN_ACTOR},
+    )
+
+
+async def decide_ab_test(
+    session: AsyncSession, *, organization_id: uuid.UUID, campaign_id: uuid.UUID
+) -> str:
+    """Pick an A/B test's winner from what its two groups did, and release the remainder to it.
+    Returns the winner (`a` | `b`), or why nothing was decided: `not_found`, `not_ab`, `decided`
+    (already — a second firing changes nothing), `not_sending` (cancelled or finished).
+
+    The rate is distinct recipients with a **human** open (or click) over recipients the provider
+    accepted, per group — the same definitions the campaign report uses (`e1_analytics`). Machine
+    events (scanners, prefetch, Apple Mail Privacy Protection) never count. Whatever the test
+    groups have done by now is what decides: a group still partly unsent (a daily cap) is judged
+    on what was sent.
+    """
+    campaign = await selectors.get_campaign(session, organization_id, campaign_id, lock=True)
+    if campaign is None:
+        return "not_found"
+    if not campaign.ab_test:
+        return "not_ab"
+    if campaign.ab_winner is not None:
+        return "decided"
+    if campaign.status not in _DRIVER_ACTIVE:
+        return "not_sending"
+
+    delivered: dict[str | None, int] = {
+        row[0]: int(row[1])
+        for row in (
+            await session.execute(
+                select(CampaignRecipient.variant, func.count())
+                .where(
+                    CampaignRecipient.organization_id == organization_id,
+                    CampaignRecipient.campaign_id == campaign_id,
+                    CampaignRecipient.variant.is_not(None),
+                    CampaignRecipient.status == "sent",
+                )
+                .group_by(CampaignRecipient.variant)
+            )
+        ).all()
+    }
+    hits: dict[str | None, int] = {
+        row[0]: int(row[1])
+        for row in (
+            await session.execute(
+                select(
+                    CampaignRecipient.variant, func.count(func.distinct(EmailEvent.recipient_id))
+                )
+                .join(
+                    EmailEvent,
+                    (EmailEvent.organization_id == CampaignRecipient.organization_id)
+                    & (EmailEvent.recipient_id == CampaignRecipient.id),
+                )
+                .where(
+                    CampaignRecipient.organization_id == organization_id,
+                    CampaignRecipient.campaign_id == campaign_id,
+                    CampaignRecipient.variant.is_not(None),
+                    EmailEvent.campaign_id == campaign_id,
+                    EmailEvent.kind == campaign.ab_metric,
+                    EmailEvent.is_machine.is_(False),
+                )
+                .group_by(CampaignRecipient.variant)
+            )
+        ).all()
+    }
+    winner = ab_pick_winner(
+        delivered_a=int(delivered.get("a", 0)),
+        hits_a=int(hits.get("a", 0)),
+        delivered_b=int(delivered.get("b", 0)),
+        hits_b=int(hits.get("b", 0)),
+    )
+    now = datetime.now(UTC)
+    campaign.ab_winner = winner
+    campaign.ab_decided_at = now
+    campaign.updated_by = CAMPAIGN_ACTOR
+    campaign.updated_at = now
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        acting_as=CAMPAIGN_ACTOR,
+        action="engage.campaign.ab_winner_chosen",
+        entity="campaign",
+        entity_id=campaign.id,
+        after={
+            "winner": winner,
+            "metric": campaign.ab_metric,
+            "a": {"delivered": int(delivered.get("a", 0)), "hits": int(hits.get("a", 0))},
+            "b": {"delivered": int(delivered.get("b", 0)), "hits": int(hits.get("b", 0))},
+        },
+    )
+    return winner
 
 
 async def _expand_whatsapp_campaign(
@@ -5745,28 +5924,39 @@ def unsubscribe_url_for_recipient(organization_id: uuid.UUID, recipient_id: uuid
 
 
 def campaign_message(
-    campaign: Campaign, *, to_address: str, unsubscribe: str, html_body: str | None = None
+    campaign: Campaign,
+    *,
+    to_address: str,
+    unsubscribe: str,
+    html_body: str | None = None,
+    variant: str = "a",
 ) -> Outgoing:
     """One recipient's copy: the campaign body plus the unsubscribe footer, and the RFC 8058
     one-click headers. Built per recipient because the link is per address.
 
     `html_body` replaces the campaign's HTML body when given: the tracked copy (slice E1), with
     links rewritten and a pixel added. The unsubscribe footer is always appended after it, so it
-    is never rewritten."""
-    text = campaign.text_body.rstrip()
+    is never rewritten.
+
+    `variant` `b` sends an A/B test's version B (subject and both bodies); anything else, or a
+    campaign that is not an A/B test, sends the campaign as written."""
+    use_b = campaign.ab_test and variant == "b"
+    subject = campaign.subject_b if use_b else campaign.subject
+    source_html = campaign.html_body_b if use_b else campaign.html_body
+    text = (campaign.text_body_b if use_b else campaign.text_body).rstrip()
     footer = f"Unsubscribe: {unsubscribe}\n"
     text = f"{text}\n\n--\n{footer}" if text else footer
     html: str | None = None
-    if campaign.html_body.strip():
+    if source_html.strip():
         link = html_escape(unsubscribe, quote=True)
         html = (
-            f"{campaign.html_body if html_body is None else html_body}\n"
+            f"{source_html if html_body is None else html_body}\n"
             '<p style="font-size:12px;color:#666">'
             f'<a href="{link}">Unsubscribe</a></p>'
         )
     return Outgoing(
         to_address=to_address,
-        subject=campaign.subject,
+        subject=subject,
         body=text,
         html=html,
         headers={
@@ -6091,6 +6281,7 @@ async def _claim_recipient_rows(
     *,
     limit: int,
     lease_seconds: int,
+    test_groups_only: bool = False,
 ) -> list[CampaignRecipient]:
     """Claim the next `limit` recipients: `queued`, or `sending` past a stale lease — a batch
     another process claimed and then died before recording. `FOR UPDATE SKIP LOCKED` inside the
@@ -6113,6 +6304,8 @@ async def _claim_recipient_rows(
                 (CampaignRecipient.status == "sending")
                 & (CampaignRecipient.claimed_at < stale_before)
             ),
+            # An undecided A/B test sends its two test groups only; the remainder waits.
+            CampaignRecipient.variant.is_not(None) if test_groups_only else true(),
         )
         .order_by(CampaignRecipient.contact_id.asc())
         .limit(limit)
@@ -6208,6 +6401,7 @@ async def claim_campaign_batch(
         campaign_id,
         limit=min(batch_size, room),
         lease_seconds=lease_seconds,
+        test_groups_only=campaign.ab_test and campaign.ab_winner is None,
     )
     if not claimed:
         counts = await _fold_campaign_counts(session, campaign)
@@ -6252,12 +6446,18 @@ async def claim_campaign_batch(
             # Recorded on the recipient as a machine-readable reason (`consent:opted_out`, ...).
             resolved.append((recipient.id, "suppressed", consent.stored_reason(refusal)))
             continue
+        # A test-group recipient gets their group's version; the remainder gets the winner.
+        variant = recipient.variant or campaign.ab_winner or "a"
+        source_html = (
+            campaign.html_body_b if campaign.ab_test and variant == "b" else campaign.html_body
+        )
         try:
             address = pii.open_sealed(recipient.email_enc, settings=cfg)
             message = campaign_message(
                 campaign,
                 to_address=address,
                 unsubscribe=unsubscribe_url_for_recipient(organization_id, recipient.id),
+                variant=variant,
                 html_body=(
                     # Off the event loop: a pass over a body of up to 500 KB, and in production
                     # this driver shares a process (and a loop) with every tenant's API traffic.
@@ -6265,11 +6465,11 @@ async def claim_campaign_batch(
                     # session is never touched from it.
                     await asyncio.to_thread(
                         tracking.render,
-                        campaign.html_body,
+                        source_html,
                         organization_id=organization_id,
                         recipient_id=recipient.id,
                     )
-                    if tracking is not None and campaign.html_body.strip()
+                    if tracking is not None and source_html.strip()
                     else None
                 ),
             )

@@ -136,6 +136,28 @@ describe("a sent campaign", () => {
     return vi.spyOn(client, "listCampaignRecipients").mockResolvedValue(page(ROWS));
   }
 
+  it("says which version of an A/B test won, and shows version B beside A", async () => {
+    mockRefs();
+    const ab: CampaignOut = {
+      ...SENT,
+      ab_test: true,
+      subject_b: "Version B subject line",
+      html_body_b: "",
+      text_body_b: "Version B text",
+      ab_split_percent: 10,
+      ab_metric: "click",
+      ab_wait_minutes: 240,
+      ab_winner: "b",
+      ab_decided_at: "2026-10-05T14:00:00Z",
+    };
+    vi.spyOn(client, "getCampaign").mockResolvedValue(ab);
+    vi.spyOn(client, "listCampaignRecipients").mockResolvedValue(page(ROWS));
+    renderReport(ab);
+
+    expect(await screen.findByText(/A\/B test: version B won on click rate/)).toBeTruthy();
+    expect(screen.getByText("Version B subject line")).toBeTruthy();
+  });
+
   it("reports the five counts the service folds, and how far along the audience is", async () => {
     mockSent();
     renderReport(SENT);

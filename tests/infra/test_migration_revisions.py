@@ -107,3 +107,25 @@ def test_remote_sh_migrate_uses_the_skip_and_still_parses() -> None:
     assert "unknown_revisions" in body and "migration_rollback_warning" in body
     # The skip comes before the upgrade it protects.
     assert body.index("unknown_revisions") < body.index("alembic upgrade head")
+
+
+DOWN_LINE = re.compile(r"^down_revision[^=]*=\s*(\([^)]*\)|[^\n]+)", re.MULTILINE)
+
+
+@pytest.mark.parametrize(
+    "versions_dir",
+    sorted(REPO_ROOT.glob("services/*/migrations/versions")),
+    ids=lambda p: p.parts[-3],
+)
+def test_every_service_has_exactly_one_alembic_head(versions_dir: Path) -> None:
+    # Two heads make `alembic upgrade head` refuse, and the deploy stops at migrate.
+    revisions: set[str] = set()
+    parents: set[str] = set()
+    for f in versions_dir.glob("*.py"):
+        text = f.read_text()
+        if rev := REVISION_LINE.search(text):
+            revisions.add(rev.group(1))
+        if down := DOWN_LINE.search(text):
+            parents.update(re.findall(r"""["']([^"']+)["']""", down.group(1)))
+    heads = revisions - parents
+    assert len(heads) == 1, f"{versions_dir.parts[-3]} has heads {sorted(heads)}"
