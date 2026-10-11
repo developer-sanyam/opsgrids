@@ -205,6 +205,53 @@ class TestMatchingTotals:
         assert audits[0].after["total_minor"] == TOTAL
 
 
+class TestDerivedFromTheBilledParty:
+    """Operations omits `supply_type` and `place_of_supply` (it knows neither the buyer's GSTIN
+    nor a state code); finance derives both from its own customer, as `create_invoice` does."""
+
+    @staticmethod
+    def _omitting(envelope: dict[str, Any]) -> dict[str, Any]:
+        del envelope["payload"]["supply_type"]
+        del envelope["payload"]["place_of_supply"]
+        return envelope
+
+    async def _issue(self, session: AsyncSession, org_id: uuid.UUID, gstin: str | None) -> Invoice:
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+            customer = await _customer(session, ctx, gstin=gstin)  # type: ignore[arg-type]
+        order_id = uuid.uuid4()
+        await consumers.invoice_requested_from_order(
+            self._omitting(
+                _envelope(organization_id=org_id, order_id=order_id, customer_id=customer.id)
+            )
+        )
+        async with session.begin():
+            return (
+                await session.execute(select(Invoice).where(Invoice.order_id == order_id))
+            ).scalar_one()
+
+    async def test_a_buyer_with_no_gstin_is_b2c_not_b2b(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        invoice = await self._issue(session, org_id, None)
+
+        assert invoice.supply_type == "b2c"
+        assert invoice.buyer_gstin is None
+        # Maharashtra buyer, Maharashtra seller: CGST+SGST, never IGST by default.
+        assert invoice.place_of_supply == "27"
+        assert (invoice.cgst_minor, invoice.sgst_minor, invoice.igst_minor) == (9_000, 9_000, 0)
+
+    async def test_a_buyer_with_a_gstin_is_b2b_in_the_gstin_state(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        invoice = await self._issue(session, org_id, BUYER_SAME_STATE)
+
+        assert invoice.supply_type == "b2b"
+        assert invoice.place_of_supply == "27"
+        assert invoice.total_minor == TOTAL
+
+
 class TestMismatchedTotals:
     async def test_rejects_without_raising_and_creates_no_invoice(
         self, session: AsyncSession, org_id: uuid.UUID

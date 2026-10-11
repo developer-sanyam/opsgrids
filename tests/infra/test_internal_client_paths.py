@@ -331,6 +331,27 @@ asyncio.run(main())
 emit(ORG, cfg, "storefront")
 """
 
+# A11: operations -> finance `customers:resolve-for-crm-contact` (INVENTORY-01).
+_A11 = """
+from app.config import Settings
+from app.orders import finance_client
+
+cfg = Settings()
+
+
+async def main():
+    async with make_client() as client:
+        await attempt(
+            finance_client.resolve_finance_customer(
+                cfg, uuid.UUID(ORG), uuid.UUID(CONTACT), client=client
+            )
+        )
+
+
+asyncio.run(main())
+emit(ORG, cfg, "finance")
+"""
+
 # --------------------------------------------------------------------------------- the registry
 
 
@@ -426,6 +447,15 @@ CALLS: tuple[Call, ...] = (
         "/internal/v1/enquiries/{enquiry}/whatsapp-opt-in",
         "notification/app/storefront_optin.py",
         _A10,
+    ),
+    Call(
+        "A11",
+        "operations",
+        "finance",
+        "POST",
+        "/internal/v1/organizations/{org}/customers:resolve-for-crm-contact",
+        "operations/app/orders/finance_client.py",
+        _A11,
     ),
 )
 

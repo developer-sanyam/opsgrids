@@ -83,7 +83,12 @@ async def build_floor(session: AsyncSession, org_id: uuid.UUID, *, stock: int = 
 
 
 async def accept_order(
-    session: AsyncSession, org_id: uuid.UUID, shop: Shop, *, lines: list[dict]
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    shop: Shop,
+    *,
+    lines: list[dict],
+    customer_id: uuid.UUID | None = None,
 ) -> Order:
     """`DRAFT -> PLACED -> ACCEPTED`, through the real order-engine write paths, so pick-task
     creation starts from a genuinely reserved order (the same reservations F3 must transfer).
@@ -108,7 +113,7 @@ async def accept_order(
             create_ctx,
             channel="manual",
             warehouse_id=shop.warehouse_id,
-            customer_id=None,
+            customer_id=customer_id,
             customer_name="Asha Verma",
             customer_phone="9999900000",
             currency="INR",
@@ -173,7 +178,13 @@ async def confirm_pick(  # type: ignore[no-untyped-def]
 
 
 async def ready_order(  # type: ignore[no-untyped-def]
-    client, org_id: uuid.UUID, session: AsyncSession, floor: Floor, *, qty: str = "10"
+    client,
+    org_id: uuid.UUID,
+    session: AsyncSession,
+    floor: Floor,
+    *,
+    qty: str = "10",
+    customer_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """Accepts a one-line order and drives it, through the real F3 write paths (one task, one
     offer, one pick confirmation), all the way to `READY` — the single-task shape every F4
@@ -185,6 +196,7 @@ async def ready_order(  # type: ignore[no-untyped-def]
         org_id,
         floor.shop,
         lines=[{"inventory_item_id": floor.shop.widget, "quantity": qty}],
+        customer_id=customer_id,
     )
     tasks = await create_tasks(client, org_id, order)
     task = tasks[0]

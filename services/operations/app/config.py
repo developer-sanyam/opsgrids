@@ -76,6 +76,13 @@ class Settings(ServiceSettings):
     #: provider is a clean 503 here rather than the gateway's own timeout.
     payment_call_timeout_seconds: float = 25.0
 
+    #: Where `services/finance`'s internal API answers: the order-invoice consumer
+    #: (`app.consumers.order_invoice_due`) resolves an order's CRM contact into finance's own
+    #: billed party there before asking for the invoice. Local `make run` port by default; the
+    #: edge's compose file points it at `http://finance:8000`.
+    finance_internal_url: str = "http://localhost:8171"
+    finance_timeout_seconds: float = 10.0
+
 
 def settings() -> Settings:
     return settings_for(Settings)  # type: ignore[return-value]

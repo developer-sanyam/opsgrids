@@ -72,8 +72,14 @@ EVT_ORDER_HANDED_OVER = "operations.orders.order.handed_over"
 #: This service's own request for an invoice (ADR-0024 §1/§4; Fulfilment plan F4) — the exact
 #: contract `libs/contracts/events/operations.orders.order.invoice_requested/v1.schema.json`
 #: fixes, consumed by `services/finance/app/consumers.py::invoice_requested_from_order` (already
-#: deployed, ahead of this producer — see that schema's own `$comment`).
+#: deployed).
 EVT_ORDER_INVOICE_REQUESTED = "operations.orders.order.invoice_requested"
+#: Staged at READY (`queue_invoice_request`) and consumed by this service itself
+#: (`app.consumers.order_invoice_due`): the invoice request needs finance's billed-party id, which
+#: takes a network call, and a network call may not run inside the READY transaction
+#: (`docs/io-outside-transactions.md`). The outbox carries the work to a consumer that makes the
+#: call with no transaction open, then emits `EVT_ORDER_INVOICE_REQUESTED`.
+EVT_ORDER_INVOICE_DUE = "operations.orders.order.invoice_due"
 #: `services/finance`'s own event name
 #: (`services/finance/app/services.py::EVT_ORDER_INVOICE_ISSUED`) — never imported (no
 #: cross-service import exists in this platform any more than a cross-schema
@@ -871,28 +877,6 @@ def _generate_pickup_code() -> str:
     return "".join(secrets.choice("0123456789") for _ in range(6))
 
 
-def _resolve_finance_customer_id(order: Order) -> uuid.UUID | None:
-    """Where `request_invoice_for_order` would resolve a `finance.customers.id` for this order's
-    buyer. **Always `None` today** — this is F4's documented, unresolved gap, not an oversight:
-
-    `Order.customer_id` is a `services/customer` id (ADR-0000 §10: a plain UUID, no cross-schema
-    FK); `finance.customers.id` is a different id space entirely, and `finance.customers` carries
-    no CRM link field to bridge them by design (its own model docstring: "Distinct from any CRM
-    account by design — no cross-schema link"). `services/finance` exposes no lookup/create-by-
-    external-reference endpoint today either (`services/finance/app/api/routes.py` and
-    `internal.py` grepped for this slice: only the ordinary `POST /finance/customers`, full
-    `CustomerCreate` payload, no dedup key) — calling it from here would mint a brand new finance
-    customer on every order a repeat buyer places, which is worse than not invoicing them at all.
-
-    Returns `None` until finance ships a real resolve-or-create surface. When it does, this
-    function is the one place that changes: a real implementation would be a **call**, run with
-    no session and no transaction open, before `request_invoice_for_order`'s own transaction —
-    the identical `docs/io-outside-transactions.md` discipline `check_credit_before_accept`
-    documents for the same reason.
-    """
-    return None
-
-
 def _invoice_request_lines(
     lines: Sequence[OrderLine], items: Mapping[uuid.UUID, Any]
 ) -> list[dict[str, Any]]:
@@ -934,8 +918,10 @@ def _invoice_request_payload(
     `domain.expected_gst_amount_minor`, which mirrors finance's own rounding (that function's own
     docstring explains why this is safe without knowing finance's seller GST registration:
     `place_of_supply` is always omitted here, and the total a rate produces does not depend on
-    the intra/inter-state split). `reverse_charge` is always `False` and `supply_type` always
-    `"b2b"` — operations tracks neither yet, and both are this schema's own defaults."""
+    the intra/inter-state split). `reverse_charge` is always `False`. `supply_type` and
+    `place_of_supply` are omitted: operations knows neither the buyer's GSTIN nor a state code,
+    so finance derives both from its own billed party (b2b only with a GSTIN on file), exactly as
+    it does for an invoice raised by hand."""
     invoice_lines = _invoice_request_lines(lines, items)
     subtotal = domain.order_subtotal_minor(lines)
     tax = sum(
@@ -952,58 +938,104 @@ def _invoice_request_payload(
         "expected_subtotal_minor": subtotal,
         "expected_tax_minor": tax,
         "expected_total_minor": subtotal + tax,
-        "supply_type": "b2b",
         "reverse_charge": False,
     }
+
+
+def _skip_invoice_request(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    order: Order,
+    reason: str,
+    *,
+    request: Request | None = None,
+) -> None:
+    """No invoice is requested for this order, and the order's own audit trail says why."""
+    log.warning(
+        "orders.invoice_request.skipped",
+        organization_id=str(ctx.organization_id),
+        order_id=str(order.id),
+        order_number=order.number,
+        reason=reason,
+    )
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="order.invoice_request_skipped",
+        entity="order",
+        entity_id=order.id,
+        after={"reason": reason},
+        request=request,
+    )
+
+
+def queue_invoice_request(
+    session: AsyncSession, ctx: ScopeContext, order: Order, *, request: Request | None = None
+) -> None:
+    """The READY-time half of the invoice request (ADR-0024 §1/§4; Fulfilment plan F4), run inside
+    the transaction that moves the order to READY. Decides from facts already on the order whether
+    an invoice can be asked for and, if so, stages `EVT_ORDER_INVOICE_DUE` for
+    `app.consumers.order_invoice_due`, which resolves the billed party and emits the request.
+
+    Two cases are skipped, each with an audit row, because a tax invoice raised on a guess is
+    worse than none:
+
+    * `tax_rate_unset` — the order was accepted under no saved fulfilment policy
+      (`settings_snapshot.source == "default"`), so its tax rate is the hard-coded 0, not a rate
+      the organization chose.
+    * `no_crm_contact` — a walk-in or hand-typed buyer with no CRM contact: there is no identity
+      to resolve a billed party from, and finance's customer book must not grow a row per order.
+    """
+    snapshot = order.settings_snapshot or {}
+    if snapshot.get("source", "default") == "default":
+        _skip_invoice_request(session, ctx, order, "tax_rate_unset", request=request)
+        return
+    if order.customer_id is None:
+        _skip_invoice_request(session, ctx, order, "no_crm_contact", request=request)
+        return
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_ORDER_INVOICE_DUE,
+        aggregate_type="order",
+        aggregate_id=order.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "order_id": str(order.id),
+            "crm_contact_id": str(order.customer_id),
+        },
+        actor=_actor(ctx),
+    )
 
 
 async def request_invoice_for_order(
     session: AsyncSession,
     ctx: ScopeContext,
-    order: Order,
-    lines: Sequence[OrderLine],
+    order_id: uuid.UUID,
+    finance_customer_id: uuid.UUID | None,
     *,
     request: Request | None = None,
 ) -> None:
-    """Emit `operations.orders.order.invoice_requested` once picking/packing completes for an
-    order (ADR-0024 §1/§4; Fulfilment plan F4) — called from
-    `app.fulfilment.services._maybe_ready_order` (via `handle_order_ready`), inside the same
-    transaction that already holds the order row lock for the `IN_FULFILMENT -> READY` move
-    (ADR-0025 §1's order-row-first discipline), so this needs no lock of its own.
+    """Emit `operations.orders.order.invoice_requested` for one order, naming finance's billed
+    party (`finance_customer_id`, resolved by `app.consumers.order_invoice_due` with no
+    transaction open). `None` means finance answered that the order's CRM contact is not part of
+    this organization: skipped with an audit row, never sent with a made-up id.
 
-    **This slice's customer_id gap (see the slice's own report).** The event's `customer_id` must
-    be a `finance.customers.id` (the schema's own description). `_resolve_finance_customer_id`
-    always returns `None` today — there is no bridge from `Order.customer_id` to one, and no
-    finance endpoint to build one against in this request/response cycle (that function's own
-    docstring has the full reasoning). Rather than send an empty/fabricated id, which would only
-    bounce off finance's `unknown_customer` rejection, this is a **visibly-logged no-op**: a
-    structured warning and an audit row (`order.invoice_request_skipped`) so the gap is on the
-    order's own trail, not only in a log line. The `READY` transition itself is unaffected —
-    picking completion is not conditional on billing.
-    """
-    tax_rate_pct = Decimal((order.settings_snapshot or {}).get("default_tax_rate_pct", "0"))
-    finance_customer_id = _resolve_finance_customer_id(order)
+    An order cancelled, or already invoiced, since READY is left alone; finance refuses a second
+    invoice for one order regardless (`uq_invoices_org_order_id`)."""
+    order = await selectors.get_order(session, ctx.organization_id, order_id, for_update=True)
+    if order is None or order.status == "CANCELLED" or order.invoice_id is not None:
+        log.info("orders.invoice_request.not_needed", order_id=str(order_id))
+        return
     if finance_customer_id is None:
-        log.warning(
-            "orders.invoice_request.skipped",
-            organization_id=str(ctx.organization_id),
-            order_id=str(order.id),
-            order_number=order.number,
-            reason="no_finance_customer_mapping",
-        )
-        record_audit(
-            session,
-            AuditLog,
-            organization_id=ctx.organization_id,
-            actor_id=ctx.principal.sub,
-            action="order.invoice_request_skipped",
-            entity="order",
-            entity_id=order.id,
-            after={"reason": "no_finance_customer_mapping"},
-            request=request,
-        )
+        _skip_invoice_request(session, ctx, order, "crm_contact_not_found", request=request)
         return
 
+    tax_rate_pct = Decimal((order.settings_snapshot or {}).get("default_tax_rate_pct", "0"))
+    lines = await selectors.lines_for(session, ctx.organization_id, order.id)
     item_ids = [line.inventory_item_id for line in lines]
     items = await selectors.items_for_lines(session, ctx.organization_id, item_ids)
     payload = _invoice_request_payload(
@@ -1049,15 +1081,14 @@ async def handle_order_ready(
        is not already set — idempotent against being called twice for the same order, though
        `_maybe_ready_order`'s own guard (`order.status != "IN_FULFILMENT"` returns early) means
        it structurally never is.
-    2. Requests an invoice from finance (`request_invoice_for_order` — see that function's own
-       docstring for this slice's customer_id gap).
+    2. Queues the invoice request (`queue_invoice_request`), or records why there is none.
     """
     snapshot = order.settings_snapshot or {}
     if snapshot.get("require_pickup_code", False) and order.pickup_code is None:
         order.pickup_code = _generate_pickup_code()
         # `release_hold_order` already flushed its own `updated_at` write before calling here, so
         # this pickup-code write is a second, later dirty column on the same row: an autoflush
-        # from here on (the `lines_for` read two lines down, say) issues a second `UPDATE order`
+        # from here on (any later read in this transaction) issues a second `UPDATE order`
         # that does not carry `updated_at` explicitly, and its `onupdate=func.now()` is a SQL-side
         # default, not a literal value SQLAlchemy can keep in memory — the Python attribute is
         # left expired. A caller that reads it later with no awaited ORM call of its own
@@ -1066,8 +1097,7 @@ async def handle_order_ready(
         # value no matter how many separate flushes this call ends up costing.
         order.updated_at = datetime.now(UTC)
 
-    lines = await selectors.lines_for(session, ctx.organization_id, order.id)
-    await request_invoice_for_order(session, ctx, order, lines, request=request)
+    queue_invoice_request(session, ctx, order, request=request)
 
 
 # ------------------------------------------------------------------ billing gate (ADR-0025 §1)
