@@ -18,14 +18,76 @@ part of reading it, so routes stay thin.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Activity, Deal
+from app.models import Activity, Deal, Pipeline, PipelineStage
+from app.pipeline import DEFAULT_PIPELINE, Outcome, PipelineSpec, StageSpec, Tone
 from app.schemas import ActivityOut, DealOut
 from platform_core.auth import ScopeContext
+
+# ------------------------------------------------------------------ the pipeline
+
+
+async def load_pipeline_spec(session: AsyncSession, organization_id: uuid.UUID) -> PipelineSpec:
+    """The organization's pipeline: its default pipeline's stored stages, or the virtual default
+    (`DEFAULT_PIPELINE`) when nothing is stored for it. One or two indexed point queries, each
+    filtered on `organization_id` on top of the forced row-level-security policy.
+
+    A write that binds a deal to a stage takes the shared pipeline lock *before* calling this
+    (`services.lock_pipeline_shared`), so the spec it reads cannot change under it; a read calls
+    it with no lock. Soft-deleted stages are never loaded; archived ones are, because a deal may
+    keep sitting in one and still has to be read, summed and shown.
+    """
+    pipeline = (
+        await session.execute(
+            select(Pipeline).where(
+                Pipeline.organization_id == organization_id,
+                Pipeline.is_default.is_(True),
+                Pipeline.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if pipeline is None:
+        return DEFAULT_PIPELINE
+    rows = (
+        (
+            await session.execute(
+                select(PipelineStage)
+                .where(
+                    PipelineStage.organization_id == organization_id,
+                    PipelineStage.pipeline_id == pipeline.id,
+                    PipelineStage.deleted_at.is_(None),
+                )
+                .order_by(PipelineStage.position, PipelineStage.key)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return PipelineSpec(
+        stages=tuple(
+            StageSpec(
+                key=row.key,
+                label=row.label,
+                position=row.position,
+                # The CHECK constraints on the table are what make these casts true.
+                outcome=cast(Outcome, row.outcome),
+                default_probability=row.default_probability,
+                tone=cast(Tone, row.tone),
+                archived=row.archived_at is not None,
+                id=row.id,
+            )
+            for row in rows
+        ),
+        id=pipeline.id,
+        key=pipeline.key,
+        name=pipeline.name,
+        materialised=True,
+    )
+
 
 # ------------------------------------------------------------------ deals
 

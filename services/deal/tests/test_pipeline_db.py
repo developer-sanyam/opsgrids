@@ -1,5 +1,6 @@
 """The pipeline tables against a real PostgreSQL: row-level security, the constraints that make a
-stage's identity safe, and the grants.
+stage's identity safe, the grants, and what `materialise_default_pipeline` and
+`load_pipeline_spec` do with them.
 
 The constraint tests go through the **admin** session (BYPASSRLS, the migration role), so the
 database itself is what refuses a bad row — RLS would otherwise get there first for some of them
@@ -9,16 +10,27 @@ and prove less. The tenant tests go through the **app** role, which is what the 
 from __future__ import annotations
 
 import ast
+import asyncio
 import re
 import uuid
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import selectors, services
 from app.config import settings
-from tests.pipeline_support import insert_pipeline, insert_stage, tenant_session
+from app.models import AuditLog, OutboxEvent, Pipeline, PipelineStage
+from app.pipeline import DEFAULT_PIPELINE, StageSpec
+from tests.pipeline_support import (
+    CUSTOM_STAGES,
+    insert_pipeline,
+    insert_stage,
+    install_pipeline,
+    tenant_session,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -322,3 +334,196 @@ class TestNoStageIsEverDeleted:
 
     def test_the_scanner_ignores_other_deletes(self) -> None:
         assert not _delete_offences("await session.delete(deal)\ntext('DELETE FROM deal.deals')")
+
+
+class TestMaterialise:
+    async def test_it_writes_the_six_rows_one_audit_row_and_no_outbox_event(
+        self, session, org_id
+    ) -> None:
+        actor = uuid.uuid4()
+        async with session.begin():
+            spec = await services.materialise_default_pipeline(session, org_id, actor)
+        assert spec.materialised is True
+        assert spec.id is not None
+        assert [s.key for s in spec.stages] == [s.key for s in DEFAULT_PIPELINE.stages]
+        assert all(s.id is not None for s in spec.stages)
+
+        async with session.begin():
+            audits = (
+                (await session.execute(select(AuditLog).where(AuditLog.entity == "pipeline")))
+                .scalars()
+                .all()
+            )
+            outbox = (
+                await session.execute(select(func.count()).select_from(OutboxEvent))
+            ).scalar_one()
+            created_by = (
+                (await session.execute(select(PipelineStage.created_by).distinct())).scalars().all()
+            )
+        assert [(a.action, a.entity_id, a.actor_id) for a in audits] == [
+            ("pipeline.materialised", spec.id, actor)
+        ]
+        assert audits[0].after == {"pipeline_id": str(spec.id), "stages": 6}
+        assert outbox == 0, "materialising changes nothing a consumer needs to hear about"
+        assert created_by == [str(actor)]
+
+    async def test_a_second_call_changes_nothing(self, session, org_id) -> None:
+        async with session.begin():
+            first = await services.materialise_default_pipeline(session, org_id, None)
+        async with session.begin():
+            second = await services.materialise_default_pipeline(session, org_id, None)
+        assert second == first
+        async with session.begin():
+            counts = (
+                await session.execute(
+                    select(
+                        select(func.count()).select_from(Pipeline).scalar_subquery(),
+                        select(func.count()).select_from(PipelineStage).scalar_subquery(),
+                        select(func.count())
+                        .select_from(AuditLog)
+                        .where(AuditLog.action == "pipeline.materialised")
+                        .scalar_subquery(),
+                    )
+                )
+            ).one()
+        assert tuple(counts) == (1, 6, 1)
+
+    async def test_two_concurrent_first_writes_make_one_pipeline(self, session, org_id) -> None:
+        async def first_write(db: AsyncSession) -> None:
+            async with db.begin():
+                await services.materialise_default_pipeline(db, org_id, None)
+
+        async with tenant_session(org_id) as other:
+            await asyncio.gather(first_write(session), first_write(other))
+
+        async with session.begin():
+            counts = (
+                await session.execute(
+                    select(
+                        select(func.count()).select_from(Pipeline).scalar_subquery(),
+                        select(func.count()).select_from(PipelineStage).scalar_subquery(),
+                    )
+                )
+            ).one()
+        assert tuple(counts) == (1, 6), "the second writer must re-read under the lock and stop"
+
+    async def test_the_materialised_spec_equals_the_virtual_default(self, session, org_id) -> None:
+        async with session.begin():
+            spec = await services.materialise_default_pipeline(session, org_id, None)
+
+        def shape(stages: tuple[StageSpec, ...]) -> list[tuple[object, ...]]:
+            return [
+                (s.key, s.label, s.position, s.outcome, s.default_probability, s.tone, s.archived)
+                for s in stages
+            ]
+
+        assert shape(spec.stages) == shape(DEFAULT_PIPELINE.stages)
+        assert (spec.key, spec.name) == (DEFAULT_PIPELINE.key, DEFAULT_PIPELINE.name)
+
+    async def test_organization_b_stays_virtual_while_a_is_materialised(
+        self, session, org_id
+    ) -> None:
+        stranger = uuid.uuid4()
+        async with session.begin():
+            await services.materialise_default_pipeline(session, org_id, None)
+        async with tenant_session(stranger) as theirs, theirs.begin():
+            spec = await selectors.load_pipeline_spec(theirs, stranger)
+        assert spec is DEFAULT_PIPELINE
+
+
+class TestLoad:
+    async def test_a_bare_organization_reads_the_virtual_default(self, session, org_id) -> None:
+        async with session.begin():
+            spec = await selectors.load_pipeline_spec(session, org_id)
+        assert spec is DEFAULT_PIPELINE
+        assert spec.materialised is False
+
+    async def test_a_soft_deleted_stage_is_not_loaded(self, session, admin_session, org_id) -> None:
+        await install_pipeline(admin_session, org_id)
+        async with admin_session.begin():
+            await admin_session.execute(
+                text(
+                    "UPDATE deal.pipeline_stages SET deleted_at = now() "
+                    "WHERE organization_id = :org AND key = 'scoping'"
+                ),
+                {"org": org_id},
+            )
+        async with session.begin():
+            spec = await selectors.load_pipeline_spec(session, org_id)
+        assert [s.key for s in spec.stages] == ["discovery", "quote", "won", "lost"]
+
+    async def test_an_archived_stage_is_loaded_and_marked(
+        self, session, admin_session, org_id
+    ) -> None:
+        stages = (
+            *CUSTOM_STAGES,
+            StageSpec("retired", "Retired", 9, "open", 5, "neutral", archived=True),
+        )
+        await install_pipeline(admin_session, org_id, stages)
+        async with session.begin():
+            spec = await selectors.load_pipeline_spec(session, org_id)
+        retired = spec.get("retired")
+        assert retired is not None
+        assert retired.archived is True
+        assert [s.key for s in spec.active()] == ["discovery", "scoping", "quote", "won", "lost"]
+
+    async def test_one_organizations_pipeline_never_reaches_another(
+        self, session, admin_session, org_id
+    ) -> None:
+        await install_pipeline(admin_session, org_id)
+        stranger = uuid.uuid4()
+        async with tenant_session(stranger) as theirs, theirs.begin():
+            their_spec = await selectors.load_pipeline_spec(theirs, stranger)
+        async with session.begin():
+            our_spec = await selectors.load_pipeline_spec(session, org_id)
+        assert their_spec is DEFAULT_PIPELINE
+        assert [s.key for s in our_spec.stages] == [s.key for s in CUSTOM_STAGES]
+        assert our_spec.materialised is True
+
+    async def test_the_loaded_spec_carries_ids_and_the_pipeline_identity(
+        self, session, admin_session, org_id
+    ) -> None:
+        installed = await install_pipeline(admin_session, org_id, name="Enterprise pipeline")
+        async with session.begin():
+            spec = await selectors.load_pipeline_spec(session, org_id)
+        assert spec.id == installed.pipeline_id
+        assert spec.name == "Enterprise pipeline"
+        assert {s.key: s.id for s in spec.stages} == installed.stage_ids
+
+
+class TestLocks:
+    async def test_a_shared_lock_waits_for_an_open_exclusive_lock(self, session, org_id) -> None:
+        async with tenant_session(org_id) as other:
+            async with session.begin():
+                await services.lock_pipeline_exclusive(session, org_id)
+                with pytest.raises(DBAPIError, match="lock timeout"):
+                    async with other.begin():
+                        await other.execute(text("SET LOCAL lock_timeout = '300ms'"))
+                        await services.lock_pipeline_shared(other, org_id)
+            # The exclusive holder committed, so the shared lock is free to take.
+            async with other.begin():
+                await other.execute(text("SET LOCAL lock_timeout = '300ms'"))
+                await services.lock_pipeline_shared(other, org_id)
+
+    async def test_an_exclusive_lock_waits_for_an_open_shared_lock(self, session, org_id) -> None:
+        async with tenant_session(org_id) as other, session.begin():
+            await services.lock_pipeline_shared(session, org_id)
+            with pytest.raises(DBAPIError, match="lock timeout"):
+                async with other.begin():
+                    await other.execute(text("SET LOCAL lock_timeout = '300ms'"))
+                    await services.lock_pipeline_exclusive(other, org_id)
+
+    async def test_two_shared_locks_do_not_block_each_other(self, session, org_id) -> None:
+        async with tenant_session(org_id) as other, session.begin():
+            await services.lock_pipeline_shared(session, org_id)
+            async with other.begin():
+                await other.execute(text("SET LOCAL lock_timeout = '300ms'"))
+                await services.lock_pipeline_shared(other, org_id)
+
+    async def test_another_organizations_lock_is_independent(self, session, org_id) -> None:
+        stranger = uuid.uuid4()
+        async with tenant_session(stranger) as other, session.begin():
+            await services.lock_pipeline_exclusive(session, org_id)
+            async with other.begin():
+                await other.execute(text("SET LOCAL lock_timeout = '300ms'"))
+                await services.lock_pipeline_exclusive(other, stranger)

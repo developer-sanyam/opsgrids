@@ -27,11 +27,13 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import domain, selectors
-from app.models import Activity, AuditLog, Deal, OutboxEvent
+from app.models import Activity, AuditLog, Deal, OutboxEvent, Pipeline, PipelineStage
+from app.pipeline import DEFAULT_PIPELINE, DEFAULT_PIPELINE_KEY, DEFAULT_PIPELINE_NAME, PipelineSpec
 from app.schemas import DealPatch
 from platform_core.audit import record_audit
 from platform_core.auth import Principal, Scope, ScopeContext
@@ -56,6 +58,95 @@ STAGE_DEFAULT_PROBABILITY: dict[str, int] = {
     "closed_won": 100,
     "closed_lost": 0,
 }
+
+
+# ------------------------------------------------------------------ the pipeline's locks
+
+
+def _pipeline_lock_key(organization_id: uuid.UUID) -> str:
+    return f"deal.pipeline:{organization_id}"
+
+
+async def lock_pipeline_shared(session: AsyncSession, organization_id: uuid.UUID) -> None:
+    """Hold the organization's pipeline **shared** until the transaction ends.
+
+    Every write that binds a deal to a stage (`create_deal`, `move_stage`) takes this, so any
+    number of them run together, but none runs while a stage-configuration write holds the
+    lock exclusively — the move cannot land in a stage an archive is removing. While the
+    default is virtual there is no pipeline row to lock, hence an advisory lock keyed on the
+    organization (`hashtextextended` collapses the key to the `bigint` Postgres takes; a hash
+    collision only ever costs two organizations a moment of needless waiting). A transaction
+    that takes this must never take `lock_pipeline_exclusive` afterwards: a lock upgrade can
+    deadlock."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:key, 0))"),
+        {"key": _pipeline_lock_key(organization_id)},
+    )
+
+
+async def lock_pipeline_exclusive(session: AsyncSession, organization_id: uuid.UUID) -> None:
+    """Hold the organization's pipeline **exclusively** until the transaction ends: the lock
+    every stage-configuration write takes first (materialising the default is the first of
+    them, R2.5 adds the rest). It waits for every in-flight stage-binding write and holds back
+    new ones."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": _pipeline_lock_key(organization_id)},
+    )
+
+
+async def materialise_default_pipeline(
+    session: AsyncSession, organization_id: uuid.UUID, actor_id: uuid.UUID | None
+) -> PipelineSpec:
+    """Store the default pipeline's six stages for an organization that has none, and return
+    the stored pipeline. Idempotent: it takes the exclusive lock, **re-reads**, and writes only
+    if nothing is stored, so two concurrent first writes materialise once.
+
+    No route calls this before R2.5, and a `GET` never does: materialising from a read would
+    write for every organization that merely opened a screen. It writes one audit row
+    (`pipeline.materialised`, ids and a count) and **no event** — nothing about the pipeline
+    changed, and every consumer already knows the default."""
+    await lock_pipeline_exclusive(session, organization_id)
+    spec = await selectors.load_pipeline_spec(session, organization_id)
+    if spec.materialised:
+        return spec
+
+    created_by = str(actor_id) if actor_id is not None else None
+    pipeline = Pipeline(
+        organization_id=organization_id,
+        key=DEFAULT_PIPELINE_KEY,
+        name=DEFAULT_PIPELINE_NAME,
+        is_default=True,
+        created_by=created_by,
+    )
+    session.add(pipeline)
+    await session.flush()  # the stages' composite foreign key needs the pipeline row first
+    session.add_all(
+        PipelineStage(
+            organization_id=organization_id,
+            pipeline_id=pipeline.id,
+            key=stage.key,
+            label=stage.label,
+            position=stage.position,
+            outcome=stage.outcome,
+            default_probability=stage.default_probability,
+            tone=stage.tone,
+            created_by=created_by,
+        )
+        for stage in DEFAULT_PIPELINE.stages
+    )
+    await session.flush()
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=actor_id,
+        action="pipeline.materialised",
+        entity="pipeline",
+        entity_id=pipeline.id,
+        after={"pipeline_id": str(pipeline.id), "stages": len(DEFAULT_PIPELINE.stages)},
+    )
+    return await selectors.load_pipeline_spec(session, organization_id)
 
 
 def _actor(ctx: ScopeContext) -> dict[str, Any]:
