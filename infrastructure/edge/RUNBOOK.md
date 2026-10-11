@@ -2625,6 +2625,111 @@ rotation does to the verifiers, so nobody mistakes it for an outage.
 The behaviour is pinned by `libs/platform-core/tests/test_jwks_key_rotation.py`, which runs a
 real JWKS server and a real `PyJWKClient`.
 
+### CRM: aborted-conversion cleanup: soak, flip and roll back
+
+CRM R2.4 gives `crm.lead.conversion_aborted` its first consumers. When a lead's conversion is
+aborted after customer and deal already wrote records, **deal** soft-deletes the attempt's orphan
+deal and **customer** soft-deletes its orphan contact and company, each only when it can prove the
+record is the attempt's own and untouched since (ADR-0038 D-1, D-2). Both consumers run inside their
+API processes (`RUN_CONSUMERS_IN_API`); `deal-worker` and `customer-worker` exist only behind
+`split-workers`, as the rollback.
+
+**The mode.** `CRM_CONVERSION_CLEANUP_MODE`, one key for both services, in the box `.env` (compose
+default `log_only`; deliberately absent from `.env.example`, because a key there becomes a preflight
+prerequisite):
+
+| Value | What happens |
+|---|---|
+| `log_only` (default) | Each event is evaluated and logged as `crm.conversion_cleanup.would_apply` or `would_keep` (ids and decision codes only). Nothing is written, not even the processed-event row, so a replay after the flip is still acted on. Customer still asks deal's references probe. |
+| `on` | Provable orphans are soft-deleted; every deletion writes an audit row with `acting_as = 'crm-conversion-cleanup'` and `reason = 'lead_conversion_aborted:<lead_id>:g<generation>'`; deal emits `crm.pipeline.deal.deleted` and never `stage_changed`. Logged as `crm.conversion_cleanup.applied` or `kept`. |
+| `off` | The event is acknowledged and ignored. |
+
+Only the exact word `on` arms deletion. Any other value (`ON`, `On`, a typo) is read as `log_only`
+and logs `crm.conversion_cleanup.mode_unknown` once at start-up. The start-up lines
+`deal.worker.started` and `customer.worker.started` state the effective `cleanup_mode`.
+
+**Before the deploy (owner).**
+
+1. The read-only D-3 count, on the box from `infrastructure/edge/`:
+
+   ```bash
+   docker compose -f compose.prod.yml --env-file .env exec -T postgres psql -U opsgrids -d opsgrids -At -v ON_ERROR_STOP=1 \
+     -c "SET default_transaction_read_only = on" \
+     -c "SELECT a.organization_id,
+                count(*) FILTER (WHERE a.action = 'lead.conversion_aborted' AND a.after ? 'conversion_generation') AS owner_changed_aborts,
+                count(*) FILTER (WHERE a.action = 'lead.conversion_aborted' AND NOT (a.after ? 'conversion_generation')) AS status_changed_aborts,
+                count(*) FILTER (WHERE a.action = 'lead.conversion_failed'  AND a.after ? 'conversion_generation') AS deleted_record_bumps
+           FROM lead.audit_logs a
+          WHERE a.action IN ('lead.conversion_aborted', 'lead.conversion_failed')
+          GROUP BY a.organization_id ORDER BY a.organization_id"
+   ```
+
+   Record the counts under Sign-offs in ADR-0038 (`D-3: <counts> on <date>`). If
+   `owner_changed_aborts + deleted_record_bumps` is non-zero for any organization, past aborts left
+   orphans the consumers will never see, and the historical sweep (plan Task 2.4.10) is built in a
+   follow-up; it is not part of this release.
+2. Raise the memory ceiling: deal's fold prices `deal` as `api_with_worker` (+1 MB), so the ten
+   profiles plus `admin` go from 3944 to 3945 MB. Edit the box `.env`:
+   `EDGE_BUDGET_ACCEPTED_MB=3945`, then `make edge-preflight HOST=… CONFIRM=…` must print 3945 MB
+   and accept it. Without this the deploy's own preflight refuses before anything changes.
+
+**Deploy.** `make deploy HOST=… CONFIRM=… REF=<sha>` in a quiet window. The release changes
+`libs/platform-core`, so every image rebuilds and recreates. No migration runs.
+
+**Verify (read-only).**
+
+```bash
+make edge-status HOST=… CONFIRM=…
+make edge-logs   HOST=… CONFIRM=… SERVICE=deal     TAIL=400 | grep -E 'consumer.started|worker.started|crm.conversion_cleanup'
+make edge-logs   HOST=… CONFIRM=… SERVICE=customer TAIL=400 | grep -E 'consumer.started|worker.started|crm.conversion_cleanup'
+```
+
+Expect `consumer.started` with `queue=deal.events` and `bindings=['crm.lead.conversion_aborted']` in
+deal's log, both bindings in customer's, `cleanup_mode=log_only` on both `worker.started` lines, and
+an ops-monitor observation `dlq.deal.events` (`not declared yet` until the consumer first runs).
+
+**Soak.** Read the `would_apply` and `would_keep` lines with the two `edge-logs` commands above and
+check any against the lead's audit rows. Aborts are rare, so the soak may see none; how long to wait
+is the owner's call.
+
+**Flip (owner, both services together, never one).** Edit the box `.env`:
+`CRM_CONVERSION_CLEANUP_MODE=on`, then
+`docker compose -f compose.prod.yml --env-file .env up -d customer deal`, and check both
+`worker.started` lines say `cleanup_mode=on`.
+
+**Roll back,** in order of preference:
+
+1. **Stop acting.** Set `CRM_CONVERSION_CLEANUP_MODE=log_only` (or `off`) in the box `.env` and run
+   the same `up -d customer deal`. Takes effect for the next message.
+2. **Undo what was done (owner SQL).** Every deletion is soft and named. List them:
+
+   ```sql
+   SELECT 'deal' AS schema_name, organization_id, entity, entity_id, reason, at FROM deal.audit_logs
+    WHERE acting_as = 'crm-conversion-cleanup'
+   UNION ALL
+   SELECT 'customer', organization_id, entity, entity_id, reason, at FROM customer.audit_logs
+    WHERE acting_as = 'crm-conversion-cleanup'
+   ORDER BY at;
+   ```
+
+   Restoring a row is clearing `deleted_at` on the row an audit row names (`deal.deals`,
+   `customer.contacts`, `customer.companies`, always with its `organization_id` in the `WHERE`);
+   restore a company before its contact. The `deleted` events already published are not recalled.
+3. **Code rollback.** `make edge-rollback HOST=… CONFIRM=…` (a full rebuild again). `deal.events`
+   stays on the broker as an inert queue.
+4. **Un-fold without un-shipping** (`RUN_CONSUMERS_IN_API=false` plus `split-workers` in
+   `EDGE_PROFILES`) starts `deal-worker` among the other `*-worker` containers, at 90 MB each; the
+   ceiling probably cannot absorb it. Prefer 1.
+
+**Stop conditions.** Any `consumer.handler.dead_lettered` line in `deal` or `customer`; depth on
+`deal.events.dlq` or `customer.events.dlq`; a `crm.conversion_cleanup.applied` for records you did
+not expect; a rise in `409 company-deleted` on `leads/{id}:convert` after the flip; either container
+restarting. Customer raises when deal's references probe cannot answer, so an unreachable deal shows
+up as a retry and then a dead letter, in `log_only` too. Attribute a dead letter by the `queue=`
+field of the `consumer.handler.dead_lettered` line: every `.dlq` is bound `#` to the one shared
+dead-letter exchange, so a dead letter from any consumer can appear in every `.dlq`, and depth on
+`deal.events.dlq` alone does not prove deal's handler failed.
+
 ### Deploying from the pipeline
 
 `.github/workflows/deploy.yml` runs the same two scripts a laptop does — `ssh-deploy.sh` for the

@@ -16,9 +16,11 @@ make relay SERVICE=deal             # the outbox relay: its own process, always
 make worker SERVICE=deal            # starts app/consumers.py
 ```
 
-The consumer is a scaffold today: `app/consumers.py` declares the queue `deal.events` and registers
-no handler, and no container runs it. The CRM overhaul registry puts its first handler in R2.4,
-proposed in ADR-0038 (pending D-1); `docs/crm.md` §10 has the schedule.
+The consumer (`app/consumers.py`, queue `deal.events`) has one handler since CRM R2.4:
+`crm.lead.conversion_aborted`, which soft-deletes an aborted conversion's pristine orphan deal
+(ADR-0038 D-1) once `CRM_CONVERSION_CLEANUP_MODE=on`; the default `log_only` only logs. On the edge
+box it runs inside the API process (`RUN_CONSUMERS_IN_API`); `make worker SERVICE=deal` runs it
+standalone. `docs/crm.md` §10 has the detail.
 
 ## Settings
 

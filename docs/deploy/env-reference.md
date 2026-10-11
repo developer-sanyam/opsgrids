@@ -538,9 +538,16 @@ implicit-TLS path. For the committed Google Workspace setup the answer is `SMTP_
 name must match `^[a-z_][a-z0-9_.-]*$`. With all ten profiles the derivation on the final release
 (computed from `ops_monitor/config.py` on the final union) is **28 API containers**
 `auth account product app-gateway catalog subscription billing metering payment notification operations storefront document approval employee attendance leave customer deal lead project timesheet standup projects support marketing finance itsm`
-and **12 queues** `account.events product.events subscription.events payment.events notification.events
-notification.dispatch approval.events attendance.events leave.events customer.events finance.events
-scheduler.events`. (The crm-leads follow-up `6c3196f` added `lead` and `customer.events`, see section 9.)
+and **13 queues** `account.events product.events subscription.events payment.events notification.events
+notification.dispatch approval.events attendance.events leave.events customer.events deal.events
+finance.events scheduler.events`. (The crm-leads follow-up `6c3196f` added `lead` and `customer.events`,
+see section 9; CRM R2.4 added `deal.events` with deal's consumer fold.)
+
+**`CRM_CONVERSION_CLEANUP_MODE`.** Not in `.env.example` on purpose (a key there becomes a preflight
+prerequisite); compose defaults it to `log_only` for every service, and only deal and customer read
+it. `log_only` logs what the aborted-conversion cleanup would do and writes nothing, `on` soft-deletes
+provable orphans, `off` ignores the event. The owner sets `on` after the soak; see the RUNBOOK
+section "CRM: aborted-conversion cleanup".
 
 ### 5.5 `MINIO_*` and `DOCUMENT_S3_*` (how the credentials relate)
 
