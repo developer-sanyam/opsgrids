@@ -495,6 +495,9 @@ async def _lock_po(session: AsyncSession, po: PurchaseOrder) -> None:
     """Re-read the PO under `FOR UPDATE` before judging its status. The route loaded it with a
     plain SELECT; a concurrent goods receipt (which locks) may have moved it since."""
     await session.refresh(po, with_for_update=True)
+    # The route's load filtered `deleted_at`, but only before this lock: a delete may have won.
+    if po.deleted_at is not None:
+        raise NotFoundProblem("Purchase order not found")
 
 
 async def update_purchase_order(
