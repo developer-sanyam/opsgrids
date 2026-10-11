@@ -100,11 +100,11 @@ route that lists or summarises the counted thing, or narrower.
 | `leads_created` | New leads | flow · count | Count of `lead_facts` with `source_created_at` in window. `breakdown=source` splits it by `form`/`import`/`manual`. | `crm.lead.lead.read`, OWN-capable (`leads.owner_id`) |
 | `leads_converted` | Leads converted | flow · count | Count of `lead_facts` with `converted_at` in window | same |
 | `deals_created` | Deals opened | flow · count | Count of `deal_facts` with `source_created_at` in window (a backdated import counts on its backdated date) | `crm.pipeline.deal.read`, OWN-capable (`deals.owner_id`) |
-| `deals_won` | Deals won | flow · count | Count of `deal_facts` where `stage = 'closed_won'` and `closed_at` in window. The "Orders" stand-in for Sales. | same |
+| `deals_won` | Deals won | flow · count | Count of `deal_facts` where `stage_outcome = 'won'` (set from the event's `to_outcome`) and `closed_at` in window. The "Orders" stand-in for Sales. | same |
 | `deals_won_value` | Won value | flow · money | Σ `value_minor` over the same rows as `deals_won` | same |
-| `deals_lost` | Deals lost | flow · count | Count where `stage = 'closed_lost'` and `closed_at` in window | same |
+| `deals_lost` | Deals lost | flow · count | Count where `stage_outcome = 'lost'` and `closed_at` in window | same |
 | `win_rate` | Win rate | percent | `deals_won ÷ (deals_won + deals_lost) × 100` over the window; `null` when none were decided. **Not** `/deals/summary.win_rate_pct`, which is all-time; the caption names the period. Delta in percentage points. | same |
-| `pipeline_value` | Open pipeline | state · money | Σ `value_minor` of `deal_facts` where `stage NOT IN ('closed_won','closed_lost')`. Live now; history from snapshots. | `crm.pipeline.deal.read`, **ORG only** |
+| `pipeline_value` | Open pipeline | state · money | Σ `value_minor` of `deal_facts` where `stage_outcome = 'open'`. Live now; history from snapshots. | `crm.pipeline.deal.read`, **ORG only** |
 | `open_deals` | Open deals | state · count | Count over the same rows | same |
 | `weighted_pipeline` | Weighted pipeline | state · money | Σ per deal of `round_half_even(value_minor × probability / 100)` over the same rows. That is `deal.domain.weighted_pipeline_minor`'s rule; Postgres `round(numeric)` rounds half away from zero, so this is computed in `app/domain.py`, not in SQL. | same |
 | `customers` | Customers | state · count | Count of `company_facts` with `status = 'customer'` | `crm.book.company.read`, **ORG only** |
@@ -171,8 +171,8 @@ passes its gate, and filtered on its owner column for OWN.
 | `payment_received` | finance | `payment_facts.source_created_at` | `reference` | `amount_minor` | `finance.billing.payment.read` ORG |
 | `lead_created` | crm | `lead_facts.source_created_at` | none (a lead's label is a person's name: shown as "New lead · {source}") | none | `crm.lead.lead.read` (`owner_ref`) |
 | `deal_created` | crm | `deal_facts.source_created_at` | `name` | `value_minor` | `crm.pipeline.deal.read` (`owner_ref`) |
-| `deal_won` | crm | `deal_facts.closed_at` (closed_won) | `name` | `value_minor` | same |
-| `deal_lost` | crm | `deal_facts.closed_at` (closed_lost) | `name` | none | same |
+| `deal_won` | crm | `deal_facts.closed_at` (outcome `won`) | `name` | `value_minor` | same |
+| `deal_lost` | crm | `deal_facts.closed_at` (outcome `lost`) | `name` | none | same |
 | `company_created` | crm | `company_facts.source_created_at`. Worded "New customer" when `status = 'customer'`, else "New company". | `name` | none | `crm.book.company.read` (`owner_ref`) |
 | `purchase_order_raised` | operations | `purchase_order_facts.source_created_at` | `number` · `supplier_name` | `total_minor` | `operations.procurement.purchase_order.read` (`owner_ref`) |
 | `task_completed` | projects | `task_facts.completed_at` | `title` | none | `projects.board.task.read` (`owner_ref`) |

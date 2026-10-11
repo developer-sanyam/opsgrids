@@ -188,7 +188,8 @@ Indexes: `(organization_id, status) WHERE deleted_at IS NULL` and
 | Column | Type | Notes |
 |---|---|---|
 | `name` | `text NOT NULL` | Business label |
-| `stage` | `text NOT NULL` | `lead` … `closed_won` \| `closed_lost` |
+| `stage` | `text NOT NULL` | A stage **key** of the deal's pipeline: `lead` … `closed_lost` for the default six, an organization's own once it can edit them. **No CHECK on its values**, and never the basis of won or lost |
+| `stage_outcome` | `text NOT NULL` | `open` \| `won` \| `lost`: the event's `stage_outcome`, or `to_outcome` on a stage change. `CHECK (stage_outcome IN ('open','won','lost'))` |
 | `value_minor` | `bigint NOT NULL` | |
 | `currency` | `char(3) NOT NULL` | |
 | `probability` | `smallint NOT NULL` | 0–100 |
@@ -202,7 +203,7 @@ Indexes:
 - `(organization_id, closed_at) WHERE closed_at IS NOT NULL`;
 - `(organization_id, source_created_at)`;
 - `(organization_id, owner_ref)`;
-- `(organization_id) WHERE deleted_at IS NULL AND stage NOT IN ('closed_won','closed_lost')`,
+- `(organization_id) WHERE deleted_at IS NULL AND stage_outcome = 'open'`,
   for the open pipeline.
 
 ### `purchase_order_facts` (operations; I5)
