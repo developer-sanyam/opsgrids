@@ -263,14 +263,20 @@ def _bool(row: dict[str, str], name: str, default: bool) -> bool:
         raise RowFailure(name, "invalid_boolean", f"{name} must be true or false") from None
 
 
-def _int(row: dict[str, str], name: str) -> int | None:
+INT32_MAX = 2**31 - 1
+
+
+def _int(row: dict[str, str], name: str, maximum: int | None = None) -> int | None:
     if name not in row:
         return None
     if not re.fullmatch(r"\d{1,15}", row[name]):
         raise RowFailure(
             name, "invalid_integer", f"{name} must be a whole number, not {row[name]!r}"
         )
-    return int(row[name])
+    value = int(row[name])
+    if maximum is not None and value > maximum:
+        raise RowFailure(name, "out_of_range", f"{name} must be at most {maximum}")
+    return value
 
 
 def _date(row: dict[str, str], name: str) -> date | None:
@@ -346,7 +352,7 @@ async def _import_item(
         "category": row["category"],
         "warehouse": row["warehouse"],
         "uom": row["uom"],
-        "reorder_point": _int(row, "reorder_point") or 0,
+        "reorder_point": _int(row, "reorder_point", INT32_MAX) or 0,
         "unit_value_minor": _int(row, "unit_value_minor") or 0,
         "currency": row.get("currency", "INR"),
         "hsn_code": row.get("hsn_code", ""),
@@ -422,7 +428,7 @@ async def _import_location(
             "name": row.get("name", row["code"]),
             "parent_id": parent_id,
             "barcode": row.get("barcode"),
-            "pick_sequence": _int(row, "pick_sequence"),
+            "pick_sequence": _int(row, "pick_sequence", INT32_MAX),
             "max_weight_grams": _int(row, "max_weight_grams"),
             "max_volume_milli": _int(row, "max_volume_milli"),
             "storage_type": row.get("storage_type"),
@@ -494,8 +500,8 @@ async def _import_roll(
             "primary_qty": row["primary_qty"],
             "secondary_qty": row.get("secondary_qty"),
             "secondary_uom": row.get("secondary_uom"),
-            "width_mm": _int(row, "width_mm"),
-            "gsm": _int(row, "gsm"),
+            "width_mm": _int(row, "width_mm", INT32_MAX),
+            "gsm": _int(row, "gsm", INT32_MAX),
             "shade": row.get("shade"),
             "grade": row.get("grade"),
             "barcode": row.get("barcode"),
@@ -674,6 +680,14 @@ async def run_import(
     _reject_unknown_columns(entity, payload.rows)
     digest = request_hash(payload, entity)
 
+    # Two imports into one organization never interleave: their duplicate checks would pass
+    # side by side and both commit. Taken before the replay lookup so a retry that queued behind
+    # the first attempt sees its committed run instead of re-running the file.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+        {"k": f"opsgrids:inventory-import:{org}"},
+    )
+
     if commit:
         if not idempotency_key:
             raise ValidationProblem(
@@ -700,13 +714,6 @@ async def run_import(
                     "That Idempotency-Key was already used for a different import"
                 )
             return ImportResultOut(**{**prior.summary, "replayed": True})
-
-    # Two imports into one organization never interleave: their duplicate checks would pass
-    # side by side and both commit.
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
-        {"k": f"opsgrids:inventory-import:{org}"},
-    )
 
     rows = [_clean(r) for r in payload.rows]
     errors: list[ImportRowError] = []

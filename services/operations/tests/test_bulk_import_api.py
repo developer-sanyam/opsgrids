@@ -8,12 +8,13 @@ do while writing nothing.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.models import (
     AuditLog,
@@ -27,6 +28,8 @@ from app.models import (
     OutboxEvent,
     Roll,
 )
+from app.inventory.bulk_import import request_hash
+from app.inventory.bulk_schemas import ImportIn
 from platform_core.events import validate_event_schema
 from tests.helpers import as_principal, principal_for
 from tests.tracking_fixtures import (
@@ -429,6 +432,25 @@ class TestOpeningStock:
 
 
 class TestOtherEntities:
+    async def test_a_number_beyond_a_32_bit_column_is_a_row_error_not_a_500(
+        self, client, world
+    ) -> None:
+        big_item = {**item_row("BIG-1"), "reorder_point": "2147483648"}
+        loc = {
+            "warehouse_code": "WH-WEAVE",
+            "kind": "bin",
+            "code": "B1",
+            "pick_sequence": "3000000000",
+        }
+        items = await run(client, world.org_id, "items", [big_item])
+        assert items.status_code == 200, items.text
+        assert items.json()["errors"][0]["field"] == "reorder_point"
+        locs = await run(client, world.org_id, "locations", [loc])
+        assert locs.status_code == 200, locs.text
+        assert locs.json()["errors"][0]["field"] == "pick_sequence"
+        edge = {**item_row("BIG-2"), "reorder_point": "2147483647"}
+        assert (await run(client, world.org_id, "items", [edge])).json()["error_count"] == 0
+
     async def test_locations_may_name_a_parent_earlier_in_the_file(
         self, client, session, world
     ) -> None:
@@ -625,6 +647,47 @@ class TestIdempotency:
         assert (
             await count(session, InventoryItem, world.org_id, InventoryItem.sku.like("NEW-%")) == 2
         )
+
+    async def test_a_retry_that_waited_on_the_lock_replays_what_committed_meanwhile(
+        self, client, world, admin_session
+    ) -> None:
+        # The retry looked for a prior run, found none, and queued behind the first import's lock;
+        # by the time it gets the lock the first import has committed. It must replay, not re-run
+        # (which would report every row as a duplicate and "nothing imported").
+        rows = [item_row("NEW-1")]
+        preview = (await run(client, world.org_id, "items", rows)).json()
+        summary = {**preview, "mode": "commit", "committed": True, "run_id": str(uuid.uuid4())}
+        lock = "opsgrids:inventory-import:" + str(world.org_id)
+        await admin_session.execute(
+            text("SELECT pg_advisory_lock(hashtextextended(:k, 0))"), {"k": lock}
+        )
+        retry = asyncio.create_task(
+            run(client, world.org_id, "items", rows, mode="commit", key="k")
+        )
+        await asyncio.sleep(1)
+        assert not retry.done()
+        admin_session.add(
+            InventoryImportRun(
+                organization_id=world.org_id,
+                idempotency_key="k",
+                request_hash=request_hash(
+                    ImportIn(mode="commit", on_duplicate="fail", rows=rows), "items"
+                ),
+                entity="items",
+                on_duplicate="fail",
+                row_count=1,
+                created_count=1,
+                skipped_count=0,
+                summary=summary,
+            )
+        )
+        await admin_session.commit()
+        await admin_session.execute(
+            text("SELECT pg_advisory_unlock(hashtextextended(:k, 0))"), {"k": lock}
+        )
+        response = await retry
+        assert response.status_code == 200, response.text
+        assert response.json()["replayed"] is True
 
     async def test_a_key_reused_for_a_different_file_is_a_conflict(self, client, world) -> None:
         await run(client, world.org_id, "items", [item_row("NEW-1")], mode="commit", key="k")
