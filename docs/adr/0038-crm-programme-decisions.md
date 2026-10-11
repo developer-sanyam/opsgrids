@@ -330,14 +330,13 @@ None yet. One line per signed or completed piece of evidence, `D-n: <what was si
   `F8` and `L17`).
 - **D-11 first bites at R2.4 too**, and only if D-13 holds the ceiling: not at R1.1, which merges
   with D-11 open (the programme register's first draft listed R1.1 for it; `P§8` now says R2.4).
-- **A release-order constraint that no decision row carries: R3.4 deploys before R3.7.** The
-  page-only CSV export of Companies does not neutralise a cell that begins with `=`, `+`, `-` or
-  `@` (`frontend/product-crm/src/lib/csv.ts:8-11`). Today only a tenant's own users write company
-  names; the first external writer is the public lead capture of R3.7. R3.4 is proposed to delete
-  the export (pending D-23), so either R3.4 deploys first or a guard in `csv.ts` ships first.
-  `P§10` already lists R3.4 among R3.7's prerequisites; the reason is recorded here so that nobody
-  reorders them. It is recorded and not fixed, because the proposal is to replace the export and
-  not to patch it (`docs/crm.md` section 11).
+- **The CSV formula guard this record once required before R3.7 has shipped.** The page-only CSV
+  export of Companies used to quote a cell without neutralising a first character of `=`, `+`, `-`
+  or `@`, so R3.4 (proposed to delete the export, pending D-23) had to deploy before R3.7's public
+  lead capture gave company names an external writer. #123 put the guard in the shared writer:
+  `frontend/product-crm/src/lib/csv.ts:7` now uses `csvCell` from `@opsgrids/client`
+  (`frontend/opsgrids-client/src/csv.ts:9-12`), which prefixes `'` to a cell starting with `=`,
+  `+`, `-`, `@`, tab or CR. R3.4 still stands on D-23 alone; it no longer has to precede R3.7.
 - **Follow-up ADRs** the programme allocates (`P§8`, "ADR numbers the programme allocates";
   registry `I2`). The slug is binding and the number is the expected one: each release confirms its
   number against `docs/decisions.md` when it files the ADR, and if a parallel branch lands above a
@@ -346,4 +345,4 @@ None yet. One line per signed or completed piece of evidence, `D-n: <what was si
   `crm-public-lead-capture` (0041) is filed by R3.7b and accepted before the R3.7b deploy (D-27 for
   leads); `approvals-for-tenants-without-hrms` (0042) is filed by R4.5, proposed, and accepted
   before the approval deploy (D-18); `crm-quotes-in-deal` (0043) is filed with R4.5 (D-19). 0040 is
-  `faster-ci`, claimed on another ref.
+  `faster-ci`, merged (#118).
