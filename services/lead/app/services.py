@@ -71,9 +71,12 @@ log = get_logger("lead.services")
 EVT_LEAD_CREATED = "crm.lead.created"
 EVT_LEAD_UPDATED = "crm.lead.updated"
 EVT_LEAD_CONVERTED = "crm.lead.converted"
-#: Staged when `finalize_conversion` refuses to write "converted" — the records customer and
-#: deal already created for the attempt are still there, and this is the hook a consumer would
-#: use to clean them up (see ADR-0017's note: no consumer acts on it yet).
+#: Staged by `_stage_conversion_aborted`, and only there: by `finalize_conversion` when it
+#: refuses to write "converted" (`status_changed`, `owner_changed`: the records customer and deal
+#: already created for the attempt are still there) and by `fail_conversion` when it bumps the
+#: generation because customer reported a record an earlier attempt created was deleted
+#: (`record_deleted`). The payload names the attempt's `generation` and `claim_id`: a consumer
+#: re-derives the attempt's ids from `(lead_id, generation)` with `domain.conversion_ids` (R2.4).
 EVT_LEAD_CONVERSION_ABORTED = "crm.lead.conversion_aborted"
 
 #: How far out a converted lead's deal defaults to closing. A lead carries no close date of
@@ -1051,6 +1054,52 @@ async def claim_conversion(
         )
 
 
+def _stage_conversion_aborted(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    lead: Lead,
+    *,
+    reason: str,
+    claim_id: uuid.UUID,
+    generation: int,
+    company_id: uuid.UUID,
+    contact_id: uuid.UUID | None,
+    deal_id: uuid.UUID,
+) -> None:
+    """Stage `crm.lead.conversion_aborted` in the caller's transaction. This is the **only**
+    place the event is built (`tests/test_aborted_event_builder.py` keeps it that way): its
+    committed schema is closed (`additionalProperties: false`), so one builder is one place to
+    keep the payload true to it.
+
+    `generation` is the value **before** the bump this abort caused, so
+    `domain.conversion_ids(lead_id, generation)` re-derives the three ids the aborted attempt
+    used; `claim_id` names the attempt that ended. `company_id`, `contact_id` and `deal_id` are
+    the ids the abort *names*: for a finalize abort the ones customer and deal returned, which
+    may be records customer matched by name or email, and for `record_deleted` the ones derived
+    at `generation` (nothing was returned). Either way they prove nothing about who created the
+    records. Ids only: no name, no email, no phone.
+    """
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_LEAD_CONVERSION_ABORTED,
+        aggregate_type="lead",
+        aggregate_id=lead.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "lead_id": str(lead.id),
+            "reason": reason,
+            "generation": generation,
+            "claim_id": str(claim_id),
+            "company_id": str(company_id),
+            "contact_id": str(contact_id) if contact_id else None,
+            "deal_id": str(deal_id),
+        },
+        actor=_actor(ctx),
+    )
+
+
 async def finalize_conversion(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -1082,8 +1131,10 @@ async def finalize_conversion(
     claim instead of overwriting whatever it moved to, and records why — including the ids of
     the records the calls already created, which nothing here can take back — and stages
     `crm.lead.conversion_aborted` so something that can (a consumer, later) knows they are
-    now orphans. An `owner_changed` abort also bumps `Lead.conversion_generation`, so the retry
-    creates fresh records for the new owner instead of reusing the old owner's.
+    now orphans. Every abort bumps `Lead.conversion_generation` by one, so the retry derives
+    ids no aborted attempt used (`domain.conversion_ids`) and creates fresh records instead of
+    reusing the abandoned ones: for a reassignment they belong to the old owner, and for a
+    status change a late cleanup of them must not be able to reach a retry that succeeded.
     """
     # `abort_reason`/`missing_claim` decide what to raise *after* the `async with` below exits —
     # never from inside it. Raising from inside a `session.begin()` block rolls the whole
@@ -1110,23 +1161,30 @@ async def finalize_conversion(
                 detail = "lead was reassigned before the conversion finished"
 
             if abort_reason is not None:
+                # Every abort moves the lead to a new generation (D-4), so the retry derives
+                # ids no aborted attempt used. For a reassignment that keeps the retry from
+                # handing the new owner a company and deal opened for the old one; for a status
+                # change it keeps a later cleanup of the abandoned records (R2.4) away from a
+                # retry that has since succeeded. The claim-id match above proves the row's
+                # generation is the one this attempt's ids were derived under: only the holder
+                # of the live claim can bump it, and a bump clears the claim.
+                aborted_generation = lead.conversion_generation
                 lead.conversion_claim_id = None
                 lead.conversion_claimed_at = None
                 lead.updated_by = str(ctx.principal.sub)
+                lead.conversion_generation += 1
                 orphans = {
                     "company_id": str(company_id),
                     "contact_id": str(contact_id) if contact_id else None,
                     "deal_id": str(deal_id),
                 }
-                abort_after: dict[str, Any] = {"reason": detail, **orphans}
-                if abort_reason == "owner_changed":
-                    # The records the abandoned attempt created were opened *for the old
-                    # owner*, so reusing them (same ids, idempotent-by-id) on the retry would
-                    # hand the new owner a company and deal that belong to someone else. A
-                    # new generation makes the retry create fresh ones for the new owner; the
-                    # old ones stay behind as the orphans this audit row and the event name.
-                    lead.conversion_generation += 1
-                    abort_after["conversion_generation"] = lead.conversion_generation
+                abort_after: dict[str, Any] = {
+                    "reason": detail,
+                    **orphans,
+                    "conversion_generation": lead.conversion_generation,
+                    "claim_id": str(claim_id),
+                    "aborted_generation": aborted_generation,
+                }
                 await session.flush()
                 record_audit(
                     session,
@@ -1143,20 +1201,16 @@ async def finalize_conversion(
                     after=abort_after,
                     request=request,
                 )
-                publish_event(
+                _stage_conversion_aborted(
                     session,
-                    OutboxEvent,
-                    organization_id=ctx.organization_id,
-                    event_type=EVT_LEAD_CONVERSION_ABORTED,
-                    aggregate_type="lead",
-                    aggregate_id=lead.id,
-                    payload={
-                        "organization_id": str(ctx.organization_id),
-                        "lead_id": str(lead.id),
-                        "reason": abort_reason,
-                        **orphans,
-                    },
-                    actor=_actor(ctx),
+                    ctx,
+                    lead,
+                    reason=abort_reason,
+                    claim_id=claim_id,
+                    generation=aborted_generation,
+                    company_id=company_id,
+                    contact_id=contact_id,
+                    deal_id=deal_id,
                 )
             else:
                 lead.status = "converted"
@@ -1242,7 +1296,10 @@ async def fail_conversion(
     reporting that the company or contact an *earlier* attempt created for this lead was
     deleted. The ids `domain.conversion_ids` derives are deterministic, so a deleted record at
     one of them refuses every future attempt on the same ids forever — bumping
-    `Lead.conversion_generation` makes the next attempt derive a fresh set instead.
+    `Lead.conversion_generation` makes the next attempt derive a fresh set instead, and
+    announces it as `crm.lead.conversion_aborted` with reason `record_deleted`, so whatever
+    the abandoned generation left behind (typically the deal) has an event to be found by.
+    A failure that does not bump stages no event.
 
     A no-op if the claim has already been taken over or cleared by someone else — there is
     nothing left for this attempt to fail on the row's behalf.
@@ -1254,6 +1311,7 @@ async def fail_conversion(
         if lead is None or lead.conversion_claim_id != claim_id:
             return
 
+        aborted_generation = lead.conversion_generation
         lead.conversion_claim_id = None
         lead.conversion_claimed_at = None
         lead.updated_by = str(ctx.principal.sub)
@@ -1261,6 +1319,8 @@ async def fail_conversion(
         if bump_generation:
             lead.conversion_generation += 1
             after["conversion_generation"] = lead.conversion_generation
+            after["claim_id"] = str(claim_id)
+            after["aborted_generation"] = aborted_generation
         await session.flush()
 
         record_audit(
@@ -1274,6 +1334,23 @@ async def fail_conversion(
             after=after,
             request=request,
         )
+        if bump_generation:
+            # The three ids are a function of the generation this attempt ran under, so they
+            # are re-derived here rather than read from anywhere: nothing was returned
+            # (customer's answer *was* the failure). The contact id is the derived one only when
+            # the lead holds an email, read from the sealed column's presence and never opened.
+            company_id, contact_id, deal_id = domain.conversion_ids(lead.id, aborted_generation)
+            _stage_conversion_aborted(
+                session,
+                ctx,
+                lead,
+                reason="record_deleted",
+                claim_id=claim_id,
+                generation=aborted_generation,
+                company_id=company_id,
+                contact_id=contact_id if lead.email_enc is not None else None,
+                deal_id=deal_id,
+            )
 
 
 async def convert_lead(

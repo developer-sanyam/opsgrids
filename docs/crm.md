@@ -302,11 +302,11 @@ says whether notification's rule engine lists the key.
 | `crm.pipeline.deal.updated` | deal | `organization_id, deal_id, changed` (`services/deal/app/services.py:247-251`) | yes | ahead: lacks `name, stage, value_minor, currency, owner_id, company_id, close_date, probability, closed_at` | none | no |
 | `crm.pipeline.deal.deleted` | deal | `organization_id, deal_id` (`services/deal/app/services.py:291`) | yes | conforms | none | no |
 | `crm.pipeline.deal.stage_changed` | deal | `organization_id, deal_id, from, to` (`services/deal/app/services.py:339-344`) | yes | ahead: lacks `name, value_minor, currency, owner_id, probability, closed_at` | notification | yes |
-| `crm.pipeline.activity.logged` | deal | `organization_id, activity_id, type, deal_id, contact_id, occurred_at` (`services/deal/app/services.py:434-441`) | yes | conforms; tested against its producer | customer, notification | yes |
-| `crm.lead.created` | lead | `organization_id, lead_id, source, owner_id` (`services/lead/app/services.py:535-540`) | yes | ahead: lacks `status` | notification | yes |
-| `crm.lead.updated` | lead | `organization_id, lead_id, changed` (`services/lead/app/services.py:644-648`) | yes | ahead: lacks `status, source, owner_id, converted_at` | notification | yes |
-| `crm.lead.converted` | lead | `organization_id, lead_id, company_id, contact_id, deal_id` (`services/lead/app/services.py:1196-1202`) | yes | ahead: lacks `owner_id, converted_at` | notification | yes |
-| `crm.lead.conversion_aborted` | lead | `organization_id, lead_id, reason, company_id, contact_id, deal_id` (`services/lead/app/services.py:1153-1158`) | yes | conforms; tested against its producer (`services/lead/tests/test_lead_lifecycle_races.py:269,292`) | notification | yes |
+| `crm.pipeline.activity.logged` | deal | `organization_id, activity_id, type, deal_id, contact_id, occurred_at` (`services/deal/app/services.py:435-440`) | yes | conforms; tested against its producer | customer, notification | yes |
+| `crm.lead.created` | lead | `organization_id, lead_id, source, owner_id` (`services/lead/app/services.py:539-542`) | yes | ahead: lacks `status` | notification | yes |
+| `crm.lead.updated` | lead | `organization_id, lead_id, changed` (`services/lead/app/services.py:648-650`) | yes | ahead: lacks `status, source, owner_id, converted_at` | notification | yes |
+| `crm.lead.converted` | lead | `organization_id, lead_id, company_id, contact_id, deal_id` (`services/lead/app/services.py:1251-1255`) | yes | ahead: lacks `owner_id, converted_at` | notification | yes |
+| `crm.lead.conversion_aborted` | lead | `organization_id, lead_id, reason, generation, claim_id, company_id, contact_id, deal_id`; `reason` is `status_changed`, `owner_changed` or `record_deleted` (`services/lead/app/services.py`, `_stage_conversion_aborted`) | yes | conforms; tested against its producer (`services/lead/tests/test_lead_lifecycle_races.py`, `TestAnAbortedConversionLeavesATrail`; `services/lead/tests/test_convert.py`, `TestGenerationsAndDealNames`) | notification | yes |
 
 - **Publishing.** A producer stages the event in its `outbox` in the same transaction as the change,
   and the relay publishes it after commit. An event with no bound queue is silently dropped while its
