@@ -579,6 +579,7 @@ async def create_inspection(
                 f"and not already under inspection; cannot inspect {format_qty(quantity_milli)}"
             )
     await session.flush()
+    await _sync_lot(session, ctx, inspection)  # a new open inspection puts the lot back to PENDING
     _audit(
         session,
         ctx,

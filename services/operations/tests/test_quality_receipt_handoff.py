@@ -406,6 +406,30 @@ class TestLotQualityStatusFollowsTheInspections:
         await decide(client, org_id, first, "disposition", {"action": "SCRAP"})
         assert await lot_status(session, org_id, lot_id) == "REJECTED"
 
+    async def test_opening_another_inspection_sends_an_approved_lot_back_to_pending(
+        self, client, session, org_id, w: RWorld
+    ) -> None:
+        lot_id, first, second = await two_roll_lot(client, session, org_id, w)
+        await decide(client, org_id, first, "release", {"note": "ok"})
+        await decide(client, org_id, second, "release", {"note": "ok"})
+        assert await lot_status(session, org_id, lot_id) == "APPROVED"
+        opened = await quality_call(
+            client,
+            org_id,
+            "POST",
+            "/inspections",
+            json={
+                "kind": "incoming",
+                "item_id": str(first.item_id),
+                "location_id": str(first.location_id),
+                "quantity": "10",
+                "lot_id": str(lot_id),
+                "roll_id": str(first.roll_id),
+            },
+        )
+        assert opened.status_code == 201, opened.text
+        assert await lot_status(session, org_id, lot_id) == "PENDING"
+
     async def test_a_lot_with_some_good_stock_is_approved(
         self, client, session, org_id, w: RWorld
     ) -> None:
