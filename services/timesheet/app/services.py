@@ -61,6 +61,9 @@ async def record_week(
     `entries` is `(work_date, project_ref, entered_minutes, billable_minutes)` — minutes,
     never float hours. Every date must fall inside the week; billable can never exceed
     entered (the database CHECK backs the same rule). Re-recording replaces the entries.
+
+    `status` applies to a new week only (the demo seed creates weeks mid-flow); the HTTP path
+    always records drafts, and a week already submitted or approved is a 409 until reopened.
     """
     if week_start.weekday() != 0:
         raise ValidationProblem("week_start must be a Monday")
@@ -70,6 +73,11 @@ async def record_week(
             raise ValidationProblem(f"{work_date} is outside the week of {week_start}")
         if billable > entered:
             raise ValidationProblem("billable hours cannot exceed entered hours")
+
+    # The caller's authorization was checked against `person_id`, but the sheet is found by
+    # `person_ref`: a pair the stored weeks disagree with would write someone else's week.
+    if await selectors.person_pair_conflicts(session, ctx.organization_id, person_id, person_ref):
+        raise ValidationProblem("person_id and person_ref name different people")
 
     sheet = await selectors.get_week(session, ctx.organization_id, person_ref, week_start)
     if sheet is None:
@@ -86,7 +94,13 @@ async def record_week(
         await session.flush()
         action = "timesheet.recorded"
     else:
-        sheet.status = status
+        # Status only moves through `set_status`; a submitted or approved week is frozen until
+        # it is reopened, so re-recording keeps the week a draft.
+        if sheet.status != "draft":
+            raise ConflictProblem(
+                f"The week is {sheet.status}; reopen it before recording it again"
+            )
+        status = sheet.status
         sheet.capacity_minutes = capacity_minutes
         sheet.updated_by = str(ctx.principal.sub)
         await session.execute(
@@ -173,7 +187,6 @@ async def record_week_from(
         person_id=person_id,
         person_ref=payload.person_ref,
         week_start=payload.week_start,
-        status=payload.status,
         capacity_minutes=domain.minutes(payload.capacity_hours),
         entries=[
             (

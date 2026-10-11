@@ -74,14 +74,18 @@ class TimesheetEntryIn(BaseModel):
 
 
 class TimesheetWeekIn(BaseModel):
-    """Record (or re-record) one person's week. `person_ref` names the roster person; the
-    week's status moves as a unit. Used by an admin recording on someone's behalf — a person
-    recording their own week relies on OWN scope matching their `person_id`."""
+    """Record (or re-record) one person's week, always as a draft. `person_ref` names the roster
+    person and must belong to `person_id`. Used by an admin recording on someone's behalf — a
+    person recording their own week relies on OWN scope matching their `person_id`. Submitting
+    and approving go through `POST /timesheets/status`; a submitted or approved week is a 409
+    here until it is reopened."""
 
     person_ref: str = Field(min_length=1, max_length=40)
     person_id: str = Field(min_length=1, description="The roster person's UUID")
     week_start: date
-    status: TimesheetStatus = "draft"
+    status: Literal["draft"] = Field(
+        default="draft", description="Always `draft`; move status via POST /timesheets/status"
+    )
     capacity_hours: float = Field(default=40, ge=0, le=168)
     entries: list[TimesheetEntryIn] = Field(default_factory=list)
 
