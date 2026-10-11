@@ -17,7 +17,7 @@ from platform_core.auth import Scope
 from platform_core.errors import ConflictProblem
 from tests.helpers import ctx_for
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("pipeline_mode")]
 
 
 class TestTheRule:

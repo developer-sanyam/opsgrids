@@ -33,11 +33,23 @@ from starlette.requests import Request
 
 from app import domain, selectors
 from app.models import Activity, AuditLog, Deal, OutboxEvent, Pipeline, PipelineStage
-from app.pipeline import DEFAULT_PIPELINE, DEFAULT_PIPELINE_KEY, DEFAULT_PIPELINE_NAME, PipelineSpec
+from app.pipeline import (
+    CLOSING_PROBABILITY,
+    DEFAULT_PIPELINE,
+    DEFAULT_PIPELINE_KEY,
+    DEFAULT_PIPELINE_NAME,
+    PipelineSpec,
+    StageSpec,
+)
 from app.schemas import DealPatch
 from platform_core.audit import record_audit
 from platform_core.auth import Principal, Scope, ScopeContext
-from platform_core.errors import ConflictProblem, NotFoundProblem
+from platform_core.errors import (
+    BusinessRuleProblem,
+    ConflictProblem,
+    NotFoundProblem,
+    ValidationProblem,
+)
 from platform_core.events import publish_event
 from platform_core.models import utcnow
 
@@ -48,15 +60,11 @@ EVT_DEAL_DELETED = "crm.pipeline.deal.deleted"
 EVT_DEAL_STAGE_CHANGED = "crm.pipeline.deal.stage_changed"
 EVT_ACTIVITY_LOGGED = "crm.pipeline.activity.logged"
 
-#: Where a deal's probability lands when a stage move does not say otherwise — the
-#: board's defaults, matching the fixture book's typical values per stage.
+#: Where a deal's probability lands on entering a stage of the *default* pipeline when nothing
+#: says otherwise — derived from `app.pipeline`, which is the one place the six stages are
+#: written. An organization's own pipeline carries its own defaults (`StageSpec`).
 STAGE_DEFAULT_PROBABILITY: dict[str, int] = {
-    "lead": 20,
-    "qualified": 40,
-    "proposal": 55,
-    "negotiation": 70,
-    "closed_won": 100,
-    "closed_lost": 0,
+    stage.key: stage.default_probability for stage in DEFAULT_PIPELINE.stages
 }
 
 
@@ -183,6 +191,44 @@ def lead_conversion_ctx(organization_id: uuid.UUID, actor_id: uuid.UUID | None) 
     )
 
 
+# ------------------------------------------------------------------ stage resolution
+
+
+def _entry_stage(spec: PipelineSpec) -> StageSpec:
+    """Where a new deal opens: the first active open stage by position."""
+    entry = spec.entry_stage()
+    if entry is None:
+        raise BusinessRuleProblem(
+            "This pipeline has no active open stage to open a deal in",
+            errors=[
+                {
+                    "code": "no_entry_stage",
+                    "message": "This pipeline has no active open stage to open a deal in",
+                }
+            ],
+        )
+    return entry
+
+
+def _target_stage(spec: PipelineSpec, key: str) -> StageSpec:
+    """The stage a deal is being put into, which must exist and be active. A deal may *sit* in
+    an archived stage, but nothing is put into one. Both refusals are 422 field errors on
+    `stage`, never a 409: the importer reads a 409 containing "already" as a skipped row, and
+    lead's client reads every deal-side 409 as a name conflict."""
+    stage = spec.get(key)
+    if stage is None:
+        message = f"{key!r} is not a stage of this pipeline"
+        raise ValidationProblem(
+            message, errors=[{"field": "stage", "code": "unknown_stage", "message": message}]
+        )
+    if stage.archived:
+        message = f"The stage {key!r} has been archived"
+        raise ValidationProblem(
+            message, errors=[{"field": "stage", "code": "stage_archived", "message": message}]
+        )
+    return stage
+
+
 # ------------------------------------------------------------------ deals
 
 
@@ -196,7 +242,7 @@ async def create_deal(
     value_minor: int,
     close_date: date,
     currency: str = "INR",
-    stage: str = "lead",
+    stage: str | None = None,
     probability: int | None = None,
     primary_contact_id: uuid.UUID | None = None,
     source: str = "",
@@ -210,12 +256,19 @@ async def create_deal(
     `created` event — all in the caller's transaction. `value_minor` is integer minor
     units of `currency`; no float is accepted anywhere on this path.
 
+    `stage` is a key of the organization's pipeline; omitted, it is the pipeline's entry stage
+    (the first active open stage by position). The write holds the pipeline's shared lock and
+    reads the stages in the same transaction, so the stage it names cannot be archived under
+    it. A deal created directly in a won or lost stage (an import, a seed) is closed on
+    creation: `closed_at` is its `created_at`.
+
     `acting_as` names the calling *service* on the audit row when this write was not a
     person clicking a button but a service holding a token addressed to deal by name
     (`lead_conversion_ctx`'s caller) — `ctx.principal.sub` still carries the human who
     ultimately asked for it, when the caller has one to give."""
-    if stage not in domain.STAGE_ORDER:
-        raise ConflictProblem(f"{stage!r} is not a pipeline stage")
+    await lock_pipeline_shared(session, ctx.organization_id)
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    target = _entry_stage(spec) if stage is None else _target_stage(spec, stage)
     if value_minor < 0:
         raise ConflictProblem("A deal's value cannot be negative")
     if await selectors.get_deal_by_name(session, ctx.organization_id, name):
@@ -229,12 +282,13 @@ async def create_deal(
         primary_contact_id=primary_contact_id,
         value_minor=value_minor,
         currency=currency.upper(),
-        stage=stage,
+        stage=target.key,
         owner_id=owner_id,
-        probability=(probability if probability is not None else STAGE_DEFAULT_PROBABILITY[stage]),
+        probability=probability if probability is not None else target.default_probability,
         close_date=close_date,
         source=source,
         last_activity_at=last_activity_at,
+        closed_at=(created_at or utcnow()) if target.outcome != "open" else None,
     )
     if deal_id is not None:
         deal.id = deal_id
@@ -253,7 +307,12 @@ async def create_deal(
         action="deal.created",
         entity="deal",
         entity_id=deal.id,
-        after={"name": name, "stage": stage, "value_minor": value_minor, "currency": deal.currency},
+        after={
+            "name": name,
+            "stage": target.key,
+            "value_minor": value_minor,
+            "currency": deal.currency,
+        },
         request=request,
     )
     publish_event(
@@ -267,7 +326,7 @@ async def create_deal(
             "organization_id": str(ctx.organization_id),
             "deal_id": str(deal.id),
             "name": name,
-            "stage": stage,
+            "stage": target.key,
             "value_minor": value_minor,
             "currency": deal.currency,
             "owner_id": str(owner_id),
@@ -395,16 +454,39 @@ async def move_stage(
 ) -> Deal:
     """Move a deal to another stage, under the transition rule in `domain.can_transition`:
     open deals move freely between open stages and close either way; a closed deal is a
-    record and moves nowhere. Closing won pins probability to 100, lost to 0, unless the
-    caller says otherwise for an open stage."""
-    if not domain.can_transition(deal.stage, new_stage):
+    record and moves nowhere.
+
+    The target must be an active stage of the organization's pipeline (422 `unknown_stage`,
+    422 `stage_archived`), and the move holds the pipeline's shared lock, so an archive cannot
+    remove it mid-move. A move into a stage whose outcome is `won` or `lost` pins the
+    probability — 100 and 0 — and a supplied figure that differs is a 422 `probability_pinned`
+    (storing a won deal at 37 percent would corrupt every rollup); omitted, the pin applies. A
+    move into an open stage takes `probability`, or the stage's default. The first move into a
+    closing stage also sets `closed_at`, once, and nothing ever clears it."""
+    await lock_pipeline_shared(session, ctx.organization_id)
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
+    target = _target_stage(spec, new_stage)
+    if not domain.can_transition(deal.stage, new_stage, spec):
         raise ConflictProblem(f"A deal in {deal.stage!r} cannot move to {new_stage!r}")
+    if target.outcome == "open":
+        resolved_probability = (
+            probability if probability is not None else target.default_probability
+        )
+    else:
+        pin = CLOSING_PROBABILITY[target.outcome]
+        if probability is not None and probability != pin:
+            message = f"A deal moved to a {target.outcome} stage is pinned at {pin} percent"
+            raise ValidationProblem(
+                message,
+                errors=[{"field": "probability", "code": "probability_pinned", "message": message}],
+            )
+        resolved_probability = pin
 
     before = deal.stage
     deal.stage = new_stage
-    deal.probability = (
-        probability if probability is not None else STAGE_DEFAULT_PROBABILITY[new_stage]
-    )
+    deal.probability = resolved_probability
+    if target.outcome != "open" and deal.closed_at is None:
+        deal.closed_at = utcnow()
     deal.updated_by = str(ctx.principal.sub)
     await session.flush()
 

@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+
+from app.pipeline import KEY_PATTERN
 
 
 def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
@@ -34,7 +36,11 @@ def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
 
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
-DealStage = Literal["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_lost"]
+#: A stage key as the wire carries it: an immutable slug. Which keys exist is the organization's
+#: pipeline (`GET /deals/stages`), not a promise of this module, so the six-value enum this used
+#: to be is gone. A well-formed key the pipeline does not contain is refused by the service
+#: (422, `unknown_stage`), as a malformed one is refused here.
+StageKey = Annotated[str, StringConstraints(pattern=KEY_PATTERN)]
 ActivityType = Literal["call", "email", "meeting", "note", "task"]
 ActivityDirection = Literal["inbound", "outbound"]
 
@@ -56,7 +62,10 @@ class DealIn(BaseModel):
     activities attribute themselves. Naming a different rep is an ORG-scoped act — the
     route re-applies the caller's scope exactly as it does on a detail route — and a
     caller with no rep identity who also names no owner has nobody to attribute the deal
-    to, which is a 422, not a row owned by nothing."""
+    to, which is a 422, not a row owned by nothing.
+
+    `stage` is optional too: an omitted one is the pipeline's entry stage, the first active open
+    stage by position. Naming one that the pipeline does not contain, or has archived, is a 422."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -66,7 +75,7 @@ class DealIn(BaseModel):
     value_minor: int = Field(ge=0)
     close_date: date
     currency: str = Field(default="INR", min_length=3, max_length=3)
-    stage: DealStage = "lead"
+    stage: StageKey | None = None
     probability: int | None = Field(default=None, ge=0, le=100)
     primary_contact_id: uuid.UUID | None = None
     source: str = Field(default="", max_length=60)
@@ -113,11 +122,14 @@ class DealPatch(BaseModel):
 
 class StageMoveIn(BaseModel):
     """Move a deal through the pipeline. `domain.can_transition` is the enforcement
-    point — an illegal move (out of a closed stage, or to the same stage) answers 409."""
+    point — an illegal move (out of a closed stage, or to the same stage) answers 409. A key the
+    pipeline does not contain, or has archived, answers 422; a closing move whose `probability`
+    is not the pin (100 for a won stage, 0 for a lost one) answers 422, and omitting it takes
+    the pin."""
 
     model_config = ConfigDict(extra="forbid")
 
-    stage: DealStage
+    stage: StageKey
     probability: int | None = Field(default=None, ge=0, le=100)
 
 
@@ -132,7 +144,7 @@ class DealOut(BaseModel):
     primary_contact_id: str | None
     value_minor: int
     currency: str
-    stage: DealStage
+    stage: StageKey
     owner_id: str
     probability: int
     close_date: date
@@ -230,7 +242,7 @@ class StageRollupOut(BaseModel):
     `pct` scaled to the richest stage so the bars read as a funnel. Mirrors the SPA's
     `StageRollup` (and its `stageFunnel` arithmetic in `data/derive.ts`)."""
 
-    stage: DealStage
+    stage: StageKey
     label: str
     count: int
     value_minor: int

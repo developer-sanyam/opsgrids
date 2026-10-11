@@ -226,7 +226,7 @@
       },
       "DealIn": {
         "additionalProperties": false,
-        "description": "Open an opportunity. `company_id` / `primary_contact_id` / `owner_id` are plain\nUUIDs into customer-service's schema \u2014 deal-service cannot verify they resolve there\n(no cross-schema FK, no cross-schema query), so none of the three is checked here.\n\n`owner_id` is optional: an omitted one defaults to the calling rep, matching how\nactivities attribute themselves. Naming a different rep is an ORG-scoped act \u2014 the\nroute re-applies the caller's scope exactly as it does on a detail route \u2014 and a\ncaller with no rep identity who also names no owner has nobody to attribute the deal\nto, which is a 422, not a row owned by nothing.",
+        "description": "Open an opportunity. `company_id` / `primary_contact_id` / `owner_id` are plain\nUUIDs into customer-service's schema \u2014 deal-service cannot verify they resolve there\n(no cross-schema FK, no cross-schema query), so none of the three is checked here.\n\n`owner_id` is optional: an omitted one defaults to the calling rep, matching how\nactivities attribute themselves. Naming a different rep is an ORG-scoped act \u2014 the\nroute re-applies the caller's scope exactly as it does on a detail route \u2014 and a\ncaller with no rep identity who also names no owner has nobody to attribute the deal\nto, which is a 422, not a row owned by nothing.\n\n`stage` is optional too: an omitted one is the pipeline's entry stage, the first active open\nstage by position. Naming one that the pipeline does not contain, or has archived, is a 422.",
         "properties": {
           "close_date": {
             "format": "date",
@@ -295,17 +295,16 @@
             "type": "string"
           },
           "stage": {
-            "default": "lead",
-            "enum": [
-              "lead",
-              "qualified",
-              "proposal",
-              "negotiation",
-              "closed_won",
-              "closed_lost"
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9_]{1,20}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Stage",
-            "type": "string"
+            "title": "Stage"
           },
           "value_minor": {
             "minimum": 0.0,
@@ -387,14 +386,7 @@
             "type": "string"
           },
           "stage": {
-            "enum": [
-              "lead",
-              "qualified",
-              "proposal",
-              "negotiation",
-              "closed_won",
-              "closed_lost"
-            ],
+            "pattern": "^[a-z0-9_]{1,20}$",
             "title": "Stage",
             "type": "string"
           },
@@ -645,7 +637,7 @@
       },
       "StageMoveIn": {
         "additionalProperties": false,
-        "description": "Move a deal through the pipeline. `domain.can_transition` is the enforcement\npoint \u2014 an illegal move (out of a closed stage, or to the same stage) answers 409.",
+        "description": "Move a deal through the pipeline. `domain.can_transition` is the enforcement\npoint \u2014 an illegal move (out of a closed stage, or to the same stage) answers 409. A key the\npipeline does not contain, or has archived, answers 422; a closing move whose `probability`\nis not the pin (100 for a won stage, 0 for a lost one) answers 422, and omitting it takes\nthe pin.",
         "properties": {
           "probability": {
             "anyOf": [
@@ -661,14 +653,7 @@
             "title": "Probability"
           },
           "stage": {
-            "enum": [
-              "lead",
-              "qualified",
-              "proposal",
-              "negotiation",
-              "closed_won",
-              "closed_lost"
-            ],
+            "pattern": "^[a-z0-9_]{1,20}$",
             "title": "Stage",
             "type": "string"
           }
@@ -695,14 +680,7 @@
             "type": "integer"
           },
           "stage": {
-            "enum": [
-              "lead",
-              "qualified",
-              "proposal",
-              "negotiation",
-              "closed_won",
-              "closed_lost"
-            ],
+            "pattern": "^[a-z0-9_]{1,20}$",
             "title": "Stage",
             "type": "string"
           },

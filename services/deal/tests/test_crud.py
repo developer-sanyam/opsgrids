@@ -20,7 +20,7 @@ from app.main import app
 from platform_core.auth import Principal, get_principal
 from tests.helpers import principal_for
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("pipeline_mode")]
 
 
 @contextlib.contextmanager

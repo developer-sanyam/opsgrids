@@ -16,13 +16,16 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import event
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app import selectors, services
 from app.config import settings
 from app.models import SCHEMA, Deal, Pipeline, PipelineStage
 from app.pipeline import StageSpec
+from platform_core.auth import Scope
 from platform_core.db import TENANT_GUC
+from tests.helpers import ctx_for
 
 #: Three open stages, one won and one lost, none of them a legacy key.
 CUSTOM_STAGES: tuple[StageSpec, ...] = (
@@ -185,3 +188,82 @@ async def insert_deal(
     async with admin.begin():
         await admin.execute(Deal.__table__.insert().values(**values))
     return deal_id
+
+
+# ------------------------------------------------------------------ through the service layer
+
+#: The rep and the account every deal made through `make_deal` belongs to.
+OWNER = uuid.uuid4()
+COMPANY = uuid.uuid4()
+
+
+def archived(stage: StageSpec) -> StageSpec:
+    """The same stage, archived."""
+    return StageSpec(
+        stage.key,
+        stage.label,
+        stage.position,
+        stage.outcome,
+        stage.default_probability,
+        stage.tone,
+        archived=True,
+    )
+
+
+async def make_deal(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    *,
+    name: str,
+    stage: str | None = None,
+    probability: int | None = None,
+    created_at: datetime | None = None,
+    value_minor: int = 1_000,
+) -> uuid.UUID:
+    """A deal made by `services.create_deal`, as the app role, in its own committed transaction.
+    Returns the id, not the instance: a refused write elsewhere in the test rolls the session back
+    and expires every instance in it, and touching one then needs IO the async session refuses."""
+    ctx = ctx_for(organization_id, "crm.pipeline.deal.write", Scope.ORG)
+    async with session.begin():
+        deal = await services.create_deal(
+            session,
+            ctx,
+            name=name,
+            company_id=COMPANY,
+            owner_id=OWNER,
+            value_minor=value_minor,
+            close_date=date(2026, 12, 31),
+            stage=stage,
+            probability=probability,
+            created_at=created_at,
+        )
+        return deal.id
+
+
+async def move_deal(
+    session: AsyncSession, organization_id: uuid.UUID, deal_id: uuid.UUID, **kwargs: Any
+) -> None:
+    """`services.move_stage` the way the route calls it: the deal is loaded in the same
+    transaction that moves it. `kwargs` are `new_stage` and `probability`."""
+    ctx = ctx_for(organization_id, "crm.pipeline.deal.write", Scope.ORG)
+    async with session.begin():
+        deal = await selectors.get_deal(session, organization_id, deal_id)
+        assert deal is not None
+        await services.move_stage(session, ctx, deal, **kwargs)
+
+
+async def reload_deal(
+    session: AsyncSession, organization_id: uuid.UUID, deal_id: uuid.UUID
+) -> Deal:
+    """The deal as the database holds it now, read in a fresh transaction."""
+    async with session.begin():
+        deal = await selectors.get_deal(session, organization_id, deal_id)
+    assert deal is not None
+    return deal
+
+
+async def count_rows(session: AsyncSession, model: Any, *where: Any) -> int:
+    async with session.begin():
+        return (
+            await session.execute(select(func.count()).select_from(model).where(*where))
+        ).scalar_one()

@@ -19,10 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import selectors, services
 from app.main import app
 from platform_core.auth import Principal, Scope, ScopeContext, get_principal
-from platform_core.errors import ConflictProblem, NotFoundProblem
+from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 from tests.helpers import ctx_for, principal_for
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("pipeline_mode")]
 
 
 @contextlib.contextmanager
@@ -307,7 +307,7 @@ class TestValidation:
         from datetime import date
 
         ctx = ctx_for(org_id, "crm.pipeline.deal.write", Scope.ORG)
-        with pytest.raises(ConflictProblem, match="not a pipeline stage"):
+        with pytest.raises(ValidationProblem, match="not a stage of this pipeline") as refused:
             async with session.begin():
                 await services.create_deal(
                     session,
@@ -319,6 +319,8 @@ class TestValidation:
                     close_date=date(2026, 12, 1),
                     stage="galaxy_brain",
                 )
+        assert refused.value.errors is not None
+        assert refused.value.errors[0]["code"] == "unknown_stage"
 
     async def test_logging_against_an_unknown_deal_is_refused(self, session, org_id, data) -> None:
         ctx = ctx_for(org_id, "crm.pipeline.activity.write", Scope.ORG)

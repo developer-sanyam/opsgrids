@@ -119,6 +119,21 @@ async def admin_session() -> AsyncIterator[AsyncSession]:
     await engine.dispose()
 
 
+@pytest_asyncio.fixture(params=["virtual", "materialised"])
+async def pipeline_mode(
+    request: pytest.FixtureRequest, session: AsyncSession, org_id: uuid.UUID
+) -> str:
+    """Run a suite against both ways an organization can hold the default pipeline: `virtual`
+    (nothing stored — what every organization is until stage configuration ships) and
+    `materialised` (the same six stages as rows, as the first stage-configuration write leaves
+    them). The suites that apply this through `pytestmark` must pass in both, which is how
+    "the legacy six behave as they always did" is proved for the stored read path too."""
+    if request.param == "materialised":
+        async with session.begin():
+            await services.materialise_default_pipeline(session, org_id, None)
+    return str(request.param)
+
+
 @pytest_asyncio.fixture
 async def data(session: AsyncSession, org_id: uuid.UUID) -> dict:
     """A small pipeline seeded through the real write paths."""

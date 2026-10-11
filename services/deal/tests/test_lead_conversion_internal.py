@@ -24,7 +24,7 @@ from platform_core.auth import Scope
 from platform_core.internal_auth import mint_service_token
 from tests.helpers import ctx_for
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("pipeline_mode")]
 
 
 def _token(org_id: uuid.UUID, *, caller: str = "lead", actor: uuid.UUID | None = None) -> str:
@@ -55,7 +55,7 @@ class TestLeadConversionInternal:
         )
         assert resp.status_code == 401
 
-    async def test_opens_a_deal_at_the_lead_stage(
+    async def test_opens_a_deal_at_the_pipelines_entry_stage(
         self, client, org_id, session: AsyncSession
     ) -> None:
         deal_id = uuid.uuid4()
@@ -69,7 +69,8 @@ class TestLeadConversionInternal:
 
         deal = await selectors.get_deal(session, org_id, deal_id)
         assert deal is not None
-        assert deal.stage == "lead"
+        assert deal.stage == "lead"  # the default pipeline's entry stage
+        assert deal.probability == 20  # and its default probability
         assert deal.value_minor == 0
         assert deal.source == "form"
 
