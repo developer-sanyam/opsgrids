@@ -7,8 +7,14 @@ pipeline is built by hand to prove the rules do not depend on the six keys.
 
 from __future__ import annotations
 
+import random
+import uuid
+from datetime import date
+
 import pytest
 
+from app import domain
+from app.models import Deal
 from app.pipeline import (
     CLOSING_PROBABILITY,
     DEFAULT_PIPELINE,
@@ -23,6 +29,15 @@ from tests.legacy_pipeline import (
     LEGACY_STAGE_LABELS,
     LEGACY_STAGE_ORDER,
     LEGACY_TERMINAL_STAGES,
+    legacy_can_transition,
+    legacy_is_open,
+    legacy_open_count,
+    legacy_open_deals,
+    legacy_pipeline_value_minor,
+    legacy_stage_funnel,
+    legacy_weighted_pipeline_minor,
+    legacy_win_rate_pct,
+    legacy_won_value_minor,
 )
 
 
@@ -250,3 +265,184 @@ class TestValidate:
         assert refused.value.code == "no_active_open_stage"
         assert "no active open stage" in refused.value.detail
         assert str(refused.value).startswith("no_active_open_stage: ")
+
+
+# ------------------------------------------------------------------ parity with the legacy six
+
+
+def deal(stage: str, value: int = 100, probability: int = 50) -> Deal:
+    return Deal(
+        id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        name=f"deal-{uuid.uuid4().hex[:6]}",
+        company_id=uuid.uuid4(),
+        value_minor=value,
+        currency="INR",
+        stage=stage,
+        owner_id=uuid.uuid4(),
+        probability=probability,
+        close_date=date(2026, 8, 24),
+        source="",
+    )
+
+
+def materialised_default() -> PipelineSpec:
+    """The default pipeline as `load_pipeline_spec` returns it for an organization that has the
+    six rows stored: the same stages, with ids, read from the database."""
+    return PipelineSpec(
+        stages=tuple(
+            StageSpec(
+                s.key,
+                s.label,
+                s.position,
+                s.outcome,
+                s.default_probability,
+                s.tone,
+                id=uuid.uuid4(),
+            )
+            for s in DEFAULT_PIPELINE.stages
+        ),
+        id=uuid.uuid4(),
+        materialised=True,
+    )
+
+
+def seeded_book(size: int = 300) -> list[Deal]:
+    rng = random.Random(20261007)  # noqa: S311 - deterministic test data, not a security use
+    keys = [*LEGACY_STAGE_ORDER, "galaxy_brain"]  # one key no pipeline contains
+    return [
+        deal(rng.choice(keys), rng.randrange(0, 5_000_000), rng.randrange(0, 101))
+        for _ in range(size)
+    ]
+
+
+class TestAliases:
+    def test_the_domain_aliases_are_derived_from_the_default_pipeline(self) -> None:
+        assert domain.STAGE_ORDER == LEGACY_STAGE_ORDER
+        assert domain.STAGE_LABELS == LEGACY_STAGE_LABELS
+        assert domain.OPEN_STAGES == LEGACY_OPEN_STAGES
+        assert domain.TERMINAL_STAGES == LEGACY_TERMINAL_STAGES
+
+
+class TestTransitions:
+    @pytest.mark.parametrize("spec", [DEFAULT_PIPELINE, materialised_default()])
+    def test_the_6x6_grid_equals_the_legacy_can_transition(self, spec: PipelineSpec) -> None:
+        keys = [*LEGACY_STAGE_ORDER, "galaxy_brain", "", "Lead"]  # three keys nobody has
+        for current in keys:
+            for new in keys:
+                expected = legacy_can_transition(current, new)
+                assert domain.can_transition(current, new, spec) is expected, (current, new)
+                assert domain.can_transition(current, new) is expected, (current, new)
+
+    def test_is_open_equals_the_legacy_rule_for_every_key(self) -> None:
+        for key in [*LEGACY_STAGE_ORDER, "galaxy_brain"]:
+            assert domain.is_open(key) is legacy_is_open(key)
+
+    def test_a_custom_pipeline_moves_between_its_own_open_stages_and_closes_either_way(
+        self,
+    ) -> None:
+        spec = PipelineSpec(stages=tuple(custom_stages()))
+        assert domain.can_transition("discovery", "quote", spec)
+        assert domain.can_transition("quote", "discovery", spec)
+        assert domain.can_transition("scoping", "won", spec)
+        assert domain.can_transition("scoping", "lost", spec)
+        assert not domain.can_transition("quote", "quote", spec)
+        # The legacy keys mean nothing here.
+        assert not domain.can_transition("lead", "qualified", spec)
+
+    def test_an_archived_target_is_refused(self) -> None:
+        stages = custom_stages()
+        stages[1] = StageSpec("scoping", "Scoping", 1, "open", 30, "info", archived=True)
+        spec = PipelineSpec(stages=tuple(stages))
+        assert not domain.can_transition("discovery", "scoping", spec)
+        assert domain.can_transition("discovery", "quote", spec)
+
+    def test_a_closed_deal_moves_nowhere_in_a_custom_pipeline(self) -> None:
+        spec = PipelineSpec(stages=tuple(custom_stages()))
+        for closed in ("won", "lost"):
+            for target in ("discovery", "quote", "won", "lost"):
+                assert not domain.can_transition(closed, target, spec), (closed, target)
+
+    def test_a_deal_in_an_archived_won_stage_still_moves_nowhere(self) -> None:
+        stages = [*custom_stages(), StageSpec("old_won", "Old won", 9, "won", 100, "success", True)]
+        spec = PipelineSpec(stages=tuple(stages))
+        assert not domain.can_transition("old_won", "discovery", spec)
+
+    def test_an_unknown_current_stage_is_not_a_transition(self) -> None:
+        spec = PipelineSpec(stages=tuple(custom_stages()))
+        assert not domain.can_transition("galaxy_brain", "discovery", spec)
+        assert not domain.can_transition("discovery", "galaxy_brain", spec)
+
+
+class TestRollups:
+    @pytest.mark.parametrize("spec", [DEFAULT_PIPELINE, materialised_default()])
+    def test_every_rollup_equals_the_legacy_function_over_a_seeded_book(
+        self, spec: PipelineSpec
+    ) -> None:
+        book = seeded_book()
+        assert [d.id for d in domain.open_deals(book, spec)] == [
+            d.id for d in legacy_open_deals(book)
+        ]
+        assert domain.pipeline_value_minor(book, spec) == legacy_pipeline_value_minor(book)
+        assert domain.weighted_pipeline_minor(book, spec) == legacy_weighted_pipeline_minor(book)
+        assert domain.open_count(book, spec) == legacy_open_count(book)
+        assert domain.win_rate_pct(book, spec) == legacy_win_rate_pct(book)
+        assert domain.won_value_minor(book, spec) == legacy_won_value_minor(book)
+        assert domain.stage_funnel(book, spec) == legacy_stage_funnel(book)
+
+    def test_a_call_without_a_spec_reads_the_default_pipeline(self) -> None:
+        book = seeded_book(60)
+        assert domain.pipeline_value_minor(book) == domain.pipeline_value_minor(
+            book, DEFAULT_PIPELINE
+        )
+        assert domain.stage_funnel(book) == domain.stage_funnel(book, DEFAULT_PIPELINE)
+
+    def test_win_rate_counts_every_won_and_lost_outcome_stage(self) -> None:
+        stages = [
+            *custom_stages()[:3],
+            StageSpec("won", "Won", 3, "won", 100, "success"),
+            StageSpec("won_late", "Won late", 4, "won", 100, "success"),
+            StageSpec("lost", "Lost", 5, "lost", 0, "danger"),
+        ]
+        spec = PipelineSpec(stages=tuple(stages))
+        book = [
+            deal("won", 100),
+            deal("won_late", 300),
+            deal("lost", 50),
+            deal("quote", 700),  # open: counts for neither the rate nor the won value
+        ]
+        assert domain.win_rate_pct(book, spec) == 67  # 2 of 3 decided
+        assert domain.won_value_minor(book, spec) == 400
+        assert domain.open_count(book, spec) == 1
+        assert domain.pipeline_value_minor(book, spec) == 700
+
+    def test_the_funnel_lists_active_open_stages_in_position_order(self) -> None:
+        stages = custom_stages()
+        stages[1] = StageSpec("scoping", "Scoping", 1, "open", 30, "info", archived=True)
+        spec = PipelineSpec(stages=tuple(stages))
+        book = [deal("discovery", 100), deal("quote", 400), deal("scoping", 999), deal("won", 5)]
+        funnel = domain.stage_funnel(book, spec)
+        assert [row["stage"] for row in funnel] == ["discovery", "quote"]
+        assert [row["label"] for row in funnel] == ["Discovery", "Quote"]
+        assert [row["pct"] for row in funnel] == [25, 100]
+        # The deal sitting in the archived stage is still open: it is in the totals, not a column.
+        assert domain.open_count(book, spec) == 3
+        assert domain.pipeline_value_minor(book, spec) == 1499
+
+    def test_a_deal_in_an_unknown_stage_counts_as_open_and_is_not_in_the_funnel(self) -> None:
+        spec = PipelineSpec(stages=tuple(custom_stages()))
+        book = [deal("discovery", 100), deal("galaxy_brain", 900)]
+        assert domain.open_count(book, spec) == 2
+        assert domain.pipeline_value_minor(book, spec) == 1000
+        assert [row["count"] for row in domain.stage_funnel(book, spec)] == [1, 0, 0]
+
+    def test_a_pipeline_with_one_open_stage_has_a_funnel(self) -> None:
+        spec = PipelineSpec(
+            stages=(
+                StageSpec("only", "Only", 0, "open", 50, "info"),
+                StageSpec("won", "Won", 1, "won", 100, "success"),
+                StageSpec("lost", "Lost", 2, "lost", 0, "danger"),
+            )
+        )
+        assert [row["pct"] for row in domain.stage_funnel([deal("only", 10)], spec)] == [100]
+        assert [row["pct"] for row in domain.stage_funnel([], spec)] == [0]
