@@ -150,11 +150,13 @@ async def add_purchase_order(
     session: AsyncSession,
     org_id: uuid.UUID,
     number: str,
-    lines: list[tuple[str, int, int]],
+    lines: list[tuple[Any, ...]],
     *,
     status: str = "approved",
 ) -> uuid.UUID:
-    """`lines` are `(sku, quantity, received_qty)` — PO lines are whole units."""
+    """`lines` are `(sku, quantity, received_qty)` — PO lines are whole units — with an optional
+    fourth dict of column overrides (`uom`, `received_milli`, `short_closed`). `received_milli`
+    defaults to `received_qty` whole units, as a real receipt would have left it."""
     po_id = uuid.uuid4()
     async with session.begin():
         supplier = (
@@ -186,7 +188,9 @@ async def add_purchase_order(
             )
         )
         await session.flush()
-        for sku, quantity, received in lines:
+        for sku, quantity, received, *rest in lines:
+            extra: dict[str, Any] = {"uom": "pcs", "received_milli": received * 1000}
+            extra.update(rest[0] if rest else {})
             session.add(
                 PurchaseOrderLine(
                     id=uuid.uuid4(),
@@ -195,7 +199,7 @@ async def add_purchase_order(
                     sku=sku,
                     quantity=quantity,
                     received_qty=received,
-                    uom="pcs",
+                    **extra,
                 )
             )
     return po_id

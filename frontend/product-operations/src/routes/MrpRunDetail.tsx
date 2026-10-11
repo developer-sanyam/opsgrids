@@ -306,7 +306,7 @@ function ShortagesSection({
     <>
       {last !== null ? (
         <InlineAlert tone="success" title={requestedMessage(last)}>
-          Request {last.request_id.slice(0, 8)}: purchasing will turn it into a requisition.
+          Request {last.request_id.slice(0, 8)}: a draft purchase requisition is created from it; find it under Purchase requisitions.
         </InlineAlert>
       ) : null}
 

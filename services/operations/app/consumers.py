@@ -75,6 +75,7 @@ from app.fulfilment import services as fulfilment_services
 from app.models import ProcessedEvent
 from app.movements import adjustments, transfers
 from app.movements import common as movement_common
+from app.mrp import services as mrp_services
 from app.orders import services as order_services
 from app.quality import handoff as quality_handoff
 from platform_core.db import (
@@ -627,6 +628,43 @@ async def goods_receipt_qc_requested(envelope: dict[str, Any]) -> None:
 
 
 consumer.on(quality_handoff.EVT_STOCK_RECEIVED)(goods_receipt_qc_requested)
+
+
+async def mrp_requisition_requested(envelope: dict[str, Any]) -> None:
+    """Bound to `operations.mrp.requisition_requested` (this service's own event, emitted when a
+    planner asks purchasing to requisition an MRP run's shortages). Makes the DRAFT purchase
+    requisition (`app.mrp.services.requisition_for_request`), once per request id. The tenant is
+    the envelope's, never the payload's: a payload that names another organization is marked
+    processed and logged, not acted on."""
+    event_id = uuid.UUID(envelope["event_id"])
+    organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload = envelope["payload"]
+    mismatch = uuid.UUID(str(payload["organization_id"])) != organization_id
+
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("mrp.requisition_request.duplicate", event_id=str(event_id))
+            return
+        if mismatch:
+            mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+            log.error(
+                "mrp.requisition_request.organization_mismatch",
+                event_id=str(event_id),
+                envelope_organization_id=str(organization_id),
+                payload_organization_id=str(payload["organization_id"]),
+            )
+            return
+        made = await mrp_services.requisition_for_request(session, organization_id, payload)
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+    log.info(
+        "mrp.requisition_request.handled",
+        event_id=str(event_id),
+        request_id=str(payload["request_id"]),
+        requisition=made.number if made else None,
+    )
+
+
+consumer.on(mrp_services.EVT_REQUISITION_REQUESTED)(mrp_requisition_requested)
 
 
 async def main() -> None:

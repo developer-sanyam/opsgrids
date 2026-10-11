@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.inventory.quantity import format_qty, is_discrete
@@ -35,6 +35,7 @@ from app.models import (
     OrderLine,
     PurchaseOrder,
     PurchaseOrderLine,
+    PurchaseRequisition,
 )
 from app.mrp import domain
 from app.mrp.models import MrpDemand, MrpRun, MrpShortage, MrpShortageLine
@@ -45,6 +46,7 @@ from app.mrp.schemas import (
     MrpShortageLineOut,
     MrpShortageOut,
 )
+from app.receiving import selectors as receiving_selectors
 from platform_core.auth import ScopeContext
 
 #: Sales orders that still owe stock: placed and not yet picked to READY (READY and later have
@@ -52,8 +54,9 @@ from platform_core.auth import ScopeContext
 OPEN_ORDER_STATUSES = ("PLACED", "ACCEPTED", "IN_FULFILMENT", "ON_HOLD")
 #: A production order that still plans to consume material and produce output.
 OPEN_PRODUCTION_STATUSES = ("DRAFT", "APPROVED", "IN_PROGRESS")
-#: A purchase order that is committed and not yet in: only `approved` (a draft is not a promise).
-OPEN_PO_STATUSES = ("approved",)
+#: A purchase order that is committed and not yet all in: `approved` and, once receiving has
+#: started, `partially_received` (a draft is not a promise; `received` has nothing left to come).
+OPEN_PO_STATUSES = ("approved", "partially_received")
 
 _CHUNK = 2000
 
@@ -165,6 +168,37 @@ async def shortages_by_ids(
         stmt = stmt.where(MrpShortage.id.in_(ids))
     stmt = stmt.order_by(MrpShortage.id).with_for_update()
     return list((await session.execute(stmt)).scalars().all())
+
+
+async def items_already_requested(
+    session: AsyncSession, org_id: uuid.UUID, run_id: uuid.UUID, item_ids: Iterable[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Items another run's shortage has already asked purchasing for, where that request is still
+    on its way: no requisition has been made from it yet, or the one made (it names the request
+    id in its reason, see `services.requisition_for_request`) is not cancelled, rejected or
+    converted into a purchase order."""
+    ids = set(item_ids)
+    if not ids:
+        return set()
+    closed = (
+        select(PurchaseRequisition.id)
+        .where(
+            PurchaseRequisition.organization_id == org_id,
+            PurchaseRequisition.status.in_(("CANCELLED", "REJECTED", "CONVERTED")),
+            PurchaseRequisition.reason.contains(cast(MrpShortage.requisition_request_id, String)),
+        )
+        .exists()
+    )
+    rows = await session.execute(
+        select(MrpShortage.item_id).where(
+            MrpShortage.organization_id == org_id,
+            MrpShortage.run_id != run_id,
+            MrpShortage.item_id.in_(ids),
+            MrpShortage.requisition_request_id.is_not(None),
+            ~closed,
+        )
+    )
+    return {r for (r,) in rows}
 
 
 async def shortage_lines_of(
@@ -443,7 +477,8 @@ async def collect_production_demand(session: AsyncSession, org_id: uuid.UUID) ->
     ).all()
     out: list[DemandRow] = []
     for order, material in rows:
-        requested = material.required_milli - material.issued_milli
+        # material handed back to stock has to be issued again, so it is demand again
+        requested = material.required_milli - material.issued_milli + material.returned_milli
         if requested <= 0:
             continue
         held = min(requested, material.reserved_milli)
@@ -493,21 +528,15 @@ async def supply_for(
         ).all():
             on_hand[item] += int(qty or 0)
             reserved[item] += int(held or 0)
-        for item, qty in (
+        po_rows = (
             await session.execute(
-                select(
-                    InventoryItem.id,
-                    func.sum(
-                        func.greatest(
-                            PurchaseOrderLine.quantity - PurchaseOrderLine.received_qty, 0
-                        )
-                    ),
-                )
+                select(InventoryItem, PurchaseOrderLine)
                 .join(
                     PurchaseOrderLine,
                     (PurchaseOrderLine.sku == InventoryItem.sku)
                     & (PurchaseOrderLine.organization_id == org_id)
-                    & PurchaseOrderLine.deleted_at.is_(None),
+                    & PurchaseOrderLine.deleted_at.is_(None)
+                    & PurchaseOrderLine.short_closed.is_(False),
                 )
                 .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
                 .where(
@@ -518,10 +547,14 @@ async def supply_for(
                     PurchaseOrder.deleted_at.is_(None),
                     PurchaseOrder.status.in_(OPEN_PO_STATUSES),
                 )
-                .group_by(InventoryItem.id)
             )
-        ).all():
-            po[item] += int(qty or 0) * 1000
+        ).all()
+        ratios = await receiving_selectors.conversions_for_items(
+            session, org_id, {item.id for item, _ in po_rows}
+        )
+        for item, line in po_rows:
+            ordered = receiving_selectors.ordered_milli(line, item.uom, ratios.get(item.id, {}))
+            po[item.id] += max(ordered - line.received_milli, 0)
         for item, qty in (
             await session.execute(
                 select(

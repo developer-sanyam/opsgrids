@@ -36,6 +36,14 @@
     "requested_by": {
       "type": "string"
     },
+    "requested_by_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid",
+      "description": "The requester's directory (subject) reference, when they have one; carried onto the requisition for OWN scope."
+    },
     "lines": {
       "type": "array",
       "minItems": 1,

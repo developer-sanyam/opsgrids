@@ -26,7 +26,7 @@ from app.config import settings
 from app.inventory.quantity import format_qty
 from app.manufacturing import common
 from app.manufacturing.selectors import items_by_id
-from app.models import AuditLog, OutboxEvent
+from app.models import AuditLog, OutboxEvent, PurchaseRequisition
 from app.mrp import domain, selectors
 from app.mrp.models import MrpDemand, MrpRun, MrpShortage, MrpShortageLine
 from app.mrp.schemas import (
@@ -35,13 +35,17 @@ from app.mrp.schemas import (
     RequisitionRequestLineOut,
     RequisitionRequestOut,
 )
+from app.receiving import requisitions as requisitions_service
+from app.receiving.schemas import RequisitionIn, RequisitionLineIn
 from platform_core.audit import record_audit
-from platform_core.auth import ScopeContext
+from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 from platform_core.events import publish_event
 
 EVT_RUN_COMPLETED = "operations.mrp.run_completed"
 EVT_REQUISITION_REQUESTED = "operations.mrp.requisition_requested"
+#: What the consumer acts under: the requisition request's own permission.
+REQUISITION_PERMISSION = "operations.manufacturing.mrp.requisition"
 
 
 class MrpFailure(Exception):
@@ -166,7 +170,7 @@ async def create_run(
     execution = "SYNC"
     if payload.mode == "worker":
         execution = "WORKER"
-    elif payload.mode == "auto":
+    else:
         lines, materials = await selectors.count_open_demand(session, org_id)
         total = (
             (lines if "SALES_ORDER" in sources else 0)
@@ -174,6 +178,11 @@ async def create_run(
             + len(manual)
         )
         if total > limit:
+            if payload.mode == "sync":
+                raise ValidationProblem(
+                    f"This run plans from {total} demand lines, over the {limit} that may run "
+                    "inside a request; use mode 'auto' or 'worker' so the worker runs it"
+                )
             execution = "WORKER"
 
     seq = await _next_seq(session, org_id)
@@ -520,6 +529,19 @@ async def request_requisition(
         rows = [r for r in rows if r.action == "BUY" and r.requisition_request_id is None]
         if not rows:
             raise ConflictProblem("There is nothing left in this run to requisition")
+    # an item an earlier run's request has already put in purchasing's hands is not asked for twice
+    on_its_way = await selectors.items_already_requested(
+        session, org_id, run_id, (r.item_id for r in rows)
+    )
+    if ids is not None:
+        if any(r.item_id in on_its_way for r in rows):
+            raise ConflictProblem(
+                "A shortage in the request is already being requisitioned from an earlier run"
+            )
+    else:
+        rows = [r for r in rows if r.item_id not in on_its_way]
+        if not rows:
+            raise ConflictProblem("There is nothing left in this run to requisition")
     rows.sort(key=lambda r: (r.level, r.item_id))
 
     request_id = uuid.uuid4()
@@ -542,6 +564,7 @@ async def request_requisition(
             "run_number": run.number,
             "note": payload.note,
             "requested_by": common.user_ref(ctx),
+            "requested_by_ref": str(ctx.subject_ref) if ctx.subject_ref else None,
             "lines": [ln.model_dump(mode="json") for ln in out.lines],
         },
     )
@@ -585,3 +608,72 @@ async def _request_out(
             for r in rows
         ],
     )
+
+
+# ------------------------------------------------------------------ the request's consumer
+
+
+def _request_marker(request_id: uuid.UUID) -> str:
+    return f"MRP request {request_id}"
+
+
+async def requisition_for_request(
+    session: AsyncSession, org_id: uuid.UUID, payload: dict[str, Any]
+) -> PurchaseRequisition | None:
+    """Turn an `operations.mrp.requisition_requested` payload into one DRAFT purchase requisition
+    that purchasing reviews, submits and converts as usual. Idempotent on the request id, which
+    the requisition's reason carries: a redelivery, even under a new event id, finds it and does
+    nothing. Attributed to the planner who asked (audit actor, and the requester id for OWN scope
+    when the event carries their directory reference); a payload without one falls to the system.
+    Returns the requisition made, or None when it already existed."""
+    request_id = uuid.UUID(str(payload["request_id"]))
+    marker = _request_marker(request_id)
+    made = (
+        await session.execute(
+            select(PurchaseRequisition.id).where(
+                PurchaseRequisition.organization_id == org_id,
+                PurchaseRequisition.reason.contains(marker),
+            )
+        )
+    ).first()
+    if made is not None:
+        return None
+    ctx = ScopeContext(
+        principal=Principal(
+            sub=_uuid_or_none(payload.get("requested_by")) or uuid.UUID(int=0),
+            organization_id=org_id,
+            subject_ref=_uuid_or_none(payload.get("requested_by_ref")),
+            perms=[f"{REQUISITION_PERMISSION}:ORG"],
+            entitlements=["operations"],
+        ),
+        scope=Scope.ORG,
+        permission=REQUISITION_PERMISSION,
+    )
+    needs = [date.fromisoformat(ln["need_by"]) for ln in payload["lines"] if ln.get("need_by")]
+    note = f": {payload['note']}" if payload.get("note") else ""
+    req = await requisitions_service.create_requisition(
+        session,
+        ctx,
+        RequisitionIn(
+            needed_by=min(needs) if needs else None,
+            reason=f"{marker} (run {payload['run_number']}){note}"[:2000],
+            requested_by=f"MRP run {payload['run_number']}",
+            lines=[
+                RequisitionLineIn(
+                    inventory_item_id=uuid.UUID(ln["item_id"]),
+                    quantity=ln["quantity"],
+                    note=f"Shortage in {payload['run_number']}",
+                )
+                for ln in payload["lines"]
+            ],
+        ),
+    )
+    await session.execute(
+        update(MrpShortage)
+        .where(
+            MrpShortage.organization_id == org_id,
+            MrpShortage.requisition_request_id == request_id,
+        )
+        .values(requisition_id=req.id)
+    )
+    return req

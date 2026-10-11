@@ -150,9 +150,14 @@ them**:
   (`requisition_request_id`, `requisition_requested_at`), and stages
   `operations.mrp.requisition_requested` carrying the lines (`shortage_id`, `item_id`, `sku`,
   `uom`, `quantity`, `need_by`) in the same transaction.
-- `mrp_shortages.requisition_id` (also a plain UUID, never an FK) is reserved for the real
-  requisition: when Phase 2 lands, a consumer of the event creates the requisition and writes its id
-  there, and the same `request_id` ties the two together.
+- `app.consumers.mrp_requisition_requested` consumes the event: one **DRAFT** purchase requisition
+  per `request_id` (its reason carries `MRP request <id>`, which makes redelivery a no-op), created
+  through `receiving/requisitions.py` as the planner who asked, and its id is written to
+  `mrp_shortages.requisition_id` (a plain UUID, never an FK). Purchasing submits, approves and
+  converts it as usual.
+- A shortage is not requested again while an earlier run's request for the same item is still on its
+  way (no requisition yet, or one not cancelled, rejected or converted): a request without ids skips
+  such items, one naming them is a `409`.
 
 ## Tables
 
