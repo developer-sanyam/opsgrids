@@ -21,7 +21,15 @@ import datetime as dt
 import uuid
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, EmailStr, Field, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    EmailStr,
+    Field,
+    StrictBool,
+    model_validator,
+)
 
 from app import domain
 
@@ -989,6 +997,28 @@ class EnquiryCreate(BaseModel):
     lines: Annotated[list[EnquiryLineIn], Field(max_length=MAX_ENQUIRY_LINES)] = Field(
         default_factory=list
     )
+    #: The form's unticked-by-default WhatsApp marketing box. Strict: only a real `true` opts in.
+    whatsapp_marketing_opt_in: StrictBool = False
+
+    @model_validator(mode="after")
+    def _opt_in_needs_a_whatsapp_number(self) -> EnquiryCreate:
+        # The same E.164 rule notification's ledger applies, checked here so a ticked box with a
+        # number the ledger would refuse is the buyer's 422 rather than a dead-lettered event.
+        if self.whatsapp_marketing_opt_in and not domain.is_whatsapp_number(self.phone or ""):
+            raise ValueError(
+                "To get WhatsApp messages, give your phone number with its country code, "
+                "like +91 98765 43210."
+            )
+        return self
+
+
+class EnquiryWhatsAppOptInOut(BaseModel):
+    """What notification-service gets for a ticked enquiry (`/internal/v1` only, never public)."""
+
+    name: str
+    email: str | None
+    phone: str | None
+    opted_in_at: dt.datetime
 
 
 class EnquiryReceiptOut(BaseModel):

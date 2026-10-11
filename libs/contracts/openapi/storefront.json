@@ -690,6 +690,11 @@
             "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
             "title": "Store",
             "type": "string"
+          },
+          "whatsapp_marketing_opt_in": {
+            "default": false,
+            "title": "Whatsapp Marketing Opt In",
+            "type": "boolean"
           }
         },
         "required": [

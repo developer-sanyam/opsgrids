@@ -91,6 +91,11 @@ class Settings(ServiceSettings):
     account_internal_url: str = "http://localhost:8111"
     account_timeout_seconds: float = 5.0
 
+    #: Where to fetch a storefront buyer's number for a ticked WhatsApp opt-in
+    #: (`app/storefront_optin.py`). Storefront owns the enquiry and audits every read.
+    storefront_internal_url: str = "http://localhost:8174"
+    storefront_timeout_seconds: float = 5.0
+
     # ----------------------------------------------------------------- engage sending identity
     #: Test sends per organization per minute. Independent of `daily_cap`, which is the
     #: provider's own limit on a *connected* connection — this bounds the route itself, which

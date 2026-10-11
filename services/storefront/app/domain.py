@@ -1091,6 +1091,16 @@ ENQUIRY_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 
+#: E.164, as notification's `domain.normalize_recipient` accepts a WhatsApp number.
+_E164 = re.compile(r"^\+[1-9]\d{7,14}$")
+
+
+def is_whatsapp_number(raw: str) -> bool:
+    """A number WhatsApp can reach: E.164 once the separators a person types are stripped. A bare
+    number is refused, never given a guessed country code."""
+    return bool(_E164.match(re.sub(r"[\s\-().]", "", raw)))
+
+
 def assert_enquiry_transition(current: str, target: str) -> None:
     """Refuse an illegal status move with a 409 naming both ends, per CLAUDE.md's "no
     free-form status set". Setting the same status again is a no-op, not a refusal."""

@@ -4497,10 +4497,22 @@ async def record_consent_event(
     if contact_id is not None and channel != "email":
         # A contact holds only an email address; a WhatsApp or SMS event links a contact to the
         # number it names, which is how a WhatsApp campaign finds that contact's number.
-        if address is None:
-            raise ValidationProblem("A WhatsApp or SMS event needs the address it is about")
         if await selectors.get_contact(session, ctx.organization_id, contact_id) is None:
             raise NotFoundProblem("No such contact")
+        if address is None:
+            # Withdrawing needs no number: staff only ever see it masked, so the opt-out is about
+            # the number this contact's newest event on the channel named. An opt-in must name it.
+            linked = await selectors.latest_linked_consent_event(
+                session, ctx.organization_id, contact_id, channel
+            )
+            if status != consent.OPTED_OUT or linked is None:
+                raise ValidationProblem("A WhatsApp or SMS event needs the address it is about")
+            subject = consent.Subject(
+                channel=channel,
+                index=linked.subject_index,
+                enc=linked.subject_enc,
+                masked=linked.subject_masked,
+            )
     elif contact_id is not None:
         contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
         if contact is None:
@@ -4595,6 +4607,87 @@ async def record_consent_event(
             )
         )[subject.index]
     return RecordedConsent(event=event, effective=effective, replayed=replayed)
+
+
+async def record_storefront_opt_in(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    enquiry_id: uuid.UUID,
+    name: str,
+    email: str | None,
+    phone: str,
+    occurred_at: datetime,
+) -> ConsentEvent | None:
+    """A storefront buyer ticked the enquiry form's WhatsApp marketing opt-in: append one
+    `opted_in` whatsapp/marketing event for their number, linked to the Engage contact for their
+    email so a WhatsApp campaign can reach them. Returns None when it was already recorded.
+
+    The contact is created when there is none, **without** the email attestation `create_contact`
+    writes — the buyer agreed to WhatsApp, not to email. A contact an operator deleted is not
+    brought back; the opt-in is then recorded against the number alone.
+    """
+    try:
+        subject = consent.subject_for("whatsapp", phone)
+    except domain.RuleError:
+        # Storefront validates the number before it stamps the enquiry; refusing loudly here
+        # beats writing a subject the ledger cannot match.
+        log.error("storefront_opt_in.invalid_number", enquiry_id=str(enquiry_id))
+        return None
+    contact_id: uuid.UUID | None = None
+    try:
+        normalized = _rules.normalize_recipient("email", email or "")
+    except domain.RuleError:
+        normalized = None  # no usable email: the opt-in stands on the number alone
+    if normalized is not None:
+        contact = await selectors.contact_by_index_including_deleted(
+            session, organization_id, selectors.email_index(normalized)
+        )
+        if contact is None:
+            sealed, masked, index = _sealed_email(normalized)
+            contact = Contact(
+                organization_id=organization_id,
+                email_enc=sealed,
+                email_masked=masked,
+                email_index=index,
+                name=name[:200],
+                attributes={},
+            )
+            session.add(contact)
+            await session.flush()
+        if contact.deleted_at is None:
+            contact_id = contact.id
+    written = await consent.append(
+        session,
+        organization_id=organization_id,
+        subject=subject,
+        purposes=(consent.MARKETING,),
+        status=consent.OPTED_IN,
+        source=consent.SOURCE_STOREFRONT_ENQUIRY,
+        evidence=f"Ticked the WhatsApp opt-in on storefront enquiry {enquiry_id}",
+        contact_id=contact_id,
+        occurred_at=occurred_at,
+        idempotency_key=f"storefront-enquiry:{enquiry_id}",
+    )
+    if not written:
+        return None
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        action="engage.consent.recorded",
+        entity="consent_event",
+        entity_id=written[0].id,
+        after={
+            "channel": "whatsapp",
+            "purpose": consent.MARKETING,
+            "status": consent.OPTED_IN,
+            "source": consent.SOURCE_STOREFRONT_ENQUIRY,
+            "subject": subject.masked,
+        },
+    )
+    return written[0]
 
 
 async def unmask_consent_subject(

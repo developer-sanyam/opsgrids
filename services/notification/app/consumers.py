@@ -45,6 +45,7 @@ from app import a1_services, domain, selectors, services, w1_services, w1_setup
 from app.config import settings
 from app.contacts import ContactResolver, make_contact_resolver
 from app.models import ProcessedEvent
+from app.storefront_optin import StorefrontOptInFetcher, make_storefront_opt_in_fetcher
 from app.targets import TargetResolver, make_resolver
 from platform_core import pii
 from platform_core.db import assert_app_role, init_engine, session_scope
@@ -269,6 +270,44 @@ async def fold_inbound_contact(
     log.info("inbound.contact.resolved", matched=resolution.contact_id is not None)
 
 
+#: Storefront's event for a ticked WhatsApp opt-in on its enquiry form (ids only).
+EVT_STOREFRONT_WHATSAPP_OPTED_IN = "storefront.enquiry.whatsapp_opted_in"
+
+
+async def record_storefront_opt_in(
+    envelope: dict[str, Any], fetch: StorefrontOptInFetcher | None
+) -> None:
+    """Record a storefront buyer's WhatsApp marketing opt-in on the consent ledger, once.
+
+    The number is fetched from storefront (the event never carries it). Storefront not answering
+    raises `StorefrontUnavailable`, so the event is redelivered rather than acknowledged with
+    nothing written; a 404 is a definite answer and is marked processed.
+    """
+    event_id = uuid.UUID(str(envelope["event_id"]))
+    organization_id = uuid.UUID(str(envelope["organization_id"]))
+    enquiry_id = uuid.UUID(str((envelope.get("payload") or {})["enquiry_id"]))
+    if fetch is None:
+        log.error("storefront_opt_in.no_fetcher_configured")
+        return
+
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            return
+        details = await fetch(str(organization_id), str(enquiry_id))
+        if details is not None:
+            await services.record_storefront_opt_in(
+                session,
+                organization_id=organization_id,
+                enquiry_id=enquiry_id,
+                name=details.name,
+                email=details.email,
+                phone=details.phone,
+                occurred_at=details.opted_in_at,
+            )
+        mark_processed(session, ProcessedEvent, event_id, EVT_STOREFRONT_WHATSAPP_OPTED_IN)
+    log.info("storefront_opt_in.recorded", found=details is not None)
+
+
 async def wake_automation_run(
     envelope: dict[str, Any], resolve_target: TargetResolver | None = None
 ) -> str:
@@ -333,6 +372,7 @@ async def run_whatsapp_setup(envelope: dict[str, Any]) -> str:
 def register(
     resolve_target: TargetResolver | None = None,
     resolve_contact: ContactResolver | None = None,
+    fetch_storefront_opt_in: StorefrontOptInFetcher | None = None,
 ) -> None:
     """Bind every subscribable routing key to the one fold.
 
@@ -372,6 +412,14 @@ def register(
         await run_whatsapp_setup(envelope)
 
     consumer.on(w1_services.EVT_SETUP_REQUESTED)(on_whatsapp_setup)
+
+    # Defaulted here rather than at each entrypoint: every process that consumes needs it.
+    fetch_opt_in = fetch_storefront_opt_in or make_storefront_opt_in_fetcher(settings())
+
+    async def on_storefront_opt_in(envelope: dict[str, Any]) -> None:
+        await record_storefront_opt_in(envelope, fetch_opt_in)
+
+    consumer.on(EVT_STOREFRONT_WHATSAPP_OPTED_IN)(on_storefront_opt_in)
 
 
 async def main() -> None:

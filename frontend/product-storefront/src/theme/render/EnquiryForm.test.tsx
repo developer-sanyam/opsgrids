@@ -129,3 +129,61 @@ describe("submitting", () => {
     expect(screen.getByRole("button", { name: "Send enquiry" })).toHaveProperty("disabled", false);
   });
 });
+
+describe("WhatsApp marketing opt-in", () => {
+  const LABEL = /Send me offers and updates on WhatsApp/;
+
+  it("is unticked by default and sends false when left alone", async () => {
+    const submit = vi
+      .spyOn(client, "submitEnquiry")
+      .mockResolvedValue({ id: "enq-3", received_at: "2026-09-18T00:00:00Z" });
+    const user = userEvent.setup();
+    renderForm();
+
+    expect(screen.getByRole("checkbox", { name: LABEL })).toHaveProperty("checked", false);
+    await fillValidly(user);
+    await user.click(screen.getByRole("button", { name: "Send enquiry" }));
+
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    expect(submit.mock.calls[0]?.[0]).toMatchObject({ whatsappOptIn: false });
+  });
+
+  it("needs a number with its country code once ticked, said on the phone field", async () => {
+    const submit = vi.spyOn(client, "submitEnquiry");
+    const user = userEvent.setup();
+    renderForm();
+
+    await fillValidly(user);
+    await user.click(screen.getByRole("checkbox", { name: LABEL }));
+    await user.type(screen.getByLabelText("Phone (optional)"), "98765 43210");
+    await user.click(screen.getByRole("button", { name: "Send enquiry" }));
+
+    expect(screen.getByLabelText("Phone (optional)").getAttribute("aria-invalid")).toBe("true");
+    expect(
+      screen.getByText("For WhatsApp, add your number with its country code, like +91 98765 43210."),
+    ).not.toBeNull();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("sends the tick with the number, then clears it", async () => {
+    const submit = vi
+      .spyOn(client, "submitEnquiry")
+      .mockResolvedValue({ id: "enq-4", received_at: "2026-09-18T00:00:00Z" });
+    const user = userEvent.setup();
+    renderForm();
+
+    await fillValidly(user);
+    await user.type(screen.getByLabelText("Phone (optional)"), "+91 98765 43210");
+    await user.click(screen.getByRole("checkbox", { name: LABEL }));
+    await user.click(screen.getByRole("button", { name: "Send enquiry" }));
+
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    expect(submit.mock.calls[0]?.[0]).toMatchObject({
+      phone: "+91 98765 43210",
+      whatsappOptIn: true,
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("checkbox", { name: LABEL })).toHaveProperty("checked", false),
+    );
+  });
+});

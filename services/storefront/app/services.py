@@ -1814,6 +1814,10 @@ def _enquiry_snapshot(enquiry: Enquiry) -> dict[str, Any]:
     return {"status": enquiry.status}
 
 
+#: Staged when a buyer ticks the enquiry form's WhatsApp marketing opt-in; notification consumes it.
+EVT_ENQUIRY_WHATSAPP_OPTED_IN = "storefront.enquiry.whatsapp_opted_in"
+
+
 async def create_enquiry_for_store(
     store: PublicStore,
     payload: EnquiryCreate,
@@ -1879,6 +1883,7 @@ async def create_enquiry_for_store(
             quantity=payload.quantity,
             lines=lines,
             status="new",
+            whatsapp_opt_in_at=now if payload.whatsapp_marketing_opt_in else None,
         )
         session.add(enquiry)
         await session.flush()
@@ -1906,7 +1911,47 @@ async def create_enquiry_for_store(
                 "line_count": len(enquiry.lines),
             },
         )
+        if enquiry.whatsapp_opt_in_at is not None:
+            # Ids only: notification fetches the number through the internal read, audited.
+            publish_event(
+                session,
+                OutboxEvent,
+                organization_id=store.organization_id,
+                event_type=EVT_ENQUIRY_WHATSAPP_OPTED_IN,
+                aggregate_type="enquiry",
+                aggregate_id=enquiry.id,
+                payload={"enquiry_id": str(enquiry.id)},
+            )
     return enquiry
+
+
+async def read_whatsapp_opt_in(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    enquiry_id: uuid.UUID,
+    *,
+    request: Request | None = None,
+) -> tuple[Enquiry, str | None, str | None] | None:
+    """A ticked enquiry's buyer email and number for notification's consent ledger, or None when
+    there is no such ticked enquiry in this organization. Every read is an audited sensitive
+    read with no actor: notification is the only service allowed to make it."""
+    enquiry = await selectors.get_whatsapp_opted_in_enquiry(session, organization_id, enquiry_id)
+    if enquiry is None:
+        return None
+    cfg = settings()
+    email = open_sealed(enquiry.email_enc, settings=cfg) if enquiry.email_enc is not None else None
+    phone = open_sealed(enquiry.phone_enc, settings=cfg) if enquiry.phone_enc is not None else None
+    record_sensitive_read(
+        session,
+        AuditLog,
+        organization_id=organization_id,
+        actor_id=None,
+        entity="enquiry",
+        entity_id=enquiry.id,
+        fields=["email", "phone"],
+        request=request,
+    )
+    return enquiry, email, phone
 
 
 async def update_enquiry_status(

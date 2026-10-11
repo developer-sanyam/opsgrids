@@ -77,6 +77,9 @@ import type {
   TestSendIn,
   WhatsAppConnectionIn,
   WhatsAppConnectionOut,
+  WhatsAppOptInSource,
+  ConsentEventOut,
+  ConsentRecordedOut,
 } from "./types";
 
 /** Default source. Live unless `VITE_USE_FIXTURES=true` pins the app to fixtures.
@@ -487,6 +490,67 @@ export async function removeSuppression(suppressionId: string): Promise<void> {
   if (USE_FIXTURES) refuseWithoutService("Lifting a suppression");
   await apiRequest<void>(`/engage/suppressions/${encodeURIComponent(suppressionId)}`, {
     method: "DELETE",
+  });
+}
+
+/* ------------------------------------ WhatsApp consent ------------------------------------ */
+
+/**
+ * A contact's WhatsApp marketing history, newest first — `GET /engage/consent/events` with
+ * `contact_id` and `channel=whatsapp`: every event about any number linked to the contact, a STOP
+ * the customer sent included. The first item is their current standing. Numbers are masked.
+ */
+export async function listWhatsAppConsent(contactId: string): Promise<Page<ConsentEventOut>> {
+  if (USE_FIXTURES) return settle({ items: [], total: 0, page: 1, size: 25, pages: 0 });
+  const query = new URLSearchParams({
+    contact_id: contactId,
+    channel: "whatsapp",
+    purpose: "marketing",
+    size: "25",
+  });
+  return apiRequest<Page<ConsentEventOut>>(`/engage/consent/events?${query.toString()}`);
+}
+
+/** Record a contact's WhatsApp marketing opt-in for `phone` — `POST /engage/consent/events`. */
+export async function recordWhatsAppOptIn(input: {
+  contactId: string;
+  phone: string;
+  source: WhatsAppOptInSource;
+  evidence: string;
+}): Promise<ConsentRecordedOut> {
+  if (USE_FIXTURES) refuseWithoutService("Recording an opt-in");
+  return apiRequest<ConsentRecordedOut>("/engage/consent/events", {
+    method: "POST",
+    body: {
+      channel: "whatsapp",
+      purpose: "marketing",
+      status: "opted_in",
+      source: input.source,
+      evidence: input.evidence,
+      address: input.phone,
+      contact_id: input.contactId,
+    },
+  });
+}
+
+/** Withdraw a contact's WhatsApp marketing opt-in. No number: the service opts out the one on
+ *  record for the contact, which staff only ever see masked. */
+export async function withdrawWhatsAppOptIn(input: {
+  contactId: string;
+  source: WhatsAppOptInSource;
+  evidence: string;
+}): Promise<ConsentRecordedOut> {
+  if (USE_FIXTURES) refuseWithoutService("Withdrawing an opt-in");
+  return apiRequest<ConsentRecordedOut>("/engage/consent/events", {
+    method: "POST",
+    body: {
+      channel: "whatsapp",
+      purpose: "marketing",
+      status: "opted_out",
+      source: input.source,
+      evidence: input.evidence,
+      contact_id: input.contactId,
+    },
   });
 }
 
