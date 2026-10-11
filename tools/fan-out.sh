@@ -29,7 +29,10 @@
 #
 # usage: fan-out.sh [--stdin] <jobs> <require> <ok-empty|strict> <command...>
 #
-#   --stdin   read the service list from stdin instead of scanning services/
+#   --stdin   read the service list from stdin instead of scanning services/. A line may also
+#             be an *item* of the form `<service>:<part>/<parts>` (tools/ci_shards.py splits a
+#             heavy service's test files across shards): the command still runs in
+#             services/<service>, and learns which part it is from FAN_OUT_ITEM.
 #
 #   jobs      how many services to process at once; 1 is strictly serial
 #   require   a path that must exist inside services/<name> or the service is skipped
@@ -45,23 +48,30 @@ self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 # ------------------------------------------------------------------ one service (recursive)
 if [ "${1:-}" = "--one" ]; then
   shift
-  svc=${1:?service}
+  item=${1:?service}
   root=${2:?root}
   ok_empty=${3:?ok-empty}
   shift 3
 
-  out=$(cd "$root/services/$svc" && "$@" 2>&1)
+  # A plain service name is its own directory; `<service>:<part>/<parts>` is a slice of it.
+  svc=${item%%:*}
+
+  started=$SECONDS
+  out=$(cd "$root/services/$svc" && FAN_OUT_ITEM="$item" "$@" 2>&1)
   rc=$?
+  # Whole seconds, printed with the result: a log that says how long each service took is how
+  # the next person finds the one that should be split, without re-deriving it from timestamps.
+  took=$((SECONDS - started))
 
   if [ "$rc" -eq 5 ] && [ "$ok_empty" = "ok-empty" ]; then
-    printf '→ %s (no tests yet)\n' "$svc"
+    printf '→ %s (no tests yet)\n' "$item"
     exit 0
   fi
   if [ "$rc" -ne 0 ]; then
-    printf '\n→ %s FAILED\n%s\n' "$svc" "$out"
+    printf '\n→ %s FAILED after %ss\n%s\n' "$item" "$took" "$out"
     exit 1
   fi
-  printf '→ %s\n' "$svc"
+  printf '→ %s (%ss)\n' "$item" "$took"
   exit 0
 fi
 
@@ -97,9 +107,9 @@ if [ "$from_stdin" = "yes" ]; then
   # what lets one partition drive mypy, pytest and alembic even though not every service
   # has an `app`, a `tests/` or an `alembic.ini`.
   services=$(
-    while read -r svc; do
-      [ -n "$svc" ] || continue
-      [ -e "$root/services/$svc/$require" ] && printf '%s\n' "$svc"
+    while read -r item; do
+      [ -n "$item" ] || continue
+      [ -e "$root/services/${item%%:*}/$require" ] && printf '%s\n' "$item"
     done
   )
   if [ -z "$services" ]; then

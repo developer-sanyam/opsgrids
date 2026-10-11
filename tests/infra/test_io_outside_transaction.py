@@ -57,6 +57,7 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -320,14 +321,27 @@ def _python_files() -> list[Path]:
     return files
 
 
-def _parse_all() -> dict[Path, ast.Module]:
-    trees = {}
+@cache
+def _parsed_once() -> tuple[tuple[Path, ast.Module], ...]:
+    """Every service's and platform-core's source, parsed once per process.
+
+    Parsing the whole tree took ~4s, and every test below used to do it again — seventeen times,
+    over half of this file's run time and the single slowest thing in the repository-tooling
+    suite. The sources cannot change during a test session and the scan only reads the trees
+    (nothing here assigns to a node), so sharing them is safe; `_parse_all` hands each caller its
+    own dict, because `_findings_in` adds a probe module to the one it is given.
+    """
+    parsed = []
     for path in _python_files():
         try:
-            trees[path] = ast.parse(path.read_text(), filename=str(path))
+            parsed.append((path, ast.parse(path.read_text(), filename=str(path))))
         except SyntaxError:  # pragma: no cover - defensive; every file here must parse
             continue
-    return trees
+    return tuple(parsed)
+
+
+def _parse_all() -> dict[Path, ast.Module]:
+    return dict(_parsed_once())
 
 
 def _identifiers(source: str) -> set[str]:

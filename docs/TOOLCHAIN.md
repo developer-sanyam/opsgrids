@@ -26,6 +26,8 @@ and run from their pinned images whenever the local binary is a different versio
 | alembic | Migrations reverse cleanly; models match migrations | `make migration-roundtrip`, `make migration-check` | gate, CI migrations | A downgrade nobody ran is a rollback nobody has. |
 | tools/smoke.py | The real entrypoint boots and `/health/ready` answers | `make smoke` | gate, CI tests (shard 1) | The only check that runs uvicorn, the lifespan and the pool for real. |
 | tools/shard-verify.sh | CI's shards partition the service list exactly | `make shard-verify SHARDS=3` | gate, CI static | A miscount silently drops a service's tests. |
+| tools/ci_shards.py | The service tests are split into items (a service, or part of one) so every test file is in exactly one, and no two parts of a service share a shard | `make test-shard-verify`; `make test-shard-plan` shows the split | gate, CI static; CI tests (each shard runs its items) | A shard plan that drops a file or double-books a database is green or flaky, never red. |
+| tools/ci-postgres-tune.sh | CI's throwaway Postgres runs without fsync (refuses outside `CI=true`) | run by the CI migrations and tests jobs | CI migrations, CI tests | The fixtures truncate ~50 tables per test; the disk wait was more than half of every service's run time. |
 | e2e harness (pytest) | One organization's journey across six real services | `make e2e` | gate-full | The only test of the contracts *between* services end to end. |
 
 ## Frontend

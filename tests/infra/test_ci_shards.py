@@ -1,0 +1,589 @@
+"""Pins how CI splits the service tests: `tools/ci_shards.py`, its shell plumbing, and the
+workflow and Makefile settings that must agree with it.
+
+The failure all of this guards against is silent. A shard plan that drops a test file, or two
+parts of one service that share a database, does not break a build — the pipeline stays green
+while a suite stops running, or goes red at random because two parts truncated each other's
+tables. So these tests drive the real planner against throwaway trees it cannot confuse with the
+repository, and then check the repository against it.
+
+No database, no network: the planner reads file names and a JSON file.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+import pytest
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
+MAKEFILE = REPO_ROOT / "Makefile"
+
+
+def _load() -> ModuleType:
+    path = REPO_ROOT / "tools" / "ci_shards.py"
+    spec = importlib.util.spec_from_file_location("ci_shards", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["ci_shards"] = module  # dataclasses resolve their annotations through sys.modules
+    spec.loader.exec_module(module)
+    return module
+
+
+ci_shards = _load()
+
+
+@pytest.fixture
+def tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An empty `services/` the planner is pointed at instead of the repository's."""
+    (tmp_path / "services").mkdir()
+    monkeypatch.setattr(ci_shards, "ROOT", tmp_path)
+    monkeypatch.setattr(ci_shards, "SERVICES", tmp_path / "services")
+    monkeypatch.setattr(ci_shards, "DURATIONS", tmp_path / "durations.json")
+    return tmp_path
+
+
+def _service(tree: Path, name: str, files: dict[str, float]) -> None:
+    """A service with test files and recorded durations for them."""
+    tests = tree / "services" / name / "tests"
+    tests.mkdir(parents=True)
+    (tests / "__init__.py").write_text("")
+    (tests / "conftest.py").write_text("")
+    for f in files:
+        (tests / f).write_text("")
+    path = tree / "durations.json"
+    existing = json.loads(path.read_text())["files"] if path.exists() else {}
+    existing.update({f"{name}/tests/{f}": secs for f, secs in files.items()})
+    path.write_text(json.dumps({"files": existing}))
+
+
+def _all_files(plan: list[list[Any]]) -> list[tuple[str, str]]:
+    return sorted((it.service, f) for shard in plan for it in shard for f in it.files)
+
+
+# ---------------------------------------------------------------- the planner on a toy tree
+
+
+def test_a_service_that_outweighs_half_a_share_is_cut_into_parts(tree: Path) -> None:
+    _service(tree, "big", {f"test_{i}.py": 100.0 for i in range(8)})
+    _service(tree, "small", {"test_a.py": 10.0})
+    items = ci_shards.build_items(2)
+    big = [it for it in items if it.service == "big"]
+    assert len(big) == 2  # 800s on two shards: each share is ~405s, half a share is ~200s
+    assert {it.parts for it in big} == {2}
+    assert next(it for it in items if it.service == "small").parts == 1
+
+
+def test_every_test_file_lands_in_exactly_one_item(tree: Path) -> None:
+    _service(tree, "big", {f"test_{i}.py": float(10 + i) for i in range(11)})
+    _service(tree, "mid", {f"test_m{i}.py": 30.0 for i in range(3)})
+    _service(tree, "tiny", {"test_t.py": 1.0})
+    plan = ci_shards.plan(3)
+    on_disk = sorted(
+        (s, f) for s in ("big", "mid", "tiny") for f in ci_shards.service_test_files(s)
+    )
+    assert _all_files(plan) == on_disk
+
+
+def test_two_parts_of_one_service_never_share_a_shard(tree: Path) -> None:
+    # The service fixtures TRUNCATE their schema before every test; two parts in one database
+    # would do it to each other mid-test.
+    _service(tree, "big", {f"test_{i}.py": 50.0 for i in range(20)})
+    _service(tree, "other", {"test_o.py": 5.0})
+    for shards in (2, 3, 4, 5):
+        for shard in ci_shards.plan(shards):
+            services = [it.service for it in shard]
+            assert len(services) == len(set(services))
+
+
+def test_a_part_count_above_the_shard_count_is_impossible_by_construction(tree: Path) -> None:
+    _service(tree, "big", {f"test_{i}.py": 500.0 for i in range(30)})
+    assert max(it.parts for it in ci_shards.build_items(4)) <= 4
+
+
+def test_the_plan_is_the_same_every_time(tree: Path) -> None:
+    _service(tree, "big", {f"test_{i}.py": float(7 * i % 13 + 1) for i in range(25)})
+    _service(tree, "mid", {f"test_{i}.py": 9.0 for i in range(6)})
+    first = [[it.name for it in shard] for shard in ci_shards.plan(4)]
+    second = [[it.name for it in shard] for shard in ci_shards.plan(4)]
+    assert first == second
+
+
+def test_a_file_missing_from_the_durations_still_runs(tree: Path) -> None:
+    _service(tree, "svc", {"test_known.py": 20.0})
+    (tree / "services/svc/tests/test_brand_new.py").write_text("")
+    assert ("svc", "tests/test_brand_new.py") in _all_files(ci_shards.plan(2))
+    assert ci_shards.verify(2) == []
+
+
+def test_verify_names_a_dropped_file(tree: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _service(tree, "svc", {"test_a.py": 5.0, "test_b.py": 5.0})
+    real = ci_shards.assign
+
+    def dropping(items: list[Any], shards: int) -> list[list[Any]]:
+        plan = real(items, shards)
+        for shard in plan:
+            for i, it in enumerate(shard):
+                shard[i] = type(it)(
+                    it.service,
+                    it.part,
+                    it.parts,
+                    it.files[1:],
+                    it.seconds,
+                )
+        return plan
+
+    monkeypatch.setattr(ci_shards, "assign", dropping)
+    problems = ci_shards.verify(2)
+    assert any("svc" in p and "dropped" in p for p in problems)
+
+
+def test_a_test_file_name_with_a_space_is_refused(tree: Path) -> None:
+    _service(tree, "svc", {"test_a b.py": 5.0})
+    assert any("space" in p for p in ci_shards.verify(2))
+
+
+def test_the_first_shard_is_handed_less_because_it_also_runs_libs_and_smoke(tree: Path) -> None:
+    for name in ("a", "b", "c", "d"):
+        _service(tree, name, {"test_x.py": 100.0})
+    shard1 = sum(it.seconds for it in ci_shards.plan(4)[0])
+    assert shard1 <= max(sum(it.seconds for it in s) for s in ci_shards.plan(4)[1:])
+
+
+def test_a_part_names_its_files_and_the_rest_name_theirs(tree: Path) -> None:
+    _service(tree, "big", {f"test_{i}.py": 100.0 for i in range(8)})
+    _service(tree, "small", {"test_a.py": 10.0})
+    parts = [it for it in ci_shards.build_items(2) if it.service == "big"]
+    listed = sorted(f for it in parts for f in ci_shards.item_files(it.name))
+    assert listed == ci_shards.service_test_files("big")
+    assert ci_shards.item_files("small") == ["tests/test_a.py"]
+
+
+def test_an_item_name_that_is_not_one_is_refused(tree: Path) -> None:
+    _service(tree, "svc", {"test_a.py": 1.0})
+    for bad in ("svc:0/2", "svc:3/2", "svc:1", "../etc", "nope"):
+        with pytest.raises(SystemExit):
+            ci_shards.item_files(bad)
+
+
+# ---------------------------------------------------------------- the affected filter
+
+
+def test_needed_shards_always_include_the_first(
+    tree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("a", "b", "c", "d"):
+        _service(tree, name, {"test_x.py": 100.0})
+    monkeypatch.setenv("AFFECTED_ALL", "false")
+    monkeypatch.setenv("AFFECTED_SERVICES", "d")
+    needed = ci_shards.shards_needed(4)
+    assert 1 in needed
+    # ...and the shard that actually holds `d` is there too, and a shard with nothing is not.
+    holder = next(
+        i + 1 for i, s in enumerate(ci_shards.plan(4)) if any(x.service == "d" for x in s)
+    )
+    assert holder in needed
+    assert len(needed) < 4
+
+
+def test_with_no_filter_every_shard_is_needed(tree: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("a", "b", "c"):
+        _service(tree, name, {"test_x.py": 100.0})
+    monkeypatch.delenv("AFFECTED_ALL", raising=False)
+    monkeypatch.delenv("AFFECTED_SERVICES", raising=False)
+    assert ci_shards.shards_needed(3) == [1, 2, 3]
+
+
+def test_an_empty_affected_list_falls_back_to_every_shard(
+    tree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The same default-safe rule as tools/filter-affected.sh.
+    for name in ("a", "b"):
+        _service(tree, name, {"test_x.py": 100.0})
+    monkeypatch.setenv("AFFECTED_ALL", "false")
+    monkeypatch.setenv("AFFECTED_SERVICES", "")
+    assert ci_shards.shards_needed(2) == [1, 2]
+
+
+# ---------------------------------------------------------------- refreshing from junit
+
+
+def test_junit_seconds_land_on_the_test_file_that_ran(tree: Path) -> None:
+    _service(tree, "svc", {"test_a.py": 1.0, "test_b.py": 1.0})
+    junit = tree / "junit"
+    junit.mkdir()
+    (junit / "svc.xml").write_text(
+        "<testsuites><testsuite>"
+        '<testcase classname="services.svc.tests.test_a" name="t1" time="1.5"/>'
+        '<testcase classname="services.svc.tests.test_a.TestX" name="t2" time="2.0"/>'
+        '<testcase classname="services.svc.tests.test_b" name="t3" time="4.0"/>'
+        "</testsuite></testsuites>"
+    )
+    seconds = ci_shards.read_junit([junit])
+    assert seconds == {"svc/tests/test_a.py": 3.5, "svc/tests/test_b.py": 4.0}
+
+
+def test_a_testcase_that_is_not_under_services_is_ignored(tree: Path) -> None:
+    _service(tree, "svc", {"test_a.py": 1.0})
+    junit = tree / "junit"
+    junit.mkdir()
+    (junit / "x.xml").write_text(
+        '<testsuite><testcase classname="elsewhere.test_z" name="t" time="9"/></testsuite>'
+    )
+    assert ci_shards.read_junit([junit]) == {}
+
+
+def _one_testcase_junit(tree: Path) -> Path:
+    _service(tree, "svc", {"test_a.py": 1.0})
+    junit = tree / "junit"
+    junit.mkdir()
+    case = '<testcase classname="services.svc.tests.test_a" name="t" time="2.0"/>'
+    (junit / "svc.xml").write_text(f"<testsuite>{case}</testsuite>")
+    return junit
+
+
+def test_refresh_records_the_ci_run_the_numbers_came_from(
+    tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `source` used to say "junit from /tmp/cif/junit-ci1": a path on one laptop, which tells a
+    # reader nothing three months on, after the run's 14-day artifacts have expired.
+    junit = _one_testcase_junit(tree)
+    run = "https://github.com/example/repo/actions/runs/123456789"
+    assert ci_shards.main(["ci_shards.py", "refresh", "--run", run, str(junit)]) == 0
+    source = json.loads((tree / "durations.json").read_text())["source"]
+    assert run in source
+    assert str(tree) not in source
+    assert re.search(r"refreshed \d{4}-\d{2}-\d{2}$", source)
+    assert "warning" not in capsys.readouterr().err
+
+
+def test_refresh_without_a_run_still_works_but_says_the_source_is_not_traceable(
+    tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    junit = _one_testcase_junit(tree)
+    assert ci_shards.main(["ci_shards.py", "refresh", str(junit)]) == 0
+    assert "no --run given" in capsys.readouterr().err
+    assert str(junit) in json.loads((tree / "durations.json").read_text())["source"]
+
+
+def test_refresh_takes_the_run_in_either_spelling() -> None:
+    assert ci_shards.parse_refresh_args(["--run", "u", "a", "b"]) == ("u", ["a", "b"])
+    assert ci_shards.parse_refresh_args(["a", "--run=u"]) == ("u", ["a"])
+    assert ci_shards.parse_refresh_args(["a"]) == ("", ["a"])
+
+
+# ---------------------------------------------------------------- the repository itself
+
+
+def test_the_repository_plan_is_sound_at_the_configured_shard_count() -> None:
+    shards = _workflow_test_shards()
+    assert ci_shards.verify(shards) == []
+
+
+def test_every_shard_of_the_repository_plan_has_work() -> None:
+    shards = _workflow_test_shards()
+    assert all(ci_shards.plan(shards))
+
+
+def test_a_durations_entry_for_a_file_that_is_gone_is_a_note_not_a_failure(
+    tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A rename or delete under services/*/tests must not turn the tooling job red: the planner
+    # only ever schedules files that exist, so the entry is dead weight that `refresh` prunes.
+    # Failing here forced a second edit, to tools/test-durations.json, onto a service-local pull
+    # request — and that edit is root tooling, so it started every shard for it.
+    _service(tree, "svc", {"test_a.py": 5.0})
+    path = tree / "durations.json"
+    document = json.loads(path.read_text())
+    document["files"]["svc/tests/test_renamed_away.py"] = 99.0
+    path.write_text(json.dumps(document))
+
+    assert ci_shards.stale_durations() == ["svc/tests/test_renamed_away.py"]
+    assert ci_shards.verify(1) == []
+    assert _all_files(ci_shards.plan(1)) == [("svc", "tests/test_a.py")]
+    assert ci_shards.main(["ci_shards.py", "verify", "1"]) == 0
+    note = "test_renamed_away.py is in test-durations.json but not on disk"
+    assert note in capsys.readouterr().out
+
+
+def test_a_shard_cannot_hold_a_dominant_share() -> None:
+    # The reason items exist: no one runner should be handed most of the suite. If the durations
+    # are re-recorded and a single item grows past a shard's fair share, this says so.
+    shards = _workflow_test_shards()
+    plan = ci_shards.plan(shards)
+    loads = [sum(it.seconds for it in shard) for shard in plan]
+    assert max(loads) <= 1.35 * (sum(loads) / shards), loads
+
+
+# ---------------------------------------------------------------- workflow and Makefile agree
+
+
+def _workflow() -> dict[str, Any]:
+    return yaml.safe_load(WORKFLOW.read_text())
+
+
+def _workflow_test_shards() -> int:
+    return int(_workflow()["env"]["TEST_SHARDS"])
+
+
+def test_the_makefile_default_matches_the_workflows_shard_count() -> None:
+    match = re.search(r"^TEST_SHARDS \?= (\d+)$", MAKEFILE.read_text(), re.MULTILINE)
+    assert match, "Makefile must set TEST_SHARDS ?= <n>"
+    assert int(match.group(1)) == _workflow_test_shards()
+
+
+def test_the_tests_job_takes_its_matrix_and_shard_count_from_the_changes_job() -> None:
+    jobs = _workflow()["jobs"]
+    tests = jobs["tests"]
+    assert "needs.changes.outputs.test_shards" in str(tests["strategy"]["matrix"]["shard"])
+    assert "needs.changes.outputs.test_shard_count" in str(tests["env"]["SHARDS"])
+    assert jobs["changes"]["outputs"]["test_shard_count"]
+
+
+def test_a_superseded_run_is_cancelled_on_main_as_well_as_on_a_pull_request() -> None:
+    # A full run bills ~95 minutes; letting every superseded main run finish cost ~40 more per
+    # commit in a burst of merges and bought nothing, because deploy.yml plans from the commit
+    # the box last served rather than from the previous commit (docs/adr/0040-faster-ci.md).
+    concurrency = _workflow()["concurrency"]
+    assert concurrency["cancel-in-progress"] is True, "unconditional: not just for pull requests"
+    group = str(concurrency["group"])
+    assert "github.ref" in group
+    # A per-commit group would give every push its own group, so nothing would ever be cancelled.
+    assert "github.sha" not in group
+
+
+def _shard_one_steps_a_red_step_would_skip(workflow: dict[str, Any]) -> list[str]:
+    """Steps of the `tests` job that run on shard 1 only but are not `!cancelled()`-gated."""
+    steps = workflow["jobs"]["tests"]["steps"]
+    return [
+        str(step.get("name", step.get("run")))
+        for step in steps
+        if "matrix.shard == 1" in str(step.get("if", "")) and "!cancelled()" not in str(step["if"])
+    ]
+
+
+def test_a_shard_one_step_is_not_skipped_by_a_red_service_test_step() -> None:
+    # The library tests and the boot smoke run even when the service tests failed, so that a red
+    # row does not hide whether they are also red (`if: ${{ !cancelled() && matrix.shard == 1 }}`).
+    # A step on shard 1 that *provisions* for them — PR #102's "Ops-monitor integration database",
+    # which creates `opsgrids_mon` — must be gated the same way: with a bare
+    # `if: matrix.shard == 1` it is skipped as soon as "Service tests" fails, and the library
+    # tests then run without their database and report a failure that is not theirs. Gate such a
+    # step `${{ !cancelled() && matrix.shard == 1 }}`.
+    assert _shard_one_steps_a_red_step_would_skip(_workflow()) == []
+
+
+def test_the_shard_one_gate_check_names_a_step_that_would_be_skipped() -> None:
+    workflow = {
+        "jobs": {
+            "tests": {
+                "steps": [
+                    {"name": "Service tests", "run": "make test-shard"},
+                    {"name": "Provision", "if": "matrix.shard == 1", "run": "true"},
+                    {"name": "Gated", "if": "${{ !cancelled() && matrix.shard == 1 }}"},
+                    {"name": "Every shard", "if": "${{ !cancelled() }}"},
+                ]
+            }
+        }
+    }
+    assert _shard_one_steps_a_red_step_would_skip(workflow) == ["Provision"]
+
+
+def test_only_main_saves_the_mypy_cache() -> None:
+    # Each entry is ~110 MB under a per-commit key. Saved from every pull-request push they fill
+    # the repository's cache quota within about a week and evict the `main` entry that every pull
+    # request restores from, which sends the type check back to its 415 s cold run.
+    steps = _workflow()["jobs"]["types"]["steps"]
+    save = next(s for s in steps if s.get("uses", "").startswith("actions/cache/save"))
+    assert "github.ref == 'refs/heads/main'" in str(save["if"])
+    restore = next(s for s in steps if s.get("uses", "").startswith("actions/cache/restore"))
+    assert "if" not in restore, "every run restores; only main saves"
+
+
+def test_every_frontend_package_is_in_exactly_one_test_and_build_leg() -> None:
+    legs = _workflow()["jobs"]["frontend-tests"]["strategy"]["matrix"]["include"]
+    owned = [p.removeprefix("./") for leg in legs for p in str(leg["packages"]).split()]
+    on_disk = sorted(
+        p.parent.name for p in (REPO_ROOT / "frontend").glob("*/package.json") if p.parent.is_dir()
+    )
+    assert sorted(owned) == on_disk, "a package is in no leg, or in two"
+
+
+def test_the_frontend_filter_is_empty_by_default() -> None:
+    # An unset FRONTEND_FILTER must mean every package: that is what the gate and every local
+    # run depend on.
+    assert re.search(r"^FRONTEND_FILTER \?=\s*$", MAKEFILE.read_text(), re.MULTILINE)
+
+
+# ---------------------------------------------------------------- shell plumbing
+
+
+def test_fan_out_runs_an_item_in_its_services_directory_and_names_it(tmp_path: Path) -> None:
+    (tmp_path / "services/svc/tests").mkdir(parents=True)
+    result = subprocess.run(
+        [
+            str(REPO_ROOT / "tools/fan-out.sh"),
+            "--stdin",
+            "1",
+            "tests",
+            "ok-empty",
+            "sh",
+            "-c",
+            'echo "item=$FAN_OUT_ITEM dir=$(basename "$PWD")" >&2; exit 1',
+        ],
+        input="svc:2/3\nsvc\n",
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1  # the command failed on purpose, so its output is printed
+    assert "→ svc:2/3 FAILED" in result.stdout
+    assert "item=svc:2/3 dir=svc" in result.stdout
+    assert "item=svc dir=svc" in result.stdout
+
+
+def test_the_affected_filter_keeps_an_item_by_its_service_name() -> None:
+    env = {**os.environ, "AFFECTED_ALL": "false", "AFFECTED_SERVICES": "operations auth"}
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "tools/filter-affected.sh")],
+        input="operations:2/5\nbilling\nauth\noperations-x:1/2\n",
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.split() == ["operations:2/5", "auth"]
+
+
+def test_the_postgres_tuning_script_refuses_to_run_outside_ci() -> None:
+    # fsync off on a database anyone cares about loses data. The script must say no before it
+    # opens a connection (there is none to open here).
+    env = {k: v for k, v in os.environ.items() if k != "CI"}
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "tools/ci-postgres-tune.sh")],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "refusing to run outside CI" in result.stderr
+
+
+# ---------------------------------------------------------------- the plan the jobs share
+
+
+def test_needed_refuses_a_tree_it_cannot_plan(
+    tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A checkout that missed the services' tests would otherwise yield an empty-looking plan and
+    # a matrix of one shard, and every other shard would simply never run.
+    assert ci_shards.main(["ci_shards.py", "needed", "3"]) == 1
+    assert "no work" in capsys.readouterr().err
+
+
+def test_the_plan_digest_follows_the_tree(tree: Path) -> None:
+    _service(tree, "svc", {"test_a.py": 5.0})
+    before = ci_shards.digest(2)
+    assert ci_shards.digest(2) == before  # stable
+    (tree / "services/svc/tests/test_b.py").write_text("")
+    assert ci_shards.digest(2) != before  # a file the other job did not see
+
+
+# A database that cannot answer (port 1), for the tests that run the real test-shard.sh: if the
+# check under test ever regresses, the script goes on to run service tests, and they must meet a
+# refused connection rather than truncate whatever Postgres is around.
+UNREACHABLE_DATABASE = (
+    "postgresql+asyncpg://nobody:nobody@127.0.0.1:1/none"  # pragma: allowlist secret
+)
+
+
+def test_a_shard_whose_plan_differs_from_the_changes_jobs_refuses_to_run() -> None:
+    env = {
+        **os.environ,
+        "TEST_PLAN_DIGEST": "0000000000000000",
+        # Were the comparison to regress, nothing may reach a real database.
+        "DATABASE_URL": UNREACHABLE_DATABASE,
+    }
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "tools/test-shard.sh"), "1", str(_workflow_test_shards()), "1"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "differs from the changes job" in result.stderr
+
+
+def test_a_ci_shard_with_no_plan_digest_refuses_to_run() -> None:
+    # An empty digest must not mean "nothing to compare against" in CI: it means the changes job's
+    # planner produced nothing, which is when the agreement check matters most.
+    env = {k: v for k, v in os.environ.items() if k != "TEST_PLAN_DIGEST"}
+    env["CI"] = "true"
+    # Should the check ever regress, the script goes on to run real service tests: point them at
+    # a database that cannot answer, so the failure is a refused connection and nothing is
+    # truncated on whatever Postgres is around.
+    env["DATABASE_URL"] = UNREACHABLE_DATABASE
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "tools/test-shard.sh"), "1", str(_workflow_test_shards()), "1"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "no TEST_PLAN_DIGEST" in result.stderr
+
+
+def _run_the_changes_jobs_shards_step(
+    tmp_path: Path, fake_python: str
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """The `shards` step's script run with a stand-in `python3`: (result, GITHUB_OUTPUT text)."""
+    steps = _workflow()["jobs"]["changes"]["steps"]
+    script = next(s["run"] for s in steps if s.get("id") == "shards")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    python = bin_dir / "python3"
+    python.write_text(f"#!/usr/bin/env bash\n{fake_python}\n")
+    python.chmod(0o755)
+    output = tmp_path / "github_output"
+    output.write_text("")
+    env = {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_OUTPUT": str(output),
+        "TEST_SHARDS": "6",
+    }
+    result = subprocess.run(
+        ["bash", "-e", "-c", script], env=env, capture_output=True, text=True, cwd=tmp_path
+    )
+    return result, output.read_text()
+
+
+def test_a_planner_that_crashes_fails_the_changes_job(tmp_path: Path) -> None:
+    # `echo "x=$(planner)"` swallows the planner's exit status: the step stayed green with
+    # `test_shards=` and `test_plan=` empty, the shards' agreement check was switched off, and
+    # the failure surfaced only as an opaque fromJSON('') error in the `tests` matrix.
+    result, written = _run_the_changes_jobs_shards_step(tmp_path, "echo boom >&2; exit 1")
+    assert result.returncode != 0
+    assert "test_plan=\n" not in written
+
+
+def test_a_planner_that_prints_nothing_fails_the_changes_job(tmp_path: Path) -> None:
+    result, _ = _run_the_changes_jobs_shards_step(tmp_path, "exit 0")
+    assert result.returncode != 0
+
+
+def test_the_changes_job_publishes_what_the_planner_printed(tmp_path: Path) -> None:
+    # Called as `python3 tools/ci_shards.py <needed|digest> <shards>`, so the subcommand is $2.
+    fake = 'case "$2" in needed) echo "[1,2]" ;; digest) echo abc123 ;; esac'
+    result, written = _run_the_changes_jobs_shards_step(tmp_path, fake)
+    assert result.returncode == 0, result.stderr
+    assert written.splitlines() == ["test_shards=[1,2]", "test_plan=abc123"]
