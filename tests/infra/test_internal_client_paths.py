@@ -68,6 +68,7 @@ CONTACT = "22222222-2222-4222-8222-222222222222"
 OWNER = "55555555-5555-4555-8555-555555555555"
 DEAL = "66666666-6666-4666-8666-666666666666"
 MEMBERSHIP = "77777777-7777-4777-8777-777777777777"
+ENQUIRY = "88888888-8888-4888-8888-888888888888"
 
 SEEN = []
 
@@ -313,6 +314,23 @@ asyncio.run(main())
 emit(ORG, cfg, "account")
 """
 
+# A10: notification -> storefront enquiry WhatsApp opt-in read.
+_A10 = """
+from app import storefront_optin
+from app.config import Settings
+
+cfg = Settings()
+
+
+async def main():
+    async with make_client() as client:
+        await attempt(storefront_optin.fetch_storefront_opt_in(cfg, ORG, ENQUIRY, client=client))
+
+
+asyncio.run(main())
+emit(ORG, cfg, "storefront")
+"""
+
 # --------------------------------------------------------------------------------- the registry
 
 
@@ -399,6 +417,15 @@ CALLS: tuple[Call, ...] = (
         "/internal/v1/organizations/{org}/memberships/{membership}",
         "notification/app/memberships.py",
         _A9,
+    ),
+    Call(
+        "A10",
+        "notification",
+        "storefront",
+        "GET",
+        "/internal/v1/enquiries/{enquiry}/whatsapp-opt-in",
+        "notification/app/storefront_optin.py",
+        _A10,
     ),
 )
 
