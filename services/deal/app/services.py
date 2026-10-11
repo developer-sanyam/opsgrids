@@ -38,6 +38,7 @@ from app.pipeline import (
     DEFAULT_PIPELINE,
     DEFAULT_PIPELINE_KEY,
     DEFAULT_PIPELINE_NAME,
+    Outcome,
     PipelineSpec,
     StageSpec,
 )
@@ -162,6 +163,66 @@ def _actor(ctx: ScopeContext) -> dict[str, Any]:
         "type": "user",
         "id": str(ctx.principal.sub),
         "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
+    }
+
+
+# ------------------------------------------------------------------ event payloads
+#
+# One builder per event, so each payload is built in one place and a producer-side test can
+# hold it to its committed schema (`libs/contracts/events/crm.pipeline.deal.*`). Payloads carry
+# ids, keys and enumerations — no free text beyond the deal's `name` and the one stage label
+# (`to_label`) a stage-changed event names. `stage`, `from` and `to` are stage **keys** and never
+# change meaning; a consumer tests the `*_outcome` field.
+
+
+def _deal_state(deal: Deal) -> dict[str, Any]:
+    """The fields all three deal events carry, from the row as it stands after the write."""
+    return {
+        "organization_id": str(deal.organization_id),
+        "deal_id": str(deal.id),
+        "name": deal.name,
+        "value_minor": deal.value_minor,
+        "currency": deal.currency,
+        "owner_id": str(deal.owner_id),
+        "probability": deal.probability,
+        "closed_at": deal.closed_at.isoformat() if deal.closed_at is not None else None,
+    }
+
+
+def _created_payload(deal: Deal, stage_outcome: Outcome) -> dict[str, Any]:
+    return {
+        **_deal_state(deal),
+        "stage": deal.stage,
+        "stage_outcome": stage_outcome,
+        "company_id": str(deal.company_id),
+        "close_date": deal.close_date.isoformat(),
+        "created_at": deal.created_at.isoformat(),
+    }
+
+
+def _updated_payload(deal: Deal, stage_outcome: Outcome, changed: list[str]) -> dict[str, Any]:
+    """The full state after the patch, so a consumer converges without reading deal back. A
+    stage move is `stage_changed`, never this event: the patch cannot touch `stage`."""
+    return {
+        **_deal_state(deal),
+        "changed": changed,
+        "stage": deal.stage,
+        "stage_outcome": stage_outcome,
+        "company_id": str(deal.company_id),
+        "close_date": deal.close_date.isoformat(),
+    }
+
+
+def _stage_changed_payload(
+    deal: Deal, *, before: str, from_outcome: Outcome, target: StageSpec
+) -> dict[str, Any]:
+    return {
+        **_deal_state(deal),
+        "from": before,
+        "to": target.key,
+        "from_outcome": from_outcome,
+        "to_outcome": target.outcome,
+        "to_label": target.label,
     }
 
 
@@ -322,15 +383,7 @@ async def create_deal(
         event_type=EVT_DEAL_CREATED,
         aggregate_type="deal",
         aggregate_id=deal.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "deal_id": str(deal.id),
-            "name": name,
-            "stage": target.key,
-            "value_minor": value_minor,
-            "currency": deal.currency,
-            "owner_id": str(owner_id),
-        },
+        payload=_created_payload(deal, target.outcome),
         actor=_actor(ctx),
     )
     return deal
@@ -369,6 +422,7 @@ async def update_deal(
     if "currency" in changes:
         changes["currency"] = changes["currency"].upper()
 
+    spec = await selectors.load_pipeline_spec(session, ctx.organization_id)
     before = {field: getattr(deal, field) for field in changes}
     for field, value in changes.items():
         setattr(deal, field, value)
@@ -394,11 +448,7 @@ async def update_deal(
         event_type=EVT_DEAL_UPDATED,
         aggregate_type="deal",
         aggregate_id=deal.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "deal_id": str(deal.id),
-            "changed": sorted(changes),
-        },
+        payload=_updated_payload(deal, spec.outcome_of(deal.stage), sorted(changes)),
         actor=_actor(ctx),
     )
     return deal
@@ -483,6 +533,7 @@ async def move_stage(
         resolved_probability = pin
 
     before = deal.stage
+    from_outcome = spec.outcome_of(before)
     deal.stage = new_stage
     deal.probability = resolved_probability
     if target.outcome != "open" and deal.closed_at is None:
@@ -509,12 +560,9 @@ async def move_stage(
         event_type=EVT_DEAL_STAGE_CHANGED,
         aggregate_type="deal",
         aggregate_id=deal.id,
-        payload={
-            "organization_id": str(ctx.organization_id),
-            "deal_id": str(deal.id),
-            "from": before,
-            "to": new_stage,
-        },
+        payload=_stage_changed_payload(
+            deal, before=before, from_outcome=from_outcome, target=target
+        ),
         actor=_actor(ctx),
     )
     return deal

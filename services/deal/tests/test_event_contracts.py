@@ -6,14 +6,11 @@ declares) is `libs/contracts/tests/test_event_schemas.py`. The deeper half lives
 checking a real *payload* needs a transaction to stage one through: the payload is read back from
 the outbox row the service wrote, the same row the relay would publish, never a hand-written dict.
 
-- `test_deal_deleted_*` and `test_activity_logged_*`: the schema and the producer agree.
-- `TestAheadOfProducer`: the deal schemas are committed ahead of their producer (each schema's
-  `$comment` says which fields the producer does not emit yet). The test pins exactly what is
-  missing, so the gap cannot drift silently and the commit that closes it cannot forget its test.
-  The closing commit (the stage work, R2.3) changes the producer, removes the schema's `$comment`,
-  deletes the row below, deletes the event's name from `PINNED_AHEAD_OF_PRODUCER` in
-  `libs/contracts/tests/test_event_schemas.py`, and validates the event with
-  `validate_event_schema` like the two below.
+- `test_deal_*_matches_its_schema` and `TestActivityLogged`: the schema and the producer agree.
+  The three stage events were committed ahead of their producer until R2.3 closed that gap, so
+  `AHEAD_OF_PRODUCER` below is empty; a new gap gets a row here and its name in
+  `PINNED_AHEAD_OF_PRODUCER` in `libs/contracts/tests/test_event_schemas.py`. The deeper check of
+  the three stage events, in every pipeline state, is `test_deal_events_contract.py`.
 
 `date-time` is not machine-checked in this environment (`rfc3339-validator` is not installed, so
 `validate_event_schema` accepts any string for it): the activity test asserts the offset by hand.
@@ -28,7 +25,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from jsonschema import Draft202012Validator, FormatChecker
 from sqlalchemy import select
 
 from app import services
@@ -44,32 +40,7 @@ pytestmark = pytest.mark.integration
 CONTRACTS_ROOT = Path(__file__).resolve().parents[3] / "libs" / "contracts"
 
 #: Event type -> (required properties the producer does not emit yet, the release that closes it).
-AHEAD_OF_PRODUCER: dict[str, tuple[frozenset[str], str]] = {
-    services.EVT_DEAL_CREATED: (
-        frozenset({"company_id", "close_date", "probability", "closed_at", "created_at"}),
-        "R2.3",
-    ),
-    services.EVT_DEAL_UPDATED: (
-        frozenset(
-            {
-                "name",
-                "stage",
-                "value_minor",
-                "currency",
-                "owner_id",
-                "company_id",
-                "close_date",
-                "probability",
-                "closed_at",
-            }
-        ),
-        "R2.3",
-    ),
-    services.EVT_DEAL_STAGE_CHANGED: (
-        frozenset({"name", "value_minor", "currency", "owner_id", "probability", "closed_at"}),
-        "R2.3",
-    ),
-}
+AHEAD_OF_PRODUCER: dict[str, tuple[frozenset[str], str]] = {}
 
 
 def _schema(event_type: str) -> dict[str, Any]:
@@ -101,28 +72,6 @@ def _conforms(event_type: str, payload: dict[str, Any]) -> None:
     validate_event_schema(event_type, 1, payload, contracts_root=CONTRACTS_ROOT)
 
 
-def _assert_pinned(event_type: str, payload: dict[str, Any]) -> None:
-    """The schema requires exactly the pinned fields the payload lacks, and nothing a field that
-    *is* emitted breaks (a type or enum error is a different defect from a missing field)."""
-    pinned, release = AHEAD_OF_PRODUCER[event_type]
-    schema = _schema(event_type)
-    missing = frozenset(schema["required"]) - payload.keys()
-    others = [
-        error.message
-        for error in Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(
-            payload
-        )
-        if error.validator != "required"
-    ]
-    assert missing == pinned, (
-        f"{event_type}: the schema requires {sorted(missing)} that the producer does not emit; "
-        f"the pin says {sorted(pinned)} (closes in {release}). If the producer now emits them, "
-        "this is the closing commit: remove the schema's $comment, delete the pin row and "
-        "validate the event with validate_event_schema."
-    )
-    assert others == [], f"{event_type}: a field the producer does emit is wrong: {others}"
-
-
 def _write(org_id: uuid.UUID) -> Any:
     return ctx_for(org_id, "crm.pipeline.deal.write", Scope.ORG)
 
@@ -133,6 +82,33 @@ async def test_deal_deleted_matches_its_schema(session, org_id, data) -> None:
     _conforms(
         services.EVT_DEAL_DELETED,
         await _staged(session, services.EVT_DEAL_DELETED, data["deal_b_id"]),
+    )
+
+
+async def test_deal_created_matches_its_schema(session, org_id, data) -> None:
+    _conforms(
+        services.EVT_DEAL_CREATED,
+        await _staged(session, services.EVT_DEAL_CREATED, data["deal_a_id"]),
+    )
+
+
+async def test_deal_updated_matches_its_schema(session, org_id, data) -> None:
+    async with session.begin():
+        await services.update_deal(
+            session, _write(org_id), data["deal_a"], DealPatch(name="Fleet telematics v2")
+        )
+    _conforms(
+        services.EVT_DEAL_UPDATED,
+        await _staged(session, services.EVT_DEAL_UPDATED, data["deal_a_id"]),
+    )
+
+
+async def test_deal_stage_changed_matches_its_schema(session, org_id, data) -> None:
+    async with session.begin():
+        await services.move_stage(session, _write(org_id), data["deal_a"], new_stage="proposal")
+    _conforms(
+        services.EVT_DEAL_STAGE_CHANGED,
+        await _staged(session, services.EVT_DEAL_STAGE_CHANGED, data["deal_a_id"]),
     )
 
 
@@ -215,32 +191,6 @@ class TestActivityLogged:
             assert published.utcoffset() == timedelta(0), payload["occurred_at"]
             if named:
                 assert published == backdated
-
-
-class TestAheadOfProducer:
-    async def test_deal_created_lacks_exactly_the_pinned_fields(
-        self, session, org_id, data
-    ) -> None:
-        payload = await _staged(session, services.EVT_DEAL_CREATED, data["deal_a_id"])
-        _assert_pinned(services.EVT_DEAL_CREATED, payload)
-
-    async def test_deal_updated_lacks_exactly_the_pinned_fields(
-        self, session, org_id, data
-    ) -> None:
-        async with session.begin():
-            await services.update_deal(
-                session, _write(org_id), data["deal_a"], DealPatch(name="Fleet telematics v2")
-            )
-        payload = await _staged(session, services.EVT_DEAL_UPDATED, data["deal_a_id"])
-        _assert_pinned(services.EVT_DEAL_UPDATED, payload)
-
-    async def test_deal_stage_changed_lacks_exactly_the_pinned_fields(
-        self, session, org_id, data
-    ) -> None:
-        async with session.begin():
-            await services.move_stage(session, _write(org_id), data["deal_a"], new_stage="proposal")
-        payload = await _staged(session, services.EVT_DEAL_STAGE_CHANGED, data["deal_a_id"])
-        _assert_pinned(services.EVT_DEAL_STAGE_CHANGED, payload)
 
 
 def test_the_ahead_comment_and_the_pin_table_agree() -> None:

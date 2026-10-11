@@ -2,8 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "opsgrids://contracts/crm.pipeline.deal.stage_changed/v1",
   "title": "crm.pipeline.deal.stage_changed",
-  "description": "A deal moved stage under deal's transition rule. `from` and `to` are the stages; the rest is the deal's state after the move. `closed_at` is set when `to` is closed_won or closed_lost (a closed deal moves nowhere afterwards) and null otherwise.",
-  "$comment": "Ahead of the producer (ADR-0020 slice I3): services/deal/app/services.py:move_stage does not emit name, value_minor, currency, owner_id, probability, closed_at yet. Until that slice merges, a real payload fails this schema on exactly those fields. That is the forcing function, not a bug. Every other field is emitted today.",
+  "description": "A deal moved stage under deal's transition rule. `from` and `to` are stage keys and never change meaning; `from_outcome` and `to_outcome` (open, won or lost) are what a consumer tests, never the keys. `to_label` is the target stage's label at the time of the move, for display only. The rest is the deal's state after the move. `closed_at` is set when `to_outcome` is won or lost (a closed deal moves nowhere afterwards) and null otherwise.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,6 +10,8 @@
     "deal_id",
     "from",
     "to",
+    "from_outcome",
+    "to_outcome",
     "name",
     "value_minor",
     "currency",
@@ -21,10 +22,11 @@
   "properties": {
     "organization_id": { "type": "string", "format": "uuid" },
     "deal_id": { "type": "string", "format": "uuid" },
-    "from": {
-      "enum": ["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_lost"]
-    },
-    "to": { "enum": ["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_lost"] },
+    "from": { "type": "string", "pattern": "^[a-z0-9_]{1,20}$" },
+    "to": { "type": "string", "pattern": "^[a-z0-9_]{1,20}$" },
+    "from_outcome": { "enum": ["open", "won", "lost"] },
+    "to_outcome": { "enum": ["open", "won", "lost"] },
+    "to_label": { "type": "string", "minLength": 1, "maxLength": 80 },
     "name": { "type": "string", "minLength": 1 },
     "value_minor": { "type": "integer", "minimum": 0 },
     "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
