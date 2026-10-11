@@ -23,6 +23,7 @@ Create Date: 2026-10-05 10:00:00.000000
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -36,30 +37,19 @@ depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "operations"
 APP_ROLE = "opsgrids_operations"
+LOCK_TIMEOUT = "5s"
+ALLOW_DESTRUCTIVE_ENV = "OPSGRIDS_ALLOW_DESTRUCTIVE_DOWNGRADE"
 
 
 def upgrade() -> None:
+    # Fail the deploy, not the service: ADD COLUMN needs ACCESS EXCLUSIVE, and queued behind a
+    # long transaction it would stall every read and write on the table.
+    op.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
     for table in ("inventory_items", "lots", "rolls"):
         op.add_column(
             table, sa.Column("barcode", sa.String(length=64), nullable=True), schema=SCHEMA
         )
-    op.create_index(
-        "uq_inventory_items_org_barcode",
-        "inventory_items",
-        ["organization_id", "barcode"],
-        unique=True,
-        schema=SCHEMA,
-        postgresql_where=sa.text("barcode IS NOT NULL AND deleted_at IS NULL"),
-    )
-    for table in ("lots", "rolls"):
-        op.create_index(
-            f"uq_{table}_org_barcode",
-            table,
-            ["organization_id", "barcode"],
-            unique=True,
-            schema=SCHEMA,
-            postgresql_where=sa.text("barcode IS NOT NULL"),
-        )
+    # The three unique barcode indexes are built CONCURRENTLY by `e1b6d4a8c273`.
 
     op.create_table(
         "inventory_import_runs",
@@ -116,13 +106,42 @@ def upgrade() -> None:
     op.execute(f'REVOKE UPDATE, DELETE ON {SCHEMA}.inventory_import_runs FROM "{APP_ROLE}"')
 
 
+def _refuse_destructive_downgrade() -> None:
+    """Dropping the columns forgets every barcode people typed, and dropping the table forgets the
+    import history. Refuse once either holds data, unless the operator says in the environment
+    that destroying it is the point."""
+    if os.environ.get(ALLOW_DESTRUCTIVE_ENV) == "1":
+        return
+    real = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                f"""
+            SELECT (SELECT count(*) FROM {SCHEMA}.inventory_items WHERE barcode IS NOT NULL)
+                 + (SELECT count(*) FROM {SCHEMA}.lots WHERE barcode IS NOT NULL)
+                 + (SELECT count(*) FROM {SCHEMA}.rolls WHERE barcode IS NOT NULL)
+                 + (SELECT count(*) FROM {SCHEMA}.inventory_import_runs)
+            """
+            )
+        )
+        .scalar_one()
+    )
+    if real:
+        raise RuntimeError(
+            f"Refusing to downgrade {revision}: {real} barcode(s) and/or import run(s) exist and "
+            "this would destroy them. Roll the application back instead (the schema is backward "
+            "compatible). To destroy them deliberately, after a backup, set "
+            f"{ALLOW_DESTRUCTIVE_ENV}=1."
+        )
+
+
 def downgrade() -> None:
+    _refuse_destructive_downgrade()
+    op.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
     op.execute(f'GRANT UPDATE, DELETE ON {SCHEMA}.inventory_import_runs TO "{APP_ROLE}"')
     op.execute(f"DROP POLICY IF EXISTS tenant_isolation ON {SCHEMA}.inventory_import_runs")
     op.drop_table("inventory_import_runs", schema=SCHEMA)
 
-    op.drop_index("uq_rolls_org_barcode", table_name="rolls", schema=SCHEMA)
-    op.drop_index("uq_lots_org_barcode", table_name="lots", schema=SCHEMA)
-    op.drop_index("uq_inventory_items_org_barcode", table_name="inventory_items", schema=SCHEMA)
+    # The barcode indexes went with `e1b6d4a8c273`'s downgrade; dropping a column drops any left.
     for table in ("rolls", "lots", "inventory_items"):
         op.drop_column(table, "barcode", schema=SCHEMA)

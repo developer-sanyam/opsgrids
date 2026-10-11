@@ -28,7 +28,10 @@ pytestmark = pytest.mark.integration
 SERVICE_DIR = Path(__file__).resolve().parent.parent
 BEFORE = "c5a82f6d3b19"  # pragma: allowlist secret
 THIS = "d9a4c6e1b3f7"  # pragma: allowlist secret
+#: The barcode unique indexes are built CONCURRENTLY here, not in THIS.
+FINISH = "e1b6d4a8c273"  # pragma: allowlist secret
 TRUNCATE = (
+    "inventory_import_runs",
     "roll_events",
     "lot_genealogy",
     "inventory_discrepancies",
@@ -179,7 +182,7 @@ async def test_up_keeps_every_row_and_stock_and_down_removes_only_what_it_added(
         await seed_item(conn, org, "FAB-1")
         before = await ledger_total(conn, org)
 
-    up = alembic("upgrade", THIS)
+    up = alembic("upgrade", FINISH)
     assert up.returncode == 0, up.stderr[-2000:]
     async with admin.begin() as conn:
         assert await ledger_total(conn, org) == before
@@ -218,7 +221,7 @@ async def test_up_keeps_every_row_and_stock_and_down_removes_only_what_it_added(
 
 
 async def test_barcodes_are_unique_per_organization_and_items_ignore_deleted(admin) -> None:
-    up = alembic("upgrade", THIS)
+    up = alembic("upgrade", FINISH)
     assert up.returncode == 0, up.stderr[-2000:]
     org_a, org_b = uuid.uuid4(), uuid.uuid4()
     async with admin.begin() as conn:
@@ -360,3 +363,22 @@ async def test_the_app_role_cannot_rewrite_a_run(admin) -> None:
                 await conn.execute(text(f"UPDATE {SCHEMA}.inventory_import_runs SET row_count = 2"))
     finally:
         await app_engine.dispose()
+
+
+async def test_the_downgrade_refuses_to_forget_barcodes_people_typed(admin) -> None:
+    up = alembic("upgrade", FINISH)
+    assert up.returncode == 0, up.stderr[-2000:]
+    async with admin.begin() as conn:
+        ids = await seed_item(conn, uuid.uuid4(), "FAB-9")
+        await conn.execute(
+            text(f"UPDATE {SCHEMA}.inventory_items SET barcode = 'EAN-9' WHERE id = :i"),
+            {"i": ids["item"]},
+        )
+    down = alembic("downgrade", BEFORE)
+    assert down.returncode != 0 and "Refusing to downgrade" in down.stderr
+    async with admin.begin() as conn:
+        assert "barcode" in await columns(conn, "inventory_items")
+        await conn.execute(
+            text(f"UPDATE {SCHEMA}.inventory_items SET barcode = NULL WHERE id = :i"),
+            {"i": ids["item"]},
+        )

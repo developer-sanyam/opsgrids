@@ -4,8 +4,8 @@
 run inside the migration's own transaction on a populated table (the pattern `c4a8e1f6d273`
 set for lots and rolls):
 
-* the two reservation indexes are built `CONCURRENTLY` (a plain `CREATE INDEX` blocks every
-  reservation write for the build);
+* the two reservation indexes and the three barcode unique indexes (`d9a4c6e1b3f7`) are built
+  `CONCURRENTLY` (a plain `CREATE INDEX` blocks every write to the table for the build);
 * the `inventory_items` and `purchase_order_lines` CHECKs were added `NOT VALID` and are
   validated here, which needs only `SHARE UPDATE EXCLUSIVE`;
 * `purchase_order_lines.received_milli` is backfilled from whole units in committed batches
@@ -51,6 +51,13 @@ CHECKS = (
 )
 
 
+BARCODE_INDEXES = (
+    ("inventory_items", "uq_inventory_items_org_barcode", "barcode IS NOT NULL AND deleted_at IS NULL"),
+    ("lots", "uq_lots_org_barcode", "barcode IS NOT NULL"),
+    ("rolls", "uq_rolls_org_barcode", "barcode IS NOT NULL"),
+)
+
+
 def _drop_invalid(name: str) -> None:
     """An interrupted `CREATE INDEX CONCURRENTLY` leaves an INVALID index that `IF NOT EXISTS`
     would then skip forever."""
@@ -91,6 +98,18 @@ def upgrade() -> None:
             postgresql_concurrently=True,
             if_not_exists=True,
         )
+        for table, name, where in BARCODE_INDEXES:
+            _drop_invalid(name)
+            op.create_index(
+                name,
+                table,
+                ["organization_id", "barcode"],
+                unique=True,
+                schema=SCHEMA,
+                postgresql_where=sa.text(where),
+                postgresql_concurrently=True,
+                if_not_exists=True,
+            )
         for table, name in CHECKS:
             op.execute(f"ALTER TABLE {SCHEMA}.{table} VALIDATE CONSTRAINT {name}")
         # Whole units before this release; one unit is 1000 milli-units (ADR-0014 §2). Only
@@ -115,5 +134,6 @@ def downgrade() -> None:
     for name in (
         "ix_inventory_reservations_org_expires_active",
         "ix_inventory_reservations_org_created",
+        *(name for _table, name, _where in BARCODE_INDEXES),
     ):
         op.execute(f"DROP INDEX IF EXISTS {SCHEMA}.{name}")

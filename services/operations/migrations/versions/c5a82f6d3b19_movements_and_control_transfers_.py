@@ -76,6 +76,9 @@ def _rls(table: str) -> None:
 
 
 def upgrade() -> None:
+    # Fail the deploy, not the service (the ADD COLUMNs on inventory_reservations below need
+    # ACCESS EXCLUSIVE).
+    op.execute("SET LOCAL lock_timeout = '5s'")
     op.create_table(
         "inventory_control_settings",
         sa.Column("transfer_approval_threshold_milli", sa.BigInteger(), nullable=True),
