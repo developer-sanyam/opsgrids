@@ -125,11 +125,16 @@ async def item_barcode_taken(
     barcode: str,
     *,
     exclude: uuid.UUID | None = None,
+    only_barcode: bool = False,
 ) -> bool:
-    """Whether a live item of this organization already carries `barcode`."""
+    """Whether a live item of this organization already carries `barcode` — or has it as its SKU,
+    unless `only_barcode`. A scan matches either column, so a barcode equal to another item's SKU
+    would make that SKU unscannable; `only_barcode` is the reverse check, for a new SKU."""
     stmt = select(InventoryItem.id).where(
         InventoryItem.organization_id == org_id,
-        InventoryItem.barcode == barcode,
+        InventoryItem.barcode == barcode
+        if only_barcode
+        else or_(InventoryItem.barcode == barcode, InventoryItem.sku == barcode),
         InventoryItem.deleted_at.is_(None),
     )
     if exclude is not None:

@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
-from sqlalchemy import BigInteger, Select, cast, func, select, text
+from sqlalchemy import BigInteger, Select, cast, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.inventory.quantity import format_qty
@@ -710,9 +710,19 @@ async def barcode_taken(
     barcode: str,
     *,
     exclude: uuid.UUID | None = None,
+    only_barcode: bool = False,
 ) -> bool:
-    """Whether a lot (or roll) of this organization already carries `barcode`."""
-    stmt = select(model.id).where(model.organization_id == org_id, model.barcode == barcode)
+    """Whether a lot (or roll) of this organization already carries `barcode` — or has it as its
+    lot/roll number, unless `only_barcode`. A scan matches either column, so a barcode equal to
+    another record's number would make that number unscannable; `only_barcode` is the reverse
+    check, for a new number."""
+    natural = Lot.lot_no if model is Lot else Roll.roll_no
+    stmt = select(model.id).where(
+        model.organization_id == org_id,
+        model.barcode == barcode
+        if only_barcode
+        else or_(model.barcode == barcode, natural == barcode),
+    )
     if exclude is not None:
         stmt = stmt.where(model.id != exclude)
     return (await session.execute(stmt.limit(1))).first() is not None

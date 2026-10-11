@@ -120,15 +120,64 @@ class TestResolve:
         # The labelled form is unambiguous.
         assert (await scan(client, world.org_id, "og:roll:R-1")).status_code == 200
 
-    async def test_a_barcode_equal_to_another_rows_natural_key_is_ambiguous(
+    async def test_a_barcode_equal_to_another_rows_natural_key_is_refused(
         self, client, world
     ) -> None:
+        """Otherwise one item.write user could make another item's SKU permanently unscannable."""
         r = await patch(
             client, world.org_id, ITEM_WRITE, f"/operations/inventory/{world.t.dye}",
             {"barcode": "BTN-14MM"},
         )  # fmt: skip
-        assert r.status_code == 200
-        assert (await scan(client, world.org_id, "og:item:BTN-14MM")).status_code == 409
+        assert r.status_code == 409, r.text
+        assert r.json()["errors"][0]["field"] == "barcode"
+        assert (await scan(client, world.org_id, "og:item:BTN-14MM")).status_code == 200
+
+    async def test_a_lot_or_roll_barcode_equal_to_another_rows_number_is_refused(
+        self, client, world
+    ) -> None:
+        item_id = str(world.t.fabric)
+        roll_body = {"inventory_item_id": item_id, "lot_id": str(world.lot), "primary_qty": "1"}
+        for perm, kind, existing, body in (
+            (LOT_WRITE, "lots", "LOT-A", {"inventory_item_id": str(world.t.fabric)}),
+            (ROLL_WRITE, "rolls", "R-1", roll_body),
+        ):  # fmt: skip
+            with as_principal(principal_for(world.org_id, [perm])):
+                made = await client.post(
+                    API + f"/operations/inventory/{kind}", json={**body, "barcode": existing}
+                )
+            assert made.status_code == 409, (kind, made.text)
+        assert (await scan(client, world.org_id, "og:lot:LOT-A")).status_code == 200
+        assert (await scan(client, world.org_id, "og:roll:R-1")).status_code == 200
+
+    async def test_a_number_equal_to_an_existing_barcode_is_refused(self, client, world) -> None:
+        r = await patch(
+            client, world.org_id, ITEM_WRITE, f"/operations/inventory/{world.t.dye}",
+            {"barcode": "EAN-77"},
+        )  # fmt: skip
+        assert r.status_code == 200, r.text
+        with as_principal(principal_for(world.org_id, [LOT_WRITE])):
+            labelled = await client.post(
+                API + "/operations/inventory/lots",
+                json={"inventory_item_id": str(world.t.fabric), "barcode": "LB-1"},
+            )
+            assert labelled.status_code == 201, labelled.text
+            clash = await client.post(
+                API + "/operations/inventory/lots",
+                json={"inventory_item_id": str(world.t.fabric), "lot_no": "LB-1"},
+            )
+        assert clash.status_code == 409, clash.text
+        with as_principal(principal_for(world.org_id, [ITEM_WRITE])):
+            item = await client.post(
+                API + "/operations/inventory",
+                json={
+                    "sku": "EAN-77",
+                    "name": "Squatter",
+                    "uom": "pcs",
+                    "category": "raw_materials",
+                    "warehouse": "Weaving Store",
+                },
+            )
+        assert item.status_code == 409, item.text
 
 
 class TestCodesWithAwkwardCharacters:

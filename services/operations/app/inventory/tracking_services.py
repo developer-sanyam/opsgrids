@@ -190,6 +190,8 @@ async def create_lot(
         session, Lot, org_id, payload.barcode
     ):
         raise _duplicate("barcode", f"Barcode {payload.barcode!r} is already in use")
+    if await sel.barcode_taken(session, Lot, org_id, lot_no, only_barcode=True):
+        raise _duplicate("lot_no", f"{lot_no!r} is already in use as another lot's barcode")
     lot_id = uuid.uuid4()
     inserted = (
         await session.execute(
@@ -414,6 +416,8 @@ async def create_roll(
         session, Roll, org_id, payload.barcode
     ):
         raise _duplicate("barcode", f"Barcode {payload.barcode!r} is already in use")
+    if await sel.barcode_taken(session, Roll, org_id, roll_no, only_barcode=True):
+        raise _duplicate("roll_no", f"{roll_no!r} is already in use as another roll's barcode")
     roll_id = uuid.uuid4()
     inserted = (
         await session.execute(

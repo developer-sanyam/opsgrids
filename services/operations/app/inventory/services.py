@@ -1063,6 +1063,8 @@ async def create_inventory_item(
         session, ctx.organization_id, barcode
     ):
         raise _duplicate("barcode", f"Barcode {barcode!r} is already in use")
+    if await inv_selectors.item_barcode_taken(session, ctx.organization_id, sku, only_barcode=True):
+        raise _duplicate("sku", f"SKU {sku!r} is already in use as another item's barcode")
     home = await _home_for(session, ctx.organization_id, warehouse) if warehouse else None
     resolved_uom = (
         await resolve_or_create_uom(session, ctx.organization_id, uom, str(ctx.principal.sub))
