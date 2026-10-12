@@ -319,7 +319,7 @@ async def invoice_requested_from_order(envelope: dict[str, Any]) -> None:
             expected_tax_minor=int(payload["expected_tax_minor"]),
             expected_total_minor=int(payload["expected_total_minor"]),
             place_of_supply=payload.get("place_of_supply"),
-            supply_type=payload.get("supply_type") or "b2b",
+            supply_type=payload.get("supply_type"),
             reverse_charge=bool(payload.get("reverse_charge", False)),
         )
         mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])

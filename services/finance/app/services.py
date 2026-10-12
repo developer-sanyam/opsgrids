@@ -711,7 +711,7 @@ async def create_invoice(
     buyer_gstin = customer.gstin
 
     supply_type = payload.supply_type or ("b2b" if buyer_gstin else "b2c")
-    place_of_supply = _place_of_supply(payload, customer, seller_state)
+    place_of_supply = _place_of_supply(payload.place_of_supply, customer, seller_state)
     if place_of_supply is not None and place_of_supply not in domain.GST_STATE_CODES:
         raise BusinessRuleProblem(f"{place_of_supply!r} is not a GST state code")
 
@@ -1058,7 +1058,7 @@ async def evaluate_order_invoice_request(
     expected_tax_minor: int,
     expected_total_minor: int,
     place_of_supply: str | None,
-    supply_type: str,
+    supply_type: str | None,
     reverse_charge: bool,
     today: date | None = None,
     request: Request | None = None,
@@ -1101,7 +1101,7 @@ async def evaluate_order_invoice_request(
     if customer is None:
         return _reject_order_invoice(session, ctx, order_id=order_id, reason="unknown_customer")
 
-    if supply_type not in domain.SUPPLY_TYPES:
+    if supply_type is not None and supply_type not in domain.SUPPLY_TYPES:
         return _reject_order_invoice(session, ctx, order_id=order_id, reason="invalid_supply_type")
     if place_of_supply is not None and place_of_supply not in domain.GST_STATE_CODES:
         return _reject_order_invoice(
@@ -1110,6 +1110,10 @@ async def evaluate_order_invoice_request(
 
     registration = await selectors.get_gst_registration(session, ctx.organization_id)
     seller_state = registration.state_code if registration else ""
+    # What the request leaves out is derived from the billed party, the same rules
+    # `create_invoice` applies to an invoice raised by hand: b2b only with a GSTIN on file.
+    supply_type = supply_type or ("b2b" if customer.gstin else "b2c")
+    place_of_supply = _place_of_supply(place_of_supply, customer, seller_state)
     intra_state = place_of_supply is not None and domain.is_intra_state(
         supply_type=supply_type, seller_state_code=seller_state, place_of_supply=place_of_supply
     )
@@ -1262,7 +1266,7 @@ async def evaluate_order_invoice_request(
     return OrderInvoiceOutcome(outcome="issued", invoice=invoice)
 
 
-def _place_of_supply(payload: InvoiceCreate, customer: Customer, seller_state: str) -> str | None:
+def _place_of_supply(explicit: str | None, customer: Customer, seller_state: str) -> str | None:
     """Where the supply is taxed, in order of authority.
 
     An explicit value from the caller wins. Otherwise the buyer's GSTIN names their state
@@ -1273,8 +1277,8 @@ def _place_of_supply(payload: InvoiceCreate, customer: Customer, seller_state: s
 
     None only when the org has configured no registration and nothing else resolves.
     """
-    if payload.place_of_supply:
-        return payload.place_of_supply
+    if explicit:
+        return explicit
     if customer.gstin:
         try:
             return domain.parse_gstin(customer.gstin).state_code

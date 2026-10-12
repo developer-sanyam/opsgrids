@@ -23,6 +23,9 @@ One more, F4's own (ADR-0025 §1's billing gate; Fulfilment plan F4):
   onto `app.orders.services.EVT_FINANCE_INVOICE_ISSUED`, the same contract-not-code discipline
   `EVT_OFFER_EXPIRE_REQUESTED` already documents for `services/scheduler`. Writes the order's own
   `invoice_id` fact, which `app.orders.services.check_billing_gate` reads.
+* **`order_invoice_due`** — bound to this service's own `operations.orders.order.invoice_due`
+  (INVENTORY-01): resolves the order's billed party with finance, with no transaction open, then
+  emits `operations.orders.order.invoice_requested`.
 
 And two for online payment (ADR-0024 A4, `services/payment`'s tenant collections; Fulfilment F10):
 
@@ -76,6 +79,7 @@ from app.models import ProcessedEvent
 from app.movements import adjustments, transfers
 from app.movements import common as movement_common
 from app.mrp import services as mrp_services
+from app.orders import finance_client
 from app.orders import services as order_services
 from app.quality import handoff as quality_handoff
 from platform_core.db import (
@@ -258,6 +262,59 @@ async def finance_invoice_issued(envelope: dict[str, Any]) -> None:
 
 
 consumer.on(order_services.EVT_FINANCE_INVOICE_ISSUED)(finance_invoice_issued)
+
+
+async def order_invoice_due(envelope: dict[str, Any]) -> None:
+    """Bound to this service's own `operations.orders.order.invoice_due`, staged at READY
+    (`app.orders.services.queue_invoice_request`). Resolves the order's CRM contact into finance's
+    billed party, then emits `invoice_requested` — claim, call, record, the call with no
+    transaction open (`docs/io-outside-transactions.md`):
+
+    1. a short transaction checks the event id was not already handled (a redelivery makes no
+       call at all);
+    2. `finance_client.resolve_finance_customer`, no transaction. Finance being unreachable
+       raises, so the broker retries and then dead-letters the message: an owed invoice is never
+       silently dropped;
+    3. a second transaction re-checks the event id, emits the request (or the skip) and marks the
+       event processed, together.
+
+    The tenant is the envelope's `organization_id`, which this service's own outbox wrote."""
+    event_id = uuid.UUID(envelope["event_id"])
+    organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload = envelope["payload"]
+    order_id = uuid.UUID(str(payload["order_id"]))
+    crm_contact_id = uuid.UUID(str(payload["crm_contact_id"]))
+
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("orders.invoice_due.duplicate", event_id=str(event_id))
+            return
+
+    cfg = settings()
+    # `off` asks finance nothing; `request_invoice_for_order` records the skip.
+    finance_customer_id = (
+        None
+        if cfg.order_invoicing_mode == "off"
+        else await finance_client.resolve_finance_customer(cfg, organization_id, crm_contact_id)
+    )
+
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            log.info("orders.invoice_due.duplicate", event_id=str(event_id))
+            return
+        await order_services.request_invoice_for_order(
+            session, order_services.service_ctx(organization_id), order_id, finance_customer_id
+        )
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+    log.info(
+        "orders.invoice_due.handled",
+        event_id=str(event_id),
+        order_id=str(order_id),
+        resolved=finance_customer_id is not None,
+    )
+
+
+consumer.on(order_services.EVT_ORDER_INVOICE_DUE)(order_invoice_due)
 
 
 async def _collection_envelope(

@@ -333,6 +333,8 @@ class ResolvedSettings:
     #: Defaults `False`, so an org with no `fulfilment_settings` row at all (or one predating
     #: this column) gets exactly F3's existing manual-only behaviour.
     auto_assignment_enabled: bool = False
+    #: Order invoicing's per-organization opt-in (INVENTORY-01). `False` for an org with no row.
+    auto_invoice_orders: bool = False
 
     def payment_term_for(self, channel: str) -> str:
         """The channel's payment term, defaulting to `"cash"` — never `"credit"` — for a channel
@@ -353,6 +355,7 @@ class ResolvedSettings:
             #: on this snapshot already follows.
             "default_tax_rate_pct": str(self.default_tax_rate_pct),
             "auto_assignment_enabled": self.auto_assignment_enabled,
+            "auto_invoice_orders": self.auto_invoice_orders,
         }
 
 
@@ -369,6 +372,7 @@ _HARDCODED_DEFAULT = ResolvedSettings(
     require_pickup_code=False,
     default_tax_rate_pct=Decimal("0"),
     auto_assignment_enabled=False,
+    auto_invoice_orders=False,
 )
 
 
@@ -397,6 +401,7 @@ async def resolve_settings(
             require_pickup_code=row.require_pickup_code,
             default_tax_rate_pct=row.default_tax_rate_pct,
             auto_assignment_enabled=row.auto_assignment_enabled,
+            auto_invoice_orders=row.auto_invoice_orders,
         )
     stmt = select(FulfilmentSettings).where(
         FulfilmentSettings.organization_id == org_id,
@@ -414,6 +419,7 @@ async def resolve_settings(
             require_pickup_code=row.require_pickup_code,
             default_tax_rate_pct=row.default_tax_rate_pct,
             auto_assignment_enabled=row.auto_assignment_enabled,
+            auto_invoice_orders=row.auto_invoice_orders,
         )
     return _HARDCODED_DEFAULT
 
@@ -450,6 +456,7 @@ def _settings_out(
             require_pickup_code=d.require_pickup_code,
             default_tax_rate_pct=d.default_tax_rate_pct.quantize(Decimal("0.01")),
             auto_assignment_enabled=d.auto_assignment_enabled,
+            auto_invoice_orders=d.auto_invoice_orders,
             task_sla_minutes=DEFAULT_TASK_SLA_MINUTES,
             alert_email=None,
             alert_phone=None,
@@ -466,6 +473,7 @@ def _settings_out(
         require_pickup_code=row.require_pickup_code,
         default_tax_rate_pct=row.default_tax_rate_pct.quantize(Decimal("0.01")),
         auto_assignment_enabled=row.auto_assignment_enabled,
+        auto_invoice_orders=row.auto_invoice_orders,
         task_sla_minutes=row.task_sla_minutes,
         alert_email=row.alert_email,
         alert_phone=row.alert_phone,

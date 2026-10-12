@@ -61,6 +61,7 @@ async def _put_settings(client, org_id: uuid.UUID, **overrides: object) -> None:
         "require_pickup_code": False,
         "default_tax_rate_pct": "0",
         "auto_assignment_enabled": False,
+        "auto_invoice_orders": False,
         "task_sla_minutes": 60,
         "alert_email": None,
         "alert_phone": None,

@@ -3741,6 +3741,10 @@
             "title": "Auto Assignment Enabled",
             "type": "boolean"
           },
+          "auto_invoice_orders": {
+            "title": "Auto Invoice Orders",
+            "type": "boolean"
+          },
           "default_tax_rate_pct": {
             "anyOf": [
               {
@@ -3816,6 +3820,7 @@
           "require_pickup_code",
           "default_tax_rate_pct",
           "auto_assignment_enabled",
+          "auto_invoice_orders",
           "task_sla_minutes",
           "alert_email",
           "alert_phone"
@@ -3850,6 +3855,10 @@
           },
           "auto_assignment_enabled": {
             "title": "Auto Assignment Enabled",
+            "type": "boolean"
+          },
+          "auto_invoice_orders": {
+            "title": "Auto Invoice Orders",
             "type": "boolean"
           },
           "default_tax_rate_pct": {
@@ -3944,6 +3953,7 @@
           "require_pickup_code",
           "default_tax_rate_pct",
           "auto_assignment_enabled",
+          "auto_invoice_orders",
           "task_sla_minutes",
           "alert_email",
           "alert_phone",

@@ -1335,6 +1335,12 @@ services:
       # tenant collections (ADR-0024 A4) over its internal API — operations holds no payment
       # secret or state. Service-to-service on `back`, never through a gateway.
       PAYMENT_SERVICE_URL: http://payment:8000
+      # The order-invoice consumer resolves an order's CRM contact into finance's billed party
+      # (`customers:resolve-for-crm-contact`) before asking finance for the invoice.
+      FINANCE_INTERNAL_URL: http://finance:8000
+      # Order invoicing's box-wide switch (INVENTORY-01): `off`, `log_only` (resolve and audit,
+      # send nothing) or `live`. Each organization must also opt in on its fulfilment settings.
+      ORDER_INVOICING_MODE: ${ORDER_INVOICING_MODE:-log_only}
     networks:
       - back
 
@@ -1587,7 +1593,11 @@ services:
     build:
       context: ../..
       dockerfile: services/finance/Dockerfile
-    environment: *service-env
+    environment:
+      <<: *service-env
+      # `customers:resolve-for-crm-contact` reads the CRM contact it bridges from customer's
+      # internal API; without this it calls localhost and every order invoice waits.
+      CUSTOMER_INTERNAL_URL: http://customer:8000
     networks:
       - back
 
