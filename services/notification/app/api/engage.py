@@ -940,12 +940,16 @@ async def list_contacts(
 async def add_contact(
     body: ContactIn, session: SessionDep, ctx: ContactWrite, request: Request
 ) -> ContactOut:
+    opt_in = body.marketing_opt_in
     row = await services.create_contact(
         session,
         ctx,
         email=body.email,
         name=body.name,
         attributes=body.attributes,
+        opt_in_source=opt_in.source if opt_in else None,
+        opt_in_evidence=opt_in.evidence if opt_in else None,
+        opt_in_occurred_at=opt_in.occurred_at if opt_in else None,
         request=request,
     )
     return _contact_out(row)

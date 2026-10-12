@@ -19,7 +19,7 @@ import pytest
 from app import consent, selectors, services
 from app.main import app
 from platform_core.auth import Principal, Scope, get_principal
-from tests.helpers import ctx_for, principal_for
+from tests.helpers import OPTED_IN, ctx_for, principal_for
 
 pytestmark = pytest.mark.integration
 
@@ -44,9 +44,10 @@ def caller(org_id: uuid.UUID, perms: list[str]) -> Principal:
 
 
 async def _contact(session, org_id: uuid.UUID, email: str = "asha@example.com"):
+    """A contact who agreed to email marketing, so the email side has a standing to compare."""
     async with session.begin():
         return await services.create_contact(
-            session, ctx_for(org_id, C_WRITE, Scope.ORG), email=email
+            session, ctx_for(org_id, C_WRITE, Scope.ORG), email=email, **OPTED_IN
         )
 
 

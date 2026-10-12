@@ -1429,27 +1429,6 @@ async def ever_opted_in_purposes(
     return set((await session.execute(stmt)).scalars())
 
 
-async def subjects_with_marketing_events(
-    session: AsyncSession, org_id: uuid.UUID, channel: str, indexes: list[str]
-) -> set[str]:
-    """Which of these subjects already have *any* marketing event, in either direction — one
-    query for a whole import. What `consent.attest_opt_ins` uses to leave a recorded choice
-    alone."""
-    if not indexes:
-        return set()
-    stmt = (
-        select(ConsentEvent.subject_index)
-        .where(
-            ConsentEvent.organization_id == org_id,
-            ConsentEvent.channel == channel,
-            ConsentEvent.purpose == "marketing",
-            ConsentEvent.subject_index.in_(indexes),
-        )
-        .distinct()
-    )
-    return set((await session.execute(stmt)).scalars())
-
-
 async def suppression_reasons(
     session: AsyncSession, org_id: uuid.UUID, indexes: list[str]
 ) -> dict[str, str]:

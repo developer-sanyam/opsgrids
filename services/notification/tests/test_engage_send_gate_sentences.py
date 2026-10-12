@@ -42,7 +42,7 @@ from app.config import settings
 from app.main import app
 from platform_core.auth import Principal, Scope, get_principal
 from platform_core.testing import is_shared_dev_database
-from tests.helpers import ctx_for, principal_for
+from tests.helpers import OPTED_IN, ctx_for, principal_for
 
 pytestmark = pytest.mark.integration
 
@@ -128,7 +128,9 @@ async def _contact(session, org_id: uuid.UUID, email: str = "reader@example.com"
     """One sendable contact — a precondition every gate below except the audience ones needs
     satisfied so it fails on its own gate rather than on the "nobody to email" one."""
     async with session.begin():
-        await services.create_contact(session, ctx_for(org_id, C_WRITE, Scope.ORG), email=email)
+        await services.create_contact(
+            session, ctx_for(org_id, C_WRITE, Scope.ORG), email=email, **OPTED_IN
+        )
 
 
 async def _draft(

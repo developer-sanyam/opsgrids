@@ -142,7 +142,7 @@ export function ListImportDialog({
       open={open}
       onClose={close}
       title="Import contacts into this list"
-      description={`Paste rows as email, name — one contact per line, up to ${CONTACT_IMPORT_MAX} at a time. Every row that imports cleanly is added to this list.`}
+      description={`Paste rows as email, name — one contact per line, up to ${CONTACT_IMPORT_MAX} at a time. Every row that imports cleanly is added to this list. Imported contacts get no marketing email until their opt-in is recorded.`}
       size="lg"
       footer={
         outcome === null ? (

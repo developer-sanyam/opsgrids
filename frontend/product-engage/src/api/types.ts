@@ -218,11 +218,20 @@ export interface ProviderTemplateOut {
 
 /* --------------------------------------- contacts --------------------------------------- */
 
-/** `POST /engage/contacts`. */
+/** `POST /engage/contacts`. Without `marketing_opt_in` no opt-in is recorded and campaigns do
+ *  not mail the contact — adding someone is not their agreement. */
 export interface ContactIn {
   email: string;
   name?: string;
   attributes?: Record<string, unknown>;
+  marketing_opt_in?: ContactOptIn;
+}
+
+/** `ContactOptInIn` — how the person agreed to email marketing, held to `ConsentEventIn`'s rules. */
+export interface ContactOptIn {
+  source: WhatsAppOptInSource;
+  evidence: string;
+  occurred_at?: string;
 }
 
 /** `PATCH /engage/contacts/{contact_id}`. An absent field is left alone. */
@@ -304,7 +313,8 @@ export interface ConsentEventOut {
   created_at: string;
 }
 
-/** How staff say they were told: the subset of `ConsentApiSource` the contact view offers. */
+/** How staff say they were told: the subset of `ConsentApiSource` the contact view offers. The
+ *  add-contact form offers the same three for email. */
 export type WhatsAppOptInSource = "in_person" | "phone_call" | "web_form";
 
 /** `ConsentRecordedOut` — the event, and whether the decision now allows sending. */

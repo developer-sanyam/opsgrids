@@ -15,10 +15,11 @@ from __future__ import annotations
 import contextlib
 import uuid
 from collections.abc import Iterator
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 import pytest_asyncio
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -322,3 +323,63 @@ class TestUnmaskIsAudited:
         }
         assert BANK not in str(row.after)
         assert PAN not in str(row.after)
+
+
+def _years_ago(years: int) -> date:
+    today = datetime.now(UTC).date()
+    try:
+        return today.replace(year=today.year - years)
+    except ValueError:  # 29 February
+        return today.replace(year=today.year - years, day=28)
+
+
+class TestDateOfBirthIsChecked:
+    """A date of birth that makes the person under 14 today, or that is in the future, is refused:
+    India's child-labour law bars employing anyone under 14, so such a record is an entry error to
+    catch, not data to keep."""
+
+    def test_exactly_fourteen_today_is_accepted(self) -> None:
+        assert EmployeePiiIn(date_of_birth=_years_ago(14)).date_of_birth == _years_ago(14)
+
+    @pytest.mark.parametrize("days", [1, 365 * 5])
+    def test_younger_than_fourteen_is_refused(self, days: int) -> None:
+        with pytest.raises(ValidationError, match="at least 14"):
+            EmployeePiiIn(date_of_birth=_years_ago(14) + timedelta(days=days))
+
+    def test_a_future_date_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="future"):
+            EmployeePiiIn(date_of_birth=datetime.now(UTC).date() + timedelta(days=1))
+
+    async def test_the_refusal_is_a_422_naming_the_field_and_writes_no_row(
+        self, client, session: AsyncSession, org_id, people
+    ) -> None:
+        principal = principal_for(org_id, people["manager"], ["hrms.people.employee.write:ORG"])
+        with as_principal(principal):
+            response = await client.post(
+                "/api/v1/employees",
+                json={
+                    "employee_no": "EMP9300",
+                    "full_name": "Too Young",
+                    "pii": {"date_of_birth": _years_ago(10).isoformat()},
+                },
+            )
+        assert response.status_code == 422
+        assert response.headers["content-type"].startswith("application/problem+json")
+        errors = response.json()["errors"]
+        assert [e["field"] for e in errors] == ["pii.date_of_birth"]
+        assert errors[0]["message"] == "An employee must be at least 14 years old"
+        assert errors[0]["code"] == "under_minimum_age"
+        async with session.begin():
+            found = await session.execute(select(Employee).where(Employee.employee_no == "EMP9300"))
+        assert found.scalar_one_or_none() is None
+
+    async def test_a_patch_is_held_to_the_same_rule(self, client, org_id, people) -> None:
+        principal = principal_for(org_id, people["manager"], ["hrms.people.employee.write:ORG"])
+        tomorrow = (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
+        with as_principal(principal):
+            response = await client.patch(
+                f"/api/v1/employees/{people['report'].id}",
+                json={"pii": {"date_of_birth": tomorrow}},
+            )
+        assert response.status_code == 422
+        assert [e["field"] for e in response.json()["errors"]] == ["pii.date_of_birth"]
