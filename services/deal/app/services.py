@@ -270,6 +270,11 @@ def service_ctx(organization_id: uuid.UUID) -> ScopeContext:
     )
 
 
+#: `(action, acting_as)` of the audit row lead's conversion writes when it creates a deal: `lead` is
+#: the calling service's name here, not a stage key.
+LEAD_CREATED_ROW = ("deal.created", "lead")
+
+
 async def is_pristine_lead_deal(
     session: AsyncSession, organization_id: uuid.UUID, deal_id: uuid.UUID
 ) -> bool:
@@ -280,7 +285,7 @@ async def is_pristine_lead_deal(
     The one predicate the aborted-conversion handler and the references probe share, so deal
     never deletes a deal the probe counted and the probe never discounts a deal deal keeps."""
     rows = await selectors.audit_rows_for_deal(session, organization_id, deal_id)
-    if rows != [("deal.created", "lead")]:
+    if rows != [LEAD_CREATED_ROW]:
         return False
     return await selectors.count_activities_for_deal(session, organization_id, deal_id) == 0
 

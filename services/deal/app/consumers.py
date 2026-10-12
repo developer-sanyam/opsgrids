@@ -116,7 +116,7 @@ async def _decide(session: AsyncSession, organization_id: uuid.UUID, deal: Deal 
     if await services.is_pristine_lead_deal(session, organization_id, deal.id):
         return "deletable"
     first = await selectors.audit_rows_for_deal(session, organization_id, deal.id, limit=1)
-    return "touched" if first == [("deal.created", "lead")] else "not_created_by_attempt"
+    return "touched" if first == [services.LEAD_CREATED_ROW] else "not_created_by_attempt"
 
 
 async def run_conversion_cleanup(envelope: dict[str, Any]) -> CleanupOutcome:
