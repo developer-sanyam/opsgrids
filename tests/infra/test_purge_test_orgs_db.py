@@ -392,6 +392,8 @@ UNREACHED = {
     "auth.platform_oauth_providers",
     "auth.staff_accounts",
     "auth.staff_enrollment_codes",
+    # The supplier's GST tax-invoice counter (ADR-0004 Q1): the operator's series, not a tenant's.
+    "billing.tax_invoice_series",
     # Meta's data-deletion callback ledger: a confirmation code and a request key, no tenant.
     "notification.w1_meta_deletion_requests",
 }

@@ -1020,6 +1020,12 @@ services:
       METERING_SERVICE_URL: http://metering:8000
       BILLING_TAX_CODE: ${BILLING_TAX_CODE:-}
       BILLING_TAX_JURISDICTION: ${BILLING_TAX_JURISDICTION:-}
+      # The GST supplier (ADR-0004 Q1). Empty and inert until tax invoices are wired in; when
+      # set, billing refuses to start on a GSTIN with a bad check digit.
+      BILLING_SUPPLIER_GSTIN: ${BILLING_SUPPLIER_GSTIN:-}
+      BILLING_SUPPLIER_LEGAL_NAME: ${BILLING_SUPPLIER_LEGAL_NAME:-}
+      BILLING_SUPPLIER_STATE_CODE: ${BILLING_SUPPLIER_STATE_CODE:-}
+      BILLING_DEFAULT_SAC: ${BILLING_DEFAULT_SAC:-}
     networks:
       - back
 

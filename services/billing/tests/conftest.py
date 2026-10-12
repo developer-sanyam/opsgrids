@@ -39,6 +39,7 @@ BILLING_TABLES = (
     "invoices",
     "credit_ledger",
     "tax_rates",
+    "tax_invoice_series",
     "audit_logs",
     "outbox",
     "processed_events",
