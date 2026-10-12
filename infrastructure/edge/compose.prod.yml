@@ -1329,6 +1329,9 @@ services:
       # The order-invoice consumer resolves an order's CRM contact into finance's billed party
       # (`customers:resolve-for-crm-contact`) before asking finance for the invoice.
       FINANCE_INTERNAL_URL: http://finance:8000
+      # Order invoicing's box-wide switch (INVENTORY-01): `off`, `log_only` (resolve and audit,
+      # send nothing) or `live`. Each organization must also opt in on its fulfilment settings.
+      ORDER_INVOICING_MODE: ${ORDER_INVOICING_MODE:-log_only}
     networks:
       - back
 

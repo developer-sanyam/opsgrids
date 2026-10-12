@@ -290,8 +290,12 @@ async def order_invoice_due(envelope: dict[str, Any]) -> None:
             log.info("orders.invoice_due.duplicate", event_id=str(event_id))
             return
 
-    finance_customer_id = await finance_client.resolve_finance_customer(
-        settings(), organization_id, crm_contact_id
+    cfg = settings()
+    # `off` asks finance nothing; `request_invoice_for_order` records the skip.
+    finance_customer_id = (
+        None
+        if cfg.order_invoicing_mode == "off"
+        else await finance_client.resolve_finance_customer(cfg, organization_id, crm_contact_id)
     )
 
     async with _session_scope(organization_id) as session:

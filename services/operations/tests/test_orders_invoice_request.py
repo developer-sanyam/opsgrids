@@ -71,7 +71,20 @@ def _fake_finance(monkeypatch: pytest.MonkeyPatch, answer: uuid.UUID | Exception
     return fake
 
 
-async def _seed_settings(session, org_id: uuid.UUID, *, tax: Decimal = Decimal("18")) -> None:
+@pytest.fixture(autouse=True)
+def mode(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    """`live` unless a test sets another: most of this file is about the request itself."""
+
+    def set_mode(value: str) -> None:
+        monkeypatch.setattr(settings(), "order_invoicing_mode", value)
+
+    set_mode("live")
+    return set_mode
+
+
+async def _seed_settings(
+    session, org_id: uuid.UUID, *, tax: Decimal = Decimal("18"), opted_in: bool = True
+) -> None:
     async with session.begin():
         session.add(
             FulfilmentSettings(
@@ -83,6 +96,7 @@ async def _seed_settings(session, org_id: uuid.UUID, *, tax: Decimal = Decimal("
                 offer_rounds=3,
                 require_pickup_code=False,
                 default_tax_rate_pct=tax,
+                auto_invoice_orders=opted_in,
             )
         )
 
@@ -149,15 +163,32 @@ class TestReady:
         assert envelope["payload"]["crm_contact_id"] == str(contact)
         assert await _skips(session, org_id, order_id) == []
 
-    async def test_no_saved_policy_means_no_chosen_tax_rate_so_nothing_is_invoiced(
-        self, client, org_id, session, floor: Floor
-    ) -> None:
+    async def test_no_saved_policy_is_not_opted_in(self, client, org_id, session, floor) -> None:
         order_id = await ready_order(
             client, org_id, session, floor, qty="5", customer_id=uuid.uuid4()
         )
 
         assert await _events(session, org_id, INVOICE_DUE, order_id) == []
-        assert await _skips(session, org_id, order_id) == ["tax_rate_unset"]
+        assert await _skips(session, org_id, order_id) == ["org_not_opted_in"]
+
+    async def test_live_but_not_opted_in_is_skipped(self, client, org_id, session, floor) -> None:
+        await _seed_settings(session, org_id, opted_in=False)
+        order_id = await ready_order(
+            client, org_id, session, floor, qty="5", customer_id=uuid.uuid4()
+        )
+
+        assert await _events(session, org_id, INVOICE_DUE, order_id) == []
+        assert await _skips(session, org_id, order_id) == ["org_not_opted_in"]
+
+    async def test_off_queues_nothing(self, client, org_id, session, floor, mode) -> None:
+        mode("off")
+        await _seed_settings(session, org_id)
+        order_id = await ready_order(
+            client, org_id, session, floor, qty="5", customer_id=uuid.uuid4()
+        )
+
+        assert await _events(session, org_id, INVOICE_DUE, order_id) == []
+        assert await _skips(session, org_id, order_id) == ["invoicing_off"]
 
     async def test_a_walk_in_buyer_with_no_crm_contact_is_skipped(
         self, client, org_id, session, floor: Floor
@@ -304,3 +335,59 @@ class TestConsumer:
 
         assert await _events(session, org_id, INVOICE_REQUESTED, order_id) == []
         assert await _events(session, other_org, INVOICE_REQUESTED, order_id) == []
+
+
+class TestModes:
+    async def test_log_only_resolves_and_audits_but_never_requests(
+        self, client, org_id, session, floor: Floor, monkeypatch: pytest.MonkeyPatch, mode
+    ) -> None:
+        mode("log_only")
+        await _seed_settings(session, org_id, tax=Decimal("18"))
+        finance_customer = uuid.uuid4()
+        fake = _fake_finance(monkeypatch, finance_customer)
+        order_id = await ready_order(
+            client, org_id, session, floor, qty="5", customer_id=uuid.uuid4()
+        )
+
+        await consumers.order_invoice_due(await _invoice_due(session, org_id, order_id))
+
+        assert len(fake.calls) == 1
+        assert await _events(session, org_id, INVOICE_REQUESTED, order_id) == []
+        async with session.begin():
+            logged = (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.organization_id == org_id,
+                        AuditLog.action == "order.invoice_request_logged",
+                        AuditLog.entity_id == order_id,
+                    )
+                )
+            ).scalar_one()
+        assert logged.after == {
+            "customer_id": str(finance_customer),
+            "supply_type": "derived_by_finance",
+            "tax_rate_pct": 18.0,
+            "expected_total_minor": 2_950_00,
+        }
+
+    async def test_off_at_consume_time_asks_finance_nothing(
+        self, client, org_id, session, floor: Floor, monkeypatch: pytest.MonkeyPatch, mode
+    ) -> None:
+        await _seed_settings(session, org_id)
+        fake = _fake_finance(monkeypatch, uuid.uuid4())
+        order_id = await ready_order(
+            client, org_id, session, floor, qty="2", customer_id=uuid.uuid4()
+        )
+        envelope = await _invoice_due(session, org_id, order_id)
+        mode("off")  # switched off after the order was queued
+
+        await consumers.order_invoice_due(envelope)
+
+        assert fake.calls == []
+        assert await _events(session, org_id, INVOICE_REQUESTED, order_id) == []
+        assert await _skips(session, org_id, order_id) == ["invoicing_off"]
+
+    def test_the_default_mode_is_log_only(self) -> None:
+        from app.config import Settings
+
+        assert Settings.model_fields["order_invoicing_mode"].default == "log_only"

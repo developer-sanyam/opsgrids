@@ -1926,6 +1926,11 @@ class FulfilmentSettings(Base, TenantBase):
         Numeric(5, 2), nullable=False, default=Decimal("0")
     )
     auto_assignment_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: Order invoicing's per-organization opt-in (INVENTORY-01): an order accepted under a row with
+    #: this false raises no invoice at READY, whatever `ORDER_INVOICING_MODE` says.
+    auto_invoice_orders: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     task_sla_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     alert_email: Mapped[str | None] = mapped_column(String(254))
     alert_phone: Mapped[str | None] = mapped_column(String(20))

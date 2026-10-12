@@ -979,18 +979,19 @@ def queue_invoice_request(
     an invoice can be asked for and, if so, stages `EVT_ORDER_INVOICE_DUE` for
     `app.consumers.order_invoice_due`, which resolves the billed party and emits the request.
 
-    Two cases are skipped, each with an audit row, because a tax invoice raised on a guess is
-    worse than none:
+    Skipped, each with an audit row, because a tax invoice raised on a guess is worse than none:
 
-    * `tax_rate_unset` — the order was accepted under no saved fulfilment policy
-      (`settings_snapshot.source == "default"`), so its tax rate is the hard-coded 0, not a rate
-      the organization chose.
+    * `invoicing_off` — `ORDER_INVOICING_MODE=off` on this box.
+    * `org_not_opted_in` — the order was accepted under a fulfilment policy without
+      `auto_invoice_orders` (including no saved policy at all, whose tax rate is the hard-coded 0).
     * `no_crm_contact` — a walk-in or hand-typed buyer with no CRM contact: there is no identity
       to resolve a billed party from, and finance's customer book must not grow a row per order.
     """
-    snapshot = order.settings_snapshot or {}
-    if snapshot.get("source", "default") == "default":
-        _skip_invoice_request(session, ctx, order, "tax_rate_unset", request=request)
+    if settings().order_invoicing_mode == "off":
+        _skip_invoice_request(session, ctx, order, "invoicing_off", request=request)
+        return
+    if not (order.settings_snapshot or {}).get("auto_invoice_orders", False):
+        _skip_invoice_request(session, ctx, order, "org_not_opted_in", request=request)
         return
     if order.customer_id is None:
         _skip_invoice_request(session, ctx, order, "no_crm_contact", request=request)
@@ -1024,11 +1025,19 @@ async def request_invoice_for_order(
     transaction open). `None` means finance answered that the order's CRM contact is not part of
     this organization: skipped with an audit row, never sent with a made-up id.
 
+    `ORDER_INVOICING_MODE` is read here, when the request would be sent: `off` skips
+    (`invoicing_off`), `log_only` writes an `order.invoice_request_logged` audit row naming what
+    would have been sent and sends nothing, `live` sends it.
+
     An order cancelled, or already invoiced, since READY is left alone; finance refuses a second
     invoice for one order regardless (`uq_invoices_org_order_id`)."""
     order = await selectors.get_order(session, ctx.organization_id, order_id, for_update=True)
     if order is None or order.status == "CANCELLED" or order.invoice_id is not None:
         log.info("orders.invoice_request.not_needed", order_id=str(order_id))
+        return
+    mode = settings().order_invoicing_mode
+    if mode == "off":
+        _skip_invoice_request(session, ctx, order, "invoicing_off", request=request)
         return
     if finance_customer_id is None:
         _skip_invoice_request(session, ctx, order, "crm_contact_not_found", request=request)
@@ -1041,6 +1050,27 @@ async def request_invoice_for_order(
     payload = _invoice_request_payload(
         order, lines, items, customer_id=finance_customer_id, tax_rate_pct=tax_rate_pct
     )
+    if mode == "log_only":
+        would = {
+            "customer_id": str(finance_customer_id),
+            # Not sent: finance derives it from the billed party's GSTIN (b2b only with one).
+            "supply_type": payload.get("supply_type", "derived_by_finance"),
+            "tax_rate_pct": payload["tax_rate_pct"],
+            "expected_total_minor": payload["expected_total_minor"],
+        }
+        log.info("orders.invoice_request.logged", order_id=str(order.id), **would)
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=ctx.organization_id,
+            actor_id=ctx.principal.sub,
+            action="order.invoice_request_logged",
+            entity="order",
+            entity_id=order.id,
+            after=would,
+            request=request,
+        )
+        return
     publish_event(
         session,
         OutboxEvent,
@@ -1709,6 +1739,7 @@ _SETTINGS_FIELDS = (
     "require_pickup_code",
     "default_tax_rate_pct",
     "auto_assignment_enabled",
+    "auto_invoice_orders",
     "task_sla_minutes",
     "alert_email",
     "alert_phone",

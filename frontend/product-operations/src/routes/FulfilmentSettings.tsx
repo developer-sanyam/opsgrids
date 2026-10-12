@@ -50,6 +50,7 @@ interface Draft {
   requirePickupCode: boolean;
   taxRate: string;
   autoAssign: boolean;
+  autoInvoice: boolean;
   offerTimeout: string;
   offerRounds: string;
   taskSla: string;
@@ -67,6 +68,7 @@ function draftFrom(s: FulfilmentSettingsOut): Draft {
     requirePickupCode: s.require_pickup_code,
     taxRate: s.default_tax_rate_pct,
     autoAssign: s.auto_assignment_enabled,
+    autoInvoice: s.auto_invoice_orders,
     offerTimeout: String(s.offer_timeout_seconds),
     offerRounds: String(s.offer_rounds),
     taskSla: String(s.task_sla_minutes),
@@ -117,6 +119,7 @@ function validate(
       require_pickup_code: draft.requirePickupCode,
       default_tax_rate_pct: tax,
       auto_assignment_enabled: draft.autoAssign,
+      auto_invoice_orders: draft.autoInvoice,
       task_sla_minutes: sla,
       alert_email: email === "" ? null : email,
       alert_phone: phone === "" ? null : phone,
@@ -129,6 +132,7 @@ const SERVER_FIELD: Record<keyof Draft, string> = {
   requirePickupCode: "require_pickup_code",
   taxRate: "default_tax_rate_pct",
   autoAssign: "auto_assignment_enabled",
+  autoInvoice: "auto_invoice_orders",
   offerTimeout: "offer_timeout_seconds",
   offerRounds: "offer_rounds",
   taskSla: "task_sla_minutes",
@@ -216,6 +220,18 @@ function SettingsForm({ settings, warehouseId, canWrite, onSaved }: SettingsForm
             draft.requirePickupCode
               ? "The customer shows a 6-digit code at the counter before the order is handed over."
               : "Orders are handed over without a pickup code."
+          }
+          className="col-span-full"
+        />
+        <Switch
+          label="Invoice orders automatically"
+          checked={draft.autoInvoice}
+          onChange={(v) => set("autoInvoice", v)}
+          disabled={readOnly}
+          description={
+            draft.autoInvoice
+              ? "When an order is ready, a tax invoice is raised in Finance for its CRM customer at the default tax rate. Walk-in orders without a CRM customer are not invoiced."
+              : "Orders do not raise invoices automatically."
           }
           className="col-span-full"
         />

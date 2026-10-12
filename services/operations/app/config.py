@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from platform_core.config import ServiceSettings, settings_for
 
 
@@ -82,6 +84,11 @@ class Settings(ServiceSettings):
     #: edge's compose file points it at `http://finance:8000`.
     finance_internal_url: str = "http://localhost:8171"
     finance_timeout_seconds: float = 10.0
+    #: The box-wide switch for order invoicing (INVENTORY-01). `off`: READY records a skip and
+    #: queues nothing. `log_only` (default): the billed party is resolved and the request finance
+    #: would get is audited, but nothing is sent. `live`: the invoice is requested. In every mode an
+    #: organization must also have opted in (`fulfilment_settings.auto_invoice_orders`).
+    order_invoicing_mode: Literal["off", "log_only", "live"] = "log_only"
 
 
 def settings() -> Settings:

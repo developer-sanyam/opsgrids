@@ -33,6 +33,7 @@ const DEFAULTS = {
   require_pickup_code: false,
   default_tax_rate_pct: "0.00",
   auto_assignment_enabled: false,
+  auto_invoice_orders: false,
   task_sla_minutes: 60,
   alert_email: null,
   alert_phone: null,
@@ -78,12 +79,28 @@ describe("FulfilmentSettingsPage", () => {
           require_pickup_code: true,
           default_tax_rate_pct: "18",
           auto_assignment_enabled: false,
+          auto_invoice_orders: false,
           task_sla_minutes: 60,
           alert_email: null,
           alert_phone: null,
         },
         undefined,
       ),
+    );
+  });
+
+  it("turns order invoicing on only when the switch is on", async () => {
+    putFulfilmentSettings.mockResolvedValue({ ...DEFAULTS, source: "organization", auto_invoice_orders: true });
+    const user = userEvent.setup();
+    renderScreen(<FulfilmentSettingsPage />, [WRITE]);
+
+    const toggle = await screen.findByRole("switch", { name: "Invoice orders automatically" });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await user.click(toggle);
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+    await waitFor(() =>
+      expect(putFulfilmentSettings).toHaveBeenCalledWith(expect.objectContaining({ auto_invoice_orders: true }), undefined),
     );
   });
 
