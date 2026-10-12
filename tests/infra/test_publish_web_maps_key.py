@@ -368,8 +368,7 @@ def test_the_key_has_a_row_in_the_env_source_matrix_and_no_value() -> None:
 #: is where the CSP-hardening release allowed the Google Maps origins, on ops.opsgrids.com only.
 KNOWN_CSPS = {
     "default-src 'none'; sandbox",  # the public bucket's objects (ADR-0009)
-    "default-src 'self'; style-src 'self' https://fonts.googleapis.com; "
-    "font-src 'self' https://fonts.gstatic.com; frame-ancestors 'none'",  # admin.opsgrids.com
+    "default-src 'self'; style-src 'self'; font-src 'self'; frame-ancestors 'none'",  # admin
 }
 
 

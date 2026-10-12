@@ -11,7 +11,7 @@ export function NotFoundPage() {
         <p className="max-w-prose text-sm text-muted">Nothing lives at this address. The products page is the start of everything here.</p>
         <Link
           to="/"
-          className="inline-flex h-11 items-center rounded-full bg-accent px-5 font-semibold text-white transition-colors hover:bg-accent-strong"
+          className="inline-flex h-11 items-center rounded-full bg-accent px-5 font-semibold text-on-accent transition-colors hover:bg-accent-strong"
         >
           Back to products
         </Link>

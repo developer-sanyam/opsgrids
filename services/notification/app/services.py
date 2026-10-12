@@ -3742,48 +3742,8 @@ def _sealed_email(email: str) -> tuple[bytes, str, str]:
     return sealed, masked, selectors.email_index(email)
 
 
-#: What the ledger records when an operator adds a contact. It is an **attestation** — the
-#: organization saying it may email this address — and the text says so: nothing here checks it,
-#: and a reader of the ledger must not mistake it for a customer's own opt-in.
-_CONTACT_ADDED_EVIDENCE = (
-    "Added to the audience by an operator. The organization attests that it may email this "
-    "address; no separate opt-in evidence was captured (unverified)."
-)
-_CONTACT_IMPORTED_EVIDENCE = (
-    "Imported into the audience by an operator. The organization attests that it may email these "
-    "addresses; no separate opt-in evidence was captured (unverified)."
-)
-
-
 def _email_subject(*, index: str, enc: bytes, masked: str) -> consent.Subject:
     return consent.Subject(channel="email", index=index, enc=enc, masked=masked)
-
-
-async def _attest_new_contacts(
-    session: AsyncSession,
-    ctx: ScopeContext,
-    contacts: list[Contact],
-    *,
-    source: str,
-    evidence: str,
-) -> None:
-    """Record the organization's opt-in attestation for contacts an operator just added, so "add a
-    contact, then send a campaign" keeps working now that marketing needs an opt-in on record.
-    Only where the ledger is silent for that address — see `consent.attest_opt_ins`."""
-    await consent.attest_opt_ins(
-        session,
-        organization_id=ctx.organization_id,
-        contacts=[
-            consent.ContactSubject(
-                subject=_email_subject(index=c.email_index, enc=c.email_enc, masked=c.email_masked),
-                contact_id=c.id,
-            )
-            for c in contacts
-        ],
-        source=source,
-        evidence=evidence,
-        recorded_by=ctx.principal.sub,
-    )
 
 
 def unsubscribe_key() -> bytes | None:
@@ -3879,8 +3839,17 @@ async def create_contact(
     email: str,
     name: str = "",
     attributes: dict[str, Any] | None = None,
+    opt_in_source: str | None = None,
+    opt_in_evidence: str | None = None,
+    opt_in_occurred_at: datetime | None = None,
     request: Request | None = None,
 ) -> Contact:
+    """Add one contact. Adding someone is not their agreement to marketing, so no opt-in is
+    recorded unless the operator says how the person agreed (`opt_in_source`) and points at the
+    record of it (`opt_in_evidence`) — held to `record_consent_event`'s own checks. Without that
+    the contact is in the audience but not mailable: silence is not consent."""
+    if (opt_in_source is None) != (opt_in_evidence is None):
+        raise ValidationProblem("A marketing opt-in needs both how they agreed and the evidence")
     normalized = _normalize_email(email)
     sealed, masked, index = _sealed_email(normalized)
     if await selectors.contacts_by_index(session, ctx.organization_id, [index]):
@@ -3897,9 +3866,6 @@ async def create_contact(
     )
     session.add(contact)
     await session.flush()
-    await _attest_new_contacts(
-        session, ctx, [contact], source=consent.SOURCE_ADMIN, evidence=_CONTACT_ADDED_EVIDENCE
-    )
 
     record_audit(
         session,
@@ -3912,6 +3878,21 @@ async def create_contact(
         after={"email": masked, "name": name},
         request=request,
     )
+    if opt_in_source is not None and opt_in_evidence is not None:
+        await record_consent_event(
+            session,
+            ctx,
+            channel="email",
+            purpose=consent.MARKETING,
+            status=consent.OPTED_IN,
+            source=opt_in_source,
+            evidence=opt_in_evidence,
+            address=None,
+            contact_id=contact.id,
+            occurred_at=opt_in_occurred_at,
+            idempotency_key=None,
+            request=request,
+        )
     return contact
 
 
@@ -3930,7 +3911,8 @@ async def update_contact(
         raise NotFoundProblem("No such contact")
 
     before = {"email": contact.email_masked, "name": contact.name}
-    changed_address = False
+    # A new address is a new consent subject: the old address's opt-in does not carry over, so
+    # an edited address is not mailable until an opt-in is recorded for it.
     if email is not None:
         normalized = _normalize_email(email)
         index = selectors.email_index(normalized)
@@ -3938,7 +3920,6 @@ async def update_contact(
             if await selectors.contacts_by_index(session, ctx.organization_id, [index]):
                 raise ConflictProblem("Another contact already has that address")
             contact.email_enc, contact.email_masked, contact.email_index = _sealed_email(normalized)
-            changed_address = True
     if name is not None:
         contact.name = name
     if attributes is not None:
@@ -3946,13 +3927,6 @@ async def update_contact(
     contact.updated_by = str(ctx.principal.sub)
     contact.updated_at = datetime.now(UTC)
     await session.flush()
-    if changed_address:
-        # A new address is a new subject with no consent history, so without this an edited
-        # contact would quietly drop out of every campaign. Only where the ledger is silent for
-        # the new address — an address that opted out elsewhere keeps its refusal.
-        await _attest_new_contacts(
-            session, ctx, [contact], source=consent.SOURCE_ADMIN, evidence=_CONTACT_ADDED_EVIDENCE
-        )
 
     record_audit(
         session,
@@ -4169,14 +4143,9 @@ async def import_contacts(
             contact.updated_at = datetime.now(UTC)
             updated += 1
             results.append(("updated", contact, None))
+    # No consent column, so nothing to record: imported contacts are not mailable until an opt-in
+    # with evidence is recorded for them (`record_consent_event`).
     await session.flush()
-    await _attest_new_contacts(
-        session,
-        ctx,
-        [c for outcome, c, _ in results if outcome == "created" and c is not None],
-        source=consent.SOURCE_IMPORT,
-        evidence=_CONTACT_IMPORTED_EVIDENCE,
-    )
 
     record_audit(
         session,
@@ -4623,8 +4592,8 @@ async def record_storefront_opt_in(
     `opted_in` whatsapp/marketing event for their number, linked to the Engage contact for their
     email so a WhatsApp campaign can reach them. Returns None when it was already recorded.
 
-    The contact is created when there is none, **without** the email attestation `create_contact`
-    writes — the buyer agreed to WhatsApp, not to email. A contact an operator deleted is not
+    The contact is created when there is none, with no email opt-in — the buyer agreed to
+    WhatsApp, not to email. A contact an operator deleted is not
     brought back; the opt-in is then recorded against the number alone.
     """
     try:
@@ -4994,6 +4963,10 @@ async def change_list_members(
 
 EVT_CAMPAIGN_SEND_REQUESTED = "engage.campaign.campaign.send_requested"
 EVT_CAMPAIGN_CANCELLED = "engage.campaign.campaign.cancelled"
+#: Internal to notification: a scheduled send's time has come. The target `schedule_send` hands the
+#: scheduler (ADR-0015), handled exactly like `EVT_CAMPAIGN_SEND_REQUESTED`; it cannot be that
+#: event because the scheduler only delivers events namespaced under the requesting service.
+EVT_CAMPAIGN_SEND_DUE = "notification.campaign.send_due"
 #: Internal to notification: an A/B test's wait is over. Staged as the target of a
 #: `platform.schedule.requested` (ADR-0015) at expansion; `notification.` because the scheduler only
 #: delivers events namespaced under the requesting service.
@@ -5503,7 +5476,7 @@ async def schedule_send(
         organization_id=ctx.organization_id,
         due_at=scheduled_at,
         idempotency_key=_campaign_send_idempotency_key(campaign_id, scheduled_at),
-        target_event_type=EVT_CAMPAIGN_SEND_REQUESTED,
+        target_event_type=EVT_CAMPAIGN_SEND_DUE,
         target_aggregate_type="campaign",
         target_aggregate_id=row.id,
         target_payload={

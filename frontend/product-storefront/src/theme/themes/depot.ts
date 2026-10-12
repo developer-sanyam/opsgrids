@@ -83,7 +83,7 @@ export const depot: Theme = {
       }),
       sec("dpt-logos", "logo-wall", { x: 0, y: 35, w: 12, h: 4 }, {
         heading: "Supplying",
-        names: "Shapoorji Pallonji\nL&T Construction\nTata Projects\nAdani Infra\nNCC Limited\nAfcons",
+        names: "[Client name 1]\n[Client name 2]\n[Client name 3]\n[Client name 4]",
       }),
       sec("dpt-cta", "footer-cta", { x: 0, y: 39, w: 12, h: 5 }, {
         heading: "Ready to place a standing order?",
@@ -146,7 +146,7 @@ export const depot: Theme = {
       }),
       sec("dpt-prd-contact", "contact-block", { x: 6, y: 17, w: 6, h: 8 }, {
         heading: "The cable desk",
-        phone: "+91 22 4000 1182",
+        phone: "[Phone number]",
         email: "cable.desk@example.co.in",
       }),
       sec("dpt-prd-cta", "footer-cta", { x: 0, y: 25, w: 12, h: 5 }, {

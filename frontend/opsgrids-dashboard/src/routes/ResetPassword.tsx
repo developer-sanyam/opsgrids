@@ -78,7 +78,7 @@ export function ResetPasswordPage() {
           <p className="text-sm text-muted">Every other session on this account has been signed out.</p>
           <Link
             to="/login"
-            className="inline-flex h-11 items-center self-start rounded-full bg-accent px-5 font-semibold text-white transition-colors hover:bg-accent-strong"
+            className="inline-flex h-11 items-center self-start rounded-full bg-accent px-5 font-semibold text-on-accent transition-colors hover:bg-accent-strong"
           >
             Sign in
           </Link>

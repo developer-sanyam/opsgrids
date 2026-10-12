@@ -1605,6 +1605,7 @@ const FIXTURE_FULFILMENT_SETTINGS: FulfilmentSettingsOut = {
   require_pickup_code: false,
   default_tax_rate_pct: "0.00",
   auto_assignment_enabled: false,
+  auto_invoice_orders: false,
   task_sla_minutes: 60,
   alert_email: null,
   alert_phone: null,

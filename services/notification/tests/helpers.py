@@ -11,6 +11,13 @@ from typing import Any
 
 from platform_core.auth import Principal, Scope, ScopeContext
 
+#: `services.create_contact` kwargs for a contact who agreed to email marketing. Adding a contact
+#: records no opt-in without them (ADR-0021 §6), so a test that mails its contacts passes these.
+OPTED_IN: dict[str, str] = {
+    "opt_in_source": "web_form",
+    "opt_in_evidence": "newsletter signup form (test fixture)",
+}
+
 
 def principal_for(
     org_id: uuid.UUID,

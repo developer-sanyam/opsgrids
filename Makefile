@@ -630,6 +630,12 @@ edge-logs: edge-guard ## Tail the edge logs: make edge-logs HOST=… CONFIRM=…
 edge-backup: edge-guard ## Run the nightly backup now (dump + certificates, off-box): HOST=… CONFIRM=…
 	@$(EDGE_SSH) backup
 
+# AGE_KEY is a path on THIS machine: the private key goes over ssh's stdin into one shell variable
+# on the box and never onto its disk. Omit it only for a bucket that still holds plaintext dumps.
+.PHONY: edge-restore-drill
+edge-restore-drill: edge-guard ## Restore the newest off-box dump into opsgrids_restore, compare row counts, drop it: HOST=… CONFIRM=… [AGE_KEY=~/age-key.txt]
+	@$(EDGE_SSH) restore-drill < $(or $(AGE_KEY),/dev/null)
+
 # The buyer bundle is built here and shipped, not built on the box: the root .dockerignore
 # keeps `frontend` out of every image build context, and shipping only a bundle that compiled
 # is what stops a failed frontend build from breaking a merchant's shop.

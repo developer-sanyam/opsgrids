@@ -75,16 +75,16 @@ export const carton: Theme = {
       }),
       sec("crt-quotes", "testimonials", { x: 0, y: 31, w: 12, h: 7 }, {
         heading: "From the despatch bay",
-        quote1: "We moved 40,000 cartons through a festive quarter without one short delivery.",
-        author1: "Nilesh Pawar",
-        role1: "Despatch Manager, Aarav Home Products",
-        quote2: "The buffer stock arrangement is the only reason our Diwali peak was boring.",
-        author2: "Shalini Menon",
-        role2: "Operations, Kanha Foods",
+        quote1: "[Your customer's words, quoted with their permission]",
+        author1: "[Customer name]",
+        role1: "[Role, company]",
+        quote2: "[Your customer's words, quoted with their permission]",
+        author2: "[Customer name]",
+        role2: "[Role, company]",
       }),
       sec("crt-logos", "logo-wall", { x: 0, y: 38, w: 12, h: 4 }, {
         heading: "Packing for",
-        names: "Kanha Foods\nAarav Home Products\nVeda Pharma\nTitan Components\nSun Agro",
+        names: "[Client name 1]\n[Client name 2]\n[Client name 3]\n[Client name 4]",
       }),
       sec("crt-cta", "footer-cta", { x: 0, y: 42, w: 12, h: 6 }, {
         heading: "Set up a standing schedule",

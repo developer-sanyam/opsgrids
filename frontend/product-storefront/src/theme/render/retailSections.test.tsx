@@ -238,7 +238,9 @@ describe("the footer columns", () => {
   });
 
   it("leaves a tel: and a mailto: as plain anchors the router cannot swallow", () => {
-    renderSection(FooterColumns, "footer-columns");
+    renderSection(FooterColumns, "footer-columns", {
+      col4Links: "+91 291 244 0000 | tel:+912912440000\nhello@example.in | mailto:hello@example.in",
+    });
 
     expect(screen.getByRole("link", { name: "+91 291 244 0000" }).getAttribute("href")).toBe(
       "tel:+912912440000",

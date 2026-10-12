@@ -1329,6 +1329,8 @@ class FulfilmentSettingsIn(BaseModel):
     require_pickup_code: bool
     default_tax_rate_pct: Decimal = Field(ge=0, le=100, max_digits=5, decimal_places=2)
     auto_assignment_enabled: bool
+    #: Order invoicing opt-in (INVENTORY-01): READY orders raise a tax invoice only when true.
+    auto_invoice_orders: bool
     task_sla_minutes: int = Field(ge=1, le=10080)
     alert_email: EmailStr | None = Field(max_length=254)
     alert_phone: str | None = Field(max_length=20, pattern=r"^\+?[0-9][0-9 ()-]{5,19}$")
@@ -1347,6 +1349,7 @@ class FulfilmentSettingsOut(BaseModel):
     require_pickup_code: bool
     default_tax_rate_pct: Decimal
     auto_assignment_enabled: bool
+    auto_invoice_orders: bool
     task_sla_minutes: int
     alert_email: str | None
     alert_phone: str | None

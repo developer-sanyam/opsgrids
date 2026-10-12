@@ -20,10 +20,10 @@ never a mutation, and the balance is a query, not a column (ADR-0004 §3).
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +42,7 @@ from app.models import (
     Invoice,
     InvoiceLine,
     OutboxEvent,
+    TaxInvoiceSeries,
 )
 from app.schemas import (
     CreditConsumeIn,
@@ -50,6 +51,7 @@ from app.schemas import (
     FinalizeInvoiceIn,
     VoidInvoiceIn,
 )
+from platform_core import gst
 from platform_core.audit import record_audit
 from platform_core.db import set_tenant
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
@@ -819,3 +821,27 @@ async def record_operator_invoices_read(
             entity="invoice",
             request=request,
         )
+
+
+async def allocate_tax_invoice_number(session: AsyncSession, *, series: str, on: date) -> str:
+    """The supplier's next GST tax-invoice number for `series` in `on`'s financial year.
+
+    Runs inside the caller's (finalize) transaction and does not commit: one atomic
+    `INSERT ... ON CONFLICT DO UPDATE ... RETURNING` on the `(series, financial_year)` row, so
+    concurrent finalizes serialize on that row's lock and get consecutive numbers, and a
+    rolled-back finalize consumes none (ADR-0004 Q1 decision 4). Not called by finalize yet.
+    """
+    if series not in domain.TAX_INVOICE_PREFIXES:
+        raise BusinessRuleProblem(f"No tax-invoice number format is decided for {series!r}")
+    financial_year = gst.financial_year(on)
+    stmt = (
+        pg_insert(TaxInvoiceSeries)
+        .values(series=series, financial_year=financial_year, last_seq=1)
+        .on_conflict_do_update(
+            index_elements=[TaxInvoiceSeries.series, TaxInvoiceSeries.financial_year],
+            set_={"last_seq": TaxInvoiceSeries.last_seq + 1, "updated_at": func.now()},
+        )
+        .returning(TaxInvoiceSeries.last_seq)
+    )
+    seq = (await session.execute(stmt)).scalar_one()
+    return domain.tax_invoice_number(series, financial_year, seq)

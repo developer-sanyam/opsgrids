@@ -668,6 +668,8 @@ export interface FulfilmentSettingsIn {
   /** A decimal string, 0.00–100.00. */
   default_tax_rate_pct: string;
   auto_assignment_enabled: boolean;
+  /** Order invoicing opt-in (INVENTORY-01): READY orders raise a tax invoice only when true. */
+  auto_invoice_orders: boolean;
   task_sla_minutes: number;
   alert_email: string | null;
   alert_phone: string | null;

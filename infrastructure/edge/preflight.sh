@@ -53,7 +53,7 @@ optional_empty="$optional_empty SMTP_HOST SMTP_USERNAME SMTP_PASSWORD RAZORPAY_K
 # `env_ignore_empty` reads it in the service. What a non-empty value may be is checked below.
 # PAYMENT_ALLOW_TEST_KEYS (staging only) is never required either; when it is on it is warned
 # about loudly, below.
-optional_empty="$optional_empty PAYMENT_PROVIDER PAYMENT_WIRE PAYMENT_ALLOW_LIVE_KEYS PAYMENT_ALLOW_TEST_KEYS CASHFREE_ENV CASHFREE_APP_ID CASHFREE_SECRET_KEY"
+optional_empty="$optional_empty PAYMENT_PROVIDER PAYMENT_WIRE PAYMENT_ALLOW_LIVE_KEYS PAYMENT_ALLOW_TEST_KEYS PAYMENT_REQUIRE_LIVE CASHFREE_ENV CASHFREE_APP_ID CASHFREE_SECRET_KEY"
 # Empty means "derive from COMPOSE_PROFILES" (`OpsMonitorSettings`'s own `expected_api_containers`/
 # `expected_dlq_queues`) — a perfectly valid state for every box, not a placeholder to fill in;
 # set explicitly only to narrow or override that computed list. SMTP_USE_SSL false is also the

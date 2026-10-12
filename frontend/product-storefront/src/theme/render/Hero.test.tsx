@@ -85,3 +85,18 @@ describe("the hero heading's size", () => {
     expect(fontSize).toBe("clamp(2rem, 0px, 3.4rem)");
   });
 });
+
+describe("the hero picture's description", () => {
+  it("carries the merchant's image description as alt text", () => {
+    const { view } = renderHero(DESKTOP, {
+      image: "/img/hero-foundry.svg",
+      imageAlt: "Bearings on a warehouse shelf",
+    });
+    expect(view.container.querySelector("img")?.getAttribute("alt")).toBe("Bearings on a warehouse shelf");
+  });
+
+  it("stays decorative (empty alt) when no description is given", () => {
+    const { view } = renderHero(DESKTOP, { image: "/img/hero-foundry.svg" });
+    expect(view.container.querySelector("img")?.getAttribute("alt")).toBe("");
+  });
+});

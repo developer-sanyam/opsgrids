@@ -30,6 +30,7 @@ def body(**overrides: object) -> dict[str, object]:
         "require_pickup_code": True,
         "default_tax_rate_pct": "18.00",
         "auto_assignment_enabled": True,
+        "auto_invoice_orders": False,
         "task_sla_minutes": 45,
         "alert_email": "ops@example.com",
         "alert_phone": "+91 98765 43210",
@@ -100,9 +101,25 @@ class TestDefaults:
         assert out["invoice_timing"] == "on_delivery"
         assert out["warehouse_id"] is None
         assert out["updated_at"] is None
+        assert out["auto_invoice_orders"] is False
 
 
 class TestWrite:
+    async def test_order_invoicing_opt_in_round_trips_and_is_audited(
+        self, client, session, org_id
+    ) -> None:
+        resp = await put(client, org_id, [WRITE, READ], body(auto_invoice_orders=True))
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["auto_invoice_orders"] is True
+        assert (await get(client, org_id, [READ])).json()["auto_invoice_orders"] is True
+        async with session.begin():
+            audit = (
+                await session.execute(
+                    select(AuditLog).where(AuditLog.action == "fulfilment.settings.updated")
+                )
+            ).scalar_one()
+        assert audit.after["auto_invoice_orders"] is True
+
     async def test_put_upserts_the_org_row_and_audits_it(self, client, session, org_id) -> None:
         first = await put(client, org_id, [WRITE, READ], body())
         assert first.status_code == 200, first.text

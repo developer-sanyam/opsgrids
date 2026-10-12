@@ -27,7 +27,7 @@ function renderForm() {
 
 async function fillValidly(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText("Your name"), "Rajeev Bhatia");
-  await user.type(screen.getByLabelText("Company"), "Sunrise Engineering");
+  await user.type(screen.getByLabelText("Company (optional)"), "Sunrise Engineering");
   await user.type(screen.getByLabelText("Email"), "rajeev@sunrise.example.in");
   await user.type(screen.getByLabelText("What do you need?"), "200 coils of 2.5 sq mm FRLS");
 }
@@ -46,10 +46,34 @@ describe("validation", () => {
     expect(describedBy).not.toBeNull();
     expect(document.getElementById(describedBy ?? "")?.textContent).toBe("Enter your name.");
 
-    expect(screen.getByText("Enter your company name.")).not.toBeNull();
     expect(screen.getByText("Enter an email address we can reply to.")).not.toBeNull();
     expect(screen.getByText("Tell us which line you need.")).not.toBeNull();
+    expect(screen.getByLabelText("Company (optional)").getAttribute("aria-invalid")).toBeNull();
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("marks exactly the required fields, and sends without a company", async () => {
+    const submit = vi
+      .spyOn(client, "submitEnquiry")
+      .mockResolvedValue({ id: "enq-1", received_at: "2026-09-18T00:00:00Z" });
+    const user = userEvent.setup();
+    renderForm();
+
+    for (const label of ["Your name", "Email", "What do you need?"]) {
+      expect(screen.getByLabelText(label).hasAttribute("required"), label).toBe(true);
+    }
+    for (const label of ["Company (optional)", "Phone (optional)", "GSTIN (optional)"]) {
+      expect(screen.getByLabelText(label).hasAttribute("required"), label).toBe(false);
+    }
+    expect(screen.getAllByText("*")).toHaveLength(3);
+
+    await user.type(screen.getByLabelText("Your name"), "Asha Rao");
+    await user.type(screen.getByLabelText("Email"), "asha@example.in");
+    await user.type(screen.getByLabelText("What do you need?"), "One dining table");
+    await user.click(screen.getByRole("button", { name: "Send enquiry" }));
+
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    expect(submit.mock.calls[0]?.[0].company).toBe("");
   });
 
   it("rejects a malformed GSTIN with the format spelled out", async () => {

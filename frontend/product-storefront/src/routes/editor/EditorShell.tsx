@@ -22,7 +22,7 @@ import { findDef } from "@/editor/sectionLibrary";
 import { SettingsInspector } from "@/editor/SettingsInspector";
 import { ThemeTokenPanel } from "@/editor/ThemeTokenPanel";
 import type { Brand, NavPlacement, SectionDef, StoreDoc } from "@/theme/schema";
-import { resolveMode } from "@/theme/store";
+import { resolveMode, sectionsWithPlaceholders } from "@/theme/store";
 
 /**
  * The three panes, the toolbar above them, and the one place document edits are turned into
@@ -242,6 +242,7 @@ export function EditorShell({
           pageId={state.pageId}
           device={state.device}
           dirty={dirty}
+          placeholderCount={sectionsWithPlaceholders(state.present).length}
           canUndo={canUndo(state)}
           canRedo={canRedo(state)}
           canEdit={canEdit}

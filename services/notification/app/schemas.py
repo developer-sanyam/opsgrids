@@ -473,12 +473,27 @@ SuppressionReason = Literal["unsubscribed", "bounced", "complained", "manual"]
 CONTACT_IMPORT_MAX = 1000
 
 
+class ContactOptInIn(BaseModel):
+    """How a contact agreed to email marketing — the `source` / `evidence` / `occurred_at` of
+    `ConsentEventIn`, held to the same checks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: ConsentApiSource
+    evidence: str = Field(min_length=3, max_length=500)
+    occurred_at: AwareDatetime | None = None
+
+
 class ContactIn(BaseModel):
+    """Add a contact. Adding someone is not their agreement to marketing: without
+    `marketing_opt_in` no opt-in is recorded and campaigns do not mail them."""
+
     model_config = ConfigDict(extra="forbid")
 
     email: str = Field(min_length=3, max_length=254)
     name: str = Field(default="", max_length=200)
     attributes: dict[str, Any] = Field(default_factory=dict)
+    marketing_opt_in: ContactOptInIn | None = None
 
 
 class ContactPatch(BaseModel):

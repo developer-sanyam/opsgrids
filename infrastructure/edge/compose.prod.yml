@@ -1026,6 +1026,12 @@ services:
       METERING_SERVICE_URL: http://metering:8000
       BILLING_TAX_CODE: ${BILLING_TAX_CODE:-}
       BILLING_TAX_JURISDICTION: ${BILLING_TAX_JURISDICTION:-}
+      # The GST supplier (ADR-0004 Q1). Empty and inert until tax invoices are wired in; when
+      # set, billing refuses to start on a GSTIN with a bad check digit.
+      BILLING_SUPPLIER_GSTIN: ${BILLING_SUPPLIER_GSTIN:-}
+      BILLING_SUPPLIER_LEGAL_NAME: ${BILLING_SUPPLIER_LEGAL_NAME:-}
+      BILLING_SUPPLIER_STATE_CODE: ${BILLING_SUPPLIER_STATE_CODE:-}
+      BILLING_DEFAULT_SAC: ${BILLING_DEFAULT_SAC:-}
     networks:
       - back
 
@@ -1072,6 +1078,9 @@ services:
       # WARNING at start-up and preflight warns while it is on (RUNBOOK.md, 'Payments: test mode
       # on a staging box').
       PAYMENT_ALLOW_TEST_KEYS: ${PAYMENT_ALLOW_TEST_KEYS:-false}
+      # Opt-in: `true` refuses to start on the stub, on test keys or with PAYMENT_ALLOW_TEST_KEYS —
+      # for the box that must collect real money (preflight fails the same combinations).
+      PAYMENT_REQUIRE_LIVE: ${PAYMENT_REQUIRE_LIVE:-false}
       CASHFREE_ENV: ${CASHFREE_ENV:-stub}
       CASHFREE_APP_ID: ${CASHFREE_APP_ID:-}
       CASHFREE_SECRET_KEY: ${CASHFREE_SECRET_KEY:-}
@@ -1332,6 +1341,12 @@ services:
       # tenant collections (ADR-0024 A4) over its internal API — operations holds no payment
       # secret or state. Service-to-service on `back`, never through a gateway.
       PAYMENT_SERVICE_URL: http://payment:8000
+      # The order-invoice consumer resolves an order's CRM contact into finance's billed party
+      # (`customers:resolve-for-crm-contact`) before asking finance for the invoice.
+      FINANCE_INTERNAL_URL: http://finance:8000
+      # Order invoicing's box-wide switch (INVENTORY-01): `off`, `log_only` (resolve and audit,
+      # send nothing) or `live`. Each organization must also opt in on its fulfilment settings.
+      ORDER_INVOICING_MODE: ${ORDER_INVOICING_MODE:-log_only}
     networks:
       - back
 
@@ -1594,7 +1609,11 @@ services:
     build:
       context: ../..
       dockerfile: services/finance/Dockerfile
-    environment: *service-env
+    environment:
+      <<: *service-env
+      # `customers:resolve-for-crm-contact` reads the CRM contact it bridges from customer's
+      # internal API; without this it calls localhost and every order invoice waits.
+      CUSTOMER_INTERNAL_URL: http://customer:8000
     networks:
       - back
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from platform_core.config import ServiceSettings, settings_for
 
 
@@ -75,6 +77,18 @@ class Settings(ServiceSettings):
     #: (`collections_call_timeout_seconds`); this stays under the gateway's 30 s so a slow
     #: provider is a clean 503 here rather than the gateway's own timeout.
     payment_call_timeout_seconds: float = 25.0
+
+    #: Where `services/finance`'s internal API answers: the order-invoice consumer
+    #: (`app.consumers.order_invoice_due`) resolves an order's CRM contact into finance's own
+    #: billed party there before asking for the invoice. Local `make run` port by default; the
+    #: edge's compose file points it at `http://finance:8000`.
+    finance_internal_url: str = "http://localhost:8171"
+    finance_timeout_seconds: float = 10.0
+    #: The box-wide switch for order invoicing (INVENTORY-01). `off`: READY records a skip and
+    #: queues nothing. `log_only` (default): the billed party is resolved and the request finance
+    #: would get is audited, but nothing is sent. `live`: the invoice is requested. In every mode an
+    #: organization must also have opted in (`fulfilment_settings.auto_invoice_orders`).
+    order_invoicing_mode: Literal["off", "log_only", "live"] = "log_only"
 
 
 def settings() -> Settings:

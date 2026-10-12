@@ -31,7 +31,7 @@ from app.transports import TransportUnavailable
 from platform_core.auth import Scope
 from platform_core.db import TENANT_GUC
 from tests.conftest import _connect_args
-from tests.helpers import ctx_for
+from tests.helpers import OPTED_IN, ctx_for
 
 pytestmark = pytest.mark.integration
 
@@ -139,7 +139,7 @@ async def _seed_sending_campaign(
     write = ctx_for(org_id, "engage.audience.contact.write", Scope.ORG)
     async with session.begin():
         for email in emails:
-            await services.create_contact(session, write, email=email)
+            await services.create_contact(session, write, email=email, **OPTED_IN)
 
     wr = ctx_for(org_id, "engage.campaign.campaign.write", Scope.ORG)
     async with session.begin():

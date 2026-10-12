@@ -32,8 +32,10 @@ from platform_core.db import apply_schema_grants
 #:   - credit_ledger, invoice_lines: fully append-only (a correction is a new row).
 #:   - invoices: DELETE revoked; UPDATE kept for the finalized->void move, which the freeze
 #:     trigger gates so the row still cannot be altered in any other way.
+#:   - tax_invoice_series: a counter (UPDATE is the allocation), but a row is never removed —
+#:     deleting one would restart a GST series mid-year (ADR-0004 Q1).
 _REVOKE_UPDATE_DELETE = ("credit_ledger", "invoice_lines")
-_REVOKE_DELETE_ONLY = ("invoices",)
+_REVOKE_DELETE_ONLY = ("invoices", "tax_invoice_series")
 
 #: The staff reader for the credit ledger and one organization's invoices. SELECT only — no write
 #: ever reaches this role, so a bug in the read path cannot write across tenants (mirrors

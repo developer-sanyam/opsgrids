@@ -20,7 +20,7 @@ from sqlalchemy import select, update
 from app import consent, models, selectors, services
 from app.main import app
 from platform_core.auth import Principal, Scope, get_principal
-from tests.helpers import ctx_for, principal_for
+from tests.helpers import OPTED_IN, ctx_for, principal_for
 
 pytestmark = pytest.mark.integration
 
@@ -53,10 +53,11 @@ def caller(org_id: uuid.UUID, perms: list[str]) -> Principal:
 
 
 async def _contact(session, org_id, email: str, phone: str | None = None) -> uuid.UUID:
-    """A contact and, when `phone` is given, a WhatsApp marketing opt-in linked to it."""
+    """A contact who agreed to email marketing and, when `phone` is given, a WhatsApp marketing
+    opt-in linked to it."""
     async with session.begin():
         row = await services.create_contact(
-            session, ctx_for(org_id, C_WRITE, Scope.ORG), email=email
+            session, ctx_for(org_id, C_WRITE, Scope.ORG), email=email, **OPTED_IN
         )
         if phone is not None:
             await services.record_consent_event(
@@ -215,7 +216,7 @@ async def test_a_segment_counts_only_contacts_in_its_filter_with_consent_for_the
         assert (await client.get(SEGMENTS)).json()["total"] == 1
         wa = await client.get(f"{SEGMENTS}/{seg}/count", params={"channel": "whatsapp"})
         assert wa.json() == {"channel": "whatsapp", "recipients": 1}
-        # Email consent is its own ledger entry: an operator-added contact is attested for email,
+        # Email consent is its own ledger entry: every contact here opted in to email when added,
         # so all three list members can be emailed, WhatsApp opt-out or not.
         email = await client.get(f"{SEGMENTS}/{seg}/count", params={"channel": "email"})
         assert email.json() == {"channel": "email", "recipients": 3}

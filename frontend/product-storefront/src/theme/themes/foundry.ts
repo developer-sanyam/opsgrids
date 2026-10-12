@@ -33,7 +33,7 @@ export const foundry: Theme = {
   pages: [
     page("fdy-home", "/", "Home", [
       sec("fdy-hero", "hero", { x: 0, y: 0, w: 12, h: 9 }, {
-        eyebrow: "Established 1994",
+        eyebrow: "Established [year founded]",
         heading: "The fastener and bearing shelf your line runs on",
         body: "Twelve thousand stocked SKUs, dispatched the same working day from Bhiwandi, Coimbatore and Ludhiana.",
         ctaLabel: "Browse the catalogue",
@@ -44,7 +44,7 @@ export const foundry: Theme = {
       }),
       sec("fdy-logos", "logo-wall", { x: 0, y: 9, w: 12, h: 4 }, {
         heading: "On approved vendor lists at",
-        names: "Godrej & Boyce\nThermax\nKirloskar Brothers\nAshok Leyland\nBharat Forge\nCummins India",
+        names: "[Client name 1]\n[Client name 2]\n[Client name 3]\n[Client name 4]",
       }),
       sec("fdy-cats", "category-tiles", { x: 0, y: 13, w: 12, h: 7 }, {
         heading: "Shop by category",

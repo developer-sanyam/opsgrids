@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import re
+
+from pydantic import field_validator, model_validator
+
+from platform_core import gst
 from platform_core.config import ServiceSettings, settings_for
 
 
@@ -40,6 +45,44 @@ class Settings(ServiceSettings):
     #: is refused rather than invoiced untaxed.
     billing_tax_code: str | None = None
     billing_tax_jurisdiction: str | None = None
+
+    # --- the GST supplier (ADR-0004 Q1 decision 1) -----------------------------------------
+    #: The legal entity operating the deployment, as it appears on a GST tax invoice. All empty by
+    #: default and **inert**: nothing reads them yet (finalize still issues commercial invoices),
+    #: so they are only checked for shape when set, never required.
+    billing_supplier_gstin: str | None = None
+    billing_supplier_legal_name: str | None = None
+    billing_supplier_state_code: str | None = None
+    #: The default SAC (services accounting code) for catalog products that carry none.
+    billing_default_sac: str | None = None
+
+    @field_validator("billing_supplier_gstin")
+    @classmethod
+    def _gstin_has_a_valid_check_digit(cls, v: str | None) -> str | None:
+        return None if v is None else gst.parse_gstin(v).value
+
+    @field_validator("billing_supplier_state_code")
+    @classmethod
+    def _state_code_is_a_gst_state(cls, v: str | None) -> str | None:
+        if v is not None and v not in gst.GST_STATE_CODES:
+            raise ValueError("BILLING_SUPPLIER_STATE_CODE is not a GST state code")
+        return v
+
+    @field_validator("billing_default_sac")
+    @classmethod
+    def _sac_is_six_digits_in_chapter_99(cls, v: str | None) -> str | None:
+        if v is not None and not re.fullmatch(r"99\d{4}", v):
+            raise ValueError("BILLING_DEFAULT_SAC is a six-digit SAC starting 99")
+        return v
+
+    @model_validator(mode="after")
+    def _state_code_matches_the_gstin(self) -> Settings:
+        gstin, state = self.billing_supplier_gstin, self.billing_supplier_state_code
+        if gstin and state and gstin[:2] != state:
+            raise ValueError(
+                "BILLING_SUPPLIER_STATE_CODE differs from BILLING_SUPPLIER_GSTIN's state"
+            )
+        return self
 
 
 def settings() -> Settings:

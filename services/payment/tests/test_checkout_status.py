@@ -11,6 +11,8 @@ never moves it.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -20,6 +22,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.providers.razorpay import _STUB_CHECKOUT_SECRET, RazorpayProvider
 from app.providers.wire import CREDENTIALS
 from tests import checkout_support as cs
 from tests.helpers import audit_rows, emitted, force_charge, rows
@@ -320,6 +323,35 @@ class TestConfirm:
         assert (
             await cs.confirm_checkout(client, org_id, out["charge_id"], body)
         ).status_code == 409
+
+    async def test_a_signature_forged_with_the_stubs_public_secret_marks_nothing_paid(
+        self, client: AsyncClient, admin_session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """With `PAYMENT_WIRE=stub` and no key secret, the callback HMAC is keyed by a constant in
+        the repository, so anyone can forge one. That signature is only the
+        precondition for asking the provider: the stub's `order_payments` holds nothing a client
+        can write, so the invoice stays unpaid and no `commerce.payment.captured` is emitted."""
+        stub = RazorpayProvider(
+            key_id=None, key_secret=None, webhook_secret=cs.HOOK, platform_billing=True
+        )
+        _, _, out = await _open(client, org_id, provider=stub)
+        order_id = out["client_action"]["order_id"]
+        forged = hmac.new(
+            _STUB_CHECKOUT_SECRET.encode(), f"{order_id}|pay_forged".encode(), hashlib.sha256
+        ).hexdigest()
+        body = {
+            "razorpay_order_id": order_id,
+            "razorpay_payment_id": "pay_forged",
+            "razorpay_signature": forged,
+        }
+
+        response = await cs.confirm_checkout(client, org_id, out["charge_id"], body)
+
+        assert response.status_code == 200, response.text  # the forgery passes the precondition…
+        assert response.json()["paid"] is False  # …and proves nothing
+        row = await _row(admin_session, out["charge_id"])
+        assert row["state"] == "created" and row["provider_payment_id"] is None
+        assert await _captured_events(admin_session, org_id) == []
 
     async def test_authorization(
         self, client: AsyncClient, org_id: uuid.UUID, org_b: uuid.UUID

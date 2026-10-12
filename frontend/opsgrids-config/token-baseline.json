@@ -9,15 +9,12 @@
     "spacing": 1
   },
   "opsgrids-dashboard/src/routes/Marketplace.tsx": {
-    "colour": 2,
     "spacing": 2
   },
   "opsgrids-dashboard/src/routes/NotFound.tsx": {
-    "colour": 1,
     "spacing": 1
   },
   "opsgrids-dashboard/src/routes/ResetPassword.tsx": {
-    "colour": 1,
     "spacing": 1
   },
   "opsgrids-dashboard/src/routes/Signup.tsx": {
@@ -60,7 +57,6 @@
     "spacing": 6
   },
   "opsgrids-internal/src/routes/NotFound.tsx": {
-    "colour": 1,
     "spacing": 3
   },
   "opsgrids-internal/src/routes/Overview.tsx": {
@@ -102,7 +98,7 @@
     "spacing": 2
   },
   "opsgrids-internal/src/ui/Button.tsx": {
-    "colour": 2,
+    "colour": 1,
     "arbitrary": 1,
     "spacing": 2
   },
@@ -129,7 +125,6 @@
     "arbitrary": 1
   },
   "opsgrids-internal/src/ui/Pill.tsx": {
-    "colour": 1,
     "spacing": 1
   },
   "opsgrids-internal/src/ui/SearchInput.tsx": {

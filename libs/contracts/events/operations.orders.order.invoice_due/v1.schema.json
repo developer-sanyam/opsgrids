@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/operations.orders.order.invoice_due/v1",
+  "title": "operations.orders.order.invoice_due",
+  "description": "An order reached READY under a saved fulfilment policy with a CRM contact as its buyer, so an invoice is owed (INVENTORY-01). Consumed by operations itself (`app.consumers.order_invoice_due`), which resolves `crm_contact_id` into finance's billed party over finance's internal API with no transaction open, then emits `operations.orders.order.invoice_requested`. Exists only to carry that network call out of the READY transaction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "order_id", "crm_contact_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "order_id": { "type": "string", "format": "uuid" },
+    "crm_contact_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "`operations.orders.customer_id`: a `services/customer` contact id, not a finance customer id."
+    }
+  }
+}

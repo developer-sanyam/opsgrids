@@ -156,8 +156,8 @@ export const circuit: Theme = {
       }),
       sec("cir-prd-contact", "contact-block", { x: 6, y: 15, w: 6, h: 9 }, {
         heading: "Technical desk",
-        address: "No. 44, Ambattur Industrial Estate\nChennai, Tamil Nadu 600058",
-        phone: "+91 44 4285 9000",
+        address: "[Street address]\n[City, State PIN code]",
+        phone: "[Phone number]",
         email: "technical@example.co.in",
       }),
       sec("cir-prd-carousel", "product-carousel", { x: 0, y: 24, w: 12, h: 8 }, {

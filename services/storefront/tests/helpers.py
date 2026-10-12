@@ -32,6 +32,7 @@ CATALOGUE_WRITE = "storefront.catalogue.product.write"
 ENQUIRY_READ = "storefront.sales.enquiry.read"
 ENQUIRY_WRITE = "storefront.sales.enquiry.write"
 ENQUIRY_UNMASK = "storefront.sales.enquiry.unmask"
+ENQUIRY_DELETE = "storefront.sales.enquiry.delete"
 
 ALL_PERMISSIONS = (
     STORE_READ,
@@ -43,6 +44,7 @@ ALL_PERMISSIONS = (
     ENQUIRY_READ,
     ENQUIRY_WRITE,
     ENQUIRY_UNMASK,
+    ENQUIRY_DELETE,
 )
 
 

@@ -79,6 +79,10 @@ allowed = [
     # licence for the ported C. Both are permissive; Zlib asks only that the origin is not
     # misrepresented.
     "Zlib",
+    # SIL Open Font License: the bundled web fonts (@fontsource). Embedding and redistributing the
+    # unmodified font with the product is allowed; only a modified font must stay OFL and be
+    # renamed. Notices: frontend/NOTICE-fonts.txt.
+    "OFL-1.1",
 ]
 
 # npm packages allowed by name, each with the reason. Empty: every production package declares

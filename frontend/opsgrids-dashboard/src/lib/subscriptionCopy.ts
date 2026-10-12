@@ -20,6 +20,15 @@ export const ACCESS_LAG_COPY = "Product access updates within about 15 minutes."
 
 export const PRICING_CONTACT_EMAIL = "info@opsgrids.com";
 
+/**
+ * A trial converts to a paid subscription on its own (the subscription service's billing run), so
+ * wherever a trial starts or is shown, this says so: when, at what price, and where to stop it.
+ */
+export function trialTerms(trialEndsAt: string | null = null): string {
+  const when = trialEndsAt ? `When the trial ends on ${formatDate(trialEndsAt)}` : "When a trial ends";
+  return `${when}, it continues as a paid subscription at the price agreed for your organisation, plus GST, unless you cancel it before then on the Subscriptions page.`;
+}
+
 const CHANGEABLE_STATES = new Set(["trial", "active"]);
 
 /** Only a trial or an active subscription changes plan; the server refuses every other state. */
@@ -144,9 +153,14 @@ function perInterval(interval: string | null): string {
   }
 }
 
+/** Billing adds tax on top of the plan price (exclusive, `billing/app/domain.py`), so every amount says so. */
+export function taxSuffix(currency: string): string {
+  return currency.toUpperCase() === "INR" ? " + GST" : " + tax";
+}
+
 /**
- * "₹2,000.00 per month", "₹500.00 per seat per month + usage" — or, without a visible amount,
- * "Billed monthly". Formatted, never computed: integer minor units in, `Intl` out.
+ * "₹2,000.00 per month + GST", "₹500.00 per seat per month + usage + GST" — or, without a visible
+ * amount, "Billed monthly". Formatted, never computed: integer minor units in, `Intl` out.
  */
 export function priceLine(ref: PlanRef): string {
   const prices = ref.prices;
@@ -161,9 +175,12 @@ export function priceLine(ref: PlanRef): string {
       return p.kind === "per_seat" ? `${amount} per ${p.unit ?? "seat"}` : amount;
     });
   const usage = prices.some((p) => p.kind === "usage");
-  if (fixed.length === 0) return usage ? `Usage-based, ${billedPhrase(ref.billing_interval).toLowerCase()}` : billedPhrase(ref.billing_interval);
+  const tax = taxSuffix(currency);
+  if (fixed.length === 0) {
+    return usage ? `Usage-based${tax}, ${billedPhrase(ref.billing_interval).toLowerCase()}` : billedPhrase(ref.billing_interval);
+  }
   const cadence = perInterval(ref.billing_interval);
-  return `${fixed.join(" + ")}${cadence ? ` ${cadence}` : ""}${usage ? " + usage" : ""}`;
+  return `${fixed.join(" + ")}${cadence ? ` ${cadence}` : ""}${usage ? " + usage" : ""}${tax}`;
 }
 
 /** A plan's name for people, never a bare id. */

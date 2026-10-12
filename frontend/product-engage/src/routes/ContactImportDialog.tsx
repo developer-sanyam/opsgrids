@@ -100,7 +100,7 @@ export function ContactImportDialog({
       open={open}
       onClose={close}
       title="Import contacts"
-      description={`Paste rows as email, name — one contact per line, up to ${CONTACT_IMPORT_MAX} at a time. A header row starting with "email" is fine and is skipped.`}
+      description={`Paste rows as email, name — one contact per line, up to ${CONTACT_IMPORT_MAX} at a time. A header row starting with "email" is fine and is skipped. Imported contacts get no marketing email until their opt-in is recorded.`}
       size="lg"
       footer={
         result === null ? (

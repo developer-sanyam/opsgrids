@@ -560,6 +560,7 @@ record-budget) record_budget ;;
 last-good-ref) good_ref ;;
 reconcile-permissions) reconcile_permissions "${2:-}" "${3:-}" ;;
 backup) ./backup.sh ;;
+restore-drill) ./restore-drill.sh ;;
 status)
 	"${COMPOSE[@]}" ps
 	echo
@@ -597,7 +598,7 @@ compose)
 	"${COMPOSE[@]}" "$@"
 	;;
 *)
-	echo "usage: remote.sh {assert-host <host>|preflight|build|validate|migrate|reconcile-roles|up|health|deploy|previous-ref|record-budget|backup|status|logs [lines] [svc]|compose ...}" >&2
+	echo "usage: remote.sh {assert-host <host>|preflight|build|validate|migrate|reconcile-roles|up|health|deploy|previous-ref|record-budget|backup|restore-drill|status|logs [lines] [svc]|compose ...}" >&2
 	exit 64
 	;;
 esac

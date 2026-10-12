@@ -148,7 +148,7 @@ describe("priceLine — an amount only where the server sent one", () => {
         prices: [{ kind: "flat", amount_minor: 250000, unit: null, unit_price_micros: null, meter_key: null }],
       }),
     );
-    expect(line).toBe("₹2,500.00 per month");
+    expect(line).toBe("₹2,500.00 per month + GST");
   });
 
   it("per-seat and usage components read as such", () => {
@@ -163,7 +163,7 @@ describe("priceLine — an amount only where the server sent one", () => {
         ],
       }),
     );
-    expect(line).toMatch(/^\$12\.00 per seat per year \+ usage$/);
+    expect(line).toMatch(/^\$12\.00 per seat per year \+ usage \+ tax$/);
   });
 
   it("a zero-exponent currency keeps its own minor units", () => {
@@ -174,7 +174,7 @@ describe("priceLine — an amount only where the server sent one", () => {
         prices: [{ kind: "flat", amount_minor: 5000, unit: null, unit_price_micros: null, meter_key: null }],
       }),
     );
-    expect(line).toMatch(/5,000 per month$/);
+    expect(line).toMatch(/5,000 per month \+ tax$/);
   });
 });
 

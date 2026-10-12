@@ -183,12 +183,13 @@ handler and both unsubscribe POSTs (one-click and the confirm form) write the le
 **`legacy_import` is unverified consent — read this before relying on the ledger as evidence.**
 When the ledger was introduced, every existing active, unsuppressed contact was carried in as an
 `opted_in` email/marketing event with `source = legacy_import` so existing campaigns kept selecting
-the same people. Nothing records how or when they agreed; the evidence text says so. Likewise
-**contacts added or imported through the API are recorded as the organization's *attestation***
-(`source = admin` / `import`, attributed to the operator, evidence "attests ... (unverified)") —
-and only where the ledger holds no earlier marketing event for that address, so re-importing
-somebody never undoes their opt-out. Filter on `source` to tell a customer's own opt-in
-(`checkout`, `web_form`, `inbound_keyword`) from these. **WhatsApp marketing has no such carry-over**:
+the same people. Nothing records how or when they agreed; the evidence text says so. **Adding or
+importing a contact records no opt-in** (ADR-0021 §6, amended 2026-10-12): `POST /engage/contacts`
+records one only when `marketing_opt_in` says how the person agreed and points at the evidence, and
+an import or an address edit records none, so those contacts are not mailable until an opt-in is
+recorded. Contacts added before that carry an `admin` / `import` *attestation* row ("attests ...
+(unverified)") that stays in the ledger as history. Filter on `source` to tell a customer's own
+opt-in (`checkout`, `web_form`, `inbound_keyword`) from these. **WhatsApp marketing has no such carry-over**:
 there were no legacy WhatsApp marketing sends, so it needs an explicit `opted_in` event.
 
 **Backfill.** The migration (`d5a7c3e91f48`) runs `app/consent_backfill.py`: every `Suppression`
@@ -265,7 +266,9 @@ Transactional: `notification.delivery.message.{queued,sent,failed,delivered,read
 Engage sending identity: `engage.setup.connection.{created,replaced}`,
 `engage.setup.whatsapp.{created,replaced}`, `engage.setup.domain.{created,verified}`,
 `engage.setup.sender.{created,verified}`. Engage campaigns:
-`engage.campaign.send_requested`, `engage.campaign.cancelled`.
+`engage.campaign.send_requested`, `engage.campaign.cancelled`. Scheduled through the scheduler
+(ADR-0015), and so namespaced `notification.` because it only delivers a requester's own events:
+`notification.campaign.send_due` (a scheduled send is due), `notification.campaign.ab_decide_due`.
 
 ## Consumes
 

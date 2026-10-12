@@ -20,7 +20,7 @@ from app import domain, models, selectors, services
 from app.main import app
 from platform_core.auth import Principal, Scope, get_principal
 from platform_core.pii import open_sealed
-from tests.helpers import ctx_for, principal_for
+from tests.helpers import OPTED_IN, ctx_for, principal_for
 
 pytestmark = pytest.mark.integration
 
@@ -53,6 +53,43 @@ def caller(org_id: uuid.UUID, perms: list[str]) -> Principal:
 async def _count(session, model) -> int:
     async with session.begin():
         return (await session.execute(select(func.count()).select_from(model))).scalar_one()
+
+
+# --------------------------------------------------------------------- contacts: marketing opt-in
+
+
+async def test_adding_a_contact_over_http_opts_in_only_with_evidence(client, session, org_id):
+    """`marketing_opt_in` is how the add form says the person agreed; without it the contact is
+    added but not mailable. A bad opt-in refuses the whole add — no contact half-written."""
+    with as_principal(caller(org_id, ALL)):
+        silent = await client.post(CONTACTS, json={"email": "silent@example.com"})
+        agreed = await client.post(
+            CONTACTS,
+            json={
+                "email": "agreed@example.com",
+                "marketing_opt_in": {"source": "in_person", "evidence": "trade fair, stall 12"},
+            },
+        )
+        forged = await client.post(
+            CONTACTS,
+            json={
+                "email": "forged@example.com",
+                "marketing_opt_in": {"source": "unsubscribe_link", "evidence": "not ours to say"},
+            },
+        )
+    assert silent.status_code == agreed.status_code == 201, (silent.text, agreed.text)
+    assert forged.status_code == 422
+    async with session.begin():
+        events = (await session.execute(select(models.ConsentEvent))).scalars().all()
+        audience = await selectors.sendable_contacts(session, ctx_for(org_id, C_READ, Scope.ORG))
+        refused = await selectors.contacts_by_index(
+            session, org_id, [selectors.email_index("forged@example.com")]
+        )
+    assert [(e.source, e.evidence, str(e.contact_id)) for e in events] == [
+        ("in_person", "trade fair, stall 12", agreed.json()["id"])
+    ]
+    assert [str(c.id) for c in audience] == [agreed.json()["id"]]
+    assert refused == {}
 
 
 # --------------------------------------------------------------------- contacts: happy paths
@@ -423,9 +460,9 @@ async def test_sendable_contacts_excludes_suppressed_addresses(session, org_id):
     write = ctx_for(org_id, C_WRITE, Scope.ORG)
     s_write = ctx_for(org_id, S_WRITE, Scope.ORG)
     async with session.begin():
-        keep = await services.create_contact(session, write, email="keep@example.com")
-        await services.create_contact(session, write, email="manual@example.com")
-        await services.create_contact(session, write, email="unsub@example.com")
+        keep = await services.create_contact(session, write, email="keep@example.com", **OPTED_IN)
+        await services.create_contact(session, write, email="manual@example.com", **OPTED_IN)
+        await services.create_contact(session, write, email="unsub@example.com", **OPTED_IN)
         await services.add_suppression(session, s_write, email="MANUAL@example.com")
         await services.unsubscribe(session, organization_id=org_id, email="unsub@example.com")
         # A suppression for an address that is not (yet) a contact is harmless.
@@ -438,7 +475,7 @@ async def test_sendable_contacts_excludes_suppressed_addresses(session, org_id):
 
     # A suppressed address that is imported later is still excluded.
     async with session.begin():
-        await services.create_contact(session, write, email="later@example.com")
+        await services.create_contact(session, write, email="later@example.com", **OPTED_IN)
         sendable = await selectors.sendable_contacts(session, read)
     assert [c.id for c in sendable] == [keep.id]
 

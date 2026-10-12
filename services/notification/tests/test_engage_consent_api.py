@@ -23,7 +23,7 @@ from app import consent, models, services
 from app.main import app
 from app.models import AuditLog, ConsentEvent
 from platform_core.auth import Principal, Scope, get_principal
-from tests.helpers import ctx_for, principal_for
+from tests.helpers import OPTED_IN, ctx_for, principal_for
 
 pytestmark = pytest.mark.integration
 
@@ -319,7 +319,7 @@ async def test_an_opt_in_does_not_lift_a_legacy_suppression_and_says_so(
 async def _contact(session, org_id: uuid.UUID, email: str = ADDRESS) -> models.Contact:
     write = ctx_for(org_id, C_WRITE, Scope.ORG)
     async with session.begin():
-        return await services.create_contact(session, write, email=email)
+        return await services.create_contact(session, write, email=email, **OPTED_IN)
 
 
 async def test_an_email_event_can_name_a_contact_instead_of_an_address(
@@ -476,11 +476,11 @@ async def test_a_contacts_history_covers_events_recorded_before_and_beside_the_c
         response = await client.get(BASE, params={"contact_id": str(contact_id)})
     assert response.status_code == 200, response.text
     items = response.json()["items"]
-    # The attestation written when the contact was added, and the operator's later opt-out —
-    # and nothing about the other address.
+    # The opt-in recorded when the contact was added, and the operator's later opt-out — and
+    # nothing about the other address.
     assert [(e["status"], e["source"]) for e in items] == [
         ("opted_out", "admin"),
-        ("opted_in", "admin"),
+        ("opted_in", "web_form"),
     ]
 
 

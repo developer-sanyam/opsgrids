@@ -108,6 +108,7 @@ def test_theme_init_is_a_same_origin_file_reading_the_apps_own_key(root: str) ->
 # The snippet carries the directives every app site shares; each site passes the rest as the
 # snippet's one argument. Why each third-party origin is there is written next to the policy in
 # the Caddyfile; this table pins that each site allows exactly those and nothing more.
+#: Only the storefront still allows Google Fonts; every other app bundles its fonts (@fontsource).
 FONTS_CSS = "https://fonts.googleapis.com"
 FONTS = "https://fonts.gstatic.com"
 AUTH = "https://app.opsgrids.com"  # product apps refresh their session against the dashboard
@@ -134,8 +135,8 @@ GOOGLE_MAPS_IMG = [
 PLAIN_PRODUCT = {
     "default-src": ["'self'"],
     "script-src": ["'self'"],
-    "style-src": ["'self'", FONTS_CSS],
-    "font-src": ["'self'", FONTS],
+    "style-src": ["'self'"],
+    "font-src": ["'self'"],
     "connect-src": ["'self'", AUTH],
 }
 PLAIN_HOSTS = (
@@ -156,8 +157,8 @@ EXPECTED_CSP: dict[str, dict[str, list[str]]] = {
     "https://app.opsgrids.com": {
         "default-src": ["'self'"],
         "script-src": ["'self'", *RAZORPAY_SCRIPT, *CASHFREE_SCRIPT],
-        "style-src": ["'self'", "'unsafe-inline'", FONTS_CSS],
-        "font-src": ["'self'", FONTS],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "font-src": ["'self'"],
         "img-src": ["'self'", "data:", "https://cdn.razorpay.com"],
         "connect-src": ["'self'", *RAZORPAY_API, *RAZORPAY_BEACON, *CASHFREE_PAGES],
         "frame-src": [*RAZORPAY_API, *CASHFREE_SCRIPT, *CASHFREE_PAGES],
@@ -175,8 +176,8 @@ EXPECTED_CSP: dict[str, dict[str, list[str]]] = {
             *RAZORPAY_SCRIPT,
             *CASHFREE_SCRIPT,
         ],
-        "style-src": ["'self'", "'unsafe-inline'", FONTS_CSS],
-        "font-src": ["'self'", FONTS],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "font-src": ["'self'"],
         "img-src": ["'self'", "data:", *GOOGLE_MAPS_IMG, "https://cdn.razorpay.com"],
         "connect-src": [
             "'self'",
@@ -197,8 +198,8 @@ EXPECTED_CSP: dict[str, dict[str, list[str]]] = {
     "https://engage.opsgrids.com": {
         "default-src": ["'self'"],
         "script-src": ["'self'", "https://connect.facebook.net"],
-        "style-src": ["'self'", "'unsafe-inline'", FONTS_CSS],
-        "font-src": ["'self'", FONTS],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "font-src": ["'self'"],
         "img-src": ["'self'", "https:"],
         "connect-src": ["'self'", AUTH, "https://graph.facebook.com", "https://www.facebook.com"],
         "frame-src": [
@@ -270,5 +271,24 @@ def test_unsafe_inline_style_only_where_a_third_party_script_needs_it() -> None:
     }
 
 
-def test_merchant_domains_get_no_platform_policy() -> None:
-    assert "Content-Security-Policy" not in _blocks()["https://"]
+def test_merchant_domains_get_the_buyer_policy_and_no_platform_headers() -> None:
+    """The buyer bundle's own policy: nothing third-party may run, merchant images and the video
+    embed still load. No HSTS and no framing ban — see the module docstring."""
+    block = _blocks()["https://"]
+    policy = re.search(r'Content-Security-Policy "([^"]*)"', block)
+    assert policy, "the buyer catch-all sends no Content-Security-Policy"
+    assert _parse(policy.group(1)) == {
+        "default-src": ["'self'"],
+        "script-src": ["'self'"],
+        "style-src": ["'self'"],
+        "img-src": ["'self'", "data:", "https:"],
+        "connect-src": ["'self'"],
+        "frame-src": ["https:"],
+        "form-action": ["'self'"],
+        "object-src": ["'none'"],
+        "base-uri": ["'self'"],
+    }
+    assert 'X-Content-Type-Options "nosniff"' in block
+    assert 'Referrer-Policy "strict-origin-when-cross-origin"' in block
+    assert "Strict-Transport-Security \"" not in block
+    assert "X-Frame-Options \"" not in block
