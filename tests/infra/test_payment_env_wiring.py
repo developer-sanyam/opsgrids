@@ -39,6 +39,7 @@ SWITCHES = {
     "PAYMENT_WIRE": "${PAYMENT_WIRE:-stub}",
     "PAYMENT_ALLOW_LIVE_KEYS": "${PAYMENT_ALLOW_LIVE_KEYS:-false}",
     "PAYMENT_ALLOW_TEST_KEYS": "${PAYMENT_ALLOW_TEST_KEYS:-false}",
+    "PAYMENT_REQUIRE_LIVE": "${PAYMENT_REQUIRE_LIVE:-false}",
     "CASHFREE_ENV": "${CASHFREE_ENV:-stub}",
     "CASHFREE_APP_ID": "${CASHFREE_APP_ID:-}",
     "CASHFREE_SECRET_KEY": "${CASHFREE_SECRET_KEY:-}",
@@ -150,6 +151,7 @@ class TestPreflightIsWired:
             "PAYMENT_WIRE",
             "PAYMENT_ALLOW_LIVE_KEYS",
             "PAYMENT_ALLOW_TEST_KEYS",
+            "PAYMENT_REQUIRE_LIVE",
             "CASHFREE_ENV",
             "CASHFREE_APP_ID",
             "CASHFREE_SECRET_KEY",
@@ -397,6 +399,46 @@ class TestTheStagingTestKeysOverride:
         text = "\n".join(problems)
         for value in (SECRET, RZP_TEST, CF_TEST_APP, CF_TEST_SECRET):
             assert value not in text
+
+
+LIVE_RAZORPAY = {
+    "PAYMENT_REQUIRE_LIVE": "true",
+    "PAYMENT_ALLOW_LIVE_KEYS": "true",
+    "PAYMENT_WIRE": "live",
+    "RAZORPAY_KEY_ID": RZP_LIVE,
+    "RAZORPAY_KEY_SECRET": SECRET,
+}
+
+
+class TestRequireLive:
+    """`PAYMENT_REQUIRE_LIVE` (PLATFORM-23): preflight FAILS (a problem line goes through `bad`) on
+    the stub, on test keys and with the test-mode override; it passes live money."""
+
+    def test_off_the_stub_still_passes(self) -> None:
+        assert _problems(PAYMENT_REQUIRE_LIVE="false") == []
+
+    def test_live_money_passes(self) -> None:
+        assert _problems(**LIVE_RAZORPAY) == []
+
+    def test_the_stub_wire_fails(self) -> None:
+        assert any("needs PAYMENT_WIRE=live" in p for p in _problems(PAYMENT_REQUIRE_LIVE="true"))
+        cashfree = _problems(PAYMENT_REQUIRE_LIVE="true", PAYMENT_PROVIDER="cashfree")
+        assert any("PAYMENT_REQUIRE_LIVE=true needs CASHFREE_ENV=production" in p for p in cashfree)
+
+    def test_test_keys_fail(self) -> None:
+        problems = _problems(
+            **LIVE_RAZORPAY, CASHFREE_APP_ID=CF_TEST_APP, CASHFREE_SECRET_KEY=CF_TEST_SECRET
+        )
+        assert any("refuses test keys" in p for p in problems), problems
+
+    def test_the_test_mode_override_fails(self) -> None:
+        problems = _problems(**STAGING_TEST_MODE, PAYMENT_REQUIRE_LIVE="true")
+        assert any("refuses PAYMENT_ALLOW_TEST_KEYS" in p for p in problems), problems
+        assert any("refuses test keys" in p for p in problems), problems
+
+    def test_a_value_that_is_not_a_boolean_is_refused_by_name(self) -> None:
+        problems = _problems(PAYMENT_REQUIRE_LIVE="maybe")
+        assert problems == ["PAYMENT_REQUIRE_LIVE must be true or false"]
 
 
 def _test_mode_warning_block() -> str:

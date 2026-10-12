@@ -72,6 +72,13 @@ class Settings(ServiceSettings):
     #: `CASHFREE_ENV=production`, so a box runs on test keys or on live money, never both.
     payment_allow_test_keys: bool = False
 
+    #: **Opt-in, for the box that collects real money.** On with `ENVIRONMENT=production`, `payment`
+    #: refuses to start unless the default provider runs live on live keys: never the stub wire,
+    #: never test-shaped keys or the Cashfree sandbox, never `PAYMENT_ALLOW_TEST_KEYS`. Off (the
+    #: default) changes nothing, so a box still on the stub keeps deploying until the owner says
+    #: payments must be real.
+    payment_require_live: bool = False
+
     #: Razorpay credentials. **Optional**: an unconfigured box passes preflight and runs on the
     #: stub. The key id is public by design (Checkout is opened in the browser with it); the key
     #: secret is a `SecretStr` and is used for nothing but a checkout callback's HMAC and the
@@ -270,6 +277,35 @@ class Settings(ServiceSettings):
             raise ValueError(
                 "PAYMENT_ALLOW_TEST_KEYS=true with a production CASHFREE_SECRET_KEY or "
                 "CASHFREE_ENV=production is refused: test mode never runs beside live money"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _live_is_required(self) -> Settings:
+        """`PAYMENT_REQUIRE_LIVE` on a production box: the stub cannot collect money and test
+        credentials pay real invoices with public test cards, so either is a refusal to start.
+        Runs before the per-provider rules so the refusal names this flag."""
+        if not (self.payment_require_live and self.environment == "production"):
+            return self
+        if self.payment_allow_test_keys:
+            raise ValueError(
+                "PAYMENT_REQUIRE_LIVE=true refuses PAYMENT_ALLOW_TEST_KEYS=true: this box must "
+                "collect real money"
+            )
+        if self.payment_provider == "razorpay" and self.payment_wire != "live":
+            raise ValueError("PAYMENT_REQUIRE_LIVE=true needs PAYMENT_WIRE=live (not the stub)")
+        if self.payment_provider == "cashfree" and self.cashfree_env != "production":
+            raise ValueError("PAYMENT_REQUIRE_LIVE=true needs CASHFREE_ENV=production")
+        app_id = self.cashfree_app_id.get_secret_value() if self.cashfree_app_id else ""
+        secret = self.cashfree_secret_key.get_secret_value() if self.cashfree_secret_key else ""
+        if (
+            _razorpay_mode(self.razorpay_key_id) == "test"
+            or self.cashfree_env == "sandbox"
+            or cashfree_codec.sandbox_shaped(app_id, secret)
+        ):
+            raise ValueError(
+                "PAYMENT_REQUIRE_LIVE=true refuses test keys (rzp_test_…, a Cashfree sandbox "
+                "key or CASHFREE_ENV=sandbox)"
             )
         return self
 

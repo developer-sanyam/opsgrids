@@ -102,9 +102,37 @@ if [ -n "${BACKUP_S3_ENDPOINT:-}" ]; then
 	endpoint_arg=(--endpoint-url "$BACKUP_S3_ENDPOINT")
 fi
 
+# --- client-side encryption (PLATFORM-09) --------------------------------------
+# The dump is every customer's data and the certificate archive holds TLS private keys; a bucket
+# policy is one misclick from public. With BACKUP_AGE_RECIPIENT set (an `age1…` PUBLIC key — the
+# private half never lives on this box, RUNBOOK.md "Restore from backup"), every artifact is
+# encrypted with `age` before it leaves, and only the `.age` file is ever handed to aws-cli: a
+# failed encryption fails that upload, it never falls back to plaintext. The recipient is a
+# public key, so it on argv is harmless; nothing secret is. `age` is the host binary
+# (BACKUP_AGE_BIN, default `age` on PATH; RUNBOOK.md says how to install it), because there is no
+# official image to pin the way aws-cli is pinned above. Unset: unchanged, and a loud warning.
+encrypt=""
+age_bin="${BACKUP_AGE_BIN:-age}"
+if [ -n "${BACKUP_AGE_RECIPIENT:-}" ]; then
+	if ! command -v "$age_bin" >/dev/null 2>&1; then
+		echo "backup: BACKUP_AGE_RECIPIENT is set but '$age_bin' is not installed — refusing to upload plaintext" >&2
+		exit 1
+	fi
+	encrypt=1
+else
+	echo "backup: WARNING — BACKUP_AGE_RECIPIENT is not set: customer data and TLS private keys go to" >&2
+	echo "        s3://$BACKUP_S3_BUCKET in PLAINTEXT, protected by the bucket policy alone (RUNBOOK.md)." >&2
+fi
+
 upload() {
 	local file="$1"
+	if [ -n "$encrypt" ]; then
+		# Written next to the plaintext (same disk, same permissions), uploaded, then removed.
+		"$age_bin" -r "$BACKUP_AGE_RECIPIENT" -o "$file.age" "$file" || return 1
+		file="$file.age"
+	fi
 	# Values go through docker's environment, not its argv, so `ps` on the box never shows them.
+	# `${a[@]+…}`: an empty array under `set -u` is an error on bash < 4.4 (a macOS test run).
 	AWS_ACCESS_KEY_ID="$BACKUP_S3_ACCESS_KEY_ID" \
 		AWS_SECRET_ACCESS_KEY="$BACKUP_S3_SECRET_ACCESS_KEY" \
 		docker run --rm \
@@ -114,12 +142,13 @@ upload() {
 		-v "$dir:/backup:ro" \
 		"$AWS_CLI_IMAGE" s3 cp "/backup/$(basename "$file")" \
 		"s3://$BACKUP_S3_BUCKET/${BACKUP_S3_PREFIX:-edge}/$(basename "$file")" \
-		"${endpoint_arg[@]}" --only-show-errors
+		${endpoint_arg[@]+"${endpoint_arg[@]}"} --only-show-errors || return 1
+	if [ -n "$encrypt" ]; then rm -f "$file"; fi
 }
 
 upload "$dump"
 upload "$certs"
-echo "  uploaded database + certificates to s3://$BACKUP_S3_BUCKET/${BACKUP_S3_PREFIX:-edge}/"
+echo "  uploaded database + certificates to s3://$BACKUP_S3_BUCKET/${BACKUP_S3_PREFIX:-edge}/${encrypt:+ (age-encrypted)}"
 
 # --- MinIO's uploaded images (ADR-0009), archived and uploaded LAST -----------
 # Only when the storefront profile actually started it: there is then no MinIO container and
