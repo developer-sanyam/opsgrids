@@ -4994,6 +4994,10 @@ async def change_list_members(
 
 EVT_CAMPAIGN_SEND_REQUESTED = "engage.campaign.campaign.send_requested"
 EVT_CAMPAIGN_CANCELLED = "engage.campaign.campaign.cancelled"
+#: Internal to notification: a scheduled send's time has come. The target `schedule_send` hands the
+#: scheduler (ADR-0015), handled exactly like `EVT_CAMPAIGN_SEND_REQUESTED`; it cannot be that
+#: event because the scheduler only delivers events namespaced under the requesting service.
+EVT_CAMPAIGN_SEND_DUE = "notification.campaign.send_due"
 #: Internal to notification: an A/B test's wait is over. Staged as the target of a
 #: `platform.schedule.requested` (ADR-0015) at expansion; `notification.` because the scheduler only
 #: delivers events namespaced under the requesting service.
@@ -5503,7 +5507,7 @@ async def schedule_send(
         organization_id=ctx.organization_id,
         due_at=scheduled_at,
         idempotency_key=_campaign_send_idempotency_key(campaign_id, scheduled_at),
-        target_event_type=EVT_CAMPAIGN_SEND_REQUESTED,
+        target_event_type=EVT_CAMPAIGN_SEND_DUE,
         target_aggregate_type="campaign",
         target_aggregate_id=row.id,
         target_payload={

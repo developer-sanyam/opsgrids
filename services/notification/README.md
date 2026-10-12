@@ -265,7 +265,9 @@ Transactional: `notification.delivery.message.{queued,sent,failed,delivered,read
 Engage sending identity: `engage.setup.connection.{created,replaced}`,
 `engage.setup.whatsapp.{created,replaced}`, `engage.setup.domain.{created,verified}`,
 `engage.setup.sender.{created,verified}`. Engage campaigns:
-`engage.campaign.send_requested`, `engage.campaign.cancelled`.
+`engage.campaign.send_requested`, `engage.campaign.cancelled`. Scheduled through the scheduler
+(ADR-0015), and so namespaced `notification.` because it only delivers a requester's own events:
+`notification.campaign.send_due` (a scheduled send is due), `notification.campaign.ab_decide_due`.
 
 ## Consumes
 
