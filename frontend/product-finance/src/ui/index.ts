@@ -61,6 +61,7 @@ export { InvoiceStatusPill, PaymentMethodBadge } from "./StatusPill";
 export {
   FilingStatusPill,
   ImsStatusPill,
+  PortalSimulatedNotice,
   SampleDataChip,
   SuggestedAction,
 } from "./ComplianceStatus";

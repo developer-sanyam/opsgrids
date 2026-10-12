@@ -27,11 +27,13 @@ def _header_value(block: str, header: str) -> str:
     return match.group(1)
 
 
-def test_the_csp_allows_self_and_only_the_named_google_fonts_hosts() -> None:
+def test_the_csp_allows_self_and_no_font_cdn() -> None:
     csp = _header_value(_admin_site_block(), "Content-Security-Policy")
     assert "default-src 'self'" in csp
-    assert "style-src 'self' https://fonts.googleapis.com" in csp
-    assert "font-src 'self' https://fonts.gstatic.com" in csp
+    # The console bundles its fonts; a font CDN would hand every operator's IP to a third party.
+    assert "style-src 'self';" in csp
+    assert "font-src 'self';" in csp
+    assert "fonts.g" not in csp
     assert "frame-ancestors 'none'" in csp
     # No blanket inline-script or inline-style allowance anywhere in the policy — the whole
     # point of extracting the theme-init snippet into its own file.

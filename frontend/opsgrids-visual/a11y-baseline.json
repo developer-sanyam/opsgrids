@@ -33,24 +33,6 @@
   "page/crm/new-deal-dialog|light|375": {
     "button-name": 2
   },
-  "page/dashboard/marketplace|dark|1280": {
-    "color-contrast": 2
-  },
-  "page/dashboard/marketplace|dark|375": {
-    "color-contrast": 2
-  },
-  "page/dashboard/marketplace|dark|768": {
-    "color-contrast": 2
-  },
-  "page/internal/accounts|dark|1280": {
-    "color-contrast": 1
-  },
-  "page/internal/accounts|dark|375": {
-    "color-contrast": 1
-  },
-  "page/internal/accounts|dark|768": {
-    "color-contrast": 1
-  },
   "story/layout-appshell--command-menu-open|dark|1280": {
     "aria-required-children": 1,
     "aria-required-parent": 6,

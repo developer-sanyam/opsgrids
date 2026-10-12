@@ -1,5 +1,9 @@
 @import "tailwindcss";
 @import "@opsgrids/ui/styles.css";
+/* Self-hosted (OFL-1.1), not a font CDN: see the note on Manrope in `@opsgrids/ui`'s console.css. */
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
 
 /* ------------------------------------------------------------------ *
  * OpsGrids Operator — the cross-tenant control panel.

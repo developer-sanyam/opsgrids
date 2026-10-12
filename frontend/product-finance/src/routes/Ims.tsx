@@ -24,6 +24,7 @@ import {
   Skeleton,
   SuggestedAction,
   Tag,
+  PortalSimulatedNotice,
 } from "@/ui";
 import type { Column } from "@/ui";
 import { InboxIcon, useDebouncedValue } from "@opsgrids/ui";
@@ -188,6 +189,7 @@ export function ImsPage() {
         against your purchase book and says what it found — the decision is yours, and every one
         is recorded with your name against it.
       </p>
+      <PortalSimulatedNotice />
 
       <Card className="flex flex-col gap-4 p-4 sm:p-5">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">

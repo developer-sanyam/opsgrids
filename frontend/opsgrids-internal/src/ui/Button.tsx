@@ -15,7 +15,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 const VARIANTS: Record<Variant, string> = {
   // The single accent, spent on the primary action: violet pill, white text.
   primary:
-    "bg-accent text-white hover:bg-accent-strong active:bg-accent-strong disabled:bg-accent/50",
+    "bg-accent text-on-accent hover:bg-accent-strong active:bg-accent-strong disabled:bg-accent/50",
   dark: "bg-ink text-surface hover:bg-ink-soft active:bg-ink-soft disabled:bg-ink/50",
   outline:
     "bg-surface text-ink border border-line hover:bg-ground active:bg-ground disabled:text-faint",

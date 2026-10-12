@@ -8,7 +8,7 @@ import { EWAY_STATUS_FILTERS, ewayStatusTone } from "@/data/compliance";
 import { formatDateTime } from "@/lib/format";
 import { formatMoney } from "@/lib/money";
 import { problemMessage, useAsync } from "@opsgrids/client";
-import { Card, DataTable, EmptyState, ErrorState, PageHeader, Pagination, Pill, Skeleton, Tag } from "@/ui";
+import { Card, DataTable, EmptyState, ErrorState, PageHeader, Pagination, Pill, PortalSimulatedNotice, Skeleton, Tag } from "@/ui";
 import type { Column } from "@/ui";
 import { TruckIcon } from "@opsgrids/ui";
 
@@ -95,6 +95,7 @@ export function EwayBillsPage() {
         Read-only: e-Way bills are raised by the dispatch system over its own connection, not from
         this screen.
       </p>
+      <PortalSimulatedNotice />
 
       <Card className="flex flex-col gap-3 p-4 sm:p-5">
         <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">

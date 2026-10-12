@@ -29,7 +29,7 @@ import {
   Tag,
   cn,
 } from "@opsgrids/ui";
-import { FilingStatusPill, SampleDataChip } from "./ComplianceStatus";
+import { FilingStatusPill, PortalSimulatedNotice, SampleDataChip } from "./ComplianceStatus";
 
 const SUPPLY_TYPE_LABEL: Record<string, string> = {
   b2b: "B2B — registered buyer",
@@ -403,6 +403,7 @@ export function CompliancePanel({ invoice }: { invoice: Invoice }) {
           </span>
         }
       />
+      <PortalSimulatedNotice />
 
       {/* What the document declares. Snapshots, not lookups: a filed invoice keeps naming the
           numbers it was raised under after either party re-registers. */}

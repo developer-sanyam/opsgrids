@@ -123,7 +123,7 @@ export function filingView(state: EInvoiceState | undefined): FilingView | null 
       return {
         key: "filed",
         label: "Filed",
-        detail: "Registered with the portal. The invoice carries its IRN and signed QR.",
+        detail: "Filed. The invoice carries the IRN and signed QR the filing returned.",
         needsPerson: false,
       };
     case "cancelled":
