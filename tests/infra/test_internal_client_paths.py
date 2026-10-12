@@ -331,8 +331,8 @@ asyncio.run(main())
 emit(ORG, cfg, "storefront")
 """
 
-# A11: customer -> deal `references`, the aborted-conversion cleanup's probe (CRM R2.4).
-_A11 = """
+# A12: customer -> deal `references`, the aborted-conversion cleanup's probe (CRM R2.4).
+_A12 = """
 from app import clients
 from app.config import Settings
 
@@ -454,13 +454,13 @@ CALLS: tuple[Call, ...] = (
         _A10,
     ),
     Call(
-        "A11",
+        "A12",
         "customer",
         "deal",
         "GET",
         "/internal/v1/organizations/{org}/references",
         "customer/app/clients.py",
-        _A11,
+        _A12,
     ),
 )
 
