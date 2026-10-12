@@ -6,8 +6,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { StoreDoc, StoreMode } from "./schema";
-import { adoptTheme, clonePages, pageForRoute, resolveMode } from "./store";
-import { THEMES, foundry } from "./themes";
+import { adoptTheme, clonePages, pageForRoute, resolveMode, sectionsWithPlaceholders } from "./store";
+import { THEMES, carton, foundry } from "./themes";
 
 const MODES: StoreMode[] = ["retail", "trade"];
 
@@ -118,5 +118,34 @@ describe("pageForRoute", () => {
     const store = adoptTheme(foundry);
     expect(pageForRoute(store, "/")?.route).toBe("/");
     expect(pageForRoute(store, "/nowhere")).toBeNull();
+  });
+});
+
+describe("sectionsWithPlaceholders", () => {
+  it("finds the bracketed stand-ins a theme ships, and nothing once they are replaced", () => {
+    const store = adoptTheme(carton);
+    const flagged = sectionsWithPlaceholders(store);
+    expect(flagged.map((s) => s.type)).toEqual(expect.arrayContaining(["testimonials", "logo-wall"]));
+
+    for (const section of flagged) {
+      for (const [key, value] of Object.entries(section.settings)) {
+        if (typeof value === "string") section.settings[key] = value.replace(/\[[^\]]*\]/g, "Real words");
+      }
+    }
+    expect(sectionsWithPlaceholders(store)).toEqual([]);
+  });
+
+  it("ships no named testimonial or client in any theme without brackets", () => {
+    for (const theme of THEMES) {
+      for (const page of theme.pages) {
+        for (const section of page.sections) {
+          if (section.type !== "testimonials" && section.type !== "logo-wall") continue;
+          for (const [key, value] of Object.entries(section.settings)) {
+            if (key === "heading" || typeof value !== "string" || value === "") continue;
+            for (const line of value.split("\n")) expect(line, `${theme.key} ${key}`).toMatch(/^\[.*\]$/);
+          }
+        }
+      }
+    }
   });
 });

@@ -271,5 +271,24 @@ def test_unsafe_inline_style_only_where_a_third_party_script_needs_it() -> None:
     }
 
 
-def test_merchant_domains_get_no_platform_policy() -> None:
-    assert "Content-Security-Policy" not in _blocks()["https://"]
+def test_merchant_domains_get_the_buyer_policy_and_no_platform_headers() -> None:
+    """The buyer bundle's own policy: nothing third-party may run, merchant images and the video
+    embed still load. No HSTS and no framing ban — see the module docstring."""
+    block = _blocks()["https://"]
+    policy = re.search(r'Content-Security-Policy "([^"]*)"', block)
+    assert policy, "the buyer catch-all sends no Content-Security-Policy"
+    assert _parse(policy.group(1)) == {
+        "default-src": ["'self'"],
+        "script-src": ["'self'"],
+        "style-src": ["'self'"],
+        "img-src": ["'self'", "data:", "https:"],
+        "connect-src": ["'self'"],
+        "frame-src": ["https:"],
+        "form-action": ["'self'"],
+        "object-src": ["'none'"],
+        "base-uri": ["'self'"],
+    }
+    assert 'X-Content-Type-Options "nosniff"' in block
+    assert 'Referrer-Policy "strict-origin-when-cross-origin"' in block
+    assert "Strict-Transport-Security \"" not in block
+    assert "X-Frame-Options \"" not in block

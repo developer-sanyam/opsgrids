@@ -196,6 +196,13 @@ export const RETAIL_SECTION_DEFS: SectionDef[] = [
       },
       { key: "image", label: "Illustration", type: "image", default: null },
       {
+        key: "imageAlt",
+        label: "Illustration description",
+        type: "text",
+        default: "",
+        help: "What the picture shows, read out by screen readers. Leave empty if it is only decoration.",
+      },
+      {
         key: "tint",
         label: "Background tint",
         type: "color",
@@ -241,7 +248,7 @@ export const RETAIL_SECTION_DEFS: SectionDef[] = [
         key: "aboutText",
         label: "About copy",
         type: "textarea",
-        default: "Furniture made by hand in Jodhpur since 1994, shipped assembled and insured across India.",
+        default: "[A line about your business.]",
       },
       { key: "col1Title", label: "Column 1 heading", type: "text", default: "Shop" },
       {
@@ -276,7 +283,7 @@ export const RETAIL_SECTION_DEFS: SectionDef[] = [
         label: "Column 4 links",
         type: "textarea",
         default:
-          "+91 291 244 0000 | tel:+912912440000\nhello@example.in | mailto:hello@example.in\nMon to Sat, 10am to 7pm",
+          "[Phone number]\nhello@example.in | mailto:hello@example.in\nMon to Sat, 10am to 7pm",
         help: "One per line, as Label | /link. A line with no | is shown as plain text — the opening hours, not a link.",
       },
       { key: "socialTitle", label: "Social heading", type: "text", default: "Follow" },
@@ -299,7 +306,7 @@ export const RETAIL_SECTION_DEFS: SectionDef[] = [
         key: "legalText",
         label: "Legal line",
         type: "text",
-        default: "© 2026 · GSTIN 08AAACR0000R1ZX · All prices in INR",
+        default: "© [Year] [Legal entity name] · GSTIN [Your GSTIN] · All prices in INR",
       },
       { key: "columns", label: "Link columns", type: "number", default: 4, help: "2 to 4." },
       {

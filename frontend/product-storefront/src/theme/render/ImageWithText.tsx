@@ -54,6 +54,7 @@ export function ImageWithText({ settings, stacked, width }: SectionRenderProps) 
         <ImagePlate
           seed={`iwt-${heading ?? "plate"}`}
           src={resolveImageSrc(image)}
+          alt={str(settings, "imageAlt", "")}
           style={{
             position: "absolute",
             inset: 0,
@@ -100,7 +101,7 @@ export function ImageWithText({ settings, stacked, width }: SectionRenderProps) 
 
   const plate = (
     <figure style={{ margin: 0, display: "flex", flexDirection: "column", gap: step(0.4) }}>
-      <ImagePlate seed={`iwt-${heading ?? "plate"}`} src={resolveImageSrc(image)} style={{ minHeight: step(10) }} />
+      <ImagePlate seed={`iwt-${heading ?? "plate"}`} src={resolveImageSrc(image)} alt={str(settings, "imageAlt", "")} style={{ minHeight: step(10) }} />
       {caption ? (
         <figcaption style={{ fontFamily: T.fontBody, fontSize: "0.75rem", color: T.muted }}>
           {caption}

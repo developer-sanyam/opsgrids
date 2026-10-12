@@ -114,6 +114,17 @@ export async function updateEnquiryStatus(id: string, status: EnquiryStatus): Pr
   return apiRequest<EnquiryOut>(`/storefront/enquiries/${id}`, { method: "PATCH", body: { status } });
 }
 
+/** `DELETE /storefront/enquiries/{id}` — erases the enquiry, its sealed contact details and its
+ *  WhatsApp opt-in for good (a buyer's deletion request). Needs `storefront.sales.enquiry.delete`. */
+export async function deleteEnquiry(id: string): Promise<void> {
+  if (USE_FIXTURES) {
+    if (!fixtureEnquiries.some((e) => e.id === id)) throw new ApiError(404, "That enquiry no longer exists.", null);
+    fixtureEnquiries = fixtureEnquiries.filter((e) => e.id !== id);
+    return settle(undefined, 220);
+  }
+  return apiRequest<void>(`/storefront/enquiries/${id}`, { method: "DELETE" });
+}
+
 /** Put the fixture inbox back to its seed. Test-only; live mode holds no state to reset. */
 export function resetEnquiryFixtures(): void {
   fixtureEnquiries = SEED.map((e) => ({ ...e }));

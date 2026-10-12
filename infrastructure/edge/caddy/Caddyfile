@@ -580,6 +580,17 @@ https://engage.opsgrids.com {
 https:// {
 	import edge
 
+	# Not `platform-headers`: HSTS on a domain we do not own outlives our tenancy of it, and a
+	# merchant may embed their own store, so no X-Frame-Options or frame-ancestors here. The CSP is
+	# what the buyer bundle loads: its own script and stylesheet (no web fonts, no third-party
+	# script), same-origin /api, merchant images from any https host (pasted addresses, uploads on
+	# EDGE_HOST, catalogue pictures), and the video section's https embed, framed only on a press.
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'; frame-src https:; form-action 'self'; object-src 'none'; base-uri 'self'"
+	}
+
 	# The buyer bundle. One build, byte-identical for every merchant: it learns its store from
 	# window.location.hostname and one bootstrap call, never from a baked-in config.
 	handle {

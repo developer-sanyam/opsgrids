@@ -44,6 +44,7 @@ const FIXTURE_GRANTS = [
   "storefront.catalogue.product.write:ORG",
   "storefront.sales.enquiry.read:ORG",
   "storefront.sales.enquiry.write:ORG",
+  "storefront.sales.enquiry.delete:ORG",
 ];
 
 /** The session, wired to this product's fixture identity. The logic lives in `@opsgrids/client`. */

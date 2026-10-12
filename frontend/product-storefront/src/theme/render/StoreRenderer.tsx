@@ -1,3 +1,4 @@
+import { useId, useRef } from "react";
 import { NavLink } from "react-router-dom";
 
 import type { Category, Product } from "@/api/types";
@@ -126,6 +127,8 @@ export function StoreRenderer({
   const stacked = width < STACK_WIDTH;
   // Narrowed here, once, rather than read raw off a document that may predate the field.
   const mode = resolveMode(store);
+  const mainId = useId();
+  const mainRef = useRef<HTMLElement>(null);
 
   /*
    * One `contentinfo` per page.
@@ -167,6 +170,29 @@ export function StoreRenderer({
      */
     <LineListProvider>
       <ThemeFrame tokens={store.tokens} style={{ minHeight: "100%" }}>
+        {showChrome ? (
+          /* The same skip link as the console's `AppShell`: off screen until focused, and it moves
+             focus itself because a bare fragment jump does not in every browser. Theme colours, so
+             it reads as part of the store. */
+          <a
+            href={`#${mainId}`}
+            onClick={(event) => {
+              event.preventDefault();
+              mainRef.current?.focus();
+            }}
+            className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:px-4 focus:py-2"
+            style={{
+              background: T.surface,
+              color: T.text,
+              border: `1px solid ${T.border}`,
+              borderRadius: T.radius,
+              fontFamily: T.fontBody,
+              fontWeight: 700,
+            }}
+          >
+            Skip to content
+          </a>
+        ) : null}
         <div
           style={{
             paddingBlock: step(stacked ? 1 : 1.5),
@@ -220,7 +246,7 @@ export function StoreRenderer({
             </div>
           ) : null}
 
-          <main>
+          <main id={mainId} ref={mainRef} tabIndex={-1} style={{ outline: "none" }}>
             {page ? (
               <PageRenderer
                 page={page}

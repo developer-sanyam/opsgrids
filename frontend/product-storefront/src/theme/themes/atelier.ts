@@ -63,7 +63,7 @@ const CHECK = {
 const FOOTER = {
   aboutTitle: "The workshop",
   aboutText:
-    "Furniture made by hand in Jodhpur since 1994, from timber we buy standing. Every piece is finished, photographed and shipped assembled.",
+    "Furniture made by hand in Jodhpur since [year founded], from timber we buy standing. Every piece is finished, photographed and shipped assembled.",
   col1Title: "Collections",
   col1Links:
     "Sofas & Seating | /store/catalogue?category=seating\nDining & Tables | /store/catalogue?category=dining\nBeds & Wardrobes | /store/catalogue?category=beds\nLighting & Décor | /store/catalogue?category=lighting",
@@ -74,12 +74,12 @@ const FOOTER = {
   col3Links: "Home | /store\nOur timber | /store/product\nThe showroom | /store/catalogue",
   col4Title: "Reach the showroom",
   col4Links:
-    "+91 291 244 0000 | tel:+912912440000\nstudio@example.in | mailto:studio@example.in\nMon to Sat, 10am to 7pm",
+    "[Phone number]\nstudio@example.in | mailto:studio@example.in\nMon to Sat, 10am to 7pm",
   socialTitle: "Follow",
   socialLinks: "Instagram | https://instagram.com\nPinterest | https://pinterest.com",
   paymentTitle: "We accept",
   paymentMethods: "UPI\nVisa\nMastercard\nRuPay\nNet banking\nBank transfer",
-  legalText: "© 2026 Atelier Handicrafts · GSTIN 08AAACR0000R1ZX · All prices in INR, inclusive of GST",
+  legalText: "© [Year] [Legal entity name] · GSTIN [Your GSTIN] · All prices in INR, inclusive of GST",
   columns: 4,
 };
 
@@ -111,9 +111,9 @@ export const atelier: Theme = {
     page("atl-home", "/", "Home", [
       sec("atl-delivery", "delivery-check", { x: 0, y: 0, w: 12, h: 3 }, { ...CHECK }),
       sec("atl-hero", "hero", { x: 0, y: 3, w: 12, h: 11 }, {
-        eyebrow: "Made by hand in Jodhpur since 1994",
+        eyebrow: "Made by hand in Jodhpur since [year founded]",
         heading: "Furniture that outlives the room it was made for",
-        body: "Solid teak, sheesham and rosewood, cut and joined by the same eleven people who have been here twenty years.",
+        body: "Solid teak, sheesham and rosewood, cut and joined by hand in [your workshop's town].",
         ctaLabel: "Shop now",
         ctaHref: "/store/catalogue",
         secondaryLabel: "",

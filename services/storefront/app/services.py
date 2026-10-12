@@ -1984,6 +1984,35 @@ async def update_enquiry_status(
     return enquiry
 
 
+async def erase_enquiry(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    enquiry: Enquiry,
+    *,
+    request: Request | None = None,
+) -> None:
+    """Erase one enquiry — a buyer's deletion request. Deletes the row outright rather than
+    soft-deleting it, because a soft delete would keep the sealed contact details it exists to
+    remove. The audit row records the act and the status, never the buyer's details."""
+    before = {
+        **_enquiry_snapshot(enquiry),
+        "had_whatsapp_opt_in": enquiry.whatsapp_opt_in_at is not None,
+    }
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="sales.enquiry.erased",
+        entity="enquiry",
+        entity_id=enquiry.id,
+        before=before,
+        request=request,
+    )
+    await session.delete(enquiry)
+    await session.flush()
+
+
 async def unmask_enquiry_contact(
     session: AsyncSession,
     ctx: ScopeContext,

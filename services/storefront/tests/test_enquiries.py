@@ -11,7 +11,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from app.models import AuditLog
+from app.models import AuditLog, Enquiry
 from tests.helpers import all_perms, principal_for, seed_category, seed_product, seed_store
 
 pytestmark = pytest.mark.integration
@@ -171,6 +171,17 @@ class TestPublicSubmission:
 
         assert response.status_code == 422
 
+    async def test_company_is_optional_for_a_consumer_buyer(
+        self, client, admin_session, org_id: uuid.UUID, slug: str
+    ) -> None:
+        await seed_store(admin_session, org_id, slug, status="published")
+        payload = _payload(slug)
+        del payload["company"]
+
+        response = await client.post(PUBLIC_ENQUIRY, json=payload)
+
+        assert response.status_code == 201
+
     async def test_it_appears_in_the_merchants_list_with_contact_fields_masked(
         self, client, as_principal, admin_session, org_id: uuid.UUID, slug: str
     ) -> None:
@@ -315,3 +326,85 @@ class TestCrossTenantIsolation:
             response = await client.get(ENQUIRIES)
 
         assert response.json()["items"] == []
+
+
+class TestErasure:
+    """`DELETE /storefront/enquiries/{id}` erases the row — the sealed contact details and the
+    WhatsApp opt-in stamp with it — and leaves an audit row that holds no buyer PII."""
+
+    async def _one(self, client, admin_session, org_id, slug) -> str:
+        await seed_store(admin_session, org_id, slug, status="published")
+        sent = await client.post(
+            PUBLIC_ENQUIRY,
+            json=_payload(slug, phone="+919876543210", whatsapp_marketing_opt_in=True),
+        )
+        assert sent.status_code == 201, sent.text
+        return str(sent.json()["id"])
+
+    async def test_delete_erases_the_row_and_writes_an_audit_row(
+        self, client, as_principal, admin_session, org_id: uuid.UUID, slug: str
+    ) -> None:
+        enquiry_id = await self._one(client, admin_session, org_id, slug)
+
+        with as_principal(principal_for(org_id, ["storefront.sales.enquiry.delete:ORG"])):
+            response = await client.delete(f"{ENQUIRIES}/{enquiry_id}")
+
+        assert response.status_code == 204
+        await admin_session.rollback()
+        remaining = (
+            await admin_session.execute(select(Enquiry).where(Enquiry.id == uuid.UUID(enquiry_id)))
+        ).scalar_one_or_none()
+        assert remaining is None
+        audit = (
+            await admin_session.execute(
+                select(AuditLog).where(
+                    AuditLog.organization_id == org_id, AuditLog.action == "sales.enquiry.erased"
+                )
+            )
+        ).scalar_one()
+        assert str(audit.entity_id) == enquiry_id
+        assert "priya" not in str(audit.before).lower()
+        assert "9876543210" not in str(audit.before)
+
+        with as_principal(all_perms(org_id)):
+            again = await client.get(f"{ENQUIRIES}/{enquiry_id}")
+        assert again.status_code == 404
+
+    async def test_without_the_permission_it_is_403_and_the_row_stays(
+        self, client, as_principal, admin_session, org_id: uuid.UUID, slug: str
+    ) -> None:
+        enquiry_id = await self._one(client, admin_session, org_id, slug)
+        others = principal_for(
+            org_id,
+            [
+                "storefront.sales.enquiry.read:ORG",
+                "storefront.sales.enquiry.write:ORG",
+                "storefront.sales.enquiry.unmask:ORG",
+            ],
+            amr=["otp"],
+        )
+
+        with as_principal(others):
+            response = await client.delete(f"{ENQUIRIES}/{enquiry_id}")
+
+        assert response.status_code == 403
+        await admin_session.rollback()
+        assert (
+            await admin_session.execute(select(Enquiry).where(Enquiry.id == uuid.UUID(enquiry_id)))
+        ).scalar_one_or_none() is not None
+
+    async def test_another_organizations_enquiry_is_404_and_untouched(
+        self, client, as_principal, admin_session, org_id: uuid.UUID, other_org: uuid.UUID
+    ) -> None:
+        other_slug = f"t{uuid.uuid4().hex[:16]}"
+        enquiry_id = await self._one(client, admin_session, other_org, other_slug)
+
+        with as_principal(all_perms(org_id)):
+            response = await client.delete(f"{ENQUIRIES}/{enquiry_id}")
+
+        assert response.status_code == 404
+        await admin_session.rollback()
+        kept = (
+            await admin_session.execute(select(Enquiry).where(Enquiry.id == uuid.UUID(enquiry_id)))
+        ).scalar_one()
+        assert kept.whatsapp_opt_in_at is not None

@@ -623,8 +623,8 @@
         "description": "The public body. `store` names the tenant the same way every other public endpoint's\nbody does; `email` and `phone` are sealed rather than stored, `phone` optional because the\nfront end's own form only requires an email (`EnquiryForm.tsx`).",
         "properties": {
           "company": {
+            "default": "",
             "maxLength": 160,
-            "minLength": 1,
             "title": "Company",
             "type": "string"
           },
@@ -700,7 +700,6 @@
         "required": [
           "store",
           "name",
-          "company",
           "email",
           "requirement"
         ],
@@ -4173,6 +4172,41 @@
       }
     },
     "/api/v1/storefront/enquiries/{enquiry_id}": {
+      "delete": {
+        "description": "`storefront.sales.enquiry.delete`, floored at ORG. A hard delete: the row goes, and with it\nthe sealed email and phone and the WhatsApp opt-in stamp. Another organization's id is the\nsame 404 as a missing one.",
+        "operationId": "delete_enquiry_api_v1_storefront_enquiries__enquiry_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "enquiry_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Enquiry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Erase an enquiry (audited, irreversible)",
+        "tags": [
+          "storefront"
+        ]
+      },
       "get": {
         "operationId": "get_enquiry_api_v1_storefront_enquiries__enquiry_id__get",
         "parameters": [

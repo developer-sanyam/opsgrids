@@ -174,7 +174,7 @@ const CORE_SECTION_DEFS: SectionDef[] = [
     group: "content",
     defaultLayout: { w: 12, h: 9 },
     fields: [
-      { key: "eyebrow", label: "Eyebrow", type: "text", default: "Since 1994" },
+      { key: "eyebrow", label: "Eyebrow", type: "text", default: "Since [year founded]" },
       { key: "heading", label: "Heading", type: "text", default: "Industrial supply, without the follow-up calls" },
       {
         key: "body",
@@ -197,6 +197,13 @@ const CORE_SECTION_DEFS: SectionDef[] = [
            Making the split arrangement honour a centred image is a renderer change worth making
            on its own, with the six themes that centre their heroes re-checked in a browser. */
         help: "Shown beside the copy in the split arrangement, or behind it in the overlay one. A centred split hero shows no picture — choose Overlay for words over an image. Leave empty for the theme's generated plate.",
+      },
+      {
+        key: "imageAlt",
+        label: "Image description",
+        type: "text",
+        default: "",
+        help: "What the picture shows, read out by screen readers. Leave empty if it is only decoration.",
       },
       { key: "align", label: "Alignment", type: "select", options: ALIGN_OPTIONS, default: "left" },
       { key: "tone", label: "Tone", type: "select", options: TONE_OPTIONS, default: "contrast" },
@@ -262,6 +269,13 @@ const CORE_SECTION_DEFS: SectionDef[] = [
     defaultLayout: { w: 12, h: 7 },
     fields: [
       { key: "image", label: "Image", type: "image", default: null },
+      {
+        key: "imageAlt",
+        label: "Image description",
+        type: "text",
+        default: "",
+        help: "What the picture shows, read out by screen readers. Leave empty if it is only decoration.",
+      },
       {
         key: "imageSide",
         label: "Image side",
@@ -453,8 +467,8 @@ const CORE_SECTION_DEFS: SectionDef[] = [
         key: "names",
         label: "Company names",
         type: "textarea",
-        default: "Godrej & Boyce\nThermax\nKirloskar Brothers\nTata Projects\nShapoorji Pallonji\nAshok Leyland",
-        help: "One per line. Rendered as wordmarks in the theme's heading face.",
+        default: "[Client name 1]\n[Client name 2]\n[Client name 3]\n[Client name 4]",
+        help: "One per line, and only firms that have agreed to be named. Rendered as wordmarks in the theme's heading face.",
       },
       { key: "muted", label: "Mute the wordmarks", type: "toggle", default: true },
     ],
@@ -466,12 +480,12 @@ const CORE_SECTION_DEFS: SectionDef[] = [
     defaultLayout: { w: 12, h: 7 },
     fields: [
       { key: "heading", label: "Heading", type: "text", default: "What purchase teams say" },
-      { key: "quote1", label: "Quote 1", type: "textarea", default: "Two years of monthly orders and not one short shipment. That is the whole review." },
-      { key: "author1", label: "Author 1", type: "text", default: "Rajeev Bhatia" },
-      { key: "role1", label: "Role 1", type: "text", default: "Purchase Head, Sunrise Engineering" },
-      { key: "quote2", label: "Quote 2", type: "textarea", default: "They quote against our drawing, not against a category. It saves a day every time." },
-      { key: "author2", label: "Author 2", type: "text", default: "Meenakshi Rao" },
-      { key: "role2", label: "Role 2", type: "text", default: "Projects Buyer, Deccan Infra" },
+      { key: "quote1", label: "Quote 1", type: "textarea", default: "[Your customer's words, quoted with their permission]" },
+      { key: "author1", label: "Author 1", type: "text", default: "[Customer name]" },
+      { key: "role1", label: "Role 1", type: "text", default: "[Role, company]" },
+      { key: "quote2", label: "Quote 2", type: "textarea", default: "[Your customer's words, quoted with their permission]" },
+      { key: "author2", label: "Author 2", type: "text", default: "[Customer name]" },
+      { key: "role2", label: "Role 2", type: "text", default: "[Role, company]" },
       { key: "quote3", label: "Quote 3", type: "textarea", default: "" },
       { key: "author3", label: "Author 3", type: "text", default: "" },
       { key: "role3", label: "Role 3", type: "text", default: "" },
@@ -519,7 +533,14 @@ const CORE_SECTION_DEFS: SectionDef[] = [
       { key: "showGstin", label: "Ask for GSTIN", type: "toggle", default: true },
       { key: "submitLabel", label: "Submit button", type: "text", default: "Send enquiry" },
       { key: "successMessage", label: "Success message", type: "text", default: "Enquiry received. We will reply to the email you gave us." },
-      { key: "consentText", label: "Consent line", type: "text", default: "We use these details to answer this enquiry and nothing else." },
+      {
+        key: "consentText",
+        label: "Privacy notice",
+        type: "textarea",
+        default:
+          "This store receives the details you send here. It uses them to reply to you and keeps a record of your enquiry. You get marketing messages only if you tick the WhatsApp box. To withdraw, or to ask for your details to be deleted, contact the store.",
+        help: "Shown under the send button. Say who receives the details, why, and how a buyer asks for them to be deleted.",
+      },
     ],
   },
   {
@@ -529,10 +550,10 @@ const CORE_SECTION_DEFS: SectionDef[] = [
     defaultLayout: { w: 6, h: 8 },
     fields: [
       { key: "heading", label: "Heading", type: "text", default: "Reach the desk" },
-      { key: "address", label: "Address", type: "textarea", default: "Plot 14, MIDC Phase II\nBhiwandi, Maharashtra 421302" },
-      { key: "phone", label: "Phone", type: "text", default: "+91 22 4000 1180" },
+      { key: "address", label: "Address", type: "textarea", default: "[Street address]\n[City, State PIN code]" },
+      { key: "phone", label: "Phone", type: "text", default: "[Phone number]" },
       { key: "email", label: "Email", type: "text", default: "sales@example.co.in" },
-      { key: "gstin", label: "GSTIN", type: "text", default: "27AABCU9603R1ZX" },
+      { key: "gstin", label: "GSTIN", type: "text", default: "[Your GSTIN]" },
       { key: "hours", label: "Hours", type: "text", default: "Mon–Sat, 9:30am–6:30pm IST" },
     ],
   },

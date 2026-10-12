@@ -38,6 +38,15 @@
       "resource": "zone"
     },
     {
+      "action": "delete",
+      "default_scope": "ORG",
+      "description": "Permanently erase an enquiry, with the buyer's contact details and WhatsApp opt-in it holds",
+      "is_dangerous": false,
+      "max_scope": "ORG",
+      "module": "sales",
+      "resource": "enquiry"
+    },
+    {
       "action": "read",
       "default_scope": "ORG",
       "description": "See enquiries and their status, with buyer contact details masked",
@@ -104,6 +113,10 @@
         },
         {
           "code": "storefront.delivery.zone.write",
+          "scope": "ORG"
+        },
+        {
+          "code": "storefront.sales.enquiry.delete",
           "scope": "ORG"
         },
         {

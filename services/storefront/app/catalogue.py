@@ -218,6 +218,17 @@ STOREFRONT = PermissionCatalogue(
             "ORG",
             "ORG",
         ),
+        # Its own permission rather than folded into `write`: `write` moves a status, this
+        # destroys a buyer's record for good (the erasure-request path).
+        PermissionSpec(
+            "sales",
+            "enquiry",
+            "delete",
+            "Permanently erase an enquiry, with the buyer's contact details and WhatsApp opt-in "
+            "it holds",
+            "ORG",
+            "ORG",
+        ),
     ],
 )
 

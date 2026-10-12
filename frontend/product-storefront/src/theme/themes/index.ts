@@ -33,7 +33,7 @@ export function themeByKey(key: string): Theme | null {
 export const SUGGESTED_BRAND: Record<string, Brand> = {
   foundry: {
     name: "Shakti Industrial Supply",
-    tagline: "Fasteners, bearings and power transmission since 1994",
+    tagline: "Fasteners, bearings and power transmission",
     logoText: "SIS",
   },
   depot: {
@@ -68,7 +68,7 @@ export const SUGGESTED_BRAND: Record<string, Brand> = {
   },
   atelier: {
     name: "Atelier Handicrafts",
-    tagline: "Hand-made furniture from Jodhpur since 1994",
+    tagline: "Hand-made furniture from Jodhpur",
     logoText: "ATL",
   },
 };

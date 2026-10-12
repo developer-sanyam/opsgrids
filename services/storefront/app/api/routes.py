@@ -119,6 +119,9 @@ EnquiryUnmask = Annotated[
     ScopeContext,
     Depends(require("storefront.sales.enquiry.unmask", amr={"otp"}, minimum=Scope.ORG)),
 ]
+EnquiryDelete = Annotated[
+    ScopeContext, Depends(require("storefront.sales.enquiry.delete", minimum=Scope.ORG))
+]
 
 #: A refusal ceiling for the CSV body, enforced in this service as well as at the gateway.
 #: ADR-0010 §9's arithmetic: about 19,000 rows at roughly 12 bytes each is ~230 KB, comfortably
@@ -1404,3 +1407,23 @@ async def reveal_enquiry(
         raise NotFoundProblem("No such enquiry")
     email, phone = await services.unmask_enquiry_contact(session, ctx, enquiry, request=request)
     return EnquiryRevealed(id=enquiry.id, email=email, phone=phone)
+
+
+@router.delete(
+    "/storefront/enquiries/{enquiry_id}",
+    status_code=204,
+    summary="Erase an enquiry (audited, irreversible)",
+    dependencies=[Entitled],
+)
+async def delete_enquiry(
+    enquiry_id: uuid.UUID, session: SessionDep, ctx: EnquiryDelete, request: Request
+) -> Response:
+    """`storefront.sales.enquiry.delete`, floored at ORG. A hard delete: the row goes, and with it
+    the sealed email and phone and the WhatsApp opt-in stamp. Another organization's id is the
+    same 404 as a missing one."""
+    enquiry = await selectors.get_enquiry(session, ctx, enquiry_id)
+    if enquiry is None:
+        raise NotFoundProblem("No such enquiry")
+    await services.erase_enquiry(session, ctx, enquiry, request=request)
+    await session.flush()
+    return Response(status_code=204)
