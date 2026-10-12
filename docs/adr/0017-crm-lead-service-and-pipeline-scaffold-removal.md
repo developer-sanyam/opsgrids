@@ -202,8 +202,9 @@ consumer stands; where it runs has changed.
   could convert a lead into a dead deal. ADR-0038 proposes a different cleanup: soft-delete the
   orphan deal with an audit row naming the consumer and emit no `stage_changed`, remove only records
   provably created by the aborted attempt, and run log-only on the first deploy
-  (pending D-1, D-2, D-3). Until the owner answers, nothing consumes the event and nothing is
-  cleaned up.
+  (ADR-0038 D-1, D-2, D-3, approved 2026-10-11). CRM R2.4 builds it: deal and customer consume the
+  event and act only once the owner sets `CRM_CONVERSION_CLEANUP_MODE=on`; until then they log what
+  they would do and change nothing.
 - **A deleted record no longer permanently blocks a lead's conversion.** The ids a lead
   converts into are derived from its own id, so a company or contact an earlier attempt created
   and someone then deleted would refuse every later attempt on the same ids. `Lead
@@ -256,4 +257,5 @@ consumer stands; where it runs has changed.
   `admin` total 3944 MB (102.1%); the three `crm` containers cost 295 MB (the core alone is 1772 MB,
   core plus `crm` is 2067 MB). The box's accepted ceiling is the owner's setting,
   `EDGE_BUDGET_ACCEPTED_MB`, and cannot be verified from the repository. Whether it rises or memory
-  is freed is ADR-0038 D-13 (pending D-13).
+  is freed is ADR-0038 D-13 (approved 2026-10-11: the owner raises the ceiling by 1 MB per fold,
+  3945 MB at R2.4).

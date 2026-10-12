@@ -656,7 +656,7 @@ states, and the additive source changes are harmless to leave in place.
    the owner's setting (`EDGE_BUDGET_ACCEPTED_MB`), so the +99 MB above is not covered by it and the
    CRM programme's own consumer folds (+1 MB each, the first at R2.4) draw on the same ceiling.
    Whether the ceiling rises, memory is freed or the folds wait is
-   [ADR-0038](0038-crm-programme-decisions.md) D-13 (pending D-13); the programme design's row D-13
+   [ADR-0038](0038-crm-programme-decisions.md) D-13 (approved 2026-10-11: +1 MB per consumer fold, raised release by release); the programme design's row D-13
    (`docs/superpowers/specs/2026-10-07-crm-overhaul-programme-design.md:388`) says the insights
    container's +99 MB ships only after a separate owner answer on the ceiling.
 2. **Two definitions of one number.** Insights' revenue against finance's, and insights' pipeline

@@ -258,6 +258,7 @@ token's `org` claim names the organization in the path (`:110-121`).
 | `POST /leads:convert` (`services/customer/app/api/internal.py:290`) | customer | `lead` | yes | lead (A3) |
 | `POST /owners:validate` (`services/customer/app/api/internal.py:351`) | customer | `lead` | yes | lead (A5) |
 | `POST /leads:convert` (`services/deal/app/api/internal.py:94`) | deal | `lead` | yes | lead (A4) |
+| `GET /references` (`services/deal/app/api/internal.py`, `references`) | deal | `customer` | yes | customer (A11) |
 
 The first two are the only CRM routes with neither check: any validly signed service token reaches a
 contact's sealed number through them. Hardening both is registered for R3.1. The organization claim
@@ -267,7 +268,7 @@ without locking notification out.
 **Every place a CRM service, finance or notification calls another service** (found with
 `grep "_internal_url\|_service_url" services/{customer,deal,lead,finance,notification}/app`,
 leaving out `config.py`; `deal` builds none). `tests/infra/test_internal_client_paths.py` registers
-these nine calls, makes each with the real client, sends the recorded request to the real callee app
+these calls, makes each with the real client, sends the recorded request to the real callee app
 and decodes the service token it carried.
 
 | # | Caller | Calls | Client code | Verdict |
@@ -281,6 +282,7 @@ and decodes the service token it carried.
 | A7 | notification | customer `GET …/contacts/{contact_id}/messaging-target` | `services/notification/app/targets.py:73-76`; its token carries the `org` claim (R1.2a) | correct |
 | A8 | notification | customer `POST …/contacts:resolve` | `services/notification/app/contacts.py:74-77`; its token carries the `org` claim (R1.2a) | correct |
 | A9 | notification | account `GET …/memberships/{membership_id}` | `services/notification/app/memberships.py:48-51`; its token carries the `org` claim (R1.2a); route `services/account/app/api/internal.py:304-346` | path correct; **unwired** (inference): compose sets no `ACCOUNT_INTERNAL_URL` (it sets `ACCOUNT_SERVICE_URL`, `infrastructure/edge/compose.prod.yml:103`) and the default is `http://localhost:8111` (`services/notification/app/config.py:91`), and `membership_is_active` answers `False` on a connection error (`services/notification/app/memberships.py:68-70`), so in production an Engage conversation assignment would be refused; wiring the URL is outside this programme (registry `L3`) |
+| A11 | customer's aborted-conversion cleanup | deal `GET …/references`: counts of live deals and activities naming a company and contact, never ids | `services/customer/app/clients.py`, `deal_references`; called with no transaction open (R2.4) | correct |
 
 Seventeen further files in nine other services build internal URLs from the same settings; nobody
 has audited them. They are `UNAUDITED_BASELINE` in `tests/infra/test_internal_client_paths.py`: the
@@ -313,7 +315,7 @@ says whether notification's rule engine lists the key.
 | `crm.lead.created` | lead | `organization_id, lead_id, source, owner_id` (`services/lead/app/services.py:539-542`) | yes | ahead: lacks `status` | notification | yes |
 | `crm.lead.updated` | lead | `organization_id, lead_id, changed` (`services/lead/app/services.py:648-650`) | yes | ahead: lacks `status, source, owner_id, converted_at` | notification | yes |
 | `crm.lead.converted` | lead | `organization_id, lead_id, company_id, contact_id, deal_id` (`services/lead/app/services.py:1251-1255`) | yes | ahead: lacks `owner_id, converted_at` | notification | yes |
-| `crm.lead.conversion_aborted` | lead | `organization_id, lead_id, reason, generation, claim_id, company_id, contact_id, deal_id`; `reason` is `status_changed`, `owner_changed` or `record_deleted` (`services/lead/app/services.py`, `_stage_conversion_aborted`) | yes | conforms; tested against its producer (`services/lead/tests/test_lead_lifecycle_races.py`, `TestAnAbortedConversionLeavesATrail`; `services/lead/tests/test_convert.py`, `TestGenerationsAndDealNames`) | notification | yes |
+| `crm.lead.conversion_aborted` | lead | `organization_id, lead_id, reason, generation, claim_id, company_id, contact_id, deal_id`; `reason` is `status_changed`, `owner_changed` or `record_deleted` (`services/lead/app/services.py`, `_stage_conversion_aborted`) | yes | conforms; tested against its producer (`services/lead/tests/test_lead_lifecycle_races.py`, `TestAnAbortedConversionLeavesATrail`; `services/lead/tests/test_convert.py`, `TestGenerationsAndDealNames`) | notification; deal and customer (the cleanup, R2.4, `log_only` until the owner sets `on`) | yes |
 
 - **Publishing.** A producer stages the event in its `outbox` in the same transaction as the change,
   and the relay publishes it after commit. An event with no bound queue is silently dropped while its
@@ -430,14 +432,14 @@ not rewritten, because a reconcile creates missing roles and widens grants and n
 
 ## 10. Runtime and operations
 
-- **Containers.** The `crm` compose profile runs three containers, `customer`, `deal` and `lead`
-  (`infrastructure/edge/compose.prod.yml:1424-1484`). `customer-worker` exists only behind the
-  `split-workers` profile, as the rollback for the consumer fold
-  (`infrastructure/edge/compose.prod.yml:1449-1454`).
+- **Containers.** The `crm` compose profile runs three containers, `customer`, `deal` and `lead`.
+  `customer-worker` and (since R2.4) `deal-worker` exist only behind the `split-workers` profile, as
+  the rollbacks for the consumer folds (`infrastructure/edge/compose.prod.yml`).
 - **The consumer fold.** `RUN_CONSUMERS_IN_API` defaults to true in compose
   (`infrastructure/edge/compose.prod.yml:94`) and to false in the service
   (`services/customer/app/config.py:23`), so on the box customer's one consumer runs as a supervised
-  task inside its API process. `deal` and `lead` have no such setting and ignore the variable. The
+  task inside its API process; since R2.4 deal does the same (`services/deal/app/config.py`). `lead`
+  has no such setting and ignores the variable; it has no consumer until R3.8. The
   rollback is `RUN_CONSUMERS_IN_API=false` with `split-workers` added to `EDGE_PROFILES`
   (`infrastructure/edge/RUNBOOK.md:3020-3021`).
 - **Outbox relays.** The shared `edge-relay` drains the CRM outboxes: its `EDGE_RELAY_SCHEMAS`
@@ -446,13 +448,13 @@ not rewritten, because a reconcile creates missing roles and widens grants and n
   check and, since R1.2b, its default is the same 29 names, `lead` included
   (`infrastructure/edge/compose.prod.yml:851`); `tests/infra/test_ops_monitor_compose_env.py` fails
   if the two differ.
-- **Dead-letter queues.** For the `crm` profile ops-monitor watches `customer.events.dlq` and no
-  other CRM queue (`libs/platform-core/src/platform_core/ops_monitor/config.py:102`); the comment
-  above that table, which says `crm` runs no consumer, is stale (`:96-100`). A queue is declared only
+- **Dead-letter queues.** For the `crm` profile ops-monitor watches `customer.events.dlq` and, since
+  R2.4, `deal.events.dlq` (`libs/platform-core/src/platform_core/ops_monitor/config.py`,
+  `PROFILE_DLQ_QUEUES`). A queue is declared only
   when its consumer first runs, and `tests/infra/test_ops_monitor_dlq_queue_sync.py` fails when a
   `./bin/worker` service has no queue in the table or the reverse (`:83-129`), so each queue is added
-  in the release that adds its consumer. The schedule the registry proposes (registry `F5`), none of
-  which is built:
+  in the release that adds its consumer. The schedule the registry proposes (registry `F5`); the first row
+  is built by R2.4:
 
   | Queue | Profile key | Added by | Because |
   |---|---|---|---|
@@ -465,12 +467,14 @@ not rewritten, because a reconcile creates missing roles and widens grants and n
 
 - **Memory.** The numbers are the repo's own arithmetic:
   `python3 infrastructure/edge/lib/memory_budget_totals.py infrastructure/edge/memory-budget.json --profiles <csv>`.
-  The core alone is 1772 MB (`--profiles ''`) and core plus the `crm` profile is 2067 MB
-  (`--profiles crm`), so the three CRM containers cost 295 MB. The ten sellable profiles
-  (`storefront,inventory,hrms,crm,pulseboard,projects,support,marketing,finance,itsm`) total 3747 MB,
-  97.0% of the 3862 MB reference, and 3944 MB, 102.1%, with `admin` added. The box's accepted ceiling
-  is the owner's setting, `EDGE_BUDGET_ACCEPTED_MB`, which is 3944 MB by the owner's note; the
-  repository cannot verify that, and `make edge-preflight` prints the verdict. The "94.4%" figure in
+  The core alone is 1772 MB (`--profiles ''`) and core plus the `crm` profile is 2068 MB
+  (`--profiles crm`), so the three CRM containers cost 296 MB since R2.4 priced `deal` as
+  `api_with_worker`. The ten sellable profiles
+  (`storefront,inventory,hrms,crm,pulseboard,projects,support,marketing,finance,itsm`) total 3748 MB,
+  97.0% of the 3862 MB reference, and 3945 MB, 102.1%, with `admin` added. The box's accepted ceiling
+  is the owner's setting, `EDGE_BUDGET_ACCEPTED_MB`, which was 3944 MB by the owner's note and must be
+  raised to 3945 before R2.4 deploys (ADR-0038 D-13); the repository cannot verify that, and
+  `make edge-preflight` prints the verdict. The "94.4%" figure in
   ADR-0017 predates the re-pricing.
 - **Folding `lead` into `customer` (D-11).** The costing is in
   [ADR-0038, "Costing of D-11"](adr/0038-crm-programme-decisions.md#costing-of-d-11): removing the
@@ -479,8 +483,24 @@ not rewritten, because a reconcile creates missing roles and widens grants and n
   by code alone. The recommendation is to keep three processes for this programme, proposed in
   ADR-0038 (pending D-11); the decision first matters at R2.4, and only if D-13 holds the ceiling.
   The default proposed for D-13 is the other answer: the owner raises `EDGE_BUDGET_ACCEPTED_MB` by
-  1 MB for each consumer fold, because `api_with_worker` is 99 MB against 98 for `api` (proposed in
-  ADR-0038, pending D-13).
+  1 MB for each consumer fold, because `api_with_worker` is 99 MB against 98 for `api` (ADR-0038
+  D-13, approved 2026-10-11; R2.4's deal fold is the first, 3944 to 3945 MB).
+- **The aborted-conversion cleanup (R2.4).** Deal and customer consume `crm.lead.conversion_aborted`.
+  Each re-derives the attempt's ids from `(lead_id, generation)` with its own copy of lead's
+  `conversion_ids` (the three copies are pinned by `libs/contracts/vectors/conversion_ids.v1.json`)
+  and never acts on the ids the payload names. Deal soft-deletes the derived deal only when it is
+  live and pristine (one audit row, `deal.created` by `lead`, no activity; no `stage_changed`).
+  Customer plans in a read-only transaction, asks deal's `GET …/references` with no transaction
+  open, and in `on` re-verifies under row locks, deleting the contact and then the company only when
+  each is the derived id, live, its creation by `lead` is its only audit row, the contact has no
+  activity, the company has no other live contact, and deal counts no deal or activity naming
+  either. A conversion that reuses a record by name or email writes a `*.reused_for_lead` audit
+  marker, so a reused record is never pristine. `CRM_CONVERSION_CLEANUP_MODE` (box `.env`, compose
+  default `log_only`): `log_only` logs `crm.conversion_cleanup.would_apply`/`would_keep` and writes
+  nothing, `on` acts, `off` ignores; only the exact word `on` arms it. Both services flip together.
+  The D-3 count of past aborts has not been taken yet (an owner read before the deploy, RUNBOOK
+  "CRM: aborted-conversion cleanup"), so the historical sweep (Task 2.4.10) is not built; it is built
+  only if that count is non-zero.
 - **The RUNBOOK** (`infrastructure/edge/RUNBOOK.md`): "Deploying" (`:524`), "Roll back a bad deploy"
   (`:2615`), "The memory budget" (`:2941`), "Removing test organisations" (`:2204`; every end-to-end
   and smoke run leaves one behind, and the owner removes them with `tools/purge_test_orgs.py`),
@@ -497,7 +517,7 @@ not rewritten, because a reconcile creates missing roles and widens grants and n
 | Limitation | Evidence | Fixed by |
 |---|---|---|
 | OWN scope is empty for a tenant without HRMS: OWN compares `owner_id` with an HR employee id that such a tenant never has | §4; `libs/platform-core/src/platform_core/auth.py:337-341,372-381` | proposed in ADR-0038 (pending D-7, D-8, D-9): R2.2, R2.6, R2.7 |
-| An aborted lead conversion leaves an orphaned company, contact and deal; nothing consumes `crm.lead.conversion_aborted`, and the generation bump has no event for a deleted record | ADR-0017 Known limitations; `services/lead/app/services.py:1122-1129,1223-1277` | proposed in ADR-0038 (pending D-1, D-2, D-3, D-4): R2.1, R2.4 |
+| An aborted lead conversion leaves an orphaned company, contact and deal | ADR-0017 Known limitations; `services/lead/app/services.py:1122-1129,1223-1277` | R2.1 (the event carries `generation` and `claim_id`; `record_deleted`) and R2.4 (deal and customer consume it; ADR-0038 D-1, D-2, approved 2026-10-11), acting only once the owner sets `CRM_CONVERSION_CLEANUP_MODE=on`; orphans left by aborts before R2.1 are swept only if the D-3 count is non-zero (D-3, approved 2026-10-11; count not yet taken) |
 | `customer.contacts.email` is plaintext (a lead's email is sealed, so conversion narrows the protection) | `services/customer/app/models.py:171`; ADR-0017 Known limitations | no release scheduled; optional sealing proposed as R2.9 Part C (pending D-26) |
 | A lead with a phone and no email converts to a company with no contact: the person and the number are dropped | `services/customer/app/services.py:1182-1185`, `services/lead/app/clients.py:103` | proposed in ADR-0038 (pending D-14): R3.1 |
 | Deal summaries add `value_minor` across currencies, though a deal's currency is free | `services/deal/app/domain.py:73-80,97-99,111-115`, `services/deal/app/schemas.py:77` | planned: R3.2 (registry `C9`: per-currency splitting, additive) |

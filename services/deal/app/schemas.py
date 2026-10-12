@@ -361,3 +361,13 @@ class LeadConversionDealIn(BaseModel):
 
 class LeadConversionDealOut(BaseModel):
     deal_id: str
+
+
+class ReferencesOut(BaseModel):
+    """What deal holds that names a company or contact, for customer's aborted-conversion cleanup
+    (`GET /internal/v1/organizations/{org}/references`). Counts only, never ids."""
+
+    company_deal_count: int = Field(ge=0)
+    contact_deal_count: int = Field(ge=0)
+    company_activity_count: int = Field(ge=0)
+    contact_activity_count: int = Field(ge=0)

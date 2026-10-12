@@ -94,12 +94,12 @@ PROFILE_API_CONTAINERS: Final[dict[str, tuple[str, ...]]] = {
 }
 
 #: B1/m6: which DLQ-bearing worker exists for a given `COMPOSE_PROFILES` entry — only profiles
-#: whose worker actually consumes events get an entry; `storefront`, `inventory`, `crm`,
-#: `pulseboard`, `projects`, `support`, `marketing` and `itsm` run no consumer today
-#: (`compose.prod.yml` has no `*-worker`/`scheduler`-shaped container for them), so they are
-#: absent here on purpose, not by omission.
+#: whose worker actually consumes events get an entry; `storefront`, `inventory`, `pulseboard`,
+#: `projects`, `support`, `marketing` and `itsm` run no consumer today (`compose.prod.yml` has no
+#: `*-worker`/`scheduler`-shaped container for them), so they are absent here on purpose, not by
+#: omission. `crm` runs customer's and (since CRM R2.4) deal's; lead has none.
 PROFILE_DLQ_QUEUES: Final[dict[str, tuple[str, ...]]] = {
-    "crm": ("customer.events",),
+    "crm": ("customer.events", "deal.events"),
     "hrms": ("approval.events", "attendance.events", "leave.events"),
     "finance": ("finance.events", "scheduler.events"),
     #: console-worker's own consumer (`console.events`) — console currently publishes nothing of

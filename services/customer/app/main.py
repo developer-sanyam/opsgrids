@@ -50,6 +50,7 @@ async def _start_background_worker(app: FastAPI) -> None:
         ),
         name="customer.worker",
     )
+    log.info("customer.worker.started", cleanup_mode=cfg.crm_conversion_cleanup_mode)
 
 
 async def _stop_background_worker(app: FastAPI) -> None:

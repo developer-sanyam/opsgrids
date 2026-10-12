@@ -392,6 +392,66 @@ class TestLeadConversionInternal:
         assert "9988776655" not in str(rows[0].after)
         assert "•" in rows[0].after["phone_from_lead"]
 
+    async def _convert(
+        self, client, org_id, owner_id, *, name: str, email: str | None, phone: str | None
+    ):  # type: ignore[no-untyped-def]
+        return await client.post(
+            f"/internal/v1/organizations/{org_id}/leads:convert",
+            headers={"X-Internal-Token": _token(org_id)},
+            json={
+                "company_id": str(uuid.uuid4()),
+                "contact_id": str(uuid.uuid4()),
+                "company_name": name,
+                "owner_id": str(owner_id),
+                "contact_full_name": "Priya Sharma",
+                "contact_email": email,
+                "contact_raw_phone": phone,
+            },
+        )
+
+    async def _markers(self, session: AsyncSession, entity_id: str) -> list[AuditLog]:
+        session.expire_all()
+        async with session.begin():
+            stmt = select(AuditLog).where(
+                AuditLog.entity_id == uuid.UUID(entity_id),
+                AuditLog.action.like("%.reused_for_lead"),
+            )
+            return list((await session.execute(stmt)).scalars())
+
+    async def test_a_company_reused_by_name_writes_one_marker_row(
+        self, client, org_id, session: AsyncSession
+    ) -> None:
+        owner_id = await _seed_owner(session, org_id)
+        first = await self._convert(
+            client, org_id, owner_id, name="Stellar Robotics", email=None, phone=None
+        )
+        second = await self._convert(
+            client, org_id, owner_id, name="Stellar Robotics", email=None, phone=None
+        )
+        assert second.json()["company_id"] == first.json()["company_id"]
+        rows = await self._markers(session, first.json()["company_id"])
+        assert [(r.action, r.acting_as, r.after) for r in rows] == [
+            ("company.reused_for_lead", "lead", {"matched_by": "name"})
+        ]
+
+    @pytest.mark.parametrize("phone", [None, "+919876543210"])
+    async def test_a_contact_reused_by_email_writes_one_marker_row(
+        self, client, org_id, session: AsyncSession, phone: str | None
+    ) -> None:
+        """No phone, or the same number already on file: nothing else is written, so the
+        marker is the reuse's only trace."""
+        owner_id = await _seed_owner(session, org_id)
+        email = "priya@stellar.example"
+        first = await self._convert(client, org_id, owner_id, name="A Co", email=email, phone=phone)
+        second = await self._convert(
+            client, org_id, owner_id, name="B Co", email=email, phone=phone
+        )
+        assert second.json()["contact_id"] == first.json()["contact_id"]
+        rows = await self._markers(session, first.json()["contact_id"])
+        assert [(r.action, r.after) for r in rows] == [
+            ("contact.reused_for_lead", {"matched_by": "email"})
+        ]
+
     async def test_a_caller_other_than_lead_is_refused(self, client, org_id) -> None:
         resp = await client.post(
             f"/internal/v1/organizations/{org_id}/leads:convert",

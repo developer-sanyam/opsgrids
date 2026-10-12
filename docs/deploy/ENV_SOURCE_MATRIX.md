@@ -830,15 +830,17 @@ INT:om/config.py:63-97):
 |---|---|
 | always (core) | `account.events`, `product.events`, `subscription.events`, `payment.events`, `notification.events`, `notification.dispatch` (6) |
 | `hrms` | `approval.events`, `attendance.events`, `leave.events` |
-| `crm` | `customer.events` |
+| `crm` | `customer.events`, `deal.events` (deal's since CRM R2.4) |
 | `finance` | `finance.events`, `scheduler.events` |
 | `storefront`, `inventory`, `pulseboard`, `projects`, `support`, `marketing`, `itsm` | none (no consumer today) |
-| **all ten declared** | **12 queues** |
+| **all ten declared** | **13 queues** |
 
-`COMPOSE_PROFILES=*` derives the same 28 and 12 (probe), in a different order. Entries you set by hand are only half-validated (a bad `:port` aborts every cycle after the DLQ check; a `.dlq` suffix or a typo is silently un-monitored): see the two rows in section 3.10. Outbox lag is checked for the schemas in
+`COMPOSE_PROFILES=*` derives the same 28 and 13 (probe), in a different order. Entries you set by hand are only half-validated (a bad `:port` aborts every cycle after the DLQ check; a `.dlq` suffix or a typo is silently un-monitored): see the two rows in section 3.10. Outbox lag is checked for the schemas in
 `EDGE_RELAY_SCHEMAS` (ops-monitor's default list is the same 29 names as edge-relay's, `lead` included; section 4).
 
-**Every compose service name, by profile** (from `memory-budget.json`, 47 containers; a service missing here has no price and preflight prices it as
+**Every compose service name, by profile** (`memory-budget.json` prices 51 containers since CRM R2.4, recomputed with
+`python3 -c "import json;print(len(json.load(open('infrastructure/edge/memory-budget.json'))['containers']))"`;
+the table below predates the worker fold and the `admin` profile, and the file is authoritative; a service missing here has no price and preflight prices it as
 `kinds.background` with a warning):
 
 | Profile | Containers |
@@ -847,7 +849,7 @@ INT:om/config.py:63-97):
 | `storefront` (4) | `minio`, `minio-init` (a one-shot labelled `opsgrids.oneshot=true`, expected to exit 0), `storefront`, `document` |
 | `inventory` (1) | `operations` |
 | `hrms` (7) | `approval`, `approval-worker`, `employee`, `attendance`, `attendance-worker`, `leave`, `leave-worker` |
-| `crm` (4) | `customer`, `customer-worker`, `deal`, `lead` |
+| `crm` (5) | `customer`, `customer-worker`, `deal`, `deal-worker`, `lead` (both `*-worker` are `split-workers` rollbacks since the folds) |
 | `pulseboard` (3) | `project`, `timesheet`, `standup` |
 | `projects`, `support`, `marketing`, `itsm` (1 each) | `projects`, `support`, `marketing`, `itsm` |
 | `finance` (3) | `finance`, `finance-worker`, `scheduler` |

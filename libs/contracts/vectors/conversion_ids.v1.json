@@ -1,0 +1,183 @@
+{
+  "version": 1,
+  "namespace": "6f2e6f3a-6d1e-4b6a-9c8e-2f7a5b1d4c90",
+  "templates": {
+    "company": "{lead_id}:company{suffix}",
+    "contact": "{lead_id}:contact{suffix}",
+    "deal": "{lead_id}:deal{suffix}"
+  },
+  "suffix": {
+    "generation_0": "",
+    "generation_n": ":{generation}"
+  },
+  "vectors": [
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000001",
+      "generation": 0,
+      "company_id": "8cb05642-8512-5e27-9d14-3a6e2fd432e8",
+      "contact_id": "6387c875-964a-5014-8ad5-811298185487",
+      "deal_id": "8348f8e3-45b6-5cb6-b2cd-86a52eb2ca9e"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000001",
+      "generation": 1,
+      "company_id": "15d22f5e-608f-5c87-9a65-e1489950fc38",
+      "contact_id": "1e156bee-4d99-51bf-bd0a-30dac8604bb0",
+      "deal_id": "f1ee08f8-8cc4-5ee0-a632-b68283cfc799"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000001",
+      "generation": 2,
+      "company_id": "e7c73c66-5c6b-539e-8a29-49ba50ba993f",
+      "contact_id": "f8f6e7ef-5158-5087-b541-c500d565ba86",
+      "deal_id": "c5a11b3d-9ea7-5482-93b1-de0f52b019d4"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000001",
+      "generation": 7,
+      "company_id": "916a938d-62f9-5467-9608-48fc60071874",
+      "contact_id": "d48e40bb-c7b6-51bd-b407-1d365a1711a6",
+      "deal_id": "6d2b8ee0-9653-51f9-b161-4f4e22c05fe1"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000002",
+      "generation": 0,
+      "company_id": "4db5fd6e-1ab6-5c7a-90a6-21b805846877",
+      "contact_id": "7f3b7c82-69ac-5f79-a9df-54c94a4a7e3a",
+      "deal_id": "196e893c-8af1-5f3a-8760-95666ac870b3"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000002",
+      "generation": 1,
+      "company_id": "90c59d9a-a771-527a-aa86-1ac979aa8314",
+      "contact_id": "abfded6a-c098-521d-b88d-546b327300f8",
+      "deal_id": "97e18ca7-8559-529b-bab9-e53796b4a171"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000002",
+      "generation": 2,
+      "company_id": "5c4b1619-d373-5911-9c3f-185dfbfb33cd",
+      "contact_id": "536e9b32-69c8-54f0-bcf8-cdf40152e1d3",
+      "deal_id": "b5a8a64a-16de-5411-b6b1-e4d639133c43"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000002",
+      "generation": 7,
+      "company_id": "56cbe025-8a59-55b4-91ff-07453247b0cb",
+      "contact_id": "91eab339-5ba3-56e5-8058-a69d31ecb0db",
+      "deal_id": "2bd9e870-b79d-5cba-9911-a4a2fdeb8dfe"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000003",
+      "generation": 0,
+      "company_id": "06532b97-baab-5f2d-b326-1baab86eb80c",
+      "contact_id": "bcd02c54-f14b-5d88-a73b-3bf3336a6366",
+      "deal_id": "a44edd5d-8a16-51b9-9bc0-7761e9e775e5"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000003",
+      "generation": 1,
+      "company_id": "ac998a6d-7c6c-5428-b471-a0fb20f1469d",
+      "contact_id": "432af0d7-8ad9-57a4-901d-c1d8f8b0c931",
+      "deal_id": "1bb364a8-c20a-5812-a871-094a325bb3f0"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000003",
+      "generation": 2,
+      "company_id": "ce4e9a4b-035e-5a0e-a33f-9ec0be603de4",
+      "contact_id": "ab35e47b-c1e8-5efc-98d6-a3c3f1d98525",
+      "deal_id": "e30283f3-d27b-5e76-97ef-30d46f0297cf"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000003",
+      "generation": 7,
+      "company_id": "0c4f5835-3e61-5e1e-af41-075d2ce73193",
+      "contact_id": "15225dce-fbd3-52fe-b837-357b478aa4a3",
+      "deal_id": "4f73e59f-5e60-5867-a7c0-8cd00633bedf"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000004",
+      "generation": 0,
+      "company_id": "559e557e-b3cd-58df-9c2e-43f18c6fc5e6",
+      "contact_id": "461a5246-4f9c-5bdd-81e0-ec546e2689a3",
+      "deal_id": "bbf04df1-e603-54ac-be5c-0e5e66b05dd2"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000004",
+      "generation": 1,
+      "company_id": "c1060d27-d289-5b0c-b144-0a452a0b9161",
+      "contact_id": "97b2e743-02e0-5841-bd33-5ca7148f245f",
+      "deal_id": "f8ece1c3-3518-5fd8-a84a-4a3dac16d3ca"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000004",
+      "generation": 2,
+      "company_id": "98a9df47-5637-501f-bcef-4d681c9a98b9",
+      "contact_id": "3d0e6077-c2d0-5a58-8494-dcf76fd7e0c9",
+      "deal_id": "5ed69e6c-b0d4-585b-8c12-f55ac00ab6d1"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000004",
+      "generation": 7,
+      "company_id": "9b8d33c0-2fba-53c4-86ac-747c3a6a224e",
+      "contact_id": "2936580d-d0cc-55a8-acc9-423ebfa9ae44",
+      "deal_id": "d1da74ea-713f-5796-8687-46489e699eff"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000005",
+      "generation": 0,
+      "company_id": "6e2b4247-b569-5223-a12c-ed00c72b889f",
+      "contact_id": "df992e8b-1cc7-574c-96cb-dedb01a8ed99",
+      "deal_id": "70fa13df-333f-5ec3-8188-c8d29ebeff46"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000005",
+      "generation": 1,
+      "company_id": "a06a9d85-d553-5961-b524-26678cb562c1",
+      "contact_id": "0d9e8fbc-a254-54b8-a4b5-ac56fe1dee31",
+      "deal_id": "b72cf713-c71d-54d0-8e26-98d01944c1f1"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000005",
+      "generation": 2,
+      "company_id": "b8f0fe69-9950-5266-b636-59ea897835fc",
+      "contact_id": "f19a7158-8808-58f2-b3d5-9f719afbc548",
+      "deal_id": "339403d9-ce20-5f7a-bce8-87105ad89daf"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000005",
+      "generation": 7,
+      "company_id": "c2a045e8-c5cf-5d29-b28f-858fb4e6c5c4",
+      "contact_id": "49e718f9-3244-5202-88b9-2e8d85fa2369",
+      "deal_id": "77fb047f-7af7-5bf8-a5bc-d0728c068314"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000006",
+      "generation": 0,
+      "company_id": "fbb80bcf-2d1c-529b-a0c2-7db2610c215c",
+      "contact_id": "55ebdc83-c0c3-51c7-ad64-a84917a40884",
+      "deal_id": "7ffcb0b2-7027-58c0-9900-13ca8c777c20"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000006",
+      "generation": 1,
+      "company_id": "5876bd63-325c-5a0c-97a4-f8a33da93809",
+      "contact_id": "da8e4ba9-e2ea-5ad7-a96f-3237deecbbf2",
+      "deal_id": "57f41ba0-9761-5231-97ec-eff5c6a51f1d"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000006",
+      "generation": 2,
+      "company_id": "57e1e2d2-dc66-58ad-a50e-41099ee0e22d",
+      "contact_id": "8de7b00d-563a-5b6b-9ea9-1fd957209862",
+      "deal_id": "bc5bcfc7-3ab3-5fcb-a593-df518e98ec2a"
+    },
+    {
+      "lead_id": "6c1d0000-0000-4000-8000-000000000006",
+      "generation": 7,
+      "company_id": "e0eec9de-bff3-505d-950d-c265c4b5a760",
+      "contact_id": "39bd8f45-ad69-5e9c-9bec-b04169739201",
+      "deal_id": "e4b5a877-a916-5a94-b0d0-94ab8b7a6bb8"
+    }
+  ]
+}

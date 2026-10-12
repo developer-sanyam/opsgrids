@@ -88,3 +88,12 @@ def test_empty_prev_is_full_rebuild(git_repo: GitRepo) -> None:
 def test_head_to_head_is_not_full_rebuild(git_repo: GitRepo) -> None:
     base = _baseline(git_repo)
     assert needs_full_rebuild(str(git_repo.path), base, base) is False
+
+
+def test_the_r2_4_diff_forces_a_full_rebuild(git_repo: GitRepo) -> None:
+    """CRM R2.4 changes `PROFILE_DLQ_QUEUES` in platform-core's ops-monitor config: every image
+    rebuilds and recreates on that deploy, which its deploy notes say."""
+    path = "libs/platform-core/src/platform_core/ops_monitor/config.py"
+    base = git_repo.initial_commit({**BASELINE_FILES, path: "v1\n"}, "baseline")
+    nxt = git_repo.commit_from(base, {path: "v2\n"}, "watch deal.events")
+    assert needs_full_rebuild(str(git_repo.path), base, nxt) is True

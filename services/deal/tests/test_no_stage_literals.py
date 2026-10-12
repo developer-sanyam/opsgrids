@@ -8,9 +8,9 @@ the default pipeline is *defined*), and `services/customer/app/c1_360.py`, must 
 string constant equal to one of the six legacy keys. Docstrings and comments are not constants
 equal to a key, so prose may still say "lead".
 
-The scan matches whole constants, so three places that really do spell `lead` for another reason
+The scan matches whole constants, so four places that really do spell `lead` for another reason
 are named here, each with the exact source line and why. A change to one of those lines, or a
-fourth place, fails this test and asks for a decision rather than slipping past.
+fifth place, fails this test and asks for a decision rather than slipping past.
 """
 
 from __future__ import annotations
@@ -40,6 +40,10 @@ ALLOWED: dict[tuple[str, str], str] = {
         "deal/app/api/internal.py",
         'acting_as="lead",',
     ): "the calling service's name on the audit row",
+    (
+        "deal/app/services.py",
+        'LEAD_CREATED_ROW = ("deal.created", "lead")',
+    ): "the calling service's name on the creation audit row the cleanup's provenance check reads",
     (
         "deal/app/schemas.py",
         'source: str = Field(default="lead", max_length=60)',

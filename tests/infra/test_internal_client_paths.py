@@ -352,6 +352,32 @@ asyncio.run(main())
 emit(ORG, cfg, "finance")
 """
 
+# A12: customer -> deal `references`, the aborted-conversion cleanup's probe (CRM R2.4).
+_A12 = """
+from app import clients
+from app.config import Settings
+
+cfg = Settings()
+
+
+async def main():
+    async with make_client() as client:
+        await attempt(
+            clients.deal_references(
+                cfg,
+                uuid.UUID(ORG),
+                company_id=uuid.UUID(COMPANY),
+                contact_id=uuid.UUID(CONTACT),
+                exclude_deal_id=uuid.UUID(DEAL),
+                client=client,
+            )
+        )
+
+
+asyncio.run(main())
+emit(ORG, cfg, "deal")
+"""
+
 # --------------------------------------------------------------------------------- the registry
 
 
@@ -456,6 +482,15 @@ CALLS: tuple[Call, ...] = (
         "/internal/v1/organizations/{org}/customers:resolve-for-crm-contact",
         "operations/app/orders/finance_client.py",
         _A11,
+    ),
+    Call(
+        "A12",
+        "customer",
+        "deal",
+        "GET",
+        "/internal/v1/organizations/{org}/references",
+        "customer/app/clients.py",
+        _A12,
     ),
 )
 

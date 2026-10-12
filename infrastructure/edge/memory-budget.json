@@ -317,7 +317,16 @@
       "profile": "split-workers",
       "note": "off by default — see account-worker's own note; the same rollback shape, folded into customer's own API container."
     },
-    "deal": { "kind": "api", "profile": "crm" },
+    "deal": {
+      "kind": "api_with_worker",
+      "profile": "crm",
+      "note": "runs its crm.lead.conversion_aborted consumer as a supervised background task since CRM R2.4 (RUN_CONSUMERS_IN_API). deal-worker exists, behind the split-workers profile, as the rollback."
+    },
+    "deal-worker": {
+      "kind": "background",
+      "profile": "split-workers",
+      "note": "off by default - see account-worker's own note; the same rollback shape, folded into deal's own API container."
+    },
     "lead": { "kind": "api", "profile": "crm" },
 
     "project": { "kind": "api", "profile": "pulseboard" },
