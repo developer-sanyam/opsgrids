@@ -48,6 +48,11 @@ interface FormFieldProps {
   /** Right of the label — a character counter, a unit toggle. */
   labelAside?: ReactNode | undefined;
   className?: string | undefined;
+  /**
+   * The id the control already carries, when it was given one by something that is not this
+   * component (the dashboard's older `Field` callers). Leave it out and `FormField` makes one.
+   */
+  controlId?: string | undefined;
   children: (ids: FieldIds) => ReactNode;
 }
 
@@ -69,10 +74,11 @@ export function FormField({
   hideLabel = false,
   labelAside,
   className,
+  controlId,
   children,
 }: FormFieldProps) {
   const base = useId();
-  const id = `${base}-control`;
+  const id = controlId ?? `${base}-control`;
   const helperId = helper ? `${base}-helper` : undefined;
   const errorId = error ? `${base}-error` : undefined;
   const describedBy = [helperId, errorId].filter(Boolean).join(" ") || undefined;
