@@ -21,7 +21,7 @@ from typing import Any
 
 import httpx
 import pytest
-from test_journey import _claims, auth_header, login
+from _http import auth_header, owner_token, token_claims
 
 TRIO = ["hrms", "crm", "finance"]
 
@@ -38,10 +38,6 @@ NON_MEMBER_READ = "/api/v1/projects"
 @pytest.fixture(scope="session")
 def bundle_journey() -> dict[str, Any]:
     return {}
-
-
-def _owner_token(client: httpx.Client, tenant: dict[str, Any]) -> str:
-    return login(client, tenant["owner"]["email"], tenant["password"], tenant["org_id"])
 
 
 def _wait_for_the_fan_out(event_probe: Any, org_id: str, *, timeout: float = 60.0) -> None:
@@ -95,7 +91,7 @@ class TestBundleJourney:
     def test_01_a_fresh_owner_is_refused_every_member(
         self, client: httpx.Client, bundle_tenant: dict[str, Any], bundle_journey: dict
     ) -> None:
-        token = _owner_token(client, bundle_tenant)
+        token = owner_token(client, bundle_tenant)
         for key, path in MEMBER_READS.items():
             response = client.get(path, headers=auth_header(token))
             assert response.status_code == 402, (
@@ -160,13 +156,13 @@ class TestBundleJourney:
         _wait_for_the_fan_out(event_probe, bundle_tenant["org_id"])
         # The owner's admin roles landing bumped the permission version, so the token from step 1
         # is stale by design; read the activations with a fresh one.
-        _wait_for_entitlement(client, _owner_token(client, bundle_tenant))
+        _wait_for_entitlement(client, owner_token(client, bundle_tenant))
 
     def test_04_a_fresh_token_carries_the_members_not_the_bundle(
         self, client: httpx.Client, bundle_tenant: dict[str, Any], bundle_journey: dict
     ) -> None:
-        token = _owner_token(client, bundle_tenant)
-        ent = set(_claims(token).get("ent", []))
+        token = owner_token(client, bundle_tenant)
+        ent = set(token_claims(token).get("ent", []))
         assert set(TRIO) <= ent, f"the token is missing trio members: {sorted(ent)}"
         assert "suite" not in ent, "the bundle's own key routes nowhere and must not be entitled"
         assert "pulseboard" not in ent, "a member list from the request body was honoured"

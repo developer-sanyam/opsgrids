@@ -50,13 +50,13 @@ def _flow_crm() -> ast.FunctionDef:
 
 
 def _steps(flow: ast.FunctionDef) -> list[tuple[str, ast.Call]]:
-    """`(step name, the _require call)` in source order. `ast.walk` is breadth-first, so sort."""
+    """`(step name, the `require` call)` in source order. `ast.walk` is breadth-first, so sort."""
     steps: list[tuple[str, ast.Call]] = []
     for node in ast.walk(flow):
         is_require = (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
-            and node.func.id == "_require"
+            and node.func.id == "require"
             and len(node.args) >= 3
         )
         if not is_require:

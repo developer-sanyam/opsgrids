@@ -34,6 +34,7 @@ from collections.abc import Callable
 from datetime import date, timedelta
 
 import httpx
+from _http import Abort, require
 from edge_lib import API, PatientClient, StepLog, bootstrap_owner
 
 #: A GSTIN known to pass `domain.parse_gstin`'s checksum (`tools/demo/seed_finance.py`'s
@@ -43,19 +44,6 @@ FINANCE_GSTIN = "27AABCA9012D1Z5"
 #: The bullet glyph `platform_core.pii.mask` uses for every masked field — the one thing every
 #: "is this actually masked" assertion below checks for, rather than guessing a format.
 BULLET = "•"
-
-
-class Abort(Exception):
-    """Raised when a step this product's later steps depend on failed outright. Caught once,
-    per product, in `run_product` — the step itself is already logged as FAIL by the time this
-    is raised; this only stops the dependent steps that would otherwise fail confusingly."""
-
-
-def _require(log: StepLog, name: str, ok: bool, detail: str = "") -> None:
-    """Log a step; abort this product's remaining steps if it failed."""
-    log.step(name, ok, detail)
-    if not ok:
-        raise Abort(name)
 
 
 # ---------------------------------------------------------------------- operations
@@ -70,7 +58,7 @@ def flow_operations(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
         headers=h,
         json={"code": f"WH-{suffix}", "name": f"Warehouse {suffix}"},
     )
-    _require(log, "create warehouse", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "create warehouse", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     warehouse = r.json()
 
     r = c.post(
@@ -78,7 +66,7 @@ def flow_operations(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
         headers=h,
         json={"code": f"SUP-{suffix}", "name": f"Supplier {suffix}", "category": "raw_materials"},
     )
-    _require(log, "create supplier", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "create supplier", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     supplier = r.json()
 
     sku = f"SKU-{suffix}"
@@ -94,7 +82,7 @@ def flow_operations(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
             "opening_on_hand": 20,
         },
     )
-    _require(
+    require(
         log,
         "create inventory item with opening_on_hand=20",
         r.status_code == 201 and r.json().get("on_hand") == 20,
@@ -107,7 +95,7 @@ def flow_operations(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
         headers=h,
         json={"quantity_delta": 5, "reason": "found"},
     )
-    _require(
+    require(
         log,
         "POST .../adjustments delta +5",
         r.status_code == 201 and r.json().get("on_hand") == 25,
@@ -119,7 +107,7 @@ def flow_operations(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
         headers=h,
         json={"counted_on_hand": 30},
     )
-    _require(
+    require(
         log,
         "POST .../adjustments count -> 30",
         r.status_code == 201 and r.json().get("on_hand") == 30,
@@ -128,7 +116,7 @@ def flow_operations(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
 
     r = c.get(f"/api/v1/operations/inventory/{item['id']}/movements", headers=h)
     kinds = {m["kind"] for m in r.json().get("items", [])} if r.status_code == 200 else set()
-    _require(
+    require(
         log,
         "GET .../movements lists opening + adjustment + count",
         r.status_code == 200 and {"opening", "adjustment", "count"} <= kinds,
@@ -161,7 +149,7 @@ def flow_operations(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
             ],
         },
     )
-    _require(
+    require(
         log,
         "raise PO: one line matches the item's SKU, one matches nothing",
         r.status_code == 201 and r.json().get("status") == "draft",
@@ -170,7 +158,7 @@ def flow_operations(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     po = r.json()
 
     r = c.post(f"/api/v1/operations/purchase-orders/{po['id']}/approve", headers=h)
-    _require(
+    require(
         log,
         "approve",
         r.status_code == 200 and r.json().get("status") == "approved",
@@ -179,7 +167,7 @@ def flow_operations(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
 
     r = c.post(f"/api/v1/operations/purchase-orders/{po['id']}/receive", headers=h)
     unmatched = r.json().get("unmatched_skus", []) if r.status_code == 200 else []
-    _require(
+    require(
         log,
         "receive: response names the unmatched SKU",
         r.status_code == 200 and unmatched == [unmatched_sku],
@@ -188,7 +176,7 @@ def flow_operations(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
 
     r = c.get(f"/api/v1/operations/inventory/{item['id']}", headers=h)
     on_hand = r.json().get("on_hand") if r.status_code == 200 else None
-    _require(
+    require(
         log,
         "on_hand rose by the matched quantity (30 -> 40)",
         r.status_code == 200 and on_hand == 40,
@@ -196,7 +184,7 @@ def flow_operations(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     )
 
     r = c.post(f"/api/v1/operations/purchase-orders/{po['id']}/close", headers=h)
-    _require(
+    require(
         log,
         "close",
         r.status_code == 200 and r.json().get("status") == "closed",
@@ -204,7 +192,7 @@ def flow_operations(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     )
 
     r = c.patch(f"/api/v1/operations/inventory/{item['id']}", headers=h, json={"on_hand": 5})
-    _require(
+    require(
         log,
         "PATCH with on_hand in the body -> 422",
         r.status_code == 422,
@@ -212,7 +200,7 @@ def flow_operations(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     )
 
     r = c.delete(f"/api/v1/operations/inventory/{item['id']}", headers=h)
-    _require(
+    require(
         log,
         "delete the item with stock -> 409",
         r.status_code == 409,
@@ -231,7 +219,7 @@ def flow_hrms(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
         headers=h,
         json={"employee_no": f"E-{suffix}", "full_name": f"Employee {suffix}"},
     )
-    _require(
+    require(
         log,
         "create employee (POST /employees)",
         r.status_code == 201 and r.json().get("status") == "probation",
@@ -240,10 +228,10 @@ def flow_hrms(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
     employee = r.json()
 
     r = c.get(f"/api/v1/employees/{employee['id']}", headers=h)
-    _require(log, "read employee", r.status_code == 200, f"{r.status_code} {r.text[:160]}")
+    require(log, "read employee", r.status_code == 200, f"{r.status_code} {r.text[:160]}")
 
     r = c.patch(f"/api/v1/employees/{employee['id']}", headers=h, json={"designation": "Engineer"})
-    _require(
+    require(
         log,
         "PATCH employee",
         r.status_code == 200 and r.json().get("designation") == "Engineer",
@@ -255,7 +243,7 @@ def flow_hrms(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
         headers=h,
         json={"to": "active", "reason": "onboarded"},
     )
-    _require(
+    require(
         log,
         "transition along a legal path (probation -> active)",
         r.status_code == 200 and r.json().get("status") == "active",
@@ -273,11 +261,11 @@ def flow_hrms(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
             "end_time": "18:00:00",
         },
     )
-    _require(log, "create shift", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "create shift", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     shift = r.json()
 
     r = c.patch(f"/api/v1/shifts/{shift['id']}", headers=h, json={"name": "Day Shift (renamed)"})
-    _require(
+    require(
         log,
         "PATCH shift",
         r.status_code == 200 and r.json().get("name") == "Day Shift (renamed)",
@@ -285,7 +273,7 @@ def flow_hrms(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
     )
 
     r = c.delete(f"/api/v1/shifts/{shift['id']}", headers=h)
-    _require(log, "DELETE shift", r.status_code == 204, f"{r.status_code}")
+    require(log, "DELETE shift", r.status_code == 204, f"{r.status_code}")
 
     r = c.post(
         "/api/v1/shifts",
@@ -297,7 +285,7 @@ def flow_hrms(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
             "end_time": "19:00:00",
         },
     )
-    _require(
+    require(
         log,
         "recreate with the same code succeeds",
         r.status_code == 201,
@@ -315,7 +303,7 @@ def flow_hrms(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
             "radius_m": 200,
         },
     )
-    _require(
+    require(
         log,
         "create geofence via the newly routed /api/v1/geofences",
         r.status_code == 201,
@@ -324,7 +312,7 @@ def flow_hrms(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
     fence = r.json()
 
     r = c.delete(f"/api/v1/geofences/{fence['id']}", headers=h)
-    _require(log, "delete geofence", r.status_code == 204, f"{r.status_code}")
+    require(log, "delete geofence", r.status_code == 204, f"{r.status_code}")
 
 
 # ---------------------------------------------------------------------- crm
@@ -339,7 +327,7 @@ def flow_crm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> Non
         headers=h,
         json={"full_name": "Rep Owner", "email": f"rep-{suffix}@example.com"},
     )
-    _require(
+    require(
         log,
         "create an owner (POST /customers/owners)",
         r.status_code == 201,
@@ -350,7 +338,7 @@ def flow_crm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> Non
     r = c.post(
         "/api/v1/customers", headers=h, json={"name": f"Acme {suffix}", "owner_id": owner["id"]}
     )
-    _require(log, "create company", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "create company", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     company = r.json()
 
     raw_phone = "+919876543210"
@@ -365,14 +353,14 @@ def flow_crm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> Non
             "raw_phone": raw_phone,
         },
     )
-    _require(
+    require(
         log,
         "create contact with raw_phone",
         r.status_code == 201,
         f"{r.status_code} {r.text[:160]}",
     )
     contact = r.json()
-    _require(
+    require(
         log,
         "read-back phone is MASKED",
         BULLET in contact.get("phone", "") and contact.get("phone") != raw_phone,
@@ -390,7 +378,7 @@ def flow_crm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> Non
             "phone": raw_phone,
         },
     )
-    _require(
+    require(
         log,
         "sending phone (not raw_phone) in the body -> 422",
         r.status_code == 422,
@@ -409,7 +397,7 @@ def flow_crm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> Non
             "primary_contact_id": contact["id"],
         },
     )
-    _require(
+    require(
         log,
         "create deal",
         r.status_code == 201 and r.json().get("stage") == "lead",
@@ -418,7 +406,7 @@ def flow_crm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> Non
     deal = r.json()
 
     r = c.post(f"/api/v1/deals/{deal['id']}/stage", headers=h, json={"stage": "qualified"})
-    _require(
+    require(
         log,
         "POST /deals/{id}/stage",
         r.status_code == 200 and r.json().get("stage") == "qualified",
@@ -427,7 +415,7 @@ def flow_crm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> Non
 
     r = c.get(f"/api/v1/customers/{contact['id']}/360", headers=h)
     card = r.json() if r.status_code == 200 else {}
-    _require(
+    require(
         log,
         "the 360 shows the deal and its CRM section",
         r.status_code == 200
@@ -441,13 +429,13 @@ def flow_crm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> Non
         headers=h,
         json={"type": "note", "subject": "Called customer", "deal_id": deal["id"]},
     )
-    _require(log, "log an activity", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "log an activity", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
 
     r = c.delete(f"/api/v1/deals/{deal['id']}", headers=h)
-    _require(log, "delete the deal", r.status_code == 204, f"{r.status_code}")
+    require(log, "delete the deal", r.status_code == 204, f"{r.status_code}")
 
     r = c.delete(f"/api/v1/customers/{company['id']}", headers=h)
-    _require(
+    require(
         log,
         "deleting the company while the contact exists -> 409",
         r.status_code == 409,
@@ -455,10 +443,10 @@ def flow_crm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> Non
     )
 
     r = c.delete(f"/api/v1/contacts/{contact['id']}", headers=h)
-    _require(log, "delete contact", r.status_code == 204, f"{r.status_code}")
+    require(log, "delete contact", r.status_code == 204, f"{r.status_code}")
 
     r = c.delete(f"/api/v1/customers/{company['id']}", headers=h)
-    _require(log, "delete company", r.status_code == 204, f"{r.status_code}")
+    require(log, "delete company", r.status_code == 204, f"{r.status_code}")
 
 
 # ---------------------------------------------------------------------- pulseboard
@@ -470,14 +458,14 @@ def flow_pulseboard(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     r = c.post(
         "/api/v1/projects/people", headers=h, json={"ref": f"p-{suffix}", "name": "Ada Lovelace"}
     )
-    _require(log, "create roster person", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "create roster person", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     person = r.json()
 
     project_code = f"PB-{suffix}"
     r = c.post(
         "/api/v1/projects", headers=h, json={"code": project_code, "name": f"Project {suffix}"}
     )
-    _require(log, "create project", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "create project", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
 
     task_key = f"TASK-{suffix}"
     r = c.post(
@@ -490,7 +478,7 @@ def flow_pulseboard(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
             "assignee_ref": person["id"],
         },
     )
-    _require(
+    require(
         log,
         "create task",
         r.status_code == 201 and r.json().get("status") == "backlog",
@@ -498,7 +486,7 @@ def flow_pulseboard(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     )
 
     r = c.patch(f"/api/v1/projects/tasks/{task_key}", headers=h, json={"status": "in_progress"})
-    _require(
+    require(
         log,
         "PATCH /projects/tasks/{key} status move",
         r.status_code == 200 and r.json().get("status") == "in_progress",
@@ -508,7 +496,7 @@ def flow_pulseboard(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     r = c.get("/api/v1/projects/tasks", headers=h, params={"project": project_code})
     items = r.json().get("items", []) if r.status_code == 200 else []
     moved = next((t for t in items if t["key"] == task_key), None)
-    _require(
+    require(
         log,
         "read back the moved task",
         r.status_code == 200 and moved is not None and moved.get("status") == "in_progress",
@@ -516,10 +504,10 @@ def flow_pulseboard(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     )
 
     r = c.delete(f"/api/v1/projects/tasks/{task_key}", headers=h)
-    _require(log, "delete task", r.status_code == 204, f"{r.status_code}")
+    require(log, "delete task", r.status_code == 204, f"{r.status_code}")
 
     r = c.delete(f"/api/v1/projects/{project_code}", headers=h)
-    _require(log, "delete project", r.status_code == 204, f"{r.status_code}")
+    require(log, "delete project", r.status_code == 204, f"{r.status_code}")
 
 
 # ---------------------------------------------------------------------- projects-workspace
@@ -531,7 +519,7 @@ def flow_projects(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -
     base = "/api/v1/projects-workspace"
 
     r = c.post(f"{base}/members", headers=h, json={"ref": f"m-{suffix}", "name": "Priya Delivery"})
-    _require(log, "create member", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "create member", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     member = r.json()
 
     project_code = f"PRJ-{suffix}"
@@ -546,7 +534,7 @@ def flow_projects(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -
             "target_date": (today + timedelta(days=60)).isoformat(),
         },
     )
-    _require(log, "create project", r.status_code == 201, f"{r.status_code} {r.text[:200]}")
+    require(log, "create project", r.status_code == 201, f"{r.status_code} {r.text[:200]}")
 
     # `MilestoneIn.due_date` is a required field on the wire today (`app/schemas.py`), not the
     # optional field the brief describes — a create with no due date is a 422, not a legitimate
@@ -561,11 +549,11 @@ def flow_projects(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -
             "due_date": (today + timedelta(days=14)).isoformat(),
         },
     )
-    _require(log, "create milestone", r.status_code == 201, f"{r.status_code} {r.text[:200]}")
+    require(log, "create milestone", r.status_code == 201, f"{r.status_code} {r.text[:200]}")
     milestone = r.json()
 
     r = c.get(f"{base}/milestones", headers=h)
-    _require(log, "the milestone list still answers 200", r.status_code == 200, f"{r.status_code}")
+    require(log, "the milestone list still answers 200", r.status_code == 200, f"{r.status_code}")
 
     r = c.post(
         f"{base}/tasks",
@@ -576,11 +564,11 @@ def flow_projects(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -
             "assignee_ref": member["id"],
         },
     )
-    _require(log, "create task", r.status_code == 201, f"{r.status_code} {r.text[:200]}")
+    require(log, "create task", r.status_code == 201, f"{r.status_code} {r.text[:200]}")
     task = r.json()
 
     r = c.patch(f"{base}/tasks/{task['id']}", headers=h, json={"stage": "in_progress"})
-    _require(
+    require(
         log,
         "PATCH task stage",
         r.status_code == 200 and r.json().get("stage") == "in_progress",
@@ -588,14 +576,14 @@ def flow_projects(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -
     )
 
     r = c.delete(f"{base}/projects/{project_code}", headers=h)
-    _require(log, "delete project", r.status_code == 204, f"{r.status_code}")
+    require(log, "delete project", r.status_code == 204, f"{r.status_code}")
 
     r = c.get(f"{base}/milestones/{milestone['id']}", headers=h)
-    _require(log, "its milestone is gone", r.status_code == 404, f"{r.status_code}")
+    require(log, "its milestone is gone", r.status_code == 404, f"{r.status_code}")
 
     r = c.get(f"{base}/tasks", headers=h, params={"project_code": project_code})
     remaining = r.json().get("items") if r.status_code == 200 else None
-    _require(
+    require(
         log,
         "its task is gone",
         r.status_code == 200 and remaining == [],
@@ -614,7 +602,7 @@ def flow_support(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
         headers=h,
         json={"name": "Agent Smith", "email": f"agent-{suffix}@example.com"},
     )
-    _require(log, "create agent", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "create agent", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     agent = r.json()
 
     r = c.post(
@@ -631,7 +619,7 @@ def flow_support(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
             "body": "Please help, I cannot sign in.",
         },
     )
-    _require(
+    require(
         log,
         "create ticket",
         r.status_code == 201 and r.json().get("status") == "new",
@@ -642,7 +630,7 @@ def flow_support(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
     r = c.post(
         f"/api/v1/support/tickets/{number}/assign", headers=h, json={"assignee_id": agent["id"]}
     )
-    _require(
+    require(
         log,
         "assign",
         r.status_code == 200 and r.json().get("assignee_id") == agent["id"],
@@ -654,14 +642,14 @@ def flow_support(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
         headers=h,
         json={"body": "Looking into it", "author_name": "Agent Smith"},
     )
-    _require(log, "reply (no author_type)", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "reply (no author_type)", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
 
     r = c.post(
         f"/api/v1/support/tickets/{number}/reply",
         headers=h,
         json={"body": "x", "author_name": "Agent Smith", "author_type": "agent"},
     )
-    _require(
+    require(
         log,
         "sending author_type in the body -> 422",
         r.status_code == 422,
@@ -669,7 +657,7 @@ def flow_support(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
     )
 
     r = c.post(f"/api/v1/support/tickets/{number}/status", headers=h, json={"status": "open"})
-    _require(
+    require(
         log,
         "status new -> open",
         r.status_code == 200 and r.json().get("status") == "open",
@@ -677,7 +665,7 @@ def flow_support(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
     )
 
     r = c.post(f"/api/v1/support/tickets/{number}/status", headers=h, json={"status": "solved"})
-    _require(
+    require(
         log,
         "status open -> solved",
         r.status_code == 200 and r.json().get("status") == "solved",
@@ -685,7 +673,7 @@ def flow_support(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
     )
 
     r = c.post(f"/api/v1/support/tickets/{number}/status", headers=h, json={"status": "pending"})
-    _require(
+    require(
         log,
         "an illegal move (solved -> pending) -> 409",
         r.status_code == 409,
@@ -705,12 +693,10 @@ def flow_support(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
             ],
         },
     )
-    _require(
-        log, "PUT /support/sla-policy", r.status_code == 200, f"{r.status_code} {r.text[:200]}"
-    )
+    require(log, "PUT /support/sla-policy", r.status_code == 200, f"{r.status_code} {r.text[:200]}")
 
     r = c.get("/api/v1/support/sla-policy", headers=h)
-    _require(
+    require(
         log,
         "GET /support/sla-policy reflects it",
         r.status_code == 200 and r.json().get("name") == "Standard",
@@ -730,7 +716,7 @@ def flow_marketing(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) 
         headers=h,
         json={"name": f"Audience {suffix}", "size": 1000, "created_at": today.isoformat()},
     )
-    _require(log, "audience", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "audience", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     audience = r.json()
 
     r = c.post(
@@ -743,7 +729,7 @@ def flow_marketing(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) 
             "start_date": today.isoformat(),
         },
     )
-    _require(
+    require(
         log,
         "campaign",
         r.status_code == 201 and r.json().get("status") == "draft",
@@ -752,7 +738,7 @@ def flow_marketing(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) 
     campaign = r.json()
 
     r = c.patch(f"/api/v1/marketing/campaigns/{campaign['id']}", headers=h, json={"status": "live"})
-    _require(
+    require(
         log,
         "PATCH status draft -> live",
         r.status_code == 200 and r.json().get("status") == "live",
@@ -762,7 +748,7 @@ def flow_marketing(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) 
     r = c.patch(
         f"/api/v1/marketing/campaigns/{campaign['id']}", headers=h, json={"status": "paused"}
     )
-    _require(
+    require(
         log,
         "live -> paused",
         r.status_code == 200 and r.json().get("status") == "paused",
@@ -772,7 +758,7 @@ def flow_marketing(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) 
     r = c.patch(
         f"/api/v1/marketing/campaigns/{campaign['id']}", headers=h, json={"status": "ended"}
     )
-    _require(
+    require(
         log,
         "paused -> ended",
         r.status_code == 200 and r.json().get("status") == "ended",
@@ -780,10 +766,10 @@ def flow_marketing(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) 
     )
 
     r = c.patch(f"/api/v1/marketing/campaigns/{campaign['id']}", headers=h, json={"status": "live"})
-    _require(log, "ended -> live -> 409", r.status_code == 409, f"{r.status_code} {r.text[:160]}")
+    require(log, "ended -> live -> 409", r.status_code == 409, f"{r.status_code} {r.text[:160]}")
 
     r = c.delete(f"/api/v1/marketing/audiences/{audience['id']}", headers=h)
-    _require(
+    require(
         log,
         "deleting the audience while the campaign exists -> 409",
         r.status_code == 409,
@@ -791,10 +777,10 @@ def flow_marketing(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) 
     )
 
     r = c.delete(f"/api/v1/marketing/campaigns/{campaign['id']}", headers=h)
-    _require(log, "delete campaign", r.status_code == 204, f"{r.status_code}")
+    require(log, "delete campaign", r.status_code == 204, f"{r.status_code}")
 
     r = c.delete(f"/api/v1/marketing/audiences/{audience['id']}", headers=h)
-    _require(log, "delete audience", r.status_code == 204, f"{r.status_code}")
+    require(log, "delete audience", r.status_code == 204, f"{r.status_code}")
 
 
 # ---------------------------------------------------------------------- finance
@@ -809,7 +795,7 @@ def flow_finance(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
         headers=h,
         json={"gstin": FINANCE_GSTIN, "legal_name": f"Crud Test {suffix} Pvt Ltd"},
     )
-    _require(
+    require(
         log,
         "GST registration first (not strictly required to invoice, but checked and done)",
         r.status_code == 200,
@@ -817,7 +803,7 @@ def flow_finance(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
     )
 
     r = c.post("/api/v1/finance/customers", headers=h, json={"name": f"Buyer {suffix}"})
-    _require(log, "create customer", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "create customer", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     customer = r.json()
 
     invoice_body = {
@@ -828,7 +814,7 @@ def flow_finance(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
         "lines": [{"description": "Consulting", "quantity": 2, "unit_price_minor": 50_000}],
     }
     r = c.post("/api/v1/finance/invoices", headers=h, json=invoice_body)
-    _require(
+    require(
         log,
         "issue invoice; server allocates the number",
         r.status_code == 201 and str(r.json().get("number", "")).startswith("INV"),
@@ -838,7 +824,7 @@ def flow_finance(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
     total_minor = invoice["total_minor"]
 
     r = c.post("/api/v1/finance/invoices", headers=h, json={**invoice_body, "status": "paid"})
-    _require(
+    require(
         log,
         "sending status in the body -> 422",
         r.status_code == 422,
@@ -848,7 +834,7 @@ def flow_finance(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
     r = c.post(
         "/api/v1/finance/invoices", headers=h, json={**invoice_body, "number": "INV-CUSTOM-1"}
     )
-    _require(
+    require(
         log,
         "sending number in the body -> 422",
         r.status_code == 422,
@@ -868,13 +854,13 @@ def flow_finance(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
             "allocations": [{"invoice_id": invoice["id"], "amount_minor": half}],
         },
     )
-    _require(
+    require(
         log, "record a partial payment", r.status_code == 201, f"{r.status_code} {r.text[:200]}"
     )
 
     r = c.get(f"/api/v1/finance/invoices/{invoice['id']}", headers=h)
     body = r.json() if r.status_code == 200 else {}
-    _require(
+    require(
         log,
         "invoice is not paid yet",
         r.status_code == 200
@@ -894,11 +880,11 @@ def flow_finance(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
             "allocations": [{"invoice_id": invoice["id"], "amount_minor": rest}],
         },
     )
-    _require(log, "pay the rest", r.status_code == 201, f"{r.status_code} {r.text[:200]}")
+    require(log, "pay the rest", r.status_code == 201, f"{r.status_code} {r.text[:200]}")
 
     r = c.get(f"/api/v1/finance/invoices/{invoice['id']}", headers=h)
     body = r.json() if r.status_code == 200 else {}
-    _require(
+    require(
         log,
         "invoice is paid",
         r.status_code == 200
@@ -919,7 +905,7 @@ def flow_finance(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
             "lines": [{"description": "Refund", "quantity": -1, "unit_price_minor": 50_000}],
         },
     )
-    _require(
+    require(
         log,
         "credit note without corrects_invoice_id -> 422",
         r.status_code == 422,
@@ -927,7 +913,7 @@ def flow_finance(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
     )
 
     r = c.delete(f"/api/v1/finance/customers/{customer['id']}", headers=h)
-    _require(
+    require(
         log,
         "archive the customer -> 409 (documents reference it)",
         r.status_code == 409,
@@ -935,10 +921,10 @@ def flow_finance(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) ->
     )
 
     r = c.patch(f"/api/v1/finance/invoices/{invoice['id']}", headers=h, json={"notes": "nope"})
-    _require(log, "PATCH invoice -> 404/405", r.status_code in (404, 405), f"{r.status_code}")
+    require(log, "PATCH invoice -> 404/405", r.status_code in (404, 405), f"{r.status_code}")
 
     r = c.delete(f"/api/v1/finance/invoices/{invoice['id']}", headers=h)
-    _require(log, "DELETE invoice -> 404/405", r.status_code in (404, 405), f"{r.status_code}")
+    require(log, "DELETE invoice -> 404/405", r.status_code in (404, 405), f"{r.status_code}")
 
 
 # ---------------------------------------------------------------------- itsm
@@ -953,7 +939,7 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
         headers=h,
         json={"id": catalog_id, "name": "New laptop", "category": "hardware"},
     )
-    _require(log, "catalog item", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "catalog item", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
 
     r = c.post(
         "/api/v1/itsm/service-requests",
@@ -964,7 +950,7 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
             "requester": "Crud Test Owner",
         },
     )
-    _require(
+    require(
         log,
         "service request",
         r.status_code == 201 and r.json().get("status") == "approval",
@@ -977,7 +963,7 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
         headers=h,
         json={"decision": "approve"},
     )
-    _require(
+    require(
         log,
         "decision approve",
         r.status_code == 200 and r.json().get("status") == "in_progress",
@@ -985,7 +971,7 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
     )
 
     r = c.post(f"/api/v1/itsm/service-requests/{req1['id']}/fulfil", headers=h)
-    _require(
+    require(
         log,
         "fulfil",
         r.status_code == 200 and r.json().get("status") == "fulfilled",
@@ -1001,7 +987,7 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
             "requester": "Crud Test Owner",
         },
     )
-    _require(log, "a second request", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "a second request", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     req2 = r.json()
 
     r = c.post(
@@ -1009,7 +995,7 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
         headers=h,
         json={"decision": "reject"},
     )
-    _require(
+    require(
         log, "reject without note -> 422", r.status_code == 422, f"{r.status_code} {r.text[:160]}"
     )
 
@@ -1019,7 +1005,7 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
         json={"decision": "reject", "note": "Not eligible"},
     )
     body = r.json() if r.status_code == 200 else {}
-    _require(
+    require(
         log,
         "reject with note -> rejected, decision_note readable",
         r.status_code == 200
@@ -1033,7 +1019,7 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
         headers=h,
         json={"summary": "Printer on fire", "requester": "Crud Test Owner"},
     )
-    _require(
+    require(
         log,
         "incident",
         r.status_code == 201 and r.json().get("status") == "new",
@@ -1046,7 +1032,7 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
         headers=h,
         json={"author": "Crud Test Owner", "body": "Investigating"},
     )
-    _require(
+    require(
         log,
         "worklog note",
         r.status_code == 200 and len(r.json().get("worklog", [])) >= 1,
@@ -1056,7 +1042,7 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
     r = c.post(
         f"/api/v1/itsm/incidents/{incident['id']}/status", headers=h, json={"status": "in_progress"}
     )
-    _require(
+    require(
         log,
         "status new -> in_progress",
         r.status_code == 200 and r.json().get("status") == "in_progress",
@@ -1068,7 +1054,7 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
         headers=h,
         json={"status": "resolved", "note": "Replaced the fuser"},
     )
-    _require(
+    require(
         log,
         "status in_progress -> resolved (note required)",
         r.status_code == 200 and r.json().get("status") == "resolved",
@@ -1078,7 +1064,7 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
     r = c.post(
         f"/api/v1/itsm/incidents/{incident['id']}/status", headers=h, json={"status": "closed"}
     )
-    _require(
+    require(
         log,
         "status resolved -> closed",
         r.status_code == 200 and r.json().get("status") == "closed",
@@ -1088,7 +1074,7 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
     r = c.post(
         f"/api/v1/itsm/incidents/{incident['id']}/status", headers=h, json={"status": "in_progress"}
     )
-    _require(
+    require(
         log, "closed -> anything -> 409", r.status_code == 409, f"{r.status_code} {r.text[:160]}"
     )
 
@@ -1096,10 +1082,10 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
     r = c.post(
         "/api/v1/itsm/assets", headers=h, json={"tag": tag, "name": "ThinkPad", "type": "laptop"}
     )
-    _require(log, "asset", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "asset", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
 
     r = c.patch(f"/api/v1/itsm/assets/{tag}", headers=h, json={"status": "in_repair"})
-    _require(
+    require(
         log,
         "PATCH asset",
         r.status_code == 200 and r.json().get("status") == "in_repair",
@@ -1107,7 +1093,7 @@ def flow_itsm(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
     )
 
     r = c.delete(f"/api/v1/itsm/assets/{tag}", headers=h)
-    _require(log, "DELETE asset", r.status_code == 204, f"{r.status_code}")
+    require(log, "DELETE asset", r.status_code == 204, f"{r.status_code}")
 
 
 # ---------------------------------------------------------------------- storefront
@@ -1117,7 +1103,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     suffix = uuid.uuid4().hex[:6]
 
     r = c.put("/api/v1/storefront/store", headers=h, json={"slug": slug, "name": "Crud Test Store"})
-    _require(
+    require(
         log,
         "PUT /storefront/store (identity)",
         r.status_code == 200,
@@ -1129,7 +1115,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
         headers=h,
         json={"theme_key": "default", "mode": "retail", "tokens": {}, "pages": [], "version": 1},
     )
-    _require(
+    require(
         log,
         "PUT /storefront/theme with version=1 (adopt)",
         r.status_code == 200 and r.json().get("version") == 1,
@@ -1137,7 +1123,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     )
 
     r = c.get("/api/v1/storefront/theme", headers=h)
-    _require(
+    require(
         log,
         "GET /storefront/theme",
         r.status_code == 200 and r.json().get("version") == 1,
@@ -1155,7 +1141,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
             "version": 1,
         },
     )
-    _require(
+    require(
         log,
         "PUT theme with the current version saves (version -> 2)",
         r.status_code == 200 and r.json().get("version") == 2,
@@ -1167,7 +1153,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
         headers=h,
         json={"theme_key": "default", "mode": "retail", "tokens": {}, "pages": [], "version": 1},
     )
-    _require(
+    require(
         log,
         "a PUT with a stale version -> 409",
         r.status_code == 409,
@@ -1178,7 +1164,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     r = c.post(
         "/api/v1/storefront/categories", headers=h, json={"key": category_key, "label": "Widgets"}
     )
-    _require(log, "category", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "category", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     category = r.json()
 
     product_code = f"PROD-{suffix}"
@@ -1208,7 +1194,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
             ],
         },
     )
-    _require(
+    require(
         log,
         "product with two variants, mrp_minor below price -> 422",
         r.status_code == 422,
@@ -1241,7 +1227,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
             ],
         },
     )
-    _require(
+    require(
         log,
         "then valid -> 201",
         r.status_code == 201 and r.json().get("status") == "active",
@@ -1251,7 +1237,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
 
     r = c.get("/api/v1/storefront/products", headers=h, params={"q": "Widget"})
     items = r.json().get("items", []) if r.status_code == 200 else []
-    _require(
+    require(
         log,
         "list with q",
         r.status_code == 200 and any(p["id"] == product["id"] for p in items),
@@ -1259,7 +1245,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     )
 
     r = c.patch(f"/api/v1/storefront/products/{product['id']}", headers=h, json={"featured": True})
-    _require(
+    require(
         log,
         "PATCH product",
         r.status_code == 200 and r.json().get("featured") is True,
@@ -1267,7 +1253,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     )
 
     r = c.delete(f"/api/v1/storefront/categories/{category['id']}", headers=h)
-    _require(
+    require(
         log,
         "deleting the category while the product exists -> 422",
         r.status_code == 422,
@@ -1275,7 +1261,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     )
 
     r = c.post("/api/v1/storefront/store/publish", headers=h)
-    _require(
+    require(
         log,
         "publish the store",
         r.status_code == 200 and r.json().get("status") == "published",
@@ -1290,7 +1276,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
             if r.status_code == 200
             else False
         )
-        _require(
+        require(
             log,
             "anonymous POST /storefront/public/catalogue (no Authorization) returns the product",
             r.status_code == 200 and found,
@@ -1307,7 +1293,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
                 "requirement": "Need 10 units",
             },
         )
-        _require(
+        require(
             log,
             "anonymous POST /storefront/public/enquiry -> 201",
             r.status_code == 201,
@@ -1318,7 +1304,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     r = c.get("/api/v1/storefront/enquiries", headers=h)
     items = r.json().get("items", []) if r.status_code == 200 else []
     mine = next((e for e in items if e["id"] == enquiry_id), None)
-    _require(
+    require(
         log,
         "owner lists enquiries, sees the email MASKED",
         r.status_code == 200 and mine is not None and BULLET in mine.get("email_masked", ""),
@@ -1328,7 +1314,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     r = c.patch(
         f"/api/v1/storefront/enquiries/{enquiry_id}", headers=h, json={"status": "contacted"}
     )
-    _require(
+    require(
         log,
         "status new -> contacted",
         r.status_code == 200 and r.json().get("status") == "contacted",
@@ -1336,7 +1322,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     )
 
     r = c.patch(f"/api/v1/storefront/enquiries/{enquiry_id}", headers=h, json={"status": "won"})
-    _require(
+    require(
         log,
         "status contacted -> won",
         r.status_code == 200 and r.json().get("status") == "won",
@@ -1344,7 +1330,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
     )
 
     r = c.post("/api/v1/storefront/store/unpublish", headers=h)
-    _require(
+    require(
         log,
         "unpublish",
         r.status_code == 200 and r.json().get("status") == "draft",
@@ -1353,7 +1339,7 @@ def flow_storefront(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str)
 
     with PatientClient(base_url=API, timeout=30) as anon:
         r = anon.post("/api/v1/storefront/public/catalogue", json={"store": slug})
-        _require(
+        require(
             log,
             "the anonymous catalogue no longer serves it",
             r.status_code == 404,
@@ -1369,7 +1355,7 @@ def flow_core(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
 
     r = c.get("/api/v1/members/me/grants", headers=h)
     grants = r.json().get("grants", []) if r.status_code == 200 else []
-    _require(
+    require(
         log,
         "GET /members/me/grants returns a non-empty list for the owner",
         r.status_code == 200 and len(grants) > 0,
@@ -1377,7 +1363,7 @@ def flow_core(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
     )
 
     r = c.get("/api/v1/permissions", headers=h)
-    _require(
+    require(
         log, "GET /permissions", r.status_code == 200 and len(r.json()) >= 2, f"{r.status_code}"
     )
     perms = sorted(r.json(), key=lambda p: p["code"])[:2]
@@ -1389,7 +1375,7 @@ def flow_core(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
         headers=h,
         json={"code": role_code, "name": "Crud Test Role", "grants": grants_payload},
     )
-    _require(
+    require(
         log,
         "create a custom role from two permissions",
         r.status_code == 201,
@@ -1402,7 +1388,7 @@ def flow_core(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
         headers=h,
         json={"code": role_code, "name": "Crud Test Role (renamed)", "grants": grants_payload},
     )
-    _require(
+    require(
         log,
         "rename it",
         r.status_code == 200 and r.json().get("name") == "Crud Test Role (renamed)",
@@ -1410,18 +1396,18 @@ def flow_core(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
     )
 
     r = c.delete(f"/api/v1/roles/{role['id']}", headers=h)
-    _require(log, "delete it", r.status_code == 204, f"{r.status_code}")
+    require(log, "delete it", r.status_code == 204, f"{r.status_code}")
 
     r = c.post(
         "/api/v1/org-units", headers=h, json={"name": "Engineering", "code": f"ENG-{suffix}"}
     )
-    _require(log, "create an org unit", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "create an org unit", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     unit = r.json()
 
     r = c.patch(
         f"/api/v1/org-units/{unit['id']}", headers=h, json={"name": "Engineering (renamed)"}
     )
-    _require(
+    require(
         log,
         "PATCH org unit",
         r.status_code == 200 and r.json().get("name") == "Engineering (renamed)",
@@ -1429,7 +1415,7 @@ def flow_core(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
     )
 
     r = c.patch(f"/api/v1/org-units/{unit['id']}", headers=h, json={"is_active": False})
-    _require(
+    require(
         log,
         "deactivate org unit",
         r.status_code == 200 and r.json().get("is_active") is False,
@@ -1437,13 +1423,13 @@ def flow_core(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
     )
 
     r = c.post("/api/v1/locations", headers=h, json={"name": "Head Office", "code": f"HQ-{suffix}"})
-    _require(log, "create a location", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
+    require(log, "create a location", r.status_code == 201, f"{r.status_code} {r.text[:160]}")
     location = r.json()
 
     r = c.patch(
         f"/api/v1/locations/{location['id']}", headers=h, json={"name": "Head Office (renamed)"}
     )
-    _require(
+    require(
         log,
         "PATCH location",
         r.status_code == 200 and r.json().get("name") == "Head Office (renamed)",
@@ -1455,7 +1441,7 @@ def flow_core(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
         headers=h,
         json={"email": f"invitee-{suffix}@example.com", "role_codes": []},
     )
-    _require(
+    require(
         log,
         "POST /invitations returns a token once",
         r.status_code == 201 and bool(r.json().get("token")),
@@ -1464,7 +1450,7 @@ def flow_core(c: httpx.Client, log: StepLog, h: dict[str, str], slug: str) -> No
     invitation = r.json()
 
     r = c.delete(f"/api/v1/invitations/{invitation['id']}", headers=h)
-    _require(log, "revoke it", r.status_code == 204, f"{r.status_code}")
+    require(log, "revoke it", r.status_code == 204, f"{r.status_code}")
 
 
 FLOWS: dict[str, Callable[[httpx.Client, StepLog, dict[str, str], str], None]] = {

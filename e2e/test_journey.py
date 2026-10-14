@@ -25,14 +25,13 @@ to a unit test and each obvious on the first real request.
 
 from __future__ import annotations
 
-import base64
-import json
 import time
 import uuid
 from typing import Any
 
 import httpx
 import pytest
+from _http import auth_header, login, token_claims
 
 pytestmark = pytest.mark.e2e
 
@@ -45,50 +44,6 @@ ADMIN_ROLES = {"CRM_BOOK_ADMIN", "CRM_PIPELINE_ADMIN"}
 
 #: A product that exists, ships a manifest, and is deliberately *not* activated.
 UNENTITLED_PATH = "/api/v1/employees"
-
-
-def _claims(token: str) -> dict[str, Any]:
-    """The token's payload, unverified.
-
-    The gateway verifies; this asserts what auth *put in*, which is a different question
-    from whether the signature is good.
-    """
-    payload = token.split(".")[1]
-    payload += "=" * (-len(payload) % 4)
-    return dict(json.loads(base64.urlsafe_b64decode(payload)))
-
-
-def login(client: httpx.Client, email: str, password: str, org_id: str) -> str:
-    """Sign in through the gateway and return a usable access token.
-
-    Belonging to several organizations makes sign-in two steps: the first returns a pre-auth
-    token and the memberships, the second exchanges it for a real one. Handled here rather
-    than assumed away, because assuming one organization is precisely the bug this platform's
-    identity model exists to avoid.
-    """
-    response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
-    assert response.status_code == 200, (
-        f"sign-in failed: {response.status_code} {response.text[:400]}. If this is a 401, check "
-        "auth-service can reach account-service's /internal/v1 — a directory it cannot read "
-        "looks exactly like a wrong password, by design."
-    )
-    body = response.json()
-    if body.get("access_token"):
-        return str(body["access_token"])
-
-    assert body.get("status") == "org_selection_required", (
-        f"sign-in returned neither a token nor an organization picker: {body}"
-    )
-    chosen = client.post(
-        "/api/v1/auth/select-org",
-        json={"pre_auth_token": body["pre_auth_token"], "organization_id": org_id},
-    )
-    assert chosen.status_code == 200, chosen.text[:400]
-    return str(chosen.json()["access_token"])
-
-
-def auth_header(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
 
 
 def seed_id(org_id: str, key: str) -> str:
@@ -114,7 +69,7 @@ class TestTheJourney:
         """
         alpha = tenants["alpha"]
         token = login(client, alpha["owner"]["email"], tenants["password"], alpha["org_id"])
-        claims = _claims(token)
+        claims = token_claims(token)
 
         assert claims["act_org"] == alpha["org_id"], (
             "the token names a different organization than the one signed in to"
@@ -260,7 +215,7 @@ class TestTheJourney:
         token = login(client, alpha["owner"]["email"], tenants["password"], alpha["org_id"])
         journey["owner_token"] = token
 
-        assert PRODUCT in _claims(token)["ent"], (
+        assert PRODUCT in token_claims(token)["ent"], (
             "the re-issued token does not carry the product just activated — auth is not "
             "seeing product-service's activations"
         )
