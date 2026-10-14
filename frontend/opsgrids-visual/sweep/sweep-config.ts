@@ -39,7 +39,7 @@ export function selectedApps(): string[] {
 }
 
 export function sweepWidths(): number[] {
-  return (process.env["SWEEP_WIDTHS"] ?? "390,768,1280,1600").split(",").map(Number);
+  return (process.env["SWEEP_WIDTHS"] ?? "320,360,390,414").split(",").map(Number);
 }
 
 export function sweepOut(): string {

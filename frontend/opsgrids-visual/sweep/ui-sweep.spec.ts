@@ -22,9 +22,14 @@ import type { Page } from "@playwright/test";
 import { mockApi } from "../lib/api";
 import { DASHBOARD_ROUTES } from "../fixtures/api/routes";
 import { unsignedToken } from "../lib/session";
-import { detect, measureBottomGap } from "./detector.mjs";
+import { detect, detectMobile, detectOverlay, focusObscured, installHelpers, measureBottomGap } from "./detector.mjs";
 import { APPS, FRONTEND_ROOT, selectedApps, sweepOut, sweepWidths } from "./sweep-config";
 
+interface Owner {
+  shared: boolean;
+  component: string;
+  file: string;
+}
 interface Hit {
   cat: string;
   kind: string;
@@ -32,9 +37,16 @@ interface Hit {
   text: string;
   rects: { x: number; y: number; w: number; h: number }[];
   detail: string;
+  /** The component that rendered the offending element (from React's dev creation stack). */
+  owner?: Owner | null;
 }
-interface RecordedHit extends Hit {
+interface RecordedHit extends Omit<Hit, "owner"> {
   width: number;
+  /** An `opsgrids-ui` / `opsgrids-client` component name, or `app-local`. */
+  component: string;
+  shared: boolean;
+  /** Found with a dialog, drawer or menu open: the control that was opened. */
+  probe?: string | undefined;
   shot?: string | undefined;
 }
 interface RouteResult {
@@ -48,7 +60,12 @@ const ROUTE_FILTER = process.env["SWEEP_ROUTE"];
 const MAX_PAGES = Number(process.env["SWEEP_MAX_PAGES"] ?? 140);
 const PARAM_SAMPLES = 2;
 const BOTTOM_MIN = 16;
-const HEIGHT: Record<number, number> = { 390: 844, 768: 1024, 1280: 800, 1600: 900 };
+const HEIGHT: Record<number, number> = { 320: 640, 360: 780, 390: 844, 414: 896, 768: 1024, 1280: 800, 1600: 900 };
+/** Below this width the mobile checks (g, h, j, k, l, m) run. */
+const MOBILE_BELOW = 768;
+/** Categories deduplicated by component and shape rather than by the offending text. */
+const SHAPE_CATS = new Set(["g", "h", "j", "k", "l", "m"]);
+const PROBES_PER_ROUTE = 5;
 
 function portFree(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -60,11 +77,11 @@ function portFree(port: number): Promise<boolean> {
 }
 
 async function freePort(start: number): Promise<number> {
-  for (let p = start; p < 5600; p += 1) {
-    // 5360-5420 and 4310-4500 belong to other sessions.
+  for (let p = start; p < 5700; p += 1) {
+    // The sweep owns 5600-5699; every other range belongs to other sessions.
     if (await portFree(p)) return p;
   }
-  throw new Error("no free port in 5500-5599");
+  throw new Error("no free port in 5600-5699");
 }
 
 async function waitUp(url: string, child: ChildProcess): Promise<void> {
@@ -120,6 +137,23 @@ async function settle(page: Page): Promise<void> {
   await page.waitForTimeout(250);
 }
 
+/** A screenshot of the viewport as it is (an open dialog is `position: fixed`), offending box outlined. */
+async function highlightViewport(page: Page, hit: Hit, file: string): Promise<boolean> {
+  const rects = hit.rects.filter((r) => r.w > 0 && r.h > 0);
+  if (rects.length === 0) return false;
+  await page.evaluate((rs) => {
+    rs.forEach((r, i) => {
+      const d = document.createElement("div");
+      d.setAttribute("data-sweep-overlay", "");
+      d.style.cssText = `position:fixed;left:${r.x - scrollX}px;top:${r.y - scrollY}px;width:${r.w}px;height:${r.h}px;outline:2px solid ${i === 0 ? "#ff1744" : "#2979ff"};pointer-events:none;z-index:2147483647;`;
+      document.body.appendChild(d);
+    });
+  }, rects);
+  await page.screenshot({ path: file }).catch(() => undefined);
+  await page.evaluate(() => document.querySelectorAll("[data-sweep-overlay]").forEach((n) => n.remove()));
+  return true;
+}
+
 async function highlightAndShoot(page: Page, hit: Hit, file: string): Promise<boolean> {
   const rects = hit.rects.filter((r) => r.w > 0 && r.h > 0);
   if (rects.length === 0) return false;
@@ -149,6 +183,39 @@ async function highlightAndShoot(page: Page, hit: Hit, file: string): Promise<bo
   return true;
 }
 
+/** Buttons worth opening to look at what they open: dialogs, drawers, menus, sheets. */
+async function probeCandidates(page: Page, seenLabels: Set<string>): Promise<string[]> {
+  const labels = await page.evaluate(() => {
+    const WANT = /^(add|new|create|invite|import|export|filters?|more|edit|assign|schedule|upload|open|menu|apply|log|record|send|compose|share|columns|bulk|actions?|notifications?|search|account|profile|sort|view|manage|configure|connect|generate|set|change|update)\b|menu|navigation|options|command/i;
+    const SKIP = /sign out|log ?out|delete|remove|cancel|close|reset|dismiss|theme|appearance|collapse|expand sidebar/i;
+    const out: string[] = [];
+    const firstWords = new Set<string>();
+    document.querySelectorAll("button, [role='button']").forEach((node) => {
+      const b = node as HTMLButtonElement;
+      const r = b.getBoundingClientRect();
+      const s = getComputedStyle(b);
+      if (r.width === 0 || r.height === 0 || s.visibility === "hidden" || b.disabled || b.type === "submit") return;
+      if (b.closest("[role='dialog'], [aria-hidden='true'], [inert], tr, [role='row']")) return;
+      const label = (b.getAttribute("aria-label") || b.textContent || "").replace(/\s+/g, " ").trim().slice(0, 48);
+      if (label === "" || SKIP.test(label)) return;
+      if (!(WANT.test(label) || b.hasAttribute("aria-haspopup") || b.getAttribute("aria-expanded") === "false")) return;
+      const first = label.toLowerCase().split(" ")[0] ?? "";
+      if (firstWords.has(first)) return;
+      firstWords.add(first);
+      b.setAttribute("data-sweep-probe", String(out.length));
+      out.push(label);
+    });
+    return out;
+  });
+  const picked: string[] = [];
+  labels.forEach((label, index) => {
+    if (seenLabels.has(label) || picked.length >= PROBES_PER_ROUTE) return;
+    seenLabels.add(label);
+    picked.push(`${index}|${label}`);
+  });
+  return picked;
+}
+
 async function sweepApp(appName: string): Promise<void> {
   const app = APPS[appName];
   if (app === undefined) throw new Error(`unknown app ${appName}`);
@@ -157,7 +224,7 @@ async function sweepApp(appName: string): Promise<void> {
   mkdirSync(shots, { recursive: true });
   const widths = sweepWidths();
   const index = Object.keys(APPS).indexOf(appName);
-  const port = await freePort(5500 + index * 3);
+  const port = await freePort(5600 + index * 4);
   const origin = `http://127.0.0.1:${port}`;
 
   const server = spawn("pnpm", ["exec", "vite", "--port", String(port), "--strictPort", "--host", "127.0.0.1"], {
@@ -211,6 +278,8 @@ async function sweepApp(appName: string): Promise<void> {
     const queue: string[] = [...concrete];
     const queued = new Set(queue);
     const sampled = new Map<string, number>();
+    /** Per width: the probe labels already opened somewhere in this app, so a header menu is opened once. */
+    const probedLabels = new Map<number, Set<string>>();
     const login = (url: string) => /\/(login|signup|forgot|reset|accept)/.test(url);
 
     while (queue.length > 0 && results.filter((r) => r.skipped === undefined).length < MAX_PAGES) {
@@ -264,30 +333,73 @@ async function sweepApp(appName: string): Promise<void> {
       for (const width of widths) {
         await page.setViewportSize({ width, height: HEIGHT[width] ?? 900 });
         await page.waitForTimeout(350);
+        await page.evaluate(installHelpers);
         await page.evaluate(() => window.scrollTo(0, 0));
+        const mobile = width < MOBILE_BELOW;
         const found: Hit[] = await page.evaluate(detect, { alignTolerance: 2 });
+        if (mobile) {
+          found.push(...(await page.evaluate(detectMobile)));
+          found.push(...(await page.evaluate(focusObscured)));
+        }
         // (f) scrolled to the end.
         await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
         await page.waitForTimeout(120);
         const bottom = await page.evaluate(measureBottomGap);
         await page.evaluate(() => window.scrollTo(0, 0));
-        if (bottom.scrollable && bottom.atEnd && bottom.gap < BOTTOM_MIN) {
-          found.push({ cat: "f", kind: "no-bottom-space", sig: bottom.sig, text: bottom.text, rects: [], detail: `${bottom.gap}px below the last content (min ${BOTTOM_MIN})` });
+        if (bottom.scrollable && bottom.atEnd && bottom.gap < 0 && bottom.bar !== null) {
+          found.push({ cat: "l", kind: "fixed-bar-covers-last-content", sig: bottom.barSig, text: bottom.text, rects: [], detail: `${-bottom.gap}px of the last content sits under a fixed bar`, owner: bottom.bar });
+        } else if (bottom.scrollable && bottom.atEnd && bottom.gap < BOTTOM_MIN) {
+          found.push({ cat: "f", kind: "no-bottom-space", sig: bottom.sig, text: bottom.text, rects: [], detail: `${bottom.gap}px below the last content (min ${BOTTOM_MIN})`, owner: bottom.owner });
         }
+        let probed: string | undefined;
         let shotCount = 0;
-        for (const hit of found) {
-          const key = `${width}|${hit.cat}|${hit.kind}|${hit.sig}|${hit.text.slice(0, 20)}`;
-          if (seen.has(key)) continue;
+        const record = async (hit: Hit, viewportShot: boolean) => {
+          const key = SHAPE_CATS.has(hit.cat) ? `${width}|${hit.cat}|${hit.kind}|${hit.sig}` : `${width}|${hit.cat}|${hit.kind}|${hit.sig}|${hit.text.slice(0, 20)}`;
+          if (seen.has(key)) return;
           seen.add(key);
-          const rec: RecordedHit = { ...hit, width };
-          if (shotCount < 6 && hit.rects.length > 0) {
+          const { owner, ...rest } = hit;
+          const rec: RecordedHit = { ...rest, width, component: owner?.component ?? "app-local", shared: owner?.shared ?? false, ...(probed !== undefined ? { probe: probed } : {}) };
+          if (shotCount < 8 && hit.rects.length > 0) {
             const file = `${slug(path)}-${width}-${hit.cat}-${shotCount}.png`;
-            if (await highlightAndShoot(page, hit, join(shots, file))) {
+            const ok = viewportShot ? await highlightViewport(page, hit, join(shots, file)) : await highlightAndShoot(page, hit, join(shots, file));
+            if (ok) {
               rec.shot = `shots/${appName}/${file}`;
               shotCount += 1;
             }
           }
           result.hits.push(rec);
+        };
+        for (const hit of found) await record(hit, false);
+        if (mobile) {
+          let labelsSeen = probedLabels.get(width);
+          if (labelsSeen === undefined) {
+            labelsSeen = new Set<string>();
+            probedLabels.set(width, labelsSeen);
+          }
+          for (const entry of await probeCandidates(page, labelsSeen)) {
+            const [index = "", label = ""] = entry.split("|");
+            probed = label;
+            try {
+              await page.locator(`[data-sweep-probe="${index}"]`).first().click({ timeout: 2500 });
+              await page.waitForTimeout(350);
+              await page.evaluate(installHelpers);
+              const open: Hit[] = [...(await page.evaluate(detectOverlay)), ...(await page.evaluate(detectMobile))];
+              for (const hit of open) await record(hit, true);
+            } catch {
+              /* not clickable at this width: the control itself is reported by g and l */
+            }
+            await page.keyboard.press("Escape").catch(() => undefined);
+            await page.waitForTimeout(150);
+            const stillOpen = await page.locator("[role='dialog']:visible").count();
+            if (stillOpen > 0 || new URL(page.url()).pathname !== landed.pathname) {
+              await page.goto(`${origin}${path}`, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => undefined);
+              await settle(page);
+              await page.setViewportSize({ width, height: HEIGHT[width] ?? 900 });
+              await page.waitForTimeout(250);
+              await page.evaluate(installHelpers);
+            }
+          }
+          probed = undefined;
         }
       }
       results.push(result);
