@@ -469,7 +469,7 @@ export function AppShell({
             className={
               layout === "full-bleed"
                 ? "min-w-0 flex-1 shell-content-bottom-pad focus:outline-none"
-                : "mx-auto w-full shell-content-max shell-content-bottom-pad px-3 pb-16 pt-3 sm:px-6 sm:pt-6 focus:outline-none"
+                : "mx-auto w-full shell-content-max shell-content-bottom-pad-padded px-3 pt-3 sm:px-6 sm:pt-6 focus:outline-none"
             }
           >
             {banner ? (

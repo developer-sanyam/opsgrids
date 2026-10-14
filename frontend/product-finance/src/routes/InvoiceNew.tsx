@@ -332,43 +332,9 @@ function IssueForm({
             <SectionHeader title="Lines" subtitle="Server-computed tax — this is a preview only" />
             {linesError ? <InlineAlert tone="danger" title={linesError} /> : null}
             {lines.map((line, i) => (
-              <div key={i} className="grid grid-cols-1 gap-3 rounded-tile border border-line p-4 sm:grid-cols-12">
-                <div className="sm:col-span-5">
-                  <TextField
-                    label="Description"
-                    value={line.description}
-                    onChange={(e) => updateLine(i, { description: e.target.value })}
-                    required
-                    error={fieldError(issueProblem, `lines.${i}.description`)}
-                  />
-                </div>
-                <div className="sm:col-span-2">
-                  <TextField
-                    label="Quantity"
-                    inputMode="decimal"
-                    value={line.quantity}
-                    onChange={(e) => updateLine(i, { quantity: e.target.value })}
-                    required
-                  />
-                </div>
-                <div className="sm:col-span-2">
-                  <TextField
-                    label="Unit price (₹)"
-                    inputMode="decimal"
-                    value={line.unitPrice}
-                    onChange={(e) => updateLine(i, { unitPrice: e.target.value })}
-                    required
-                  />
-                </div>
-                <div className="sm:col-span-2">
-                  <TextField
-                    label="HSN/SAC"
-                    value={line.hsnSac}
-                    onChange={(e) => updateLine(i, { hsnSac: e.target.value })}
-                    optional
-                  />
-                </div>
-                <div className="flex items-end sm:col-span-1">
+              <div key={i} className="flex flex-col gap-3 rounded-tile border border-line p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-faint">Line {i + 1}</span>
                   <Button
                     type="button"
                     variant="ghost"
@@ -379,6 +345,37 @@ function IssueForm({
                   >
                     Remove
                   </Button>
+                </div>
+                <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-3">
+                  <div className="sm:col-span-3">
+                    <TextField
+                      label="Description"
+                      value={line.description}
+                      onChange={(e) => updateLine(i, { description: e.target.value })}
+                      required
+                      error={fieldError(issueProblem, `lines.${i}.description`)}
+                    />
+                  </div>
+                  <TextField
+                    label="Quantity"
+                    inputMode="decimal"
+                    value={line.quantity}
+                    onChange={(e) => updateLine(i, { quantity: e.target.value })}
+                    required
+                  />
+                  <TextField
+                    label="Unit price (₹)"
+                    inputMode="decimal"
+                    value={line.unitPrice}
+                    onChange={(e) => updateLine(i, { unitPrice: e.target.value })}
+                    required
+                  />
+                  <TextField
+                    label="HSN/SAC"
+                    value={line.hsnSac}
+                    onChange={(e) => updateLine(i, { hsnSac: e.target.value })}
+                    optional
+                  />
                 </div>
               </div>
             ))}

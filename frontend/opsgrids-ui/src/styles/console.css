@@ -428,6 +428,14 @@ body {
   padding-bottom: var(--shell-bottom-inset);
 }
 
+/* The padded layout's foot: the nav clearance plus 48px of breathing room, so the last card never
+   ends flush against the viewport. This is one declaration on purpose — an unlayered rule beats
+   a Tailwind `pb-*` utility, so a utility next to `.shell-content-bottom-pad` is silently
+   discarded (that is how desktop pages lost their bottom padding). */
+.shell-content-bottom-pad-padded {
+  padding-bottom: calc(var(--shell-bottom-inset) + 3rem);
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     --duration-instant: 0ms;
