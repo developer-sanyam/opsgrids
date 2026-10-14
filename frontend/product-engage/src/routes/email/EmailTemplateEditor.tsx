@@ -214,7 +214,7 @@ function TemplateForm({
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-4">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
       <form
         noValidate
         className="flex flex-col gap-6 lg:col-span-3"

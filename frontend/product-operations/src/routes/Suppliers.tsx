@@ -241,7 +241,7 @@ export function SuppliersPage() {
         eyebrow="Procurement"
         title="Suppliers"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <ImportExportButton
               meta={dx.meta}
               state={dx.state}

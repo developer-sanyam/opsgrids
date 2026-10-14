@@ -64,7 +64,7 @@ export function PlansPage() {
             : "What every customer can buy. Read-only — changing the catalogue needs the owner role."
         }
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <EnvBadge />
             {canWrite && planId === null ? (
               <Button variant="primary" onClick={() => setCreating(true)}>

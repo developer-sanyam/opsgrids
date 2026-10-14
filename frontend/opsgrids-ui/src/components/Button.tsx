@@ -125,7 +125,10 @@ export function Button({
       disabled={disabled === true || loading}
       aria-busy={loading || undefined}
       className={cn(
-        "relative inline-flex items-center justify-center rounded-tile font-semibold",
+        // `shrink-0`: a flex row squeezes a button below its own label, the label then wraps inside the
+        // pill and grows past its fixed height and out of its card ("Import / Export" on a phone). A label
+        // too long for any row still wraps, in a button that is not in a flex row.
+        "relative inline-flex items-center justify-center shrink-0 rounded-tile font-semibold",
         "transition-colors duration-(--duration-quick) disabled:cursor-not-allowed",
         SIZES[size],
         VARIANTS[variant],

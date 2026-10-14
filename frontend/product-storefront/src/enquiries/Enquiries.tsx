@@ -106,7 +106,7 @@ function EnquiryDetail({
             <StatusBadge tone={enquiryTone(detail.data.status)} label={STATUS_LABEL[detail.data.status]} />
           </div>
 
-          <dl className="grid gap-3 sm:grid-cols-2">
+          <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <dt className="text-xs font-semibold uppercase tracking-wide text-faint">Email</dt>
               <dd className="text-sm text-ink">{detail.data.email_masked}</dd>

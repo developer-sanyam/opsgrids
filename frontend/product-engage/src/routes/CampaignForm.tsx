@@ -537,7 +537,7 @@ export function CampaignForm({
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-5">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
       <Card className="p-6 lg:col-span-3">
         <h2 className="mb-4 text-base font-bold text-ink">Write the campaign</h2>
 

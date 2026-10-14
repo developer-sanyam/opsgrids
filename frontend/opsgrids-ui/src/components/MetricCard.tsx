@@ -128,12 +128,12 @@ export function MetricCard({
       ) : null}
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex flex-wrap items-center gap-2">
-          <p className={cn("min-w-0 font-medium text-muted", compact ? "text-xs" : "text-sm")}>{label}</p>
+          <p className={cn("min-w-0 break-words font-medium text-muted", compact ? "text-xs" : "text-sm")}>{label}</p>
           {sample ? <SampleChip {...(sample === true ? {} : sample)} /> : null}
         </div>
         <p
           data-kpi-value
-          className={cn("tnum min-w-0 font-bold leading-tight text-ink", compact ? "text-xl" : "text-2xl")}
+          className={cn("tnum min-w-0 break-words font-bold leading-tight text-ink", compact ? "text-xl" : "text-2xl")}
         >
           {value}
         </p>

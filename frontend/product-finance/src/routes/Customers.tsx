@@ -178,7 +178,7 @@ export function CustomersPage() {
         eyebrow="Accounts receivable"
         title="Customers"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
               <UsersIcon className="size-4 text-muted" />
               <span className="tnum">{customers.status === "success" ? customers.data.total : "—"}</span>

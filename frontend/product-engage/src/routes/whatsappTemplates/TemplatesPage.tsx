@@ -321,7 +321,7 @@ function TemplatesList() {
           value={tabFor(filters)}
           onChange={(id) => applyFilters(TAB_FILTERS[id] ?? TAB_FILTERS["all"] ?? filters)}
         >
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             <Card className="flex flex-col lg:col-span-2">
               <div className="flex flex-col gap-3 p-4 sm:flex-row">
                 <SearchInput

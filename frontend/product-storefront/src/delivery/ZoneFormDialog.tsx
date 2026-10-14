@@ -176,7 +176,7 @@ export function ZoneFormDialog({
           void submit();
         }}
       >
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <TextField
             label="Zone name"
             value={values.name}
@@ -243,7 +243,7 @@ export function ZoneFormDialog({
         ) : null}
 
         {promised && values.promiseKind === "DATE_OFFSET" ? (
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <TextField
               label="Days after the order"
               inputMode="numeric"
@@ -286,7 +286,7 @@ export function ZoneFormDialog({
               They appear on the answer a buyer is given. Nothing charges them: there is no cart or
               checkout yet, so a fee here is copy, not a price.
             </InlineAlert>
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <TextField
                 label={`Delivery fee (${store.currency})`}
                 inputMode="decimal"

@@ -220,7 +220,7 @@ export function GrantsPage() {
         title="Grants & Credits"
         description="Every append-only credit-ledger entry across all tenants."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <EnvBadge />
             <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setGranting(true)} disabled={orgs.status !== "success"}>
               Grant credit

@@ -228,7 +228,7 @@ export function InventoryPage() {
         eyebrow="Inventory"
         title="Stock on Hand"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full bg-surface shadow-card px-4 h-11 hidden sm:inline-flex items-center gap-2 text-sm font-semibold">
               <span className="text-muted font-medium">Page value</span>
               <span className="tnum">{formatMoneyCompact(totalValue)}</span>

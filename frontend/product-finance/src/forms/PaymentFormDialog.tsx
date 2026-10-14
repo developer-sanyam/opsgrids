@@ -165,7 +165,7 @@ export function PaymentFormDialog({ invoice, customers, onClose, onSaved }: Paym
         />
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           ref={referenceRef}
           label="Reference"

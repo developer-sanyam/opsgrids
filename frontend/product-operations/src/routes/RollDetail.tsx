@@ -150,7 +150,7 @@ function RollDetail() {
 
       <Card className="flex flex-col gap-4 p-4 sm:p-6">
         <SectionHeader title="Parent and children" subtitle="The rolls this one came from, and the rolls made of it." />
-        <div className="grid gap-6 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
           <TraceList
             title="Came from"
             nodes={ancestors}

@@ -128,7 +128,7 @@ function Summary({
         </div>
       </div>
 
-      <dl className="m-0 grid gap-px overflow-hidden rounded-card bg-line shadow-card sm:grid-cols-2">
+      <dl className="m-0 grid grid-cols-1 gap-px overflow-hidden rounded-card bg-line shadow-card sm:grid-cols-2">
         {facts.map((fact, index) => (
           <Fact key={fact.label} {...fact} wide={facts.length % 2 === 1 && index === facts.length - 1} />
         ))}
@@ -175,7 +175,7 @@ export function DoneStep({ headingRef }: { headingRef: Ref<HTMLHeadingElement> }
 
   const number = numbers.items.find((n) => n.is_default) ?? numbers.items[0] ?? null;
   return (
-    <div className="mx-auto grid w-full max-w-5xl items-start gap-6 lg:grid-cols-3">
+    <div className="mx-auto grid grid-cols-1 w-full max-w-5xl items-start gap-6 lg:grid-cols-3">
       <Summary health={health} number={number} wabaId={wabaId} headingRef={headingRef} />
       <aside aria-label="Next steps" className="flex flex-col gap-3">
         <h2 className="text-card-title text-ink">Next steps</h2>

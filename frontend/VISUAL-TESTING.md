@@ -32,7 +32,7 @@ Run these from `frontend/`, with Node 22 and pnpm 11 on PATH.
 `visual:check` and `visual:update` first build the workshop and the three apps under test
 (`opsgrids-dashboard`, `product-crm`, `opsgrids-internal`). Then they serve those builds on ports
 4910–4913 and run Playwright. A full run takes about 4 minutes on 8 workers. To run fewer
-workers, set `VISUAL_WORKERS=4`. To run beside another checkout's harness (a second worktree),
+workers, set `VISUAL_WORKERS` to a percentage (`50%`); a bare number is rejected by Playwright's config check. To run beside another checkout's harness (a second worktree),
 move the four ports with `VISUAL_PORT_BASE=4920`; a run never reuses a server it did not start.
 
 To work on one thing, run Playwright directly after one `visual:check` has built the targets:
@@ -179,6 +179,63 @@ None of these were fixed in the slice that installed the harness. Its brief was 
 To add a page, add an entry to `lib/pages.ts` with a surface, app, path, a `ready` locator and an
 optional `act` step. Then add routes and fixtures for every call it makes. The run lists any call
 you missed. Then run `pnpm visual:update` and review.
+
+## The layout sweep
+
+Screenshots catch a change; they do not catch a layout that was wrong from the start. The sweep
+(`opsgrids-visual/sweep/`) opens **every route of every app** in sample mode, at 390, 768, 1280 and
+1600 px, and measures the page for the class of defect a person sees in a second: a button that
+floats lower than the select beside it, a card something spills out of, a wrapped label that pushes
+its input down, chart ticks that touch, a page with no room under its last line.
+
+It is a developer's tool, **not part of `visual:check` or CI**: it starts a Vite dev server per app
+(ports from 5500 up, never 4310-4500 or 5360-5420) and takes several minutes.
+
+```bash
+cd frontend
+pnpm --filter @opsgrids/visual run sweep                                   # all 13 apps, 4 widths
+SWEEP_APPS=product-engage,product-finance pnpm --filter @opsgrids/visual run sweep
+SWEEP_WIDTHS=390,1280 SWEEP_THEME=dark pnpm --filter @opsgrids/visual run sweep
+SWEEP_ROUTE=/invoices SWEEP_APPS=product-finance pnpm --filter @opsgrids/visual run sweep
+```
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `SWEEP_APPS` | comma list of package directories | all 13 |
+| `SWEEP_WIDTHS` | viewport widths | `390,768,1280,1600` |
+| `SWEEP_THEME` | `light` or `dark` | `light` |
+| `SWEEP_ROUTE` | only routes whose path contains this | every route |
+| `SWEEP_OUT` | where `report.json`, one JSON per app and `shots/` go | `opsgrids-visual/test-results/sweep` |
+| `SWEEP_MAX_PAGES` | page cap per app | 140 |
+| `SWEEP_WORKERS` | apps swept at once | 4 |
+
+Routes come from each app's `main.tsx` (static routes), plus every in-app link the pages render
+(that is how `/invoices/:id` gets a real id; two samples per parameterised route). A route that
+redirects to sign-in or renders the not-found page is listed in the report as skipped, with the
+reason. `opsgrids-dashboard` and `worker-app` have no sample mode, so their API is answered from
+the harness's contract mocks and anything those do not cover answers as an empty list; their
+populated states are therefore under-covered.
+
+What it flags (the `cat` field of each hit):
+
+| `cat` | Defect |
+|---|---|
+| `a` | The page scrolls sideways (`scrollWidth > clientWidth`); the widest in-flow element is named. |
+| `b` | An element's box escapes its nearest bordered or shadowed ancestor. |
+| `c` | Controls in one flex/grid row whose control boxes (not their wrappers) share no top, bottom or centre within 2 px. A caption under one control no longer hides this. |
+| `d` | The same, for form fields: inputs in a row whose tops differ because a label wrapped or a helper sits under one. |
+| `e` | Text clipped or wider than its box, text overlapping text, and chart axis labels closer than 8 px. |
+| `f` | The last content is within 16 px of the bottom of the viewport once scrolled to the end. |
+| `i` | Informational: text truncated with an ellipsis or line clamp and no `title` to read it in full. Counted, not a hit. |
+
+Every hit has a screenshot with the offending box in red (and the container or sibling in blue)
+under `shots/<app>/`. `report.json` carries the selector signature, the measured numbers and the
+width. The sweep is a detector, so it has false negatives: it cannot judge a populated state the
+sample data does not produce, a modal, or anything behind an interaction.
+
+Fix at the shared layer first (`opsgrids-ui`), then app-local; a hit is only acceptable when the
+reason is written down. `opsgrids-visual/sweep/detector.mjs` is the in-page measurement; the notes
+at the top of it are the definition of each category.
 
 ## How the later phases use this
 

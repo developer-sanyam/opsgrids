@@ -255,7 +255,7 @@ export function PortfolioPage() {
         eyebrow="Portfolio"
         title="Projects"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {projects.status === "success" ? (
               <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
                 <BriefcaseIcon className="size-4 text-muted" />
@@ -279,7 +279,7 @@ export function PortfolioPage() {
 
       {/* Controls */}
       <Card className="p-4 sm:p-5 flex flex-col gap-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
           <SearchInput
             label="Search projects"
             placeholder="Search by name, code, client or summary…"
@@ -287,7 +287,7 @@ export function PortfolioPage() {
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"
           />
-          <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
+          <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1 lg:h-11">
             {HEALTH_FILTERS.map((f) => (
               <Pill key={f.value} active={health === f.value} onClick={() => setHealth(f.value)}>
                 {f.label}

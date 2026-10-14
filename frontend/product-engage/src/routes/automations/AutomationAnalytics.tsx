@@ -50,7 +50,7 @@ function Loading() {
       <span className="sr-only" role="status">
         Loading analytics
       </span>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {[0, 1, 2, 3].map((n) => (
           <Skeleton key={n} className="h-32 w-full rounded-card" />
         ))}
@@ -65,7 +65,7 @@ function Populated({ stats }: { stats: StatsOut }) {
   const reasonsTotal = stats.failures_by_reason.reduce((sum, r) => sum + r.count, 0);
   return (
     <div className="flex flex-col gap-6">
-      <section aria-label="Totals" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <section aria-label="Totals" className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           label="Total executions"
           value={formatNumber(stats.executions)}
@@ -94,7 +94,7 @@ function Populated({ stats }: { stats: StatsOut }) {
         />
       </section>
 
-      <div className="grid items-start gap-6 lg:grid-cols-3">
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-3">
         <Card className="flex flex-col gap-4 p-4 sm:p-6 lg:col-span-2">
           <h2 className="text-lg font-bold">Executions over time</h2>
           {stats.series.length === 0 ? (
@@ -210,7 +210,7 @@ function Analytics() {
         description="Track how your automations perform and where they fail."
       />
 
-      <Card className="grid gap-4 p-4 sm:grid-cols-2 sm:p-6 lg:max-w-xl">
+      <Card className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 sm:p-6 lg:max-w-xl">
         <TextField
           label="From"
           type="date"

@@ -118,7 +118,7 @@ function RecipeList() {
       <h2 id="recipes-heading" className="text-lg font-bold">
         Start from a recipe
       </h2>
-      <ul className="grid gap-3 sm:grid-cols-2">
+      <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {RECIPES.map((recipe) => (
           <li key={recipe.id}>
             <Link

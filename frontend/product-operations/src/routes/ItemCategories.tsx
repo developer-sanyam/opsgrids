@@ -156,7 +156,7 @@ export function ItemCategoriesPage() {
         title="Item categories"
         description="The item master's own catalogue tree — separate from the procurement category every item already carries."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <ImportExportButton
               meta={dx.meta}
               state={dx.state}

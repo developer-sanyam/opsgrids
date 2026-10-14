@@ -457,7 +457,7 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
               ? { error: toleranceError ?? save.fieldErrors.receipt_tolerance_pct }
               : {})}
           />
-          <div className="col-span-full grid gap-4 sm:grid-cols-2">
+          <div className="col-span-full grid grid-cols-1 gap-4 sm:grid-cols-2">
             <CheckboxGroup
               label="Tracking"
               options={TRACKING_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}

@@ -18,7 +18,7 @@ import type { MessagingCost, WhatsAppOverview } from "@/api/analytics";
 import { formatNumber } from "@/lib/format";
 import { LoadingStatus } from "./DashboardParts";
 import { DashboardFailure } from "./DashboardFailure";
-import { DateRangeControl } from "./DateRangeControl";
+import { DateRangeControl, DateRangeSummary } from "./DateRangeControl";
 import { SectionTabs } from "./SectionTabs";
 import { VolumeChartCard } from "./VolumeChartCard";
 import { formatMoney } from "./format";
@@ -175,7 +175,7 @@ function Content({ data }: { data: WhatsAppOverview | null }) {
         emptyDescription="Messages you send from Engage appear here. Try a wider date range."
       />
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <ChartCard
           title="Message status"
           description="Where each message ended up"
@@ -275,6 +275,7 @@ export function WhatsAppAnalyticsPage() {
         eyebrow="Communication"
         title="WhatsApp analytics"
         description="Delivery outcomes, message categories, failures and estimated cost for the selected period."
+        meta={<DateRangeSummary controls={dates} />}
         actions={<DateRangeControl controls={dates} />}
       />
       <SectionTabs section="whatsapp" />

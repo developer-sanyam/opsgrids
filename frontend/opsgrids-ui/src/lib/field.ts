@@ -28,3 +28,25 @@ export function fieldSkin(invalid: boolean, className?: string): string {
     className,
   );
 }
+
+/**
+ * The layout a row of fields shares. Every `FormField` is three rows (label, control, messages),
+ * and in this grid each one spans three rows of the parent, so the rows line up across the
+ * fields: a label that wraps ("Estimated unit price (optional)") makes its neighbours' label rows
+ * taller too, instead of pushing its own input down out of line, and helper text under one input
+ * does not move the input beside it.
+ *
+ * Only a `FormField` (it carries `data-field`) takes part; anything else in the grid is laid out
+ * as an ordinary cell.
+ */
+export const FIELD_GRID = [
+  // No row gap: the space between fields is each field's own bottom padding, so a field with no
+  // helper text (an empty third row) takes no more room than it did before the rows were shared.
+  // The grid's own `-mb-4` takes back the last row's padding.
+  "grid items-start gap-x-4 gap-y-0 -mb-4",
+  "[&>[data-field]]:row-span-3! [&>[data-field]]:grid! [&>[data-field]]:grid-rows-subgrid!",
+  "[&>[data-field]]:gap-y-0! [&>[data-field]]:pb-4",
+  // The label-to-input and input-to-message spaces, which the flex layout got from `gap-1.5`.
+  "[&>[data-field]>:first-child]:mb-1.5 [&>[data-field]>:nth-child(3)]:mt-1.5",
+  "[&>:not([data-field])]:mb-4",
+].join(" ");

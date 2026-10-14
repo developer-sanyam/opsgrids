@@ -72,7 +72,7 @@ function VariantRow({
           Remove
         </Button>
       </div>
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <TextField
           label="Min price"
           inputMode="decimal"
@@ -186,7 +186,7 @@ export function ProductForm({
         ? { error: problemMessage(save.error), reference: (save.error as ApiError).problem?.request_id }
         : {})}
     >
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           ref={codeRef}
           label="Code"
@@ -207,7 +207,7 @@ export function ProductForm({
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Brand"
           value={values.brand}
@@ -225,7 +225,7 @@ export function ProductForm({
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Specification"
           value={values.spec}
@@ -248,7 +248,7 @@ export function ProductForm({
           leads.
         </InlineAlert>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <TextField
             label="Min price"
             inputMode="decimal"
@@ -312,7 +312,7 @@ export function ProductForm({
         )}
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <TextField
           label="MOQ"
           inputMode="numeric"
@@ -371,7 +371,7 @@ export function ProductForm({
         onChange={(e) => set("status", e.target.value as ProductStatus)}
       />
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Switch
           label="GST inclusive"
           checked={values.gstInclusive}

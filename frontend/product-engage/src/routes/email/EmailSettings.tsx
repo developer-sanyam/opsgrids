@@ -53,7 +53,7 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 
 function Configuration({ account }: { account: EmailAccount }) {
   return (
-    <dl className="grid gap-4 pt-4 sm:grid-cols-2">
+    <dl className="grid grid-cols-1 gap-4 pt-4 sm:grid-cols-2">
       <Fact label="Provider">{connectionKindLabel(account.kind)}</Fact>
       <Fact label="Username">{account.username}</Fact>
       <Fact label="Host">{account.host}</Fact>
@@ -68,7 +68,7 @@ function Configuration({ account }: { account: EmailAccount }) {
 function Limits({ account }: { account: EmailAccount }) {
   return (
     <div className="flex flex-col gap-3 pt-4">
-      <dl className="grid gap-4 sm:grid-cols-2">
+      <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Fact label="Daily limit">{formatNumber(account.daily_cap)} emails</Fact>
       </dl>
       <p className="text-sm text-muted">
@@ -147,7 +147,7 @@ export function EmailSettingsPage() {
       </div>
 
       {state.status === "loading" ? (
-        <div className="grid gap-6 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           <Card className="p-6">
             <Skeleton className="h-16 w-full rounded-tile" />
           </Card>
@@ -174,7 +174,7 @@ export function EmailSettingsPage() {
       ) : null}
 
       {state.status === "success" && account !== null ? (
-        <div className="grid gap-6 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           <section aria-label="Accounts" className="lg:col-span-1">
             <AccountList account={account} />
           </section>

@@ -101,7 +101,7 @@ function CatalogCard({
           <Icon className="size-5" />
         </span>
         <div className="flex min-w-0 flex-1 flex-col leading-tight">
-          <span className="font-bold text-ink text-balance">{item.name}</span>
+          <span className="break-words font-bold text-ink text-balance">{item.name}</span>
           <span className="text-xs text-muted">{catalogCategoryLabel(item.category)}</span>
         </div>
         {canAdmin ? (

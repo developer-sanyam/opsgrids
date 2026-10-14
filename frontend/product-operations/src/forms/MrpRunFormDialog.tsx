@@ -130,7 +130,7 @@ export function MrpRunFormDialog({ onClose, onStarted }: MrpRunFormDialogProps) 
                 }}
                 error={fieldError(lineErrorKey(line, "item"))}
               />
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <TextField
                   ref={index === 0 ? firstRef : undefined}
                   label="Quantity"

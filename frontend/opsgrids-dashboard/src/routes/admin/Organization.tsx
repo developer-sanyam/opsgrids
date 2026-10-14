@@ -123,7 +123,7 @@ function OrganizationForm({
     >
       <Card className="flex flex-col gap-4 p-6">
         <h2 className="text-lg font-bold tracking-tight">Identity</h2>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <TextField
             label="Organisation name"
             value={name}
@@ -169,7 +169,7 @@ function OrganizationForm({
 
       <Card className="flex flex-col gap-4 p-6">
         <h2 className="text-lg font-bold tracking-tight">Locale</h2>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Select
             label="Country"
             placeholder="Choose a country"
@@ -212,7 +212,7 @@ function OrganizationForm({
 
       <Card className="flex flex-col gap-4 p-6">
         <h2 className="text-lg font-bold tracking-tight">Registered address</h2>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <TextField label="Address line" optional value={addressLine1} onChange={(e) => setAddressLine1(e.target.value)} disabled={!canWrite} />
           <TextField label="City" optional value={addressCity} onChange={(e) => setAddressCity(e.target.value)} disabled={!canWrite} />
           <TextField label="State" optional value={addressState} onChange={(e) => setAddressState(e.target.value)} disabled={!canWrite} />

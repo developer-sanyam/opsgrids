@@ -90,7 +90,7 @@ function LotDetail() {
           title="Genealogy"
           subtitle="Where this lot came from, and what was made of it."
         />
-        <div className="grid gap-6 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
           <TraceList
             title="Came from"
             nodes={ancestors}

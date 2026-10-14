@@ -122,7 +122,7 @@ export function QcTemplateFormDialog({ template, onClose, onSaved }: QcTemplateF
       size="lg"
       {...formDialogError(save.error, save.fieldErrors)}
     >
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Code"
           value={code}
@@ -169,7 +169,7 @@ export function QcTemplateFormDialog({ template, onClose, onSaved }: QcTemplateF
         ) : null}
         {params.map((p, i) => (
           <div key={p.key} className="rounded-tile border border-line p-3 flex flex-col gap-3">
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <TextField
                 label={`Parameter ${i + 1} name`}
                 value={p.name}
@@ -191,7 +191,7 @@ export function QcTemplateFormDialog({ template, onClose, onSaved }: QcTemplateF
               />
             </div>
             {p.kind === "numeric" ? (
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <TextField
                   label={`Parameter ${i + 1} minimum`}
                   value={p.min}

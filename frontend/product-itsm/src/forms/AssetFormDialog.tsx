@@ -131,7 +131,7 @@ export function AssetFormDialog({ asset, onClose, onSaved }: AssetFormDialogProp
       error={hasTopLevelError ? problemMessage(save.error) : undefined}
       reference={hasTopLevelError ? (save.error as ApiError).problem?.request_id : undefined}
     >
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {asset ? (
           <TextField label="Tag" value={asset.tag} disabled helper="Cannot change once created." />
         ) : (
@@ -156,7 +156,7 @@ export function AssetFormDialog({ asset, onClose, onSaved }: AssetFormDialogProp
           error={nameError ?? save.fieldErrors.name}
         />
       </div>
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Select
           label="Type"
           value={type}
@@ -172,7 +172,7 @@ export function AssetFormDialog({ asset, onClose, onSaved }: AssetFormDialogProp
           error={save.fieldErrors.status}
         />
       </div>
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Owner"
           value={owner}
@@ -199,7 +199,7 @@ export function AssetFormDialog({ asset, onClose, onSaved }: AssetFormDialogProp
         maxLength={120}
         error={save.fieldErrors.serial}
       />
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Purchased"
           type="date"
@@ -217,7 +217,7 @@ export function AssetFormDialog({ asset, onClose, onSaved }: AssetFormDialogProp
           error={save.fieldErrors.warranty_expires_at}
         />
       </div>
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Cost"
           inputMode="decimal"

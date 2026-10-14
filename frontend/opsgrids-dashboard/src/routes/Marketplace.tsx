@@ -167,7 +167,7 @@ export function MarketplacePage() {
       ) : null}
 
       {load.state === "loading" ? (
-        <ul className="grid list-none gap-4 p-0 sm:grid-cols-2 xl:grid-cols-3" aria-hidden>
+        <ul className="grid grid-cols-1 list-none gap-4 p-0 sm:grid-cols-2 xl:grid-cols-3" aria-hidden>
           {[0, 1, 2].map((i) => (
             <li key={i}>
               <Skeleton className="h-56 w-full rounded-card" />
@@ -220,7 +220,7 @@ export function MarketplacePage() {
             );
           }
           return (
-            <ul className="grid list-none gap-4 p-0 sm:grid-cols-2 xl:grid-cols-3">
+            <ul className="grid grid-cols-1 list-none gap-4 p-0 sm:grid-cols-2 xl:grid-cols-3">
               {filtered.map((row) => (
                 <ProductCard key={row.product.key} row={row} busy={busy === row.product.key} onStart={() => void handleStart(row)} />
               ))}

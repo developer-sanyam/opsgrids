@@ -171,7 +171,7 @@ export function SenderFormDialog({
           {...(errors.domainId !== undefined ? { error: errors.domainId } : {})}
         />
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <TextField
             label="Name"
             value={values.name}
@@ -201,7 +201,7 @@ export function SenderFormDialog({
           />
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <TextField
             label="Reply-to"
             type="email"
