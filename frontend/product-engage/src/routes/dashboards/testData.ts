@@ -145,7 +145,15 @@ export const HUB: HubOverview = {
     { key: "sms", connected: false, detail: null },
     { key: "push", connected: false, detail: null },
   ],
-  whatsapp: { sent: 12842, delivered: 11921, read: 8643, failed: 134, replies: 2184 },
+  whatsapp: WHATSAPP,
   email: null,
-  costs: { total: { amount_minor: 384250, currency: "INR" }, estimated: true, by_category: [] },
+  costs: {
+    total: { amount_minor: 384250, currency: "INR" },
+    estimated: true,
+    by_channel: [
+      { channel: "whatsapp", amount: { amount_minor: 384250, currency: "INR" } },
+      { channel: "email", amount: { amount_minor: 0, currency: "INR" } },
+    ],
+    rate_card: { source: "platform_default", placeholder: true },
+  },
 };

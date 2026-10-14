@@ -83,7 +83,7 @@ export function RunList({ automationId, published }: { automationId: string; pub
 
       {result.status === "success" && runs.length > 0 ? (
         <Card className="p-6">
-          <div className="overflow-x-auto">
+          <div className="relative overflow-x-auto">
             <table className="w-full min-w-3xl border-collapse text-left">
               <caption className="sr-only">Runs of this automation, newest first</caption>
               <thead>

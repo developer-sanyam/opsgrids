@@ -10,6 +10,8 @@
 import { apiRequest } from "@opsgrids/client";
 
 import { FULL_PAGE, listCampaigns } from "./client";
+import { USE_FIXTURES, fixturePage, refuseWithoutService, settle } from "./client";
+import { EMAIL_TEMPLATES } from "./sample.fixtures";
 import type { CampaignStatus, ConnectionOut, Page } from "./types";
 
 /**
@@ -59,12 +61,14 @@ export const TEMPLATE_SUBJECT_MAX = 300;
 /** Every email template in the organization — one full page, the same working-set approach the
  *  other Engage lists take. */
 export async function listEmailTemplates(): Promise<Page<EmailTemplateOut>> {
+  if (USE_FIXTURES) return settle(fixturePage(EMAIL_TEMPLATES));
   const query = new URLSearchParams({ size: String(FULL_PAGE) });
   return apiRequest<Page<EmailTemplateOut>>(`/engage/email/templates?${query.toString()}`);
 }
 
 /** Create or replace an email template — `PUT /engage/email/templates`. */
 export async function saveEmailTemplate(input: EmailTemplateIn): Promise<EmailTemplateOut> {
+  if (USE_FIXTURES) refuseWithoutService("Saving an email template");
   return apiRequest<EmailTemplateOut>("/engage/email/templates", { method: "PUT", body: input });
 }
 

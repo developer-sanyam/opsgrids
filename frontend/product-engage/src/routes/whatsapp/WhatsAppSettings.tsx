@@ -98,7 +98,7 @@ function BusinessAccount({
           >
             {initials(name)}
           </span>
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <div className="flex min-w-40 flex-1 flex-col gap-1">
             <span className="text-section text-ink">{name}</span>
             <span className="text-body-sm text-muted">
               WhatsApp Business Account{wabaId !== null ? `: ${maskedId(wabaId)}` : ""}
@@ -217,7 +217,7 @@ function PhoneNumbers({
           description="Numbers appear here once Meta has shared them with OpsGrids."
         />
       ) : (
-        <div className="max-md:overflow-x-auto">
+        <div className="relative max-md:overflow-x-auto">
           <table className="w-full min-w-160 border-collapse md:min-w-0">
             <caption className="sr-only">Phone numbers on your WhatsApp Business Account</caption>
             <thead>

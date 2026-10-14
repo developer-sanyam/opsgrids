@@ -13,7 +13,7 @@
  * else — a masked secret is still a secret with a hint attached.
  */
 
-import { apiRequest } from "@opsgrids/client";
+import { ApiError, apiRequest } from "@opsgrids/client";
 
 import {
   CAMPAIGNS,
@@ -96,13 +96,13 @@ export const LIVE = !USE_FIXTURES;
 export const FULL_PAGE = 200;
 
 /** Small artificial delay so loading states are exercised in fixture mode. */
-function settle<T>(value: T, ms = 240): Promise<T> {
+export function settle<T>(value: T, ms = 240): Promise<T> {
   return new Promise((resolve) => setTimeout(() => resolve(value), ms));
 }
 
 /** Wrap fixture rows in the envelope `platform_core.pagination.Page` puts on the wire, so a
  *  screen reads the same shape either side of the flag. */
-function fixturePage<T>(items: T[]): Page<T> {
+export function fixturePage<T>(items: T[]): Page<T> {
   return { items, total: items.length, page: 1, size: FULL_PAGE, pages: items.length ? 1 : 0 };
 }
 
@@ -116,10 +116,14 @@ function fixturePage<T>(items: T[]): Page<T> {
  *
  * Fixture mode is dev-only, so the audience for this sentence is an engineer and it names the flag.
  */
-function refuseWithoutService(action: string): never {
-  throw new Error(
+export function refuseWithoutService(action: string): never {
+  // An `ApiError` rather than a bare `Error`: the screens print an `ApiError`'s sentence verbatim
+  // and replace anything else with "Couldn't reach the server", which would hide why this refused.
+  throw new ApiError(
+    0,
     `${action} needs the notification service, and this app is running on sample data. ` +
       "Set VITE_USE_FIXTURES=false to run against the gateway.",
+    null,
   );
 }
 

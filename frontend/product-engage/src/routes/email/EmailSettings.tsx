@@ -147,7 +147,7 @@ export function EmailSettingsPage() {
       </div>
 
       {state.status === "loading" ? (
-        <div className="grid gap-6 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           <Card className="p-6">
             <Skeleton className="h-16 w-full rounded-tile" />
           </Card>
@@ -174,7 +174,7 @@ export function EmailSettingsPage() {
       ) : null}
 
       {state.status === "success" && account !== null ? (
-        <div className="grid gap-6 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           <section aria-label="Accounts" className="lg:col-span-1">
             <AccountList account={account} />
           </section>

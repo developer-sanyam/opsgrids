@@ -9,11 +9,20 @@
  * cost the service returns is an estimate (`estimated: true`): the rate card behind it is not a
  * bill.
  *
- * There is no fixture mode here. These endpoints do not exist in `fixtures.ts`, and a dashboard
- * drawn from made-up counts is exactly the sample-data lie the shared chart card has a chip for.
+ * In fixture mode (dev only, `VITE_USE_FIXTURES=true`) every read answers from
+ * `analytics.fixtures.ts` in the shape the service sends, so the dashboards can be walked without
+ * a gateway. Never reached live: `USE_FIXTURES` compiles to `false` in a production build.
  */
 
 import { apiRequest } from "@opsgrids/client";
+
+import {
+  sampleCampaignAnalytics,
+  sampleEmailOverview,
+  sampleHubOverview,
+  sampleWhatsAppOverview,
+} from "./analytics.fixtures";
+import { USE_FIXTURES, settle } from "./client";
 
 /** `2026-09-01` — the calendar-date form both range parameters take. */
 export interface DateRange {
@@ -198,28 +207,29 @@ export interface HubChannel {
   detail: string | null;
 }
 
-export interface HubWhatsAppKpis {
-  sent: number;
-  delivered: number;
-  read: number;
-  failed: number;
-  replies: number;
+/** Which rates produced a cost, so a reader can tell a placeholder from a real figure. */
+export interface RateCardRef {
+  source: "platform_default" | "organization" | "mixed";
+  placeholder: boolean;
 }
 
-export interface HubEmailKpis {
-  sent: number;
-  delivered: number;
-  opened: number;
-  clicked: number;
-  failed: number;
+/** The hub's cost block (`HubCosts`): one total, split by channel. Not the WhatsApp page's
+ *  `MessagingCost`, which splits by template category. */
+export interface HubCosts {
+  total: Money;
+  estimated: true;
+  by_channel: { channel: ChannelKey; amount: Money }[];
+  rate_card: RateCardRef;
 }
 
-/** `GET /engage/analytics/overview?from&to` — both channels' headline numbers in one read. */
+/** `GET /engage/analytics/overview?from&to` — both channels' headline numbers in one read. The
+ *  service returns each channel's full overview here (`WhatsAppOverview`, and E1's email overview
+ *  passed through), so the hub reads only the headline counts and leaves the rest. */
 export interface HubOverview {
   channels: HubChannel[];
-  whatsapp: HubWhatsAppKpis | null;
-  email: HubEmailKpis | null;
-  costs: MessagingCost | null;
+  whatsapp: WhatsAppOverview | null;
+  email: EmailOverview | null;
+  costs: HubCosts | null;
 }
 
 /* -------------------------------- requests -------------------------------- */
@@ -230,18 +240,22 @@ function rangeQuery(range: DateRange): string {
 
 /** The WhatsApp overview and the deeper analytics page read the same endpoint. */
 export async function getWhatsAppOverview(range: DateRange): Promise<WhatsAppOverview> {
+  if (USE_FIXTURES) return settle(sampleWhatsAppOverview(range));
   return apiRequest<WhatsAppOverview>(`/engage/analytics/whatsapp/overview?${rangeQuery(range)}`);
 }
 
 export async function getEmailOverview(range: DateRange): Promise<EmailOverview> {
+  if (USE_FIXTURES) return settle(sampleEmailOverview(range));
   return apiRequest<EmailOverview>(`/engage/analytics/email/overview?${rangeQuery(range)}`);
 }
 
 export async function getHubOverview(range: DateRange): Promise<HubOverview> {
+  if (USE_FIXTURES) return settle(sampleHubOverview(range));
   return apiRequest<HubOverview>(`/engage/analytics/overview?${rangeQuery(range)}`);
 }
 
 export async function getCampaignAnalytics(campaignId: string): Promise<CampaignAnalytics> {
+  if (USE_FIXTURES) return settle(sampleCampaignAnalytics());
   return apiRequest<CampaignAnalytics>(
     `/engage/campaigns/${encodeURIComponent(campaignId)}/analytics`,
   );

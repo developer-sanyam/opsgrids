@@ -127,7 +127,7 @@ export function CampaignRecipients({ campaignId, live }: { campaignId: string; l
       {state.status === "success" && rows.length > 0 ? (
         <>
           <div
-            className="overflow-x-auto"
+            className="relative overflow-x-auto"
             role="region"
             aria-label="Recipients of this campaign"
             // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a horizontally scrolling region must be reachable by keyboard or its overflow is unreachable without a pointer (axe: scrollable-region-focusable); the aria-label names it when it takes focus.

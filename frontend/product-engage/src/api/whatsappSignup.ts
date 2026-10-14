@@ -17,6 +17,9 @@
 
 import { apiRequest } from "@opsgrids/client";
 
+import { USE_FIXTURES, refuseWithoutService, settle } from "./client";
+import { SIGNUP_CONFIG, WHATSAPP_HEALTH, WHATSAPP_NUMBERS } from "./sample.fixtures";
+
 /* ---------------------------------- signup ---------------------------------- */
 
 /** `GET /engage/whatsapp/signup/config`. `enabled: false` means the server has no Meta app
@@ -67,10 +70,12 @@ export interface SignupStatusOut {
 }
 
 export async function getSignupConfig(): Promise<SignupConfig> {
+  if (USE_FIXTURES) return settle(SIGNUP_CONFIG);
   return apiRequest<SignupConfig>("/engage/whatsapp/signup/config");
 }
 
 export async function completeSignup(input: SignupCompleteIn): Promise<SignupCompleteOut> {
+  if (USE_FIXTURES) refuseWithoutService("Connecting a WhatsApp account");
   return apiRequest<SignupCompleteOut>("/engage/whatsapp/signup/complete", {
     method: "POST",
     body: input,
@@ -78,6 +83,8 @@ export async function completeSignup(input: SignupCompleteIn): Promise<SignupCom
 }
 
 export async function getSignupStatus(setupId: string): Promise<SignupStatusOut> {
+  // A setup only exists once `completeSignup` has run, and that is refused in sample mode.
+  if (USE_FIXTURES) refuseWithoutService("Checking a WhatsApp setup");
   return apiRequest<SignupStatusOut>(`/engage/whatsapp/signup/${encodeURIComponent(setupId)}`);
 }
 
@@ -119,10 +126,12 @@ export interface OkOut {
 }
 
 export async function listWhatsAppNumbers(): Promise<WhatsAppNumbersOut> {
+  if (USE_FIXTURES) return settle(WHATSAPP_NUMBERS);
   return apiRequest<WhatsAppNumbersOut>("/engage/whatsapp/numbers");
 }
 
 export async function setDefaultNumber(id: string): Promise<OkOut> {
+  if (USE_FIXTURES) refuseWithoutService("Changing the default WhatsApp number");
   return apiRequest<OkOut>(`/engage/whatsapp/numbers/${encodeURIComponent(id)}/default`, {
     method: "POST",
   });
@@ -150,6 +159,7 @@ export interface WhatsAppHealth {
 }
 
 export async function getWhatsAppHealth(): Promise<WhatsAppHealth> {
+  if (USE_FIXTURES) return settle(WHATSAPP_HEALTH);
   return apiRequest<WhatsAppHealth>("/engage/whatsapp/health");
 }
 
@@ -169,6 +179,7 @@ export interface TestMessageOut {
 }
 
 export async function sendWhatsAppTestMessage(input: TestMessageIn): Promise<TestMessageOut> {
+  if (USE_FIXTURES) refuseWithoutService("Sending a WhatsApp test message");
   return apiRequest<TestMessageOut>("/engage/whatsapp/test-message", {
     method: "POST",
     body: input,
@@ -178,6 +189,7 @@ export async function sendWhatsAppTestMessage(input: TestMessageIn): Promise<Tes
 /** `POST /engage/whatsapp/disconnect`: marks the connection disconnected and wipes the sealed
  *  token. History — templates, automations, conversations — is kept. */
 export async function disconnectWhatsApp(): Promise<OkOut> {
+  if (USE_FIXTURES) refuseWithoutService("Disconnecting WhatsApp");
   return apiRequest<OkOut>("/engage/whatsapp/disconnect", { method: "POST" });
 }
 
@@ -192,5 +204,6 @@ export interface TemplateSyncOut {
 }
 
 export async function syncWhatsAppTemplates(): Promise<TemplateSyncOut> {
+  if (USE_FIXTURES) refuseWithoutService("Syncing WhatsApp templates");
   return apiRequest<TemplateSyncOut>("/engage/whatsapp/templates/sync", { method: "POST" });
 }

@@ -27,33 +27,38 @@ export function ChartDataTable({
   rows: { key: string; cells: string[] }[];
 }) {
   return (
-    <table className="sr-only">
-      <caption>{caption}</caption>
-      <thead>
-        <tr>
-          {headers.map((header) => (
-            <th key={header} scope="col">
-              {header}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row) => (
-          <tr key={row.key}>
-            {row.cells.map((cell, index) =>
-              index === 0 ? (
-                <th key={index} scope="row">
-                  {cell}
-                </th>
-              ) : (
-                <td key={index}>{cell}</td>
-              ),
-            )}
+    // The off-screen clip sits on a wrapper, not the table: a table lays out at its content width
+    // whatever `width: 1px` says, so `sr-only` on the table itself widened the page and gave every
+    // chart screen a horizontal scrollbar on a phone.
+    <div className="sr-only">
+      <table>
+        <caption>{caption}</caption>
+        <thead>
+          <tr>
+            {headers.map((header) => (
+              <th key={header} scope="col">
+                {header}
+              </th>
+            ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.key}>
+              {row.cells.map((cell, index) =>
+                index === 0 ? (
+                  <th key={index} scope="row">
+                    {cell}
+                  </th>
+                ) : (
+                  <td key={index}>{cell}</td>
+                ),
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

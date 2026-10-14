@@ -32,6 +32,9 @@ export function TrendChart({
       series={series}
       formatValue={formatNumber}
       integer
+      // Daily labels such as "15 Sept" collide on a phone-width card at the shared default stride
+      // once a month of days is plotted; four labels across the range read on every width.
+      categoryStride={Math.max(1, Math.ceil(categories.length / 4))}
       height={height}
     />
   );

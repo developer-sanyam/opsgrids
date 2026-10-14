@@ -7,7 +7,7 @@ import { ApiError } from "@opsgrids/client";
 
 import * as analytics from "@/api/analytics";
 import type { HubOverview } from "@/api/analytics";
-import { HUB } from "./testData";
+import { HUB, WHATSAPP_EMPTY } from "./testData";
 import { CommunicationHubPage } from "./CommunicationHub";
 
 const NOTHING_CONNECTED: HubOverview = {
@@ -76,6 +76,8 @@ describe("the communication hub", () => {
     expect(screen.queryByRole("link", { name: "Connect SMS" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Connect Push" })).toBeNull();
     expect(within(card("SMS")).getByText(/isn.t available in Engage yet/)).toBeTruthy();
+    // Not both an invitation to connect and a statement that connecting is impossible.
+    expect(within(card("SMS")).queryByText(/to start messaging customers/)).toBeNull();
   });
 
   it("links the WhatsApp connect action to the connection wizard", async () => {
@@ -109,7 +111,7 @@ describe("the communication hub", () => {
   it("says so when a connected channel sent nothing in the range", async () => {
     vi.spyOn(analytics, "getHubOverview").mockResolvedValue({
       ...HUB,
-      whatsapp: { sent: 0, delivered: 0, read: 0, failed: 0, replies: 0 },
+      whatsapp: WHATSAPP_EMPTY,
     });
     mount();
 

@@ -132,7 +132,7 @@ export function EmailTemplatesPage() {
               }
             />
           ) : (
-            <div className="overflow-x-auto">
+            <div className="relative overflow-x-auto">
               <table className="w-full min-w-2xl border-collapse text-left">
                 <caption className="sr-only">
                   Email templates, their subject, how many variables each names, and when each last changed

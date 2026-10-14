@@ -1,5 +1,6 @@
 import { getAuthOrigin, NotificationsBell, useAdminLinks, useAuth, useCurrentUser, usePlatformModules } from "@opsgrids/client";
 import { AppShell as Shell, moduleIcon } from "@opsgrids/ui";
+import { USE_FIXTURES } from "./api/client";
 import { useNavGroups } from "./ui";
 import { LogoMark } from "./ui/LogoMark";
 
@@ -32,8 +33,10 @@ export function AppShell() {
       adminLinks={adminLinks.map((l) => ({ key: l.key, label: l.label, href: `${adminOrigin}${l.href}` }))}
       user={{ name: currentUser.name, email: currentUser.email, roleLabel: currentUser.roleDisplay }}
       onSignOut={() => void logout()}
-      search={{ placeholder: "Search domains", fallback: { label: "Search domains for", to: "/domains" } }}
-      notifications={<NotificationsBell />}
+      search={{ placeholder: "Search contacts", fallback: { label: "Search contacts for", to: "/contacts" } }}
+      // The feed is a gateway read with no sample-data answer, and the bell hides itself on a failed
+      // read, so in sample mode it is left out rather than left to fail in the console.
+      notifications={USE_FIXTURES ? undefined : <NotificationsBell />}
     />
   );
 }

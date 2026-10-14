@@ -135,7 +135,7 @@ function Populated({ stats }: { stats: StatsOut }) {
         {stats.per_automation.length === 0 ? (
           <p className="text-sm text-muted">No automation has run in this range.</p>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="relative overflow-x-auto">
             <table className="w-full min-w-3xl border-collapse text-left">
               <caption className="sr-only">Executions, success rate, failures and timing for each automation</caption>
               <thead>
