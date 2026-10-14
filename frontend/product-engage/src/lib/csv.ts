@@ -1,4 +1,3 @@
-import { csvCell } from "@opsgrids/client";
 import type { ContactImportRow } from "@/api/types";
 
 /**
@@ -131,23 +130,7 @@ export function parseContactCsv(text: string): ContactImportRow[] {
 }
 
 /**
- * The other direction: a client-side "Export selected" for a `DataTable`'s bulk-action bar.
- * Nothing here calls the server — it turns rows already on screen into a CSV the browser
- * downloads, for lists that have no bulk write worth offering.
+ * The other direction: a client-side "Export selected" for a `DataTable`'s bulk-action bar,
+ * the shared implementation in `@opsgrids/client`.
  */
-
-/** Builds a CSV string from a header row and the data rows beneath it. */
-export function toCsv(header: string[], rows: string[][]): string {
-  return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
-}
-
-/** Triggers a browser download of `content` as `filename` — no library, one anchor click. */
-export function downloadCsv(filename: string, header: string[], rows: string[][]): void {
-  const blob = new Blob([toCsv(header, rows)], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
-}
+export { downloadCsvGrid as downloadCsv, toCsvGrid as toCsv } from "@opsgrids/client";
