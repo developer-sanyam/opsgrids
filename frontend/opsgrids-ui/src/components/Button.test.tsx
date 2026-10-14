@@ -83,4 +83,9 @@ describe("Button", () => {
     render(<Button disabled>Create widget</Button>);
     expect(screen.getByRole("button")).toHaveProperty("disabled", true);
   });
+
+  it("is not squeezed below its label by a flex row, which would wrap the label past its fixed height and out of its card", () => {
+    render(<Button>Import / Export</Button>);
+    expect(screen.getByRole("button", { name: "Import / Export" }).className).toContain("shrink-0");
+  });
 });

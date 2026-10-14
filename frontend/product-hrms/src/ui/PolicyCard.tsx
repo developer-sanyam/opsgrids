@@ -186,7 +186,7 @@ export function PolicyCard({ policy, canEdit, announce }: PolicyCardProps) {
             <legend className="text-xs font-semibold uppercase tracking-wide text-faint">
               Time to decide
             </legend>
-            <div className="flex flex-wrap items-end gap-3">
+            <div className="flex flex-wrap items-start gap-3">
               <TextField
                 label="Amount"
                 type="number"

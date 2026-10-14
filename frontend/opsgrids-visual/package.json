@@ -12,6 +12,7 @@
     "visual:browsers": "playwright install chromium",
     "visual:check": "pnpm run visual:targets && playwright test",
     "visual:update": "pnpm run visual:targets && VISUAL_UPDATE=1 playwright test --update-snapshots=changed",
+    "sweep": "playwright test -c sweep/playwright.sweep.config.ts",
     "visual:report": "playwright show-report playwright-report",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",

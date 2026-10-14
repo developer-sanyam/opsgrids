@@ -56,3 +56,20 @@ export const DescriptionHiddenOnPhone: Story = {
     actions: <Button variant="outline">Last 30 Days</Button>,
   },
 };
+
+/** A period picker beside the page's primary action. The "Showing ..." line is `meta`, under the
+ *  title, so the select and the button share one top and one bottom edge. */
+export const WithMetaAndPeriodControl: Story = {
+  args: {
+    eyebrow: "Communication",
+    title: "Email",
+    description: "Manage email accounts, templates, automations and track performance.",
+    meta: <span role="status">Showing 15 Sep 2026 – 14 Oct 2026</span>,
+    actions: (
+      <>
+        <Button variant="secondary">Last 30 days</Button>
+        <Button leadingIcon={<PlusIcon className="size-5" />}>Create campaign</Button>
+      </>
+    ),
+  },
+};

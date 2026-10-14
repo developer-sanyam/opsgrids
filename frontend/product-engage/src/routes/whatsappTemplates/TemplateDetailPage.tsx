@@ -46,7 +46,7 @@ function BackLink() {
 
 function DetailSkeleton() {
   return (
-    <div aria-busy="true" className="grid gap-4 lg:grid-cols-3">
+    <div aria-busy="true" className="grid grid-cols-1 gap-4 lg:grid-cols-3">
       <span className="sr-only" role="status">
         Loading template
       </span>
@@ -107,7 +107,7 @@ function TemplateDetail({ id }: { id: string }) {
     <div className="rise flex flex-col gap-6">
       <BackLink />
       <PageHeader eyebrow="WhatsApp template" title={templateName(detail)} />
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="flex flex-col gap-4 p-6">
           <h2 className="text-section text-ink">Details</h2>
           <div className="flex flex-wrap items-center gap-2">

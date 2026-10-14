@@ -132,7 +132,7 @@ export function AssetsPage() {
         render: (a) => {
           const Icon = TYPE_ICON[a.type];
           return (
-            <span className="inline-flex min-w-0 max-w-[20rem] items-center gap-2.5">
+            <span className="inline-flex min-w-0 max-w-full items-center gap-2.5 md:max-w-xs">
               <span className="grid size-8 shrink-0 place-items-center rounded-tile bg-ground text-ink-soft">
                 <Icon className="size-[18px]" />
               </span>
@@ -223,7 +223,7 @@ export function AssetsPage() {
         eyebrow="Assets & config"
         title="Assets (CMDB)"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
               <BoxIcon className="size-4 text-muted" />
               <span className="tnum">{state.status === "success" ? state.data.total : "—"}</span>

@@ -18,7 +18,7 @@ import { formatNumber } from "@/lib/format";
 import { ActivityCard, KpiGrid, LoadingStatus } from "./DashboardParts";
 import type { Kpi } from "./DashboardParts";
 import { DashboardFailure } from "./DashboardFailure";
-import { DateRangeControl } from "./DateRangeControl";
+import { DateRangeControl, DateRangeSummary } from "./DateRangeControl";
 import { SectionTabs } from "./SectionTabs";
 import { VolumeChartCard } from "./VolumeChartCard";
 import { formatMoney, shareCaption } from "./format";
@@ -129,6 +129,7 @@ export function WhatsAppOverviewPage() {
         eyebrow="Communication"
         title="WhatsApp"
         description="Manage conversations, templates, automations and analytics."
+        meta={<DateRangeSummary controls={dates} />}
         actions={<DateRangeControl controls={dates} />}
       />
       <SectionTabs section="whatsapp" />
@@ -149,7 +150,7 @@ export function WhatsAppOverviewPage() {
             columns={5}
           />
 
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             <VolumeChartCard
               className="lg:col-span-2"
               title="Message volume"

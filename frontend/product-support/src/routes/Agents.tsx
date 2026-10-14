@@ -536,7 +536,7 @@ export function AgentsPage() {
         eyebrow="Support"
         title="Agents & SLA"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="inline-flex h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold shadow-card">
               <GaugeIcon className="size-4 text-muted" />
               <span className="tnum">{agents.length}</span>

@@ -82,7 +82,7 @@ function ButtonRow({
   const number = position + 1;
   return (
     <li className="flex flex-col gap-3 rounded-tile border border-line p-4">
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Select
           label={`Button ${number} type`}
           value={button.type}
@@ -171,7 +171,7 @@ export function ContentStep({
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-3">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
       <div className="flex flex-col gap-6 lg:col-span-2">
         <fieldset className="flex flex-col gap-3">
           <legend className="text-section text-ink">Header</legend>

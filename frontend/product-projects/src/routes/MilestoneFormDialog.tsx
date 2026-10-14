@@ -158,7 +158,7 @@ export function MilestoneFormDialog({
         {...maybe("error", errors.title ?? save.fieldErrors.title)}
         />
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Select
           label="Owner"
           value={ownerRef}
@@ -178,7 +178,7 @@ export function MilestoneFormDialog({
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Select
           label="Status"
           value={status}

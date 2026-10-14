@@ -71,6 +71,7 @@ export type { FilterChip, FilterSearch, FilterSelect } from "./components/Filter
 export { FormDialog } from "./components/FormDialog";
 export { FormField } from "./components/FormField";
 export type { FieldIds } from "./components/FormField";
+export { FieldGrid } from "./components/FieldGrid";
 export { FormSection } from "./components/FormSection";
 export { HeroMetricCard } from "./components/HeroMetricCard";
 export { InlineAlert } from "./components/InlineAlert";

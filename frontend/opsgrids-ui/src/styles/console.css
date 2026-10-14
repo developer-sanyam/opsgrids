@@ -283,6 +283,19 @@ body {
 }
 
 /*
+ * A table cell is the containing block for what it holds. Without it an `sr-only` label in a
+ * cell (the "Actions" column header) is positioned against the page, so inside a table that
+ * scrolls sideways it sits past the visible edge and gives the whole page a horizontal
+ * scrollbar. A utility such as `sticky` still wins: this is the base layer.
+ */
+@layer base {
+  th,
+  td {
+    position: relative;
+  }
+}
+
+/*
  * Tailwind v4's `outline-none` also sets `--tw-outline-style: none`, and `outline-2` draws with
  * `outline-style: var(--tw-outline-style)`. So the pairing this suite uses on ~25 fields —
  * `focus:outline-none focus-visible:outline-2`, no ring for a pointer and a ring for a keyboard —

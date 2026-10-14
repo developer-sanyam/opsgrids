@@ -105,7 +105,7 @@ function DetailsStep({
         helper="Lowercase letters, numbers and underscores only. This cannot change after approval."
         {...(errors["name"] !== undefined ? { error: errors["name"] } : {})}
       />
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Select
           label="Category"
           required
@@ -184,7 +184,7 @@ function ProblemList({
 function ReviewStep({ draft, onFix }: { draft: Draft; onFix: (step: 0 | 1) => void }) {
   const problems = validateDraft(draft);
   return (
-    <div className="grid gap-6 lg:grid-cols-3">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
       <div className="flex flex-col gap-4 lg:col-span-2">
         <Summary draft={draft} />
         {Object.keys(problems).length === 0 ? (
@@ -217,7 +217,7 @@ function SubmitStep({
   onFix: (step: 0 | 1) => void;
 }) {
   return (
-    <div className="grid gap-6 lg:grid-cols-3">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
       <div className="flex flex-col gap-4 lg:col-span-2">
         <p className="text-body text-ink">
           Submitting sends {draft.name === "" ? "this template" : `“${draft.name}”`} to Meta for
@@ -368,7 +368,7 @@ function TemplateWizard() {
         }
       />
 
-      <Card className="grid gap-6 p-6 md:grid-cols-4">
+      <Card className="grid grid-cols-1 gap-6 p-6 md:grid-cols-4">
         {created !== null ? (
           <div className="md:col-span-4">
             <Submitted

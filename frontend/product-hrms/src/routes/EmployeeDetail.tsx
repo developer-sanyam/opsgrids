@@ -461,7 +461,7 @@ export function EmployeeDetailPage() {
         {...(employee.designation ? { eyebrow: employee.designation } : {})}
         title={employee.full_name}
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <EmployeeStatusPill status={employee.status} />
             {canWrite ? (
               <Button variant="outline" size="sm" onClick={() => setEditing(true)}>

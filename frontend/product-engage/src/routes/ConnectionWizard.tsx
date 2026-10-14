@@ -376,7 +376,7 @@ export function ConnectionWizard({
         </Button>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label={USERNAME_LABEL[kind]}
           value={values.username}
@@ -405,7 +405,7 @@ export function ConnectionWizard({
           asked up front, so the other two customers never see a field they would have to
           research. */}
       {kind === "smtp" ? (
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <TextField
             label="Submission host"
             value={values.host}

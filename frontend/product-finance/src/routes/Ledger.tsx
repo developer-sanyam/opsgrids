@@ -110,7 +110,7 @@ export function LedgerPage() {
         eyebrow="Books"
         title="Ledger & Reports"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {ledger.status === "success" && ledger.data.sample ? <SampleChip /> : null}
             <Button
               variant="outline"
@@ -141,7 +141,7 @@ export function LedgerPage() {
 
       {ledger.status === "loading" ? (
         <Card className="p-6">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
             {Array.from({ length: 3 }).map((_, i) => (
               <Skeleton key={i} className="h-24 w-full rounded-tile" />
             ))}
@@ -163,7 +163,7 @@ export function LedgerPage() {
       {ledger.status === "success" && summary ? (
         <>
           {/* P&L summary tiles */}
-          <section aria-label="Profit and loss summary" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <section aria-label="Profit and loss summary" className="grid grid-cols-1 gap-4 xl:grid-cols-3">
             <SummaryTile
               label="Net revenue"
               value={formatMoney(summary.netRevenue)}

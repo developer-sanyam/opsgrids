@@ -97,7 +97,7 @@ function LeaveTypesScreen() {
         eyebrow="Leave"
         title="Leave types"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {canGrant ? (
               <Button variant="outline" onClick={() => setGranting(true)}>
                 Grant balance

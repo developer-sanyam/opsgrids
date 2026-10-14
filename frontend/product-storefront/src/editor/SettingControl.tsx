@@ -226,26 +226,25 @@ function ColorControl({ field, value, onChange, disabled }: Required<Omit<Settin
   }
 
   return (
-    <div className="flex items-end gap-2">
-      <TextField
-        label={field.label}
-        value={draft}
-        onChange={(event) => commit(event.target.value)}
-        disabled={disabled}
-        spellCheck={false}
-        containerClassName="flex-1"
-        {...(field.help !== undefined ? { helper: field.help } : {})}
-        {...(error !== undefined ? { error } : {})}
-      />
-      <input
-        type="color"
-        aria-label={`${field.label} — colour picker`}
-        value={swatch}
-        disabled={disabled}
-        onChange={(event) => commit(event.target.value)}
-        className="h-11 w-12 shrink-0 cursor-pointer rounded-tile border border-line bg-surface p-1 disabled:cursor-not-allowed"
-      />
-    </div>
+    <TextField
+      label={field.label}
+      value={draft}
+      onChange={(event) => commit(event.target.value)}
+      disabled={disabled}
+      spellCheck={false}
+      {...(field.help !== undefined ? { helper: field.help } : {})}
+      {...(error !== undefined ? { error } : {})}
+      trailing={
+        <input
+          type="color"
+          aria-label={`${field.label} — colour picker`}
+          value={swatch}
+          disabled={disabled}
+          onChange={(event) => commit(event.target.value)}
+          className="h-11 w-12 shrink-0 cursor-pointer rounded-tile border border-line bg-surface p-1 disabled:cursor-not-allowed"
+        />
+      }
+    />
   );
 }
 

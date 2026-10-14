@@ -151,7 +151,7 @@ export function SupplierFormDialog({ supplier, onClose, onSaved }: SupplierFormD
       dirty={dirty}
       {...formDialogError(save.error, save.fieldErrors)}
     >
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           ref={firstFieldRef}
           label="Code"
@@ -171,7 +171,7 @@ export function SupplierFormDialog({ supplier, onClose, onSaved }: SupplierFormD
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Select
           label="Category"
           value={category}
@@ -190,7 +190,7 @@ export function SupplierFormDialog({ supplier, onClose, onSaved }: SupplierFormD
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Lead time (days)"
           inputMode="numeric"
@@ -209,7 +209,7 @@ export function SupplierFormDialog({ supplier, onClose, onSaved }: SupplierFormD
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Contact name"
           value={contactName}

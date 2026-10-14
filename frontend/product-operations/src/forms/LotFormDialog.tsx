@@ -135,7 +135,7 @@ export function LotFormDialog({ item: initialItem, onClose, onSaved }: LotFormDi
         optional
         error={op.fieldErrors["supplier_lot_no"]}
       />
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <TextField
           label="Manufactured on"
           type="date"

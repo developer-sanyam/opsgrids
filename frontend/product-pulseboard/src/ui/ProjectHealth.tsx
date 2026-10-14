@@ -63,7 +63,7 @@ export function ProjectHealth({ buckets, activeTotal, deliveredCount }: ProjectH
                 style={{ backgroundColor: PROJECT_STATUS_META[bucket.status].color }}
                 aria-hidden
               />
-              <span className="whitespace-nowrap text-ink-soft">{bucket.label}</span>
+              <span className="min-w-0 flex-1 truncate text-ink-soft">{bucket.label}</span>
               <span className="ml-auto tnum font-semibold text-ink">{bucket.count}</span>
               <span className="w-10 text-right tnum text-muted">{bucket.pct}%</span>
             </li>

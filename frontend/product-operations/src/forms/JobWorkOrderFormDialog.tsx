@@ -129,7 +129,7 @@ export function JobWorkOrderFormDialog({ onClose, onCreated }: JobWorkOrderFormD
         onPick={() => undefined}
         {...(supplierError !== undefined ? { error: supplierError } : {})}
       />
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Process"
           value={process}
@@ -149,7 +149,7 @@ export function JobWorkOrderFormDialog({ onClose, onCreated }: JobWorkOrderFormD
         <legend className="text-sm font-semibold text-ink">Material to send</legend>
         {rows.map((row, index) => (
           <div key={row.key} className="flex flex-col gap-2 rounded-tile border border-line p-3">
-            <div className="grid gap-3 sm:grid-cols-3 sm:items-end">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:items-end">
               <SkuPicker
                 value={row.option}
                 onChange={(option) => patchRow(row.key, { option, error: "" })}

@@ -116,7 +116,7 @@ export function OpenInspectionDialog({ onClose, onOpened }: OpenInspectionDialog
         placeholder="Look up a SKU or item name…"
         {...(open.fieldErrors.item_id !== undefined ? { error: open.fieldErrors.item_id } : {})}
       />
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Select
           label="Warehouse"
           value={warehouseId}
@@ -139,7 +139,7 @@ export function OpenInspectionDialog({ onClose, onOpened }: OpenInspectionDialog
           required
         />
       </div>
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Select
           label="Kind"
           value={kind}

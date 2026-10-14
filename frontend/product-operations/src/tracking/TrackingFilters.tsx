@@ -55,7 +55,7 @@ export function TrackingFilters({
         role="search"
         aria-label={label}
         onSubmit={(e) => e.preventDefault()}
-        className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"
+        className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
       >
         <ItemPicker value={filters.item} onChange={(item) => setFilter("item", item)} label="Item" />
         <Select

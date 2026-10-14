@@ -297,7 +297,7 @@ function ReportView({
 
       <Card className="flex flex-col gap-4 p-6">
         <h2 className="text-base font-bold text-ink">What was sent</h2>
-        <dl className="grid gap-4 text-sm sm:grid-cols-2">
+        <dl className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
           <div className="flex flex-col gap-1">
             <dt className="text-xs font-bold uppercase tracking-wider text-faint">Sent as</dt>
             <dd className="text-ink first-letter:uppercase">{senderLabel}</dd>

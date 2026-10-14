@@ -18,7 +18,7 @@ import { formatNumber } from "@/lib/format";
 import { ActionLink, ActivityCard, KpiGrid, LoadingStatus } from "./DashboardParts";
 import type { Kpi } from "./DashboardParts";
 import { DashboardFailure } from "./DashboardFailure";
-import { DateRangeControl } from "./DateRangeControl";
+import { DateRangeControl, DateRangeSummary } from "./DateRangeControl";
 import { SectionTabs } from "./SectionTabs";
 import { VolumeChartCard } from "./VolumeChartCard";
 import { shareCaption } from "./format";
@@ -123,6 +123,7 @@ export function EmailOverviewPage() {
         eyebrow="Communication"
         title="Email"
         description="Manage email accounts, templates, automations and track performance."
+        meta={<DateRangeSummary controls={dates} />}
         actions={
           <>
             <DateRangeControl controls={dates} />
@@ -148,7 +149,7 @@ export function EmailOverviewPage() {
             counted only for campaigns that have tracking turned on.
           </p>
 
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             <VolumeChartCard
               className="lg:col-span-2"
               title="Email performance"

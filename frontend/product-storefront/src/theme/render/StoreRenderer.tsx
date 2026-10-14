@@ -220,14 +220,16 @@ export function StoreRenderer({
                     style={{
                       display: "grid",
                       placeItems: "center",
-                      width: step(2),
+                      minWidth: step(2),
+                      padding: `0 ${step(0.25)}`,
+                      flexShrink: 0,
                       height: step(2),
                       borderRadius: T.radius,
                       background: T.accent,
                       color: T.accentText,
                       fontFamily: T.fontHeading,
                       fontWeight: 800,
-                      fontSize: "0.875rem",
+                      fontSize: "0.75rem",
                     }}
                   >
                     {brand.logoText.slice(0, 3).toUpperCase()}

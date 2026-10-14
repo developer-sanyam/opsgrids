@@ -113,7 +113,7 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
           }
         : {})}
     >
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           ref={nameRef}
           label="Name"
@@ -131,7 +131,7 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Email"
           type="email"
@@ -151,7 +151,7 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="City"
           value={city}

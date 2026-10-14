@@ -99,7 +99,7 @@ export function BomDetailPage() {
         title={`${bom.code} · ${bom.name}`}
         description={`Produces ${bom.sku} — ${bom.item_name}, in ${bom.uom}.${bom.description ? ` ${bom.description}` : ""}`}
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {bom.is_active ? <StatusBadge status="active" /> : <StatusBadge status="inactive" />}
             <Can permission="operations.manufacturing.bom.write" scope="ORG">
               <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>

@@ -289,7 +289,7 @@ function IssueForm({
             </InlineAlert>
           ) : null}
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Select
               label="Customer"
               value={customerId}
@@ -309,7 +309,7 @@ function IssueForm({
             />
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <TextField
               label="Issued date"
               type="date"
@@ -386,7 +386,7 @@ function IssueForm({
 
           <details className="rounded-tile border border-line p-4">
             <summary className="cursor-pointer text-sm font-bold text-ink">Advanced GST fields</summary>
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Select
                 label="Supply type"
                 value={supplyType}

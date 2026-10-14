@@ -36,6 +36,20 @@ function problems(from: string, to: string): { from?: string; to?: string } {
   return {};
 }
 
+/**
+ * "Showing 15 Sep – 14 Oct" — the resolved range, for a `PageHeader`'s `meta`. Kept out of the
+ * control itself so the control is one row of equal-height boxes that lines up with the page's
+ * action button beside it.
+ */
+export function DateRangeSummary({ controls }: { controls: DateRangeControls }) {
+  const { range } = controls;
+  return (
+    <p role="status" className="tnum">
+      Showing {formatDayLong(range.from)} – {formatDayLong(range.to)}
+    </p>
+  );
+}
+
 export function DateRangeControl({ controls }: { controls: DateRangeControls }) {
   const { preset, range, setPreset, setCustom } = controls;
   const [draft, setDraft] = useState<Draft>({});
@@ -60,43 +74,40 @@ export function DateRangeControl({ controls }: { controls: DateRangeControls }) 
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-start gap-3">
-        <Select
-          label="Date range"
-          hideLabel
-          options={OPTIONS}
-          value={preset}
-          onChange={(event) => choose(event.target.value)}
-          containerClassName="w-44"
-        />
-        {preset === "custom" ? (
-          <fieldset className="m-0 flex flex-wrap items-start gap-3 border-0 p-0">
-            <legend className="sr-only">Custom date range</legend>
-            <TextField
-              type="date"
-              label="From"
-              value={from}
-              max={to === "" ? undefined : to}
-              onChange={(event) => edit({ from: event.target.value })}
-              {...(errors.from !== undefined ? { error: errors.from } : {})}
-              containerClassName="w-44"
-            />
-            <TextField
-              type="date"
-              label="To"
-              value={to}
-              min={from === "" ? undefined : from}
-              onChange={(event) => edit({ to: event.target.value })}
-              {...(errors.to !== undefined ? { error: errors.to } : {})}
-              containerClassName="w-44"
-            />
-          </fieldset>
-        ) : null}
-      </div>
-      <p role="status" className="text-xs text-muted tnum">
-        Showing {formatDayLong(range.from)} – {formatDayLong(range.to)}
-      </p>
+    <div className="flex flex-wrap items-start gap-3">
+      <Select
+        label="Date range"
+        hideLabel
+        options={OPTIONS}
+        value={preset}
+        onChange={(event) => choose(event.target.value)}
+        containerClassName="w-44"
+      />
+      {preset === "custom" ? (
+        <fieldset className="m-0 flex flex-wrap items-start gap-3 border-0 p-0">
+          <legend className="sr-only">Custom date range</legend>
+          <TextField
+            type="date"
+            label="From"
+            hideLabel
+            value={from}
+            max={to === "" ? undefined : to}
+            onChange={(event) => edit({ from: event.target.value })}
+            {...(errors.from !== undefined ? { error: errors.from } : {})}
+            containerClassName="w-44"
+          />
+          <TextField
+            type="date"
+            label="To"
+            hideLabel
+            value={to}
+            min={from === "" ? undefined : from}
+            onChange={(event) => edit({ to: event.target.value })}
+            {...(errors.to !== undefined ? { error: errors.to } : {})}
+            containerClassName="w-44"
+          />
+        </fieldset>
+      ) : null}
     </div>
   );
 }

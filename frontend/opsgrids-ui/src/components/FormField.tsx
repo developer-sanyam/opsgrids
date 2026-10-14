@@ -110,7 +110,7 @@ export function FormField({
     );
 
   return (
-    <div className={cn("flex flex-col gap-1.5", className)}>
+    <div data-field className={cn("flex flex-col gap-1.5", className)}>
       {/*
         A hidden label with nothing beside it is rendered bare rather than inside the label row.
         `sr-only` takes it out of flow, so it is not a flex item and the column's `gap` does not
@@ -125,15 +125,21 @@ export function FormField({
         </div>
       )}
       {children({ id, describedBy, invalid: error !== undefined, required })}
-      {helper ? (
-        <p id={helperId} className="text-xs text-muted">
-          {helper}
-        </p>
-      ) : null}
-      {error ? (
-        <p id={errorId} className="text-xs font-medium text-negative">
-          {error}
-        </p>
+      {helper || error ? (
+        // One element however many messages there are, so a field is always label / control /
+        // messages: three rows a `FIELD_GRID` can line up across a row of fields.
+        <div className="flex flex-col gap-1.5">
+          {helper ? (
+            <p id={helperId} className="text-xs text-muted">
+              {helper}
+            </p>
+          ) : null}
+          {error ? (
+            <p id={errorId} className="text-xs font-medium text-negative">
+              {error}
+            </p>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

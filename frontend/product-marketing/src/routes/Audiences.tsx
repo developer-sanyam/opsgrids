@@ -149,7 +149,7 @@ export function AudiencesPage() {
                         <UsersIcon className="size-5" />
                       </span>
                       <div className="flex min-w-0 flex-1 flex-col leading-tight">
-                        <span className="font-bold text-ink">{audience.name}</span>
+                        <span className="break-words font-bold text-ink">{audience.name}</span>
                         <span className="text-sm text-muted tnum">
                           {formatNumber(audience.size)} reachable people
                         </span>
