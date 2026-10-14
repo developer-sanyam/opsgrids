@@ -144,3 +144,19 @@ describe("PutawayBinScan", () => {
     expect(onClear).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("PutawayBinScan touch targets", () => {
+  it("keeps every action at least 48px tall", () => {
+    camera();
+    const { unmount } = render(<PutawayBinScan label={null} onAccept={() => undefined} onClear={() => undefined} />);
+    for (const name of ["Scan with camera", "Use this label"]) {
+      expect(screen.getByRole("button", { name }).className).toContain("min-h-12");
+    }
+    unmount();
+
+    render(<PutawayBinScan label="A-01-03" onAccept={() => undefined} onClear={() => undefined} />);
+    const change = screen.getByRole("button", { name: "Change bin label" });
+    expect(change.className).toContain("min-h-12");
+    expect(change.className).not.toContain("h-9");
+  });
+});

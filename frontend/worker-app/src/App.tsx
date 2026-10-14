@@ -34,9 +34,8 @@ function GrantsStatusBanner() {
 /**
  * The app shell — the mobile header, bottom navigation and routed main column — is
  * `@opsgrids/ui`'s `AppShell`, the same component every product app uses. This file supplies only
- * what is this app's own: its mark, its (short) nav, and Profile as a first-class bottom tab
- * (`bottomNavExtra`) rather than buried behind "More" — a phone-first surface with a handful of
- * destinations puts the ones a worker needs one tap away.
+ * what is this app's own: its mark, its (short) nav, the work destinations as bottom tabs
+ * (`bottomNavExtra`: Counts, Put away) and Profile in the header's account menu (`accountLinks`).
  *
  * It is also where the put-away queue's drainer lives (`PutawayQueueProvider`), because a put-away
  * saved on a basement floor has to sync when the signal returns wherever the worker happens to be
@@ -63,7 +62,8 @@ export function AppShell() {
         nav={groups}
         user={{ name: currentUser.name, email: currentUser.email, roleLabel: currentUser.roleDisplay }}
         onSignOut={requestSignOut}
-        bottomNavExtra={[...bottomExtra, PROFILE_NAV_ENTRY]}
+        bottomNavExtra={bottomExtra}
+        accountLinks={[PROFILE_NAV_ENTRY]}
         banner={
           <>
             <GrantsStatusBanner />

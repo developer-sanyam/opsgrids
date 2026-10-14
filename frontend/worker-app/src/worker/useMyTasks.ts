@@ -26,20 +26,18 @@ const STATUS_RANK: Record<PickTaskStatus, number> = {
 };
 
 /**
- * "My tasks": `GET /operations/fulfilment/tasks` carries no `worker_id`/`mine` filter
- * (`api/client.ts`'s own note), so this fetches every live-status task org-wide — which
- * `operations.fulfilment.task.read:ORG` already lets a worker do, same as the dispatcher board —
- * and keeps only the ones with a live offer that is this worker's own. One request per status,
- * in parallel, each capped at `FULL_PAGE` (200): the org-wide "board" a `task.read:ORG` holder can
- * see is not expected to exceed that in the open statuses at once for the MVP's warehouse sizes;
- * a busier one would need the `worker_id` filter this endpoint does not have (this app's
- * `README.md` gap list).
+ * "My tasks": `GET /operations/fulfilment/tasks?assigned_to_me=true`, so the server returns only
+ * the tasks this worker holds a live offer on — not the whole org's board filtered here. One
+ * request per live status, in parallel (the endpoint takes one status at a time), each small by
+ * construction: a worker holds a handful of live offers, never a warehouse's worth. The offer is
+ * still checked against `now` client-side, because an `OFFERED` offer can have expired before the
+ * sweep marks it so.
  */
 export function useMyTasks(workerId: string | null): AsyncState<WorkerTaskRow[]> & AsyncControls {
   return useAsync(async () => {
     if (!workerId) return [];
     const pages = await Promise.all(
-      LIVE_STATUSES.map((status) => listTasks({ status, size: FULL_PAGE })),
+      LIVE_STATUSES.map((status) => listTasks({ status, assigned_to_me: true, size: FULL_PAGE })),
     );
     const now = new Date();
     const rows: WorkerTaskRow[] = [];

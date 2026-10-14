@@ -158,7 +158,20 @@ describe("AppShell — navigation", () => {
     const labels = within(bottom)
       .getAllByRole("link")
       .map((link) => link.textContent);
-    expect(labels).toEqual(["Home", "Put away", "Profile"]);
+    expect(labels).toEqual(["Home", "Counts", "Put away"]);
+  });
+
+  it("puts Profile in the header's account menu, not in a bottom slot", async () => {
+    const user = userEvent.setup();
+    renderShell();
+
+    const bottom = screen.getByRole("navigation", { name: "Primary mobile navigation" });
+    expect(within(bottom).queryByRole("link", { name: "Profile" })).toBeNull();
+
+    const trigger = screen.getAllByRole("button", { name: /Account menu/ })[0];
+    if (!trigger) throw new Error("account menu trigger not found");
+    await user.click(trigger);
+    expect(screen.getByRole("menuitem", { name: "Profile" })).toBeTruthy();
   });
 
   it("leaves it out for one who may not — the screen is gated too, but a dead entry is noise", () => {
@@ -170,7 +183,7 @@ describe("AppShell — navigation", () => {
       within(bottom)
         .getAllByRole("link")
         .map((link) => link.textContent),
-    ).toEqual(["Home", "Profile"]);
+    ).toEqual(["Home", "Counts"]);
   });
 
   it("an OWN grant is not enough to show it", () => {

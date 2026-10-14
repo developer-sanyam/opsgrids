@@ -20,6 +20,7 @@ function task(overrides: Partial<WorkerTaskRow["task"]> = {}): WorkerTaskRow["ta
   return {
     id: "task-1",
     order_id: "11111111-2222-3333-4444-555555555555",
+    order_number: null,
     warehouse_id: "wh-1",
     zone_location_id: null,
     status: "ACCEPTED",
@@ -38,6 +39,11 @@ function task(overrides: Partial<WorkerTaskRow["task"]> = {}): WorkerTaskRow["ta
         short: "0",
         sequence: 1,
         status: "pending",
+        item_name: null,
+        item_unit: null,
+        source_location_code: null,
+        source_location_name: null,
+        destination_location_code: null,
       },
     ],
     offers: [],
@@ -116,5 +122,18 @@ describe("TaskListPanel", () => {
     expect(link.getAttribute("href")).toBe("/tasks/task-1");
     expect(within(link).getByText("Offered")).toBeTruthy();
     expect(within(link).getByText(/Expires in/)).toBeTruthy();
+  });
+});
+
+describe("TaskListPanel order label", () => {
+  it("shows the order number the server resolved, not an id fragment", () => {
+    renderPanel(
+      <TaskListPanel
+        status="populated"
+        tasks={[{ task: task({ order_number: "ORD-000042" }), myOffer: null }]}
+      />,
+    );
+    expect(screen.getByRole("link", { name: /Order ORD-000042/ })).toBeTruthy();
+    expect(screen.queryByText(/11111111/)).toBeNull();
   });
 });

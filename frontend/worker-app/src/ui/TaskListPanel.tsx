@@ -11,6 +11,7 @@ import {
 } from "@opsgrids/ui";
 
 import type { AssignmentOfferOut, PickTaskOut } from "@/api/types";
+import { orderLabel } from "@/lib/display";
 import { PickTaskStatusPill } from "@/ui/StatusPill";
 
 export type TaskListStatus = "loading" | "empty" | "error" | "populated";
@@ -36,9 +37,8 @@ interface TaskListPanelProps {
  * The task list's four states, reserving the same block of layout in every one of them
  * (frontend/CLAUDE.md: no layout shift on load).
  *
- * `populated` renders from `GET /operations/fulfilment/tasks`, filtered client-side to the
- * caller's own live offers (`Home.tsx`'s own `useMyTasks`) — there is no `mine`/`worker_id` filter
- * on the endpoint itself (`api/client.ts`'s note on `listTasks`).
+ * `populated` renders from `GET /operations/fulfilment/tasks?assigned_to_me=true`
+ * (`useMyTasks`), the caller's own live offers.
  */
 export function TaskListPanel({ status, tasks, errorMessage, onRetry }: TaskListPanelProps) {
   if (status === "loading") {
@@ -95,7 +95,7 @@ export function TaskListPanel({ status, tasks, errorMessage, onRetry }: TaskList
                 <ClipboardListIcon className="size-5" aria-hidden />
               </span>
               <div className="flex min-w-0 flex-1 flex-col gap-1">
-                <span className="truncate font-semibold text-ink tnum">Order {task.order_id.slice(0, 8)}</span>
+                <span className="truncate font-semibold text-ink tnum">Order {orderLabel(task)}</span>
                 <span className="flex flex-wrap items-center gap-2 text-xs text-muted">
                   <PickTaskStatusPill status={task.status} />
                   <span>

@@ -2,7 +2,9 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { listCountLines, submitCount } from "@/api/client";
+import { ScanCamera } from "@/ui/ScanCamera";
 import { ScanInput } from "@/ui/ScanInput";
+import { StickyAction } from "@/ui/StickyAction";
 import { problemMessage, useAsync, useMutation } from "@opsgrids/client";
 import {
   ArrowRightIcon,
@@ -116,6 +118,11 @@ export function CountLineEntryPage() {
       {submit.error ? <InlineAlert tone="danger" title={problemMessage(submit.error)} /> : null}
 
       <Card className="flex flex-col gap-4 p-4 sm:p-6">
+        <ScanCamera
+          onDetected={(value) => setBarcode(value.trim())}
+          subject="the bin's label"
+          videoLabel="Camera view for scanning the location barcode"
+        />
         <ScanInput
           label="Location barcode"
           value={barcode}
@@ -133,10 +140,13 @@ export function CountLineEntryPage() {
           required
           {...(quantityError !== undefined ? { error: quantityError } : {})}
         />
-        <Button size="md" loading={submit.pending} onClick={handleSubmit}>
+      </Card>
+
+      <StickyAction>
+        <Button className="min-h-12 w-full" loading={submit.pending} onClick={handleSubmit}>
           Submit count
         </Button>
-      </Card>
+      </StickyAction>
     </div>
   );
 }

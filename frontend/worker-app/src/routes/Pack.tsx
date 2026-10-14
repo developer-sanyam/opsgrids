@@ -19,8 +19,10 @@ import { FULL_PAGE, confirmPackage, listPackages, listPackagingMaterials, listTa
 import type { PackageLineIn, PackageOut, PackagingMaterialOut, PickTaskLineOut } from "@/api/types";
 import { RequireGrant } from "@/auth/RequireGrant";
 import { formatQty, milliToQty, qtyToMilli } from "@/lib/quantity";
+import { itemTitle, locationCode, orderLabel, qtyWithUnit } from "@/lib/display";
 import { shortId } from "@/lib/shortId";
 import { PackageStatusPill } from "@/ui/StatusPill";
+import { StickyAction } from "@/ui/StickyAction";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -93,7 +95,10 @@ function PackContent() {
 
   return (
     <div className="rise flex flex-col gap-6">
-      <PageHeader title="Pack order" description={`Order ${shortId(orderId)}`} />
+      <PageHeader
+        title="Pack order"
+        description={`Order ${tasks[0] ? orderLabel(tasks[0]) : shortId(orderId)}`}
+      />
 
       {!anyPicked ? (
         <Card className="p-2">
@@ -138,9 +143,9 @@ function PackageRow({ pkg }: { pkg: PackageOut }) {
       </div>
       <ul className="flex flex-col gap-1">
         {pkg.lines.map((line) => (
-          <li key={line.id} className="flex items-center justify-between text-sm">
-            <span className="font-mono">{line.sku}</span>
-            <span className="tnum text-muted">{formatQty(line.quantity)}</span>
+          <li key={line.id} className="flex items-center justify-between gap-2 text-sm">
+            <span className="truncate">{line.item_name ?? <span className="font-mono">{line.sku}</span>}</span>
+            <span className="tnum shrink-0 text-muted">{qtyWithUnit(line.quantity, line.item_unit)}</span>
           </li>
         ))}
       </ul>
@@ -198,7 +203,7 @@ function PackForm({
     try {
       const location = await resolveLocationByBarcode(value);
       setDestinationId(location.id);
-      setDestinationLabel(location.code || shortId(location.id));
+      setDestinationLabel(locationCode(location.code, location.id));
     } catch (err) {
       if (err instanceof ApiError && err.status === 403 && UUID_RE.test(value)) {
         setDestinationId(value);
@@ -257,6 +262,7 @@ function PackForm({
   }
 
   return (
+    <>
     <Card className="flex flex-col gap-4 p-4">
       <div className="flex flex-col gap-2">
         <div className="flex items-end gap-2">
@@ -298,8 +304,8 @@ function PackForm({
         {packable.map(({ line, availableMilli }) => (
           <div key={line.id} className="flex items-end gap-2">
             <TextField
-              label={line.sku}
-              helper={`${formatQty(milliToQty(availableMilli))} staged`}
+              label={itemTitle(line)}
+              helper={`${qtyWithUnit(milliToQty(availableMilli), line.item_unit)} staged${line.item_name ? ` · ${line.sku}` : ""}`}
               containerClassName="flex-1"
               value={quantities[line.id] ?? ""}
               onChange={(event) => setQuantities((prev) => ({ ...prev, [line.id]: event.target.value }))}
@@ -312,9 +318,13 @@ function PackForm({
       {lineErrors._form ? <InlineAlert tone="danger" title={lineErrors._form} /> : null}
       {pack.error ? <InlineAlert tone="danger" title="Couldn't confirm this package">{problemMessage(pack.error)}</InlineAlert> : null}
 
-      <Button onClick={submit} loading={pack.pending} disabled={pack.pending}>
-        Confirm package
-      </Button>
     </Card>
+
+      <StickyAction>
+        <Button className="min-h-12 w-full" onClick={submit} loading={pack.pending} disabled={pack.pending}>
+          Confirm package
+        </Button>
+      </StickyAction>
+    </>
   );
 }

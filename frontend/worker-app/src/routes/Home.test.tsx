@@ -1,7 +1,7 @@
 /**
- * "My tasks": resolved client-side from every live-status task against the caller's own offers
- * (`worker/useMyTasks.ts`) — there is no `mine` filter on the endpoint itself, so this exercises
- * that filtering as much as the screen's own states.
+ * "My tasks": `worker/useMyTasks.ts` asks the server for only the caller's own live offers
+ * (`assigned_to_me=true`, one request per live status) and still re-checks each offer client-side
+ * (an `OFFERED` one can have expired before the sweep says so).
  */
 import { screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -96,5 +96,20 @@ describe("HomePage", () => {
     renderHome({}, { status: "not-found", worker: null });
 
     await screen.findByText("You're not on this warehouse's roster yet");
+  });
+});
+
+describe("HomePage asks the server for only my tasks", () => {
+  it("sends assigned_to_me on every request, and never asks for the org-wide board", async () => {
+    const gateway = renderHome();
+    await screen.findByText("No tasks yet");
+
+    const requests = gateway.calls.filter((call) => call.key === TASKS_URL);
+    expect(requests.map((call) => call.search.get("status")).sort()).toEqual(
+      ["ACCEPTED", "EXCEPTION", "IN_PROGRESS", "OFFERED"],
+    );
+    for (const request of requests) {
+      expect(request.search.get("assigned_to_me")).toBe("true");
+    }
   });
 });

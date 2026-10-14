@@ -40,7 +40,7 @@ describe("PackPage", () => {
       "POST /api/v1/operations/fulfilment/packages": (call) => {
         confirmBody = call.body;
         const created = makePackage({
-          lines: [{ id: "pl-1", pick_task_line_id: "line-1", inventory_item_id: "item-1", sku: "SKU-100", quantity: "10" }],
+          lines: [{ id: "pl-1", pick_task_line_id: "line-1", inventory_item_id: "item-1", sku: "SKU-100", quantity: "10", item_name: null, item_unit: null }],
         });
         packagesReturned = page([created]);
         return json(created, 201);
@@ -68,7 +68,7 @@ describe("PackPage", () => {
   it("every picked line already packed: the terminal ready-for-handover state", async () => {
     const task = makeTask({ order_id: "order-1", lines: [makeLine({ quantity: "10", picked: "10" })] });
     const existingPackage = makePackage({
-      lines: [{ id: "pl-1", pick_task_line_id: "line-1", inventory_item_id: "item-1", sku: "SKU-100", quantity: "10" }],
+      lines: [{ id: "pl-1", pick_task_line_id: "line-1", inventory_item_id: "item-1", sku: "SKU-100", quantity: "10", item_name: null, item_unit: null }],
     });
     stubGateway({
       "GET /api/v1/operations/fulfilment/tasks": () => json(page([task])),

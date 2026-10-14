@@ -122,6 +122,11 @@ export function makeLine(overrides: Partial<PickTaskLineOut> = {}): PickTaskLine
     short: "0",
     sequence: 1,
     status: "pending",
+    item_name: null,
+    item_unit: null,
+    source_location_code: null,
+    source_location_name: null,
+    destination_location_code: null,
     ...overrides,
   };
 }
@@ -145,6 +150,7 @@ export function makeTask(overrides: Partial<PickTaskOut> = {}): PickTaskOut {
   return {
     id: "task-1",
     order_id: "11111111-2222-3333-4444-555555555555",
+    order_number: null,
     warehouse_id: "warehouse-1",
     zone_location_id: null,
     status: "ACCEPTED",
