@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import yaml
+from _helpers import compose_services, edge_budget, sellable_profiles
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EDGE_DIR = REPO_ROOT / "infrastructure/edge"
@@ -21,7 +21,7 @@ LIB_DIR = EDGE_DIR / "lib"
 MEMORY_BUDGET_SH = LIB_DIR / "memory-budget.sh"
 
 sys.path.insert(0, str(LIB_DIR))
-from memory_budget_totals import expected_total_mb, load_budget  # noqa: E402
+from memory_budget_totals import expected_total_mb  # noqa: E402
 
 
 def _verdict(
@@ -43,15 +43,6 @@ def _verdict(
     return verdict, int(percent)
 
 
-def _compose_services() -> dict[str, dict]:
-    raw = yaml.safe_load(COMPOSE_FILE.read_text())
-    return raw["services"]
-
-
-def _budget() -> dict:
-    return load_budget(BUDGET_FILE)
-
-
 def _enabled_profiles() -> set[str]:
     """`.env.example`'s COMPOSE_PROFILES. Deliberately empty since the memory-headroom slice
     (2026-09-23): re-measuring `kinds.background` (see memory-budget.json's own header) showed
@@ -64,16 +55,8 @@ def _enabled_profiles() -> set[str]:
     raise AssertionError("COMPOSE_PROFILES not found in infrastructure/edge/.env.example")
 
 
-def _every_sellable_profile() -> set[str]:
-    """`memory-budget.json`'s own `profiles` list — every product this platform can sell, at
-    once. No longer what `.env.example` defaults to (see `_enabled_profiles`'s docstring), but
-    still the worst case an operator could configure by hand, and the scenario the hard budget
-    line exists to catch."""
-    return set(_budget()["profiles"])
-
-
 def test_every_compose_service_has_a_mem_limit() -> None:
-    services = _compose_services()
+    services = compose_services()
     missing = sorted(name for name, cfg in services.items() if "mem_limit" not in cfg)
     assert not missing, (
         "these services in compose.prod.yml have no mem_limit, so an unbounded process — not "
@@ -82,8 +65,8 @@ def test_every_compose_service_has_a_mem_limit() -> None:
 
 
 def test_every_compose_service_is_in_the_budget() -> None:
-    services = set(_compose_services())
-    budgeted = set(_budget()["containers"])
+    services = set(compose_services())
+    budgeted = set(edge_budget()["containers"])
     missing = sorted(services - budgeted)
     assert not missing, (
         "added to compose.prod.yml with no entry in memory-budget.json — this container's "
@@ -96,8 +79,8 @@ def test_every_budget_entry_is_a_real_compose_service() -> None:
     """The other direction of drift: a container memory-budget.json still prices that
     compose.prod.yml no longer runs — stale, and it would understate a future refactor's
     actual savings."""
-    services = set(_compose_services())
-    budgeted = set(_budget()["containers"])
+    services = set(compose_services())
+    budgeted = set(edge_budget()["containers"])
     stale = sorted(budgeted - services)
     assert not stale, (
         f"memory-budget.json names containers compose.prod.yml no longer defines: {stale}. "
@@ -108,8 +91,8 @@ def test_every_budget_entry_is_a_real_compose_service() -> None:
 def test_every_enabled_profile_container_exists_in_compose() -> None:
     """A container the budget says runs for an enabled profile that compose does not define
     would make preflight's sum count memory nothing actually allocates."""
-    budget = _budget()
-    services = set(_compose_services())
+    budget = edge_budget()
+    services = set(compose_services())
     enabled = _enabled_profiles()
     for name, meta in budget["containers"].items():
         profile = meta.get("profile")
@@ -125,7 +108,7 @@ def test_datastores_carry_both_mem_limit_and_mem_reservation() -> None:
     enough, that ADR-0013's memory-budget erratum gave them an explicit mem_reservation too —
     so host-wide memory pressure reclaims from the squeezable api/background containers before
     it touches a datastore."""
-    services = _compose_services()
+    services = compose_services()
     for name in ("postgres", "rabbitmq", "redis", "caddy"):
         cfg = services[name]
         assert "mem_limit" in cfg, f"{name} has no mem_limit"
@@ -140,7 +123,7 @@ def test_env_example_profile_list_fits_the_documented_box() -> None:
     ships empty (see `_enabled_profiles`'s docstring) precisely because the alternative —
     defaulting to every profile — no longer passes this same assertion (see the test directly
     below, which proves that on purpose)."""
-    budget = _budget()
+    budget = edge_budget()
     enabled = _enabled_profiles()
     total = expected_total_mb(budget, enabled)
     host = budget["host"]
@@ -168,8 +151,8 @@ def test_every_sellable_profile_at_once_no_longer_refuses_since_the_worker_fold(
     honest state of a box selling everything it can sell, not a bug. If a future change moves this
     back over the hard line, or comfortably under the soft one, update this assertion again — the
     same reasoning the docstring it replaces gave for updating it this time."""
-    budget = _budget()
-    enabled = _every_sellable_profile()
+    budget = edge_budget()
+    enabled = set(sellable_profiles(budget))
     total = expected_total_mb(budget, enabled)
     host = budget["host"]
     mem_total_kb = host["mem_total_mb_reference"] * 1024
@@ -188,7 +171,7 @@ def test_realistic_default_profile_list_fits_comfortably() -> None:
     product sold so far) must fit with real margin — not just under the hard line, under the
     soft one too. This is the scenario `EDGE_PROFILES`/COMPOSE_PROFILES auto-off actually
     targets: profiles grow one at a time, as products are sold, not all at once."""
-    budget = _budget()
+    budget = edge_budget()
     enabled = {"inventory"}
     total = expected_total_mb(budget, enabled)
     host = budget["host"]
@@ -218,7 +201,7 @@ def test_a_memswap_limit_that_says_no_swap_really_means_no_swap() -> None:
     the shared limit to 256m and left 64 MB of swap the comment said did not exist (round 3).
     Any service that sets one must set it equal to its own `mem_limit`."""
     offenders = {}
-    for name, service in _compose_services().items():
+    for name, service in compose_services().items():
         if "memswap_limit" not in service:
             continue
         mem, swap = _mb(service["mem_limit"]), _mb(service["memswap_limit"])

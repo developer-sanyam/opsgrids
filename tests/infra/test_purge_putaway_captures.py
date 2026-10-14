@@ -32,6 +32,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from _helpers import DisposableEngine
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOL = REPO_ROOT / "tools" / "purge_putaway_captures.py"
@@ -83,7 +84,7 @@ class _Result:
 
 
 @dataclass
-class FakeDb:
+class FakeDb(DisposableEngine):
     rows: list[Capture]
     #: One entry per transaction, each the SQL text of its statements in order.
     transactions: list[list[str]] = field(default_factory=list)
@@ -92,9 +93,6 @@ class FakeDb:
 
     def begin(self) -> _Txn:
         return _Txn(self)
-
-    async def dispose(self) -> None:
-        self.disposed = True
 
     @property
     def statements(self) -> list[str]:

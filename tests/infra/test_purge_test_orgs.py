@@ -30,6 +30,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from _helpers import DisposableEngine
 from _purge_orgs_world import REPO_ROOT, TOOL, purge
 
 Table = purge.Table
@@ -994,13 +995,6 @@ def test_an_error_line_never_carries_the_database_message() -> None:
     assert own["detail"] == "s.orders: 2 rows remain after the delete"
 
 
-class _Engine:
-    disposed = False
-
-    async def dispose(self) -> None:
-        self.disposed = True
-
-
 def _stub_run(monkeypatch: pytest.MonkeyPatch, *, refuse_on: int) -> list[uuid.UUID]:
     """Run `run` with the database stubbed out: three organisations, each purge succeeds except the
     `refuse_on`-th, which raises the refusal `_purge_one` raises when the advisory lock is held."""
@@ -1031,7 +1025,7 @@ async def test_a_refusal_before_the_first_write_is_still_a_refusal(
     ids = _stub_run(monkeypatch, refuse_on=1)
     lines: list[str] = []
     with pytest.raises(purge.Refusal, match="another purge"):
-        await purge.run(_Engine(), selected=ids, apply=True, out=lines.append)
+        await purge.run(DisposableEngine(), selected=ids, apply=True, out=lines.append)
     assert lines == [], "nothing was done, so nothing is summarised: exit 2 is accurate"
 
 
@@ -1044,7 +1038,7 @@ async def test_a_refusal_after_an_organisation_committed_is_a_failure_with_a_sum
     happened"."""
     ids = _stub_run(monkeypatch, refuse_on=2)
     lines: list[str] = []
-    engine = _Engine()
+    engine = DisposableEngine()
     result = await purge.run(engine, selected=ids, apply=True, out=lines.append)
     assert (result.removed, result.failed, result.not_attempted) == (1, 1, 1)
     assert engine.disposed

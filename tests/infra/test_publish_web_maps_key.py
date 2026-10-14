@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+from _helpers import read_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EDGE_DIR = REPO_ROOT / "infrastructure/edge"
@@ -276,16 +277,12 @@ def test_no_other_app_is_ever_given_the_key(sandbox: Sandbox, app: str) -> None:
 
 
 # --------------------------------------------------------------------------- the script's own text
-def _text() -> str:
-    return SCRIPT.read_text()
-
-
 def _code_lines(text: str) -> list[str]:
     return [line for line in text.splitlines() if not line.lstrip().startswith("#")]
 
 
 def test_the_key_is_parsed_with_the_shared_dotenv_helper() -> None:
-    code = "\n".join(_code_lines(_text()))
+    code = "\n".join(_code_lines(read_text(SCRIPT)))
     assert 'maps_key=$(_dotenv_value "$maps_key")' in code, (
         "the key must be read with `_dotenv_value`, so it is judged exactly the way the box's own "
         "deploy scripts read the same line, not by a second, slightly different parser"
@@ -295,7 +292,7 @@ def test_the_key_is_parsed_with_the_shared_dotenv_helper() -> None:
 
 
 def test_the_worker_case_never_mentions_the_key() -> None:
-    match = re.search(r"\nworker\)\n(.*?)\n\t;;\n", _text(), re.DOTALL)
+    match = re.search(r"\nworker\)\n(.*?)\n\t;;\n", read_text(SCRIPT), re.DOTALL)
     assert match, "publish-web.sh has no `worker)` case in its app table"
     assert NAME not in match.group(1)
 
@@ -303,7 +300,7 @@ def test_the_worker_case_never_mentions_the_key() -> None:
 def test_the_key_is_handled_in_exactly_one_place_and_only_for_operations() -> None:
     """Every non-comment line that names the variable sits in the one `case "$app"` block whose
     first arm is `operations)` and whose default arm unsets it."""
-    code_lines = _code_lines(_text())
+    code_lines = _code_lines(read_text(SCRIPT))
     named = [line for line in code_lines if NAME in line]
     assert named, "publish-web.sh does not handle the Maps key at all"
     text = "\n".join(code_lines)
@@ -321,7 +318,7 @@ def test_the_key_is_handled_in_exactly_one_place_and_only_for_operations() -> No
 
 def test_the_build_log_line_never_expands_the_key_itself() -> None:
     """The one line that reports a found key may say how long it is, never what it is."""
-    for line in _code_lines(_text()):
+    for line in _code_lines(read_text(SCRIPT)):
         if "echo" in line and "$maps_key" in line:
             assert "${#maps_key}" in line
             assert not re.search(r"\$maps_key\b|\$\{maps_key\}", line.replace("${#maps_key}", ""))

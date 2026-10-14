@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
+from _helpers import compose_services
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = REPO_ROOT / "infrastructure/edge/compose.prod.yml"
@@ -30,13 +30,9 @@ COMPOSE_FILE = REPO_ROOT / "infrastructure/edge/compose.prod.yml"
 SWEEPING_SERVICES = ("operations", "storefront", "document")
 
 
-def _services() -> dict[str, dict]:
-    return yaml.safe_load(COMPOSE_FILE.read_text())["services"]
-
-
 @pytest.mark.parametrize("service", SWEEPING_SERVICES)
 def test_the_dedicated_cron_container_is_gone(service: str) -> None:
-    assert f"{service}-cron" not in _services(), (
+    assert f"{service}-cron" not in compose_services(), (
         f"{service}-cron is back in compose.prod.yml — its sweep runs inside the `{service}` API "
         f"container now (RUN_SWEEPS_IN_API); a second container is ~85 MB for nothing."
     )
@@ -44,7 +40,7 @@ def test_the_dedicated_cron_container_is_gone(service: str) -> None:
 
 @pytest.mark.parametrize("service", SWEEPING_SERVICES)
 def test_the_api_container_is_told_to_run_the_sweep(service: str) -> None:
-    env = _services()[service].get("environment") or {}
+    env = compose_services()[service].get("environment") or {}
     if isinstance(env, list):
         env = dict(item.split("=", 1) for item in env)
     value = str(env.get("RUN_SWEEPS_IN_API", ""))

@@ -16,6 +16,7 @@ import ast
 from pathlib import Path
 
 import pytest
+from _helpers import parse_python
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVICES = {
@@ -24,12 +25,8 @@ SERVICES = {
 }
 
 
-def _module(path: Path) -> ast.Module:
-    return ast.parse(path.read_text())
-
-
 def _constant(path: Path, name: str) -> object:
-    for node in _module(path).body:
+    for node in parse_python(path).body:
         if (
             isinstance(node, ast.Assign)
             and len(node.targets) == 1
@@ -42,7 +39,7 @@ def _constant(path: Path, name: str) -> object:
 
 
 def _budget_function(path: Path) -> ast.AsyncFunctionDef:
-    for node in _module(path).body:
+    for node in parse_python(path).body:
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "enforce_reveal_budget":
             return node
     raise AssertionError(f"{path.relative_to(REPO_ROOT)} has no enforce_reveal_budget")

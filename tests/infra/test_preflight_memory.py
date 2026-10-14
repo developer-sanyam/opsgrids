@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from _helpers import sellable_profiles
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EDGE_SRC = REPO_ROOT / "infrastructure/edge"
@@ -138,10 +139,6 @@ def budget() -> dict:
 
 def _core(budget: dict) -> set[str]:
     return {n for n, m in budget["containers"].items() if m.get("profile") is None}
-
-
-def _all_ten(budget: dict) -> set[str]:
-    return set(budget["profiles"])
 
 
 class Box:
@@ -319,11 +316,11 @@ def test_record_budget_prices_the_box_the_same_way_the_gate_does(box: Box, budge
 
 
 def _ten_profile_total(budget: dict) -> int:
-    return expected_total_mb(budget, _all_ten(budget))
+    return expected_total_mb(budget, set(sellable_profiles(budget)))
 
 
 def _all_ten_csv(budget: dict) -> str:
-    return ",".join(budget["profiles"])
+    return ",".join(sellable_profiles(budget))
 
 
 def _small_box_over_hard_line(budget: dict, box: Box) -> tuple[int, int]:

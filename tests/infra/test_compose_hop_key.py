@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
+from _helpers import load_compose
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = REPO_ROOT / "infrastructure/edge/compose.prod.yml"
@@ -23,12 +23,8 @@ ENV_EXAMPLE = REPO_ROOT / "infrastructure/edge/.env.example"
 KEY = "ADMIN_GATEWAY_HOP_KEY"
 
 
-def _rendered() -> dict:
-    return yaml.safe_load(COMPOSE_FILE.read_text())
-
-
 def _environment(service: str) -> dict[str, object]:
-    env = _rendered()["services"][service].get("environment") or {}
+    env = load_compose()["services"][service].get("environment") or {}
     assert isinstance(env, dict), f"{service}: expected a mapping environment, got {type(env)}"
     return env
 
@@ -48,7 +44,7 @@ def test_app_gateway_is_not_given_the_hop_key() -> None:
 
 def test_the_shared_service_env_anchor_does_not_carry_the_key() -> None:
     """Every service merges this block, so putting the key in it would hand it to all of them."""
-    assert KEY not in _rendered()["x-service-env"]
+    assert KEY not in load_compose()["x-service-env"]
 
 
 def test_admin_gateway_is_given_the_hop_key_to_sign_with() -> None:
@@ -60,7 +56,7 @@ def test_admin_gateway_is_given_the_hop_key_to_sign_with() -> None:
 def test_no_service_other_than_auth_and_admin_gateway_carries_the_key() -> None:
     carriers = sorted(
         name
-        for name, cfg in _rendered()["services"].items()
+        for name, cfg in load_compose()["services"].items()
         if isinstance(cfg.get("environment"), dict) and KEY in cfg["environment"]
     )
     assert carriers == ["admin-gateway", "auth"], carriers
