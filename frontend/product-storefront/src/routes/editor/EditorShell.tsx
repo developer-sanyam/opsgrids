@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 
 import { ApiError } from "@opsgrids/client";
-import { Button, Card, InlineAlert, TABLET_QUERY, Tabs, useAnnounce, useMediaQuery } from "@opsgrids/ui";
+import { Button, Card, InlineAlert, StickyActionBar, TABLET_QUERY, Tabs, useAnnounce, useMediaQuery } from "@opsgrids/ui";
 
 import type { Category, Product } from "@/api/types";
 import { Canvas } from "@/editor/Canvas";
@@ -23,7 +23,6 @@ import { SettingsInspector } from "@/editor/SettingsInspector";
 import { ThemeTokenPanel } from "@/editor/ThemeTokenPanel";
 import type { Brand, NavPlacement, SectionDef, StoreDoc } from "@/theme/schema";
 import { resolveMode, sectionsWithPlaceholders } from "@/theme/store";
-import { StickyActionBar } from "@/ui/StickyActionBar";
 
 type PhonePane = "sections" | "page" | "settings";
 
@@ -458,10 +457,13 @@ export function EditorShell({
       {/* Save is the one action the editor exists for, so on a phone it stays in reach under the
           panes however long the Sections list or the settings run. */}
       {!roomy && canEdit ? (
-        <StickyActionBar>
-          <span className="min-w-0 flex-1 text-sm text-muted" aria-live="polite">
-            {saving ? "Saving…" : dirty ? "Unsaved changes" : "All changes saved"}
-          </span>
+        <StickyActionBar
+          summary={
+            <span className="text-sm text-muted" aria-live="polite">
+              {saving ? "Saving…" : dirty ? "Unsaved changes" : "All changes saved"}
+            </span>
+          }
+        >
           <Button onClick={() => void save()} disabled={!dirty || saving} loading={saving}>
             Save changes
           </Button>

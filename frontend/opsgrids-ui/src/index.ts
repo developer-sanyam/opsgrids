@@ -25,6 +25,7 @@ export type { BarListItem } from "./components/BarList";
 export { BottomNavigation } from "./components/BottomNavigation";
 export type { BottomNavItem } from "./components/BottomNavigation";
 export { BulkActionBar } from "./components/BulkActionBar";
+export { StickyActionBar } from "./components/StickyActionBar";
 export { Button } from "./components/Button";
 export type { ButtonSize, ButtonVariant } from "./components/Button";
 export { Card } from "./components/Card";

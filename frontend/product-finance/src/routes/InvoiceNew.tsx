@@ -23,7 +23,7 @@ import {
   UnsavedChangesGuard,
   useFormDirty,
 } from "@/ui";
-import { PlusIcon, useToast } from "@opsgrids/ui";
+import { PlusIcon, StickyActionBar, useToast } from "@opsgrids/ui";
 import type { ProblemJson } from "@opsgrids/client";
 
 const TAX_RATES = ["0", "0.25", "3", "5", "12", "18", "28"];
@@ -459,19 +459,18 @@ function IssueForm({
 
       {/* Below md the review button lives in a bar that stays above the bottom navigation, with the
           estimate beside it: the long form never scrolls the one action out of reach. */}
-      <div
-        className="sticky z-10 -mx-3 flex items-center justify-between gap-3 border-t border-line bg-surface px-4 py-3 shadow-card md:hidden"
-        style={{ bottom: "var(--shell-bottom-inset)" }}
-        data-action-bar=""
+      <StickyActionBar
+        summary={
+          <div className="flex min-w-0 flex-col leading-tight">
+            <span className="text-xs text-muted">Total (est.)</span>
+            <span className="money text-base font-extrabold text-ink">{formatMoney(previewTotalMinor)}</span>
+          </div>
+        }
       >
-        <div className="flex min-w-0 flex-col leading-tight">
-          <span className="text-xs text-muted">Total (est.)</span>
-          <span className="money text-base font-extrabold text-ink">{formatMoney(previewTotalMinor)}</span>
-        </div>
         <Button onClick={submit} disabled={issue.pending}>
           {isCreditNote ? "Review credit note" : "Review invoice"}
         </Button>
-      </div>
+      </StickyActionBar>
 
       <ConfirmDialog
         open={confirming}

@@ -569,9 +569,9 @@ describe("on a phone", () => {
 
     const save = screen.getByRole("button", { name: "Save changes" });
     expect(screen.getAllByRole("button", { name: "Save changes" })).toHaveLength(1);
-    const bar = save.closest("div.sticky");
+    const bar = save.closest("[data-action-bar]");
     expect(bar).not.toBeNull();
-    expect((bar as HTMLElement).style.bottom).toBe("var(--shell-bottom-inset)");
+    expect((bar as HTMLElement).classList.contains("shell-sticky-action")).toBe(true);
     expect(within(bar as HTMLElement).getByText("Unsaved changes")).toBeDefined();
 
     await user.click(save);

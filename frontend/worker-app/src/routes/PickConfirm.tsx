@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { ApiError, problemMessage, useAsync, useMutation } from "@opsgrids/client";
-import { Button, Card, ErrorState, InlineAlert, PageHeader, RadioGroup, Skeleton, TextArea, TextField } from "@opsgrids/ui";
+import { Button, Card, ErrorState, InlineAlert, PageHeader, RadioGroup, Skeleton, StickyActionBar, TextArea, TextField } from "@opsgrids/ui";
 import type { RadioOption } from "@opsgrids/ui";
 
 import { confirmPick, getTask } from "@/api/client";
@@ -10,7 +10,6 @@ import type { PickExceptionReason } from "@/api/types";
 import { RequireGrant } from "@/auth/RequireGrant";
 import { formatQty, milliToQty, qtyToMilli } from "@/lib/quantity";
 import { itemTitle, orderLabel, qtyWithUnit, sourceLabel } from "@/lib/display";
-import { StickyAction } from "@/ui/StickyAction";
 import { remainingMilli } from "@/worker/taskLines";
 
 const REASON_OPTIONS: RadioOption[] = [
@@ -247,11 +246,11 @@ function PickForm({
 
       </Card>
 
-      <StickyAction>
+      <StickyActionBar always bleed={false}>
         <Button className="min-h-12 w-full" onClick={submit} loading={confirm.pending} disabled={confirm.pending}>
           {isShortEntry ? "Confirm short pick" : "Confirm pick"}
         </Button>
-      </StickyAction>
+      </StickyActionBar>
     </div>
   );
 }

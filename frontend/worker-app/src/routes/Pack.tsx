@@ -12,6 +12,7 @@ import {
   PageHeader,
   Select,
   Skeleton,
+  StickyActionBar,
   TextField,
 } from "@opsgrids/ui";
 
@@ -22,7 +23,6 @@ import { formatQty, milliToQty, qtyToMilli } from "@/lib/quantity";
 import { itemTitle, locationCode, orderLabel, qtyWithUnit } from "@/lib/display";
 import { shortId } from "@/lib/shortId";
 import { PackageStatusPill } from "@/ui/StatusPill";
-import { StickyAction } from "@/ui/StickyAction";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -320,11 +320,11 @@ function PackForm({
 
     </Card>
 
-      <StickyAction>
+      <StickyActionBar always bleed={false}>
         <Button className="min-h-12 w-full" onClick={submit} loading={pack.pending} disabled={pack.pending}>
           Confirm package
         </Button>
-      </StickyAction>
+      </StickyActionBar>
     </>
   );
 }
