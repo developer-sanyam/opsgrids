@@ -145,7 +145,7 @@ export function FormDialog({
 
         <div
           className={cn(
-            "sticky bottom-0 -mx-5 flex flex-row justify-end gap-2 border-t border-line bg-surface",
+            "sticky -bottom-4 -mx-5 flex flex-row justify-end gap-2 border-t border-line bg-surface",
             "px-5 py-4 sm:-mx-6 sm:px-6 flex-wrap max-sm:[&>*]:grow",
           )}
         >

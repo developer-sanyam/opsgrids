@@ -290,3 +290,20 @@ describe("FormDialog destructive", () => {
     expect(screen.getByRole("button", { name: "Suspend account" }).className).toContain("bg-negative");
   });
 });
+
+describe("FormDialog sticky footer", () => {
+  it("sticks past the scroll body's bottom padding so scrolled fields never show beneath the bar", () => {
+    render(
+      <FormDialog open onClose={vi.fn()} onSubmit={vi.fn()} title="New widget" submitLabel="Create widget">
+        <p>Fields</p>
+      </FormDialog>,
+    );
+    const bar = screen.getByRole("button", { name: "Create widget" }).parentElement;
+    const body = bar?.closest("form")?.parentElement;
+    // Dialog's body pads its bottom by `pb-4`; a sticky bar sticks above that padding (bottom-0) unless its offset
+    // is the same amount negative (-bottom-4); otherwise there is a strip where content scrolls past beneath it.
+    expect(body?.className).toContain("pb-4");
+    expect(bar?.className).toContain("sticky");
+    expect(bar?.className).toContain("-bottom-4");
+  });
+});
