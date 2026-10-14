@@ -104,7 +104,7 @@ function TemplateRow({
   const name = templateName(template);
   return (
     <tr className={selected ? "border-t border-line bg-accent-soft" : "border-t border-line"}>
-      <th scope="row" className="max-w-0 py-3 pl-4 pr-4 text-left">
+      <th scope="row" className="w-1/3 min-w-32 max-w-0 py-3 pl-4 pr-4 text-left">
         <Link
           to={`/whatsapp/templates/${encodeURIComponent(template.id)}`}
           className="block truncate font-mono text-body-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
@@ -321,7 +321,7 @@ function TemplatesList() {
           value={tabFor(filters)}
           onChange={(id) => applyFilters(TAB_FILTERS[id] ?? TAB_FILTERS["all"] ?? filters)}
         >
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             <Card className="flex flex-col lg:col-span-2">
               <div className="flex flex-col gap-3 p-4 sm:flex-row">
                 <SearchInput
@@ -389,7 +389,7 @@ function TemplatesList() {
               ) : null}
 
               {items.length > 0 ? (
-                <div className="overflow-x-auto">
+                <div className="relative overflow-x-auto">
                   <table className="w-full border-collapse text-left">
                     <caption className="sr-only">
                       WhatsApp templates, their category, language, Meta's approval status and when
@@ -397,7 +397,7 @@ function TemplatesList() {
                     </caption>
                     <thead>
                       <tr className="bg-sunken text-caption font-bold text-muted">
-                        <th scope="col" className="py-3 pl-4 pr-4">
+                        <th scope="col" className="w-1/3 min-w-32 py-3 pl-4 pr-4">
                           Name
                         </th>
                         <th scope="col" className="py-3 pr-4">

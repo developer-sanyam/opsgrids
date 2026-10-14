@@ -112,7 +112,7 @@ function NewCampaignButton() {
 
 function CampaignTable({ campaigns }: { campaigns: CampaignOut[] }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="relative overflow-x-auto">
       <table className="w-full min-w-4xl border-collapse text-left">
         <caption className="sr-only">
           Campaigns, their status, recipients, how many were sent and failed, and when

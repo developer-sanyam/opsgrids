@@ -12,7 +12,10 @@
  * never show.
  */
 
-import { apiRequest } from "@opsgrids/client";
+import { ApiError, apiRequest } from "@opsgrids/client";
+
+import { USE_FIXTURES, fixturePage, refuseWithoutService, settle } from "./client";
+import { WA_TEMPLATES, waTemplateDetail } from "./sample.fixtures";
 
 import type { Page, TemplateCategory, TemplateStatus } from "./types";
 
@@ -123,6 +126,16 @@ function path(id: string, suffix = ""): string {
 
 /** `GET /engage/whatsapp/templates?category&status&q&page`. A blank filter is left off the wire. */
 export async function listTemplates(query: TemplateListQuery = {}): Promise<Page<WhatsAppTemplate>> {
+  if (USE_FIXTURES) {
+    const q = (query.q ?? "").trim().toLowerCase();
+    const rows = WA_TEMPLATES.filter(
+      (t) =>
+        (query.category === undefined || t.category === query.category) &&
+        (query.status === undefined || t.status === query.status) &&
+        (q === "" || t.id.toLowerCase().includes(q) || t.body_preview.toLowerCase().includes(q)),
+    );
+    return settle(fixturePage(rows));
+  }
   const params = new URLSearchParams();
   if (query.category !== undefined) params.set("category", query.category);
   if (query.status !== undefined) params.set("status", query.status);
@@ -136,11 +149,17 @@ export async function listTemplates(query: TemplateListQuery = {}): Promise<Page
 
 /** `GET /engage/whatsapp/templates/{id}` — the row plus its approval history. */
 export async function getTemplate(id: string): Promise<WhatsAppTemplateDetail> {
+  if (USE_FIXTURES) {
+    const found = waTemplateDetail(id);
+    if (found === null) throw new ApiError(404, `No such template: ${id}`, null);
+    return settle(found);
+  }
   return apiRequest<WhatsAppTemplateDetail>(path(id));
 }
 
 /** `POST /engage/whatsapp/templates/sync` — pull every template from Meta. */
 export async function syncTemplates(): Promise<TemplateSyncResult> {
+  if (USE_FIXTURES) refuseWithoutService("Syncing templates from Meta");
   return apiRequest<TemplateSyncResult>(`${BASE}/sync`, { method: "POST" });
 }
 
@@ -150,6 +169,7 @@ export async function syncTemplates(): Promise<TemplateSyncResult> {
  * (`components.body.examples`, `name`), which `useMutation` maps onto the controls.
  */
 export async function createTemplate(input: CreateTemplateInput): Promise<WhatsAppTemplate> {
+  if (USE_FIXTURES) refuseWithoutService("Submitting a template");
   return apiRequest<WhatsAppTemplate>(BASE, { method: "POST", body: input });
 }
 
@@ -158,5 +178,11 @@ export async function previewTemplate(
   id: string,
   values: Record<string, string>,
 ): Promise<TemplatePreview> {
+  if (USE_FIXTURES) {
+    const found = WA_TEMPLATES.find((t) => t.id === id);
+    if (found === undefined) throw new ApiError(404, `No such template: ${id}`, null);
+    const text = found.body_preview.replace(/\{\{(\d+)\}\}/g, (whole, n: string) => values[n] ?? whole);
+    return settle({ text, buttons: [] });
+  }
   return apiRequest<TemplatePreview>(path(id, "/preview"), { method: "POST", body: { values } });
 }

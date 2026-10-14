@@ -75,7 +75,11 @@ function ChannelCard({ channel }: { channel: HubChannel }) {
       </div>
       <p className="min-h-10 text-sm text-muted">
         {channel.detail ??
-          (channel.connected ? "Connected." : `Connect ${meta.name} to start messaging customers.`)}
+          (channel.connected
+          ? "Connected."
+          : meta.connect === null
+            ? ""
+            : `Connect ${meta.name} to start messaging customers.`)}
       </p>
       {channel.connected ? (
         meta.open !== null ? (

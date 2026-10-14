@@ -53,6 +53,13 @@ const FIXTURE_GRANTS = [
   "engage.setup.sender.write:ORG",
   "engage.setup.whatsapp.read:ORG",
   "engage.setup.whatsapp.write:ORG",
+  "engage.email.template.read:ORG",
+  "engage.email.template.write:ORG",
+  "engage.inbox.conversation.read:ORG",
+  "engage.inbox.conversation.write:ORG",
+  "engage.inbox.message.reply:ORG",
+  "engage.whatsapp.template.read:ORG",
+  "engage.whatsapp.template.write:ORG",
 ];
 
 /** The session, wired to this product's fixture identity. The logic lives in `@opsgrids/client`. */

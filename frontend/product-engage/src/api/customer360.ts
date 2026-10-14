@@ -10,6 +10,9 @@
 
 import { apiRequest } from "@opsgrids/client";
 
+import { USE_FIXTURES, settle } from "./client";
+import { CUSTOMER_360 } from "./customer360.fixtures";
+
 export interface Money {
   amount_minor: number;
   currency: string;
@@ -89,5 +92,6 @@ export interface Customer360 {
 }
 
 export function getCustomer360(customerId: string): Promise<Customer360> {
+  if (USE_FIXTURES) return settle(CUSTOMER_360);
   return apiRequest<Customer360>(`/customers/${encodeURIComponent(customerId)}/360`);
 }

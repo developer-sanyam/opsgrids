@@ -182,7 +182,7 @@ function ContactListMembers({ listId }: { listId: string }) {
 
       {state.status === "success" && members.length > 0 ? (
         <Card className="p-6">
-          <div className="overflow-x-auto">
+          <div className="relative overflow-x-auto">
             <table className="w-full min-w-lg border-collapse text-left">
               <caption className="sr-only">Contacts on this list, addresses masked</caption>
               <thead>

@@ -382,7 +382,7 @@ function Automations() {
 
         {state.status === "success" && rows.length > 0 ? (
           <Card className="p-6">
-            <div className="overflow-x-auto">
+            <div className="relative overflow-x-auto">
               <table className="w-full min-w-4xl border-collapse text-left">
                 <caption className="sr-only">
                   Automations, their trigger, module, status, runs and success rate over the last 30

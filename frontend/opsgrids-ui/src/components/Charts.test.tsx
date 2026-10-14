@@ -247,3 +247,20 @@ describe("MetricCard", () => {
     expect(screen.getByText("128").hasAttribute("data-kpi-value")).toBe(true);
   });
 });
+
+describe("the chart's data table", () => {
+  it("is clipped by a wrapper, never by the table itself", () => {
+    // `sr-only` on a <table> does not shrink it (tables size to content), so it widened the page.
+    render(
+      <LineChart
+        label="Messages per day"
+        categories={WEEKS}
+        series={[{ key: "a", label: "Sent", values: [1, 2, 3, 4] }]}
+        formatValue={(value) => String(value)}
+      />,
+    );
+    const table = screen.getByRole("table", { name: "Messages per day" });
+    expect(table.className).not.toContain("sr-only");
+    expect(table.parentElement?.className).toContain("sr-only");
+  });
+});

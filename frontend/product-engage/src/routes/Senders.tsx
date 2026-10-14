@@ -183,7 +183,7 @@ function Senders() {
 
       {senders.length > 0 ? (
         <Card className="p-6">
-          <div className="overflow-x-auto">
+          <div className="relative overflow-x-auto">
             <table className="w-full min-w-[60rem] border-collapse text-left">
               <caption className="sr-only">
                 Senders, their domain and whether a test message has been delivered

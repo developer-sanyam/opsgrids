@@ -217,7 +217,7 @@ export function DomainRecordsTable({
         </InlineAlert>
       ) : null}
 
-      <div className="overflow-x-auto">
+      <div className="relative overflow-x-auto">
         <table className="w-full min-w-[52rem] border-collapse text-left">
           <caption className="sr-only">
             DNS records to publish for {domainName}, whether each is required, and whether it has

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { Can, useAsync, useCan } from "@opsgrids/client";
 import { FileTextIcon, UserPlusIcon, UsersIcon } from "@opsgrids/ui";
@@ -45,7 +46,15 @@ const NO_CONTACTS: ContactOut[] = [];
 function Contacts() {
   const announce = useAnnounce();
   const canWrite = useCan("engage.audience.contact.write", "ORG");
-  const [search, setSearch] = useState("");
+  // The shell's search box hands a query over as `?q=`; seed from it and follow it when the page
+  // is already open and the person searches again.
+  const [params] = useSearchParams();
+  const urlQuery = params.get("q") ?? "";
+  const [search, setSearch] = useState(urlQuery);
+  useEffect(() => {
+    setSearch(urlQuery);
+    setPage(1);
+  }, [urlQuery]);
   const debouncedSearch = useDebouncedValue(search);
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(25);
