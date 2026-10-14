@@ -263,6 +263,17 @@ export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; o
         <p className="text-sm text-muted">{payments.collect_blocked_reason}</p>
       ) : null}
 
+      {payments.collections.length === 0 && !payments.paid_at ? (
+        <div className="rounded-tile border border-dashed border-line p-3 flex flex-col gap-1">
+          <p className="text-sm font-semibold text-ink">No payment recorded yet</p>
+          <p className="text-xs text-muted">
+            {payments.can_collect
+              ? "Use “Collect online payment” when the customer is ready to pay. Payments taken at the counter or on handover are recorded on the order."
+              : "Payments taken at the counter or on handover are recorded on the order. Nothing has been taken online."}
+          </p>
+        </div>
+      ) : null}
+
       {payments.collections.length > 0 ? (
         <ul className="flex flex-col gap-3" aria-label="Online payment attempts">
           {payments.collections.map((c) => (

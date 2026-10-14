@@ -522,3 +522,31 @@ describe("fixture movements refuse what the server would refuse", () => {
     expect(await m.getControlSettings()).toMatchObject({ transfer_approval_threshold: "250.5" });
   });
 });
+
+describe("the order payment card in fixture mode", () => {
+  it("answers an order's payments from sample data instead of calling a server that is not there", async () => {
+    const { client, fixtures } = await fixtureMode();
+    const order = fixtures.ORDERS.find((o) => o.status !== "DRAFT");
+    if (order === undefined) throw new Error("no fixture order");
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const payments = await client.getOrderPayments(order.id);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(payments).toMatchObject({
+      order_id: order.id,
+      total_minor: order.total_minor,
+      currency: order.currency,
+      paid_at: order.paid_at ?? null,
+      can_collect: false,
+      online_payments_configured: false,
+      collections: [],
+    });
+    expect(payments.collect_blocked_reason).toMatch(/sample data/i);
+  });
+
+  it("refuses an order that does not exist with the not-found answer the order page gives", async () => {
+    const { client } = await fixtureMode();
+    await expect(client.getOrderPayments("70570000-0000-4000-8000-0000000fffff")).rejects.toThrow(/could not be found/);
+  });
+});

@@ -2519,8 +2519,10 @@ export async function insightDiscrepancyTrend(days = 30): Promise<DiscrepancyTre
 /* ------------------------------------ online payment (ADR-0024 A4, Fulfilment F10) ------------------------------------ */
 /**
  * An order's online payment, and the organization's own payment-provider connection (Razorpay or
- * Cashfree, ADR-0033). No fixture-mode branch (the dispatch section's precedent): every function
- * calls the real endpoint.
+ * Cashfree, ADR-0033). The only fixture-mode branch is the read below: sample data has no payment
+ * provider, so it answers "nothing recorded, not connected" for a sample order instead of calling
+ * an API that is not running (which the dev proxy turns into a 500). Every write calls the real
+ * endpoint — the card never offers one in sample mode, because `can_collect` is false.
  *
  * Nothing here can mark an order paid. `startOrderCheckout` returns what the provider's hosted
  * checkout needs (Razorpay: a public key id and an Order id; Cashfree: a payment session id);
@@ -2530,6 +2532,26 @@ export async function insightDiscrepancyTrend(days = 30): Promise<DiscrepancyTre
 
 /** `GET /operations/orders/{id}/payments` — `operations.orders.order.read`. */
 export async function getOrderPayments(orderId: string): Promise<OrderPaymentsOut> {
+  if (USE_FIXTURES) {
+    const order = ORDERS.find((o) => o.id === orderId);
+    if (!order) throw new NotFoundError("That order could not be found.");
+    return settle({
+      order_id: order.id,
+      total_minor: order.total_minor,
+      currency: order.currency,
+      paid_at: order.paid_at ?? null,
+      paid_via_charge_id: order.paid_via_charge_id ?? null,
+      payment_term: "prepaid",
+      can_collect: false,
+      collect_blocked_reason: "Online payments are not connected in sample data.",
+      online_payments_configured: false,
+      mode: null,
+      wire: "stub",
+      provider: null,
+      provider_wire: null,
+      collections: [],
+    });
+  }
   return apiRequest<OrderPaymentsOut>(`/operations/orders/${encodeURIComponent(orderId)}/payments`);
 }
 
