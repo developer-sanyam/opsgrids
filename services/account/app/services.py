@@ -59,6 +59,7 @@ from app.schemas import (
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.cache import bump_permission_version
+from platform_core.db import constraint_name
 from platform_core.errors import (
     BusinessRuleProblem,
     ConflictProblem,
@@ -684,28 +685,6 @@ async def add_member(
 EMPLOYEE_LINK_CONSTRAINT = "uq_memberships_org_employee"
 
 
-def _integrity_error_constraint(exc: IntegrityError) -> str | None:
-    """The name of the constraint that actually fired, when the driver surfaces one — or
-    `None` when it does not (a constraint with no name, or an `IntegrityError` that is not a
-    constraint violation at all).
-
-    asyncpg's own exception carries `constraint_name` directly, but SQLAlchemy's asyncpg
-    dialect re-raises it as a driver-shaped exception first
-    (`AsyncAdapt_asyncpg_dbapi.IntegrityError`, raised `from` the original), so the
-    structured attribute survives on `exc.orig.__cause__` rather than on `exc.orig` itself.
-    Both are checked, in that order, so this keeps working if a future SQLAlchemy version
-    stops wrapping. The same helper `approval/app/services.py` uses for its exclusion
-    constraint, for the same reason.
-    """
-    orig = exc.orig
-    name = getattr(orig, "constraint_name", None)
-    if name is not None:
-        return str(name)
-    cause = getattr(orig, "__cause__", None)
-    name = getattr(cause, "constraint_name", None)
-    return str(name) if name is not None else None
-
-
 def _employee_already_linked(
     employee_id: uuid.UUID, holder_membership_id: uuid.UUID | None
 ) -> ConflictProblem:
@@ -780,7 +759,7 @@ async def _write_employee_link(
             async with session.begin_nested():
                 await session.execute(stmt)
     except IntegrityError as exc:
-        if _integrity_error_constraint(exc) != EMPLOYEE_LINK_CONSTRAINT:
+        if constraint_name(exc) != EMPLOYEE_LINK_CONSTRAINT:
             raise
         assert employee_id is not None  # clearing a link cannot violate this index
         holder = await selectors.get_membership_by_employee(session, org_id, employee_id)

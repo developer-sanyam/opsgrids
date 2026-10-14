@@ -85,6 +85,8 @@ from platform_core import pii
 from platform_core.audit import record_audit, record_sensitive_read
 from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.cache import enforce_rate_limit
+from platform_core.db import constraint_name
+from platform_core.db import sqlstate as driver_sqlstate
 from platform_core.errors import (
     BusinessRuleProblem,
     ConflictProblem,
@@ -1748,37 +1750,6 @@ _DEAD_LETTER_DEDUPE_CONSTRAINT: Final = "uq_inbound_dead_letters_org_kind_provid
 _DEAD_LETTER_PROVIDER_ID_MAX: Final = 200
 
 
-def _dbapi_constraint(exc: DBAPIError) -> str | None:
-    """The name of the constraint that actually fired, when the driver surfaces one.
-
-    asyncpg's own exception carries `constraint_name` directly, but SQLAlchemy's asyncpg dialect
-    re-raises it as a driver-shaped exception first, so the structured attribute can survive on
-    `exc.orig.__cause__` rather than on `exc.orig` itself. Both are checked, in that order — the
-    same helper `account/app/services.py` uses for its own unique-constraint check, for the same
-    reason.
-    """
-    orig = exc.orig
-    name = getattr(orig, "constraint_name", None)
-    if name is not None:
-        return str(name)
-    cause = getattr(orig, "__cause__", None)
-    name = getattr(cause, "constraint_name", None)
-    return str(name) if name is not None else None
-
-
-def _dbapi_sqlstate(exc: DBAPIError) -> str | None:
-    """The Postgres SQLSTATE the driver attached, by the same two-hop lookup `_dbapi_constraint`
-    uses — enough for an operator to tell a serialization failure from a data exception without
-    opening a sealed column or ever seeing a parameter value."""
-    orig = exc.orig
-    state = getattr(orig, "sqlstate", None)
-    if state is not None:
-        return str(state)
-    cause = getattr(orig, "__cause__", None)
-    state = getattr(cause, "sqlstate", None)
-    return str(state) if state is not None else None
-
-
 #: Postgres SQLSTATE class/codes that mean "this exact statement will fail identically forever" —
 #: a value or shape the database itself rejects, not a momentary condition. Class 22 (`22*`) is
 #: "data exception" (a string too long, a value out of range, an invalid input syntax); `23502`
@@ -1812,7 +1783,7 @@ def is_inbound_dedupe_conflict(exc: BaseException) -> bool:
     duplicate would be park-and-never-replay-away, since replaying it would only hit this same
     conflict again.
     """
-    return isinstance(exc, IntegrityError) and _dbapi_constraint(exc) == _INBOUND_DEDUPE_CONSTRAINT
+    return isinstance(exc, IntegrityError) and constraint_name(exc) == _INBOUND_DEDUPE_CONSTRAINT
 
 
 def is_permanent_fold_error(exc: BaseException) -> bool:
@@ -1836,7 +1807,7 @@ def is_permanent_fold_error(exc: BaseException) -> bool:
     `isinstance(exc, OperationalError)` therefore never matches anything real in production and
     silently classified every genuine data error as the unmatched, transient default instead —
     accepted forever, 503, retried forever, since the identical oversized value never becomes any
-    smaller on redelivery. The SQLSTATE the driver attaches (`_dbapi_sqlstate`) survives that
+    smaller on redelivery. The SQLSTATE the driver attaches (`driver_sqlstate`) survives that
     translation regardless of which Python exception class wraps it, so it is what this function
     reads instead.
 
@@ -1861,7 +1832,7 @@ def is_permanent_fold_error(exc: BaseException) -> bool:
         seen is exactly the case where guessing "safe to drop" is the more expensive mistake.
     """
     if isinstance(exc, DBAPIError):
-        sqlstate = _dbapi_sqlstate(exc)
+        sqlstate = driver_sqlstate(exc)
         if sqlstate is None:
             return False
         if sqlstate.startswith(_PERMANENT_SQLSTATE_PREFIXES) or sqlstate in _PERMANENT_SQLSTATES:
@@ -1940,10 +1911,10 @@ def _dead_letter_error_text(error: BaseException) -> str:
     own message. See `record_dead_letter`'s docstring for why."""
     parts = [type(error).__name__]
     if isinstance(error, DBAPIError):
-        sqlstate = _dbapi_sqlstate(error)
+        sqlstate = driver_sqlstate(error)
         if sqlstate:
             parts.append(f"sqlstate={sqlstate}")
-        constraint = _dbapi_constraint(error)
+        constraint = constraint_name(error)
         if constraint:
             parts.append(f"constraint={constraint}")
     return " ".join(parts)[:500]

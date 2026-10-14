@@ -48,6 +48,7 @@ from app.registry import ProductSnapshot
 from app.schemas import PlanCreateIn, PlanPatchIn, SeatClassIn, VersionCreateIn
 from platform_core.audit import record_audit
 from platform_core.auth import Principal
+from platform_core.db import constraint_name
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
 from platform_core.events import publish_event
 
@@ -407,20 +408,11 @@ async def draft_version(
                     reason=reason,
                 )
         except IntegrityError as exc:
-            if _constraint_name(exc) != "uq_plan_versions_plan_version":
+            if constraint_name(exc) != "uq_plan_versions_plan_version":
                 raise
     raise ConflictProblem(
         "other drafts on this plan kept taking the next version number; reload and try again"
     )
-
-
-def _constraint_name(exc: IntegrityError) -> str | None:
-    """The constraint that fired, when asyncpg surfaces one (directly or on its cause)."""
-    orig = exc.orig
-    name = getattr(orig, "constraint_name", None)
-    if name is None:
-        name = getattr(getattr(orig, "__cause__", None), "constraint_name", None)
-    return str(name) if name is not None else None
 
 
 def _validate_trial_days(value: Any) -> None:

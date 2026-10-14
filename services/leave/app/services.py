@@ -45,6 +45,7 @@ from app.schemas import (
 )
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
+from platform_core.db import constraint_name
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
 from platform_core.events import publish_event
 
@@ -87,19 +88,6 @@ def _subject_employee(ctx: ScopeContext) -> uuid.UUID:
     if subject is None:
         raise BusinessRuleProblem("Only an employee can apply for their own leave")
     return subject
-
-
-def _integrity_error_constraint(exc: IntegrityError) -> str | None:
-    """The name of the constraint that actually fired, when the driver surfaces one. Same
-    extraction `approval.services._integrity_error_constraint` uses, for the identical
-    asyncpg-wraps-the-driver-exception reason — see that function's docstring."""
-    orig = exc.orig
-    name = getattr(orig, "constraint_name", None)
-    if name is not None:
-        return str(name)
-    cause = getattr(orig, "__cause__", None)
-    name = getattr(cause, "constraint_name", None)
-    return str(name) if name is not None else None
 
 
 async def resolve_timezone(session: AsyncSession, org_id: uuid.UUID) -> str:
@@ -401,7 +389,7 @@ async def grant_leave_balance(
             session.add(entry)
             await session.flush()
     except IntegrityError as exc:
-        if _integrity_error_constraint(exc) != "uq_leave_ledger_entries_org_idempotency_key":
+        if constraint_name(exc) != "uq_leave_ledger_entries_org_idempotency_key":
             raise
         # The race the pre-check above cannot see: two concurrent calls with the same key.
         existing = await selectors.get_ledger_entry_by_idempotency_key(
@@ -583,7 +571,7 @@ async def apply_for_leave(
     try:
         await session.flush()
     except IntegrityError as exc:
-        if _integrity_error_constraint(exc) != "ex_leave_requests_no_overlap":
+        if constraint_name(exc) != "ex_leave_requests_no_overlap":
             raise
         # The race the pre-check above cannot see: another transaction inserted an overlapping
         # request between our read and our insert (the same shape

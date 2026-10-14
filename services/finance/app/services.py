@@ -108,7 +108,7 @@ from app.schemas import (
 )
 from platform_core.audit import record_audit
 from platform_core.auth import Principal, Scope, ScopeContext
-from platform_core.db import assert_tenant, set_tenant
+from platform_core.db import assert_tenant, constraint_name, set_tenant
 from platform_core.errors import (
     BusinessRuleProblem,
     ConflictProblem,
@@ -595,7 +595,7 @@ async def ensure_customer_for_crm_contact(
                 session.add(customer)
                 await session.flush()
         except IntegrityError as exc:
-            if _integrity_error_constraint(exc) != "uq_customers_org_crm_contact":
+            if constraint_name(exc) != "uq_customers_org_crm_contact":
                 raise
             winner = await selectors.get_customer_by_crm_contact(
                 session, ctx.organization_id, crm_contact_id
@@ -941,18 +941,6 @@ async def allocate_invoice_number(
 # ------------------------------------------------------- orders (Fulfilment ADR-0024 §1/§4)
 
 
-def _integrity_error_constraint(exc: IntegrityError) -> str | None:
-    """The name of the constraint that actually fired, when the driver surfaces one. Same
-    extraction `leave.services._integrity_error_constraint`/`approval.services`'s own uses, for
-    the identical asyncpg-wraps-the-driver-exception reason — see that function's docstring."""
-    orig = exc.orig
-    name = getattr(orig, "constraint_name", None)
-    if name is not None:
-        return str(name)
-    cause = getattr(orig, "__cause__", None)
-    return str(name) if (name := getattr(cause, "constraint_name", None)) is not None else None
-
-
 @dataclass
 class OrderInvoiceLineIn:
     """One line of an order's invoice request, as `operations` reports it (ADR-0024 §1/§4).
@@ -1213,7 +1201,7 @@ async def evaluate_order_invoice_request(
             session.add(invoice)
             await session.flush()
     except IntegrityError as exc:
-        if _integrity_error_constraint(exc) != "uq_invoices_org_order_id":
+        if constraint_name(exc) != "uq_invoices_org_order_id":
             raise
         return OrderInvoiceOutcome(outcome="duplicate")
 
