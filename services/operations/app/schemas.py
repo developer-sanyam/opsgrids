@@ -32,6 +32,7 @@ from pydantic import (
 from app import domain
 from app.inventory.quantity import MAX_ABS_MILLI, QTY_SCALE
 from app.jobwork.domain import RECEIVED_ON_FUTURE_TOLERANCE, ist_today
+from platform_core.validation import reject_explicit_null
 
 #: Validates a non-empty string as an email address — used where the field is "email format or
 #: empty" rather than always-required, so `EmailStr` itself (which rejects empty) does not fit.
@@ -52,19 +53,6 @@ def _validate_email_or_empty(value: str) -> str:
     except Exception as exc:
         raise ValueError("must be a valid email address, or empty") from exc
     return value
-
-
-def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
-    """A PATCH field typed `X | None` is optional two different ways: omitted (leave alone) or
-    explicitly `null` (the caller's own JSON says so). For a domain field the database column
-    never allows NULL — a name, a flag, a code — only the first meaning is valid; the second is
-    a malformed request (422), not a value to carry through to an `IntegrityError` (or, worse, a
-    silent `setattr(..., None)` if the column happened to tolerate it). Fields that are
-    genuinely nullable in the domain (`parent_id`, `item_category_id`, `secondary_uom_id` — "no
-    category" is a real state) are simply not passed here."""
-    for field in fields:
-        if field in instance.model_fields_set and getattr(instance, field) is None:
-            raise ValueError(f"{field} cannot be set to null")
 
 
 # ------------------------------------------------------------------ vocabularies (match the SPA)
@@ -368,7 +356,7 @@ class ItemCategoryPatch(BaseModel):
 
     @model_validator(mode="after")
     def _no_explicit_nulls(self) -> Self:
-        _reject_explicit_null(self, ("name",))
+        reject_explicit_null(self, ("name",))
         return self
 
 
@@ -512,7 +500,7 @@ class InventoryItemPatch(BaseModel):
         # `item_category_id`, `secondary_uom_id` and the selling-price pair are deliberately
         # excluded — `null` on any of them is a real, meaningful state ("no category", "no
         # secondary unit", "no selling price"), not a malformed one.
-        _reject_explicit_null(
+        reject_explicit_null(
             self,
             (
                 "name",
@@ -623,7 +611,7 @@ class ItemVariantPatch(BaseModel):
 
     @model_validator(mode="after")
     def _no_explicit_nulls(self) -> Self:
-        _reject_explicit_null(self, ("name", "is_active"))
+        reject_explicit_null(self, ("name", "is_active"))
         return self
 
 
@@ -987,7 +975,7 @@ class LocationPatch(BaseModel):
 
     @model_validator(mode="after")
     def _no_explicit_nulls(self) -> Self:
-        _reject_explicit_null(self, ("kind", "code", "name"))
+        reject_explicit_null(self, ("kind", "code", "name"))
         return self
 
 
@@ -1023,7 +1011,7 @@ class WarehouseFloorPatch(BaseModel):
 
     @model_validator(mode="after")
     def _no_explicit_nulls(self) -> Self:
-        _reject_explicit_null(self, ("floor_number",))
+        reject_explicit_null(self, ("floor_number",))
         return self
 
 
@@ -1635,7 +1623,7 @@ class WorkerPatch(BaseModel):
 
     @model_validator(mode="after")
     def _no_explicit_nulls(self) -> Self:
-        _reject_explicit_null(self, ("warehouse_id", "display_name", "is_active"))
+        reject_explicit_null(self, ("warehouse_id", "display_name", "is_active"))
         return self
 
 

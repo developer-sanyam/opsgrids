@@ -22,24 +22,13 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app import domain
+from platform_core.validation import reject_explicit_null
 
 LeadSource = Literal["form", "import", "manual"]
 LeadStatus = Literal["new", "working", "qualified", "disqualified", "converted"]
 AssignmentMode = Literal["round_robin", "manual"]
 #: The two sealed contact details a lead carries, and the only two `:reveal` can open.
 RevealField = Literal["phone", "email"]
-
-
-def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
-    """A PATCH field typed `X | None` is optional two different ways: omitted (leave alone) or
-    explicitly `null` (the caller's own JSON says so). For a field the database column never
-    allows NULL, only the first meaning is valid — the second is a malformed request (422),
-    not a value that should reach an `IntegrityError` or a silent no-op write. Fields that are
-    genuinely nullable in the domain (`owner_id` — unassigning is a real state) are simply not
-    passed here. Same helper `operations.app.schemas._reject_explicit_null` uses."""
-    for field in fields:
-        if field in instance.model_fields_set and getattr(instance, field) is None:
-            raise ValueError(f"{field} cannot be set to null")
 
 
 class ServiceInfo(BaseModel):
@@ -95,13 +84,13 @@ class LeadPatch(BaseModel):
     status: LeadStatus | None = None
     #: Nullable in the domain: unassigning a lead (`owner_id: null`) is a real, valid state
     #: (`services.update_lead` requires ORG scope for it), so this one is deliberately not
-    #: passed to `_reject_explicit_null` below.
+    #: passed to `reject_explicit_null` below.
     owner_id: uuid.UUID | None = None
     notes: str | None = Field(default=None, max_length=4000)
 
     @model_validator(mode="after")
     def _no_explicit_nulls(self) -> Self:
-        _reject_explicit_null(self, ("full_name", "status", "notes"))
+        reject_explicit_null(self, ("full_name", "status", "notes"))
         return self
 
 
