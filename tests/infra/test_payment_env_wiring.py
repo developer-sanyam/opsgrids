@@ -22,7 +22,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+from _helpers import load_compose
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EDGE_DIR = REPO_ROOT / "infrastructure/edge"
@@ -46,12 +46,8 @@ SWITCHES = {
 ALL_KEYS = ("RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", *SWITCHES)
 
 
-def _rendered() -> dict:
-    return yaml.safe_load(COMPOSE_FILE.read_text())
-
-
 def _environment(service: str) -> dict[str, object]:
-    env = _rendered()["services"][service].get("environment") or {}
+    env = load_compose()["services"][service].get("environment") or {}
     assert isinstance(env, dict)
     return env
 
@@ -84,14 +80,14 @@ class TestComposeParity:
     def test_no_other_service_carries_a_provider_key(self, key: str) -> None:
         carriers = sorted(
             name
-            for name, cfg in _rendered()["services"].items()
+            for name, cfg in load_compose()["services"].items()
             if isinstance(cfg.get("environment"), dict) and key in cfg["environment"]
         )
         assert carriers == ["payment", "payment-worker"], (key, carriers)
 
     @pytest.mark.parametrize("key", [*ALL_KEYS, "RAZORPAY_WEBHOOK_SECRET"])
     def test_the_shared_service_env_block_does_not_carry_any(self, key: str) -> None:
-        assert key not in _rendered()["x-service-env"]
+        assert key not in load_compose()["x-service-env"]
 
     def test_a_missing_credential_does_not_break_every_compose_command(self) -> None:
         """`${KEY:-}`, never `${KEY:?}`: a `:?` aborts backup.sh's pg_dump and a rollback too."""

@@ -15,57 +15,29 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from _helpers import committing_dependency_names, python_files
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOTS = [REPO_ROOT / "services", REPO_ROOT / "libs" / "platform-core" / "src"]
 
 
-def _python_files() -> list[Path]:
-    files: list[Path] = []
-    for root in SOURCE_ROOTS:
-        for path in root.rglob("*.py"):
-            parts = set(path.parts)
-            if "tests" in parts or "migrations" in parts or ".venv" in parts:
-                continue
-            files.append(path)
-    return files
-
-
-def _opens_a_transaction_and_yields(node: ast.AsyncFunctionDef) -> bool:
-    yields = any(isinstance(n, (ast.Yield, ast.YieldFrom)) for n in ast.walk(node))
-    begins = any(
-        isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "begin"
-        for n in ast.walk(node)
-    )
-    decorated_as_context_manager = any(
-        (isinstance(d, ast.Name) and d.id == "asynccontextmanager")
-        or (isinstance(d, ast.Attribute) and d.attr == "asynccontextmanager")
-        for d in node.decorator_list
-    )
-    return yields and begins and not decorated_as_context_manager
-
-
-def _committing_dependencies(trees: dict[Path, ast.Module]) -> set[str]:
-    names: set[str] = set()
-    for tree in trees.values():
-        for node in ast.walk(tree):
-            if isinstance(node, ast.AsyncFunctionDef) and _opens_a_transaction_and_yields(node):
-                names.add(node.name)
-    return names
-
-
 def _parse_all() -> dict[Path, ast.Module]:
-    return {path: ast.parse(path.read_text(), filename=str(path)) for path in _python_files()}
+    return {
+        path: ast.parse(path.read_text(), filename=str(path)) for path in python_files(SOURCE_ROOTS)
+    }
 
 
 def test_the_tenant_chokepoint_is_recognised_as_committing() -> None:
     """Guards the guard: if the scan stopped recognising `get_tenant_session`, every assertion
     below would pass vacuously."""
-    assert "get_tenant_session" in _committing_dependencies(_parse_all())
+    assert "get_tenant_session" in committing_dependency_names(
+        _parse_all(), exclude_context_managers=True
+    )
 
 
 def test_every_committing_dependency_is_function_scoped() -> None:
     trees = _parse_all()
-    committing = _committing_dependencies(trees)
+    committing = committing_dependency_names(trees, exclude_context_managers=True)
     offenders: list[str] = []
     for path, tree in trees.items():
         for node in ast.walk(tree):

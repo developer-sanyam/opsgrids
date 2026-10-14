@@ -25,7 +25,7 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
+from _helpers import compose_services
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = REPO_ROOT / "infrastructure/edge/compose.prod.yml"
@@ -41,10 +41,6 @@ def _services_with_a_sweep() -> list[str]:
         if _EXEC_CRON.search(bin_cron.read_text()) and (service_dir / "app" / "cron.py").is_file():
             names.append(service_dir.name)
     return names
-
-
-def _compose_services() -> dict[str, dict]:
-    return yaml.safe_load(COMPOSE_FILE.read_text())["services"]
 
 
 def _command(service: dict) -> list[str]:
@@ -116,7 +112,7 @@ def test_the_sweeping_services_are_found() -> None:
 
 @pytest.mark.parametrize("service", SWEEPING)
 def test_every_sweep_runs_in_a_container(service: str) -> None:
-    assert _sweep_runs(_compose_services(), service), (
+    assert _sweep_runs(compose_services(), service), (
         f"services/{service}/app/cron.py has a sweep and nothing on the edge runs it: add a "
         f"`{service}-cron` compose service on ./bin/cron, run it from app/worker.py "
         f"(bin/worker -> app.worker) in `{service}-worker`, or set RUN_SWEEPS_IN_API on its API "
@@ -145,7 +141,7 @@ def test_a_sweep_folded_into_its_api_container_counts(environment: dict | list, 
 def test_the_d3_sweeps_are_folded_into_their_workers(service: str) -> None:
     """D3 round 3's decision: no new containers (no memory-budget change) — the reclaim and
     stuck-charge sweeps run in the existing workers, supervised."""
-    compose = _compose_services()
+    compose = compose_services()
     assert not _runs(compose, service, "./bin/cron")
     assert _runs(compose, service, "./bin/worker")
     assert _folded_into_worker(service)

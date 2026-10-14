@@ -27,6 +27,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from _helpers import parse_python
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -50,17 +51,13 @@ SHIPPED_SOURCE = sorted(
 )
 
 
-def _tree(path: Path) -> ast.Module:
-    return ast.parse(path.read_text())
-
-
 def _rel(path: Path) -> str:
     return str(path.relative_to(REPO_ROOT))
 
 
 def _string_constant(path: Path, name: str) -> str:
     """The module-level `NAME = "literal"` in `path`."""
-    for node in _tree(path).body:
+    for node in parse_python(path).body:
         if (
             isinstance(node, ast.Assign)
             and len(node.targets) == 1
@@ -125,7 +122,7 @@ def test_the_reveal_guard_requires_otp_and_the_marker_together(service: str) -> 
     makes a login-time `otp` token insufficient."""
     calls = [
         call
-        for call in _calls(_tree(GUARDS[service]))
+        for call in _calls(parse_python(GUARDS[service]))
         if _called_name(call) == "require" and any(k.arg == "amr" for k in call.keywords)
     ]
     assert len(calls) == 1, f"{service}: expected exactly one guarded `require(..., amr=...)`"
@@ -147,7 +144,7 @@ def test_the_literal_appears_only_where_the_marker_is_defined() -> None:
     scanned; a literal somebody types into an `amr` list is.)"""
     found: list[str] = []
     for path in SHIPPED_SOURCE:
-        for node in ast.walk(_tree(path)):
+        for node in ast.walk(parse_python(path)):
             if (
                 isinstance(node, ast.Constant)
                 and node.value == EXPECTED
@@ -158,7 +155,7 @@ def test_the_literal_appears_only_where_the_marker_is_defined() -> None:
     for path in LITERAL_HOMES:
         literals = [
             node
-            for node in ast.walk(_tree(path))
+            for node in ast.walk(parse_python(path))
             if isinstance(node, ast.Constant) and node.value == EXPECTED
         ]
         assert len(literals) == 1, (
@@ -172,7 +169,7 @@ def test_the_constant_is_named_only_where_it_is_meant_to_be() -> None:
     file: nowhere."""
     offenders: list[str] = []
     for path in SHIPPED_SOURCE:
-        tree = _tree(path)
+        tree = parse_python(path)
         owner = _enclosing_functions(tree)
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Name) and node.id == "STEP_UP_AMR"):
@@ -195,7 +192,7 @@ def test_only_step_up_hands_anything_to_a_token_beyond_its_sessions_record() -> 
     """`extra_amr=` — the only way to add to a token's `amr` beyond what its session holds — is
     passed from `step_up` alone. (`_mint_access_only`, which accepts it, is what `step_up`
     calls.)"""
-    tree = _tree(AUTH)
+    tree = parse_python(AUTH)
     owner = _enclosing_functions(tree)
     passed_from = {
         owner.get(id(call))
@@ -210,7 +207,7 @@ def test_every_token_minted_takes_its_amr_from_the_stripped_session_record() -> 
     builds `amr` from `_session_amr(...)`. That is what makes "no sign-in, refresh, organization
     switch, rotation or operator flow can produce the marker" literally true, whatever a session
     row holds."""
-    tree = _tree(AUTH)
+    tree = parse_python(AUTH)
     mints = [call for call in _calls(tree) if _called_name(call) == "mint_access"]
     assert len(mints) == 4, f"expected four mint_access calls, found {len(mints)}"
     for call in mints:
@@ -226,7 +223,7 @@ def test_every_write_to_a_sessions_amr_passes_through_the_strip() -> None:
     """`something.amr = ...` — verify_mfa and the operator's two steps — is built from
     `_session_amr(...)` too, so a marker that got into a row is dropped the next time it is
     written."""
-    tree = _tree(AUTH)
+    tree = parse_python(AUTH)
     writes = [
         node
         for node in ast.walk(tree)
@@ -245,7 +242,7 @@ def test_a_session_is_built_only_by_start_session_and_never_updated_in_bulk() ->
     `start_session` and nowhere else, and no statement anywhere that ships sets `amr` through
     `.values(amr=...)` (`update(Session).values(...)` or `Session.__table__.update()...`)."""
     for path in SHIPPED_SOURCE:
-        tree = _tree(path)
+        tree = parse_python(path)
         owner = _enclosing_functions(tree)
         for call in _calls(tree):
             keywords = {k.arg for k in call.keywords}
@@ -270,7 +267,7 @@ def test_start_session_is_only_ever_told_plain_methods() -> None:
     """The callers of `start_session` pass `amr=` as a literal list of the methods a sign-in used
     (`pwd`, or one of the federated-sign-in constants). None of them is a list built from anything
     else."""
-    tree = _tree(AUTH)
+    tree = parse_python(AUTH)
     for call in _calls(tree):
         if _called_name(call) != "start_session":
             continue

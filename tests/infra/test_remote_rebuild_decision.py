@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import subprocess
 
+from _helpers import baseline_for
 from conftest import REBUILD_LIB, GitRepo
 
 BASELINE_FILES = {
@@ -35,8 +36,7 @@ def needs_full_rebuild(repo: str, prev: str, nxt: str) -> bool:
     return result.returncode == 0
 
 
-def _baseline(git_repo: GitRepo) -> str:
-    return git_repo.initial_commit(BASELINE_FILES, "baseline")
+_baseline = baseline_for(BASELINE_FILES)
 
 
 def test_change_under_platform_core_src_is_full_rebuild(git_repo: GitRepo) -> None:

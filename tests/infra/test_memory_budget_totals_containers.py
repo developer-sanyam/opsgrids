@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _helpers import edge_budget
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EDGE_DIR = REPO_ROOT / "infrastructure/edge"
 BUDGET_FILE = EDGE_DIR / "memory-budget.json"
@@ -20,18 +22,13 @@ TOTALS_SCRIPT = LIB_DIR / "memory_budget_totals.py"
 sys.path.insert(0, str(LIB_DIR))
 from memory_budget_totals import (  # noqa: E402
     expected_total_for_names,
-    load_budget,
     post_deploy_container_names,
     unpriced_container_names,
 )
 
 
-def _budget() -> dict:
-    return load_budget(BUDGET_FILE)
-
-
 def test_prices_an_explicit_container_list_regardless_of_profile() -> None:
-    budget = _budget()
+    budget = edge_budget()
     # auth and billing are core (profile: null) and plain `kind: api` (unlike account, which is
     # `api_with_worker` since the worker-folding follow-up folded its own worker in); operations
     # is behind `inventory` and still plain `api` too (it folds only a sweep, on
@@ -47,7 +44,7 @@ def test_a_container_the_budget_does_not_price_is_priced_as_background_not_skipp
     project's own label, so an unpriced name here is not a stray foreign container — it is one
     of ours `memory-budget.json` has fallen behind on. Priced conservatively rather than as
     zero, so a real gap does not silently understate the box."""
-    budget = _budget()
+    budget = edge_budget()
     total = expected_total_for_names(budget, {"auth", "some-unpriced-container"})
     assert (
         total
@@ -57,19 +54,19 @@ def test_a_container_the_budget_does_not_price_is_priced_as_background_not_skipp
 
 
 def test_unpriced_container_names_names_the_gap() -> None:
-    budget = _budget()
+    budget = edge_budget()
     assert unpriced_container_names(budget, {"auth", "some-unpriced-container"}) == {
         "some-unpriced-container"
     }
 
 
 def test_unpriced_container_names_is_empty_when_everything_is_priced() -> None:
-    budget = _budget()
+    budget = edge_budget()
     assert unpriced_container_names(budget, {"auth", "account"}) == set()
 
 
 def test_empty_container_set_prices_zero() -> None:
-    budget = _budget()
+    budget = edge_budget()
     assert expected_total_for_names(budget, set()) == 0
 
 
@@ -77,7 +74,7 @@ def test_orphaned_container_from_a_disabled_profile_still_counts() -> None:
     """The exact scenario H2 exists for: a profile taken out of COMPOSE_PROFILES whose
     container compose never actually stopped. Pricing by the running-container list (this
     function) must still count it; pricing by the (now-reduced) profile list would not."""
-    budget = _budget()
+    budget = edge_budget()
     running_now = {"auth", "account", "employee"}  # hrms never actually disabled by anything
     still_running_after_profile_removed = running_now  # docker did not stop them
     assert expected_total_for_names(
@@ -123,7 +120,7 @@ class TestPostDeployContainerNames:
     def test_prices_correctly_through_expected_total_for_names(self) -> None:
         # `billing`, not `account`: plain `kind: api`, unlike `account`, which is
         # `api_with_worker` since the worker-folding follow-up folded its own worker in.
-        budget = _budget()
+        budget = edge_budget()
         names = post_deploy_container_names(
             running={"auth", "billing"},
             all_services={"auth", "billing", "operations"},
@@ -152,7 +149,7 @@ def test_cli_post_deploy_mode_matches_the_python_function() -> None:
         text=True,
         check=True,
     )
-    budget = _budget()
+    budget = edge_budget()
     expected = expected_total_for_names(budget, {"auth", "account", "operations"})
     assert int(result.stdout.strip()) == expected
 
@@ -186,7 +183,7 @@ def test_cli_containers_mode_matches_the_python_function() -> None:
         text=True,
         check=True,
     )
-    budget = _budget()
+    budget = edge_budget()
     expected = expected_total_for_names(budget, {"auth", "account", "operations"})
     assert int(result.stdout.strip()) == expected
 
@@ -215,7 +212,7 @@ def test_cli_profiles_mode_still_works_with_the_new_flag_form() -> None:
         text=True,
         check=True,
     )
-    budget = _budget()
+    budget = edge_budget()
     from memory_budget_totals import expected_total_mb
 
     assert int(result.stdout.strip()) == expected_total_mb(budget, {"inventory"})

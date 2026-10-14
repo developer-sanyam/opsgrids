@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 
+from _helpers import baseline_for
 from conftest import CI_PLAN, GitRepo
 
 ALL_APPS = [
@@ -69,8 +70,7 @@ def _parse(stdout: str) -> dict[str, object]:
     return plan
 
 
-def _baseline(git_repo: GitRepo) -> str:
-    return git_repo.initial_commit(BASELINE_FILES, "baseline")
+_baseline = baseline_for(BASELINE_FILES)
 
 
 def test_backend_only_change_deploys_services_and_no_apps(git_repo: GitRepo) -> None:
