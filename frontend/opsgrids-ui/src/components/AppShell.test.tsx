@@ -69,6 +69,15 @@ describe("AppShell — landmarks and focus", () => {
     expect(screen.getByRole("main")).toBeTruthy();
   });
 
+  it("gives the padded layout its bottom spacing from one class, not a competing pb utility", () => {
+    renderShell();
+    const main = screen.getByRole("main");
+    // An unlayered `.shell-content-bottom-pad` beats a Tailwind `pb-*`, which once zeroed the
+    // desktop padding; the padded layout must use the single combined class.
+    expect(main.className).toContain("shell-content-bottom-pad-padded");
+    expect(main.className).not.toMatch(/(^|\s)pb-/);
+  });
+
   it("moves focus onto main content on a route change", async () => {
     const user = userEvent.setup();
     renderShell();
