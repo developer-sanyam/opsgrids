@@ -104,9 +104,9 @@ function WorklogThread({ entries }: { entries: WorklogEntry[] }) {
 
 function PropertyRow({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 py-2.5">
+    <div className="flex flex-col items-start gap-1 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
       <span className="text-sm text-muted">{label}</span>
-      <div className="text-sm font-semibold text-ink text-right">{children}</div>
+      <div className="w-full text-sm font-semibold text-ink sm:w-auto sm:text-right">{children}</div>
     </div>
   );
 }
@@ -131,7 +131,7 @@ function PriorityControl({
   if (!canWriteOrg) return <PriorityPill priority={incident.priority} />;
 
   return (
-    <div className="flex w-40 flex-col items-end gap-1.5">
+    <div className="flex w-full flex-col gap-1.5 sm:w-40 sm:items-end">
       <Select
         label="Priority"
         hideLabel
@@ -177,7 +177,7 @@ function AssigneeControl({
 
   return (
     <form
-      className="flex w-44 flex-col items-end gap-1.5"
+      className="flex w-full flex-col gap-1.5 sm:w-44 sm:items-end"
       onSubmit={(e) => {
         e.preventDefault();
         if (value.trim() !== incident.assignee) void change.mutate(value.trim());
@@ -359,7 +359,7 @@ export function IncidentDetailPage() {
       {state.status === "loading" && !incident ? (
         <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
           <Card className="p-6 xl:col-span-2">
-            <Skeleton className="h-8 w-2/3" />
+            <Skeleton label="Loading incident" className="h-8 w-2/3" />
             <Skeleton className="mt-4 h-40 w-full rounded-tile" />
           </Card>
           <Card className="p-6">

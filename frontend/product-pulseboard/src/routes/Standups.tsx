@@ -11,6 +11,7 @@ import {
   ArrowRightIcon,
   Button,
   Card,
+  CheckCircleIcon,
   EmptyState,
   ErrorState,
   MessageSquareIcon,
@@ -69,7 +70,7 @@ export function StandupsPage() {
         }
       />
 
-      <div className="flex items-center gap-1.5">
+      <div role="group" aria-label="Filter check-ins" className="-my-1 flex items-center gap-1.5 py-1">
         <Pill active={!blockedOnly} onClick={() => setBlockedOnly(false)}>
           All check-ins
         </Pill>
@@ -79,7 +80,7 @@ export function StandupsPage() {
       </div>
 
       {stats ? (
-        <section aria-label="Standup summary" className="grid grid-cols-3 gap-4">
+        <section aria-label="Standup summary" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <Card className="p-4 flex items-center justify-between">
             <div className="flex flex-col">
               <span className="text-2xl font-extrabold tnum text-ink">{stats.total}</span>
@@ -92,7 +93,7 @@ export function StandupsPage() {
               <span className="text-2xl font-extrabold tnum text-present">{stats.clear}</span>
               <span className="text-xs font-medium text-muted">Clear</span>
             </div>
-            <AlertTriangleIcon className="size-5 text-present" />
+            <CheckCircleIcon className="size-5 text-present" />
           </Card>
           <Card className="p-4 flex items-center justify-between">
             <div className="flex flex-col">
@@ -105,7 +106,10 @@ export function StandupsPage() {
       ) : null}
 
       {standups.status === "loading" ? (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2" aria-busy="true">
+          <span role="status" className="sr-only">
+            Loading standups
+          </span>
           {Array.from({ length: 4 }).map((_, i) => (
             <Card key={i} className="p-5 flex flex-col gap-4">
               <div className="flex items-center gap-3">

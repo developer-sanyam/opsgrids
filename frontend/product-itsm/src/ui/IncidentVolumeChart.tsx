@@ -161,7 +161,7 @@ export function IncidentVolumeChart({ data }: IncidentVolumeChartProps) {
           </div>
         ) : null}
 
-        <div className="mt-2 flex justify-between px-0.5 text-[0.7rem] font-medium text-faint">
+        <div className="mt-2 flex justify-between px-0.5 text-caption font-medium text-faint">
           {data.map((p) => (
             <span key={p.label} className="tnum">
               {p.label}

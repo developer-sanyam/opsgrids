@@ -44,7 +44,7 @@ export function NeedsAttention({ items }: { items: AttentionItem[] }) {
                   <span className="truncate font-semibold text-ink">{item.name}</span>
                   <span
                     className={cn(
-                      "shrink-0 rounded-full px-2 py-0.5 text-[0.65rem] font-bold uppercase tracking-wide",
+                      "shrink-0 rounded-full px-2 py-0.5 text-caption font-bold uppercase tracking-wide",
                       meta.tone,
                     )}
                   >

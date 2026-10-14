@@ -64,6 +64,7 @@ export function AuditPage() {
     {
       key: "action",
       header: "Action",
+      mobile: "title",
       render: (a) => <span className="mono text-xs font-semibold text-accent-ink">{a.action}</span>,
     },
     {
@@ -120,7 +121,7 @@ export function AuditPage() {
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"
           />
-          <div className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1">
+          <div role="group" aria-label="Filter by action" className="-mx-1 -my-1 flex items-center gap-1.5 overflow-x-auto px-1 py-1">
             <Pill active={action === "all"} onClick={() => setAction("all")}>
               All actions
             </Pill>
@@ -148,7 +149,6 @@ export function AuditPage() {
             rows={rows}
             rowKey={(a) => a.id}
             caption="Operator audit log"
-            dense
             emptyState={
               <EmptyState
                 icon={<ShieldIcon className="size-6" />}

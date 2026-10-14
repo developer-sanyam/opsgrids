@@ -1,4 +1,5 @@
-import { useId, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { Dialog, FormDialog, Select, TextField } from "@opsgrids/ui";
 import { Link } from "react-router-dom";
 
 import { listLedger, listOrganizations, postOverride } from "@/api/client";
@@ -13,7 +14,6 @@ import {
   EnvBadge,
   ErrorState,
   LedgerKindPill,
-  Modal,
   Money,
   PageHeader,
   Pill,
@@ -22,9 +22,6 @@ import {
 } from "@/ui";
 import type { Column } from "@/ui";
 import { CheckCircleIcon, GiftIcon, PlusIcon } from "@/ui/icons";
-
-const INPUT =
-  "h-11 rounded-tile bg-ground px-3 text-sm text-ink placeholder:text-faint focus:outline-none focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2";
 
 /* ------------------------------- grant modal ------------------------------ */
 
@@ -40,22 +37,23 @@ function GrantModal({
   onClose: () => void;
   onDone: (r: OverrideResult) => void;
 }) {
-  const orgId = useId();
-  const amountId = useId();
-  const reasonId = useId();
   const [organization, setOrganization] = useState(() => organizationIds[0] ?? "");
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
+  const [amountError, setAmountError] = useState<string | undefined>(undefined);
+  const [reasonError, setReasonError] = useState<string | undefined>(undefined);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<OverrideResult | null>(null);
 
   const amountMinor = Math.round(Number(amount) * 100);
-  const valid = organization !== "" && amountMinor > 0 && reason.trim().length > 0;
 
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    if (!valid) return;
+  async function handleSubmit() {
+    const badAmount = amount === "" || !(amountMinor > 0) ? "Enter an amount greater than zero." : undefined;
+    const badReason = reason.trim().length === 0 ? "Enter a reason." : undefined;
+    setAmountError(badAmount);
+    setReasonError(badReason);
+    if (badAmount || badReason || organization === "" || submitting) return;
     setError(null);
     setSubmitting(true);
     try {
@@ -75,15 +73,9 @@ function GrantModal({
     }
   }
 
-  return (
-    <Modal
-      open
-      onClose={onClose}
-      title="Grant credit"
-      description="Writes one append-only credit-ledger entry."
-      icon={<GiftIcon className="size-5" />}
-    >
-      {result ? (
+  if (result) {
+    return (
+      <Dialog open onClose={onClose} title="Grant credit" description="Writes one append-only credit-ledger entry.">
         <div className="flex flex-col items-center gap-4 py-4 text-center" role="status" aria-live="polite">
           <span className="grid size-14 place-items-center rounded-full bg-present-soft text-present">
             <CheckCircleIcon className="size-7" />
@@ -94,51 +86,50 @@ function GrantModal({
             Done
           </Button>
         </div>
-      ) : (
-        <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
-          {error ? (
-            <p role="alert" className="rounded-tile bg-danger-soft px-3 py-2.5 text-sm font-medium text-danger">
-              {error}
-            </p>
-          ) : null}
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor={orgId} className="text-sm font-semibold text-ink-soft">
-              Organization id
-            </label>
-            <select id={orgId} value={organization} onChange={(e) => setOrganization(e.target.value)} className={`${INPUT} cursor-pointer`}>
-              {organizationIds.map((id) => (
-                <option key={id} value={id} className="mono">
-                  {id}
-                </option>
-              ))}
-            </select>
-          </div>
+      </Dialog>
+    );
+  }
 
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor={amountId} className="text-sm font-semibold text-ink-soft">
-              Amount (₹)
-            </label>
-            <input id={amountId} type="number" min="1" step="1" required inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="45000" className={`${INPUT} tnum`} />
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor={reasonId} className="text-sm font-semibold text-ink-soft">
-              Reason (required)
-            </label>
-            <input id={reasonId} required value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. 3 months complimentary — migration goodwill" className={INPUT} />
-          </div>
-
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={onClose} type="button">
-              Cancel
-            </Button>
-            <Button type="submit" disabled={submitting || !valid}>
-              {submitting ? "Recording…" : "Record grant"}
-            </Button>
-          </div>
-        </form>
-      )}
-    </Modal>
+  return (
+    <FormDialog
+      open
+      onClose={onClose}
+      onSubmit={() => void handleSubmit()}
+      title="Grant credit"
+      description="Writes one append-only credit-ledger entry."
+      submitLabel="Record grant"
+      pendingLabel="Recording…"
+      pending={submitting}
+      {...(error !== null ? { error } : {})}
+    >
+      <Select
+        label="Organization id"
+        value={organization}
+        onChange={(e) => setOrganization(e.target.value)}
+        options={organizationIds.map((id) => ({ value: id, label: id }))}
+      />
+      <TextField
+        label="Amount (₹)"
+        type="number"
+        min="1"
+        step="1"
+        required
+        inputMode="numeric"
+        value={amount}
+        error={amountError}
+        onChange={(e) => setAmount(e.target.value)}
+        placeholder="45000"
+        className="tnum"
+      />
+      <TextField
+        label="Reason (required)"
+        required
+        value={reason}
+        error={reasonError}
+        onChange={(e) => setReason(e.target.value)}
+        placeholder="e.g. 3 months complimentary — migration goodwill"
+      />
+    </FormDialog>
   );
 }
 
@@ -184,13 +175,14 @@ export function GrantsPage() {
     {
       key: "org",
       header: "Organization",
+      mobile: "title",
       render: (e) => (
         <Link to={`/accounts/${e.organization_id}`} className="mono truncate text-sm font-semibold text-ink hover:text-accent transition-colors">
           {e.organization_id}
         </Link>
       ),
     },
-    { key: "kind", header: "Entry", render: (e) => <LedgerKindPill kind={e.entry_type} /> },
+    { key: "kind", header: "Entry", mobile: "status", render: (e) => <LedgerKindPill kind={e.entry_type} /> },
     {
       key: "reason",
       header: "Reason",
@@ -254,7 +246,7 @@ export function GrantsPage() {
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"
           />
-          <div className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1">
+          <div role="group" aria-label="Filter by entry type" className="-mx-1 -my-1 flex items-center gap-1.5 overflow-x-auto px-1 py-1">
             <Pill active={entryType === "all"} onClick={() => setEntryType("all")}>
               All entries
             </Pill>
@@ -280,7 +272,6 @@ export function GrantsPage() {
             rows={rows}
             rowKey={(e) => e.id}
             caption="Credit-ledger entries across all tenants"
-            dense
             emptyState={
               <EmptyState
                 icon={<GiftIcon className="size-6" />}

@@ -175,7 +175,7 @@ export function AssetsPage() {
           return (
             <span className="inline-flex items-center justify-end gap-2 whitespace-nowrap">
               {flag ? (
-                <span className={`rounded-full px-2 py-0.5 text-[0.7rem] font-bold ${flag.tone}`}>
+                <span className={`rounded-full px-2 py-0.5 text-caption font-bold ${flag.tone}`}>
                   {flag.label}
                 </span>
               ) : null}
@@ -274,7 +274,7 @@ export function AssetsPage() {
               ))}
             </select>
           </label>
-          <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1 lg:ml-auto">
+          <div role="group" aria-label="Filter by status" className="flex items-center gap-1.5 overflow-x-auto -mx-1 -my-1 px-1 py-1 lg:ml-auto">
             {STATUS_FILTERS.map((f) => (
               <Pill
                 key={f.value}
@@ -293,11 +293,7 @@ export function AssetsPage() {
 
       <Card className="p-2 sm:p-4">
         {state.status === "loading" ? (
-          <div className="flex flex-col gap-3 p-3">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <Skeleton key={i} className="h-12 w-full rounded-tile" />
-            ))}
-          </div>
+          <Skeleton label="Loading assets" className="m-3 h-96 rounded-tile" />
         ) : null}
         {state.status === "error" ? (
           <ErrorState

@@ -272,7 +272,7 @@ export function ProjectsPage() {
             onDebouncedChange={setSearch}
             containerClassName="lg:max-w-xs"
           />
-          <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
+          <div role="group" aria-label="Filter by status" className="flex items-center gap-1.5 overflow-x-auto -mx-1 -my-1 px-1 py-1">
             {STATUS_FILTERS.map((f) => (
               <Pill key={f.value} active={status === f.value} onClick={() => setStatus(f.value)}>
                 {f.label}

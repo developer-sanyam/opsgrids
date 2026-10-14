@@ -3,8 +3,9 @@ import { useEffect, useMemo, useRef } from "react";
 import type { MilestoneOut, ProjectOut } from "@/api/types";
 import { HEALTH_LABEL, MILESTONE_STATUS_LABEL, PHASE_LABEL } from "@/data/labels";
 import { formatDate } from "@/lib/format";
-import { Avatar } from "@opsgrids/ui";
+import { Avatar, TABLET_QUERY, useMediaQuery } from "@opsgrids/ui";
 import { healthColor } from "./healthColor";
+import { ProjectTimelineList } from "./ProjectTimelineList";
 
 const DAY_PX = 3.4;
 const LABEL_W = 216;
@@ -39,6 +40,13 @@ const MILESTONE_COLOR: Record<MilestoneOut["status"], string> = {
   slipping: "var(--color-danger)",
 };
 
+/**
+ * The chart scrolls sideways, so the scroller is a named region a keyboard can focus and arrow
+ * through (axe `scrollable-region-focusable`); without a tab stop its off-screen months are
+ * unreachable without a pointer.
+ */
+const SCROLL_REGION = { role: "region", tabIndex: 0, "aria-label": "Project timeline, scrolls sideways" } as const;
+
 /** A milestone known to have a due date — the only kind this timeline can place. */
 type DatedMilestone = Omit<MilestoneOut, "due_date"> & { due_date: string };
 
@@ -50,18 +58,27 @@ interface GanttTimelineProps {
 }
 
 /**
+ * The timeline: a card per project on a phone, the Gantt from 768px up.
+ */
+export function GanttTimeline(props: GanttTimelineProps) {
+  const wide = useMediaQuery(TABLET_QUERY, true);
+  if (!wide) return <ProjectTimelineList projects={props.projects} milestones={props.milestones} />;
+  return <GanttChart {...props} />;
+}
+
+/**
  * A Gantt-style timeline: one row per project, bars spanning start→target across a month scale,
  * with milestone diamonds pinned to their due dates and a "Today" marker. The whole grid scrolls
  * horizontally inside its own container; the project-label column stays pinned to the left.
  */
-export function GanttTimeline({ projects, milestones, now }: GanttTimelineProps) {
+function GanttChart({ projects, milestones, now }: GanttTimelineProps) {
   const geo = useMemo(() => {
     const starts = projects.map((p) => parseUtc(p.start_date));
     const ends = projects.map((p) => parseUtc(p.target_date));
     const domainStart = firstOfMonth(Math.min(...starts, parseUtc(now)));
     const domainEnd = addMonth(Math.max(...ends, parseUtc(now)));
     const totalDays = Math.round((domainEnd - domainStart) / MS_PER_DAY);
-    const trackW = totalDays * DAY_PX;
+    const trackW = totalDays * DAY_PX + 96; // room for the text label past the last bar
 
     const months: { label: string; x: number }[] = [];
     for (let m = domainStart; m < domainEnd; m = addMonth(m)) {
@@ -101,12 +118,12 @@ export function GanttTimeline({ projects, milestones, now }: GanttTimelineProps)
     const el = scrollRef.current;
     if (!el) return;
     const target = LABEL_W + geo.todayX - el.clientWidth / 3;
-    el.scrollTo({ left: Math.max(0, target), behavior: "auto" });
+    el.scrollLeft = Math.max(0, target);
   }, [geo.todayX]);
 
   return (
     <div className="flex flex-col gap-4">
-      <div ref={scrollRef} className="overflow-x-auto rounded-tile border border-line">
+      <div ref={scrollRef} {...SCROLL_REGION} className="overflow-x-auto rounded-tile border border-line">
         <div style={{ width: LABEL_W + geo.trackW, minWidth: "100%" }}>
           {/* Header: month scale */}
           <div
@@ -114,7 +131,7 @@ export function GanttTimeline({ projects, milestones, now }: GanttTimelineProps)
             style={{ height: HEADER_H }}
           >
             <div
-              className="sticky left-0 z-20 flex items-center border-r border-line bg-surface px-3 text-[0.7rem] font-bold uppercase tracking-wider text-faint"
+              className="sticky left-0 z-20 flex items-center border-r border-line bg-surface px-3 text-caption font-bold uppercase tracking-wider text-faint"
               style={{ width: LABEL_W }}
             >
               Project
@@ -123,7 +140,7 @@ export function GanttTimeline({ projects, milestones, now }: GanttTimelineProps)
               {geo.months.map((month) => (
                 <div
                   key={month.x}
-                  className="absolute top-0 flex h-full items-center border-l border-line/70 pl-1.5 text-[0.7rem] font-semibold text-muted"
+                  className="absolute top-0 flex h-full items-center border-l border-line/70 pl-1.5 text-caption font-semibold text-muted"
                   style={{ left: month.x }}
                 >
                   {month.label}
@@ -141,7 +158,7 @@ export function GanttTimeline({ projects, milestones, now }: GanttTimelineProps)
                 style={{ left: LABEL_W + geo.todayX, top: 0, bottom: 0 }}
               >
                 <div className="h-full w-px bg-accent" />
-                <span className="absolute -top-0.5 left-0 -translate-x-1/2 rounded-full bg-accent px-1.5 py-0.5 text-[0.6rem] font-bold text-white">
+                <span className="absolute -top-0.5 left-0 -translate-x-1/2 rounded-full bg-accent px-1.5 py-0.5 text-caption font-bold text-white">
                   Today
                 </span>
               </div>
@@ -165,7 +182,7 @@ export function GanttTimeline({ projects, milestones, now }: GanttTimelineProps)
                     <Avatar name={project.owner.name} size="xs" />
                     <div className="flex min-w-0 flex-col leading-tight">
                       <span className="truncate text-xs font-bold text-ink">{project.name}</span>
-                      <span className="truncate text-[0.7rem] text-muted tnum">
+                      <span className="truncate text-caption text-muted tnum">
                         {project.code} · {PHASE_LABEL[project.phase]}
                       </span>
                     </div>
@@ -194,11 +211,13 @@ export function GanttTimeline({ projects, milestones, now }: GanttTimelineProps)
                       }}
                       title={`${project.name}: ${formatDate(project.start_date)} → ${formatDate(project.target_date)}, ${HEALTH_LABEL[project.health]}, ${project.progress_pct}% complete`}
                     />
+                    {/* Health and progress as words beside the bar: dark text on the card, so it reads
+                        whatever the bar's colour, and health is never colour alone. */}
                     <span
-                      className="absolute top-1/2 -translate-y-1/2 text-[0.65rem] font-bold tnum text-white mix-blend-luminosity"
-                      style={{ left: left + 8 }}
+                      className="absolute top-1/2 -translate-y-1/2 whitespace-nowrap text-caption font-semibold text-ink-soft tnum"
+                      style={{ left: left + width + 8 }}
                     >
-                      {project.progress_pct}%
+                      {HEALTH_LABEL[project.health]} · {project.progress_pct}%
                     </span>
 
                     {/* Milestone diamonds */}
