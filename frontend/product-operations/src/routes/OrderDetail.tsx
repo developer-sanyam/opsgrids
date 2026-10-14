@@ -14,7 +14,15 @@ import {
 import type { OrderOut } from "@/api/types";
 import { orderActions } from "@/lib/orderActions";
 import { isStaleOrderConflict, stockShortfalls } from "@/lib/orderErrors";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import {
+  Can,
+  getPlatformHost,
+  problemMessage,
+  useAsync,
+  useCan,
+  useMutation,
+  usePlatformModules,
+} from "@opsgrids/client";
 import { formatDate, formatMoney } from "@/lib/format";
 import { formatQty } from "@/lib/quantity";
 import { OrderPaymentCard } from "@/forms/OrderPaymentCard";
@@ -76,6 +84,8 @@ export function OrderDetailPage() {
 
   // A live re-check before Place: pricing or stock may have moved since the order was drafted.
   // Once accepted, the lines are already priced and reserved — the preview stops being asked.
+  const modules = usePlatformModules();
+  const financeHref = modules.some((m) => m.key === "finance") ? getPlatformHost("finance") : null;
   const showQuote = order !== null && (order.status === "DRAFT" || order.status === "PLACED");
   const quoteLoader = () =>
     order && showQuote
@@ -370,6 +380,23 @@ export function OrderDetailPage() {
               </div>
             </dl>
           </Card>
+
+          {order.invoice_id && financeHref ? (
+            <Card className="p-6 flex flex-col gap-3">
+              <SectionHeader title="Invoice" />
+              <p className="text-sm text-muted">
+                A tax invoice was raised for this order in Finance. The printable copy is the same
+                document Finance sends.
+              </p>
+              <a
+                href={`${financeHref}/invoices/${encodeURIComponent(order.invoice_id)}/print`}
+                className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-accent-ink underline underline-offset-2"
+              >
+                Open the invoice to download or print
+                <ArrowRightIcon className="size-4" />
+              </a>
+            </Card>
+          ) : null}
 
           {/* Online payment (ADR-0024 A4): once the order is priced there is a total to pay. It
               refreshes the order in the background, never by a reload: a reload swaps the page for

@@ -136,6 +136,13 @@ function InvoiceBody({ invoice, onReload }: { invoice: Invoice; onReload: () => 
                 Due <span className="font-semibold text-ink-soft tnum">{formatDate(invoice.due_date)}</span>
               </span>
             </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate(`/invoices/${encodeURIComponent(invoice.id)}/print`)}
+            >
+              Download or print
+            </Button>
             {canCorrect ? (
               <Can permission="finance.billing.invoice.issue" scope="ORG">
                 <Button
