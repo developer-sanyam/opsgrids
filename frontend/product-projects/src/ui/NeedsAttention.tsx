@@ -40,7 +40,7 @@ export function NeedsAttention({ milestones, now }: { milestones: MilestoneOut[]
               </div>
               <div className="flex shrink-0 flex-col items-end gap-1">
                 <MilestoneStatusPill status={m.status} />
-                <span className="text-[0.7rem] font-medium text-faint tnum">
+                <span className="text-caption font-medium text-faint tnum">
                   {formatDateShort(m.due_date)} · {overdue}
                 </span>
               </div>

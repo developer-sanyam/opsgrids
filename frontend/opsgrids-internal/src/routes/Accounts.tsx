@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { MobileDataCard } from "@opsgrids/ui";
+import type { MobileCardWiring } from "@opsgrids/ui";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { listOrganizations } from "@/api/client";
 import type { OrgStateOut } from "@/api/types";
-import { formatDate, relativeDays } from "@/lib/format";
+import { formatDate, orgIdentity, relativeDays } from "@/lib/format";
 import { useAsync } from "@/lib/useAsync";
 import {
   Card,
@@ -86,6 +88,68 @@ export function AccountsPage() {
   }, [accounts, search, status, sort]);
 
   const totalMrr = useMemo(() => rows.reduce((sum, r) => sum + r.mrr_minor, 0), [rows]);
+
+  /**
+   * A phone's row: the organization and its id, access state on the right, and the figures an
+   * operator scans for - MRR, trial, active products, last update. The whole card opens the
+   * account, as the table row does.
+   */
+  function accountCard(row: OrgStateOut, wiring: MobileCardWiring) {
+    const who = orgIdentity({ name: row.name, slug: row.slug, organization_id: row.organization_id });
+    return (
+      <MobileDataCard
+        {...wiring}
+        onOpen={() => navigate(`/accounts/${row.organization_id}`)}
+        title={who.primary}
+        subtitle={<span className="mono">{who.secondary ?? row.organization_id}</span>}
+        status={
+          row.locked ? (
+            <span className="inline-flex items-center gap-1 text-xs font-semibold text-danger">
+              <LockIcon className="size-3.5" /> Locked
+            </span>
+          ) : (
+            <span className="text-xs text-muted">Unlocked</span>
+          )
+        }
+        fields={[
+          {
+            key: "mrr",
+            label: "MRR",
+            value:
+              row.mrr_minor > 0 ? (
+                <Money minor={row.mrr_minor} currency={row.currency ?? "INR"} className="font-semibold" />
+              ) : (
+                <span className="text-faint">—</span>
+              ),
+          },
+          {
+            key: "trial",
+            label: "Trial",
+            value: row.trial_ends_at ? (
+              <span className="font-semibold text-late">Ends {relativeDays(row.trial_ends_at)}</span>
+            ) : (
+              <span className="text-faint">—</span>
+            ),
+          },
+          {
+            key: "products",
+            label: "Active products",
+            value:
+              row.active_products.length > 0 ? (
+                <span className="flex flex-wrap gap-1">
+                  {row.active_products.map((p) => (
+                    <Tag key={p}>{p}</Tag>
+                  ))}
+                </span>
+              ) : (
+                <span className="text-faint">—</span>
+              ),
+          },
+          { key: "updated", label: "Last updated", value: formatDate(row.updated_at) },
+        ]}
+      />
+    );
+  }
 
   const columns: Column<OrgStateOut>[] = [
     {
@@ -183,7 +247,7 @@ export function AccountsPage() {
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"
           />
-          <div className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1">
+          <div role="group" aria-label="Filter by status" className="-mx-1 -my-1 flex items-center gap-1.5 overflow-x-auto px-1 py-1">
             {STATUS_FILTERS.map((f) => (
               <Pill key={f.value} active={status === f.value} onClick={() => setStatus(f.value)}>
                 {f.label}
@@ -238,8 +302,8 @@ export function AccountsPage() {
             rows={rows}
             rowKey={(row) => row.organization_id}
             caption="Customer organizations across all tenants"
-            dense
             onRowClick={(row) => navigate(`/accounts/${row.organization_id}`)}
+            mobileCard={accountCard}
             emptyState={
               <EmptyState
                 icon={<BuildingsIcon className="size-6" />}

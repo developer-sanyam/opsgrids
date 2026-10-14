@@ -167,7 +167,7 @@ function LedgerCard({ orgId, reloadKey }: { orgId: string; reloadKey: number }) 
       ) : ledger.data.items.length === 0 ? (
         <p className="py-4 text-sm text-muted">No credit or comp grants on this account.</p>
       ) : (
-        <DataTable columns={columns} rows={ledger.data.items} rowKey={(e) => e.id} caption="Credit ledger" dense />
+        <DataTable columns={columns} rows={ledger.data.items} rowKey={(e) => e.id} caption="Credit ledger" />
       )}
     </Card>
   );

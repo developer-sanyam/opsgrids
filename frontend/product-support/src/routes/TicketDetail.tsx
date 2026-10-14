@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
@@ -21,6 +21,7 @@ import {
   Switch,
   TextArea,
   cn,
+  useMediaQuery,
   useToast,
 } from "@opsgrids/ui";
 import { channelLabel, formatDateTime, initials, statusLabel } from "@/lib/format";
@@ -76,7 +77,7 @@ function MessageBubble({ message }: { message: Message }) {
           {isAgent ? "Agent" : "Customer"}
         </span>
         {message.internal ? (
-          <span className="rounded-full bg-late-soft px-2 py-0.5 text-[0.7rem] font-bold text-late">
+          <span className="rounded-full bg-late-soft px-2 py-0.5 text-caption font-bold text-late">
             Internal note
           </span>
         ) : null}
@@ -101,9 +102,9 @@ function MessageBubble({ message }: { message: Message }) {
 /** A labelled property row in the sidebar. */
 function PropertyRow({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 py-2.5">
+    <div className="flex flex-col items-start gap-1 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
       <span className="text-sm text-muted">{label}</span>
-      <div className="text-right">{children}</div>
+      <div className="w-full sm:w-auto sm:text-right">{children}</div>
     </div>
   );
 }
@@ -141,7 +142,7 @@ function AssigneeControl({
   }
 
   return (
-    <div className="flex w-40 flex-col items-end gap-1.5">
+    <div className="flex w-full flex-col gap-1.5 sm:w-40 sm:items-end">
       <Select
         label="Assignee"
         containerClassName="w-full"
@@ -186,7 +187,7 @@ function StatusControl({
   }
 
   return (
-    <div className="flex w-40 flex-col items-end gap-1.5">
+    <div className="flex w-full flex-col gap-1.5 sm:w-40 sm:items-end">
       <TicketStatusPill status={ticket.status} />
       <Select
         label="Move ticket to"
@@ -212,16 +213,20 @@ function TicketProperties({
   agents,
   canWrite,
   onChanged,
+  collapsed = false,
 }: {
   ticket: Ticket;
   agents: Agent[];
   canWrite: boolean;
   onChanged: (ticket: Ticket) => void;
+  /** On a phone the properties sit in a disclosure that supplies its own heading and surface. */
+  collapsed?: boolean;
 }) {
   const ChannelIcon = CHANNEL_ICON[ticket.channel];
+  const Surface = collapsed ? "div" : Card;
   return (
-    <Card className="flex flex-col gap-1 p-6">
-      <SectionHeader title="Properties" />
+    <Surface className={cn("flex flex-col gap-1", !collapsed && "p-4 sm:p-6")}>
+      {collapsed ? null : <SectionHeader title="Properties" />}
 
       <div className="mt-1 flex items-center gap-3 rounded-tile bg-ground p-3">
         <Avatar name={ticket.requester.name} size="md" />
@@ -231,7 +236,7 @@ function TicketProperties({
         </div>
         <span
           className={cn(
-            "ml-auto rounded-full px-2 py-0.5 text-[0.7rem] font-bold",
+            "ml-auto rounded-full px-2 py-0.5 text-caption font-bold",
             ticket.requester.kind === "staff"
               ? "bg-accent-soft text-accent-ink"
               : "bg-info-soft text-info",
@@ -288,7 +293,44 @@ function TicketProperties({
           )}
         </div>
       </div>
-    </Card>
+    </Surface>
+  );
+}
+
+/**
+ * The three things that decide what happens next - status, SLA, assignee - first on a phone, ahead
+ * of the conversation, folded away behind a summary that already shows them. Opening it reveals
+ * the full properties and their controls.
+ */
+function PropertiesDisclosure({
+  ticket,
+  agents,
+  canWrite,
+  onChanged,
+}: {
+  ticket: Ticket;
+  agents: Agent[];
+  canWrite: boolean;
+  onChanged: (ticket: Ticket) => void;
+}) {
+  const assignee = agentById(agents, ticket.assignee_id);
+  return (
+    <details className="group rounded-card bg-surface p-4 shadow-card">
+      <summary className="hit-44 flex cursor-pointer list-none flex-col justify-center gap-2 focus-visible:outline-2 focus-visible:outline-accent">
+        <span className="flex items-center justify-between gap-2 text-sm font-semibold text-ink">
+          Ticket details
+          <ChevronRightIcon className="size-4 text-faint transition-transform group-open:rotate-90" aria-hidden />
+        </span>
+        <span className="flex flex-wrap items-center gap-2">
+          <TicketStatusPill status={ticket.status} />
+          <SlaPill ticket={ticket} />
+          <span className="text-sm text-ink-soft">{assignee ? assignee.name : "Unassigned"}</span>
+        </span>
+      </summary>
+      <div className="pt-3">
+        <TicketProperties ticket={ticket} agents={agents} canWrite={canWrite} onChanged={onChanged} collapsed />
+      </div>
+    </details>
   );
 }
 
@@ -297,11 +339,14 @@ function ReplyBox({
   authorName,
   canWrite,
   onSent,
+  textareaRef,
 }: {
   ticketId: string;
   authorName: string | null;
   canWrite: boolean;
   onSent: (ticket: Ticket) => void;
+  /** So the sticky Reply action can scroll to and focus the field. */
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
 }) {
   const toast = useToast();
   const [body, setBody] = useState("");
@@ -331,6 +376,10 @@ function ReplyBox({
   function submit(event: React.FormEvent) {
     event.preventDefault();
     setBodyError(undefined);
+    if (authorName === null) {
+      setBodyError("Your account has no display name set, so this can't be attributed to you yet.");
+      return;
+    }
     const trimmed = body.trim();
     if (trimmed.length < 1) {
       setBodyError("Write something before sending.");
@@ -348,6 +397,7 @@ function ReplyBox({
         </InlineAlert>
       ) : null}
       <TextArea
+        ref={textareaRef}
         label="Reply"
         value={body}
         onChange={(e) => setBody(e.target.value)}
@@ -366,9 +416,7 @@ function ReplyBox({
         />
         <Button
           type="submit"
-          size="sm"
           loading={send.pending}
-          disabled={authorName === null || body.trim().length === 0}
           leadingIcon={<ReplyIcon className="size-4" />}
           className="ml-auto"
         >
@@ -401,6 +449,13 @@ export function TicketDetailPage() {
   const setTicket = setOverride;
 
   const [editing, setEditing] = useState(false);
+  const replyRef = useRef<HTMLTextAreaElement>(null);
+  const sideBySide = useMediaQuery("(min-width: 1024px)", true);
+
+  function goToReply() {
+    replyRef.current?.scrollIntoView({ block: "center" });
+    replyRef.current?.focus({ preventScroll: true });
+  }
 
   const agents = agentsState.status === "success" ? agentsState.data : [];
 
@@ -430,18 +485,7 @@ export function TicketDetailPage() {
       </nav>
 
       {ticketState.status === "loading" ? (
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
-          <Card className="p-6 lg:col-span-2">
-            <div className="flex flex-col gap-4">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <Skeleton key={i} className="h-20 w-full rounded-tile" />
-              ))}
-            </div>
-          </Card>
-          <Card className="p-6">
-            <Skeleton className="h-72 w-full rounded-tile" />
-          </Card>
-        </div>
+        <Skeleton label="Loading ticket" className="h-96 w-full rounded-card" />
       ) : null}
 
       {ticketState.status === "error" ? (
@@ -477,7 +521,7 @@ export function TicketDetailPage() {
               </div>
             </div>
             <Can permission={CAN_WRITE} scope="ORG">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Button variant="outline" onClick={() => setEditing(true)}>
                   Edit
                 </Button>
@@ -505,9 +549,13 @@ export function TicketDetailPage() {
             <InlineAlert tone="danger" title={problemMessage(statusMutation.error)} />
           ) : null}
 
+          {sideBySide ? null : (
+            <PropertiesDisclosure ticket={ticket} agents={agents} canWrite={canWrite} onChanged={setTicket} />
+          )}
+
           <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-3">
             {/* Conversation */}
-            <Card className="flex flex-col gap-5 p-6 lg:col-span-2">
+            <Card className="flex flex-col gap-5 p-4 sm:p-6 lg:col-span-2">
               <SectionHeader
                 title="Conversation"
                 subtitle={`${thread.length} message${thread.length === 1 ? "" : "s"}`}
@@ -523,18 +571,25 @@ export function TicketDetailPage() {
                   authorName={user?.full_name ?? null}
                   canWrite={canWrite}
                   onSent={setTicket}
+                  textareaRef={replyRef}
                 />
               </div>
             </Card>
 
-            {/* Properties */}
-            <TicketProperties
-              ticket={ticket}
-              agents={agents}
-              canWrite={canWrite}
-              onChanged={setTicket}
-            />
+            {/* Properties: beside the conversation on a wide screen, above it (folded) on a phone. */}
+            {sideBySide ? (
+              <TicketProperties ticket={ticket} agents={agents} canWrite={canWrite} onChanged={setTicket} />
+            ) : null}
           </div>
+
+          {/* The reply box is at the foot of a long thread: a phone gets a way to it that stays in reach. */}
+          {sideBySide || !canWrite || !user?.full_name ? null : (
+            <div className="sticky z-10 flex justify-end" style={{ bottom: "calc(var(--shell-bottom-inset) + 0.75rem)" }}>
+              <Button leadingIcon={<ReplyIcon className="size-4" />} onClick={goToReply} className="shadow-float">
+                Reply
+              </Button>
+            </div>
+          )}
         </>
       ) : null}
 

@@ -287,7 +287,7 @@ export function PortfolioPage() {
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"
           />
-          <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1 lg:h-11">
+          <div role="group" aria-label="Filter by health" className="flex items-center gap-1.5 overflow-x-auto -mx-1 -my-1 px-1 py-1 lg:h-11">
             {HEALTH_FILTERS.map((f) => (
               <Pill key={f.value} active={health === f.value} onClick={() => setHealth(f.value)}>
                 {f.label}
@@ -303,7 +303,7 @@ export function PortfolioPage() {
           />
         </div>
 
-        <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1 border-t border-line pt-4">
+        <div role="group" aria-label="Filter by phase" className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1 border-t border-line pt-4 pb-1">
           <span className="pr-1 text-xs font-semibold uppercase tracking-wide text-faint shrink-0">
             Phase
           </span>

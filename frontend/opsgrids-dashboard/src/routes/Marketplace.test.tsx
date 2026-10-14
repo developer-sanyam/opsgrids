@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Toaster } from "@opsgrids/ui";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
@@ -124,14 +125,18 @@ describe("MarketplacePage", () => {
     arrange();
     render(
       <MemoryRouter>
-        <MarketplacePage />
+        <Toaster>
+          <MarketplacePage />
+        </Toaster>
       </MemoryRouter>,
     );
     await waitFor(() => screen.getByRole("button", { name: "Start 14-day trial" }));
     await user.click(screen.getByRole("button", { name: "Start 14-day trial" }));
 
     await waitFor(() => expect(api.startTrial).toHaveBeenCalledWith("operations", "ver-1"));
-    const status = (await screen.findByRole("status")).textContent;
+    // The result is a toast (announced), not a banner at the top of a page the card may be far below.
+    // The Toaster renders the visible toast and a polite live region carrying the same sentence.
+    const status = (await screen.findAllByText(/14-day trial begins now/))[0]?.textContent ?? "";
     expect(status).toContain("14-day trial begins now");
     expect(status).toContain(`When the trial ends on ${formatDate("2026-10-04T00:00:00Z")}, it continues as a paid subscription`);
   });

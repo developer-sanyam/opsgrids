@@ -4,7 +4,7 @@ import { postStandup } from "@/api/client";
 import type { Person, StandupEntry } from "@/api/types";
 import { withOptional } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
-import { FormDialog, Select, TextArea, useFormDirty } from "@opsgrids/ui";
+import { FormDialog, Select, Switch, TextArea, useFormDirty } from "@opsgrids/ui";
 import type { SelectOption } from "@opsgrids/ui";
 
 /**
@@ -117,15 +117,7 @@ export function StandupFormDialog({
         required
         {...withOptional("error", save.fieldErrors.today)}
       />
-      <label className="flex items-center gap-2 text-sm font-medium text-ink-soft">
-        <input
-          type="checkbox"
-          checked={blocked}
-          onChange={(e) => setBlocked(e.target.checked)}
-          className="size-4 accent-accent"
-        />
-        Something is blocking this
-      </label>
+      <Switch label="Something is blocking this" checked={blocked} onChange={setBlocked} />
       {blocked ? (
         <TextArea
           label="Blockers"

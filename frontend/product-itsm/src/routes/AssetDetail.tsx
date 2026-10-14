@@ -148,7 +148,7 @@ export function AssetDetailPage() {
                         <PropertyRow label="Warranty">
                           <span className="inline-flex items-center gap-2">
                             {warrantyExpired ? (
-                              <span className="rounded-full bg-danger-soft px-2 py-0.5 text-[0.7rem] font-bold text-danger">
+                              <span className="rounded-full bg-danger-soft px-2 py-0.5 text-caption font-bold text-danger">
                                 Expired
                               </span>
                             ) : null}

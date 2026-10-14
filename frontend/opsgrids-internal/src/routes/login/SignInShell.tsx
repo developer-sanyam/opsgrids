@@ -43,7 +43,7 @@ export function SignInShell({ title, intro, titleRef, children }: SignInShellPro
           <div className="mb-6 flex items-center justify-center gap-2.5">
             <LogoMark className="size-9" />
             <span className="text-[1.15rem] font-extrabold tracking-tight">OpsGrids</span>
-            <span className="mono rounded-md bg-accent-soft px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-widest text-accent-ink">
+            <span className="mono rounded-md bg-accent-soft px-2 py-0.5 text-caption font-semibold uppercase tracking-widest text-accent-ink">
               Internal
             </span>
           </div>

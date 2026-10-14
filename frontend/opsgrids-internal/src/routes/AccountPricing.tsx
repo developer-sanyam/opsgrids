@@ -1,5 +1,6 @@
 import { useCallback, useId, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import { Dialog } from "@opsgrids/ui";
 
 import { getOrganizationPricing, setOrganizationPrice } from "@/api/client";
 import type {
@@ -25,7 +26,6 @@ import {
   DataTable,
   EmptyState,
   ErrorState,
-  Modal,
   Money,
   SectionHeader,
   Skeleton,
@@ -35,7 +35,7 @@ import type { Column } from "@/ui";
 import { CheckCircleIcon, TagIcon } from "@/ui/icons";
 
 const INPUT =
-  "h-11 rounded-tile bg-ground px-3 text-sm text-ink placeholder:text-faint focus:outline-none focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-60";
+  "h-11 rounded-tile bg-ground px-3 text-base text-ink sm:text-sm placeholder:text-faint focus:outline-none focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-60";
 
 function toggleClass(active: boolean): string {
   return `rounded-tile border px-3 py-2.5 text-left text-sm font-semibold transition-colors ${
@@ -73,7 +73,7 @@ function CurrentPriceCell({ price }: { price: ProductCurrentPrice | null }) {
       <span className="flex items-center gap-1.5">
         <span className="text-xs text-muted">/ {intervalLabel(price.billing_interval)}</span>
         {price.is_bespoke ? (
-          <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-1.5 py-0.5 text-[0.65rem] font-semibold text-accent-ink">
+          <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-1.5 py-0.5 text-caption font-semibold text-accent-ink">
             <TagIcon className="size-3" /> Custom
           </span>
         ) : (
@@ -150,6 +150,7 @@ interface SetPriceDialogProps {
 type Step = "form" | "confirm";
 
 function SetPriceDialog({ org, product, onClose, onSuccess }: SetPriceDialogProps) {
+  const formId = useId();
   const amountId = useId();
   const reasonId = useId();
   const amountErrorId = useId();
@@ -226,13 +227,34 @@ function SetPriceDialog({ org, product, onClose, onSuccess }: SetPriceDialogProp
     }
   }
 
+  const footer =
+    step === "form" ? (
+      <>
+        <Button variant="outline" type="button" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button type="submit" form={formId}>
+          Continue
+        </Button>
+      </>
+    ) : (
+      <>
+        <Button variant="outline" type="button" onClick={() => setStep("form")} disabled={submitting}>
+          Back
+        </Button>
+        <Button type="submit" form={formId} disabled={submitting}>
+          {submitting ? "Setting price…" : "Confirm & set price"}
+        </Button>
+      </>
+    );
+
   return (
-    <Modal
+    <Dialog
       open
       onClose={onClose}
       title={`Set price — ${product.product_name}`}
       description={org.name}
-      icon={<TagIcon className="size-5" />}
+      footer={result ? undefined : footer}
     >
       {result ? (
         <div role="status" aria-live="polite" className="flex flex-col items-center gap-4 py-4 text-center">
@@ -256,7 +278,7 @@ function SetPriceDialog({ org, product, onClose, onSuccess }: SetPriceDialogProp
         // `noValidate` — this form owns its own validation (inline, field-tied messages that
         // mirror the server's own rules); the browser's native constraint bubble is inconsistent
         // across browsers and screen readers and would otherwise fire instead of `handleSubmit`.
-        <form className="flex flex-col gap-4" onSubmit={handleSubmit} noValidate>
+        <form id={formId} className="flex flex-col gap-4 pb-2" onSubmit={handleSubmit} noValidate>
           {error ? (
             <p role="alert" className="rounded-tile bg-danger-soft px-3 py-2.5 text-sm font-medium text-danger">
               {error}
@@ -355,17 +377,15 @@ function SetPriceDialog({ org, product, onClose, onSuccess }: SetPriceDialogProp
                 ) : null}
               </div>
 
-              <p className="rounded-tile bg-ground px-3 py-2.5 text-xs leading-relaxed text-muted">
-                POSTs to <span className="mono">/api/v1/admin/organizations/{"{id}"}/pricing</span> —
-                clones {product.product_name}&apos;s public flat plan into a version pinned to {org.name}.
-              </p>
-
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" type="button" onClick={onClose}>
-                  Cancel
-                </Button>
-                <Button type="submit">Continue</Button>
-              </div>
+              <details className="rounded-tile bg-ground px-3 text-caption leading-relaxed text-muted">
+                <summary className="hit-44 flex cursor-pointer items-center font-semibold text-ink-soft">
+                  Details
+                </summary>
+                <p className="pb-3">
+                  POSTs to <span className="mono">/api/v1/admin/organizations/{"{id}"}/pricing</span> —
+                  clones {product.product_name}&apos;s public flat plan into a version pinned to {org.name}.
+                </p>
+              </details>
             </>
           ) : (
             <>
@@ -382,19 +402,11 @@ function SetPriceDialog({ org, product, onClose, onSuccess }: SetPriceDialogProp
                 reflects what actually happened. This creates a new price version; past prices and
                 invoices are never edited.
               </p>
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" type="button" onClick={() => setStep("form")} disabled={submitting}>
-                  Back
-                </Button>
-                <Button type="submit" disabled={submitting}>
-                  {submitting ? "Setting price…" : "Confirm & set price"}
-                </Button>
-              </div>
             </>
           )}
         </form>
       )}
-    </Modal>
+    </Dialog>
   );
 }
 

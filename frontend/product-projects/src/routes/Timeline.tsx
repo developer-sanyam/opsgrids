@@ -72,7 +72,7 @@ export function TimelinePage() {
       />
 
       <Card className="flex flex-col gap-5 p-4 sm:p-6">
-        <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
+        <div role="group" aria-label="Filter by health" className="flex items-center gap-1.5 overflow-x-auto -mx-1 -my-1 px-1 py-1">
           {FILTERS.map((f) => (
             <Pill key={f.value} active={filter === f.value} onClick={() => setFilter(f.value)}>
               {f.label}
