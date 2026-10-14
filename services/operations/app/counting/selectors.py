@@ -123,12 +123,6 @@ async def get_line(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def lines_for_session(
-    session: AsyncSession, org_id: uuid.UUID, session_id: uuid.UUID
-) -> list[CountLine]:
-    return list((await session.execute(count_lines_stmt(org_id, session_id))).scalars().all())
-
-
 async def get_line_by_bucket(
     session: AsyncSession,
     org_id: uuid.UUID,

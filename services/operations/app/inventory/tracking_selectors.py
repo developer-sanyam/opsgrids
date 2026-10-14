@@ -261,29 +261,6 @@ async def existing_roll_nos(
     return set((await session.execute(stmt)).scalars().all())
 
 
-async def bucket_balance(
-    session: AsyncSession,
-    org_id: uuid.UUID,
-    *,
-    item_id: uuid.UUID,
-    location_id: uuid.UUID,
-    status: str,
-    lot_id: uuid.UUID | None,
-    roll_id: uuid.UUID | None,
-) -> int:
-    """A bucket's current quantity (0 if it has no row). Plain read — callers that act on it hold
-    the roll lock, and the kernel re-checks under the balance lock."""
-    stmt = select(InventoryBalance.quantity_milli).where(
-        InventoryBalance.organization_id == org_id,
-        InventoryBalance.inventory_item_id == item_id,
-        InventoryBalance.location_id == location_id,
-        InventoryBalance.status == status,
-        InventoryBalance.lot_id.is_not_distinct_from(lot_id),
-        InventoryBalance.roll_id.is_not_distinct_from(roll_id),
-    )
-    return int((await session.execute(stmt)).scalar_one_or_none() or 0)
-
-
 async def lock_roll_balances(
     session: AsyncSession, org_id: uuid.UUID, roll_ids: Sequence[uuid.UUID]
 ) -> dict[uuid.UUID, list[InventoryBalance]]:

@@ -79,15 +79,6 @@ async def get_order(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def get_order_by_number(
-    session: AsyncSession, org_id: uuid.UUID, number: str
-) -> Order | None:
-    stmt = select(Order).where(
-        Order.number == number, Order.organization_id == org_id, Order.deleted_at.is_(None)
-    )
-    return (await session.execute(stmt)).scalar_one_or_none()
-
-
 async def lines_for(
     session: AsyncSession, org_id: uuid.UUID, order_id: uuid.UUID
 ) -> list[OrderLine]:

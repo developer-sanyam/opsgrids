@@ -281,7 +281,7 @@ def test_every_crm_subscribable_key_has_a_committed_schema() -> None:
 
 
 #: The `crm.*` schemas committed ahead of their producer (their `$comment` says which fields the
-#: producer does not emit yet), each with the release that closes the gap. A ninth cannot appear,
+#: producer does not emit yet), each with the release that closes the gap. No new one can appear,
 #: and a closed one leaves this set in the commit that closes it — the same commit deletes its row
 #: from the service's own `AHEAD_OF_PRODUCER` pin (`services/<service>/tests/
 #: test_event_contracts.py`) and removes the schema's `$comment`. Once the set is empty the test
@@ -297,7 +297,7 @@ PINNED_AHEAD_OF_PRODUCER: frozenset[str] = frozenset(
 )
 
 
-def test_the_ahead_of_producer_schemas_are_exactly_the_pinned_eight() -> None:
+def test_the_ahead_of_producer_schemas_are_exactly_the_pinned_set() -> None:
     ahead = {
         path.parent.name
         for path in _schema_files()

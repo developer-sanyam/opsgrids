@@ -1556,19 +1556,6 @@ async def get_conversation(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def get_conversation_by_address_index(
-    session: AsyncSession, org_id: uuid.UUID, channel: str, wa_address_index: str
-) -> Conversation | None:
-    """The webhook fold's lookup: does a conversation already exist for this number."""
-    stmt = select(Conversation).where(
-        Conversation.organization_id == org_id,
-        Conversation.channel == channel,
-        Conversation.wa_address_index == wa_address_index,
-        Conversation.deleted_at.is_(None),
-    )
-    return (await session.execute(stmt)).scalar_one_or_none()
-
-
 def thread_stmt(ctx: ScopeContext, conversation_id: uuid.UUID) -> Select[Any]:
     """One conversation's timeline, both directions, oldest first — a `UNION ALL` of the inbound
     and outbound tables rather than two paginated reads, so a page of the thread is one page of

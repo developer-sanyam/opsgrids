@@ -77,14 +77,3 @@ class HttpEntitlements:
             return []
 
         return list(response.json().get("entitlements", []))
-
-
-class NoEntitlements:
-    """Used when no product-service is configured.
-
-    Explicit rather than a None check at every call site, and it makes the degraded behaviour
-    the same shape as the failure path above — an empty list, not an exception.
-    """
-
-    async def for_organization(self, organization_id: uuid.UUID) -> list[str]:
-        return []

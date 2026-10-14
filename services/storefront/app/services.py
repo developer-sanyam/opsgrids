@@ -1489,17 +1489,6 @@ async def delete_category(
 # --------------------------------------------------------------------- products
 
 
-def _variant_snapshot(variant: ProductVariant) -> dict[str, Any]:
-    return {
-        "label": variant.label,
-        "price_min_minor": variant.price_min_minor,
-        "price_max_minor": variant.price_max_minor,
-        "mrp_minor": variant.mrp_minor,
-        "in_stock": variant.in_stock,
-        "position": variant.position,
-    }
-
-
 def _product_snapshot(product: Product) -> dict[str, Any]:
     return {
         "code": product.code,

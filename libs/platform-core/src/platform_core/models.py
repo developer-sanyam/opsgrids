@@ -79,10 +79,6 @@ class SoftDeleteMixin:
 
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    @property
-    def is_deleted(self) -> bool:
-        return self.deleted_at is not None
-
 
 class TenantBase(UUIDPrimaryKeyMixin, OrgScopedMixin, TimestampMixin, SoftDeleteMixin):
     """The standard row shape. Mix in alongside ``Base``::

@@ -492,7 +492,7 @@ fails on the final union for exactly this reason (section 9). The authoritative 
 prints on the box: the price is *(running containers the new compose still defines) union
 (declared services)*, so it depends on what is running at deploy time. Read it, do not compute it
 (command in section 7). ADR-0013 also warns the API price (85 MB) may be low: the API images
-measured 94-102 MiB (`MH:docs/adr/0013...md`, RSS measurements).
+measured 94-102 MiB (`docs/adr/0013-self-serve-products-and-the-one-box-deployment.md`, RSS measurements).
 
 **What the repo records about the real box** (ADR-0013, from a read-only look during review:
 `MH:docs/adr/0013-self-serve-products-and-the-one-box-deployment.md:326,615-622`): MemTotal 3862 MB,

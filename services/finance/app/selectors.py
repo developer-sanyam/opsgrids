@@ -435,15 +435,6 @@ async def get_customer_by_crm_contact(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def invoice_exists(session: AsyncSession, org_id: uuid.UUID, invoice_id: uuid.UUID) -> bool:
-    stmt = select(Invoice.id).where(
-        Invoice.id == invoice_id,
-        Invoice.organization_id == org_id,
-        Invoice.deleted_at.is_(None),
-    )
-    return (await session.execute(stmt)).scalar_one_or_none() is not None
-
-
 async def invoice_exists_for_order(
     session: AsyncSession, org_id: uuid.UUID, order_id: uuid.UUID
 ) -> bool:

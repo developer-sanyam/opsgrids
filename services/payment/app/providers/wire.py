@@ -179,12 +179,6 @@ def ensure_deadline(seconds: float | None) -> Iterator[Deadline | None]:
         yield created
 
 
-def run_with_deadline[T](seconds: float | None, fn: Callable[[], T]) -> T:
-    """`fn()` under `call_deadline(seconds)` — the shape `asyncio.to_thread` takes."""
-    with call_deadline(seconds):
-        return fn()
-
-
 # --------------------------------------------------------------------------- the credentials latch
 
 #: How long the first rejected-credentials answer stops further calls to that provider. After it the

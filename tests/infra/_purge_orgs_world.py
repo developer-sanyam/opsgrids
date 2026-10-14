@@ -91,10 +91,6 @@ class World:
     globals_made: list[tuple[Any, dict[str, Any]]] = field(default_factory=list)
 
     @property
-    def selectable(self) -> list[uuid.UUID]:
-        return [self.orgs[k] for k in ("a", "b", "c")]
-
-    @property
     def every_org(self) -> list[uuid.UUID]:
         return list(self.orgs.values())
 

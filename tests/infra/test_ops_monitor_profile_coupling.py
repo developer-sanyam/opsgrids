@@ -7,15 +7,12 @@ expected API containers and DLQ queues from (`config.expected_api_containers`,
 read different variables, a box could run one set of products and page about another — exactly
 the silent divergence B1 (round 2) was fixing at the container level.
 
-Coupling with the memory-headroom slice (`slice/memory-headroom`, not yet merged into this
-branch's base when this was written): that slice adds `EDGE_PROFILES`, an explicit override that
-`remote.sh` resolves and then **exports as `COMPOSE_PROFILES`** so that it beats the value in
-`.env` for every `docker compose` call. The mechanism this file pins — "an exported
-`COMPOSE_PROFILES` wins over `--env-file`, and `ops-monitor` renders whatever compose resolved" —
-is precisely what that slice relies on, so this test holds unchanged before and after that slice
-merges. Today's `remote.sh` has no `EDGE_PROFILES`; the last test below turns into a real
-assertion the moment it appears (an `EDGE_PROFILES` that does not end in an exported
-`COMPOSE_PROFILES` would leave ops-monitor watching the wrong box).
+The memory-headroom slice has merged: `remote.sh` resolves `EDGE_PROFILES`, an explicit override,
+and **exports it as `COMPOSE_PROFILES`** so that it beats the value in `.env` for every
+`docker compose` call. The mechanism this file pins — "an exported `COMPOSE_PROFILES` wins over
+`--env-file`, and `ops-monitor` renders whatever compose resolved" — is what that relies on. The
+last test below asserts that `EDGE_PROFILES` ends in an exported `COMPOSE_PROFILES`, since
+otherwise ops-monitor would watch the wrong box.
 """
 
 from __future__ import annotations
@@ -145,23 +142,19 @@ def test_the_wildcard_makes_ops_monitor_expect_every_api_container_compose_runs(
 
 
 def test_remote_sh_has_no_second_profile_variable_that_ops_monitor_would_not_see() -> None:
-    """Forward-looking coupling with the memory-headroom slice. While `remote.sh` has no
-    `EDGE_PROFILES` (this tree today), the only profile source it can possibly use is
-    `COMPOSE_PROFILES` via `--env-file .env` — asserted as: no other `*_PROFILES` variable is
-    mentioned. Once the slice merges and `EDGE_PROFILES` appears, the resolved value must be
-    **exported as `COMPOSE_PROFILES`** (compose interpolation, and so `ops-monitor`, reads
-    nothing else) — the assertion this test switches to, so it is never vacuous."""
+    """The memory-headroom slice has merged, so `remote.sh` has `EDGE_PROFILES`. The resolved
+    value must be **exported as `COMPOSE_PROFILES`** (compose interpolation, and so `ops-monitor`,
+    reads nothing else), and no other `*_PROFILES` variable may be mentioned."""
     import re
 
     text = REMOTE_SH.read_text()
     profile_vars = set(re.findall(r"\b([A-Z][A-Z_]*_PROFILES)\b", text))
-    if "EDGE_PROFILES" in profile_vars:
-        assert "export COMPOSE_PROFILES=" in text, (
-            "remote.sh resolves EDGE_PROFILES but never exports COMPOSE_PROFILES, so compose "
-            "and ops-monitor would not see the resolved list"
-        )
-    else:
-        assert profile_vars <= {"COMPOSE_PROFILES"}, (
-            f"remote.sh reads profile variable(s) {sorted(profile_vars - {'COMPOSE_PROFILES'})} "
-            "that ops-monitor does not"
-        )
+    assert "EDGE_PROFILES" in profile_vars
+    assert profile_vars <= {"COMPOSE_PROFILES", "EDGE_PROFILES"}, (
+        f"remote.sh reads unexpected profile variable(s) {sorted(profile_vars)} "
+        "that ops-monitor does not"
+    )
+    assert "export COMPOSE_PROFILES=" in text, (
+        "remote.sh resolves EDGE_PROFILES but never exports COMPOSE_PROFILES, so compose "
+        "and ops-monitor would not see the resolved list"
+    )

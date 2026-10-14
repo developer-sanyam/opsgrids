@@ -33,7 +33,6 @@ libs/contracts
 
 # Node. No service image contains any frontend code.
 **/node_modules
-**/.next
 **/dist
 frontend
 

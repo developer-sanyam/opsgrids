@@ -544,18 +544,6 @@ class SubscriptionItemOut(BaseModel):
     quantity: int
 
 
-class TransitionOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    from_state: str | None = None
-    to_state: str
-    from_plan_version_id: uuid.UUID | None = None
-    to_plan_version_id: uuid.UUID | None = None
-    reason: str | None = None
-    occurred_at: datetime
-
-
 class DunningOut(BaseModel):
     """The live grace window, as the customer's own app should render it (ADR-0005).
 

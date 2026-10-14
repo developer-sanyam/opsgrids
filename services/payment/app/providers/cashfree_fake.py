@@ -93,14 +93,6 @@ class CashfreeFakeWire:
     def expire(self, order_id: str) -> None:
         self.orders[order_id]["order_status"] = "EXPIRED"
 
-    def settle_refund(self, order_id: str, refund_id: str, status: str = "SUCCESS") -> None:
-        """What Cashfree does to a refund later (`SUCCESS`, `CANCELLED`, …)."""
-        for refund in self.refunds.get(order_id, []):
-            if refund["refund_id"] == refund_id:
-                refund["refund_status"] = status
-                return
-        raise KeyError(refund_id)
-
     # -- the API -------------------------------------------------------------------------
 
     def request(

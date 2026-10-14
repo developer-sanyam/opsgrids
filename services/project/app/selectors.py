@@ -141,12 +141,6 @@ async def all_projects(session: AsyncSession, ctx: ScopeContext) -> list[Project
     return list((await session.execute(projects_stmt(ctx))).scalars().all())
 
 
-async def projects_by_id(session: AsyncSession, org_id: uuid.UUID) -> dict[uuid.UUID, Project]:
-    """Every engagement keyed by id — for validating a task's project link."""
-    stmt = select(Project).where(Project.organization_id == org_id, Project.deleted_at.is_(None))
-    return {p.id: p for p in (await session.execute(stmt)).scalars().all()}
-
-
 # ------------------------------------------------------------------ tasks
 
 

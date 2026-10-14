@@ -2167,14 +2167,6 @@ class OrderCheckoutOut(BaseModel):
     checkout: OrderCheckoutSessionOut | None
 
 
-class OrderPaymentActionIn(BaseModel):
-    """`POST /orders/{id}/payments/{charge_id}/sync|cancel` — no body is needed or read. In
-    particular there is **no** "the payment succeeded" field: whether it did is asked of the
-    provider, server to server."""
-
-    model_config = ConfigDict(extra="ignore")
-
-
 class OrderRefundIn(BaseModel):
     """`POST /orders/{id}/payments/{charge_id}/refunds`. The `Idempotency-Key` header is required:
     the same key is the same refund, here and at the provider."""

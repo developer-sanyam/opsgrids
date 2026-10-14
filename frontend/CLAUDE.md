@@ -11,7 +11,6 @@ a prototype.
 
 ```
 opsgrids-dashboard    The ecosystem home after sign-in                  Vite · React
-opsgrids-admin        Customer administration                           Vite · React
 opsgrids-internal     OpsGrids staff console                              Vite · React
 product-*           One standalone app per product                    Vite · React
 opsgrids-ui           Design system — the components every app imports

@@ -15,7 +15,7 @@ from PIL import Image
 
 from app.config import Settings
 from app.storage import ObjectStore, OrphanScanner
-from platform_core.auth import Principal, Scope, ScopeContext
+from platform_core.auth import Principal
 from platform_core.errors import UpstreamUnavailableProblem
 
 READ = "core.content.asset.read"
@@ -38,12 +38,6 @@ def principal_for(
         perms=perms,
         entitlements=["core"],
     )
-
-
-def ctx_for(org_id: uuid.UUID, permission: str, scope: Scope = Scope.ORG) -> ScopeContext:
-    """A scope context as `require(...)` would have built it."""
-    principal = principal_for(org_id, [f"{permission}:{scope.value}"])
-    return ScopeContext(principal=principal, scope=scope, permission=permission)
 
 
 # --------------------------------------------------------------------- image fixtures

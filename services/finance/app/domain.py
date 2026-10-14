@@ -926,12 +926,6 @@ class Gstr1Return:
     totals: ReturnTotals
 
 
-def in_period(on: date, period: str) -> bool:
-    """Whether a document dated `on` belongs to return period `period` (`YYYY-MM`)."""
-    year, month = parse_period(period)
-    return on.year == year and on.month == month
-
-
 def is_reportable_in_return(document_type: str, status: str) -> bool:
     """Whether a document's *figures* belong in a return.
 

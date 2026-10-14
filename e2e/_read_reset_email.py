@@ -1,6 +1,6 @@
 """Read the set-password / reset-password link the platform actually sent, off the real
 delivery path — the same one `POST /api/v1/auth/password/forgot` uses in production
-(`edge_selfserve_journey.py::read_reset_token` does the identical thing over ssh against the
+(`edge_lib.py::read_reset_token` does the identical thing over ssh against the
 production box; this is the local-harness equivalent, a direct read instead of an ssh hop).
 
 The token is never returned by any HTTP response — that is the whole point of a reset link
