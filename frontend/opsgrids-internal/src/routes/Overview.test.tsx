@@ -241,14 +241,14 @@ describe("OverviewPage — error", () => {
     vi.spyOn(client, "listSubscriptions").mockResolvedValue({ subscriptions: [] });
     vi.spyOn(client, "listAudit").mockResolvedValue({ audit: [] });
     renderOverview();
-    await waitFor(() => expect(screen.getAllByText("Request failed with 503").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText(/something went wrong on our side/i).length).toBeGreaterThan(0));
   });
 
   it("shows a contained error on the revenue tile when the billing-gated call fails", async () => {
     mockAllSuccess();
     vi.spyOn(client, "getOverview").mockRejectedValue(new Error("Request failed with 500"));
     renderOverview();
-    await waitFor(() => expect(screen.getByText("Request failed with 500")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/something went wrong on our side/i)).toBeTruthy());
   });
 });
 

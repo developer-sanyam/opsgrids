@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
-import type { KeyboardEvent, ReactNode } from "react";
+import { useEffect, useId, useRef } from "react";
+import type { MouseEvent, ReactNode } from "react";
 
 import { cn } from "../lib/cn";
+import { useScrollFade } from "../lib/useScrollFade";
 import { TABLET_QUERY, useMediaQuery } from "../lib/useMediaQuery";
 import { BulkActionBar } from "./BulkActionBar";
 import { MobileDataCard } from "./MobileDataCard";
@@ -97,11 +98,12 @@ interface DataTableProps<T> {
   stickyHeader?: boolean | undefined;
   /**
    * Below 768px, render each row as a card instead of a table row (brief §7: no sideways-scrolling
-   * tables on a phone). `"auto"` builds a `MobileDataCard` from the columns, placed by each
-   * column's `mobile`; a function renders your own, and is handed the wiring — open, current,
-   * selection — to spread onto it. Omit it and the table scrolls sideways on a phone, as before.
+   * tables on a phone). **The default is `"auto"`**: a `MobileDataCard` built from the columns,
+   * placed by each column's `mobile`. A function renders your own, and is handed the wiring —
+   * open, current, selection — to spread onto it. `"table"` opts out and keeps the table on a
+   * phone, scrolling sideways inside its own region with a fade on the edge that has more.
    */
-  mobileCard?: "auto" | ((row: T, wiring: MobileCardWiring) => ReactNode) | undefined;
+  mobileCard?: "auto" | "table" | ((row: T, wiring: MobileCardWiring) => ReactNode) | undefined;
 }
 
 /**
@@ -117,18 +119,21 @@ function TriStateCheckbox({
   onChange,
   label,
   className = "size-4 cursor-pointer accent-accent",
+  bare = false,
 }: {
   checked: boolean;
   indeterminate: boolean;
   onChange: (next: boolean) => void;
   label: string;
   className?: string;
+  /** Already inside a label that is itself the 44px target: add no wrapper of its own. */
+  bare?: boolean;
 }) {
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (ref.current) ref.current.indeterminate = indeterminate;
   }, [indeterminate]);
-  return (
+  const input = (
     <input
       ref={ref}
       type="checkbox"
@@ -138,6 +143,9 @@ function TriStateCheckbox({
       className={className}
     />
   );
+  // The box is 16px; the label around it is the 44px target, pulled back with a negative margin
+  // so the cell keeps its padding.
+  return bare ? input : <label className="-m-3 grid size-11 cursor-pointer place-items-center">{input}</label>;
 }
 
 /** A column's place in the generated card; the first column is the title unless one says otherwise. */
@@ -194,10 +202,13 @@ export function DataTable<T>({
   loadingRows,
   errorState,
   stickyHeader = false,
-  mobileCard,
+  mobileCard = "auto",
 }: DataTableProps<T>) {
   const wide = useMediaQuery(TABLET_QUERY, true);
-  const cards = mobileCard !== undefined && !wide;
+  const cards = mobileCard !== "table" && !wide;
+  const base = useId();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const fade = useScrollFade(scrollRef, `${cards}-${loading}-${rows.length}-${columns.length}`);
 
   const selectedCount = selection
     ? rows.filter((row) => selection.selected.has(rowKey(row))).length
@@ -240,15 +251,10 @@ export function DataTable<T>({
   const clickable = onRowClick !== undefined;
   const skeletonCount = loadingRows ?? (rows.length || 5);
 
+  const cellId = (key: string, index: number) => `${base}-${key}-${index}`;
+
   function activate(row: T) {
     onRowClick?.(row);
-  }
-
-  function onRowKeyDown(event: KeyboardEvent<HTMLTableRowElement>, row: T) {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      activate(row);
-    }
   }
 
   function wiring(row: T): MobileCardWiring {
@@ -291,8 +297,9 @@ export function DataTable<T>({
         {toolbar}
         {bulk}
         {selection && !loading && rows.length > 0 ? (
-          <label className="flex items-center gap-3 px-1 text-sm font-medium text-ink-soft">
+          <label className="flex min-h-11 items-center gap-3 px-1 text-sm font-medium text-ink-soft">
             <TriStateCheckbox
+              bare
               checked={allSelected}
               indeterminate={selectedCount > 0 && !allSelected}
               onChange={(next) => selection.onToggleAll(next)}
@@ -334,10 +341,10 @@ export function DataTable<T>({
   // in it is one a keyboard cannot move (axe's scrollable-region-focusable), so only the loading
   // skeleton — which has nothing to scroll to yet — clips instead.
   const scroller = stickyHeader
-    ? { className: "max-h-dvh overflow-auto", tabIndex: 0, role: "region", "aria-label": caption ?? "Table" }
+    ? { className: "scroll-fade max-h-dvh overflow-auto", tabIndex: 0, role: "region", "aria-label": caption ?? "Table" }
     : loading
       ? { className: "overflow-hidden" }
-      : { className: "overflow-x-auto", tabIndex: 0, role: "region", "aria-label": caption ?? "Table" };
+      : { className: "scroll-fade overflow-x-auto", tabIndex: 0, role: "region", "aria-label": caption ?? "Table" };
   const pinned = stickyHeader
     ? "sticky top-0 z-10 bg-surface after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-line"
     : undefined;
@@ -346,7 +353,7 @@ export function DataTable<T>({
     <div className="flex flex-col gap-4">
       {toolbar}
       {bulk}
-      <div {...scroller}>
+      <div ref={scrollRef} data-fade={fade} {...scroller}>
         <table className="w-full border-collapse text-sm" aria-busy={loading || undefined}>
           {caption ? <caption className="sr-only">{caption}</caption> : null}
           <thead>
@@ -422,21 +429,22 @@ export function DataTable<T>({
                 const selected = isSelected?.(row) ?? false;
                 const ticked = selection?.selected.has(key) ?? false;
                 return (
+                  // A row stays a row. Opening it is the button in its first cell, stretched over the
+                  // row; a pointer click anywhere else on the row bubbles here. Controls inside the
+                  // row (a link, the tick box, the actions menu) keep their own click.
                   <tr
                     key={key}
                     {...(clickable
                       ? {
-                          role: "button",
-                          tabIndex: 0,
-                          onClick: () => activate(row),
-                          onKeyDown: (event: KeyboardEvent<HTMLTableRowElement>) =>
-                            onRowKeyDown(event, row),
-                          ...(isSelected ? { "aria-pressed": selected } : {}),
+                          onClick: (event: MouseEvent<HTMLTableRowElement>) => {
+                            if ((event.target as Element).closest("a, button, input, select, textarea, label, [role='menu']")) return;
+                            activate(row);
+                          },
                         }
                       : {})}
                     className={cn(
-                      "border-b border-line/70 last:border-0 transition-colors",
-                      clickable && "cursor-pointer focus-visible:bg-ground/60",
+                      "relative border-b border-line/70 last:border-0 transition-colors",
+                      clickable && "cursor-pointer",
                       selected || ticked ? "bg-accent-soft/60" : "hover:bg-ground/60",
                     )}
                   >
@@ -457,18 +465,35 @@ export function DataTable<T>({
                         />
                       </td>
                     ) : null}
-                    {columns.map((col) => (
-                      <td
-                        key={col.key}
-                        className={cn(
-                          BODY_CELL,
-                          col.align === "right" ? "text-right" : "text-left",
-                          col.cellClassName,
-                        )}
-                      >
-                        {col.render(row)}
-                      </td>
-                    ))}
+                    {columns.map((col, index) => {
+                      const opens = clickable && index === 0;
+                      return (
+                        <td
+                          key={col.key}
+                          id={clickable ? cellId(key, index) : undefined}
+                          className={cn(
+                            BODY_CELL,
+                            // The cell is not the containing block, so the button covers the row.
+                            opens && "static",
+                            col.align === "right" ? "text-right" : "text-left",
+                            col.cellClassName,
+                          )}
+                        >
+                          {opens ? (
+                            <button
+                              type="button"
+                              // Named by the whole row, as the row itself was: the title, then the figures
+                              // and badges a screen reader needs to know which one this opens.
+                              aria-labelledby={columns.map((_, at) => cellId(key, at)).join(" ")}
+                              {...(isSelected ? { "aria-pressed": selected } : {})}
+                              onClick={() => activate(row)}
+                              className="absolute inset-0 rounded-tile focus-visible:-outline-offset-2"
+                            />
+                          ) : null}
+                          {col.render(row)}
+                        </td>
+                      );
+                    })}
                   </tr>
                 );
               })

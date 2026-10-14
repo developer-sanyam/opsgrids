@@ -68,14 +68,14 @@ export function InlineAlert({
         // `border-l-2`, not an arbitrary width: the same leading-edge treatment Timeline's
         // quoted blockquote uses, off Tailwind's built-in border-width scale rather than a
         // one-off value.
-        "flex items-start gap-3 rounded-tile border-l-2 px-4 py-3",
+        "flex flex-wrap items-start gap-3 rounded-tile border-l-2 px-4 py-3",
         styles.fill,
         styles.edge,
         className,
       )}
     >
       <Icon className={cn("mt-0.5 size-4.5 shrink-0", styles.ink)} aria-hidden />
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
+      <div className="flex min-w-0 flex-1 basis-48 flex-col gap-1">
         <p className="text-sm font-bold text-ink">{title}</p>
         {children ? <div className="text-sm text-ink-soft">{children}</div> : null}
         {reference ? <p className="text-xs text-muted tnum">Reference: {reference}</p> : null}

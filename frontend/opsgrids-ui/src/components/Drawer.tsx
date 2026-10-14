@@ -102,10 +102,10 @@ export function Drawer({
         className={cn(
           // Phone: a sheet from the bottom, never taller than most of the screen, so the page it
           // came from stays visible above it.
-          "absolute inset-x-0 bottom-0 flex max-h-11/12 flex-col rounded-t-card bg-surface shadow-float",
+          "sheet-safe-bottom absolute inset-x-0 bottom-0 flex max-h-11/12 flex-col rounded-t-card bg-surface shadow-float",
           "transition-transform duration-200 ease-out starting:translate-y-full",
           // Tablet and up: full height against one edge.
-          "md:inset-y-0 md:max-h-none md:w-full md:rounded-none",
+          "md:inset-y-0 md:max-h-none md:w-full md:rounded-none md:pb-0",
           "md:starting:translate-y-0",
           side === "right"
             ? "md:left-auto md:right-0 md:starting:translate-x-full"
@@ -138,7 +138,7 @@ export function Drawer({
             type="button"
             onClick={onClose}
             aria-label={`Close ${title}`}
-            className="grid size-9 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-ground hover:text-ink"
+            className="hit-44 relative grid size-9 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-ground hover:text-ink"
           >
             <CloseIcon className="size-5" />
           </button>
@@ -157,7 +157,7 @@ export function Drawer({
         ) : null}
 
         {footer ? (
-          <div className="flex flex-col-reverse gap-2 border-t border-line p-4 sm:flex-row sm:justify-end md:px-6">
+          <div className="flex flex-row justify-end gap-2 border-t border-line p-4 flex-wrap max-sm:[&>*]:grow md:px-6">
             {footer}
           </div>
         ) : null}

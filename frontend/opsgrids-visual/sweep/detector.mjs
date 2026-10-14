@@ -13,7 +13,132 @@
  *   e  text clipped, overflowing its own box, or overlapping other text (including chart ticks)
  *   i  informational: text deliberately truncated (ellipsis / line-clamp) with no title to read it in full
  *   f  the last content is within 16px of the bottom edge when scrolled to the end
+ *
+ * Mobile categories (`detectMobile`, `detectOverlay`, `focusObscured`; run below 768px):
+ *   g  an interactive target under 44x44 CSS px (a checkbox counts with its label; a ::before/::after hit
+ *      area counts; an inline link inside running prose is exempt)
+ *   h  a text field whose computed font-size is under 16px (iOS zooms the page on focus)
+ *   j  an open dialog / drawer / menu wider or taller than the viewport, or whose primary action is off-screen
+ *      or clipped; a full-bleed sheet that ignores the safe-area insets
+ *   k  a table wider than the viewport with no scroll container of its own (and no card layout instead)
+ *   l  a fixed or sticky bar that covers content or a focused field, a fixed bar on a screen edge with no
+ *      `env(safe-area-inset-*)` rule, a viewport meta without `viewport-fit=cover`
+ *   m  text under 12px (SVG text measured after its viewBox scale), body font under 14px / table-cell text under 13px
+ *
+ * Every hit carries `owner`: `{ shared, component, file }`. It comes from React's dev-build creation stack on
+ * the element's fiber, so it names the component that *rendered* the element, not an ancestor that merely
+ * contains it. `shared` is true for `opsgrids-ui` and `opsgrids-client`; everything else is app-local.
  */
+
+/**
+ * Installs the helpers every in-page function shares as `window.__sweep`. Call it once after each
+ * navigation, before `detect` and the others (page evaluations are separate, self-contained
+ * functions, so a helper cannot simply be imported).
+ */
+export function installHelpers() {
+  const FRAME = /at (?:\S+ )?\(?(https?:\/\/[^\s)]+?)(?:\?[^\s):]*)?:(\d+):(\d+)\)?\s*$/;
+  const fileOf = (stack) => {
+    const lines = (stack || "").split("\n").slice(2);
+    for (const ln of lines) {
+      const m = FRAME.exec(ln.trim());
+      if (m) return m[1];
+    }
+    return null;
+  };
+  const ownerOf = (start) => {
+    let el = start;
+    let f = null;
+    for (let i = 0; el && i < 6 && !f; i += 1, el = el.parentElement) {
+      const key = Object.keys(el).find((k) => k.startsWith("__reactFiber$"));
+      if (key) f = el[key];
+    }
+    for (let i = 0; f && i < 16; i += 1, f = f._debugOwner) {
+      const url = fileOf(f._debugStack && f._debugStack.stack);
+      if (!url || /node_modules|\.vite\/deps/.test(url)) continue;
+      const m = /\/(opsgrids-ui|opsgrids-client)\/src\/(?:[^?]*\/)?([^/?]+)\.tsx?$/.exec(url);
+      if (m) return { shared: true, component: (m[1] === "opsgrids-client" ? "client/" : "") + m[2], file: url.replace(/^.*\/frontend\//, "") };
+      return { shared: false, component: "app-local", file: url.replace(/^https?:\/\/[^/]+/, "").replace(/^.*\/frontend\//, "") };
+    }
+    return { shared: false, component: "app-local", file: "" };
+  };
+  const rectOf = (el) => {
+    const r = el.getBoundingClientRect();
+    return { x: r.left + scrollX, y: r.top + scrollY, w: r.width, h: r.height };
+  };
+  const isSrOnly = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width <= 1 && r.height <= 1;
+  };
+  const inClosedDetails = (el) => {
+    for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+      if (n.tagName === "DETAILS" && !n.open && !(el.closest("summary") && el.closest("summary").parentElement === n)) return true;
+    }
+    return false;
+  };
+  const isVisible = (el) => {
+    const s = getComputedStyle(el);
+    if (s.display === "none" || s.visibility === "hidden" || s.visibility === "collapse" || Number(s.opacity) === 0) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && !inClosedDetails(el);
+  };
+  const sigOf = (el) => {
+    const parts = [];
+    let n = el;
+    for (let i = 0; n && n !== document.body && i < 3; i += 1, n = n.parentElement) {
+      const cls = (typeof n.className === "string" ? n.className : "")
+        .split(/\s+/)
+        .filter((c) => c && !/^(?:sm|md|lg|xl|hover|focus|dark):/.test(c) && !/\[/.test(c))
+        .slice(0, 3)
+        .join(".");
+      parts.push(n.tagName.toLowerCase() + (cls ? "." + cls : ""));
+    }
+    return parts.join(" < ");
+  };
+  const textOf = (el) => (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60);
+  /** What the person can see of `el`: its box intersected with every clipping ancestor. */
+  const visibleBox = (el) => {
+    const r = el.getBoundingClientRect();
+    let l = r.left, t = r.top, rt = r.right, b = r.bottom;
+    for (let n = el.parentElement; n && n !== document.documentElement; n = n.parentElement) {
+      const s = getComputedStyle(n);
+      if (s.overflowX !== "visible" || s.overflowY !== "visible") {
+        const c = n.getBoundingClientRect();
+        if (s.overflowX !== "visible") { l = Math.max(l, c.left); rt = Math.min(rt, c.right); }
+        if (s.overflowY !== "visible") { t = Math.max(t, c.top); b = Math.min(b, c.bottom); }
+      }
+    }
+    return { left: l, top: t, right: rt, bottom: b, width: rt - l, height: b - t };
+  };
+  /** Style rules that read `env(safe-area-inset-*)`, with the edge they read. */
+  const safeRules = [];
+  const walk = (rules) => {
+    for (const rule of Array.from(rules)) {
+      if (rule.selectorText && /safe-area-inset/.test(rule.cssText)) {
+        for (const edge of ["top", "bottom", "left", "right"]) if (rule.cssText.includes("safe-area-inset-" + edge)) safeRules.push({ selector: rule.selectorText, edge });
+      }
+      if (rule.cssRules && rule.cssRules.length > 0) walk(rule.cssRules);
+    }
+  };
+  for (const sheet of Array.from(document.styleSheets)) {
+    try {
+      walk(sheet.cssRules);
+    } catch {
+      /* a cross-origin sheet */
+    }
+  }
+  /** The element, or something inside it, reads the safe-area inset for `edge`. */
+  const safeAreaAware = (el, edge) => {
+    const rules = safeRules.filter((r) => r.edge === edge);
+    const matches = (node) => rules.some((r) => { try { return node.matches(r.selector); } catch { return false; } });
+    if (matches(el)) return true;
+    for (const d of el.querySelectorAll("*")) if (matches(d)) return true;
+    for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) if (matches(n)) return true;
+    return false;
+  };
+  window.__sweep = { ownerOf, rectOf, isSrOnly, isVisible, sigOf, textOf, visibleBox, safeAreaAware, inClosedDetails };
+}
+
+/** The layout checks, a to f (see the list above), at the current viewport. */
 export function detect(opts) {
   const TOL = opts.alignTolerance;
   const hits = [];
@@ -95,8 +220,9 @@ export function detect(opts) {
     return parts.join(" < ");
   };
   const textOf = (el) => (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60);
+  const owner = (el) => (window.__sweep ? window.__sweep.ownerOf(el) : null);
   const push = (cat, kind, el, rects, detail) =>
-    hits.push({ cat, kind, sig: sig(el), text: textOf(el), rects, detail: detail || "" });
+    hits.push({ cat, kind, sig: sig(el), text: textOf(el), rects, detail: detail || "", owner: owner(el) });
 
   const all = Array.from(document.body.querySelectorAll("*")).filter(
     (el) => !["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "PATH", "CIRCLE", "LINE", "RECT", "G", "DEFS", "USE", "TITLE"].includes(el.tagName.toUpperCase()) && isVisible(el),
@@ -107,12 +233,15 @@ export function detect(opts) {
     const clipsAbove = (el) => {
       for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
         const s = style(n);
-        if (s.overflowX !== "visible") return true;
+        // `overflow-x: clip` is the shell's safety net (AppShell): it stops a wide child from
+        // widening the page, but the child is still cut off, so it is still this defect.
+        if (s.overflowX !== "visible" && s.overflowX !== "clip") return true;
         if (s.position === "fixed") return true;
       }
       return false;
     };
-    if (doc.scrollWidth > vw + 1) {
+    const clippedSomewhere = all.some((el) => !outOfFlow(el) && !insideSvg(el) && el.getBoundingClientRect().right > vw + 1 && !clipsAbove(el));
+    if (doc.scrollWidth > vw + 1 || clippedSomewhere) {
       const offenders = all
         .filter((el) => !outOfFlow(el) && !insideSvg(el) && !clipsAbove(el) && el.getBoundingClientRect().right > vw + 1)
         .slice(0, 400);
@@ -126,8 +255,8 @@ export function detect(opts) {
           .sort((x, y) => y.getBoundingClientRect().right - x.getBoundingClientRect().right)
           .slice(0, 2);
       }
-      if (leaves.length === 0) hits.push({ cat: "a", kind: "page-overflow", sig: "html", text: "", rects: [], detail: `scrollWidth ${doc.scrollWidth} > ${vw}` });
-      for (const el of leaves) push("a", "page-overflow", el, [rectOf(el)], `right edge ${Math.round(el.getBoundingClientRect().right)} > viewport ${vw}`);
+      if (leaves.length === 0 && doc.scrollWidth > vw + 1) hits.push({ cat: "a", kind: "page-overflow", sig: "html", text: "", rects: [], detail: `scrollWidth ${doc.scrollWidth} > ${vw}`, owner: null });
+      for (const el of leaves) push("a", doc.scrollWidth > vw + 1 ? "page-overflow" : "content-clipped-by-shell", el, [rectOf(el)], `right edge ${Math.round(el.getBoundingClientRect().right)} > viewport ${vw}`);
     }
   }
 
@@ -244,6 +373,7 @@ export function detect(opts) {
           text: line.items.map((i) => textOf(i.ctl) || i.ctl.getAttribute("aria-label") || i.ctl.tagName.toLowerCase()).join(" | ").slice(0, 80),
           rects,
           detail: `tops differ ${dTop.toFixed(1)}px, bottoms ${dBottom.toFixed(1)}px, centres ${dMid.toFixed(1)}px`,
+          owner: owner(box),
         });
       }
     }
@@ -260,6 +390,9 @@ export function detect(opts) {
       if (s.display === "inline") continue;
       const over = el.scrollWidth - el.clientWidth;
       if (over <= 1 || el.clientWidth === 0) continue;
+      // A `::before` hit area (hit-44) is wider than a small control and counts toward scrollWidth; it paints nothing.
+      const pb = getComputedStyle(el, "::before");
+      if (pb.position === "absolute" && pb.content !== "none" && pb.content !== "normal") continue;
       const clip = s.overflowX === "hidden" || s.overflowX === "clip";
       const scroll = s.overflowX === "auto" || s.overflowX === "scroll";
       if (scroll || el.clientWidth < 24 || inClosedDetails(el) || el.closest("nav, aside")) continue;
@@ -315,8 +448,14 @@ export function detect(opts) {
       if (insideSvg(el) || SKIP_TAG.has(el.tagName.toUpperCase()) || isSrOnly(el) || !ownText(el)) continue;
       // Chart axes are absolutely positioned and aria-hidden by design: their collisions are the point.
       const inChart = el.closest("figure") !== null && !el.closest("[role='tooltip']");
-      if (!inChart && (outOfFlow(el) || el.closest("[role='tooltip'], [aria-hidden='true']"))) continue;
+      if (!inChart && (outOfFlow(el) || el.closest("[role='tooltip'], [role='listbox'], [role='menu'], [aria-hidden='true']"))) continue;
       if (inFixed(el) || inClosedDetails(el) || el.closest(".sr-only")) continue;
+      let layered = false;
+      for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+        const ns = style(n);
+        if (ns.position === "absolute" && ns.zIndex !== "auto") layered = true;
+      }
+      if (layered && !inChart) continue;
       const range = document.createRange();
       range.selectNodeContents(el);
       const rects = Array.from(range.getClientRects())
@@ -361,6 +500,7 @@ export function detect(opts) {
 export function measureBottomGap() {
   const vh = window.innerHeight;
   let limit = vh;
+  let limitEl = null;
   let last = 0;
   let lastEl = null;
   for (const el of document.body.querySelectorAll("*")) {
@@ -369,7 +509,7 @@ export function measureBottomGap() {
     const r = el.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) continue;
     if (s.position === "fixed") {
-      if (r.bottom >= vh - 2 && r.height < vh / 2 && r.width > window.innerWidth / 2) limit = Math.min(limit, r.top);
+      if (r.bottom >= vh - 2 && r.height < vh / 2 && r.width > window.innerWidth / 2) { if (r.top < limit) limitEl = el; limit = Math.min(limit, r.top); }
       continue;
     }
     let fixedAnc = false;
@@ -409,5 +549,225 @@ export function measureBottomGap() {
     const cls = (typeof n.className === "string" ? n.className : "").split(/\s+/).filter((c) => c && !/\[/.test(c)).slice(0, 3).join(".");
     sigParts.push(n.tagName.toLowerCase() + (cls ? "." + cls : ""));
   }
-  return { gap: Math.round(limit - last), atEnd, scrollable: document.documentElement.scrollHeight > vh + 1, sig: sigParts.join(" < "), text: lastEl ? (lastEl.textContent || "").replace(/\s+/g, " ").trim().slice(0, 50) : "" };
+  return { gap: Math.round(limit - last), atEnd, scrollable: document.documentElement.scrollHeight > vh + 1, sig: sigParts.join(" < "), text: lastEl ? (lastEl.textContent || "").replace(/\s+/g, " ").trim().slice(0, 50) : "", bar: limitEl ? window.__sweep.ownerOf(limitEl) : null, barSig: limitEl ? window.__sweep.sigOf(limitEl) : "", owner: lastEl ? window.__sweep.ownerOf(lastEl) : null };
+}
+
+/**
+ * The mobile checks that need no interaction: g, h, k, m and the static half of l. Run below 768px.
+ */
+export function detectMobile() {
+  const H = window.__sweep;
+  const hits = [];
+  const doc = document.documentElement;
+  const vw = doc.clientWidth;
+  const vh = window.innerHeight;
+  const push = (cat, kind, el, detail, rects) =>
+    hits.push({ cat, kind, sig: H.sigOf(el), text: H.textOf(el), rects: rects || [H.rectOf(el)], detail, owner: H.ownerOf(el) });
+  const inert = (el) => el.closest("[aria-hidden='true'], [inert], .sr-only");
+
+  // ---- (g) touch targets under 44x44 ------------------------------------------------------
+  {
+    const MIN = 43.5;
+    const TARGET = [
+      "button",
+      "a[href]",
+      "summary",
+      "[role='button']",
+      "[role='tab']",
+      "[role='menuitem']",
+      "[role='menuitemcheckbox']",
+      "[role='menuitemradio']",
+      "[role='switch']",
+      "[role='checkbox']",
+      "[role='radio']",
+      "input[type='checkbox']",
+      "input[type='radio']",
+      "input[type='button']",
+      "input[type='submit']",
+    ].join(",");
+    const FIELD = "input:not([type='hidden']):not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='button']):not([type='submit']), select, textarea";
+    const inProse = (a) => {
+      if (a.tagName !== "A" || getComputedStyle(a).display !== "inline") return false;
+      const p = a.parentElement;
+      if (!p) return false;
+      let text = "";
+      for (const n of p.childNodes) if (n.nodeType === 3) text += n.nodeValue;
+      return text.replace(/\s+/g, " ").trim().length >= 8;
+    };
+    const pseudoSize = (el) => {
+      let w = 0;
+      let h = 0;
+      for (const which of ["::before", "::after"]) {
+        const ps = getComputedStyle(el, which);
+        if (ps.content === "none" || ps.content === "normal" || ps.position !== "absolute") continue;
+        w = Math.max(w, parseFloat(ps.width) || 0);
+        h = Math.max(h, parseFloat(ps.height) || 0);
+      }
+      return { w, h };
+    };
+    for (const el of document.body.querySelectorAll(TARGET + "," + FIELD)) {
+      if (!H.isVisible(el) || H.isSrOnly(el) || el.disabled || el.getAttribute("aria-disabled") === "true" || inert(el)) continue;
+      const isField = el.matches(FIELD);
+      if (!isField && inProse(el)) continue;
+      const vb = H.visibleBox(el);
+      if (vb.width <= 0 || vb.height <= 0) continue;
+      const r = el.getBoundingClientRect();
+      // Parked off-screen (a skip link until it takes focus): nobody can tap it.
+      if (r.bottom <= 0 || r.right <= 0 || r.left >= vw || r.top >= vh + 4000) continue;
+      let w = r.width;
+      let h = r.height;
+      if (el.matches("input[type='checkbox'], input[type='radio'], [role='checkbox'], [role='radio']")) {
+        const label = (el.labels && el.labels[0]) || el.closest("label");
+        if (label) {
+          const lr = label.getBoundingClientRect();
+          w = Math.max(w, lr.width);
+          h = Math.max(h, lr.height);
+        }
+      }
+      const px = pseudoSize(el);
+      w = Math.max(w, px.w);
+      h = Math.max(h, px.h);
+      if (isField) {
+        if (h < MIN) push("g", "field-under-44px-tall", el, `${Math.round(w)}x${Math.round(h)}px`);
+      } else if (w < MIN || h < MIN) push("g", "target-under-44px", el, `${Math.round(w)}x${Math.round(h)}px (min 44x44)`);
+    }
+  }
+
+  // ---- (h) fields under 16px ----------------------------------------------------------------
+  {
+    const FIELD = "input:not([type='hidden']):not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='color']):not([type='button']):not([type='submit']), select, textarea, [contenteditable='true']";
+    for (const el of document.body.querySelectorAll(FIELD)) {
+      if (!H.isVisible(el) || H.isSrOnly(el) || inert(el)) continue;
+      const fs = parseFloat(getComputedStyle(el).fontSize);
+      if (fs < 15.99) push("h", "field-font-under-16px", el, `font-size ${fs}px: iOS zooms the page on focus`);
+    }
+  }
+
+  // ---- (k) tables wider than the viewport with no scroll container ---------------------------------
+  {
+    for (const t of document.body.querySelectorAll("table, [role='table'], [role='grid']")) {
+      if (!H.isVisible(t) || t.closest(".sr-only") || t.getBoundingClientRect().width <= 1) continue;
+      const tr = t.getBoundingClientRect();
+      let scroller = null;
+      let clipper = null;
+      for (let n = t.parentElement; n && n !== document.body; n = n.parentElement) {
+        const s = getComputedStyle(n);
+        if (s.overflowX === "auto" || s.overflowX === "scroll") { scroller = n; break; }
+        if (s.overflowX === "hidden" || s.overflowX === "clip") { clipper = n; break; }
+      }
+      if (scroller) continue;
+      if (clipper && tr.right > clipper.getBoundingClientRect().right + 1) push("k", "table-clipped-no-scroll", t, `table ${Math.round(tr.width)}px wide inside a clipping box ${Math.round(clipper.getBoundingClientRect().width)}px`);
+      else if (!clipper && (tr.right > vw + 1 || tr.width > vw + 1)) push("k", "table-wider-than-viewport", t, `table ${Math.round(tr.width)}px wide, viewport ${vw}px, no scroll container`);
+    }
+  }
+
+  // ---- (l, static) viewport meta and fixed bars on a screen edge ----------------------------------
+  {
+    const meta = document.querySelector("meta[name='viewport']");
+    if (!meta || !/viewport-fit\s*=\s*cover/.test(meta.getAttribute("content") || "")) {
+      hits.push({ cat: "l", kind: "viewport-fit-not-cover", sig: "meta[name=viewport]", text: "", rects: [], detail: "env(safe-area-inset-*) is 0 on iOS without viewport-fit=cover", owner: { shared: false, component: "app-local", file: "index.html" } });
+    }
+    for (const el of document.body.querySelectorAll("*")) {
+      const s = getComputedStyle(el);
+      if (s.position !== "fixed" && s.position !== "sticky") continue;
+      if (!H.isVisible(el) || H.isSrOnly(el) || el.closest("[role='dialog'], [role='alertdialog'], dialog")) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < vw * 0.5 || (r.width >= vw * 0.98 && r.height >= vh * 0.9)) continue;
+      if (s.position === "fixed" && r.bottom >= vh - 1 && !H.safeAreaAware(el, "bottom")) push("l", "fixed-bar-no-safe-area-bottom", el, "bar sits on the bottom edge and reads no env(safe-area-inset-bottom)");
+      if (r.top <= 1 && r.height < vh * 0.5 && !H.safeAreaAware(el, "top")) push("l", "fixed-bar-no-safe-area-top", el, "bar sits on the top edge and reads no env(safe-area-inset-top)");
+    }
+  }
+
+  // ---- (m) text size ------------------------------------------------------------------------------
+  {
+    const bodyFs = parseFloat(getComputedStyle(document.body).fontSize);
+    if (bodyFs < 14) push("m", "body-font-under-14px", document.body, `body font-size ${bodyFs}px`, []);
+    const ownText = (el) => Array.from(el.childNodes).some((n) => n.nodeType === 3 && n.nodeValue.trim() !== "");
+    for (const el of document.body.querySelectorAll("*")) {
+      const tag = el.tagName.toLowerCase();
+      if (["script", "style", "option", "input", "textarea", "select", "svg", "tspan"].includes(tag) || !ownText(el) || H.isSrOnly(el) || !H.isVisible(el) || inert(el)) continue;
+      let fs = parseFloat(getComputedStyle(el).fontSize);
+      const svg = el.closest("svg");
+      if (svg) {
+        const vb = svg.viewBox && svg.viewBox.baseVal;
+        const sr = svg.getBoundingClientRect();
+        if (vb && vb.width > 0 && vb.height > 0) fs *= Math.min(sr.width / vb.width, sr.height / vb.height);
+      }
+      if (fs < 11.99) push("m", svg ? "svg-text-under-12px" : "text-under-12px", el, `font-size ${Math.round(fs * 10) / 10}px`);
+      else if (!svg && fs < 12.99 && tag === "td") push("m", "table-cell-text-under-13px", el, `font-size ${Math.round(fs * 10) / 10}px`);
+    }
+  }
+  return hits;
+}
+
+/**
+ * (j) and the overlay half of (l): run while a dialog, drawer or menu is open.
+ */
+export function detectOverlay() {
+  const H = window.__sweep;
+  const hits = [];
+  const vw = document.documentElement.clientWidth;
+  const vh = window.innerHeight;
+  const push = (cat, kind, el, detail) =>
+    hits.push({ cat, kind, sig: H.sigOf(el), text: H.textOf(el), rects: [H.rectOf(el)], detail, owner: H.ownerOf(el) });
+  const OVERLAY = "[role='dialog'], [role='alertdialog'], dialog[open], [role='menu'], [role='listbox'], [data-radix-popper-content-wrapper] > *";
+  const found = Array.from(document.querySelectorAll(OVERLAY)).filter((el) => H.isVisible(el));
+  for (const el of found) {
+    if (found.some((o) => o !== el && o.contains(el))) continue;
+    const r = el.getBoundingClientRect();
+    const isDialog = el.matches("[role='dialog'], [role='alertdialog'], dialog");
+    const kind = isDialog ? "dialog" : "menu";
+    if (r.width > vw + 1 || r.left < -1 || r.right > vw + 1) push("j", `${kind}-exceeds-viewport-width`, el, `${Math.round(r.left)}..${Math.round(r.right)} of ${vw}px`);
+    if (r.height > vh + 1 || r.top < -1 || r.bottom > vh + 1) push("j", `${kind}-exceeds-viewport-height`, el, `${Math.round(r.top)}..${Math.round(r.bottom)} of ${vh}px`);
+    if (!isDialog) continue;
+    const buttons = Array.from(el.querySelectorAll("button, [role='button'], a[href]")).filter(
+      (b) => H.isVisible(b) && !/^(close|dismiss)/i.test(b.getAttribute("aria-label") || ""),
+    );
+    // The primary action: the submit button, or a filled accent / negative button. A navigation sheet has none.
+    const primary = buttons.find((b) => b.matches("button[type='submit']")) || buttons.find((b) => !b.getAttribute("role") && /(^|\s)bg-(accent|negative)(\s|$)/.test(typeof b.className === "string" ? b.className : ""));
+    if (primary) {
+      const pr = primary.getBoundingClientRect();
+      const vb = H.visibleBox(primary);
+      if (pr.bottom > vh + 1 || pr.top < -1 || pr.right > vw + 1 || vb.height < pr.height - 2 || vb.width < pr.width - 2) {
+        push("j", "dialog-primary-action-not-in-view", primary, `button ${Math.round(pr.top)}..${Math.round(pr.bottom)} of ${vh}px, visible ${Math.round(vb.height)}/${Math.round(pr.height)}px`);
+      }
+    }
+    if (r.bottom >= vh - 1 && !H.safeAreaAware(el, "bottom")) push("l", "sheet-no-safe-area-bottom", el, "sheet sits on the bottom edge and reads no env(safe-area-inset-bottom)");
+    if (r.top <= 1 && r.height >= vh - 1 && !H.safeAreaAware(el, "top")) push("l", "sheet-no-safe-area-top", el, "full-screen sheet reads no env(safe-area-inset-top)");
+  }
+  return hits;
+}
+
+/**
+ * (l, dynamic) Focus the first few text fields the way a keyboard user would and check that the
+ * browser's scroll-into-view did not leave one behind a fixed or sticky bar.
+ */
+export function focusObscured() {
+  const H = window.__sweep;
+  const hits = [];
+  const FIELD = "input:not([type='hidden']):not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='button']):not([type='submit']), select, textarea";
+  const fields = Array.from(document.body.querySelectorAll(FIELD))
+    .filter((el) => H.isVisible(el) && !el.disabled && !el.closest("[role='dialog'], [aria-hidden='true'], [inert]"))
+    .slice(0, 12);
+  const seen = new Set();
+  window.scrollTo(0, 0);
+  for (const el of fields) {
+    el.focus();
+    const r = el.getBoundingClientRect();
+    // Where the caret is: the top-left of the field, not its centre (a tall textarea is bigger than the screen).
+    const cx = Math.min(Math.max(r.left + Math.min(16, r.width / 2), 1), window.innerWidth - 1);
+    const cy = Math.min(Math.max(r.top + Math.min(16, r.height / 2), 1), window.innerHeight - 1);
+    const top = document.elementFromPoint(cx, cy);
+    const off = r.bottom < 0 || r.top > window.innerHeight;
+    if (!off && top && !el.contains(top) && !top.contains(el) && !(top.closest("label") && top.closest("label").contains(el))) {
+      const key = H.sigOf(top);
+      if (!seen.has(key)) {
+        seen.add(key);
+        hits.push({ cat: "l", kind: "focused-field-obscured", sig: H.sigOf(top), text: H.textOf(top), rects: [H.rectOf(el), H.rectOf(top)], detail: `focused field "${H.textOf(el) || el.getAttribute("aria-label") || el.name || el.type}" is covered by another element`, owner: H.ownerOf(top) });
+      }
+    }
+    el.blur();
+  }
+  window.scrollTo(0, 0);
+  return hits;
 }

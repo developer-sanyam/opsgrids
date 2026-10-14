@@ -152,14 +152,14 @@ export function CommandMenu({ open, onClose, items, placeholder, fallback, resul
   const optionId = (key: string) => `${base}-option-${key}`;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-start justify-center p-4 sm:pt-16">
+    <div className="fixed inset-0 z-50 flex items-start justify-center sm:p-4 sm:pt-16">
       <div className="absolute inset-0 bg-scrim" onClick={onClose} aria-hidden />
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label="Command menu"
-        className="relative flex w-full max-w-lg flex-col overflow-hidden rounded-card bg-surface shadow-overlay"
+        className="sheet-safe relative flex h-dvh w-full max-w-lg flex-col overflow-hidden bg-surface shadow-overlay sm:h-auto sm:rounded-card"
       >
         <div className="shell-header-h flex items-center gap-3 border-b border-line px-4">
           <SearchIcon className="size-5 shrink-0 text-faint" aria-hidden />
@@ -180,14 +180,14 @@ export function CommandMenu({ open, onClose, items, placeholder, fallback, resul
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onKeyDown}
             placeholder={placeholder}
-            className="min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
+            className="min-w-0 flex-1 self-stretch bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
           />
           <kbd className="hidden shrink-0 rounded-chip border border-line px-1.5 py-0.5 text-caption font-semibold text-faint sm:block">
             Esc
           </kbd>
         </div>
 
-        <div className="max-h-96 overflow-y-auto p-2">
+        <div className="min-h-0 flex-1 overflow-y-auto p-2 sm:max-h-96 sm:flex-none">
           {displayed.length === 0 && results === undefined ? (
             <p className="px-3 py-6 text-center text-sm text-muted">
               No matches for &ldquo;{query.trim()}&rdquo;.
@@ -219,7 +219,7 @@ export function CommandMenu({ open, onClose, items, placeholder, fallback, resul
                               choose(item);
                             }}
                             className={cn(
-                              "flex h-10 cursor-pointer items-center gap-3 rounded-tile px-3 text-sm font-semibold",
+                              "flex h-11 cursor-pointer items-center gap-3 rounded-tile px-3 text-sm font-semibold",
                               index === activeIndex
                                 ? "bg-accent-soft text-accent-ink"
                                 : "text-ink-soft hover:bg-ground",

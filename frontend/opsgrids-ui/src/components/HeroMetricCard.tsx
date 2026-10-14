@@ -88,7 +88,7 @@ export function HeroMetricCard({
         </div>
         {/* Never truncated: a KPI figure cut to "₹12,48,3…" is a wrong number. The type steps down
             on a phone so a full grouped amount still fits beside the icon and the bars at 320px. */}
-        <p data-kpi-value className="tnum min-w-0 text-kpi-sm font-bold text-ink sm:text-kpi">
+        <p data-kpi-value className="tnum min-w-0 whitespace-nowrap text-kpi-sm font-bold text-ink sm:text-kpi">
           {value}
         </p>
         {deltaPct !== undefined || caption ? (

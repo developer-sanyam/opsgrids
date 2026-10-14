@@ -251,9 +251,8 @@ describe("Approvals inbox — deadlines", () => {
     renderInbox();
 
     await waitFor(() => expect(screen.getByText("Kabir Shah")).toBeDefined());
-    const row = screen.getByRole("button", { name: /Kabir Shah/ });
-    // The overdue words are part of the row's accessible name, not a tooltip-only affordance.
-    expect(row.textContent).toContain("Overdue by 5 hours");
+    // The overdue words are part of the open control's accessible name, not a tooltip-only affordance.
+    const row = screen.getByRole("button", { name: /Kabir Shah.*Overdue by 5 hours/ });
     row.focus();
     await user.keyboard("{Enter}");
     await waitFor(() => expect(screen.getByText("Request detail")).toBeDefined());

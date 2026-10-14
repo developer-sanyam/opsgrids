@@ -183,26 +183,26 @@ you missed. Then run `pnpm visual:update` and review.
 ## The layout sweep
 
 Screenshots catch a change; they do not catch a layout that was wrong from the start. The sweep
-(`opsgrids-visual/sweep/`) opens **every route of every app** in sample mode, at 390, 768, 1280 and
-1600 px, and measures the page for the class of defect a person sees in a second: a button that
+(`opsgrids-visual/sweep/`) opens **every route of every app** in sample mode, at the phone widths
+320, 360, 390 and 414 px (768, 1280 and 1600 are one `SWEEP_WIDTHS` away), and measures the page for the class of defect a person sees in a second: a button that
 floats lower than the select beside it, a card something spills out of, a wrapped label that pushes
 its input down, chart ticks that touch, a page with no room under its last line.
 
 It is a developer's tool, **not part of `visual:check` or CI**: it starts a Vite dev server per app
-(ports from 5500 up, never 4310-4500 or 5360-5420) and takes several minutes.
+(ports 5600-5699 only) and takes several minutes.
 
 ```bash
 cd frontend
-pnpm --filter @opsgrids/visual run sweep                                   # all 13 apps, 4 widths
+pnpm --filter @opsgrids/visual run sweep                                   # all 13 apps, the 4 phone widths
 SWEEP_APPS=product-engage,product-finance pnpm --filter @opsgrids/visual run sweep
-SWEEP_WIDTHS=390,1280 SWEEP_THEME=dark pnpm --filter @opsgrids/visual run sweep
+SWEEP_WIDTHS=768,1280 SWEEP_THEME=dark pnpm --filter @opsgrids/visual run sweep
 SWEEP_ROUTE=/invoices SWEEP_APPS=product-finance pnpm --filter @opsgrids/visual run sweep
 ```
 
 | Variable | Meaning | Default |
 |---|---|---|
 | `SWEEP_APPS` | comma list of package directories | all 13 |
-| `SWEEP_WIDTHS` | viewport widths | `390,768,1280,1600` |
+| `SWEEP_WIDTHS` | viewport widths | `320,360,390,414` |
 | `SWEEP_THEME` | `light` or `dark` | `light` |
 | `SWEEP_ROUTE` | only routes whose path contains this | every route |
 | `SWEEP_OUT` | where `report.json`, one JSON per app and `shots/` go | `opsgrids-visual/test-results/sweep` |
@@ -226,7 +226,19 @@ What it flags (the `cat` field of each hit):
 | `d` | The same, for form fields: inputs in a row whose tops differ because a label wrapped or a helper sits under one. |
 | `e` | Text clipped or wider than its box, text overlapping text, and chart axis labels closer than 8 px. |
 | `f` | The last content is within 16 px of the bottom of the viewport once scrolled to the end. |
+| `g` | An interactive target under 44x44 CSS px (button, link, tab, switch, checkbox with its label, text field under 44 tall). A `::before`/`::after` hit area counts (`hit-44`); an inline link in running prose does not. *Below 768 px only.* |
+| `h` | A text field whose computed font-size is under 16 px: iOS Safari zooms the page on focus. |
+| `j` | An open dialog, drawer or menu wider or taller than the viewport, or whose primary action is off-screen or clipped. Found by *probing*: the sweep clicks up to five openers per route (buttons that open a menu or sheet, "New ...", "Filters") and measures with the overlay open. |
+| `k` | A table wider than the viewport with no scroll container of its own. |
+| `l` | A fixed bar on a screen edge with no `env(safe-area-inset-*)`, a viewport meta without `viewport-fit=cover`, a sheet that ignores the insets, a bar covering the last content, a focused field hidden under a bar. |
+| `m` | Text under 12 px (SVG text after its viewBox scale), body font under 14 px, table-cell text under 13 px. |
 | `i` | Informational: text truncated with an ellipsis or line clamp and no `title` to read it in full. Counted, not a hit. |
+
+**Who owns a hit.** Every hit names the component that *rendered* the offending element (`component`
+in `report.json`; `components.json` groups by it). The name comes from React's dev-build creation stack
+on the element's fiber: a file under `opsgrids-ui/src` is a shared component (`Button`, `DataTable`),
+under `opsgrids-client/src` is `client/...`, anything else is `app-local`. `summary.txt` prints the
+table, shared first. Fix shared hits once in `opsgrids-ui`; app-local ones in the app.
 
 Every hit has a screenshot with the offending box in red (and the container or sibling in blue)
 under `shots/<app>/`. `report.json` carries the selector signature, the measured numbers and the

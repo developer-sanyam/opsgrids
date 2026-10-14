@@ -101,7 +101,7 @@ function NavRow({
       title={collapsed ? item.label : undefined}
       className={({ isActive }) =>
         cn(
-          "group relative flex items-center gap-3 rounded-tile h-10 text-sm font-semibold transition-colors",
+          "group relative flex items-center gap-3 rounded-tile h-11 text-sm font-semibold transition-colors",
           collapsed ? "justify-center px-2" : "pl-3 pr-2.5",
           isActive
             ? "bg-accent-soft text-accent-ink"
@@ -161,7 +161,7 @@ function LinkRow({
   const Icon = link.icon;
   const classes = (isActive: boolean) =>
     cn(
-      "group flex items-center gap-3 rounded-tile h-10 text-sm font-semibold transition-colors",
+      "group flex items-center gap-3 rounded-tile h-11 text-sm font-semibold transition-colors",
       collapsed ? "justify-center px-2" : "pl-3 pr-2.5",
       isActive ? "bg-accent-soft text-accent-ink" : "text-muted hover:bg-ground hover:text-ink",
     );

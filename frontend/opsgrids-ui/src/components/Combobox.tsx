@@ -246,7 +246,7 @@ export function Combobox({
                   inputRef.current?.focus();
                 }}
                 aria-label={text.remove(value.label)}
-                className="grid size-6 place-items-center rounded-chip transition-colors hover:bg-surface/60"
+                className="hit-44 relative grid size-6 place-items-center rounded-chip transition-colors hover:bg-surface/60"
               >
                 <CloseIcon className="size-4" />
               </button>
@@ -288,7 +288,7 @@ export function Combobox({
                 }}
                 onFocus={() => setOpen(true)}
                 onKeyDown={onKeyDown}
-                className="min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
+                className="-my-px min-w-0 flex-1 self-stretch bg-transparent text-sm text-ink placeholder:text-faint focus:outline-none"
               />
             </div>
 

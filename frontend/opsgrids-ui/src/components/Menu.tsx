@@ -193,7 +193,7 @@ export function Menu({
           type="button"
           aria-label={label}
           {...triggerProps}
-          className="grid size-9 place-items-center rounded-full text-ink-soft transition-colors hover:bg-ground"
+          className="hit-44 relative grid size-9 place-items-center rounded-full text-ink-soft transition-colors hover:bg-ground"
         >
           {icon ?? <MoreHorizontalIcon className="size-5" />}
         </button>
@@ -219,9 +219,12 @@ export function Menu({
           tabIndex={-1}
           onKeyDown={onMenuKeyDown}
           className={cn(
-            "absolute top-full z-40 mt-1 flex min-w-48 flex-col",
-            "rounded-tile border border-line bg-surface py-1 shadow-float",
-            align === "end" ? "right-0" : "left-0",
+            // A phone gets a bottom sheet (a popover at the trigger would leave the screen); from
+            // 768px it hangs from the trigger.
+            "sheet-safe-bottom fixed inset-x-2 bottom-2 z-40 flex max-h-3/4 flex-col overflow-y-auto",
+            "rounded-card border border-line bg-surface py-1 shadow-overlay",
+            "md:absolute md:inset-x-auto md:bottom-auto md:top-full md:mt-1 md:min-w-48 md:max-h-none md:rounded-tile md:shadow-float",
+            align === "end" ? "md:right-0" : "md:left-0",
           )}
         >
           {visible.map((item, index) => {

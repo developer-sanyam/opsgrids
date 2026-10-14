@@ -125,7 +125,7 @@ export function Dialog({
         aria-describedby={descriptionId}
         className={cn(
           "relative flex max-h-dvh w-full flex-col bg-surface shadow-overlay",
-          "h-dvh rounded-none sm:h-auto sm:max-h-[85dvh] sm:rounded-card",
+          "sheet-safe h-dvh rounded-none sm:h-auto sm:max-h-[85dvh] sm:rounded-card",
           SIZES[size],
           className,
         )}
@@ -150,7 +150,7 @@ export function Dialog({
             type="button"
             onClick={onClose}
             aria-label="Close dialog"
-            className="grid size-9 shrink-0 place-items-center rounded-tile text-muted transition-colors hover:bg-sunken hover:text-ink"
+            className="hit-44 relative grid size-9 shrink-0 place-items-center rounded-tile text-muted transition-colors hover:bg-sunken hover:text-ink"
           >
             <CloseIcon className="size-5" />
           </button>
@@ -161,7 +161,7 @@ export function Dialog({
         ) : null}
 
         {footer ? (
-          <div className="flex flex-col-reverse gap-2 border-t border-line p-5 sm:flex-row sm:justify-end sm:border-0 sm:p-6 sm:pt-4">
+          <div className="flex flex-row justify-end gap-2 border-t border-line p-4 sm:border-0 sm:p-6 sm:pt-4 flex-wrap max-sm:[&>*]:grow">
             {footer}
           </div>
         ) : null}

@@ -94,14 +94,16 @@ export function MobileDataCard({
       >
         <div className="flex items-start gap-3">
           {selection ? (
-            <input
-              type="checkbox"
-              checked={selection.checked}
-              onChange={(event) => selection.onChange(event.target.checked)}
-              aria-label={selection.label}
-              // 24px: the smallest target WCAG 2.2 allows when it sits on another control (the card).
-              className="size-6 shrink-0 cursor-pointer accent-accent"
-            />
+            // The box is 24px; the label around it is the 44px target, pulled back so the title keeps its place.
+            <label className="-m-2 grid size-11 shrink-0 cursor-pointer place-items-center">
+              <input
+                type="checkbox"
+                checked={selection.checked}
+                onChange={(event) => selection.onChange(event.target.checked)}
+                aria-label={selection.label}
+                className="size-6 cursor-pointer accent-accent"
+              />
+            </label>
           ) : null}
           {leading ? <div className="shrink-0">{leading}</div> : null}
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
