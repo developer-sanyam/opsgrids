@@ -37,6 +37,15 @@ function useDocumentTitle(title: string | null) {
   }, [title]);
 }
 
+/** Opens the system share sheet with a link to this document. Dismissing it is not an error. */
+async function shareDocument(number: string, buyer: string): Promise<void> {
+  try {
+    await navigator.share({ title: documentFileTitle(number, buyer), url: window.location.href });
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "AbortError")) throw error;
+  }
+}
+
 function PaperSkeleton() {
   return (
     <div
@@ -54,13 +63,15 @@ function PaperSkeleton() {
 
 /**
  * `/invoices/:id/print` — the invoice as a document to send. No app chrome (see `main.tsx`):
- * the toolbar is screen-only, the sheet is what prints. "Download PDF" and "Print" both open the
- * browser's print dialog; the first is for choosing "Save as PDF", and the page title is already
- * `INV-… - Customer` so that is the file name offered.
+ * the toolbar is screen-only, the sheet is what prints. One "Print or save as PDF" button opens the
+ * browser's print dialog (where "Save as PDF" is a destination), and the page title is already
+ * `INV-… - Customer` so that is the file name offered. Where the browser can share (a phone),
+ * "Share" hands the link to the system share sheet.
  */
 export function InvoicePrintPage() {
   const { id = "" } = useParams();
   useLightPalette();
+  const canShare = typeof navigator.share === "function";
 
   const invoice = useAsync(useCallback(() => getInvoice(id), [id]), [id]);
   const invoiceData = invoice.status === "success" ? invoice.data : null;
@@ -162,11 +173,17 @@ export function InvoicePrintPage() {
             Back to invoice
           </Link>
           <div className="flex flex-wrap items-center gap-3">
-            <Button variant="outline" onClick={() => window.print()} disabled={!printable}>
-              Print
-            </Button>
+            {canShare && built ? (
+              <Button
+                variant="outline"
+                onClick={() => void shareDocument(built.model.number, built.model.buyer.name)}
+                disabled={!printable}
+              >
+                Share
+              </Button>
+            ) : null}
             <Button variant="primary" onClick={() => window.print()} disabled={!printable}>
-              Download PDF
+              Print or save as PDF
             </Button>
           </div>
         </div>
@@ -176,7 +193,7 @@ export function InvoicePrintPage() {
         <div className="print:hidden flex flex-col gap-3" aria-live="polite">
           {built && printable ? (
             <p className="text-sm text-muted">
-              To save a PDF, choose Download PDF and pick &ldquo;Save as PDF&rdquo; as the
+              To save a PDF, choose Print or save as PDF and pick &ldquo;Save as PDF&rdquo; as the
               destination. The file is named {built.model.number} - {built.model.buyer.name}.
             </p>
           ) : null}

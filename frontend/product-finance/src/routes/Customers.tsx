@@ -89,6 +89,7 @@ export function CustomersPage() {
     {
       key: "name",
       header: "Customer",
+      mobile: "title",
       render: (row) => (
         <div className="flex items-center gap-3">
           <Avatar name={row.customer.name} size="md" />
@@ -145,15 +146,18 @@ export function CustomersPage() {
       key: "standing",
       header: "Standing",
       align: "right",
+      mobile: "status",
       render: (row) => <StandingPill standing={row.standing} />,
     },
     {
       key: "actions",
       header: "",
       align: "right",
+      mobile: "actions",
       render: (row) => (
         <RowActions
           label={row.customer.name}
+          inlineLimit={2}
           actions={[
             {
               label: "View invoices",

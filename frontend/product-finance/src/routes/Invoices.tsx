@@ -26,6 +26,7 @@ import {
   Select,
   Skeleton,
   Tag,
+  Explainer,
 } from "@/ui";
 import type { Column, TableSelection } from "@/ui";
 import { DownloadIcon, PlusIcon, ReceiptIcon, useDebouncedValue } from "@opsgrids/ui";
@@ -217,27 +218,27 @@ export function InvoicesPage() {
       <PageHeader
         eyebrow="Accounts receivable"
         title="Invoices"
+        meta={
+          <span className="inline-flex items-center gap-2">
+            <ReceiptIcon className="size-4" />
+            <span className="tnum">{invoices.status === "success" ? invoices.data.total : "—"}</span>
+            documents
+          </span>
+        }
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
-              <ReceiptIcon className="size-4 text-muted" />
-              <span className="tnum">{invoices.status === "success" ? invoices.data.total : "—"}</span>
-              <span className="text-muted font-medium">documents</span>
-            </span>
-            <Can permission="finance.billing.invoice.issue" scope="ORG">
-              <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => navigate("/invoices/new")}>
-                New invoice
-              </Button>
-            </Can>
-          </div>
+          <Can permission="finance.billing.invoice.issue" scope="ORG">
+            <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => navigate("/invoices/new")}>
+              New invoice
+            </Button>
+          </Can>
         }
       />
 
-      <p className="-mt-2 max-w-2xl text-sm text-muted">
+      <Explainer>
         The invoice register is append-only. A mistake is corrected by issuing a{" "}
         <span className="font-semibold text-ink-soft">credit note</span> against the original —
         never by editing an issued invoice — so the audit trail stays intact.
-      </p>
+      </Explainer>
 
       {/* Controls */}
       <Card className="p-4 sm:p-5 flex flex-col gap-4">

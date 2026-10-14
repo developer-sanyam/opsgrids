@@ -65,6 +65,22 @@ describe("TaxInvoiceDocument", () => {
     expect(document.body.textContent).not.toMatch(/−|-₹|(^|[^A-Za-z0-9])-\d/);
   });
 
+  it("labels each figure of a line and of the tax summary, so the phone layout can stack them", () => {
+    render(<TaxInvoiceDocument model={modelFor(filedNumber)} />);
+    const lines = screen.getByRole("table", { name: /^Items on / });
+    expect(lines.classList.contains("stack-rows")).toBe(true);
+    const row = lines.querySelectorAll("tbody tr")[0];
+    const labels = Array.from(row?.querySelectorAll("td[data-label]") ?? []).map((cell) =>
+      cell.getAttribute("data-label"),
+    );
+    expect(labels).toContain("Qty");
+    expect(labels).toContain("Amount (₹)");
+    expect(row?.querySelector("td.stack-title")).not.toBeNull();
+    const summary = screen.getByRole("table", { name: "Tax summary" });
+    expect(summary.classList.contains("stack-rows")).toBe(true);
+    expect(summary.querySelector("tbody td[data-label='Taxable value']")).not.toBeNull();
+  });
+
   it("leaves a missing supplier name off the page instead of printing a stand-in", () => {
     render(<TaxInvoiceDocument model={modelFor(filedNumber, { registration: null })} />);
     expect(screen.queryByText("OpsGrids Demo")).toBeNull();

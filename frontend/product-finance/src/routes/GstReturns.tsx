@@ -93,6 +93,7 @@ function GenerateReturnDialog({ onClose, onSaved }: { onClose: () => void; onSav
       <TextField
         ref={periodRef}
         label="Period"
+        type="month"
         placeholder="2026-08"
         value={period}
         onChange={(e) => setPeriod(e.target.value)}
@@ -133,6 +134,7 @@ export function GstReturnsPage() {
     {
       key: "period",
       header: "Period",
+      mobile: "title",
       render: (r) => <span className="font-semibold text-ink tnum">{r.period}</span>,
     },
     {
@@ -149,6 +151,18 @@ export function GstReturnsPage() {
       render: (r) => <span className="money text-ink-soft">{formatMoney(r.total_taxable_minor)}</span>,
     },
     {
+      key: "tax",
+      header: "Tax",
+      align: "right",
+      cellClassName: "whitespace-nowrap hidden lg:table-cell",
+      headerClassName: "hidden lg:table-cell",
+      render: (r) => (
+        <span className="money text-ink-soft">
+          {formatMoney(r.total_cgst_minor + r.total_sgst_minor + r.total_igst_minor)}
+        </span>
+      ),
+    },
+    {
       key: "documents",
       header: "Documents",
       align: "right",
@@ -160,6 +174,7 @@ export function GstReturnsPage() {
       key: "status",
       header: "Status",
       align: "right",
+      mobile: "status",
       render: (r) => (
         <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${STATUS_TONE[r.status] ?? "bg-ground text-muted"}`}>
           {r.status}
@@ -186,6 +201,7 @@ export function GstReturnsPage() {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <TextField
             label="Period"
+            type="month"
             placeholder="2026-08"
             value={period}
             onChange={(e) => {

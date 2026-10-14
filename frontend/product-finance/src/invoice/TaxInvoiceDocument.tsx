@@ -51,7 +51,7 @@ function SummaryTable({ model }: { model: TaxInvoiceModel }) {
   const intra = model.taxMode === "intra";
   const rows: readonly TaxSummaryRow[] = model.summary;
   return (
-    <table className="w-full border-collapse text-caption tnum">
+    <table className="stack-rows invoice-summary w-full border-collapse text-caption tnum">
       <caption className="pb-2 text-left text-caption font-bold uppercase tracking-wide text-muted">
         Tax summary
       </caption>
@@ -90,20 +90,20 @@ function SummaryTable({ model }: { model: TaxInvoiceModel }) {
       <tbody>
         {rows.map((row) => (
           <tr key={`${row.hsnSac ?? ""}|${row.taxRatePct}`} className="break-inside-avoid border-b border-line">
-            <td className="px-2 py-2 text-left align-top">
+            <td data-label={model.showHsn ? "HSN / SAC" : "Rate"} className="px-2 py-2 text-left align-top">
               {model.showHsn ? row.hsnSac : rate(row.taxRatePct)}
             </td>
-            <td className={NUM_TD}>{formatAmount(row.taxable)}</td>
-            {model.showHsn ? <td className={NUM_TD}>{rate(row.taxRatePct)}</td> : null}
+            <td data-label="Taxable value" className={NUM_TD}>{formatAmount(row.taxable)}</td>
+            {model.showHsn ? <td data-label="Rate" className={NUM_TD}>{rate(row.taxRatePct)}</td> : null}
             {intra ? (
               <>
-                <td className={NUM_TD}>{formatAmount(row.cgst)}</td>
-                <td className={NUM_TD}>{formatAmount(row.sgst)}</td>
+                <td data-label="CGST" className={NUM_TD}>{formatAmount(row.cgst)}</td>
+                <td data-label="SGST" className={NUM_TD}>{formatAmount(row.sgst)}</td>
               </>
             ) : (
-              <td className={NUM_TD}>{formatAmount(row.igst)}</td>
+              <td data-label="IGST" className={NUM_TD}>{formatAmount(row.igst)}</td>
             )}
-            <td className={NUM_TD}>{formatAmount(row.totalTax)}</td>
+            <td data-label="Total tax" className={NUM_TD}>{formatAmount(row.totalTax)}</td>
           </tr>
         ))}
       </tbody>
@@ -112,17 +112,17 @@ function SummaryTable({ model }: { model: TaxInvoiceModel }) {
           <th scope="row" className="px-2 py-2 text-left font-bold">
             Total
           </th>
-          <td className={NUM_TD}>{formatAmount(model.totals.taxable)}</td>
+          <td data-label="Taxable value" className={NUM_TD}>{formatAmount(model.totals.taxable)}</td>
           {model.showHsn ? <td /> : null}
           {intra ? (
             <>
-              <td className={NUM_TD}>{formatAmount(model.totals.cgst)}</td>
-              <td className={NUM_TD}>{formatAmount(model.totals.sgst)}</td>
+              <td data-label="CGST" className={NUM_TD}>{formatAmount(model.totals.cgst)}</td>
+              <td data-label="SGST" className={NUM_TD}>{formatAmount(model.totals.sgst)}</td>
             </>
           ) : (
-            <td className={NUM_TD}>{formatAmount(model.totals.igst)}</td>
+            <td data-label="IGST" className={NUM_TD}>{formatAmount(model.totals.igst)}</td>
           )}
-          <td className={NUM_TD}>{formatAmount(model.totals.totalTax)}</td>
+          <td data-label="Total tax" className={NUM_TD}>{formatAmount(model.totals.totalTax)}</td>
         </tr>
       </tfoot>
     </table>
@@ -237,7 +237,7 @@ export function TaxInvoiceDocument({ model }: { model: TaxInvoiceModel }) {
       </div>
 
       {/* Lines. The header repeats on every printed page. */}
-      <table className="invoice-lines w-full border-collapse text-caption tnum">
+      <table className="stack-rows invoice-lines w-full border-collapse text-caption tnum">
         <caption className="sr-only">Items on {model.number}</caption>
         <thead>
           <tr className="border-y border-ink text-ink">
@@ -275,15 +275,15 @@ export function TaxInvoiceDocument({ model }: { model: TaxInvoiceModel }) {
         <tbody>
           {model.lines.map((line) => (
             <tr key={line.number} className="break-inside-avoid border-b border-line">
-              <td className="px-2 py-2 text-left align-top">{line.number}</td>
-              <td className="px-2 py-2 text-left align-top text-body-sm text-ink">{line.description}</td>
-              {model.showHsn ? <td className="px-2 py-2 text-left align-top">{line.hsnSac}</td> : null}
-              <td className={NUM_TD}>{QUANTITY.format(line.quantity)}</td>
-              <td className={NUM_TD}>{formatAmount(line.ratePerUnit)}</td>
-              <td className={NUM_TD}>{formatAmount(line.taxable)}</td>
-              <td className={NUM_TD}>{rate(line.taxRatePct)}</td>
-              <td className={NUM_TD}>{formatAmount(intra ? line.cgst + line.sgst : line.igst)}</td>
-              <td className={`${NUM_TD} font-bold`}>{formatAmount(line.lineTotal)}</td>
+              <td className="invoice-line-no px-2 py-2 text-left align-top">{line.number}</td>
+              <td className="stack-title px-2 py-2 text-left align-top text-body-sm text-ink">{line.description}</td>
+              {model.showHsn ? <td data-label="HSN / SAC" className="px-2 py-2 text-left align-top">{line.hsnSac}</td> : null}
+              <td data-label="Qty" className={NUM_TD}>{QUANTITY.format(line.quantity)}</td>
+              <td data-label="Rate (₹)" className={NUM_TD}>{formatAmount(line.ratePerUnit)}</td>
+              <td data-label="Taxable value (₹)" className={NUM_TD}>{formatAmount(line.taxable)}</td>
+              <td data-label="GST" className={NUM_TD}>{rate(line.taxRatePct)}</td>
+              <td data-label={intra ? "CGST + SGST (₹)" : "IGST (₹)"} className={NUM_TD}>{formatAmount(intra ? line.cgst + line.sgst : line.igst)}</td>
+              <td data-label="Amount (₹)" className={`${NUM_TD} font-bold`}>{formatAmount(line.lineTotal)}</td>
             </tr>
           ))}
         </tbody>

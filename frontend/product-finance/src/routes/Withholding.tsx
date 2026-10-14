@@ -52,10 +52,11 @@ export function WithholdingPage() {
     {
       key: "invoice",
       header: "Invoice",
+      mobile: "title",
       render: (row) => (
         <Link
           to={`/invoices/${row.withholding.invoice_id}`}
-          className="font-semibold text-ink hover:text-accent transition-colors tnum"
+          className="relative hit-44 font-semibold text-ink hover:text-accent transition-colors tnum"
         >
           {row.invoice_number}
         </Link>
@@ -97,6 +98,7 @@ export function WithholdingPage() {
       key: "amount",
       header: "Amount",
       align: "right",
+      mobile: "status",
       cellClassName: "whitespace-nowrap",
       render: (row) => <span className="money font-semibold text-ink">{formatMoney(row.withholding.amount_minor)}</span>,
     },

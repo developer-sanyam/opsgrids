@@ -57,7 +57,7 @@ export function InvoiceDetailPage() {
     <div className="rise flex flex-col gap-6">
       <Link
         to="/invoices"
-        className="inline-flex items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors self-start"
+        className="relative hit-44 inline-flex items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors self-start"
       >
         <ArrowLeftIcon className="size-4" />
         Back to invoices
@@ -163,7 +163,7 @@ function InvoiceBody({ invoice, onReload }: { invoice: Invoice; onReload: () => 
             type="button"
             onClick={() => canCorrect && navigate(`/invoices/new?corrects=${invoice.id}`)}
             disabled={!canCorrect}
-            className="font-semibold text-ink-soft underline decoration-dotted underline-offset-2 disabled:cursor-not-allowed disabled:no-underline"
+            className="relative hit-44 font-semibold text-ink-soft underline decoration-dotted underline-offset-2 disabled:cursor-not-allowed disabled:no-underline"
           >
             issuing a credit note
           </button>{" "}
@@ -200,7 +200,7 @@ function InvoiceBody({ invoice, onReload }: { invoice: Invoice; onReload: () => 
 
         {/* Line items */}
         <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
+          <table className="stack-rows w-full border-collapse text-sm">
             <caption className="sr-only">Line items for {invoice.number}</caption>
             <thead>
               <tr className="border-b border-line text-xs font-semibold uppercase tracking-wide text-faint">
@@ -213,12 +213,12 @@ function InvoiceBody({ invoice, onReload }: { invoice: Invoice; onReload: () => 
             <tbody>
               {invoice.lines.map((line) => (
                 <tr key={line.id} className="border-b border-line/70 last:border-0">
-                  <td className="py-3 pr-3 align-top text-ink-soft">{line.description}</td>
-                  <td className="py-3 px-3 text-right align-top tnum text-muted">{line.quantity}</td>
-                  <td className="py-3 px-3 text-right align-top money text-muted">
+                  <td className="stack-title py-3 pr-3 align-top text-ink-soft">{line.description}</td>
+                  <td data-label="Qty" className="py-3 px-3 text-right align-top tnum text-muted">{line.quantity}</td>
+                  <td data-label="Unit price" className="py-3 px-3 text-right align-top money text-muted">
                     {sign(line.unit_price_minor)}₹{formatAmount(Math.abs(line.unit_price_minor))}
                   </td>
-                  <td className="py-3 pl-3 text-right align-top money font-semibold text-ink">
+                  <td data-label="Amount" className="py-3 pl-3 text-right align-top money font-semibold text-ink">
                     {sign(line.amount_minor)}₹{formatAmount(Math.abs(line.amount_minor))}
                   </td>
                 </tr>

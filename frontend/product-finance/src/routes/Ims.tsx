@@ -25,6 +25,7 @@ import {
   SuggestedAction,
   Tag,
   PortalSimulatedNotice,
+  Explainer,
 } from "@/ui";
 import type { Column } from "@/ui";
 import { InboxIcon, useDebouncedValue } from "@opsgrids/ui";
@@ -117,6 +118,7 @@ export function ImsPage() {
     {
       key: "supplier",
       header: "Supplier",
+      mobile: "title",
       render: (doc) => (
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink">{doc.supplier_name}</span>
@@ -161,6 +163,7 @@ export function ImsPage() {
       key: "status",
       header: "Decision",
       align: "right",
+      mobile: "status",
       render: (doc) => <ImsStatusPill status={doc.status} />,
     },
   ];
@@ -170,25 +173,23 @@ export function ImsPage() {
       <PageHeader
         eyebrow="GST compliance"
         title="Supplier reconciliation"
-        actions={
-          <span className="flex items-center gap-2">
-            <SampleDataChip />
-            <span className="inline-flex h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold shadow-card">
-              <InboxIcon className="size-4 text-muted" />
-              <span className="tnum">{queue.status === "success" ? queue.data.total : "—"}</span>
-              <span className="font-medium text-muted">documents</span>
-            </span>
+        meta={
+          <span className="inline-flex items-center gap-2">
+            <InboxIcon className="size-4" />
+            <span className="tnum">{queue.status === "success" ? queue.data.total : "—"}</span>
+            documents
           </span>
         }
+        actions={<SampleDataChip />}
       />
 
-      <p className="-mt-2 max-w-2xl text-sm text-muted">
+      <Explainer>
         Documents your suppliers filed against this organization. Accepting one{" "}
         <span className="font-semibold text-ink-soft">claims the input tax credit</span> on it;
         rejecting declines the credit and sends the document back. The platform reconciles each
         against your purchase book and says what it found — the decision is yours, and every one
         is recorded with your name against it.
-      </p>
+      </Explainer>
       <PortalSimulatedNotice />
 
       <Card className="flex flex-col gap-4 p-4 sm:p-5">

@@ -29,10 +29,11 @@ export function EwayBillsPage() {
     {
       key: "invoice",
       header: "Invoice",
+      mobile: "title",
       render: (row) => (
         <Link
           to={`/invoices/${row.bill.invoice_id}`}
-          className="font-semibold text-ink hover:text-accent transition-colors tnum"
+          className="relative hit-44 font-semibold text-ink hover:text-accent transition-colors tnum"
         >
           {row.invoice_number}
         </Link>
@@ -80,6 +81,7 @@ export function EwayBillsPage() {
       key: "status",
       header: "Status",
       align: "right",
+      mobile: "status",
       render: (row) => (
         <Tag className={ewayStatusTone(row.bill.effective_status)}>
           {row.bill.effective_status}

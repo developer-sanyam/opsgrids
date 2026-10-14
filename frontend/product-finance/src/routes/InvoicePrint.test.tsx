@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -51,13 +51,33 @@ describe("InvoicePrintPage", () => {
     registration.mode = "present";
   });
 
-  it("offers Download PDF and Print once the document is ready", async () => {
+  it("offers one Print or save as PDF button once the document is ready", async () => {
     renderPage();
     await screen.findByRole("heading", { level: 1, name: "Tax Invoice" });
-    const download = screen.getByRole("button", { name: "Download PDF" });
-    expect(download.hasAttribute("disabled")).toBe(false);
-    expect(screen.getByRole("button", { name: "Print" }).hasAttribute("disabled")).toBe(false);
+    const print = screen.getByRole("button", { name: "Print or save as PDF" });
+    expect(print.hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByRole("button", { name: "Print" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Download PDF" })).toBeNull();
     expect(screen.getByText(GST_REGISTRATION.legal_name)).toBeTruthy();
+  });
+
+  it("offers Share only where the browser can share, and shares the link", async () => {
+    const share = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "share", { value: share, configurable: true });
+    try {
+      renderPage();
+      await screen.findByRole("heading", { level: 1, name: "Tax Invoice" });
+      fireEvent.click(screen.getByRole("button", { name: "Share" }));
+      expect(share).toHaveBeenCalledOnce();
+    } finally {
+      Reflect.deleteProperty(navigator, "share");
+    }
+  });
+
+  it("shows no Share button when the browser cannot share", async () => {
+    renderPage();
+    await screen.findByRole("heading", { level: 1, name: "Tax Invoice" });
+    expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
   });
 
   it("asks for the registration instead of printing without a supplier name", async () => {
@@ -66,7 +86,6 @@ describe("InvoicePrintPage", () => {
     expect(await screen.findByText("Fill this in before sending")).toBeTruthy();
     expect(screen.getByText(/GST registration is not set up/)).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open GST registration settings" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Download PDF" }).hasAttribute("disabled")).toBe(true);
-    expect(screen.getByRole("button", { name: "Print" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Print or save as PDF" }).hasAttribute("disabled")).toBe(true);
   });
 });

@@ -39,6 +39,7 @@ export function PurchasesPage() {
     {
       key: "supplier",
       header: "Supplier",
+      mobile: "title",
       render: (p) => (
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink">{p.supplier_name || "—"}</span>
@@ -75,6 +76,7 @@ export function PurchasesPage() {
       key: "total",
       header: "Total",
       align: "right",
+      mobile: "status",
       cellClassName: "whitespace-nowrap",
       render: (p) => <span className="money font-semibold text-ink">₹{formatAmount(p.total_minor)}</span>,
     },
