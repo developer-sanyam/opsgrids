@@ -34,6 +34,16 @@ const ASPECT_RATIO: Record<(typeof ASPECTS)[number], string> = {
 const DENSE_FROM = { stacked: 3, wide: 5 } as const;
 
 /**
+ * Under this canvas width the grid is two across whatever the merchant chose for phones.
+ *
+ * Four across at 390px is a ~80px tile with ~50px of words, a tap target well under a thumb, and a
+ * label that wraps six times; at 360 and 320 it is worse. Two across keeps the picture, the label
+ * and the count readable and every tile a target a finger can hit. Wider phones and tablets keep
+ * the merchant's own count.
+ */
+const TWO_ACROSS_BELOW = 400;
+
+/**
  * Entry points into the catalogue. Each tile is one link, not a card with a link inside it.
  *
  * Four styles. `tile` and `list` are words only and are what the trade themes ship. `photo` and
@@ -59,7 +69,8 @@ export function CategoryTiles({ settings, categories, stacked, width }: SectionR
   /* A list is one column by definition. Everything else honours the count for the width it is at —
      which is the fix: `stacked` used to force one column, so a phone got a stack of wide cards
      where every reference design shows a grid. */
-  const cols = style === "list" ? 1 : stacked ? mobileColumns : columns;
+  const phoneColumns = width < TWO_ACROSS_BELOW ? Math.min(mobileColumns, 2) : mobileColumns;
+  const cols = style === "list" ? 1 : stacked ? phoneColumns : columns;
   const dense = cols >= (stacked ? DENSE_FROM.stacked : DENSE_FROM.wide);
   const withPicture = style === "photo" || style === "compact";
   const blurbShows = showBlurb && !dense && (style === "tile" || style === "photo");

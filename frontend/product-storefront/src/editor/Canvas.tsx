@@ -16,6 +16,7 @@ import { ROW_HEIGHT, STACK_WIDTH } from "@/theme/schema";
 import { ThemeFrame } from "@/theme/render";
 import { useElementWidth } from "@/lib/useElementWidth";
 import { DEVICE_WIDTHS } from "@/ui/deviceWidths";
+import { useCoarsePointer } from "@/ui/useCoarsePointer";
 
 import type { Device } from "./document";
 import { dragTypeFrom, SECTION_DRAG_MIME } from "./dragTypes";
@@ -139,6 +140,7 @@ export function Canvas({
   const gap = tokens.space;
   // The width the page is composed at: the merchant's chosen preview, not this pane's width.
   const designWidth = DEVICE_WIDTHS[device] ?? DESKTOP_DESIGN_WIDTH;
+  const touch = useCoarsePointer();
   const stacked = designWidth < STACK_WIDTH;
   const editable = canEdit && !stacked;
 
@@ -294,8 +296,7 @@ export function Canvas({
                 <div className="p-4">
                   <InlineAlert tone="info" title="You're editing the phone width" live="off">
                     Sections run full width here and follow the order they sit in down the page, so
-                    there is nothing to move sideways. Alt with up or down still changes that order.
-                    Choose Desktop or Tablet above to lay the page out.
+                    there is nothing to move sideways. {touch ? "Move up and Move down on the Sections tab still change that order." : "Alt with up or down still changes that order. Choose Desktop or Tablet above to lay the page out."}
                   </InlineAlert>
                 </div>
               ) : null}

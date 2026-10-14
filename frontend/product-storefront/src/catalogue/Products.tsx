@@ -8,16 +8,14 @@ import {
   DataTable,
   EmptyState,
   ErrorState,
+  FilterBar,
   PageHeader,
   Pagination,
   RowActions,
   SampleChip,
-  SearchInput,
-  Select,
   Skeleton,
   StatusBadge,
   statusTone,
-  useDebouncedValue,
   useToast,
 } from "@opsgrids/ui";
 import type { Column, StatusTone, TableSelection } from "@opsgrids/ui";
@@ -41,11 +39,17 @@ const STATUS_TONE_OVERRIDE: Partial<Record<ProductStatus, StatusTone>> = {
 const WRITE = "storefront.catalogue.product.write";
 const READ = "storefront.catalogue.product.read";
 
+/** What a status is called on screen. The wire value is a lowercase slug and never shown as one. */
+const STATUS_LABEL: Record<ProductStatus, string> = {
+  draft: "Draft",
+  active: "Active",
+  archived: "Archived",
+};
+
 const STATUS_FILTER_OPTIONS = [
-  { value: "", label: "Any status" },
-  { value: "draft", label: "Draft" },
-  { value: "active", label: "Active" },
-  { value: "archived", label: "Archived" },
+  { value: "draft", label: STATUS_LABEL.draft },
+  { value: "active", label: STATUS_LABEL.active },
+  { value: "archived", label: STATUS_LABEL.archived },
 ];
 
 export function ProductsPage() {
@@ -53,8 +57,8 @@ export function ProductsPage() {
   const canWrite = useCan(WRITE, "ORG");
   const canRead = useCan(READ, "ORG");
   const [params] = useSearchParams();
-  const [rawQuery, setRawQuery] = useState(params.get("q") ?? "");
-  const query = useDebouncedValue(rawQuery);
+  // `FilterBar` debounces the typing itself and hands back the committed query.
+  const [query, setQuery] = useState(params.get("q") ?? "");
   const [status, setStatus] = useState<ProductStatus | "">("");
   const [categoryId, setCategoryId] = useState("");
   const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "updated_at", dir: "desc" });
@@ -68,8 +72,8 @@ export function ProductsPage() {
   const categories = useAsync(() => listCategories({ size: 200 }), []);
   const categoryOptions =
     categories.status === "success"
-      ? [{ value: "", label: "Any category" }, ...categories.data.items.map((c) => ({ value: c.id, label: c.label }))]
-      : [{ value: "", label: "Any category" }];
+      ? categories.data.items.map((c) => ({ value: c.id, label: c.label }))
+      : [];
 
   const sortKey = (sort.dir === "desc" ? `-${sort.key}` : sort.key) as ProductSort;
   const products = useAsync(
@@ -101,6 +105,13 @@ export function ProductsPage() {
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "That didn't work. Try again.");
     }
+  }
+
+  function clearFilters() {
+    setQuery("");
+    setStatus("");
+    setCategoryId("");
+    setPage(1);
   }
 
   const productSelection: TableSelection<ProductOut> | undefined =
@@ -143,7 +154,19 @@ export function ProductsPage() {
         eyebrow="Storefront"
         title="Products"
         description="Your catalogue — what buyers see on the storefront, and what the theme's product sections draw from."
-        actions={USE_FIXTURES ? <SampleChip title="Representative data — running on local fixtures" /> : null}
+        actions={
+          <>
+            {USE_FIXTURES ? <SampleChip title="Representative data — running on local fixtures" /> : null}
+            <Can permission={WRITE} scope="ORG">
+              <Button
+                onClick={() => setCreating(true)}
+                disabled={categories.status !== "success" || categories.data.items.length === 0}
+              >
+                New product
+              </Button>
+            </Can>
+          </>
+        }
       />
 
       {!canRead ? (
@@ -178,44 +201,43 @@ export function ProductsPage() {
                   </Button>
                 }
                 toolbar={
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <SearchInput
-                        label="Search products"
-                        placeholder="Code, name or brand"
-                        value={rawQuery}
-                        onChange={(e) => {
-                          setRawQuery(e.target.value);
+                  <FilterBar
+                    label="Filter products"
+                    search={{
+                      label: "Search products",
+                      placeholder: "Code, name or brand",
+                      value: query,
+                      onChange: (value) => {
+                        setQuery(value);
+                        setPage(1);
+                      },
+                    }}
+                    filters={[
+                      {
+                        key: "status",
+                        label: "Status",
+                        allLabel: "Any status",
+                        options: STATUS_FILTER_OPTIONS,
+                        value: status,
+                        onChange: (value) => {
+                          setStatus(value as ProductStatus | "");
                           setPage(1);
-                        }}
-                      />
-                      <Select
-                        label="Status"
-                        value={status}
-                        options={STATUS_FILTER_OPTIONS}
-                        onChange={(e) => {
-                          setStatus(e.target.value as ProductStatus | "");
+                        },
+                      },
+                      {
+                        key: "category",
+                        label: "Category",
+                        allLabel: "Any category",
+                        options: categoryOptions,
+                        value: categoryId,
+                        onChange: (value) => {
+                          setCategoryId(value);
                           setPage(1);
-                        }}
-                        containerClassName="w-40"
-                      />
-                      <Select
-                        label="Category"
-                        value={categoryId}
-                        options={categoryOptions}
-                        onChange={(e) => {
-                          setCategoryId(e.target.value);
-                          setPage(1);
-                        }}
-                        containerClassName="w-48"
-                      />
-                    </div>
-                    <Can permission={WRITE} scope="ORG">
-                      <Button onClick={() => setCreating(true)} disabled={categories.status !== "success" || categories.data.items.length === 0}>
-                        New product
-                      </Button>
-                    </Can>
-                  </div>
+                        },
+                      },
+                    ]}
+                    onClearAll={clearFilters}
+                  />
                 }
                 emptyState={
                   <EmptyState
@@ -229,14 +251,7 @@ export function ProductsPage() {
                     }
                     action={
                       query || status || categoryId ? (
-                        <Button
-                          variant="outline"
-                          onClick={() => {
-                            setRawQuery("");
-                            setStatus("");
-                            setCategoryId("");
-                          }}
-                        >
+                        <Button variant="outline" onClick={clearFilters}>
                           Clear filters
                         </Button>
                       ) : canWrite && categories.status === "success" && categories.data.items.length > 0 ? (
@@ -272,7 +287,7 @@ export function ProductsPage() {
                       header: "Status",
                       mobile: "status",
                       render: (p) => (
-                        <StatusBadge tone={STATUS_TONE_OVERRIDE[p.status] ?? statusTone(p.status) ?? "neutral"} label={p.status} />
+                        <StatusBadge tone={STATUS_TONE_OVERRIDE[p.status] ?? statusTone(p.status) ?? "neutral"} label={STATUS_LABEL[p.status]} />
                       ),
                     },
                     {

@@ -40,6 +40,7 @@ export function Faq({ settings, width }: SectionRenderProps) {
               }}
             >
               <summary
+                data-st-target=""
                 style={{
                   fontFamily: T.fontHeading,
                   fontWeight: 700,

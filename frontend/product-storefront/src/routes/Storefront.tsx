@@ -1,8 +1,8 @@
 import { useCallback, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import { useAsync } from "@opsgrids/client";
-import { LayoutIcon, Select } from "@opsgrids/ui";
+import { LayoutIcon, Select, TABLET_QUERY, useMediaQuery } from "@opsgrids/ui";
 
 import { getStore, getStoreBrand, listCategories, listProducts, USE_FIXTURES } from "@/api/client";
 import type { Category, Product } from "@/api/types";
@@ -19,6 +19,7 @@ import {
   DeviceToggle,
   EmptyState,
   ErrorState,
+  LinkButton,
   PageHeader,
   SampleChip,
   Skeleton,
@@ -123,6 +124,9 @@ export function StorefrontPage() {
   const state = useAsync(load, [attempt]);
 
   const [device, setDevice] = useState<DeviceKey>("desktop");
+  // The width presets and the canvas-width line are for judging a layout from a desk. On a phone
+  // the screen is the width, and both are noise in a header that has no room for them.
+  const roomy = useMediaQuery(TABLET_QUERY, true);
   const canvasRef = useRef<HTMLDivElement>(null);
   const measured = useElementWidth(canvasRef, 1200);
   const fixedWidth = DEVICE_WIDTHS[device];
@@ -164,7 +168,7 @@ export function StorefrontPage() {
             {USE_FIXTURES ? (
               <SampleChip title="Representative data — running on local fixtures" />
             ) : null}
-            <DeviceToggle value={device} onChange={setDevice} />
+            {roomy ? <DeviceToggle value={device} onChange={setDevice} /> : null}
           </div>
         }
       />
@@ -178,11 +182,13 @@ export function StorefrontPage() {
           onChange={(event) => void navigate(storeHref(event.target.value, CONSOLE_STORE_BASE))}
           containerClassName="w-full max-w-xs"
         />
-        <p className="text-xs text-muted" aria-live="polite">
-          {width < STACK_WIDTH
-            ? `Canvas ${Math.round(width)}px — below ${STACK_WIDTH}px, so every section is full width and stacks in order.`
-            : `Canvas ${Math.round(width)}px — sections sit on the 12-column grid.`}
-        </p>
+        {roomy ? (
+          <p className="text-xs text-muted" aria-live="polite">
+            {width < STACK_WIDTH
+              ? `Canvas ${Math.round(width)}px — below ${STACK_WIDTH}px, so every section is full width and stacks in order.`
+              : `Canvas ${Math.round(width)}px — sections sit on the 12-column grid.`}
+          </p>
+        ) : null}
       </div>
 
       {state.status === "error" ? (
@@ -202,12 +208,9 @@ export function StorefrontPage() {
             title="No theme adopted yet"
             description="Your store has no pages because no theme has been adopted. Pick one from the gallery and its pages are copied into your store."
             action={
-              <Link
-                to="/"
-                className="inline-flex h-11 items-center rounded-full bg-accent px-5 font-semibold text-white transition-colors hover:bg-accent-strong"
-              >
+              <LinkButton to="/" variant="primary">
                 Pick a theme
-              </Link>
+              </LinkButton>
             }
           />
         </Card>

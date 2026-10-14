@@ -5,3 +5,44 @@
    `@opsgrids/ui`. Tailwind's source detection stops at node_modules, so point the scanner at the
    design system's components explicitly; without this their classes are never generated. */
 @source "../../opsgrids-ui/src";
+
+/*
+ * The store a buyer sees, on a phone or a touch screen.
+ *
+ * The renderer styles itself from the merchant's tokens and draws each control compactly, so the
+ * console's own touch rules (`hit-44`, the 16px field) never reach it: they key off classes this
+ * folder does not use, and an inline `font-size` outranks any stylesheet rule that is not
+ * `!important`. These rules therefore hang off data attributes the primitives set, apply only where
+ * a finger is the pointer (a 1280px preview in a desktop browser is untouched), and say what a
+ * control must be rather than re-skinning it.
+ *
+ * - 44px is the minimum target. An action is 46 because it carries a 1px border each side, and a
+ *   quantity stepper is 44 per button inside the same border: ADD and the stepper that replaces it
+ *   stand the same height, so pressing ADD moves nothing.
+ * - 16px is the smallest a text field may be: iOS Safari zooms the page on focus below it and does
+ *   not zoom back.
+ */
+@media (max-width: 767px), (pointer: coarse) {
+  [data-storefront-frame] [data-st-action] {
+    min-height: calc(2.75rem + 2px);
+    min-width: 2.75rem;
+  }
+  [data-storefront-frame] [data-st-stepper] > button {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
+  [data-storefront-frame] a[data-st-target] {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.75rem;
+  }
+  [data-storefront-frame] summary[data-st-target] {
+    min-height: 2.75rem;
+    padding-block: 0.625rem;
+    box-sizing: border-box;
+  }
+  [data-storefront-frame] [data-st-field] {
+    min-height: 2.75rem;
+    font-size: 1rem !important;
+  }
+}

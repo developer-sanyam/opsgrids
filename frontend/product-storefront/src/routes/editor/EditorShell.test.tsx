@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Announcer } from "@opsgrids/ui";
 
@@ -516,5 +516,65 @@ describe("the page manager", () => {
 
     expect(screen.queryByRole("button", { name: "Delete Home" })).toBeNull();
     expect(screen.getByRole("button", { name: "Delete About" })).toBeDefined();
+  });
+});
+
+describe("on a phone", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function phone() {
+    // Below the tablet breakpoint: `(min-width: 768px)` does not match.
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }));
+  }
+
+  it("shows one pane at a time as Sections, Page and Settings tabs, on the page by default", async () => {
+    phone();
+    const user = userEvent.setup();
+    renderShell();
+
+    const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
+    expect(tabs).toEqual(["Sections", "Page", "Settings"]);
+    expect(screen.getByRole("tab", { name: "Page" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("This page is empty")).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Add Test block" })).toBeNull();
+
+    await user.click(screen.getByRole("tab", { name: "Sections" }));
+    expect(screen.getByRole("button", { name: "Add Test block" })).toBeDefined();
+    expect(screen.queryByText("This page is empty")).toBeNull();
+
+    await user.click(screen.getByRole("tab", { name: "Settings" }));
+    expect(screen.getByText(/Theme and brand/)).toBeDefined();
+  });
+
+  it("drops the width presets and the pane toggles, which the tabs and the screen replace", () => {
+    phone();
+    renderShell();
+    expect(screen.queryByRole("group", { name: "Preview width" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^(Hide|Show) (sections|settings)$/ })).toBeNull();
+  });
+
+  it("keeps Save in a bar above the bottom navigation, and saves from it", async () => {
+    phone();
+    const user = userEvent.setup();
+    const { onSave } = renderShell();
+    await user.click(screen.getByRole("tab", { name: "Sections" }));
+    await user.click(screen.getByRole("button", { name: "Add Test block" }));
+
+    const save = screen.getByRole("button", { name: "Save changes" });
+    expect(screen.getAllByRole("button", { name: "Save changes" })).toHaveLength(1);
+    const bar = save.closest("div.sticky");
+    expect(bar).not.toBeNull();
+    expect((bar as HTMLElement).style.bottom).toBe("var(--shell-bottom-inset)");
+    expect(within(bar as HTMLElement).getByText("Unsaved changes")).toBeDefined();
+
+    await user.click(save);
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
   });
 });

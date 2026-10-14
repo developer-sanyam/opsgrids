@@ -72,7 +72,8 @@ export function PreviewBar() {
 
   return (
     <div
-      className="pointer-events-none fixed inset-x-0 bottom-0 z-50 flex justify-start px-3 pb-3"
+      // `sheet-safe-bottom` keeps the pill clear of the home indicator, which a bare `bottom-0` ignores.
+      className="sheet-safe-bottom pointer-events-none fixed inset-x-0 bottom-0 z-50"
       style={{
         transform: visible ? "none" : "translateY(calc(100% + 1rem))",
         opacity: visible ? 1 : 0,
@@ -81,6 +82,7 @@ export function PreviewBar() {
         transition: reducedMotion ? "none" : "transform 200ms ease, opacity 200ms ease",
       }}
     >
+      <div className="flex justify-start px-3 pb-3">
       <nav
         aria-label="Preview controls"
         className="rise pointer-events-auto flex items-center gap-1 rounded-full border border-line bg-surface p-1 shadow-float"
@@ -92,17 +94,18 @@ export function PreviewBar() {
         </span>
         <Link
           to="/editor"
-          className="inline-flex h-8 items-center rounded-full px-3 text-sm font-semibold text-ink transition-colors hover:bg-ground"
+          className="inline-flex min-h-11 items-center rounded-full px-3 text-sm font-semibold text-ink transition-colors hover:bg-ground"
         >
           Editor
         </Link>
         <Link
           to="/"
-          className="inline-flex h-8 items-center rounded-full px-3 text-sm font-semibold text-ink transition-colors hover:bg-ground"
+          className="inline-flex min-h-11 items-center rounded-full px-3 text-sm font-semibold text-ink transition-colors hover:bg-ground"
         >
           Gallery
         </Link>
       </nav>
+      </div>
     </div>
   );
 }

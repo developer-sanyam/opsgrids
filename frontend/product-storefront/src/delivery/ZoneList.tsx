@@ -9,8 +9,8 @@ import {
   EmptyState,
   InlineAlert,
   MapPinIcon,
+  RowActions as RowActionsMenu,
   Tag,
-  cn,
 } from "@opsgrids/ui";
 import type { Column } from "@opsgrids/ui";
 
@@ -74,31 +74,19 @@ interface RowActions {
  * (ADR-0003 §3). The write controls are hidden only so a read-only merchant is not offered a form
  * that ends in a 403.
  */
-function Actions({
-  zone,
-  actions,
-  grow = false,
-}: {
-  zone: ZoneOut;
-  actions: RowActions;
-  grow?: boolean;
-}) {
+function Actions({ zone, actions }: { zone: ZoneOut; actions: RowActions }) {
   return (
-    <div className={cn("flex items-center gap-2", grow ? "flex-wrap" : "justify-end")}>
-      <Button size="sm" variant="outline" onClick={() => actions.onPostalCodes(zone)}>
-        Postal codes
-      </Button>
-      {actions.canWrite ? (
-        <>
-          <Button size="sm" variant="ghost" onClick={() => actions.onEdit(zone)}>
-            Edit
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => actions.onDelete(zone)}>
-            Delete
-          </Button>
-        </>
-      ) : null}
-    </div>
+    <RowActionsMenu
+      label={zone.name}
+      // Postal codes stays in view; Edit and Delete go behind one menu, where Delete is red and a
+      // thumb has to mean it. Three equal buttons put the destructive one beside the safe ones.
+      inlineLimit={2}
+      actions={[
+        { label: "Postal codes", onSelect: () => actions.onPostalCodes(zone) },
+        { label: "Edit", onSelect: () => actions.onEdit(zone), hidden: !actions.canWrite },
+        { label: "Delete", tone: "danger", onSelect: () => actions.onDelete(zone), hidden: !actions.canWrite },
+      ]}
+    />
   );
 }
 
@@ -247,7 +235,7 @@ export function ZoneList({
                 </div>
                 <ModeCell zone={zone} />
                 <MoneyCell zone={zone} currency={store.currency} />
-                <Actions zone={zone} actions={actions} grow />
+                <Actions zone={zone} actions={actions} />
               </li>
             ))}
           </ul>

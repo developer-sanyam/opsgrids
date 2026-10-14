@@ -313,13 +313,13 @@ export function ActionLink({
   }
   if (decision.kind === "external") {
     return (
-      <a href={decision.href} style={style} {...named}>
+      <a href={decision.href} style={style} data-st-action="" {...named}>
         {children}
       </a>
     );
   }
   return (
-    <Link to={decision.href} style={style} {...named}>
+    <Link to={decision.href} style={style} data-st-action="" {...named}>
       {children}
     </Link>
   );
@@ -355,6 +355,7 @@ export function ActionButton({
     <button
       type={type}
       disabled={disabled}
+      data-st-action=""
       {...(ariaLabel ? { "aria-label": ariaLabel } : {})}
       {...(onClick ? { onClick } : {})}
       style={{
@@ -416,6 +417,7 @@ export function QuantityStepper({
 
   return (
     <span
+      data-st-stepper=""
       style={{
         display: "inline-flex",
         alignItems: "stretch",
@@ -539,6 +541,7 @@ export function StoreField({
         {...(inputMode ? { inputMode } : {})}
         {...(autoComplete ? { autoComplete } : {})}
         {...(maxLength === undefined ? {} : { maxLength })}
+        data-st-field=""
         {...(invalid ? { "aria-invalid": true, "aria-describedby": errorId } : {})}
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -589,7 +592,7 @@ export function DiscountBadge({ percent, style }: { percent: number; style?: CSS
       style={{
         display: "inline-block",
         fontFamily: T.fontBody,
-        fontSize: "0.6875rem",
+        fontSize: "0.75rem",
         fontWeight: 800,
         lineHeight: 1.15,
         letterSpacing: "0.02em",
@@ -747,6 +750,7 @@ export function VariantSelect({
       id={selectId}
       {...binding}
       {...(hideLabel ? { "aria-label": label } : {})}
+      data-st-field=""
       style={{
         fontFamily: T.fontBody,
         fontSize: "0.8125rem",

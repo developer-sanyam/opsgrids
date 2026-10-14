@@ -249,6 +249,9 @@ export function LiveStorePage() {
           basePath={LIVE_BASE}
         />
       </div>
+      {/* Clearance for the preview pill (52px, 12px off the edge) and the home-indicator inset, on
+          top of the padding above: the store's last line must end clear of the pill, not under it. */}
+      <div aria-hidden className="sheet-safe-bottom min-h-12" />
     </div>
   );
 }

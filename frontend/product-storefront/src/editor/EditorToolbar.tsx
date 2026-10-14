@@ -24,6 +24,12 @@ interface EditorToolbarProps {
   canRedo: boolean;
   canEdit: boolean;
   saving: boolean;
+  /**
+   * A phone: one column of controls, no width presets (the device is the width) and no show/hide
+   * toggles (the Sections / Page / Settings tabs are how panes are chosen), and Save lives in a bar
+   * at the foot of the screen rather than here.
+   */
+  phone?: boolean;
   paletteOpen: boolean;
   inspectorOpen: boolean;
   onPage: (pageId: string) => void;
@@ -47,6 +53,7 @@ export function EditorToolbar({
   canRedo,
   canEdit,
   saving,
+  phone = false,
   paletteOpen,
   inspectorOpen,
   onPage,
@@ -59,6 +66,58 @@ export function EditorToolbar({
   onSave,
   onDiscard,
 }: EditorToolbarProps) {
+  const placeholderTag =
+    placeholderCount > 0 ? (
+      // A warning, not a block: saving is still allowed, but a theme's stand-in text (its bracketed
+      // [Customer name]) must not reach buyers looking like a real testimonial without the
+      // merchant having been told.
+      <Tag tone="warning">
+        {placeholderCount === 1 ? "1 section" : `${placeholderCount} sections`} still have sample text to
+        replace
+      </Tag>
+    ) : null;
+  const statusTag = dirty ? (
+    <Tag tone="warning">Unsaved changes</Tag>
+  ) : (
+    <Tag tone="neutral">All changes saved</Tag>
+  );
+
+  if (phone) {
+    return (
+      <div className="flex flex-col gap-3 border-b border-line bg-surface p-4">
+        <div className="flex items-end gap-2">
+          <Select
+            label="Page"
+            value={pageId}
+            onChange={(event) => onPage(event.target.value)}
+            options={pages.map((page) => ({ value: page.id, label: `${page.name} — ${page.route}` }))}
+            containerClassName="min-w-0 flex-1"
+          />
+          <Button variant="outline" onClick={onManagePages}>
+            Pages
+          </Button>
+        </div>
+        {canEdit ? (
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={onUndo} disabled={!canUndo}>
+              Undo
+            </Button>
+            <Button variant="outline" size="sm" onClick={onRedo} disabled={!canRedo}>
+              Redo
+            </Button>
+            <Button variant="ghost" size="sm" onClick={onDiscard} disabled={!dirty || saving}>
+              Discard
+            </Button>
+          </div>
+        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {statusTag}
+          {placeholderTag}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-wrap items-end justify-between gap-4 border-b border-line bg-surface px-6 py-3">
       <div className="flex flex-wrap items-end gap-4">
@@ -97,18 +156,8 @@ export function EditorToolbar({
       </div>
 
       <div className="flex flex-wrap items-center gap-2 pb-1">
-        {/* A warning, not a block: saving is still allowed, but a theme's [Customer name] must not
-            reach buyers looking like a real testimonial without the merchant having been told. */}
-        {placeholderCount > 0 ? (
-          <Tag tone="warning">
-            {placeholderCount === 1 ? "1 section" : `${placeholderCount} sections`} still show [placeholder] text
-          </Tag>
-        ) : null}
-        {dirty ? (
-          <Tag tone="warning">Unsaved changes</Tag>
-        ) : (
-          <Tag tone="neutral">All changes saved</Tag>
-        )}
+        {placeholderTag}
+        {statusTag}
 
         {canEdit ? (
           <>

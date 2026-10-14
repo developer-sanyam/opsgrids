@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 
 import { useAsync } from "@opsgrids/client";
 import { CheckIcon, LayoutIcon } from "@opsgrids/ui";
@@ -19,9 +19,12 @@ import type { StoreDoc, Theme } from "@/theme/schema";
 import {
   Button,
   Card,
+  ConfirmDialog,
   EmptyState,
   ErrorState,
   InlineAlert,
+  LinkButton,
+  Menu,
   PageHeader,
   SampleChip,
   Skeleton,
@@ -80,6 +83,7 @@ export function GalleryPage() {
   const [confirmKey, setConfirmKey] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [failure, setFailure] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
   const store = adopted === undefined ? (state.status === "success" ? state.data.store : null) : adopted;
   const currentThemeName =
@@ -111,9 +115,11 @@ export function GalleryPage() {
     setFailure(null);
     try {
       await removeStore();
+      setConfirmRemove(false);
       setAdopted(null);
       setAnnouncement("Store removed. Adopt a theme to start again.");
     } catch (error) {
+      setConfirmRemove(false);
       setFailure(error instanceof Error ? error.message : "The store couldn't be removed.");
     } finally {
       setBusyKey(null);
@@ -126,41 +132,38 @@ export function GalleryPage() {
         eyebrow="Storefront"
         title="Pick a theme"
         description="Each theme ships a full set of pages — home, catalogue and line detail — already composed. Adopting one copies its pages into your store, where you can edit them."
+        meta={
+          USE_FIXTURES ? <SampleChip title="Representative data — running on local fixtures" /> : undefined
+        }
         actions={
-          /* Wraps: there are four controls here now, and at 360px a single row would push the
-             page sideways instead of stacking. */
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            {USE_FIXTURES ? (
-              <SampleChip title="Representative data — running on local fixtures" />
-            ) : null}
-            {store ? (
-              <Button
-                variant="outline"
-                onClick={() => void runRemove()}
-                disabled={busyKey !== null}
-              >
-                {busyKey === "__remove__" ? "Removing…" : "Remove this store"}
-              </Button>
-            ) : null}
-            {/* Navigation is an `<a>`, never a button that navigates — the house pattern for a
-                link wearing the primary action's skin (see product-hrms `ComingSoon`).
+          /* Navigation is an `<a>`, never a button that navigates — the house pattern for a link
+             wearing a button's skin (`LinkButton`).
 
-                Two destinations, named apart: one frames the store inside the console, the other
-                is the page a buyer gets. Calling both "Preview" would hide the difference that
-                the second route exists to make. */}
-            <Link
-              to={CONSOLE_STORE_BASE}
-              className="inline-flex h-11 items-center rounded-full border border-line bg-surface px-5 font-semibold text-ink transition-colors hover:bg-ground"
-            >
-              Preview in the console
-            </Link>
-            <Link
-              to={LIVE_BASE}
-              className="inline-flex h-11 items-center rounded-full bg-accent px-5 font-semibold text-white transition-colors hover:bg-accent-strong"
-            >
+             Two destinations, named apart: one frames the store inside the console, the other
+             is the page a buyer gets. Calling both "Preview" would hide the difference that
+             the second route exists to make. */
+          <>
+            {store ? (
+              <Menu
+                label="Store options"
+                trigger="icon"
+                align="end"
+                items={[
+                  {
+                    label: "Remove this store",
+                    tone: "danger",
+                    disabled: busyKey !== null,
+                    disabledReason: "Another change is still running.",
+                    onSelect: () => setConfirmRemove(true),
+                  },
+                ]}
+              />
+            ) : null}
+            <LinkButton to={CONSOLE_STORE_BASE}>Preview in the console</LinkButton>
+            <LinkButton to={LIVE_BASE} variant="primary">
               Open the live store
-            </Link>
-          </div>
+            </LinkButton>
+          </>
         }
       />
 
@@ -184,16 +187,6 @@ export function GalleryPage() {
           tone="info"
           live="off"
           title={`Your store is running the ${currentThemeName} theme`}
-          action={
-            // Safe to send them straight to the buyer's view: this alert only renders when a
-            // theme has been adopted, which is the one condition `/live` needs.
-            <Link
-              to={LIVE_BASE}
-              className="inline-flex h-9 items-center rounded-full border border-line bg-surface px-4 text-sm font-semibold text-ink transition-colors hover:bg-ground"
-            >
-              Open the live store
-            </Link>
-          }
         >
           Adopting a different theme replaces every page with that theme's pages. Your brand details
           are kept; edits to the current pages are not.
@@ -274,12 +267,7 @@ export function GalleryPage() {
 
                   <div className="mt-auto flex flex-wrap items-center gap-2">
                     {adoption === "current" ? (
-                      <Link
-                        to={CONSOLE_STORE_BASE}
-                        className="inline-flex h-11 items-center rounded-full border border-line bg-surface px-5 font-semibold text-ink transition-colors hover:bg-ground"
-                      >
-                        Preview in the console
-                      </Link>
+                      <LinkButton to={CONSOLE_STORE_BASE}>Preview in the console</LinkButton>
                     ) : confirmKey === theme.key ? (
                       <>
                         <Button
@@ -315,6 +303,17 @@ export function GalleryPage() {
           })}
         </ul>
       ) : null}
+
+      <ConfirmDialog
+        open={confirmRemove}
+        onClose={() => setConfirmRemove(false)}
+        onConfirm={() => void runRemove()}
+        title="Remove this store?"
+        body="Every page in your store is deleted, and the live store goes offline until you adopt a theme again. Your products and categories are not touched. This can't be undone."
+        confirmLabel="Remove this store"
+        pendingLabel="Removing…"
+        pending={busyKey === "__remove__"}
+      />
     </div>
   );
 }

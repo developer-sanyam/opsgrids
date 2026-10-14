@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { useAsync } from "@opsgrids/client";
@@ -14,6 +14,7 @@ import {
   Skeleton,
   TruckIcon,
   cn,
+  useScrollFade,
 } from "@opsgrids/ui";
 
 import { getStoreSettings, listZones, USE_FIXTURES } from "./api";
@@ -69,6 +70,8 @@ export function DeliveryPage() {
   const [editing, setEditing] = useState<{ zone: ZoneOut | null } | null>(null);
   const [codesFor, setCodesFor] = useState<ZoneOut | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  const viewsRef = useRef<HTMLUListElement>(null);
+  const viewsFade = useScrollFade(viewsRef);
 
   const canWrite = allows(access.write);
 
@@ -111,22 +114,26 @@ export function DeliveryPage() {
       ) : null}
 
       <nav aria-label="Delivery sections">
-        {/* Wraps rather than scrolls. Measured in Chrome at 390px: the four pills come to just
-            over the viewport, so a scroll rail clipped "Demand" at the edge with no affordance —
-            a control that looks broken rather than scrollable. Two short rows cost nothing. */}
-        <ul className="m-0 flex list-none flex-wrap gap-2 p-0">
+        {/* One row that scrolls sideways when the four do not fit, with the design system's edge
+            fade saying there is more — the earlier version scrolled with no sign of it and clipped
+            "Demand" at the edge, which is the failure the fade exists to prevent. */}
+        <ul
+          ref={viewsRef}
+          data-fade={viewsFade}
+          className="scroll-fade m-0 flex list-none gap-2 overflow-x-auto p-0"
+        >
           {VIEWS.map((entry) => {
             const active = entry.key === view;
             const Icon = entry.icon;
             return (
-              <li key={entry.key}>
+              <li key={entry.key} className="shrink-0">
                 {/* An `<a>`, not a button that navigates: these are four addresses, so they open
                     in a new tab, go back, and can be linked to. */}
                 <Link
                   to={{ search: `?view=${entry.key}` }}
                   aria-current={active ? "page" : undefined}
                   className={cn(
-                    "inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-full px-4 text-sm font-semibold transition-colors",
+                    "inline-flex min-h-11 items-center gap-2 whitespace-nowrap rounded-full px-4 text-sm font-semibold transition-colors",
                     active ? "bg-accent text-white" : "text-muted hover:bg-ground hover:text-ink",
                   )}
                 >

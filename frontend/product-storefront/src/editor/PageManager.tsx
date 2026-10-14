@@ -7,6 +7,7 @@ import { Button, cn, Dialog, Select, Tag, TextField } from "@opsgrids/ui";
 
 import type { NavPlacement, PageDoc } from "@/theme/schema";
 import { navPlacement } from "@/theme/store";
+import { useCoarsePointer } from "@/ui/useCoarsePointer";
 
 import {
   checkRoute,
@@ -117,6 +118,7 @@ export function PageManager({
   onReorder,
   onDelete,
 }: PageManagerProps) {
+  const touch = useCoarsePointer();
   const [mode, setMode] = useState<RowMode>({ kind: "idle" });
   const bodyRef = useRef<HTMLDivElement>(null);
   const initialFocus = useRef<HTMLElement | null>(null);
@@ -160,7 +162,9 @@ export function PageManager({
             </h3>
             <p className="text-xs text-muted">
               {canEdit
-                ? "Alt with up or down moves a page through the order. Choosing a page opens it on the canvas."
+                ? touch
+                  ? "Up and Down move a page through the order. Choosing a page opens it on the canvas."
+                  : "Alt with up or down moves a page through the order. Choosing a page opens it on the canvas."
                 : "Choosing a page opens it on the canvas."}
             </p>
           </div>
