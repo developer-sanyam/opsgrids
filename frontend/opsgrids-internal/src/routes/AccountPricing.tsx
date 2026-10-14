@@ -38,7 +38,7 @@ const INPUT =
   "h-11 rounded-tile bg-ground px-3 text-base text-ink sm:text-sm placeholder:text-faint focus:outline-none focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-60";
 
 function toggleClass(active: boolean): string {
-  return `rounded-tile border px-3 py-2.5 text-left text-sm font-semibold transition-colors ${
+  return `min-h-11 rounded-tile border px-3 py-2.5 text-left text-sm font-semibold transition-colors ${
     active ? "border-accent bg-accent-soft text-accent-ink" : "border-line text-muted hover:bg-ground"
   }`;
 }
@@ -104,7 +104,7 @@ function ProductHistory({ product }: { product: ProductPricing }) {
 
   return (
     <details className="rounded-tile border border-line px-4 py-3">
-      <summary className="cursor-pointer text-sm font-semibold text-ink-soft">
+      <summary className="flex min-h-11 cursor-pointer flex-wrap items-center text-sm font-semibold text-ink-soft">
         Price history — {product.product_name}
         <span className="ml-2 text-xs font-normal text-faint">
           ({sorted.length} {sorted.length === 1 ? "change" : "changes"})

@@ -70,7 +70,7 @@ export function ModulesGrid() {
     <section aria-label="Your modules" className="flex flex-col gap-3 md:hidden">
       <div className="flex items-center justify-between">
         <h2 className="text-base font-bold text-ink">Your Modules</h2>
-        <Link to="/products" className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent">
+        <Link to="/products" className="hit-44 relative text-sm font-semibold text-accent-ink transition-colors hover:text-accent">
           View All
         </Link>
       </div>

@@ -123,7 +123,7 @@ export function RequestDetailPage() {
       <button
         type="button"
         onClick={() => navigate("/requests")}
-        className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
+        className="hit-44 relative inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
       >
         <ArrowLeftIcon className="size-4" />
         Back to requests

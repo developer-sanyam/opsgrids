@@ -1,10 +1,8 @@
 export { Card } from "./Card";
-export { Button } from "./Button";
-export { Pill } from "./Pill";
+export { Button, Pill, SearchInput } from "@opsgrids/ui";
 export { Tag } from "./Tag";
 export { Avatar } from "./Avatar";
 export { OrgIdentity } from "./OrgIdentity";
-export { SearchInput } from "./SearchInput";
 export { PageHeader } from "./PageHeader";
 export { ThemeToggle } from "./ThemeToggle";
 export { useNavGroups } from "./useNavGroups";

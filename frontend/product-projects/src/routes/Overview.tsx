@@ -319,7 +319,7 @@ export function OverviewPage() {
             title="Project progress"
             subtitle="Active projects, soonest target date first"
             action={
-              <Link to="/portfolio" className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent">
+              <Link to="/portfolio" className="hit-44 relative text-sm font-semibold text-accent-ink transition-colors hover:text-accent">
                 View all
               </Link>
             }
@@ -381,7 +381,7 @@ export function OverviewPage() {
           <SectionHeader
             title="My tasks"
             action={
-              <Link to="/board" className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent">
+              <Link to="/board" className="hit-44 relative text-sm font-semibold text-accent-ink transition-colors hover:text-accent">
                 View all
               </Link>
             }
@@ -407,7 +407,7 @@ export function OverviewPage() {
           <SectionHeader
             title="Deadlines"
             action={
-              <Link to="/milestones" className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent">
+              <Link to="/milestones" className="hit-44 relative text-sm font-semibold text-accent-ink transition-colors hover:text-accent">
                 View all
               </Link>
             }
