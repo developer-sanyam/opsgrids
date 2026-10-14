@@ -19,7 +19,7 @@ import pytest
 
 import app.worker as worker
 from app.cron import FilingReclaimSweep
-from app.supervise import LoopExited, run_supervised
+from platform_core.supervise import LoopExited, run_supervised
 
 
 @pytest.fixture

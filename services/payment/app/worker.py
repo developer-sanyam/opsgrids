@@ -9,7 +9,7 @@ thing that does, and it therefore has to run wherever payment runs. It does so h
 change to the memory budget, the same fold `subscription`, `account` and `approval` made
 (ADR-0013's memory-budget erratum).
 
-The two loops are supervised (`app/supervise.py`): either one returning or raising ends the
+The two loops are supervised (`platform_core.supervise`): either one returning or raising ends the
 process non-zero so the orchestrator restarts it, and the sweep's own per-tick guard
 (`StuckChargeSweep.run`) means a failing tick backs off instead of ending anything — a bad pass
 never takes the consumers down with it.
@@ -26,7 +26,6 @@ from app.checkout.cron import build_poller
 from app.collections.cron import build_expiry_sweep
 from app.config import announce_test_mode, settings
 from app.cron import build_sweep
-from app.supervise import run_supervised
 from platform_core.db import (
     assert_app_role,
     assert_outbox_role,
@@ -35,6 +34,7 @@ from platform_core.db import (
     init_outbox_engine,
 )
 from platform_core.logging import get_logger
+from platform_core.supervise import run_supervised
 
 log = get_logger("payment.worker")
 
