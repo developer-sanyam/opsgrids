@@ -16,3 +16,75 @@
     "Spline Sans Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
     Consolas, "Liberation Mono", monospace;
 }
+
+/* ------------------------------------------------------------------ printable invoice
+   The sheet is A4 on screen and on paper. `page: invoice` scopes the page box to the document, so
+   printing any other screen in this app is untouched. Margins sit inside the 12-15 mm band; the
+   bottom is deeper to hold the per-page footer. */
+@page invoice {
+  size: A4;
+  margin: 14mm 12mm 18mm;
+}
+
+.invoice-sheet {
+  width: 100%;
+  max-width: 210mm;
+  min-height: 297mm;
+  margin-inline: auto;
+  padding: 12mm;
+  box-sizing: border-box;
+  box-shadow: var(--shadow-card);
+  border-radius: var(--radius-card);
+}
+
+@media (max-width: 40rem) {
+  .invoice-sheet {
+    padding: 16px;
+    min-height: 0;
+  }
+}
+
+.invoice-footer {
+  border-top: 1px solid var(--color-line);
+  padding-top: 8px;
+  margin-top: auto;
+}
+
+@media print {
+  .invoice-sheet {
+    page: invoice;
+    max-width: none;
+    min-height: 0;
+    padding: 0;
+    margin: 0;
+    box-shadow: none;
+    border-radius: 0;
+    background: none;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  html,
+  body {
+    background: none;
+  }
+
+  /* Repeat the column heads when the items run onto a second page, and never split a row. */
+  .invoice-lines thead {
+    display: table-header-group;
+  }
+  .invoice-lines tr {
+    break-inside: avoid;
+  }
+
+  /* Repeated at the foot of every page. Fixed boxes print on each page in Chromium and Firefox;
+     the page margin leaves the room, so the flow never runs underneath it. */
+  .invoice-footer {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    margin: 0;
+    background: none;
+  }
+}

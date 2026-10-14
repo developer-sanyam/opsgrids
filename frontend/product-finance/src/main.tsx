@@ -33,6 +33,9 @@ if (AUTH_ORIGIN) configureAuthOrigin(AUTH_ORIGIN);
 const InvoiceNewPage = lazy(() =>
   import("./routes/InvoiceNew").then((m) => ({ default: m.InvoiceNewPage })),
 );
+const InvoicePrintPage = lazy(() =>
+  import("./routes/InvoicePrint").then((m) => ({ default: m.InvoicePrintPage })),
+);
 const ImsPage = lazy(() => import("./routes/Ims").then((m) => ({ default: m.ImsPage })));
 const ImsDetailPage = lazy(() =>
   import("./routes/ImsDetail").then((m) => ({ default: m.ImsDetailPage })),
@@ -86,6 +89,17 @@ const router = createBrowserRouter([
           />
         ) : (
           <LoginPage />
+        ),
+      },
+      {
+        // The printable document has no app chrome: a sidebar has no place on a sent invoice.
+        path: "/invoices/:id/print",
+        element: (
+          <RequireAuth>
+            <Suspense fallback={<RouteFallback />}>
+              <InvoicePrintPage />
+            </Suspense>
+          </RequireAuth>
         ),
       },
       {

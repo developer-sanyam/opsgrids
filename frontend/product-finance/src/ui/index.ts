@@ -60,6 +60,7 @@ export { AgingBreakdown } from "./AgingBreakdown";
 export { InvoiceStatusPill, PaymentMethodBadge } from "./StatusPill";
 export {
   FilingStatusPill,
+  GST_PORTAL_CONNECTED,
   ImsStatusPill,
   PortalSimulatedNotice,
   SampleDataChip,
