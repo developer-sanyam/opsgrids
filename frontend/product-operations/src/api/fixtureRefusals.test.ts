@@ -76,6 +76,18 @@ describe("a fixture create that the server would refuse", () => {
     });
   });
 
+  it("generates the next ITM- code for an item created without a SKU", async () => {
+    const { client, fixtures } = await fixtureMode();
+    const warehouse = fixtures.WAREHOUSES[0];
+    if (warehouse === undefined) throw new Error("no fixture warehouse");
+    const input = { name: "Auto", category: "raw_materials" as const, warehouse: warehouse.name, uom: "pcs" };
+
+    const first = await client.createInventoryItem(input);
+    const second = await client.createInventoryItem(input);
+    expect(first.sku).toMatch(/^ITM-\d{6}$/);
+    expect(Number(second.sku.slice(4))).toBe(Number(first.sku.slice(4)) + 1);
+  });
+
   it("answers a category code that exists with a 409, and a parent that does not with a 422", async () => {
     const { client, fixtures, ApiError } = await fixtureMode();
     const category = fixtures.ITEM_CATEGORIES[0];

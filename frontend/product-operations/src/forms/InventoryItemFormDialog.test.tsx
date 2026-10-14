@@ -79,16 +79,57 @@ describe("InventoryItemFormDialog", () => {
     await screen.findByRole("heading", { name: "Item details" });
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
-    expect(await screen.findByText("Letters, numbers, dots, hyphens and underscores only.")).toBeDefined();
+    // The SKU is optional now, so the first thing missing is the name.
+    expect(await screen.findByText("Give the item a name.")).toBeDefined();
     expect(screen.queryByRole("heading", { name: "Item master" })).toBeNull();
     expect(createInventoryItem).not.toHaveBeenCalled();
+  });
+
+  it("refuses a typed SKU with characters the server would reject", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.type(screen.getByLabelText(/SKU/), "bad sku");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(await screen.findByText("Letters, numbers, dots, hyphens and underscores only.")).toBeDefined();
+    expect(createInventoryItem).not.toHaveBeenCalled();
+  });
+
+  it("shows the SKU as optional, with the auto-generate hint", async () => {
+    renderDialog();
+
+    const field = await screen.findByLabelText(/SKU/);
+    expect(field).toHaveProperty("required", false);
+    expect(screen.getByText("Leave blank to generate one automatically")).toBeDefined();
+  });
+
+  it("creates with no sku in the body when it is left blank, and hands back the generated code", async () => {
+    const user = userEvent.setup();
+    createInventoryItem.mockResolvedValue({ ...CREATED, sku: "ITM-000001" });
+    const { onSaved } = renderDialog();
+
+    await user.type(screen.getByLabelText("Name"), "Cotton yarn");
+    await user.selectOptions(screen.getByLabelText("Category"), "raw_materials");
+    await waitFor(() => expect(listWarehouses).toHaveBeenCalled());
+    await user.selectOptions(await screen.findByLabelText("Warehouse"), "Bengaluru DC");
+    await user.type(screen.getByLabelText("Unit of measure"), "MT");
+    await user.type(screen.getByLabelText("Unit value"), "1500");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("heading", { name: "Item master" });
+    await user.click(screen.getByRole("button", { name: "Create item" }));
+
+    await waitFor(() => expect(createInventoryItem).toHaveBeenCalledTimes(1));
+    const body = createInventoryItem.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect("sku" in body).toBe(false);
+    expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ sku: "ITM-000001" }));
   });
 
   it("moves to item master on Continue, and the step rail returns to item details", async () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.type(screen.getByLabelText("SKU"), "RM-100");
+    await user.type(screen.getByLabelText(/SKU/), "RM-100");
     await user.type(screen.getByLabelText("Name"), "Cotton yarn");
     await user.selectOptions(screen.getByLabelText("Category"), "raw_materials");
     await waitFor(() => expect(listWarehouses).toHaveBeenCalled());
@@ -100,10 +141,10 @@ describe("InventoryItemFormDialog", () => {
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(await screen.findByRole("heading", { name: "Item master" })).toBeDefined();
-    expect(screen.queryByLabelText("SKU")).toBeNull();
+    expect(screen.queryByLabelText(/SKU/)).toBeNull();
 
     await user.click(screen.getByRole("button", { name: /Item details/ }));
-    expect(await screen.findByLabelText("SKU")).toHaveProperty("value", "RM-100");
+    expect(await screen.findByLabelText(/SKU/)).toHaveProperty("value", "RM-100");
   });
 
   it("creates the item from the item master step", async () => {
@@ -111,7 +152,7 @@ describe("InventoryItemFormDialog", () => {
     createInventoryItem.mockResolvedValue(CREATED);
     const { onSaved } = renderDialog();
 
-    await user.type(screen.getByLabelText("SKU"), "RM-100");
+    await user.type(screen.getByLabelText(/SKU/), "RM-100");
     await user.type(screen.getByLabelText("Name"), "Cotton yarn");
     await user.selectOptions(screen.getByLabelText("Category"), "raw_materials");
     await waitFor(() => expect(listWarehouses).toHaveBeenCalled());
@@ -134,7 +175,7 @@ describe("InventoryItemFormDialog", () => {
   });
 
   async function reachItemMaster(user: ReturnType<typeof userEvent.setup>) {
-    await user.type(screen.getByLabelText("SKU"), "FAB-100");
+    await user.type(screen.getByLabelText(/SKU/), "FAB-100");
     await user.type(screen.getByLabelText("Name"), "Cotton poplin");
     await user.selectOptions(screen.getByLabelText("Category"), "raw_materials");
     await waitFor(() => expect(listWarehouses).toHaveBeenCalled());

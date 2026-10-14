@@ -1576,6 +1576,30 @@ class InventoryDiscrepancy(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     )
 
 
+class ItemCodeCounter(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """The per-organization counter behind auto-generated item codes (SKUs).
+
+    One row per (organization, series); `last_value` is the last number handed out. A creator
+    takes the next number with a single `INSERT ... ON CONFLICT DO UPDATE ... RETURNING`
+    (`app.inventory.item_codes.next_item_code`), so the row lock is held until its transaction
+    ends and two simultaneous creates in one organization queue behind each other rather than
+    both reading the same value. Gap-tolerant by design: a code that was skipped because someone
+    typed it by hand is simply never issued. A global Postgres SEQUENCE is deliberately not used —
+    it would be shared across tenants and leak how many items other organizations have.
+    """
+
+    __tablename__ = "item_code_counters"
+
+    #: `item` today; the column keeps room for another series (variants, say) without a migration.
+    series: Mapped[str] = mapped_column(String(20), nullable=False)
+    last_value: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    __table_args__ = (
+        Index("uq_item_code_counters_org_series", "organization_id", "series", unique=True),
+        CheckConstraint("last_value >= 0", name="last_value_not_negative"),
+    )
+
+
 class OperationalAlert(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
     """One open operational condition F12's alert sweep found — low stock, or a pick task or
     shipment sitting past its SLA. Recorded and surfaced the same way `InventoryDiscrepancy` is:

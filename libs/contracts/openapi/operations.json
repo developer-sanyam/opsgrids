@@ -5663,11 +5663,18 @@
             "title": "Selling Price Minor"
           },
           "sku": {
-            "maxLength": 60,
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9._-]+$",
-            "title": "Sku",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sku"
           },
           "track_expiry": {
             "default": false,
@@ -5709,7 +5716,6 @@
           }
         },
         "required": [
-          "sku",
           "name",
           "category",
           "warehouse",

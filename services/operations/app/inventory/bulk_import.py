@@ -97,7 +97,12 @@ def _c(name: str, required: bool, description: str, example: str) -> Col:
 
 COLUMNS: dict[ImportEntity, tuple[Col, ...]] = {
     "items": (
-        _c("sku", True, "Unique per organization: letters, digits, . _ -", "FAB-001"),
+        _c(
+            "sku",
+            False,
+            "Unique per organization: letters, digits, . _ -; generated when blank (ITM-000001)",
+            "FAB-001",
+        ),
         _c("name", True, "Item name", "Cotton poplin 58in"),
         _c(
             "category",
@@ -330,9 +335,11 @@ async def _warehouse_by_code(session: AsyncSession, org_id: uuid.UUID, code: str
 async def _import_item(
     session: AsyncSession, ctx: ScopeContext, row: dict[str, str], request: Request | None
 ) -> str | None:
-    _need(row, "sku", "name", "category", "warehouse", "uom")
+    # `sku` is optional: a blank cell is dropped when the row is read, and the create path then
+    # draws the next code from the organization's series (`app.inventory.item_codes`).
+    _need(row, "name", "category", "warehouse", "uom")
     org = ctx.organization_id
-    if await inv_selectors.get_inventory_by_sku(session, org, row["sku"]):
+    if "sku" in row and await inv_selectors.get_inventory_by_sku(session, org, row["sku"]):
         raise RowDuplicate("sku", f"An item with SKU {row['sku']!r} already exists", row["sku"])
     category_id: str | None = None
     if "item_category_code" in row:
@@ -347,7 +354,7 @@ async def _import_item(
             )
         category_id = str(category.id)
     values: dict[str, Any] = {
-        "sku": row["sku"],
+        "sku": row.get("sku"),
         "name": row["name"],
         "category": row["category"],
         "warehouse": row["warehouse"],
@@ -371,7 +378,7 @@ async def _import_item(
         raise RowFailure(
             "warehouse", "unknown_warehouse", f"No warehouse named {payload.warehouse!r}"
         )
-    await inv_services.create_inventory_item(
+    item = await inv_services.create_inventory_item(
         session,
         ctx,
         sku=payload.sku,
@@ -396,7 +403,7 @@ async def _import_item(
         barcode=payload.barcode,
         request=request,
     )
-    return payload.sku
+    return item.sku
 
 
 async def _import_location(

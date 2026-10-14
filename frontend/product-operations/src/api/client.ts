@@ -818,11 +818,23 @@ export async function getInventoryItem(id: string): Promise<InventoryItemOut> {
   return apiRequest<InventoryItemOut>(`/operations/inventory/${encodeURIComponent(id)}`);
 }
 
-/** `POST /operations/inventory` — `operations.inventory.item.write`. 409 duplicate SKU, 422 an
- *  unknown warehouse. */
+/** Fixture twin of the server's per-organization series: the first free `ITM-nnnnnn` above every
+ *  `ITM-` code already present. */
+function nextFixtureItemCode(): string {
+  let highest = 0;
+  for (const i of INVENTORY) {
+    const m = /^ITM-(\d+)$/.exec(i.sku);
+    if (m?.[1] !== undefined) highest = Math.max(highest, Number(m[1]));
+  }
+  return `ITM-${String(highest + 1).padStart(6, "0")}`;
+}
+
+/** `POST /operations/inventory` — `operations.inventory.item.write`. `sku` is optional: left out,
+ *  the server returns the next generated code (`ITM-000001`). 409 duplicate SKU, 422 an unknown
+ *  warehouse. */
 export async function createInventoryItem(input: InventoryItemIn): Promise<InventoryItemOut> {
   if (USE_FIXTURES) {
-    if (INVENTORY.some((i) => i.sku === input.sku)) {
+    if (input.sku !== undefined && INVENTORY.some((i) => i.sku === input.sku)) {
       throw refusal(409, `An inventory item with SKU '${input.sku}' already exists`);
     }
     if (!WAREHOUSES.some((w) => w.name === input.warehouse)) {
@@ -830,7 +842,7 @@ export async function createInventoryItem(input: InventoryItemIn): Promise<Inven
     }
     const item: InventoryItemOut = {
       id: fixtureId("inv"),
-      sku: input.sku,
+      sku: input.sku ?? nextFixtureItemCode(),
       name: input.name,
       category: input.category,
       warehouse: input.warehouse,
