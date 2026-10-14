@@ -3,12 +3,11 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
-import { RedirectToCentralLogin, configureAuthOrigin, configureSession } from "@opsgrids/client";
+import { RedirectToCentralLogin, RequireAuth, configureAuthOrigin, configureSession } from "@opsgrids/client";
 import { NotFoundScreen, RouteFallback, ThemeProvider, Toaster, lazyRoute as sharedLazyRoute } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
-import { RequireAuth } from "./auth/RequireAuth";
 import { OverviewPage } from "./routes/Overview";
 import { LoginPage } from "./routes/Login";
 import { RouteError } from "./routes/RouteError";
