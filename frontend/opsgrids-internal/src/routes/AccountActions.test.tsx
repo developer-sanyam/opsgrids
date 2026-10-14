@@ -60,7 +60,8 @@ describe("SuspendAction", () => {
     render(<SuspendAction org={ORG} onClose={vi.fn()} onDone={vi.fn()} />);
 
     const dialog = await screen.findByRole("dialog", { name: "Suspend Zenith Polymers" });
-    expect(within(dialog).getByRole("button", { name: "Suspend account" })).toBeTruthy();
+    // Suspend is destructive, so the submit is red and not the accent.
+    expect(within(dialog).getByRole("button", { name: "Suspend account" }).className).toContain("bg-negative");
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeTruthy();
 
     const details = dialog.querySelector("details");

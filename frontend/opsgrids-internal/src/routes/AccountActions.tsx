@@ -64,6 +64,8 @@ interface ActionDialogProps {
   submitting: boolean;
   submitLabel: string;
   pendingLabel: string;
+  /** The submit is destructive (suspend): drawn in the destructive colour. */
+  destructive?: boolean;
   onClose: () => void;
   onSubmit: () => void;
   children: ReactNode;
@@ -79,6 +81,7 @@ function ActionDialog({
   submitting,
   submitLabel,
   pendingLabel,
+  destructive = false,
   onClose,
   onSubmit,
   children,
@@ -100,6 +103,7 @@ function ActionDialog({
       submitLabel={submitLabel}
       pendingLabel={pendingLabel}
       pending={submitting}
+      destructive={destructive}
       {...(error !== null ? { error } : {})}
     >
       {children}
@@ -198,6 +202,7 @@ export function SuspendAction({ org, onClose, onDone }: ActionProps) {
       submitting={submitting}
       submitLabel="Suspend account"
       pendingLabel="Suspending…"
+      destructive
       onClose={onClose}
       onSubmit={submit}
     >

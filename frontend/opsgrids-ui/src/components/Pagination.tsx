@@ -139,7 +139,7 @@ export function Pagination({
               onClick={() => onPageChange(page - 1)}
               disabled={page <= 1}
               aria-label="Previous page"
-              className="grid size-11 place-items-center md:size-9 rounded-tile text-ink-soft transition-colors hover:bg-sunken disabled:cursor-not-allowed disabled:text-disabled disabled:hover:bg-transparent"
+              className="grid size-11 shrink-0 place-items-center md:size-9 rounded-tile text-ink-soft transition-colors hover:bg-sunken disabled:cursor-not-allowed disabled:text-disabled disabled:hover:bg-transparent"
             >
               <ChevronRight className="size-4 rotate-180" />
             </button>
@@ -179,7 +179,7 @@ export function Pagination({
               onClick={() => onPageChange(page + 1)}
               disabled={page >= pages}
               aria-label="Next page"
-              className="grid size-11 place-items-center md:size-9 rounded-tile text-ink-soft transition-colors hover:bg-sunken disabled:cursor-not-allowed disabled:text-disabled disabled:hover:bg-transparent"
+              className="grid size-11 shrink-0 place-items-center md:size-9 rounded-tile text-ink-soft transition-colors hover:bg-sunken disabled:cursor-not-allowed disabled:text-disabled disabled:hover:bg-transparent"
             >
               <ChevronRight className="size-4" />
             </button>
