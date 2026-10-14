@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import domain
-from app.inventory import ledger, quantity
+from app.inventory import item_codes, ledger, quantity
 from app.inventory import selectors as inv_selectors
 from app.inventory.ledger import MoveLine
 from app.inventory.quantity import QTY_SCALE, format_qty, whole_units
@@ -1015,7 +1015,7 @@ async def create_inventory_item(
     session: AsyncSession,
     ctx: ScopeContext,
     *,
-    sku: str,
+    sku: str | None,
     name: str,
     category: str,
     warehouse: str = "",
@@ -1053,7 +1053,13 @@ async def create_inventory_item(
     `item_category_id` and `secondary_uom_id`, when given, must each name an existing row in this
     organization (ADR-0014 Phase 1) — validated here, not left to the foreign key to refuse with
     a bare `IntegrityError`.
+
+    `sku=None` asks for the next code in the organization's series (`ITM-000001`, ...), drawn
+    from its counter inside this transaction (`app.inventory.item_codes`). A typed `sku` is used
+    as given and must be free; a generated one skips anything already taken.
     """
+    if sku is None:
+        sku = await item_codes.next_item_code(session, ctx.organization_id)
     await _lock_sku(session, ctx.organization_id, sku)
     if await inv_selectors.get_inventory_by_sku(session, ctx.organization_id, sku):
         raise ConflictProblem(f"An inventory item with SKU {sku!r} already exists")

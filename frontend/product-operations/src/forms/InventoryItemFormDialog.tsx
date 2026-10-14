@@ -185,7 +185,8 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
     setOpeningError(undefined);
 
     const trimmedSku = sku.trim();
-    if (!item && (trimmedSku.length < 1 || !SKU_PATTERN.test(trimmedSku))) {
+    // Blank is fine on create: the server generates the next code in the organization's series.
+    if (!item && trimmedSku.length > 0 && !SKU_PATTERN.test(trimmedSku)) {
       setSkuError("Letters, numbers, dots, hyphens and underscores only.");
       firstFieldRef.current?.focus();
       return false;
@@ -285,7 +286,7 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
 
     const opening = parseInt0(openingOnHand);
     const input: InventoryItemIn = {
-      sku: sku.trim(),
+      ...(sku.trim() === "" ? {} : { sku: sku.trim() }),
       name: trimmedName,
       category,
       warehouse,
@@ -333,8 +334,12 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
             value={sku}
             onChange={(e) => setSku(e.target.value)}
             disabled={item !== null}
-            helper={item ? "A SKU can't change once created." : "Letters, numbers, . - and _."}
-            required={item === null}
+            helper={
+              item
+                ? "A SKU can't change once created."
+                : "Leave blank to generate one automatically"
+            }
+            optional={item === null}
             {...((skuError ?? save.fieldErrors.sku) !== undefined ? { error: skuError ?? save.fieldErrors.sku } : {})}
           />
           <TextField

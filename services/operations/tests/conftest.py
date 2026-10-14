@@ -42,6 +42,7 @@ from platform_core.db import TENANT_GUC, get_session
 from tests.helpers import ctx_for
 
 TENANT_TABLES = (
+    "item_code_counters",
     "putaway_captures",
     "stock_transfer_transitions",
     "stock_transfer_lines",

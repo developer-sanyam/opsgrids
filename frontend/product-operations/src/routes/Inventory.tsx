@@ -383,7 +383,7 @@ export function InventoryPage() {
           onClose={() => setCreating(false)}
           onSaved={(item) => {
             setCreating(false);
-            toast.success(`${item.name} created.`);
+            toast.success(`${item.name} created with code ${item.sku}.`);
             state.reload();
           }}
         />

@@ -428,7 +428,9 @@ class InventoryItemIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    sku: str = Field(min_length=1, max_length=60, pattern=r"^[A-Za-z0-9._-]+$")
+    #: Optional: leave it out (or blank) and the next code in the organization's series
+    #: (`ITM-000001`, ...) is generated. A typed code must be unique within the organization.
+    sku: str | None = Field(default=None, min_length=1, max_length=60, pattern=r"^[A-Za-z0-9._-]+$")
     name: str = Field(min_length=1, max_length=200)
     category: Category
     #: Must name an existing warehouse in the org — validated against the warehouse directory,
@@ -458,6 +460,13 @@ class InventoryItemIn(BaseModel):
     selling_price_currency: str | None = Field(default=None, min_length=3, max_length=3)
     #: Unique across the organization's live items; printable ASCII, no spaces.
     barcode: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[!-~]+$")
+
+    @field_validator("sku", mode="before")
+    @classmethod
+    def _blank_sku_means_generate(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def _selling_price_paired(self) -> Self:

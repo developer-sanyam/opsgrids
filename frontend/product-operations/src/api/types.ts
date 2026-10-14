@@ -208,7 +208,8 @@ export interface InventoryItemOut {
 /** `POST /inventory`. `on_hand` is never accepted — `opening_on_hand` becomes the item's first
  *  `opening` movement instead. `warehouse` must name an existing warehouse. */
 export interface InventoryItemIn {
-  sku: string;
+  /** Optional: omit it and the server generates the next `ITM-000001`-style code. */
+  sku?: string;
   name: string;
   category: Category;
   warehouse: string;
