@@ -7,7 +7,7 @@ import { useDirectory } from "@/data/directoryContext";
 import { contactImport } from "@/data/importExport/contacts";
 import type { ContactFilters } from "@/data/importExport/contacts";
 import { companyName, ownerName } from "@/data/lookups";
-import { ArrowRightIcon, ChevronDown, cn, ImportExportButton, MailIcon, MobileDataCard, TABLET_QUERY, useMediaQuery, PlusIcon, StepUpDialog, useDebouncedValue, UsersIcon, useToast } from "@opsgrids/ui";
+import { ArrowRightIcon, ChevronDown, cn, ImportExportButton, MailIcon, MobileDataCard, TABLET_QUERY, useMediaQuery, PlusIcon, StepUpDialog, useDebouncedValue, UsersIcon, useToast, ChipRow } from "@opsgrids/ui";
 import { formatDate, formatRelative } from "@/lib/format";
 import { RevealField } from "@/reveal/RevealField";
 import type { UseStepUpResult } from "@opsgrids/client";
@@ -36,7 +36,6 @@ import {
   SearchInput,
   Skeleton,
 } from "@/ui";
-import { ChipRow } from "@/ui/ChipRow";
 import { ContactFormDialog } from "@/forms/ContactFormDialog";
 
 type StatusFilter = ContactStatus | "all";

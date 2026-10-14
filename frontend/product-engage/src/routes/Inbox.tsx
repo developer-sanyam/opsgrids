@@ -123,7 +123,11 @@ function Inbox() {
   return (
     <div className="rise flex h-full flex-col gap-6">
       {/* With a thread open on a phone the thread is the screen; the page title would only push
-          the conversation down. */}
+          the conversation down. It stays as the page's heading for assistive tech, which loses
+          the visible one with `display: none`. */}
+      {selected !== null ? (
+        <h1 className="sr-only lg:hidden">Inbox: conversation with {selected.wa_address}</h1>
+      ) : null}
       <div className={selectedId !== null ? "hidden lg:block" : undefined}>
         <PageHeader
           eyebrow="Engage"

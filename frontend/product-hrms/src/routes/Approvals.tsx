@@ -22,6 +22,7 @@ import {
   formatRelative,
   useAnnounce,
   useMediaQuery,
+  ChipRow,
 } from "@opsgrids/ui";
 import type { Column } from "@opsgrids/ui";
 
@@ -35,7 +36,6 @@ import {
   summaryLine,
 } from "@/lib/approvalCopy";
 import { useZoneLookup } from "@/lib/zone";
-import { ChipRow } from "@/ui/ChipRow";
 import { PersonRefBlock } from "@/ui/PersonRef";
 
 const PAGE_SIZE = 25;

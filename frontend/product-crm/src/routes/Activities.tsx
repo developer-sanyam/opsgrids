@@ -15,8 +15,7 @@ import {
   Pill,
   Skeleton,
 } from "@/ui";
-import { ChipRow } from "@/ui/ChipRow";
-import { ActivityIcon, PlusIcon, useToast } from "@opsgrids/ui";
+import { ActivityIcon, PlusIcon, useToast, ChipRow } from "@opsgrids/ui";
 import { ActivityFormDialog } from "@/forms/ActivityFormDialog";
 
 type TypeFilter = ActivityType | "all";

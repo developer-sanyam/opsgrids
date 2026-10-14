@@ -8,7 +8,7 @@ import { leadImport } from "@/data/importExport/leads";
 import type { LeadFilters } from "@/data/importExport/leads";
 import { formatDate } from "@/lib/format";
 import { Can, problemMessage, useAsync, useCan, useImportExport } from "@opsgrids/client";
-import { ImportExportButton, PlusIcon, UserPlusIcon } from "@opsgrids/ui";
+import { ImportExportButton, PlusIcon, UserPlusIcon, ChipRow } from "@opsgrids/ui";
 import {
   Button,
   Card,
@@ -23,7 +23,6 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { ChipRow } from "@/ui/ChipRow";
 import { LeadFormDialog } from "@/forms/LeadFormDialog";
 
 type StatusFilter = LeadStatus | "all";

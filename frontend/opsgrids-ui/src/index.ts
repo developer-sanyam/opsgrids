@@ -80,6 +80,7 @@ export { KpiCard } from "./components/KpiCard";
 export type { KpiTone } from "./components/KpiCard";
 export { LineChart } from "./components/LineChart";
 export type { ChartSeries, ChartTone } from "./components/LineChart";
+export { ChipRow } from "./components/ChipRow";
 export { LoadMore } from "./components/LoadMore";
 export { Menu } from "./components/Menu";
 export type { MenuItem } from "./components/Menu";

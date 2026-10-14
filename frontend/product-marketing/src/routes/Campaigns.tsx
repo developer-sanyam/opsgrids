@@ -6,7 +6,7 @@ import type { Campaign, CampaignStatus, Channel } from "@/api/types";
 import { roas } from "@/data/derive";
 import { downloadCsv } from "@/lib/csv";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
-import { MegaphoneIcon, PlusIcon, TABLET_QUERY, cn, useDebouncedValue, useMediaQuery, useToast } from "@opsgrids/ui";
+import { MegaphoneIcon, PlusIcon, TABLET_QUERY, cn, useDebouncedValue, useMediaQuery, useToast, ChipRow } from "@opsgrids/ui";
 import type { TableSelection } from "@opsgrids/ui";
 import { formatMoneyCompact, formatNumber, formatRoas } from "@/lib/format";
 import {
@@ -27,7 +27,6 @@ import {
   Skeleton,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { ChipRow } from "@/ui/ChipRow";
 import { CampaignFormDialog } from "@/forms/CampaignFormDialog";
 
 const WRITE_PERMISSION = "marketing.analytics.campaign.write";

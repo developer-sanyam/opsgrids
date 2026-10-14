@@ -130,6 +130,19 @@ describe("the list and the thread", () => {
     expect(screen.getByRole("link", { name: /view in Revenue/i })).toBeTruthy();
   });
 
+  it("keeps a page heading naming the conversation once a thread is open, for the phone where the visible one is hidden", async () => {
+    vi.spyOn(client, "listConversations").mockResolvedValue(page([OPEN]));
+    vi.spyOn(client, "listConversationMessages").mockResolvedValue(page(THREAD));
+    renderInbox();
+
+    expect(screen.queryByRole("heading", { name: /conversation with/ })).toBeNull();
+    await userEvent.click(await screen.findByRole("button", { name: /4210/ }));
+    await screen.findByText("Is my order ready?");
+
+    const heading = screen.getByRole("heading", { level: 1, name: "Inbox: conversation with •••••• 4210" });
+    expect(heading.className).toContain("sr-only");
+  });
+
   it("shows no CRM link for a stranger number", async () => {
     vi.spyOn(client, "listConversations").mockResolvedValue(page([EXPIRED]));
     vi.spyOn(client, "listConversationMessages").mockResolvedValue(page(THREAD));

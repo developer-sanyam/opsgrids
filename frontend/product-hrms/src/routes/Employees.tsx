@@ -1,4 +1,3 @@
-import { ChipRow } from "@/ui/ChipRow";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
@@ -31,6 +30,7 @@ import {
   Select,
   UsersIcon,
   useToast,
+  ChipRow,
 } from "@opsgrids/ui";
 import { EmployeeForm } from "@/ui/EmployeeForm";
 
