@@ -118,8 +118,8 @@ function ChannelSkeleton() {
 
 function Figure({ label, value }: { label: string; value: number }) {
   return (
-    <div className="flex flex-col gap-1">
-      <dt className="text-xs font-bold uppercase tracking-wider text-faint">{label}</dt>
+    <div className="flex min-w-0 flex-col gap-1">
+      <dt className="break-words text-xs font-bold uppercase tracking-wider text-faint">{label}</dt>
       <dd className="tnum text-xl font-bold text-ink">{formatNumber(value)}</dd>
     </div>
   );
